@@ -251,10 +251,10 @@
 // ============================================================
 const GB_CUSTOM_COLORS_KEY = 'meldex-custom-colors';
 const GB_STANDARD_PALETTE_ADJUST_KEY = 'meldex-standard-palette-adjust';
-const GB_STANDARD_PALETTE_HUE_MIN = -360;
+const GB_STANDARD_PALETTE_HUE_MIN = 0;
 const GB_STANDARD_PALETTE_HUE_MAX = 360;
 const GB_STANDARD_PALETTE_GRAY_PCTS = Object.freeze([0, 17, 33, 50, 67, 83, 100]);
-const GB_STANDARD_PALETTE_DEFAULT_ADJUST = Object.freeze({ hueStart: 0, hueEnd: 320, saturation: 50, brightness: 0, contrast: 50 });
+const GB_STANDARD_PALETTE_DEFAULT_ADJUST = Object.freeze({ hueStart: 0, hueEnd: 320, hueWrap: false, saturation: 50, brightness: 0, contrast: 50 });
 const GB_OS_ACCENT_TONES = Object.freeze([
   { tone: 'dark', label: 'OSアクセント（暗）' },
   { tone: 'base', label: 'OSアクセント' },
@@ -346,6 +346,13 @@ function _clampPaletteAdjustValue(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.round(num)));
 }
 
+function _normalizePaletteHueEndpoint(value, fallback) {
+  const num = Number(value);
+  const source = Number.isFinite(num) ? Math.round(num) : Math.round(Number(fallback) || 0);
+  if (source === GB_STANDARD_PALETTE_HUE_MAX) return GB_STANDARD_PALETTE_HUE_MAX;
+  return ((source % GB_STANDARD_PALETTE_HUE_MAX) + GB_STANDARD_PALETTE_HUE_MAX) % GB_STANDARD_PALETTE_HUE_MAX;
+}
+
 function normalizeStandardPaletteAdjust(adjust) {
   const src = adjust && typeof adjust === 'object' ? adjust : {};
   const hasOwn = key => Object.prototype.hasOwnProperty.call(src, key);
@@ -354,11 +361,16 @@ function normalizeStandardPaletteAdjust(adjust) {
   const legacyHue = _clampPaletteAdjustValue(src.hue, -180, 180, 0);
   const hueStartFallback = GB_STANDARD_PALETTE_DEFAULT_ADJUST.hueStart + (isLegacy ? legacyHue : 0);
   const hueEndFallback = GB_STANDARD_PALETTE_DEFAULT_ADJUST.hueEnd + (isLegacy ? legacyHue : 0);
+  const hueStart = _normalizePaletteHueEndpoint(src.hueStart, hueStartFallback);
+  const hueEnd = _normalizePaletteHueEndpoint(src.hueEnd, hueEndFallback);
+  const fullHueRange = Math.abs(hueEnd - hueStart) === GB_STANDARD_PALETTE_HUE_MAX;
+  const inferredHueWrap = !fullHueRange && hueStart > hueEnd;
   const rawSaturation = isLegacy ? GB_STANDARD_PALETTE_DEFAULT_ADJUST.saturation + (Number(src.saturation) || 0) : src.saturation;
   const rawContrast = isLegacy ? 50 + ((Number(src.contrast) || 0) / 2) : src.contrast;
   return {
-    hueStart: _clampPaletteAdjustValue(src.hueStart, GB_STANDARD_PALETTE_HUE_MIN, GB_STANDARD_PALETTE_HUE_MAX, hueStartFallback),
-    hueEnd: _clampPaletteAdjustValue(src.hueEnd, GB_STANDARD_PALETTE_HUE_MIN, GB_STANDARD_PALETTE_HUE_MAX, hueEndFallback),
+    hueStart,
+    hueEnd,
+    hueWrap: hasOwn('hueWrap') ? src.hueWrap === true : inferredHueWrap,
     saturation: _clampPaletteAdjustValue(rawSaturation, 0, 100, GB_STANDARD_PALETTE_DEFAULT_ADJUST.saturation),
     brightness: _clampPaletteAdjustValue(src.brightness, -100, 100, 0),
     contrast: _clampPaletteAdjustValue(rawContrast, 0, 100, GB_STANDARD_PALETTE_DEFAULT_ADJUST.contrast),
@@ -553,10 +565,6 @@ function _clampPalettePct(value) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function _paletteLerp(a, b, t) {
-  return a + ((b - a) * t);
-}
-
 function _grayFromBlackPct(pct) {
   const v = Math.max(0, Math.min(255, Math.round(255 * (1 - (pct / 100)))));
   const hex = v.toString(16).padStart(2, '0');
@@ -574,7 +582,18 @@ function _adjustBlackPctForContrast(pct, contrast) {
 
 function _standardPaletteHueAt(adjust, index) {
   const t = index / 7;
-  return _wrapHue(_paletteLerp(adjust.hueStart, adjust.hueEnd, t));
+  const rawSpan = Number(adjust.hueEnd) - Number(adjust.hueStart);
+  const distance = Math.min(GB_STANDARD_PALETTE_HUE_MAX, Math.abs(rawSpan));
+  const fullHueRange = distance === GB_STANDARD_PALETTE_HUE_MAX;
+  const wrapsHueRange = !fullHueRange && adjust.hueWrap === true;
+  const spanMagnitude = fullHueRange
+    ? GB_STANDARD_PALETTE_HUE_MAX
+    : (wrapsHueRange ? GB_STANDARD_PALETTE_HUE_MAX - distance : distance);
+  const direction = fullHueRange
+    ? (rawSpan < 0 ? -1 : 1)
+    : (wrapsHueRange ? (rawSpan < 0 ? 1 : -1) : (rawSpan < 0 ? -1 : 1));
+  const span = spanMagnitude * direction;
+  return _wrapHue(Number(adjust.hueStart) + (span * t));
 }
 
 function _standardPaletteBaseBrightness(adjust) {
@@ -812,8 +831,11 @@ function openColorPalette(anchorEl, currentColor, onSelect) {
     const initial = palette.querySelector('.gb-swatch.active, button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
     initial?.focus?.({ preventScroll: true });
   });
-  setTimeout(() => document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true), 0);
-  setTimeout(() => document.addEventListener('keydown', _gbPaletteKeyHandler, true), 0);
+  // パレットはclickハンドラから開くため、開いた時点で起点のpointerdownは既に
+  // 完了している。次のmacrotaskまで登録を遅らせると、高速なタッチ操作や
+  // 再描画直後の外側クリックを取りこぼすため、ここで直ちに監視を開始する。
+  document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true);
+  document.addEventListener('keydown', _gbPaletteKeyHandler, true);
 }
 
 // ============================================================

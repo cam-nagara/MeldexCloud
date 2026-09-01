@@ -516,8 +516,11 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       img.replaceWith(document.createTextNode(v));
     };
     img.addEventListener('click', (e) => { e.stopPropagation(); });
-    row.appendChild(img);
-    window.MeldexImageLoading?.track?.(img, { label: '画像セルを読み込んでいます', errorMode: 'silent' });
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, {
+      className: 'cell-thumbnail-host' + (thumbSize === 'large' ? ' large' : ''),
+    });
+    row.appendChild(imageHost || img);
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像セルを読み込んでいます', errorMode: 'silent' });
     return row;
   }
 

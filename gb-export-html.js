@@ -8,6 +8,68 @@
 
 const MeldexExportHtml = (() => {
 
+  const INLINE_ASSET_MAX_BYTES = 50 * 1024 * 1024;
+  const ASSET_BASE_TOKEN = '__MELDEX_ASSET_BASE__';
+
+  function _assetExtension(blob, rawUrl) {
+    const mime = String(blob?.type || '').toLowerCase().split(';', 1)[0];
+    const byMime = {
+      'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
+      'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/avif': 'avif',
+      'image/bmp': 'bmp', 'image/x-icon': 'ico',
+      'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+      'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/ogg': 'ogg',
+      'audio/flac': 'flac', 'audio/mp4': 'm4a',
+      'font/woff2': 'woff2', 'font/woff': 'woff',
+    };
+    if (byMime[mime]) return byMime[mime];
+    try {
+      const pathname = new URL(String(rawUrl || ''), document.baseURI).pathname;
+      const match = pathname.match(/\.([A-Za-z0-9]{1,8})$/);
+      if (match) return match[1].toLowerCase();
+    } catch {}
+    return 'bin';
+  }
+
+  async function _sha256Hex(blob) {
+    if (!globalThis.crypto?.subtle) {
+      throw new Error('公開資産の整合性hashを計算できないため生成を停止しました');
+    }
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  function createAssetCollector(options) {
+    const configured = Number(options?.inlineLimitBytes);
+    const inlineLimitBytes = Number.isFinite(configured) && configured >= 0
+      ? configured
+      : INLINE_ASSET_MAX_BYTES;
+    const assets = [];
+    const byName = new Map();
+    return {
+      assets,
+      inlineLimitBytes,
+      async addBlob(blob, rawUrl) {
+        if (!blob) throw new Error('公開資産を読み込めませんでした');
+        if (blob.size <= inlineLimitBytes) return _blobToDataUri(blob);
+        const sha256 = await _sha256Hex(blob);
+        const name = `${sha256}.${_assetExtension(blob, rawUrl)}`;
+        if (!byName.has(name)) {
+          const asset = Object.freeze({
+            name,
+            mime: String(blob.type || 'application/octet-stream'),
+            size: Number(blob.size) || 0,
+            sha256,
+            blob,
+          });
+          byName.set(name, asset);
+          assets.push(asset);
+        }
+        return `${ASSET_BASE_TOKEN}/${name}`;
+      },
+    };
+  }
+
   function _getFormControlStaticText(node) {
     if (!node) return '';
     const tagName = node.tagName || '';
@@ -62,10 +124,27 @@ const MeldexExportHtml = (() => {
       node.removeAttribute('draggable');
     });
     // イベント属性除去
-    const eventAttrs = ['onclick', 'onmouseover', 'onmouseout', 'onmousedown', 'onmouseup',
-      'onkeydown', 'onkeyup', 'ondblclick', 'oncontextmenu', 'ondragstart', 'ondrop', 'oninput', 'onchange'];
     allNodes.forEach(node => {
-      eventAttrs.forEach(attr => node.removeAttribute(attr));
+      Array.from(node.attributes || []).forEach(attr => {
+        if (/^on/i.test(attr.name)) node.removeAttribute(attr.name);
+      });
+    });
+    // canvasはcloneNodeでは描画面を複製しない。公開前に確定bitmapへ変換する。
+    const sourceCanvases = [el, ...el.querySelectorAll('canvas')].filter(node => node?.tagName === 'CANVAS');
+    const clonedCanvases = [clone, ...clone.querySelectorAll('canvas')].filter(node => node?.tagName === 'CANVAS');
+    sourceCanvases.forEach((source, index) => {
+      const target = clonedCanvases[index];
+      if (!target) return;
+      let dataUrl = '';
+      try { dataUrl = source.toDataURL('image/png'); } catch {
+        throw new Error('canvasを安全な画像へ確定できませんでした');
+      }
+      const image = document.createElement('img');
+      image.src = dataUrl;
+      image.alt = source.getAttribute('aria-label') || '';
+      image.className = source.className || '';
+      image.setAttribute('style', source.getAttribute('style') || '');
+      target.replaceWith(image);
     });
     // input / textarea / select をテキストに変換、button は無効化
     // preserveFormControls=true の場合はフォーム操作を残すためスキップ
@@ -82,6 +161,63 @@ const MeldexExportHtml = (() => {
         }
       });
     }
+    return clone;
+  }
+
+  const PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST = new Set(['data-publish-form', 'data-form-type']);
+  const PUBLISHED_FORBIDDEN_ELEMENTS = 'script,iframe,object,embed,base,meta,link,portal';
+
+  function _safePublishedLink(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('#')) return raw;
+    try {
+      const url = new URL(raw, document.baseURI);
+      return ['https:', 'http:', 'mailto:', 'tel:'].includes(url.protocol) ? url.toString() : '';
+    } catch { return ''; }
+  }
+
+  function sanitizePublishedClone(clone, options) {
+    const opts = options || {};
+    clone.querySelectorAll(PUBLISHED_FORBIDDEN_ELEMENTS).forEach(node => node.remove());
+    const allNodes = [clone, ...clone.querySelectorAll('*')];
+    allNodes.forEach(node => {
+      Array.from(node.attributes || []).forEach(attr => {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || name === 'srcdoc') {
+          node.removeAttribute(attr.name);
+          return;
+        }
+        if (name === 'srcset') {
+          node.removeAttribute(attr.name);
+          return;
+        }
+        if (name.startsWith('data-') && !(opts.preserveFormControls && PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST.has(name))) {
+          node.removeAttribute(attr.name);
+          return;
+        }
+        if (name === 'href' && String(node.localName || '').toLowerCase() !== 'image') {
+          const safe = _safePublishedLink(attr.value);
+          if (safe) {
+            node.setAttribute(attr.name, safe);
+            if (node.tagName === 'A') node.setAttribute('rel', 'noopener noreferrer');
+          } else node.removeAttribute(attr.name);
+        }
+      });
+      const style = node.getAttribute?.('style') || '';
+      if (/url\(\s*(["']?)(?!data:|__MELDEX_ASSET_BASE__\/)/i.test(style)) {
+        throw new Error('公開HTMLに未埋込みのCSS資産が残っています');
+      }
+    });
+    clone.querySelectorAll('img[src],image[href],image[xlink\\:href],video[src],audio[src],source[src],[poster]').forEach(node => {
+      const attr = node.hasAttribute('src') ? 'src' : node.hasAttribute('poster') ? 'poster'
+        : node.hasAttribute('href') ? 'href' : 'xlink:href';
+      const value = String(node.getAttribute(attr) || '');
+      if (!value.startsWith('data:')
+        && !new RegExp(`^${ASSET_BASE_TOKEN}/[A-Za-z0-9][A-Za-z0-9._-]{0,159}$`).test(value)) {
+        throw new Error('公開HTMLに未埋込みのローカル資産が残っています');
+      }
+    });
     return clone;
   }
 
@@ -150,7 +286,7 @@ const MeldexExportHtml = (() => {
 
   /** Noto Sans JP を data URI で埋め込む。既定は Regular のみ。
       太字を使うビュー（エントリレイアウトのセル書式等）は weights: ['regular','bold'] を渡す。 */
-  async function embedFont(weights) {
+  async function embedFont(weights, assetCollector) {
     const list = Array.isArray(weights) && weights.length ? weights : ['regular'];
     const parts = [];
     for (const key of list) {
@@ -159,12 +295,11 @@ const MeldexExportHtml = (() => {
       try {
         const r = await fetch(def.file);
         if (!r.ok) continue;
-        const buf = await r.arrayBuffer();
-        const bin = new Uint8Array(buf);
-        let s = '';
-        for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
-        const b64 = btoa(s);
-        parts.push(`@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: ${def.weight}; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`);
+        const blob = await r.blob();
+        const source = assetCollector
+          ? await assetCollector.addBlob(blob, def.file)
+          : await _blobToDataUri(blob);
+        parts.push(`@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: ${def.weight}; src: url('${source}') format('woff2'); }`);
       } catch { /* このウェイトはフォールバックフォントに任せる */ }
     }
     return parts.join('\n');
@@ -208,7 +343,7 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
     return `${url}${sep}_=${Date.now()}`;
   }
 
-  async function _inlineCssImports(cssText, baseUrl, seen) {
+  async function _inlineCssImports(cssText, baseUrl, seen, assetCollector) {
     const importRe = /@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?[^;]*;/gi;
     let out = '';
     let last = 0;
@@ -216,14 +351,55 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
     while ((match = importRe.exec(cssText))) {
       out += cssText.slice(last, match.index);
       const importUrl = _resolveCssUrl(match[1], baseUrl);
-      if (importUrl) out += await fetchCss(importUrl, seen) + '\n';
+      if (importUrl) out += await fetchCss(importUrl, seen, assetCollector) + '\n';
       last = match.index + match[0].length;
     }
-    return out + cssText.slice(last);
+    return _inlineCssUrls(out + cssText.slice(last), baseUrl, assetCollector);
+  }
+
+  async function _blobToDataUri(blob) {
+    if (!blob || blob.size > INLINE_ASSET_MAX_BYTES) {
+      throw new Error('公開資産がインライン上限50MBを超えています');
+    }
+    const reader = new FileReader();
+    return new Promise((resolve, reject) => {
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('公開資産を読み込めませんでした'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function _fetchAssetDataUri(rawUrl, baseUrl, assetCollector) {
+    const raw = String(rawUrl || '').trim().replace(/^['"]|['"]$/g, '');
+    if (!raw || raw.startsWith('data:')) return raw;
+    if (raw.startsWith('#')) return raw;
+    const resolved = _resolveCssUrl(raw, baseUrl);
+    let response;
+    try { response = await fetch(resolved, { cache: 'no-store' }); }
+    catch { throw new Error('公開資産を取得できません: ' + raw.slice(0, 160)); }
+    if (!response.ok) throw new Error('公開資産を取得できません (' + response.status + '): ' + raw.slice(0, 160));
+    const blob = await response.blob();
+    return assetCollector ? assetCollector.addBlob(blob, resolved) : _blobToDataUri(blob);
+  }
+
+  async function _inlineCssUrls(cssText, baseUrl, assetCollector) {
+    const source = String(cssText || '');
+    const pattern = /url\(\s*(["']?)([^"')]+)\1\s*\)/gi;
+    let output = '';
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(source))) {
+      output += source.slice(last, match.index);
+      const raw = String(match[2] || '').trim();
+      if (!raw || raw.startsWith('data:') || raw.startsWith('#')) output += match[0];
+      else output += `url("${await _fetchAssetDataUri(raw, baseUrl, assetCollector)}")`;
+      last = match.index + match[0].length;
+    }
+    return output + source.slice(last);
   }
 
   /** 外部CSSファイルを取得し、@import も自己完結用に展開する（キャッシュバイパス付き） */
-  async function fetchCss(url, seen) {
+  async function fetchCss(url, seen, assetCollector) {
     const resolvedUrl = _resolveCssUrl(url);
     if (!resolvedUrl) return '';
     const visited = seen || new Set();
@@ -231,11 +407,11 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
     visited.add(resolvedUrl);
     try {
       const res = await fetch(_withCacheBust(resolvedUrl), { cache: 'no-store' });
-      if (!res.ok) return '';
+      if (!res.ok) throw new Error('公開用CSSを取得できません (' + res.status + '): ' + resolvedUrl);
       const cssText = await res.text();
-      return await _inlineCssImports(cssText, resolvedUrl, visited);
-    } catch {
-      return '';
+      return await _inlineCssImports(cssText, resolvedUrl, visited, assetCollector);
+    } catch (error) {
+      throw error instanceof Error ? error : new Error('公開用CSSを取得できません: ' + resolvedUrl);
     }
   }
 
@@ -243,29 +419,21 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
   // 7. 画像の data URI 化
   // ================================================================
 
-  /** クローン内の画像を data URI に変換する */
-  async function embedImages(clone) {
-    const imgs = clone.querySelectorAll('img[src]');
-    const promises = [];
-    for (const img of imgs) {
-      const src = img.getAttribute('src');
+  /** クローン内の画像・media・style URLを data URI に変換する。失敗は公開停止。 */
+  async function embedImages(clone, assetCollector) {
+    const assets = clone.querySelectorAll('img[src],image[href],image[xlink\\:href],video[src],audio[src],source[src],[poster]');
+    for (const node of assets) {
+      const attr = node.hasAttribute('src') ? 'src' : node.hasAttribute('poster') ? 'poster'
+        : node.hasAttribute('href') ? 'href' : 'xlink:href';
+      const src = node.getAttribute(attr);
       if (!src || src.startsWith('data:')) continue;
-      promises.push((async () => {
-        try {
-          const res = await fetch(src);
-          if (!res.ok) return;
-          const blob = await res.blob();
-          const reader = new FileReader();
-          const dataUri = await new Promise((resolve, reject) => {
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-          img.setAttribute('src', dataUri);
-        } catch { /* 変換失敗は無視 */ }
-      })());
+      node.setAttribute(attr, await _fetchAssetDataUri(src, document.baseURI, assetCollector));
     }
-    await Promise.all(promises);
+    clone.querySelectorAll('[srcset]').forEach(node => node.removeAttribute('srcset'));
+    for (const node of [clone, ...clone.querySelectorAll('[style]')]) {
+      const style = node.getAttribute?.('style') || '';
+      if (/url\(/i.test(style)) node.setAttribute('style', await _inlineCssUrls(style, document.baseURI, assetCollector));
+    }
   }
 
   // ================================================================
@@ -274,19 +442,24 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
 
   function buildHtml(title, bodyHtml, css, fontCss, extraHeadHtml) {
     const escHtml = MeldexEscape.html;
+    const suppliedHead = String(extraHeadHtml || '');
+    const csp = /Content-Security-Policy/i.test(suppliedHead) ? ''
+      : '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; media-src data:">';
     return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="color-scheme" content="dark light">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+${csp}
 <title>${escHtml(title)}</title>
 <style>
 ${fontCss}
 ${css}
 ${getStaticCss()}
 </style>
-${extraHeadHtml || ''}
+${suppliedHead}
 </head>
 <body>
 ${bodyHtml}
@@ -298,18 +471,60 @@ ${bodyHtml}
   // 9. 保存ダイアログ呼び出し
   // ================================================================
 
-  async function saveWithDialog(html, title) {
+  function _publishSaveContext(ctx) {
+    if (!ctx?.path || !ctx?.kind) return null;
+    return {
+      source_path: String(ctx.path),
+      source_kind: String(ctx.kind),
+      source_revision: String(ctx.board?.sourceRevision || ''),
+      context_policy: ctx.kind === 'board' ? 'saved-active-board' : 'active-context-snapshot',
+      view_id: String(ctx.viewId || ''),
+    };
+  }
+
+  let _pendingPublishDialogOperation = null;
+
+  function _newPublishOperationId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    globalThis.crypto?.getRandomValues?.(bytes);
+    return 'publish-' + Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function saveWithDialog(htmlOrPackage, title, publishCtx) {
     if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
-      return await MeldexExportSave.saveText(html, {
+      const publicationPackage = htmlOrPackage && typeof htmlOrPackage === 'object' && typeof htmlOrPackage.html === 'string'
+        ? htmlOrPackage
+        : null;
+      const html = publicationPackage ? publicationPackage.html : String(htmlOrPackage || '');
+      const publishContext = _publishSaveContext(publishCtx);
+      const operationKey = publishContext ? JSON.stringify({
+        html,
+        assets: (publicationPackage?.assets || []).map(asset => ({
+          name: asset.name, size: asset.size, sha256: asset.sha256,
+        })),
+        publishContext,
+      }) : '';
+      if (publishContext && _pendingPublishDialogOperation?.key !== operationKey) {
+        _pendingPublishDialogOperation = { key: operationKey, id: _newPublishOperationId() };
+      }
+      const options = {
         title,
         extension: '.html',
         dialogTitle: 'HTMLとして保存',
         filetypes: [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
         bom: true,
-        registerPublishPath: true,
+        registerPublishPath: !!publishCtx,
+        publishContext,
+        operationId: publishContext ? _pendingPublishDialogOperation.id : '',
         okMessage: 'HTML として保存しました',
         errorMessage: 'HTML の保存に失敗しました',
-      });
+      };
+      const result = publicationPackage && typeof MeldexExportSave.savePublicationPackage === 'function'
+        ? await MeldexExportSave.savePublicationPackage(publicationPackage, options)
+        : await MeldexExportSave.saveText(html, options);
+      if (result && publishContext) _pendingPublishDialogOperation = null;
+      return result;
     }
     showStatus('保存ダイアログを初期化できませんでした', true);
     return false;
@@ -336,6 +551,7 @@ ${bodyHtml}
     if (opts.embedImages !== false) {
       await embedImages(clone);
     }
+    sanitizePublishedClone(clone, { preserveFormControls: !!opts.preserveFormControls });
 
     // CSS
     const varDecls = collectCssVars();
@@ -356,7 +572,7 @@ ${bodyHtml}
     }
     // 追加インラインCSS
     if (opts.extraCss) {
-      cssText += opts.extraCss + '\n';
+      cssText += await _inlineCssUrls(opts.extraCss, document.baseURI) + '\n';
     }
 
     // フォント埋め込み（fontWeights で太字等の追加ウェイトを指定できる）
@@ -378,7 +594,6 @@ ${bodyHtml}
         case 'page': html = await _exportNotePage(); break;
         case 'database': html = await _exportDatabase(); break;
         case 'csv': html = await _exportCsv(); break;
-        case 'smart-db': html = await _exportSmartDb(); break;
         case 'calendar': html = await _exportCalendar(); break;
         case 'board': html = await _exportBoard(); break;
         case 'entity-layout': html = await _exportEntityLayout(); break;
@@ -388,7 +603,7 @@ ${bodyHtml}
       }
       if (!html) return;
       const title = _getViewTitle(viewType);
-      await saveWithDialog(html, title);
+      await saveWithDialog(html, title, null);
     } catch (err) {
       showStatus('HTML出力に失敗しました: ' + (err?.message || err), true);
     }
@@ -396,10 +611,18 @@ ${bodyHtml}
 
   async function publishCurrentView(viewType, opts) {
     const publishOpts = opts || {};
-    const ctx = typeof getCurrentPublishContext === 'function' ? getCurrentPublishContext() : { kind: viewType, path: '' };
-    const kind = viewType || ctx.kind;
-    const supportedKinds = ['page', 'entity', 'database', 'csv', 'smart-db', 'calendar'];
-    if (!supportedKinds.includes(kind)) {
+    let publishCtx = publishOpts.contextSnapshot
+      || (typeof createPublishContextSnapshot === 'function' ? createPublishContextSnapshot(viewType) : null);
+    if (!publishCtx || (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true))) {
+      return false;
+    }
+    if (publishCtx.kind === 'board' && !publishCtx.board && typeof preparePublishContextSnapshot === 'function') {
+      publishCtx = await preparePublishContextSnapshot(publishCtx);
+      if (!publishCtx) return false;
+    }
+    const kind = viewType || publishCtx.kind;
+    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board'];
+    if (!supportedKinds.includes(kind) || kind !== publishCtx.kind) {
       showStatus('このビューは公開HTMLに未対応です', true);
       return false;
     }
@@ -408,33 +631,58 @@ ${bodyHtml}
       return false;
     }
     showStatus('公開HTMLを生成中...');
-    const publishCtx = typeof getCurrentPublishContext === 'function' ? getCurrentPublishContext() : { kind, path: '' };
     const cfg = typeof getPublishConfigForContext === 'function' ? getPublishConfigForContext(publishCtx) : {};
     if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) {
+      return false;
+    }
+    if (typeof assertPublishSourceRevisionCurrent === 'function' && !await assertPublishSourceRevisionCurrent(publishCtx)) {
+      return false;
+    }
+    if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
       return false;
     }
     // 公開設定にコンテキスト由来の値を合成してランタイムへ渡す
     const mergedCfg = {
       ...cfg,
       title: _getViewTitle(kind),
-      db_path: publishCtx.path || cfg.db_path || '',
+      db_path: kind === 'board' ? '' : (publishCtx.path || cfg.db_path || ''),
+      board_snapshot: publishCtx.board || null,
     };
-    const html = await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg);
+    const publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
+      ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
+      : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
+    const html = publicationPackage?.html;
     if (!html) return false;
+    if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
+      return false;
+    }
+    if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) return false;
+    if (typeof assertPublishSourceRevisionCurrent === 'function' && !await assertPublishSourceRevisionCurrent(publishCtx)) return false;
     let result = false;
-    if (cfg.html_path && !publishOpts.changePath && typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveTextDirect === 'function') {
-      result = await MeldexExportSave.saveTextDirect(cfg.html_path, html, {
+    if (cfg.html_path && cfg.html_etag && !publishOpts.changePath && typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveTextDirect === 'function') {
+      const directOptions = {
         bom: true,
         allowRegister: false,
+        ifMatchEtag: cfg.html_etag,
+        publishContext: _publishSaveContext(publishCtx),
         okMessage: '公開HTMLを更新しました',
         errorMessage: '公開HTMLの更新に失敗しました',
-      });
-      if (!result) result = await saveWithDialog(html, mergedCfg.title);
+      };
+      result = typeof MeldexExportSave.savePublicationPackageDirect === 'function'
+        ? await MeldexExportSave.savePublicationPackageDirect(cfg.html_path, publicationPackage, directOptions)
+        : await MeldexExportSave.saveTextDirect(cfg.html_path, html, directOptions);
     } else {
-      result = await saveWithDialog(html, mergedCfg.title);
+      result = await saveWithDialog(publicationPackage, mergedCfg.title, publishCtx);
     }
-    if (result?.path && typeof savePublishConfigForContext === 'function') {
-      const next = { ...(cfg || {}), html_path: result.path, last_published_at: new Date().toISOString() };
+    if (result?.path
+      && (typeof isPublishContextSnapshotCurrent !== 'function' || isPublishContextSnapshotCurrent(publishCtx, true))
+      && typeof savePublishConfigForContext === 'function') {
+      const next = {
+        ...(cfg || {}),
+        html_path: result.path,
+        html_etag: result.etag || '',
+        last_published_at: new Date().toISOString(),
+      };
       await savePublishConfigForContext(publishCtx, next);
     }
     return !!result;
@@ -453,8 +701,6 @@ ${bodyHtml}
       }
       case 'database':
         return state?.currentDbPath?.split('/').pop() || 'シート';
-      case 'smart-db':
-        return (state?.currentSmartDb?.name || 'スマートシート') + (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard' ? ' ダッシュボード' : '');
       case 'csv':
         return (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV';
       case 'calendar':
@@ -665,33 +911,6 @@ ${bodyHtml}
     });
   }
 
-  // --- スマートDB ---
-  async function _exportSmartDb() {
-    if (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard') {
-      const dashEl = document.getElementById('smart-db-dashboard-area');
-      if (!dashEl) { showStatus('スマートシートが開かれていません', true); return null; }
-      return exportToHtml(dashEl, {
-        title: _getViewTitle('smart-db'),
-        cssFiles: ['gb-tools.css', 'gb-ui.css'],
-        extraCss: 'body { padding: 16px; }',
-        embedImages: false,
-      });
-    }
-    const table = document.getElementById('smart-db-table');
-    if (!table) { showStatus('スマートシートが開かれていません', true); return null; }
-    return exportToHtml(table, {
-      title: _getViewTitle('smart-db'),
-      cssFiles: ['gb-tools.css', 'gb-ui.css'],
-      extraCss: `
-        table { border-collapse: collapse; table-layout: auto; width: 100%; }
-        th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }
-        thead { position: static; }
-        body { padding: 16px; }
-      `,
-      embedImages: false,
-    });
-  }
-
   // --- カレンダー ---
   async function _exportCalendar() {
     const calIframe = document.querySelector('#calendar-container iframe, iframe[src*="calendar"]');
@@ -780,15 +999,19 @@ ${bodyHtml}
     exportCurrentView,
     publishCurrentView,
     cloneAndClean,
+    sanitizePublishedClone,
     convertDataRuby,
     noteExportCss,
     collectCssVars,
+    createAssetCollector,
+    ASSET_BASE_TOKEN,
     embedFont,
     embedImages,
     saveWithDialog,
     buildHtml,
     getStaticCss,
     fetchCss,
+    inlineCssAssets: _inlineCssUrls,
     entityLayoutExportOptions,
   };
 

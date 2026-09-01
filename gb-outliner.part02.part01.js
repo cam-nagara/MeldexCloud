@@ -594,7 +594,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -760,11 +760,24 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
   }
 
+  if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
+    const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
+    if (topicSource) {
+      window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
+        addMenuItem(item.label, () => {
+          closeTreeContextMenu();
+          item.action();
+        }, null, item.icon);
+      });
+      addSep();
+    }
+  }
+
   // --- 新規作成サブメニュー ---
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,

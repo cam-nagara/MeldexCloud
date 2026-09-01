@@ -1,5 +1,35 @@
+        cn.style.display = _showRegularNodeByGlobalFilter(d) ? '' : 'none';
+      });
+      childrenDiv.classList.remove('collapsed');
+      saveExpandedState(item.path, true);
+      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
+      if (parentVirtualContainer && window.GBOutlinerVirtualRender?.expandCachedNested(parentVirtualContainer, item.path)) {
+        return;
+      }
+
+      // Lazy load children
+      if (childrenDiv.dataset.loaded === 'false' && childrenDiv.dataset.loading !== 'true') {
+        childrenDiv.dataset.loading = 'true';
+        // スピナー表示
+        const spinner = document.createElement('div');
+        spinner.className = 'tree-spinner';
+        spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
+        childrenDiv.appendChild(spinner);
+        try {
+          if (currentIsDB) {
+            const [pivotData] = await Promise.all([
+              apiFetch('/pivot?path=' + encodeURIComponent(item.path)),
+              window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, {
+                reason: 'outliner-expand',
+              }) || Promise.resolve(null),
+            ]);
+            window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
+            // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
-            const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            const entityItems = entityNames.map(name => ({
+              name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+              entityData: pivotData.entities[name],
+            }));
             // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
             const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
             if (attachmentFolder) {
@@ -254,6 +284,16 @@
   });
 
   row.addEventListener('dragover', (e) => {
+    const topicMime = window.MeldexTopicPlacementUI?.MIME;
+    if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
+      if (item.type === 'database' || item.type === 'board') {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+        clearDragIndicators();
+        row.classList.add('drag-over-inside');
+      }
+      return;
+    }
     e.preventDefault();
     if (!draggedNode) {
       const externalItems = _outlinerExternalDragItems(e);
@@ -299,6 +339,13 @@
   });
 
   row.addEventListener('drop', async (e) => {
+    const topicMime = window.MeldexTopicPlacementUI?.MIME;
+    if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
+      e.preventDefault();
+      e.stopPropagation();
+      clearDragIndicators();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
@@ -851,50 +898,3 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
   }
   const jobs = [];
   if (typeof loadOutliner === 'function') jobs.push(Promise.resolve(loadOutliner()).catch(() => {}));
-  if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
-  if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
-  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-    jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
-      skipShowView: true,
-      skipSaveLastView: true,
-      skipNavPush: true,
-      skipHighlight: true,
-      skipGlobalUi: true,
-    })).catch(() => {}));
-  }
-  await Promise.allSettled(jobs);
-}
-
-async function deleteOutlinerItemsWithHistory(items, options = {}) {
-  const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
-  if (requestedTargets.some(item => item.linked)) {
-    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
-    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
-  }
-  const targets = _prepareOutlinerDeleteTargets(requestedTargets);
-  if (!targets.length) {
-    return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
-  }
-
-  const targetPaths = targets.map(item => item.path).filter(Boolean);
-  _markOutlinerDeletePending(targetPaths);
-  if (typeof options.onOptimisticDelete === 'function') {
-    try { options.onOptimisticDelete(targets); } catch {}
-  }
-
-  const results = await _deleteOutlinerTargetsSequentially(targets, {
-    confirmation: options.confirmation,
-    onSuccess: (item, response) => {
-      if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
-    },
-    onFailure: (item, reason) => {
-      if (typeof options.onItemDeleteFailed === 'function') options.onItemDeleteFailed(item, reason);
-    },
-  });
-  const succeeded = [];
-  const skipped = [];
-  const failed = [];
-  results.forEach((result, index) => {
-    const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
-    if (!trashRef) {
-      if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);

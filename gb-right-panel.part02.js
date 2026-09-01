@@ -30,7 +30,7 @@ async function _toggleResolveComment(c) {
   try {
     const body = { resolved: c.resolved ? 0 : 1 };
     if (typeof _putAnnotationWithHistory === 'function') {
-      await _putAnnotationWithHistory(c.id, body, '注釈: 解決状態変更', c.id);
+      await _putAnnotationWithHistory(c.id, body, 'アノテート: 解決状態変更', c.id);
     } else {
       await apiPut('/annotations/' + encodeURIComponent(c.id), body);
     }
@@ -41,7 +41,7 @@ async function _toggleResolveComment(c) {
 
 async function _deleteComment(c) {
   if (!_rpCanDeleteAnnotation(c)) {
-    showStatus('注釈の削除はソースフォルダの管理者だけが行えます', true);
+    showStatus('アノテートの削除はソースフォルダの管理者だけが行えます', true);
     return;
   }
   if (!await cfConfirm('このコメントを削除しますか？')) return;
@@ -50,7 +50,7 @@ async function _deleteComment(c) {
       ? await _fetchAnnotationHistoryRow(c.id).catch(() => null)
       : null;
     await apiDelete('/annotations/' + encodeURIComponent(c.id));
-    if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, c.id);
+    if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, c.id);
     _invalidateCommentBadgesFor(c);
     loadRpAnnotationList();
   } catch { showStatus('削除に失敗', true); }
@@ -108,7 +108,6 @@ function _rpCommentNavType(c, file) {
   if (/\.board\.md$/i.test(file)) return 'board';
   if (/\.(?:scriptnote|scenario)\.json$/i.test(file)) return 'scriptnote';
   if (/\.calendar\.json$/i.test(file)) return 'calendar';
-  if (/\.smart-db\.json$/i.test(file)) return 'smart-db';
   return 'page';
 }
 
@@ -162,26 +161,12 @@ function _jumpToCommentTarget(c) {
   }, 350);
 }
 
-// 新規コメント作成（§5.2.1: target_kind='none' で作成）
+// 新規コメント作成: selection / shortcut / context menu と同じcomposerへ集約する。
 async function newRpComment() {
-  const text = await cfPrompt('新規コメントの本文を入力:');
-  if (text == null || !text.trim()) return;
-  const cur = String((typeof getAnnotationTarget === 'function') ? (getAnnotationTarget() || '') : '');
-  try {
-    const res = await apiPost('/annotations', {
-      type: 'comment',
-      target_path: cur || '',
-      target_kind: 'none',
-      body: text,
-      data: { type: 'comment', text: text },
-    });
-    if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-      _pushAnnotationCreateHistory(res.id, '注釈: コメント追加', cur || '').catch(() => {});
-    }
-    if (cur) _invalidateCommentBadgesFor({ target_path: cur });
-    // 追加直後は「状態: 全て」ならすぐ見える。未解決でも未解決扱いで見えるはず
-    loadRpAnnotationList();
-  } catch { showStatus('コメント作成に失敗', true); }
+  if (typeof CommentBadges !== 'undefined' && typeof CommentBadges.addCommentHere === 'function') {
+    return CommentBadges.addCommentHere();
+  }
+  if (typeof showStatus === 'function') showStatus('この画面ではコメント対象を確認できません', true);
 }
 
 // 簡易リスト（stroke/marker/lasso/sticky 向け）
@@ -267,7 +252,7 @@ function openCalendar() {
   }
 }
 
-// 注釈パネルのフィルタ入力にリロードを接続（Phase 2e-i）
+// アノテートパネルのフィルタ入力にリロードを接続（Phase 2e-i）
 (function _setupRpAnnotationFilters() {
   function wire() {
     const search = document.getElementById('rp-ann-search');
@@ -277,10 +262,14 @@ function openCalendar() {
     const scope = document.getElementById('rp-ann-scope');
     const status = document.getElementById('rp-ann-status');
     const user = document.getElementById('rp-ann-user');
+    const dateFrom = document.getElementById('rp-ann-date-from');
+    const dateTo = document.getElementById('rp-ann-date-to');
     if (!search || search.dataset.rpBound) return;
     search.dataset.rpBound = '1';
     if (view) view.value = localStorage.getItem('rp-ann-view-mode') || 'preview';
     if (sort) sort.value = localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
+    if (dateFrom) dateFrom.value = localStorage.getItem('rp-ann-date-from') || '';
+    if (dateTo) dateTo.value = localStorage.getItem('rp-ann-date-to') || '';
     let tid = 0;
     const clearTargetFilter = () => { delete search.dataset.targetFilter; };
     search.addEventListener('input', () => { clearTargetFilter(); clearTimeout(tid); tid = setTimeout(loadRpAnnotationList, 200); });
@@ -290,6 +279,8 @@ function openCalendar() {
     if (scope) scope.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
     if (status) status.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
     if (user) user.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
+    if (dateFrom) dateFrom.addEventListener('change', () => { localStorage.setItem('rp-ann-date-from', dateFrom.value || ''); loadRpAnnotationList(); });
+    if (dateTo) dateTo.addEventListener('change', () => { localStorage.setItem('rp-ann-date-to', dateTo.value || ''); loadRpAnnotationList(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
   else wire();

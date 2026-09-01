@@ -9,7 +9,7 @@
        表示はアイコン+ファイル名+ネイティブ<audio controls>の固定サイズカード
        （.viewer-audio-player、viewer.css）で行う。
      - 先読みはしない（preload="metadata"のみ、動画と同じ理由）。
-     - 注釈オーバーレイは viewer-annotation-scene.js が `layer.querySelectorAll('img, canvas')`
+     - アノテートオーバーレイは viewer-annotation-scene.js が `layer.querySelectorAll('img, canvas')`
        で対象を探すため、audio要素（を包むカードdiv）は動画と同じく自動的に対象外になる。
    公開: window.MeldexViewerAudio */
 (function () {
@@ -94,8 +94,7 @@
   }
 
   // メタデータ取得完了を待つ。showGroup()のレイヤー入替タイミング制御に使う（動画と同じ設計）。
-  // タイムアウト時はfalseではなくtrueで解決する（読み込みが遅くてもネイティブコントロールで
-  // 再生できるため、画像のプレビューURLフォールバックのようなブロッキングは不要）。
+  // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
   function waitForAudioReady(audio, timeoutMs = 3000) {
     return new Promise(resolve => {
       if (!audio) { resolve(false); return; }
@@ -112,7 +111,7 @@
       };
       const onReady = () => finish(true);
       const onError = () => finish(false);
-      timer = setTimeout(() => finish(true), timeoutMs);
+      timer = setTimeout(() => finish(false), timeoutMs);
       audio.addEventListener('loadedmetadata', onReady, { once: true });
       audio.addEventListener('error', onError, { once: true });
     });

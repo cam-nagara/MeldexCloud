@@ -63,12 +63,84 @@
     result.topicId = string(source.topicId, 'TopicRecord.topicId', true);
     result.title = string(source.title, 'TopicRecord.title', false);
     result.properties = clone(object(source.properties === undefined ? {} : source.properties, 'TopicRecord.properties'));
+    const typed = object(source.propertyValuesByFamilyId === undefined ? {}
+      : source.propertyValuesByFamilyId, 'TopicRecord.propertyValuesByFamilyId');
+    result.propertyValuesByFamilyId = {};
+    Object.keys(typed).forEach((familyId) => {
+      result.propertyValuesByFamilyId[familyId] = normalizePropertyValue(typed[familyId], familyId);
+    });
+    const requestedOrder = array(source.propertyValueOrder === undefined ? [] : source.propertyValueOrder,
+      'TopicRecord.propertyValueOrder');
+    result.propertyValueOrder = [...new Set(requestedOrder.map((item) => string(item,
+      'TopicRecord.propertyValueOrder[]', true)).filter((item) => item in result.propertyValuesByFamilyId))];
+    Object.keys(result.propertyValuesByFamilyId).forEach((familyId) => {
+      if (!result.propertyValueOrder.includes(familyId)) result.propertyValueOrder.push(familyId);
+    });
     result.note = clone(source.note);
     result.resources = clone(array(source.resources === undefined ? [] : source.resources, 'TopicRecord.resources'));
     result.revision = revision(source.revision === undefined ? 0 : source.revision, 'TopicRecord.revision', false);
     result.schemaVersion = revision(source.schemaVersion === undefined ? 1 : source.schemaVersion, 'TopicRecord.schemaVersion', false);
     for (const field of ['createdAt', 'updatedAt', 'updatedBy']) result[field] = clone(source[field]);
     return result;
+  }
+
+  function normalizeTopicPlacement(value) {
+    const source = object(value, 'TopicPlacement');
+    const result = clone(source);
+    result.placementId = string(source.placementId, 'TopicPlacement.placementId', true);
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    result.documentId = string(source.documentId, 'TopicPlacement.documentId', true);
+    result.viewId = string(source.viewId, 'TopicPlacement.viewId', true);
+    if (!['sheet', 'board'].includes(source.surface)) {
+      throw new ContractValidationError('TopicPlacement.surface must be sheet or board');
+    }
+    result.surface = source.surface;
+    result.order = clone(source.order);
+    result.position = clone(source.position);
+    result.revision = revision(source.revision === undefined ? 0 : source.revision,
+      'TopicPlacement.revision', false);
+    return result;
+  }
+
+  function normalizeTopicUsage(value) {
+    const source = object(value, 'TopicUsage');
+    const result = clone(source);
+    result.usageId = string(source.usageId, 'TopicUsage.usageId', true);
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    if (!['placement', 'note-link', 'chat-link'].includes(source.kind)) {
+      throw new ContractValidationError('TopicUsage.kind is invalid');
+    }
+    result.kind = source.kind;
+    result.targetId = string(source.targetId, 'TopicUsage.targetId', true);
+    result.label = string(source.label === undefined ? '' : source.label, 'TopicUsage.label', false);
+    result.location = clone(source.location);
+    return result;
+  }
+
+  function normalizePropertyValue(value, familyId) {
+    const source = object(value, 'TopicPropertyValue');
+    const result = clone(source);
+    result.propertyFamilyId = string(familyId || source.propertyFamilyId,
+      'TopicPropertyValue.propertyFamilyId', true);
+    result.displayName = typeof source.displayName === 'string' ? source.displayName : '';
+    result.columnType = canonicalColumnType(source.columnType || source.type || 'unknown');
+    result.typeConfig = clone(object(source.typeConfig === undefined ? {} : source.typeConfig,
+      'TopicPropertyValue.typeConfig'));
+    result.value = clone(source.value);
+    result.origins = clone(array(source.origins === undefined ? [] : source.origins,
+      'TopicPropertyValue.origins'));
+    return result;
+  }
+
+  function canonicalColumnType(value) {
+    const normalized = string(value, 'TopicPropertyValue.columnType', true)
+      .trim().toLowerCase().replaceAll('_', '-');
+    const aliases = {
+      string: 'text', 'long-text': 'text', textarea: 'text', integer: 'number',
+      float: 'number', decimal: 'number', url: 'multi-link', link: 'multi-link',
+      links: 'multi-link', formula: 'calculation', computed: 'calculation',
+    };
+    return aliases[normalized] || normalized;
   }
 
   function normalizeRelationSet(value) {
@@ -120,17 +192,27 @@
   function normalizeMembership(value) {
     const source = object(value, 'TopicViewDocument.membership');
     const result = clone(source);
-    if (!['manual', 'query', 'hybrid'].includes(source.mode)) {
+    if (source.mode !== 'manual') {
       throw new ContractValidationError('TopicViewDocument.membership.mode is invalid');
     }
     result.mode = source.mode;
     result.manualTopicRefs = array(source.manualTopicRefs === undefined ? [] : source.manualTopicRefs,
       'TopicViewDocument.membership.manualTopicRefs').map(normalizeTopicRef);
-    if (['query', 'hybrid'].includes(source.mode)) {
-      result.queryDefinition = clone(object(source.queryDefinition, 'TopicViewDocument.membership.queryDefinition'));
-    } else {
-      result.queryDefinition = clone(source.queryDefinition);
+    delete result.queryDefinition;
+    return result;
+  }
+
+  function normalizeSystemProvider(value) {
+    const source = object(value, 'TopicViewDocument.systemProvider');
+    const result = clone(source);
+    result.providerId = string(source.providerId, 'systemProvider.providerId', true);
+    result.scopeId = string(source.scopeId, 'systemProvider.scopeId', true);
+    const capabilities = array(source.capabilities === undefined ? ['read-only'] : source.capabilities,
+      'systemProvider.capabilities');
+    if (capabilities.length !== 1 || capabilities[0] !== 'read-only') {
+      throw new ContractValidationError('systemProvider capabilities must be read-only');
     }
+    result.capabilities = ['read-only'];
     return result;
   }
 
@@ -144,7 +226,11 @@
       throw new ContractValidationError('TopicViewDocument.defaultSurface must be sheet or board');
     }
     result.defaultSurface = source.defaultSurface;
-    result.membership = normalizeMembership(source.membership);
+    result.membership = normalizeMembership(source.membership || { mode: 'manual', manualTopicRefs: [] });
+    result.systemProvider = source.systemProvider == null ? null : normalizeSystemProvider(source.systemProvider);
+    if (result.systemProvider && result.membership.manualTopicRefs.length) {
+      throw new ContractValidationError('system topic views use their provider, not membership');
+    }
     for (const field of ['sheetViews', 'boardViews', 'topicLayouts']) {
       result[field] = clone(array(source[field] === undefined ? [] : source[field], `TopicViewDocument.${field}`));
     }
@@ -177,15 +263,21 @@
     clone,
     normalizeMutation,
     normalizeRelationSet,
+    normalizePropertyValue,
     normalizeTopicRecord,
+    normalizeTopicPlacement,
     normalizeTopicRef,
+    normalizeTopicUsage,
     normalizeTopicViewDocument,
+    normalizeSystemProvider,
     sourceRecordPath,
     topicRefKey,
     validateMutation: normalizeMutation,
     validateRelationSet: normalizeRelationSet,
     validateTopicRecord: normalizeTopicRecord,
+    validateTopicPlacement: normalizeTopicPlacement,
     validateTopicRef: normalizeTopicRef,
+    validateTopicUsage: normalizeTopicUsage,
     validateTopicViewDocument: normalizeTopicViewDocument,
   });
 });

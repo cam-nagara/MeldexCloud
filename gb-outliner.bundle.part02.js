@@ -1,3 +1,4 @@
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
       payload = raw ? JSON.parse(raw) : null;
     }
   } catch {
@@ -423,7 +424,7 @@ async function toggleItemLock(path) {
       await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
     } else {
       // ダイアログ禁止原則: window.prompt は使わない。
-      // 編集ロックの理由は任意であり、後から付箋注釈・履歴ノートで補足できるため、
+      // 編集ロックの理由は任意であり、後から付箋アノテート・履歴ノートで補足できるため、
       // ロック取得時点では空でセットし、必要なら後段で編集する運用にする。
       await _fileLockApi('/file-lock', {
         method: 'PUT',
@@ -454,7 +455,7 @@ function _applyOutlinerLockStateToNode(nodeEl) {
   if (!row || !label || !item.path) return;
   row.querySelector('.tree-lock-badge')?.remove();
   const locked = isItemLocked(item.path);
-  row.draggable = !locked && !item._isRoot && item.type !== 'entity';
+  row.draggable = !locked && !item._isRoot;
   label.style.fontStyle = locked ? 'italic' : '';
   _syncOutlinerAddHoverButton(nodeEl, item, locked);
   if (!locked) {
@@ -640,6 +641,26 @@ async function refreshOutliner(options) {
   return Promise.allSettled(refreshJobs);
 }
 
+let _topicRecordsOutlinerRefreshTimer = null;
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('meldex:topic-records-updated', () => {
+    clearTimeout(_topicRecordsOutlinerRefreshTimer);
+    _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
+      const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
+      const failures = settled.filter(result => result.status === 'rejected');
+      if (!failures.length) return;
+      const detail = {
+        failures: failures.map(result => String(result.reason?.message || result.reason || '再読込に失敗しました')),
+        retry: () => refreshOutliner({ force: true, reason: 'topic-records-retry' }),
+      };
+      window.dispatchEvent(new CustomEvent('meldex:topic-outliner-refresh-failed', { detail }));
+      if (typeof showStatus === 'function') {
+        showStatus('保存は完了しましたが、フォルダ／トピック一覧を更新できませんでした。更新ボタンで再試行してください', true);
+      }
+    }, 40);
+  });
+}
+
 async function refreshOutlinerFromButton(event) {
   event?.preventDefault?.();
   event?.stopPropagation?.();
@@ -729,7 +750,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   if (item.rootKind) row.dataset.rootKind = item.rootKind;
   if (item.workspaceId) row.dataset.workspaceId = item.workspaceId;
   const itemLocked = item.path && isItemLocked(item.path);
-  row.draggable = !itemLocked && !item._isRoot && item.type !== 'entity';
+  row.draggable = !itemLocked && !item._isRoot;
   row.tabIndex = -1;
 
   const isFolder = item.type === 'folder';
@@ -877,24 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
         if (!d || d._isRoot || d.type === 'folder') return;
         if (d.type === 'database') { cn.style.display = _showDatabaseByGlobalFilter() ? '' : 'none'; return; }
         if (d.type === 'entity') { cn.style.display = _showEntityByGlobalFilter() ? '' : 'none'; return; }
-        cn.style.display = _showRegularNodeByGlobalFilter(d) ? '' : 'none';
-      });
-      childrenDiv.classList.remove('collapsed');
-      saveExpandedState(item.path, true);
-      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
-      if (parentVirtualContainer && window.GBOutlinerVirtualRender?.expandCachedNested(parentVirtualContainer, item.path)) {
-        return;
-      }
-
-      // Lazy load children
-      if (childrenDiv.dataset.loaded === 'false' && childrenDiv.dataset.loading !== 'true') {
-        childrenDiv.dataset.loading = 'true';
-        // スピナー表示
-        const spinner = document.createElement('div');
-        spinner.className = 'tree-spinner';
-        spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
-        childrenDiv.appendChild(spinner);
-        try {
-          if (currentIsDB) {
-            const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
-            // entities が undefined でも TypeError にならないようガード

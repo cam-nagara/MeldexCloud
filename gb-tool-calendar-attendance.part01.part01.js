@@ -441,10 +441,18 @@
     this._clockBusy = true;
     this._renderClockButtons(state);
     try {
+      const workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+      const workspaceId = String(window.MeldexWorkspaces?.getActiveId?.()
+        || workspaceState.workspaceId || workspaceState.workspace_id || '');
+      const members = workspaceState.members || workspaceState.workspace?.members || [];
+      const currentMember = Array.isArray(members)
+        ? members.find(member => String(member?.name || member?.user || '') === this._getUser()) : null;
       await apiPost('/cal/time', {
         type,
         user: this._getUser(),
         timestamp: this._localDateTimeStr(new Date()),
+        workspace_id: workspaceId,
+        member_id: String(currentMember?.id || currentMember?.member_id || ''),
       });
       const labels = { clock_in: '出勤しました', clock_out: '退勤しました', break_start: '離席しました', break_end: '復帰しました' };
       this._showStatus(labels[type] || type);
@@ -589,7 +597,10 @@
           folder: workspace.id || workspace.folder || '',
           workspaceId: workspace.id || '',
           label: workspace.name || workspace.folder || 'ワークスペース',
-          members: this._normalizeTeamMembers(workspace.members || [], current),
+          members: this._normalizeTeamMembers(workspace.members || [], current).map(member => ({
+            ...member,
+            memberId: member.memberId || ((workspace.id || '') && member.name ? `${workspace.id}::${member.name}` : ''),
+          })),
         }));
         this._calTeamFolderLabels = new Map(groups.map(group => [String(group.folder || ''), group.label || 'ワークスペース']));
         return groups;
@@ -603,9 +614,13 @@
     const map = new Map();
     (members || []).forEach(member => {
       const name = String(member?.name || '').trim();
-      if (name) map.set(name, { name, role: member.role || '' });
+      if (name) map.set(name, {
+        name,
+        role: member.role || '',
+        memberId: String(member.id || member.memberId || member.member_id || ''),
+      });
     });
-    if (current && !map.has(current)) map.set(current, { name: current, role: '' });
+    if (current && !map.has(current)) map.set(current, { name: current, role: '', memberId: '' });
     return [...map.values()];
   };
 

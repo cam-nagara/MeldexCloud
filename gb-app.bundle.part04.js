@@ -1,12 +1,3 @@
-      settled = true;
-      clearTimeout(timer);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
-      }
-      resolve(value);
-    }).catch((error) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timer);
       if (typeof _logPerfEvent === 'function') {
         _logPerfEvent('startup.error.' + label, startedAt, {
@@ -243,7 +234,6 @@ async function init() {
       localStorage.removeItem('folder-files-hidden');
       localStorage.setItem('_folder-hidden-removed', '1');
     }
-    if (typeof removeLegacyDashboardStorageOnce === 'function') removeLegacyDashboardStorageOnce();
 
     // フォルダツリーとビュー復元を並行実行
     const outlinerStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
@@ -303,12 +293,6 @@ async function init() {
             restored = true;
           }
         }
-        else if (openType === 'smart-db') {
-          if (typeof openSmartDbFile === 'function') {
-            openSmartDbFile(openLabel, openPath, _urlOpenOpts);
-            restored = true;
-          }
-        }
       } finally {
         window._skipLastViewSave = previousSkipLastView;
       }
@@ -339,8 +323,6 @@ async function init() {
           else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
           else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
-          else if (last.type === 'smart-db' && last.path && last.path.startsWith('file:') === false && typeof openSmartDbFile === 'function') { openSmartDbFile(last.label || '', last.path, _expOpts); restored = true; }
-          else if (last.type === 'smart-db' && last.smartDbId) { selectSmartDb(last.smartDbId, null, _expOpts); restored = true; }
         }
       } catch (e) {}
       if (typeof _logPerfEvent === 'function') {
@@ -391,13 +373,13 @@ async function init() {
    表示切替
    ============================== */
 function showView(viewName, ctx) {
-  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
-  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
+  const resolvedViewName = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewName) ? 'timeline' : viewName;
+  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(name);
   // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
   if (ctx && ctx.containerEl) {
     const isDbView = isDbViewName(viewName);
     const c = ctx.containerEl;
-    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view');
     if (hasPaneViewSurfaces) {
       const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
       _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
@@ -409,7 +391,6 @@ function showView(viewName, ctx) {
       _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
       _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
       _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
       ctx.viewMode = viewName;
       if (typeof _dbTreeSetOptionTabVisible === 'function') {
         _dbTreeSetOptionTabVisible(resolvedViewName === 'tree', ctx);
@@ -450,7 +431,6 @@ function showView(viewName, ctx) {
   _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
   _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
   _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
   _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
   _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
   _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
@@ -499,7 +479,7 @@ function showView(viewName, ctx) {
     if (newTarget !== ann.targetPath) {
       ann.targetPath = newTarget;
       // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
-      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
+      // スタンドアロン側の loadAnnotations を呼ぶと同じアノテートが二重に描画される
       const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
         && _usesEmbeddedAnnotationSurface(viewName);
       if (embedded) {
@@ -898,3 +878,23 @@ async function captureScreenshot(mode) {
     });
     if (res.path) {
       if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
+      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
+    }
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
+  }
+}
+
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;

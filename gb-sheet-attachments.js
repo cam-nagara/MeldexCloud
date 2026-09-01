@@ -179,8 +179,8 @@
   // 「名前.種別.拡張子」の複合拡張子。`.board.md` のように末尾が .md でも
   // エントリではないものがあるため、単純な拡張子判定より先に見る。
   const COMPOUND_SUFFIXES = [
-    '.scriptnote.json', '.scenario.json', '.smart-db.json',
-    '.dashboard.json', '.timer.json', '.calendar.json', '.board.md',
+    '.scriptnote.json', '.scenario.json',
+    '.timer.json', '.calendar.json', '.board.md',
   ];
   // シートの中へ置いてよい項目か。シートの実体はフォルダなので、
   // ボード・シナリオ・画像などを入れると「シートの中にボードがある」状態になる。

@@ -5,7 +5,9 @@
   const TAB_STORAGE_KEY = 'meldex.tagPanel.activeTab.v1';
   const TAB_AUTO = 'auto-tag';
   const TAB_TREE = 'tag-tree';
+  const TAG_MUTATION_DEBOUNCE_MS = 180;
   const pendingKeyCounts = new Map();
+  const queuedMutationBatches = new Map();
   let savedTab = '';
   let treeRoot = null;
   let context = emptyContext();
@@ -320,37 +322,124 @@
     }
   }
 
-  function queueTagMutation(tag, checked) {
-    const captured = {
-      path: context.path,
-      sourceFolder: context.sourceFolder,
-      signature: context.signature,
-      tag,
-      checked,
-    };
-    const key = captured.signature + '\n' + String(tag?.id || '');
-    pendingKeyCounts.set(key, Number(pendingKeyCounts.get(key) || 0) + 1);
-    setAssigned(tag, checked);
-    schedulePatch();
+  function pendingKey(signature, tag) {
+    return String(signature || '') + '\n' + String(tag?.id || tag?.name || '');
+  }
+
+  function changePendingCount(key, delta) {
+    const next = Number(pendingKeyCounts.get(key) || 0) + delta;
+    if (next > 0) pendingKeyCounts.set(key, next);
+    else pendingKeyCounts.delete(key);
+  }
+
+  function canUseBatchMutation(operations) {
+    if (!window.MeldexGlobalTags?.updateTargetTags) return false;
+    return operations.every(operation => {
+      const scope = String(operation.tag?._dictionary_scope || '');
+      return scope !== 'admin' && scope !== 'duplicate';
+    });
+  }
+
+  async function executeMutationBatch(batch, operations) {
+    if (canUseBatchMutation(operations)) {
+      batch.usedBatchApi = true;
+      return window.MeldexGlobalTags.updateTargetTags(batch.path, {
+        add: operations.filter(operation => operation.checked).map(operation => operation.tag),
+        remove: operations.filter(operation => !operation.checked).map(operation => operation.tag),
+      }, { sourceFolder: batch.sourceFolder });
+    }
+    let result = null;
+    for (const operation of operations) {
+      result = operation.checked
+        ? await window.MeldexGlobalTags.addTargetTag(batch.path, operation.tag)
+        : await window.MeldexGlobalTags.removeTargetTag(batch.path, operation.tag);
+    }
+    return result;
+  }
+
+  function flushMutationBatch(batch) {
+    if (queuedMutationBatches.get(batch.signature) !== batch) return;
+    queuedMutationBatches.delete(batch.signature);
+    clearTimeout(batch.timer);
+    const operations = [...batch.operations.values()];
+    if (!operations.length) return;
+
     mutationQueue = mutationQueue.catch(() => {}).then(async () => {
-      if (checked) await window.MeldexGlobalTags.addTargetTag(captured.path, tag?.name || '');
-      else await window.MeldexGlobalTags.removeTargetTag(captured.path, tag);
+      batch.result = await executeMutationBatch(batch, operations);
     }).catch(error => {
-      if (captured.signature === context.signature) {
-        setAssigned(tag, !checked);
+      batch.failed = true;
+      if (batch.signature === context.signature) {
+        operations.forEach(operation => {
+          const key = pendingKey(batch.signature, operation.tag);
+          if (Number(pendingKeyCounts.get(key) || 0) === 1) {
+            setAssigned(operation.tag, operation.initial);
+          }
+        });
         context.warning = String(error?.userMessage || error?.message || error || 'タグを保存できませんでした');
         if (typeof showStatus === 'function') showStatus(context.warning, true);
       }
     }).finally(() => {
-      const remaining = Number(pendingKeyCounts.get(key) || 0) - 1;
-      if (remaining > 0) pendingKeyCounts.set(key, remaining);
-      else pendingKeyCounts.delete(key);
+      operations.forEach(operation => {
+        changePendingCount(pendingKey(batch.signature, operation.tag), -1);
+      });
+      if (batch.signature !== context.signature) return;
       schedulePatch();
-      if (
-        captured.signature === context.signature
-        && !hasPendingForSignature(captured.signature)
-      ) refreshTarget(true);
+      if (hasPendingForSignature(batch.signature)) return;
+      if (batch.failed) {
+        // 失敗が連鎖した場合は各操作の楽観状態だけでは正しい復元先を
+        // 決められないため、失敗時だけ保存済み状態を読み直す。
+        refreshTarget(true);
+      } else if (batch.usedBatchApi && batch.result) {
+        context.warning = '';
+        applyTargetData(batch.result);
+      } else {
+        refreshTarget(true);
+      }
     });
+  }
+
+  function flushQueuedMutationBatches() {
+    [...queuedMutationBatches.values()].forEach(flushMutationBatch);
+  }
+
+  function queueTagMutation(tag, checked) {
+    const signature = context.signature;
+    let batch = queuedMutationBatches.get(signature);
+    if (!batch) {
+      batch = {
+        path: context.path,
+        sourceFolder: context.sourceFolder,
+        signature,
+        operations: new Map(),
+        timer: 0,
+        usedBatchApi: false,
+        result: null,
+        failed: false,
+      };
+      queuedMutationBatches.set(signature, batch);
+    }
+    const operationKey = String(tag?.id || tag?.name || '');
+    let operation = batch.operations.get(operationKey);
+    if (!operation) {
+      operation = { tag, initial: !checked, checked };
+      batch.operations.set(operationKey, operation);
+      changePendingCount(pendingKey(signature, tag), 1);
+    } else {
+      operation.tag = tag;
+      operation.checked = checked;
+    }
+    setAssigned(tag, checked);
+    if (operation.checked === operation.initial) {
+      batch.operations.delete(operationKey);
+      changePendingCount(pendingKey(signature, tag), -1);
+    }
+    clearTimeout(batch.timer);
+    if (batch.operations.size) {
+      batch.timer = setTimeout(() => flushMutationBatch(batch), TAG_MUTATION_DEBOUNCE_MS);
+    } else {
+      queuedMutationBatches.delete(signature);
+    }
+    schedulePatch();
   }
 
   // タグ行（チップ）のクリック/Enter/Spaceから呼ばれる、唯一の付け外し入口。
@@ -380,7 +469,8 @@
     if (!context.eligible) return;
     if (pathKey(event?.detail?.path) !== pathKey(context.path)) return;
     if (hasPendingForSignature(context.signature)) return;
-    refreshTarget(true);
+    if (event?.detail?.data) applyTargetData(event.detail.data);
+    else refreshTarget(true);
   }
 
   function handleAutoTagJobFinished() {
@@ -389,6 +479,11 @@
   }
 
   window.addEventListener?.('meldex:target-tags-changed', handleTargetTagsChanged);
+  window.addEventListener?.('pagehide', flushQueuedMutationBatches);
+  window.addEventListener?.('beforeunload', flushQueuedMutationBatches);
+  document.addEventListener?.('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushQueuedMutationBatches();
+  });
   document.addEventListener?.('meldex:auto-tag-job-finished', handleAutoTagJobFinished);
 
   window.MeldexTagPanelTabs = {

@@ -27,7 +27,7 @@ function _bdDefaultDepthStyles() {
 // 雲型 / トゲ型 のシェイプ固有パラメータ (cloudBumpWidth 等) は depth.shape が cloud 系のときのみ
 // _bdApplyDepthCardFieldsToNode 内で追加適用するため、ここには含めない。
 const _BD_DEPTH_CARD_FIELDS = [
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth',
   'shape', 'width',
 ];
@@ -58,7 +58,7 @@ function _bdNormalizeDepthCardShape(value) {
   return '';
 }
 const _BD_DEPTH_LINE_FIELDS = [
-  'color', 'width', 'style', 'arrow', 'pathType',
+  'color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType',
   'branchRatio', 'cornerRadius',
   'labelBgColor', 'labelBorderColor', 'labelBorderWidth', 'labelTextColor',
   'fontBold', 'fontItalic', 'fontFamily',
@@ -71,7 +71,10 @@ function _bdNormalizeDepthLine(raw, _fallback) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const out = {
     color: src.color != null ? String(src.color) : '',
-    width: Number.isFinite(+src.width) ? Math.max(0, Math.min(20, +src.width)) : 0,
+    colorOpacity: _bdNormalizeStyleOpacity(src.colorOpacity, 1),
+    width: typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(src.width, 0)
+      : (Number.isFinite(+src.width) ? Math.max(0, Math.min(200, +src.width)) : 0),
     style: src.style === 'dashed' ? 'dashed' : '',
     arrow: ['end', 'start', 'both'].includes(src.arrow) ? src.arrow : '',
     // v0.5.320: pathType を 3 種 (curve/straight/orthogonal) に統合。旧 free-bezier は curve、
@@ -119,8 +122,10 @@ function bdNormalizeDepthStyles(styles) {
       fontFamily: typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(raw.fontFamily) : String(raw.fontFamily || ''),
       width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback.width,
       bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback.bgColor,
+      bgOpacity: _bdNormalizeStyleOpacity(raw.bgOpacity, _bdNormalizeStyleOpacity(fallback.bgOpacity, 1)),
       textColor: raw.textColor != null ? String(raw.textColor) : (fallback.textColor || ''),
       borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback.borderColor || ''),
+      borderOpacity: _bdNormalizeStyleOpacity(raw.borderOpacity, _bdNormalizeStyleOpacity(fallback.borderOpacity, 1)),
       borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback.borderWidth) ? +fallback.borderWidth : 0),
       borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback.borderRadius) ? +fallback.borderRadius : 6),
       textStrokeColor: raw.textStrokeColor != null ? String(raw.textStrokeColor) : '',

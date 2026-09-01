@@ -466,7 +466,7 @@ function bdFitAll(_retryCount) {
 // --- 保存 ---
 function bdDirty() {
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
-  bd.dirty=true; markAutoVersionDirty(); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
+  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
 }
 // 工程2-C項目2: 保存応答/エラーが409（本物の競合）かどうかを判定する。

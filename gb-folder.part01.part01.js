@@ -354,7 +354,6 @@ function _folderItemExt(item) {
   if (name.endsWith('.mel-scenario')) return '.mel-scenario';
   if (name.endsWith('.mel-timer')) return '.mel-timer';
   if (name.endsWith('.scriptnote.json')) return '.scriptnote.json';
-  if (name.endsWith('.smart-db.json')) return '.smart-db.json';
   if (name.endsWith('.timer.json')) return '.timer.json';
   const index = name.lastIndexOf('.');
   return index >= 0 ? name.slice(index) : '';
@@ -368,7 +367,6 @@ function _folderItemTypeKeys(item) {
   const type = _folderItemTypeKey(item);
   if (type === 'scriptnote') return ['scriptnote', 'scenario'];
   if (type === 'scenario') return ['scenario', 'scriptnote'];
-  if (type === 'smart-db') return ['smart-db'];
   return [type];
 }
 
@@ -950,6 +948,8 @@ function renderFolderGrid(opts) {
       window._gbFolderViewDragNonce = '';
     });
     el.addEventListener('dragover', (e) => {
+      const routedNode = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+      if (routedNode && MeldexDnD.resolveTargetRoute?.(e)?.kind !== 'topic-placement') return;
       const osDrop = _folderCanAcceptOsDrop(e, item);
       const manualDrop = _folderManualDropIntent(e, el, item);
       const linkDrop = _folderCanAcceptLinkDrop(e, item);
@@ -967,6 +967,8 @@ function renderFolderGrid(opts) {
       el.classList.remove('fv-manual-before', 'fv-manual-after');
     });
     el.addEventListener('drop', async (e) => {
+      const routedNode = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+      if (routedNode && MeldexDnD.resolveTargetRoute?.(e)?.kind !== 'topic-placement') return;
       const osDrop = _folderCanAcceptOsDrop(e, item);
       const manualDrop = _folderManualDropIntent(e, el, item);
       const linkDrop = _folderCanAcceptLinkDrop(e, item);
@@ -1208,7 +1210,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   const createParent = _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {
     const createSub = addSub('新規作成', 'plus');
-    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']].forEach(([label,type,icon]) => {
+    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
       createSub.item(label, async () => {
         if (typeof addItemAt === 'function') {
           await addItemAt(createParent, type);

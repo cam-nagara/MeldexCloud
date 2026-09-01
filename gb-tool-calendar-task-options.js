@@ -67,10 +67,25 @@
       <div class="cal-option-actions cal-option-actions--footer">
         <button type="button" class="danger" data-cal-task-delete data-e2e-id="cal-task-delete" aria-label="ToDoを削除">削除</button>
         <span></span>
+        <button type="button" data-cal-task-history data-e2e-id="cal-task-history" aria-label="ToDoの版を見る">版を見る</button>
         <button type="button" class="primary" data-cal-task-save data-e2e-id="cal-task-save" aria-label="ToDoを保存">保存</button>
       </div>`;
     body.querySelector('[data-cal-task-save]')?.addEventListener('click', () => this._saveTaskOptions(task.id, body));
     body.querySelector('[data-cal-task-delete]')?.addEventListener('click', () => this._deleteTaskFromOptions(task.id));
+    body.querySelector('[data-cal-task-history]')?.addEventListener('click', event => {
+      window.MeldexCalendarItemHistory?.open('todo', task.id, {
+        returnFocus: event.currentTarget,
+        onRestored: async () => {
+          await this._loadTasks();
+          this._render();
+          this._renderTodayTasks();
+          const restored = (this._tasks || []).find(item => item.id === task.id);
+          if (restored) this._showTaskOptionsPanel(restored);
+          else body.innerHTML = '<div class="cal-option-empty">この版ではToDoが存在しません</div>';
+          this._showStatus('ToDoを復元しました');
+        },
+      }).catch(error => this._showStatus(error?.message || 'ToDoの版を開けませんでした', true));
+    });
     // ToDo担当者はコンボ型ピッカー（候補選択+自由入力併用。ユーザーアカウント
     // 一元管理 計画書 Phase 3、§5.8）。既存の自由入力値は保存経路（value読み取り）
     // をそのまま使うため壊さない。

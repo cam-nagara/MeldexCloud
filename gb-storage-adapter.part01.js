@@ -265,7 +265,6 @@
     if (lower.endsWith('.mel-scenario')) return '.mel-scenario';
     if (lower.endsWith('.mel-timer')) return '.mel-timer';
     if (lower.endsWith('.scriptnote.json')) return '.scriptnote.json';
-    if (lower.endsWith('.smart-db.json')) return '.smart-db.json';
     if (lower.endsWith('.timer.json')) return '.timer.json';
     const firstDot = safeName.indexOf('.');
     if (firstDot <= 0) return '';

@@ -5,6 +5,9 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _showRoleMenu(roleBtn, opts) {
     this._closeRoleMenu();
+    // タイプメニューの操作中は、直前の文字選択から遅延表示される
+    // 書式ポップアップが Escape を先取りしないよう抑止する。
+    window.GBTextSelectionFormat?.suppressFor?.(1200);
     const sel = window.getSelection();
     this._roleMenuSavedRange = null;
     if (sel && sel.rangeCount) {
@@ -34,7 +37,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const pageSettings = typeof PAGE_SETTINGS !== 'undefined' && Array.isArray(PAGE_SETTINGS)
       ? PAGE_SETTINGS : ['改ページ', 'めくり', '見開き', '白紙', 'トビラ絵', '大ゴマ', '未完'];
     const specialCharas = typeof SPECIAL_CHARA !== 'undefined' && Array.isArray(SPECIAL_CHARA)
-      ? SPECIAL_CHARA : ['プロット', 'ト書き', 'ナレーション', '擬音', 'コマ外注釈'];
+      ? SPECIAL_CHARA : ['プロット', 'ト書き', 'ナレーション', '擬音', 'コマ外アノテート'];
     const chars = this._getCharacterList();
 
     const select = (val) => {
@@ -203,6 +206,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.addEventListener('keydown', menuKeyHandler);
     // _closeRoleMenuで解除するため保持
     this._roleMenuKeyHandler = menuKeyHandler;
+    const escapeKeyHandler = (e) => {
+      if (!this._roleMenu || e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._closeRoleMenu();
+      this._restoreRangeAfterRoleMenu(roleBtn.closest('.sn2-row'));
+    };
+    // document の capture listener が先に Escape を消費する画面でも
+    // タイプメニューを確実に閉じられるよう、window capture で受ける。
+    window.addEventListener('keydown', escapeKeyHandler, true);
+    this._roleMenuEscapeKeyHandler = escapeKeyHandler;
 
     // 位置決め
     const rect = roleBtn.getBoundingClientRect();
@@ -233,6 +247,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (this._roleMenuKeyHandler) {
       document.removeEventListener('keydown', this._roleMenuKeyHandler);
       this._roleMenuKeyHandler = null;
+    }
+    if (this._roleMenuEscapeKeyHandler) {
+      window.removeEventListener('keydown', this._roleMenuEscapeKeyHandler, true);
+      this._roleMenuEscapeKeyHandler = null;
     }
     if (this._roleMenu) {
       this._roleMenu.remove();

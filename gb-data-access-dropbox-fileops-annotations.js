@@ -4,13 +4,13 @@
  * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
  *
  * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
- * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * 決定」の③アノテートクラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
  * (gb-system-storage.js、種別 annotations)へ載せ替える。
  *
  * ## 保存先の変更
  *
  * 旧: `_events/annotations/<id>.json` への直接読み書き。
- * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ * 新: 共通ストレージ層(document_id = アノテートid)。個人領域は `/MeldexSettings/system/v1`、
  *     参加中の共有ワークスペースに接続している場合は `<ワークスペース>/MeldexShare/system/v1`
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
@@ -41,7 +41,7 @@ function _annotationTargetResolver() {
 async function _migrateAnnotationStoredRecord(provider, adapter, docId) {
   const contract = window.MeldexSystemStorage;
   const boundary = adapter?.describe?.().boundary;
-  if (!boundary) throw new Error('注釈のDropbox adapter boundaryを確認できません');
+  if (!boundary) throw new Error('アノテートのDropbox adapter boundaryを確認できません');
   return _annotationTargetResolver().migrateRecord({
     provider, adapter, boundary, kind: contract.SystemStorageKind.ANNOTATIONS,
     documentId: docId, operationId: `annotation-lazy-migrate:${docId}`,
@@ -133,8 +133,8 @@ function _mergeAnnotationRecord(existing, body, options) {
 // 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
 // できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
 // ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
-// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
-// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へアノテートを
+// 付けた場合、共有管理領域に保存されたそのアノテートを同じセッションで読めること)。
 
 async function _annotationScopes(provider) {
   const resolver = window.MeldexDropboxManagementRootResolver;
@@ -146,7 +146,7 @@ async function _annotationScopes(provider) {
 
 function _annotationUnavailable(error, operation) {
   if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
-  const wrapped = new Error(`注釈SystemStorageの${operation}に失敗しました`);
+  const wrapped = new Error(`アノテートSystemStorageの${operation}に失敗しました`);
   wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
   return wrapped;
 }
@@ -167,7 +167,7 @@ async function _findAnnotationRecordsById(provider, docId) {
     if (stored) matches.push({ scope, stored });
   }
   if (matches.length > 1) {
-    const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+    const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
     error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
   }
   return matches;
@@ -213,7 +213,7 @@ async function _writeAnnotationRecord(provider, record) {
 }
 
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
-// identity claimと同じ保留/復帰の対象へ注釈書込みを含められるようにする登録。
+// identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
 // 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
 // (aftercare側は実行時にこのレジストリを参照するため、このファイルが
 // aftercare側より先に読み込まれても後に読み込まれても問題ない)。
@@ -286,7 +286,7 @@ async function _listAnnotationRecords(provider, query) {
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
         const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
         if (!coverage.complete) {
-          const error = new Error('注釈metadata indexを構築中です。再試行してください');
+          const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
         }
         const ids = await _annotationTargetResolver().indexedIds(scope.adapter, kind, query);
@@ -317,7 +317,7 @@ async function _listAnnotationRecords(provider, query) {
       owners.add(String(scope.scopeKey || scope.adapter?.describe?.().boundary || 'unknown'));
       scopeOwnersById.set(key, owners);
       if (owners.size > 1) {
-        const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+        const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
         error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
       }
       seenIds.add(key);
@@ -332,7 +332,7 @@ async function _listAnnotationRecords(provider, query) {
       if (payload && typeof payload === 'object' && payload.id) {
         const id = String(payload.id);
         if (records.some(existing => String(existing.id) === id)) {
-          const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+          const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
           error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
         }
         records.push(payload); seenIds.add(id);
@@ -521,7 +521,7 @@ async function _prepareAnnotationsForPathMutation(provider, event) {
     let stored = await scope.adapter.load(kind, String(record.id));
     if (!stored) {
       if (!newPath || !new Set(['rename', 'move', 'delete']).has(action)) {
-        throw Object.assign(new Error('legacy注釈を安全に移行できません'), { status: 409 });
+        throw Object.assign(new Error('legacyアノテートを安全に移行できません'), { status: 409 });
       }
       const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
       stored = await _annotationTargetResolver().prepareLegacyRecordForMove({

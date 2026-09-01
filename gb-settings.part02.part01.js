@@ -22,7 +22,7 @@ const SETTINGS_THEME_COMMON_BODY_BG_LINKED_KEYS = Object.freeze([
   '--db-entity-bg',
   '--bd-bg',
 ]);
-const COMMON_THEME_SURFACE_STYLE_KEYS = new Set(['--page-text-bg', '--sn2-page-bg', '--db-row-bg', '--fv-panel-bg', '--cal-content-bg', '--preview-bg', '--detail-bg', '--chat-bg', '--timer-bg', '--history-bg', '--annotation-bg', '--search-bg', '--version-bg']);
+const COMMON_THEME_SURFACE_STYLE_KEYS = new Set(['--page-text-bg', '--sn2-page-bg', '--db-row-bg', '--fv-panel-bg', '--cal-content-bg', '--preview-bg', '--detail-bg', '--chat-bg', '--history-bg', '--annotation-bg', '--search-bg', '--version-bg']);
 const COMMON_THEME_SCROLLBAR_STYLE_KEYS = new Set(['--cal-scroll-thumb', '--cal-scroll-thumb-hover']);
 
 // getCssVar, rgbToHex は meldex-core.js で定義済み
@@ -81,18 +81,18 @@ const UI_STYLE_SECTIONS = {
     { label: 'パネルタブバー', bg:'--ui-pane-tabbar-bg', text:'タブバー' },
     { label: 'パネルタブ選択背景', bg:'--ui-pane-tab-active-bg', text:'選択タブ' },
     { label: '折りたたみ/ドックバー', bg:'--ui-collapsed-tabbar-bg', text:'折りたたみ' },
-    { label: 'ボタン', fg:'--ui-fg-default', bg:'--ui-bg-control', text:'ボタン' },
-    { label: 'ボタンホバー', fg:'--ui-hover-fg', bg:'--ui-bg-control-hover', text:'ホバー' },
-    { label: 'ボタン選択', fg:'--ui-accent-fg', bg:'--ui-accent', text:'選択' },
+    { label: 'ボタン', fg:'--ui-button-fg', bg:'--ui-button-bg', line:'--ui-button-border', width:'--ui-button-border-width', leftAccent:'--ui-button-left-accent', underline:'--ui-button-underline', accent:'--ui-button-accent-color', bold:'--ui-button-font-weight', italic:'--ui-button-font-style', fontSize:'--ui-button-font-size', font:'--ui-button-font', lineHeight:'--ui-button-line-height', text:'ボタン' },
+    { label: 'ボタンホバー', fg:'--ui-button-hover-fg', bg:'--ui-button-hover-bg', line:'--ui-button-hover-border', width:'--ui-button-hover-border-width', leftAccent:'--ui-button-hover-left-accent', underline:'--ui-button-hover-underline', accent:'--ui-button-hover-accent-color', bold:'--ui-button-hover-font-weight', italic:'--ui-button-hover-font-style', fontSize:'--ui-button-hover-font-size', font:'--ui-button-hover-font', lineHeight:'--ui-button-hover-line-height', text:'ホバー' },
+    { label: 'ボタン選択', fg:'--ui-button-active-fg', bg:'--ui-button-active-bg', line:'--ui-button-active-border', width:'--ui-button-active-border-width', leftAccent:'--ui-button-active-left-accent', underline:'--ui-button-active-underline', accent:'--ui-button-active-accent-color', bold:'--ui-button-active-font-weight', italic:'--ui-button-active-font-style', fontSize:'--ui-button-active-font-size', font:'--ui-button-active-font', lineHeight:'--ui-button-active-line-height', text:'選択' },
     { label: '通常文字', fg:'--fg', bg:'--ui-text-bg', bold:'--ui-text-bold', italic:'--ui-text-italic', fontSize:'--ui-text-font-size', text:'通常テキスト', font:'--ui-font' },
     { label: 'サブテキスト', fg:'--fg2', bold:'--ui-muted-bold', italic:'--ui-muted-italic', fontSize:'--ui-muted-font-size', text:'サブテキスト', font:'--ui-muted-font' },
     { label: 'ヘッダー', fg:'--ui-header-fg', bg:'--ui-header-bg', text:'ヘッダー', font:'--ui-header-font' },
     { label: 'ツールバー', fg:'--ui-toolbar-fg', bg:'--ui-toolbar-bg', text:'ツールバー', font:'--ui-toolbar-font' },
     { label: 'ホバー', fg:'--ui-hover-fg', bg:'--ui-hover-bg', text:'ホバー' },
     { label: 'パネル内タブバー', bg:'--ui-inner-tabbar-bg', line:'--ui-inner-tabbar-border', width:'--ui-inner-tabbar-border-width', text:'タブバー' },
-    { label: 'パネル内タブ 通常', fg:'--ui-inner-tab-fg', bg:'--ui-inner-tab-bg', bold:'--ui-inner-tab-font-weight', fontSize:'--ui-inner-tab-font-size', text:'タブ', font:'--ui-inner-tab-font' },
-    { label: 'パネル内タブ ホバー', fg:'--ui-inner-tab-hover-fg', bg:'--ui-inner-tab-hover-bg', text:'ホバー' },
-    { label: 'パネル内タブ 選択', fg:'--ui-inner-tab-active-fg', bg:'--ui-inner-tab-active-bg', bold:'--ui-inner-tab-active-font-weight', line:'--ui-inner-tab-active-underline', width:'--ui-inner-tab-underline-width', text:'選択中' },
+    { label: 'パネル内タブ 通常', fg:'--ui-inner-tab-fg', bg:'--ui-inner-tab-bg', line:'--ui-inner-tab-border', width:'--ui-inner-tab-border-width', leftAccent:'--ui-inner-tab-left-accent', underline:'--ui-inner-tab-underline', accent:'--ui-inner-tab-accent-color', bold:'--ui-inner-tab-font-weight', italic:'--ui-inner-tab-font-style', fontSize:'--ui-inner-tab-font-size', text:'タブ', font:'--ui-inner-tab-font', lineHeight:'--ui-inner-tab-line-height' },
+    { label: 'パネル内タブ ホバー', fg:'--ui-inner-tab-hover-fg', bg:'--ui-inner-tab-hover-bg', line:'--ui-inner-tab-hover-border', width:'--ui-inner-tab-hover-border-width', leftAccent:'--ui-inner-tab-hover-left-accent', underline:'--ui-inner-tab-hover-underline', accent:'--ui-inner-tab-hover-accent-color', bold:'--ui-inner-tab-hover-font-weight', italic:'--ui-inner-tab-hover-font-style', fontSize:'--ui-inner-tab-hover-font-size', font:'--ui-inner-tab-hover-font', lineHeight:'--ui-inner-tab-hover-line-height', text:'ホバー' },
+    { label: 'パネル内タブ 選択', fg:'--ui-inner-tab-active-fg', bg:'--ui-inner-tab-active-bg', line:'--ui-inner-tab-active-border', width:'--ui-inner-tab-active-border-width', leftAccent:'--ui-inner-tab-active-left-accent', underline:'--ui-inner-tab-active-underline-width', accent:'--ui-inner-tab-active-underline', bold:'--ui-inner-tab-active-font-weight', italic:'--ui-inner-tab-active-font-style', fontSize:'--ui-inner-tab-active-font-size', font:'--ui-inner-tab-active-font', lineHeight:'--ui-inner-tab-active-line-height', text:'選択中' },
     { label: 'パネル内タブ 選択背景濃度', numbers:[{ label:'濃度', key:'--ui-inner-tab-active-bg-alpha', min:0, max:100, step:1, unit:'%', slider:true, fallback:14 }], text:'14%' },
     { label: 'パネル内タブ サイズ', numbers:[{ label:'高さ', key:'--ui-inner-tab-height', min:18, max:56, step:1, unit:'px', fallback:28 }, { label:'左右余白', key:'--ui-inner-tab-padding-x', min:0, max:40, step:1, unit:'px', fallback:12 }], text:'タブ' },
     { label: '強調文字', fg:'--ui-accent-fg', previewBg:'--ui-accent', text:'強調文字' },
@@ -115,13 +115,13 @@ const UI_STYLE_SECTIONS = {
   ],
   'ノート': [
     { label: 'タイトル', fg:'--page-title-fg', bold:'--page-title-bold', italic:'--page-title-italic', bg:'--page-title-bg', text:'ページタイトル', font:'--page-title-font' },
-    { label: '見出し H1', fg:'--page-h1-fg', bold:'--page-h1-bold', italic:'--page-h1-italic', bg:'--page-h1-bg', text:'見出し1', font:'--page-h1-font' },
-    { label: '見出し H2', fg:'--page-h2-fg', bold:'--page-h2-bold', italic:'--page-h2-italic', bg:'--page-h2-bg', text:'見出し2', font:'--page-h2-font' },
-    { label: '見出し H3', fg:'--page-h3-fg', bold:'--page-h3-bold', italic:'--page-h3-italic', bg:'--page-h3-bg', text:'見出し3', font:'--page-h3-font' },
-    { label: '見出し H4', fg:'--page-h4-fg', bold:'--page-h4-bold', italic:'--page-h4-italic', bg:'--page-h4-bg', text:'見出し4', font:'--page-h4-font' },
-    { label: '見出し H5', fg:'--page-h5-fg', bold:'--page-h5-bold', italic:'--page-h5-italic', bg:'--page-h5-bg', text:'見出し5', font:'--page-h5-font' },
-    { label: '見出し H6', fg:'--page-h6-fg', bold:'--page-h6-bold', italic:'--page-h6-italic', bg:'--page-h6-bg', text:'見出し6', font:'--page-h6-font' },
-    { label: '本文', fg:'--page-text-fg', bold:'--page-text-bold', italic:'--page-text-italic', text:'本文テキスト', font:'--page-text-font' },
+    { label: '見出し H1', fg:'--page-h1-fg', bold:'--page-h1-bold', italic:'--page-h1-italic', bg:'--page-h1-bg', text:'見出し1', font:'--page-h1-font', lineHeight:'--page-h1-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h1-space-before', min:0, max:96, step:1, unit:'px', fallback:16 }, { label:'本文まで', key:'--page-h1-space-after', min:0, max:64, step:1, unit:'px', fallback:6 }] },
+    { label: '見出し H2', fg:'--page-h2-fg', bold:'--page-h2-bold', italic:'--page-h2-italic', bg:'--page-h2-bg', text:'見出し2', font:'--page-h2-font', lineHeight:'--page-h2-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h2-space-before', min:0, max:96, step:1, unit:'px', fallback:14 }, { label:'本文まで', key:'--page-h2-space-after', min:0, max:64, step:1, unit:'px', fallback:4 }] },
+    { label: '見出し H3', fg:'--page-h3-fg', bold:'--page-h3-bold', italic:'--page-h3-italic', bg:'--page-h3-bg', text:'見出し3', font:'--page-h3-font', lineHeight:'--page-h3-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h3-space-before', min:0, max:96, step:1, unit:'px', fallback:12 }, { label:'本文まで', key:'--page-h3-space-after', min:0, max:64, step:1, unit:'px', fallback:4 }] },
+    { label: '見出し H4', fg:'--page-h4-fg', bold:'--page-h4-bold', italic:'--page-h4-italic', bg:'--page-h4-bg', text:'見出し4', font:'--page-h4-font', lineHeight:'--page-h4-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h4-space-before', min:0, max:96, step:1, unit:'px', fallback:10 }, { label:'本文まで', key:'--page-h4-space-after', min:0, max:64, step:1, unit:'px', fallback:3 }] },
+    { label: '見出し H5', fg:'--page-h5-fg', bold:'--page-h5-bold', italic:'--page-h5-italic', bg:'--page-h5-bg', text:'見出し5', font:'--page-h5-font', lineHeight:'--page-h5-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h5-space-before', min:0, max:96, step:1, unit:'px', fallback:8 }, { label:'本文まで', key:'--page-h5-space-after', min:0, max:64, step:1, unit:'px', fallback:3 }] },
+    { label: '見出し H6', fg:'--page-h6-fg', bold:'--page-h6-bold', italic:'--page-h6-italic', bg:'--page-h6-bg', text:'見出し6', font:'--page-h6-font', lineHeight:'--page-h6-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h6-space-before', min:0, max:96, step:1, unit:'px', fallback:6 }, { label:'本文まで', key:'--page-h6-space-after', min:0, max:64, step:1, unit:'px', fallback:2 }] },
+    { label: '本文', fg:'--page-text-fg', bold:'--page-text-bold', italic:'--page-text-italic', text:'本文テキスト', font:'--page-text-font', lineHeight:'--page-text-line-height' },
     { label: '引用ブロック', fg:'--page-quote-fg', bold:'--page-quote-bold', italic:'--page-quote-italic', bg:'--page-quote-bg', text:'引用テキスト', bgType:'rgba' },
     { label: '引用線', line:'--page-quote-border', text:'━━' },
   ],
@@ -196,10 +196,10 @@ const UI_STYLE_SECTIONS = {
   ],
   'フォルダツリー': [
     { label: 'パネル', fg:'--outliner-fg', bg:'--outliner-bg', line:'--outliner-border', text:'フォルダツリー' },
-    { label: '見出し', fg:'--outliner-section-fg', bg:'--outliner-section-bg', text:'見出し' },
-    { label: '項目', fg:'--outliner-item-fg', bg:'--outliner-item-bg', text:'項目' },
-    { label: '項目ホバー', fg:'--outliner-item-hover-fg', bg:'--outliner-item-hover-bg', text:'ホバー' },
-    { label: '項目選択', fg:'--outliner-item-selected-fg', bg:'--outliner-item-selected-bg', text:'選択中' },
+    { label: '見出し', fg:'--outliner-section-fg', bg:'--outliner-section-bg', lineHeight:'--outliner-section-line-height', text:'見出し' },
+    { label: '項目', fg:'--outliner-item-fg', bg:'--outliner-item-bg', lineHeight:'--outliner-item-line-height', text:'項目' },
+    { label: '項目ホバー', fg:'--outliner-item-hover-fg', bg:'--outliner-item-hover-bg', line:'--outliner-item-hover-outline-color', width:'--outliner-item-hover-outline-width', lineStyle:'--outliner-item-hover-outline-style', lineHeight:'--outliner-item-hover-line-height', text:'ホバー' },
+    { label: '項目選択', fg:'--outliner-item-selected-fg', bg:'--outliner-item-selected-bg', line:'--outliner-item-selected-outline-color', width:'--outliner-item-selected-outline-width', lineStyle:'--outliner-item-selected-outline-style', lineHeight:'--outliner-item-selected-line-height', text:'選択中' },
     { label: '補助表示', fg:'--outliner-muted-fg', text:'補助' },
     { label: 'ドラッグ/アクセント', line:'--outliner-accent', text:'━━' },
   ],
@@ -228,14 +228,6 @@ const UI_STYLE_SECTIONS = {
     { label: 'ホバー', bg:'--chat-hover-bg', text:'ホバー' },
     { label: '選択/送信', fg:'--chat-active-fg', bg:'--chat-active-bg', line:'--chat-accent', text:'送信' },
   ],
-  'タイマー': [
-    { label: 'パネル', fg:'--timer-fg', line:'--timer-border', text:'タイマー' },
-    { label: '設定パネル', bg:'--timer-panel-bg', text:'設定' },
-    { label: '表示部', bg:'--timer-display-bg', text:'00:05:00' },
-    { label: '補助表示', fg:'--timer-muted-fg', text:'補助' },
-    { label: 'ホバー', bg:'--timer-hover-bg', text:'ホバー' },
-    { label: '実行中/操作', fg:'--timer-active-fg', bg:'--timer-active-bg', line:'--timer-accent', text:'開始' },
-  ],
   'ヒストリー': [
     { label: 'パネル', fg:'--history-fg', line:'--history-border', text:'ヒストリー' },
     { label: '行背景', bg:'--history-row-bg', text:'履歴行' },
@@ -243,8 +235,8 @@ const UI_STYLE_SECTIONS = {
     { label: 'ホバー', bg:'--history-hover-bg', text:'ホバー' },
     { label: '強調', fg:'--history-active-fg', bg:'--history-active-bg', line:'--history-accent', text:'強調' },
   ],
-  '注釈': [
-    { label: 'パネル', fg:'--annotation-fg', line:'--annotation-border', text:'注釈' },
+  'アノテート': [
+    { label: 'パネル', fg:'--annotation-fg', line:'--annotation-border', text:'アノテート' },
     { label: 'カード背景', bg:'--annotation-card-bg', text:'カード' },
     { label: '補助表示', fg:'--annotation-muted-fg', text:'補助' },
     { label: 'ホバー', bg:'--annotation-hover-bg', text:'ホバー' },
@@ -267,15 +259,14 @@ const UI_STYLE_SECTIONS = {
   ],
   '補助パネル': [
     { label: 'フォルダツリー', fg:'--outliner-fg', bg:'--outliner-bg', line:'--outliner-border', text:'フォルダツリー' },
-    { label: 'フォルダツリー項目', fg:'--outliner-item-fg', bg:'--outliner-item-bg', text:'項目' },
+    { label: 'フォルダツリー項目', fg:'--outliner-item-fg', bg:'--outliner-item-bg', lineHeight:'--outliner-item-line-height', text:'項目' },
     { label: 'ビューワー', fg:'--preview-fg', line:'--preview-border', text:'ビューワー' },
     { label: 'ビューワーカード', bg:'--preview-card-bg', text:'カード' },
     { label: 'オプション', fg:'--detail-fg', line:'--detail-border', text:'オプション' },
     { label: 'チャット本文', fg:'--chat-fg', line:'--chat-border', text:'チャット' },
     { label: 'チャット入力', fg:'--chat-input-fg', bg:'--chat-input-bg', text:'入力欄' },
-    { label: 'タイマー', fg:'--timer-fg', line:'--timer-border', text:'タイマー' },
     { label: 'ヒストリー', fg:'--history-fg', line:'--history-border', text:'ヒストリー' },
-    { label: '注釈', fg:'--annotation-fg', line:'--annotation-border', text:'注釈' },
+    { label: 'アノテート', fg:'--annotation-fg', line:'--annotation-border', text:'アノテート' },
     { label: '検索', fg:'--search-fg', line:'--search-border', text:'検索' },
     { label: 'バージョン管理', fg:'--version-fg', line:'--version-border', text:'バージョン管理' },
     { label: '補助パネルアクセント', line:'--preview-accent', text:'━━' },
@@ -378,6 +369,7 @@ function _extraStyleKeys(d) {
     d.leftAccent || `${base}-left-accent`,
     d.underline || `${base}-underline`,
     d.accent || `${base}-accent-color`,
+    d.lineHeight,
   ].filter(Boolean);
 }
 
@@ -426,13 +418,20 @@ function getAllStyleKeys() {
       if(d.bold) keys.add(d.bold); if(d.italic) keys.add(d.italic);
       if(d.line) keys.add(d.line); if(d.toggle) keys.add(d.toggle);
       if(d.width) keys.add(d.width); if(d.font) keys.add(d.font);
+      if(d.lineStyle) keys.add(d.lineStyle);
       if(d.fontSize) keys.add(d.fontSize);
+      if(d.lineHeight) keys.add(d.lineHeight);
       if(Array.isArray(d.numbers)) d.numbers.forEach(n => { if(n?.key) keys.add(n.key); });
+      if(Array.isArray(d.popupNumbers)) d.popupNumbers.forEach(n => { if(n?.key) keys.add(n.key); });
       _extraStyleKeys(d).forEach(k => keys.add(k));
     });
   }
   keys.add('--page-margin-x');
   keys.add('--page-content-max-width');
+  [
+    '--ui-pane-tab-line-height', '--ui-pane-tab-hover-line-height', '--ui-pane-tab-active-line-height',
+    '--ui-dock-button-line-height', '--ui-dock-button-hover-line-height', '--ui-dock-button-active-line-height',
+  ].forEach(key => keys.add(key));
   // ボード固有設定（UI_STYLE_SECTIONS では表現しきれないキー）
   keys.add('--bd-shadow');
   keys.add('--bd-bg-image');

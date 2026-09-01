@@ -1,4 +1,4 @@
-/* standalone-secondary-panel.js: Quick Memo / Viewer の内容付き右サイドバー。 */
+/* standalone-secondary-panel.js: Viewer の内容付き右サイドバー。 */
 (function (root) {
   'use strict';
 
@@ -216,7 +216,7 @@
     return { activate, panels };
   }
 
-  // 「情報」タブに必要な部品は数が多い。ビューワーは本体のビューワーパネル内でも
+  // 「プロパティ」タブに必要な部品は数が多い。ビューワーは本体のビューワーパネル内でも
   // iframe として動くため、起動時に全部読むと画像を開くたびに重くなる。
   // タブを最初に開いた時だけ読み込む。
   const FILE_INFO_SCRIPTS = [
@@ -243,7 +243,7 @@
       const element = document.createElement('script');
       element.src = src;
       element.addEventListener('load', () => resolve());
-      // 1つ足りなくても情報タブ全体を止めない（タグが出ない等の部分的な欠けに留める）
+      // 1つ足りなくてもプロパティタブ全体を止めない（タグが出ない等の部分的な欠けに留める）
       element.addEventListener('error', () => resolve());
       document.head.appendChild(element);
     });
@@ -264,7 +264,7 @@
     return fileInfoDepsPromise;
   }
 
-  // 「情報」タブ: 本体のフォルダパネル→情報タブと同じ内容
+  // 「プロパティ」タブ: 本体のフォルダパネル→プロパティタブと同じ内容
   async function renderFileInfoTab(host, getPath) {
     if (!host) return;
     if (!root.MeldexFileInfoPanel?.renderInto) {
@@ -286,44 +286,6 @@
       return;
     }
     root.MeldexShortcutRegistry.renderSettings(host, { scope });
-  }
-
-  function setupQuickMemo() {
-    const host = document.querySelector('#editorView .qm-header-actions');
-    const shell = setupShell('quick-memo', host, 'qm-icon');
-    if (!shell) return false;
-    const save = section('保存と同期');
-    const saveStatus = statusElement(document.getElementById('syncStatus')?.textContent || '端末へ保存します');
-    save.appendChild(row('現在の状態', saveStatus));
-    const actions = document.createElement('div');
-    actions.className = 'sa-secondary-actions';
-    actions.append(
-      actionButton('今すぐ端末へ保存', () => document.getElementById('saveBtn')?.click()),
-      actionButton('Meldexファイルを開く', () => document.getElementById('workspaceBtn')?.click())
-    );
-    save.appendChild(actions);
-    const syncSource = document.getElementById('syncStatus');
-    if (syncSource) new MutationObserver(() => { saveStatus.textContent = syncSource.textContent || ''; })
-      .observe(syncSource, { childList: true, subtree: true, characterData: true });
-
-    const input = section('入力方法');
-    const modeSource = document.getElementById('modeSelect');
-    if (modeSource) input.appendChild(row('モード', linkedSelect(modeSource, '入力方法')));
-    const modeHint = statusElement('テキスト、ペン、音声の内容を同じ下書きへ保存します');
-    input.appendChild(row('保存対象', modeHint));
-
-    root.__meldexAppShortcutScope = 'quickmemo';
-    const tabs = setupTabs(shell, [
-      { id: 'settings', label: 'クイックメモ' },
-      {
-        id: 'info',
-        label: '情報',
-        onActivate: host => renderFileInfoTab(host, () => root.MeldexQuickMemo?.currentPath?.() || ''),
-      },
-      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'quickmemo') },
-    ]);
-    tabs.panels.get('settings').append(save, input);
-    return true;
   }
 
   function setupViewer(embedded) {
@@ -372,9 +334,9 @@
       .observe(infoSource, { childList: true, subtree: true, characterData: true });
     const metadataActions = document.createElement('div');
     metadataActions.className = 'sa-secondary-actions';
-    // ツールバーの注釈ボタンは撤去済み（ビューワー安定化計画）。右サイドバーは単独ビューワーの
-    // 公開注釈コントローラーへ直接発呼する（右クリックメニュー・Aキーと同じ入口）。
-    metadataActions.appendChild(actionButton('注釈を開く', () => window.MeldexViewerAnnotations?.toggle?.()));
+    // ツールバーのアノテートボタンは撤去済み（ビューワー安定化計画）。右サイドバーは単独ビューワーの
+    // 公開アノテートコントローラーへ直接発呼する（右クリックメニュー・Aキーと同じ入口）。
+    metadataActions.appendChild(actionButton('アノテートを開く', () => window.MeldexViewerAnnotations?.toggle?.()));
     metadata.appendChild(metadataActions);
 
     if (embedded) {
@@ -387,13 +349,13 @@
       { id: 'settings', label: 'ビューワー' },
       {
         id: 'info',
-        label: '情報',
+        label: 'プロパティ',
         onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
       },
       { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
     ]);
     tabs.panels.get('settings').append(display, slideshow, metadata);
-    // 表示中のファイルが変わったら「情報」タブを追従させる
+    // 表示中のファイルが変わったら「プロパティ」タブを追従させる
     if (infoSource) {
       new MutationObserver(() => {
         const host = tabs.panels.get('info');
@@ -408,8 +370,7 @@
     // ファイル情報もショートカットも本体のオプションパネル側にあるので、タブを足さず
     // 従来どおり表示設定だけを出す（右サイドバー自体は従来から出している）。
     const embedded = !!(root.parent && root.parent !== root);
-    if (document.getElementById('editorView') && document.querySelector('.qm-header-actions')) setupQuickMemo();
-    else if (document.getElementById('controls') && document.getElementById('display')) setupViewer(embedded);
+    if (document.getElementById('controls') && document.getElementById('display')) setupViewer(embedded);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });

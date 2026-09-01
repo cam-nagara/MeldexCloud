@@ -192,12 +192,39 @@ function setComponentInstance(tabId, instance) {
   _componentInstances[tabId] = instance;
 }
 
-function removeComponentInstance(tabId) {
+function removeComponentInstance(tabId, options = {}) {
   const inst = _componentInstances[tabId];
   if (inst) {
-    inst.destroy();
+    const destroyed = inst.destroy(options);
+    if (destroyed === false) return false;
     delete _componentInstances[tabId];
   }
+  return true;
+}
+
+// 保存を持つコンポーネントを破棄する全画面共通境界。複数タブは全件の
+// flush成功を確認してから破棄へ進めるため、途中失敗で一部だけ消さない。
+async function flushComponentInstancesBeforeRemoval(tabIds) {
+  const ids = [...new Set((Array.isArray(tabIds) ? tabIds : [tabIds]).filter(Boolean))];
+  for (const tabId of ids) {
+    const inst = _componentInstances[tabId];
+    if (!inst || typeof inst.flush !== 'function') continue;
+    let flushed = false;
+    try { flushed = (await inst.flush()) !== false; }
+    catch (_) { flushed = false; }
+    if (!flushed) {
+      if (typeof showStatus === 'function') {
+        showStatus('保存を確認できなかったため、画面を閉じたり置換したりしませんでした', true);
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+async function removeComponentInstanceSafely(tabId) {
+  if (!await flushComponentInstancesBeforeRemoval([tabId])) return false;
+  return removeComponentInstance(tabId, { skipFlush: true });
 }
 
 // 全インスタンスを走査

@@ -207,17 +207,31 @@
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
-      if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
+      if ((createOnly && entry) || (expectedEtag && !entry)) {
         _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
       }
       if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
         _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
-      if (expectedEtag && entry && !forceOverwrite) {
+      if (expectedEtag && entry) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
         if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
-      if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
+      let commitEtag = expectedEtag;
+      if (forceOverwrite && entry && !commitEtag) {
+        if (typeof provider.refreshMetadata !== 'function') {
+          const error = new Error('厳密な競合検出に必要な最新revisionを取得できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        const freshMeta = await provider.refreshMetadata(filePath);
+        commitEtag = await _fileEtag(provider, filePath, entry, freshMeta);
+        if (!commitEtag) {
+          const error = new Error('厳密な競合検出に必要な最新revisionを確認できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+      }
       const currentContent = entry ? await provider.readText(filePath) : '';
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
@@ -241,11 +255,20 @@
         }
       }
       const history = await _prepareCloudFileEdit(
-        provider, filePath, currentContent, content, _versionActor(url, body), expectedEtag, !!entry,
+        provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
       );
       let writeMeta;
       try {
-        writeMeta = await provider.writeText(filePath, content);
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          const error = new Error('この保存先は厳密なrevision条件付き保存に対応していません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        writeMeta = await provider.uploadBytesConditional(
+          filePath,
+          new TextEncoder().encode(content),
+          entry ? commitEtag : null,
+        );
       } catch (error) {
         await _abortCloudFileEdit(history);
         throw error;
@@ -510,9 +533,9 @@
       const screenshotBytes = _decodeUploadData(dataUrl);
       const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
       const annotationTarget = sourceTarget || targetPath;
-      // 注釈recordはbytes publish前に確定させ、identity claimと同じ
+      // アノテートrecordはbytes publish前に確定させ、identity claimと同じ
       // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
-      // 管理データ一元化計画 §10.1)。これにより注釈書込みの失敗も
+      // 管理データ一元化計画 §10.1)。これによりアノテート書込みの失敗も
       // aftercare_pending化され、identity claimと同じdrain/復帰対象になる。
       const annRecord = _mergeAnnotationRecord(null, {
         type: 'screenshot',
@@ -551,7 +574,7 @@
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
       const existing = await _readAnnotationRecord(provider, id);
-      if (!existing) throw new Error('注釈が見つかりません');
+      if (!existing) throw new Error('アノテートが見つかりません');
       const updateBody = {};
       ANNOTATION_UPDATE_KEYS.forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(body || {}, key)) updateBody[key] = body[key];
@@ -684,7 +707,6 @@
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
-        'smart-db': ['スマートシート', 'Phase 4'],
       }[type];
       if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
       if (type === 'folder') {
@@ -739,19 +761,6 @@
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
-      }
-      if (type === 'smart-db') {
-        const labelName = await _uniqueName(provider, parent, label, '.json');
-        const targetPath = _joinPath(parent, labelName + '.json');
-        await provider.writeJson(targetPath, {
-          type: 'smart-db',
-          name: labelName,
-          filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-          views: { table: {} },
-          activeView: 'table',
-          created: new Date().toISOString(),
-        });
-        return { ok: true, node: { type: _phase1SurfaceType('smart-db', 'file'), label: labelName, path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }

@@ -669,7 +669,7 @@
           <label><input type="checkbox" data-dup-setting="watch_changes" data-e2e-id="duplicate-setting-watch-changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
           ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
         </div>
-        <div class="gb-section-desc">オンにすると、エクスプローラーなどMeldexの外で行った移動・改名にも、タグ・注釈・版履歴・検索索引・編集ロックが追従します。</div>
+        <div class="gb-section-desc">オンにすると、エクスプローラーなどMeldexの外で行った移動・改名にも、タグ・アノテート・版履歴・検索索引・編集ロックが追従します。</div>
         <div class="dup-settings-actions">
           <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline data-e2e-id="duplicate-setting-scan-now">${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
           <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>

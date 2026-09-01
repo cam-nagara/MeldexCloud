@@ -1,8 +1,3 @@
-      const widgets = (obj.views?.dashboard?.widgets || []).length;
-      return `スマートシート — フィルタ${filters}件` + (widgets ? `\nダッシュボード: ウィジェット${widgets}件` : '') + (obj.sourceDb ? `\nソース: ${obj.sourceDb.split('/').pop()}` : '');
-    }
-    // キャンバス（フロントマター付きMarkdown→JSONではないが念のため）
-    return '';
   } catch { return ''; }
 }
 
@@ -94,15 +89,11 @@ function _queueAutoLinkTooltip(linkOrTarget) {
         } else {
           // エンティティだがプロパティなし（DBフォルダ等）— エンティティ数を取得
           try {
-            const params = new URLSearchParams({
-              scope: path,
-              filters: JSON.stringify([{ property: '' }]),
-            });
             const [dbData, meta] = await Promise.all([
-              apiFetch('/smart-db?' + params.toString()),
+              apiFetch('/pivot?path=' + encodeURIComponent(path)),
               apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
             ]);
-            const entityCount = Number(dbData.total_entities_scanned ?? dbData.entities?.length ?? 0);
+            const entityCount = Object.keys(dbData.entities || {}).length;
             const propNames = Object.keys(meta.property_types || {}).slice(0, 5);
             const summary = `${entityCount}件のエントリ` + (propNames.length ? `\n項目: ${propNames.join(', ')}` : '');
             tooltipCache[path] = { title: data.entity || fname, props: summary };
@@ -123,7 +114,7 @@ function _queueAutoLinkTooltip(linkOrTarget) {
           try {
             const fd = await apiFetch('/file?path=' + encodeURIComponent(path));
             const raw = fd.content || '';
-            // JSON（シナリオ/キャンバス/スマートDB/ダッシュボード）は要約表示
+            // JSON（シナリオ等）は要約表示
             if (ext === 'json') {
               tooltipCache[path] = { title: fname, props: _summarizeJson(raw) };
             } else {
@@ -250,6 +241,29 @@ let _fileSearchIdx = -1;
 let _fileSearchLastQuery = '';
 let _fileSearchLastRoot = null;
 
+function _bindFileSearchEscape(element) {
+  if (!element || element._meldexFileSearchEscapeBound) return;
+  element._meldexFileSearchEscapeBound = true;
+  element.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeFileSearch();
+    e.preventDefault();
+  });
+}
+
+function _bindFileSearchWindowEscape() {
+  if (window._meldexFileSearchWindowEscapeBound) return;
+  window._meldexFileSearchWindowEscapeBound = true;
+  // document上の別UIがcapture段階でEscapeを消費しても、検索欄自身の閉じ操作を優先する。
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !e.target?.matches?.('#fsb-query, #fsb-replace')) return;
+    const bar = e.target.closest('#file-search-bar');
+    if (!bar?.classList.contains('open')) return;
+    closeFileSearch();
+    e.preventDefault();
+  }, true);
+}
+
 function openFileSearch(mode = 'find') {
   const bar = document.getElementById('file-search-bar');
   const replaceMode = String(mode || '').toLowerCase() === 'replace';
@@ -265,6 +279,10 @@ function openFileSearch(mode = 'find') {
   _fileSearchIdx = -1;
   _fileSearchLastQuery = '';
   _fileSearchLastRoot = null;
+  // モバイルUI再構築後の現行入力にもEscape契約を付け直す。
+  _bindFileSearchWindowEscape();
+  _bindFileSearchEscape(q);
+  _bindFileSearchEscape(r);
   q.focus();
 }
 
@@ -273,6 +291,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const q = document.getElementById('fsb-query');
   const r = document.getElementById('fsb-replace');
   if (!q || !r) return;
+  _bindFileSearchEscape(q);
+  _bindFileSearchEscape(r);
 
   function autoResize(ta) {
     const lines = ta.value.split('\n').length;

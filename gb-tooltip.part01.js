@@ -12,6 +12,7 @@
   const ATTR_NATIVE_TITLE = 'data-gb-native-title';
   const TOOLTIP_ID = 'gb-tooltip';
   const MODAL_OVERLAY_SELECTOR = '.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay';
+  const ACTIVE_MODAL_TOOLTIP_PORTAL_SELECTOR = '.gb-fmt-popup, .gb-palette-popup';
   const SHOW_DELAY_MS = 350;
   const FOCUS_DELAY_MS = 120;
   const HIDE_DELAY_MS = 80;
@@ -151,7 +152,7 @@
     add: '追加します',
     addcolumn: '列を追加します',
     addtodaytask: '今日のToDoを追加します',
-    annclear: '注釈をすべて削除します',
+    annclear: 'アノテートをすべて削除します',
     applyapplayout: '単一レイアウトを維持します',
     bdopenfindbar: 'ボード内を検索または置換します',
     chatattachments: '添付ファイルを追加します',
@@ -180,8 +181,8 @@
     htmlrefresh: '表示中のページを更新します',
     insertcallout: 'コールアウトを挿入します',
     insertnotetable: '表を挿入します',
-    loadrpannotationlist: '注釈一覧を更新します',
-    newrpcomment: '新しい注釈コメントを作成します',
+    loadrpannotationlist: 'アノテート一覧を更新します',
+    newrpcomment: '新しいアノテートコメントを作成します',
     onstampsend: 'スタンプを送信します',
     onvalidateclick: 'シートの整合性を検証します',
     opencurrenttoolbarsearchreplace: 'このビューで検索と置換を開きます',
@@ -209,12 +210,12 @@
     teamattachmentpick: 'チームチャットに画像を添付します',
     teamsend: 'チームチャットへ送信します',
     toggleactivitymenu: 'メニューを開閉します',
-    toggleannotationtoolbar: '注釈ツールバーを開閉します',
+    toggleannotationtoolbar: 'アノテートツールバーを開閉します',
     toggledetailpanel: 'オプションパネルを開閉します',
     toggleglobalfilterbar: 'フォルダツリーのフィルタを表示または非表示にします',
     toggleheadingindent: '見出しインデント表示を切り替えます',
     togglenotevertical: 'ノートの縦書きを切り替えます',
-    toggleoverlayvisibility: '注釈オーバーレイを表示または非表示にします',
+    toggleoverlayvisibility: 'アノテートオーバーレイを表示または非表示にします',
     togglerightpaneltab: '右サイドバーのタブを開閉します',
     togglesidebar: 'フォルダツリーを開閉します',
     togglesidebarsection: 'セクションを開閉します',
@@ -226,8 +227,8 @@
     showhomeaddmenu: 'ホームフォルダへ追加する項目を選びます'
   });
   const DATA_HINTS = Object.freeze({
-    'bd-action:pick-card-style': 'カードスタイルを選択します',
-    'bd-action:manage-card-styles': 'カードスタイルを管理します',
+    'bd-action:pick-card-style': 'トピックスタイルを選択します',
+    'bd-action:manage-card-styles': 'トピックスタイルを管理します',
     'bd-action:pick-line-style': 'ラインスタイルを選択します',
     'bd-action:manage-line-styles': 'ラインスタイルを管理します',
     'bd-action:filters': 'ボードのフィルタを設定します',
@@ -242,10 +243,10 @@
     'bd-action:bg-color': 'ボード背景色を変更します',
     'bd-action:bg-image': '背景画像を設定します',
     'bd-action:bg-clear': '背景をクリアします',
-    'bd-tool:select': 'カードやラインを選択します',
-    'bd-tool:add-card': 'ボードにカードを追加します',
-    'bd-tool:add-line': 'カード間にラインを追加します',
-    'bd-tool:erase': 'カードやラインを消します',
+    'bd-tool:select': 'トピックやラインを選択します',
+    'bd-tool:add-card': 'ボードにトピックを追加します',
+    'bd-tool:add-line': 'トピック間にラインを追加します',
+    'bd-tool:erase': 'トピックやラインを消します',
     'sn-action:saveTemplate': '現在のシナリオ設定をテンプレートとして登録します',
     'sn-action:horizontal': 'シナリオを横書き表示にします',
     'sn-action:vertical': 'シナリオを縦書き表示にします',
@@ -262,7 +263,6 @@
     'cal-action:prev': '前の期間へ移動します',
     'cal-action:next': '次の期間へ移動します',
     'cal-action:template': 'カレンダーテンプレートを開きます',
-    'cal-action:timer': 'タイマーを開きます',
     'cal-action:production': '制作管理パネルを開きます',
     'cal-action:sync': '外部カレンダーと同期します',
     'cal-action:sidebarOnly': 'サイドバーのみの表示に切り替えます',
@@ -271,17 +271,17 @@
     'cal-action:miniNext': '小型カレンダーを次の月へ移動します',
     'cal-action:addTodayTask': '今日のToDoを追加します',
     'cal-action:createCalendar': '新しいカレンダーを作成します',
-    'tool:pen': 'ペンで注釈を書き込みます',
-    'tool:marker': 'マーカーで注釈を書き込みます',
+    'tool:pen': 'ペンでアノテートを書き込みます',
+    'tool:marker': 'マーカーでアノテートを書き込みます',
     'tool:lasso': '囲んだ範囲を塗ります',
-    'tool:eraser': '注釈を消します',
+    'tool:eraser': 'アノテートを消します',
     'tool:sticky': '付箋を追加します',
     'align:left': '左寄せにします',
     'align:center': '中央に揃えます',
     'align:right': '右寄せにします',
     'rp-tab:calendar': 'カレンダータブを表示します',
     'rp-tab:chat': 'チャットタブを表示します',
-    'rp-tab:annotation': '注釈タブを表示します',
+    'rp-tab:annotation': 'アノテートタブを表示します',
     'rp-tab:history': '履歴タブを表示します'
   });
   const ID_HINTS = Object.freeze({
@@ -295,8 +295,8 @@
     'left-chrome-floating-settings': 'Meldexの設定を開きます',
     'left-chrome-user': 'ユーザー設定を開きます',
     'left-chrome-floating-user': 'ユーザー設定を開きます',
-    'ann-color-swatch': '注釈の色を変更します',
-    'ann-opacity': '注釈の不透明度を調整します',
+    'ann-color-swatch': 'アノテートの色を変更します',
+    'ann-opacity': 'アノテートの不透明度を調整します',
     'bd-zoom-slider': 'ボードの表示倍率を調整します',
     'bd-rot-slider': 'ボードの回転角度を調整します',
     'btn-tree-search-clear': 'フォルダツリー検索をクリアします',
@@ -336,7 +336,8 @@
     search: '検索します',
     settings2: '設定を開きます',
     slidersHorizontal: 'オプションを開きます',
-    stickyNote: '注釈を開きます',
+    stickyNote: '付箋を開きます',
+    squarePen: 'アノテートを開きます',
     strikethrough: '取り消し線を適用します',
     table: '表を挿入します',
     trash2: '削除します',
@@ -409,7 +410,11 @@
 
   function isBlockedByActiveModal(el) {
     const overlay = activeModalOverlay();
-    return !!overlay && !!el && !overlay.contains(el);
+    if (!overlay || !el || overlay.contains(el)) return false;
+    // 書式・配色ポップアップは、モーダル内のアンカーから開いた場合も位置決めのため
+    // body 直下へマウントされる。見た目と操作上はモーダルの一部なので、ツールチップを許可する。
+    if (el.closest?.(ACTIVE_MODAL_TOOLTIP_PORTAL_SELECTOR)) return false;
+    return true;
   }
 
   function findCellContentNativeTitleTarget(start) {
@@ -1046,8 +1051,8 @@
   regId('left-chrome-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('left-chrome-floating-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('btn-sidebar-toggle',  { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
-  regId('btn-tb-annotation',   { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regId('btn-overlay-toggle',  { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regId('btn-tb-annotation',   { label: 'アノテートツール', desc: '手描きアノテートツールバーを開閉します', shortcutId: 'global.annotation' });
+  regId('btn-overlay-toggle',  { label: 'アノテート表示/非表示', desc: '描き込んだアノテートの表示/非表示を切り替えます' });
   regId('btn-split-toggle',    { label: 'スプリット', desc: '画面を上下または左右に分割して2画面表示にします' });
   regId('btn-toc-toggle',      { label: '目次',       desc: 'ノートの見出しから生成した目次パネルを開閉します' });
   regId('btn-note-vertical',   { label: '縦書き / 横書き', desc: 'ノート本文の組方向を切り替えます' });

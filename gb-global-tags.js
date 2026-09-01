@@ -156,6 +156,32 @@
     }
     chip.appendChild(label);
 
+    const dictionaryScope = String(tag?._dictionary_scope || '');
+    if (dictionaryScope === 'admin' || dictionaryScope === 'duplicate') {
+      const badge = document.createElement('span');
+      badge.className = `gb-tag-chip__scope gb-tag-chip__scope--${dictionaryScope}`;
+      badge.tabIndex = 0;
+      badge.setAttribute('role', 'button');
+      const description = dictionaryScope === 'duplicate'
+        ? '管理者タグと個人タグの完全一致。自分の分だけ外しても管理者タグは残ります'
+        : '管理者タグ。メンバーは編集・削除できません';
+      badge.textContent = dictionaryScope === 'duplicate' ? '重' : '管';
+      badge.title = description;
+      badge.setAttribute('aria-label', description);
+      const explain = event => {
+        if (event?.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (typeof showStatus === 'function') showStatus(description);
+      };
+      badge.addEventListener('click', explain);
+      badge.addEventListener('keydown', explain);
+      chip.appendChild(badge);
+      chip.classList.add(`gb-tag-chip--${dictionaryScope}`);
+    } else if (tag?.origin?.scope === 'admin-copy' || tag?._tag_origin?.scope === 'admin-copy') {
+      chip.title = options.title || `${displayName}（管理者辞書から個人辞書へコピー）`;
+    }
+
     if (typeof options.onRemove === 'function') {
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -208,7 +234,10 @@
 
   async function loadTags(sourceFolder) {
     if (typeof apiFetch !== 'function') return { tags: [], groups: [] };
-    return apiFetch(withSourceQuery('/global-tags', sourceFolder), { silentError: true, timeoutMs: 120000 });
+    const personal = await apiFetch(withSourceQuery('/global-tags', sourceFolder), { silentError: true, timeoutMs: 120000 });
+    return window.MeldexAdminTagDictionary?.mergeWithPersonalCatalog
+      ? window.MeldexAdminTagDictionary.mergeWithPersonalCatalog(personal)
+      : personal;
   }
 
   // シートの共通タグ列など、大量のセル描画で同一データを繰り返し参照する用途向けの
@@ -295,6 +324,12 @@
   }
 
   async function updateTag(tagId, payload, sourceFolder) {
+    if (String(tagId || '').startsWith('admin:') && window.MeldexAdminTagDictionary?.updateTag) {
+      const result = await window.MeldexAdminTagDictionary.updateTag(tagId, payload);
+      invalidateTagsCatalogCache(sourceFolder);
+      notifyTagsCatalogChanged('admin-tag-updated', result, sourceFolder);
+      return result;
+    }
     const result = await apiFetch('/global-tags/' + encodeURIComponent(tagId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -314,6 +349,12 @@
   }
 
   async function deleteTag(tagId, sourceFolder) {
+    if (String(tagId || '').startsWith('admin:') && window.MeldexAdminTagDictionary?.deleteTag) {
+      const result = await window.MeldexAdminTagDictionary.deleteTag(tagId);
+      invalidateTagsCatalogCache(sourceFolder);
+      notifyTagsCatalogChanged('admin-tag-deleted', result, sourceFolder);
+      return result;
+    }
     const result = await apiFetch(withSourceQuery('/global-tags/' + encodeURIComponent(tagId), sourceFolder), { method: 'DELETE', silentError: true });
     return publishTagsCatalogMutation('tag-deleted', result, sourceFolder);
   }
@@ -474,18 +515,7 @@
     return targetTagsLastResolved.get(targetTagsCacheKey(targetPath, sourceFolder)) || null;
   }
 
-  function notifyTargetTagsChanged(path, sourceFolder) {
-    invalidateTargetTagsCache(path, sourceFolder);
-    try {
-      window.dispatchEvent(new CustomEvent('meldex:target-tags-changed', {
-        detail: {
-          path: normalizeTargetPath(path),
-          sourceFolder: normalizedSourceFolder(sourceFolder) || sourceFolderForTarget(path),
-        },
-      }));
-    } catch (_) {
-      // CustomEventを利用できない古い埋め込み環境でもタグ更新自体は成功扱いにする。
-    }
+  function refreshFolderTagsAfterTargetMutation(path) {
     try {
       if (typeof _folderInvalidateTagsForPath === 'function') _folderInvalidateTagsForPath(path);
       const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
@@ -495,6 +525,39 @@
         _folderEnsureTags(typeof _folderItems !== 'undefined' ? _folderItems : [], { rerender: true });
       }
     } catch (_) {}
+  }
+
+  function dispatchTargetTagsChanged(path, sourceFolder, data) {
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:target-tags-changed', {
+        detail: {
+          path: normalizeTargetPath(path),
+          sourceFolder: normalizedSourceFolder(sourceFolder) || sourceFolderForTarget(path),
+          data: data || null,
+        },
+      }));
+    } catch (_) {
+      // CustomEventを利用できない古い埋め込み環境でもタグ更新自体は成功扱いにする。
+    }
+    refreshFolderTagsAfterTargetMutation(path);
+  }
+
+  function notifyTargetTagsChanged(path, sourceFolder) {
+    invalidateTargetTagsCache(path, sourceFolder);
+    dispatchTargetTagsChanged(path, sourceFolder, null);
+  }
+
+  function publishTargetTagsMutation(path, data, sourceFolder) {
+    const targetPath = normalizeTargetPath(path);
+    const resolvedSourceFolder = normalizedSourceFolder(sourceFolder) || sourceFolderForTarget(targetPath);
+    const key = targetTagsCacheKey(targetPath, resolvedSourceFolder);
+    const authoritative = { ...(data || {}), _provisional: false };
+    const requestRevision = ++targetTagsRequestSeq;
+    targetTagsLatestRequest.set(key, requestRevision);
+    targetTagsLastResolved.set(key, authoritative);
+    targetTagsCache.set(key, { at: Date.now(), promise: Promise.resolve(authoritative) });
+    dispatchTargetTagsChanged(targetPath, resolvedSourceFolder, authoritative);
+    return authoritative;
   }
 
   async function loadTargetTags(path, options) {
@@ -508,6 +571,8 @@
     const requestRevision = ++targetTagsRequestSeq;
     targetTagsLatestRequest.set(key, requestRevision);
     const promise = apiFetch(targetTagsUrl(path, sourceFolder), { silentError: true })
+      .then(data => window.MeldexAdminTagDictionary?.mergeTargetTags
+        ? window.MeldexAdminTagDictionary.mergeTargetTags(path, data) : data)
       .then(data => {
         if (targetTagsLatestRequest.get(key) === requestRevision) {
           targetTagsLastResolved.set(key, { ...(data || {}), _provisional: false });
@@ -522,22 +587,62 @@
     return promise;
   }
 
-  async function addTargetTag(path, name) {
+  async function addTargetTag(path, nameOrTag) {
     const sourceFolder = sourceFolderForTarget(path);
+    const tag = nameOrTag && typeof nameOrTag === 'object' ? nameOrTag : null;
+    const name = String(tag?.name || nameOrTag || '').trim();
+    const scope = String(tag?._dictionary_scope || '');
+    if ((scope === 'admin' || scope === 'duplicate') && window.MeldexAdminTagDictionary) {
+      const result = await window.MeldexAdminTagDictionary.useTag(path, tag, sourceFolder);
+      invalidateTagsCatalogCache(sourceFolder);
+      notifyTargetTagsChanged(path, sourceFolder);
+      return result;
+    }
     const result = await apiPost('/global-tags/target', withSourcePayload({
       path: normalizeTargetPath(path),
-      name: String(name || '').trim(),
+      name,
     }, sourceFolder), { silentError: true });
     notifyTargetTagsChanged(path, sourceFolder);
     return result;
   }
 
   async function removeTargetTag(path, tag) {
+    const scope = String(tag?._dictionary_scope || '');
+    if (scope === 'admin' && window.MeldexAdminTagDictionary?.setAdminAssignment) {
+      const result = await window.MeldexAdminTagDictionary.setAdminAssignment(path, tag, false);
+      notifyTargetTagsChanged(path, sourceFolderForTarget(path));
+      return result;
+    }
+    if (scope === 'duplicate') {
+      const message = '自分の分だけ外します。管理者タグとしても付いているため表示は残ります。続けますか？';
+      const accepted = typeof cfConfirm === 'function' ? await cfConfirm(message) : window.confirm(message);
+      if (!accepted) return { ok: false, cancelled: true };
+    }
     const tagKey = tag?.id || tag?.name || tag || '';
     const sourceFolder = sourceFolderForTarget(path);
     const result = await apiFetch(targetTagsUrl(path, sourceFolder) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
     notifyTargetTagsChanged(path, sourceFolder);
     return result;
+  }
+
+  async function updateTargetTags(path, changes, options) {
+    const targetPath = normalizeTargetPath(path);
+    const sourceFolder = normalizedSourceFolder(options?.sourceFolder) || sourceFolderForTarget(targetPath);
+    const result = await apiFetch('/global-tags/target', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withSourcePayload({
+        path: targetPath,
+        add: Array.isArray(changes?.add) ? changes.add : [],
+        remove: Array.isArray(changes?.remove) ? changes.remove : [],
+      }, sourceFolder)),
+      keepalive: true,
+      silentError: true,
+    });
+    const merged = window.MeldexAdminTagDictionary?.mergeTargetTags
+      ? await window.MeldexAdminTagDictionary.mergeTargetTags(targetPath, result)
+      : result;
+    return publishTargetTagsMutation(targetPath, merged, sourceFolder);
   }
 
   async function searchByTag(tag, sourceFolder) {
@@ -559,10 +664,12 @@
   // ============================================================
   // ファイル別タグ編集 UI (オプションパネルのファイル詳細などに埋め込み)
   // ============================================================
-  async function refreshTargetTagOptions(datalist, targetPath) {
+  async function refreshTargetTagOptions(datalist, targetPath, explicitSourceFolder) {
     if (!datalist) return;
     try {
-      const data = await loadTagsCached(sourceFolderForTarget(targetPath));
+      const sourceFolder = explicitSourceFolder == null
+        ? sourceFolderForTarget(targetPath) : explicitSourceFolder;
+      const data = await loadTagsCached(sourceFolder);
       cache = Array.isArray(data?.tags) ? data.tags : [];
       datalist.textContent = '';
       cache.forEach(tag => {
@@ -884,7 +991,8 @@
   // 汎用タグエディタ（get/set コールバック対象向け）
   //   ボードのカード・シートの行・クイックメモなど、ファイルパスを持たず
   //   データ本体へタグID配列を直接埋め込む対象向け。表示は buildTargetTagEditorUi を共用する。
-  //   options: { getIds(): string[], setIds(ids: string[]): void, onChange?(): void, compact?: boolean, boxed?: boolean }
+  //   options: { getIds(): string[], setIds(ids: string[]): Promise<void>|void,
+  //     onChange?(): void, compact?: boolean, boxed?: boolean, readOnly?: boolean, sourceFolder?: string }
   // ============================================================
   function renderInlineTagEditor(container, options) {
     if (!container) return;
@@ -893,16 +1001,16 @@
     const ui = buildTargetTagEditorUi(container, options);
     const refresh = () => refreshInlineTagEditorTags(options, ui, refresh);
     bindInlineTagEditor(options, ui, refresh);
-    refreshTargetTagOptions(ui.datalist);
+    refreshTargetTagOptions(ui.datalist, '', options.sourceFolder);
     refresh();
   }
 
   async function refreshInlineTagEditorTags(options, ui, refresh) {
     ui.msg.textContent = 'タグを読み込んでいます...';
     try {
-      const data = await loadTagsCached();
+      const data = await loadTagsCached(options.sourceFolder);
       const allTags = Array.isArray(data?.tags) ? data.tags : [];
-      ui.mutationBlocked = !!data?.mutation_blocked;
+      ui.mutationBlocked = options.readOnly === true || !!data?.mutation_blocked;
       ui.input.disabled = ui.mutationBlocked;
       ui.add.disabled = ui.mutationBlocked;
       const groups = Array.isArray(data?.groups) ? data.groups : [];
@@ -928,7 +1036,9 @@
         ui.mutationBlocked,
       )));
       ui.msg.textContent = ui.mutationBlocked
-        ? (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。')
+        ? (options.readOnly === true
+          ? 'このトピックは読み取り専用です。'
+          : (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。'))
         : '';
     } catch (err) {
       ui.msg.textContent = 'タグを読み込めませんでした: ' + (err.userMessage || err.message || err);
@@ -961,14 +1071,15 @@
         e2eId: `global-tags-inline-remove:${tagKey}`,
         globalTagsRole: 'inline-remove',
       },
-      onRemove() {
+      async onRemove() {
         try {
           const nextIds = (options.getIds() || []).filter(id => String(id) !== String(tag.id));
-          options.setIds(nextIds);
+          await Promise.resolve(options.setIds(nextIds));
           if (typeof options.onChange === 'function') options.onChange();
-          refresh();
+          await refresh();
         } catch (err) {
           if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
+          await refresh();
         }
       },
     });
@@ -991,16 +1102,16 @@
       const name = ui.input.value.trim();
       if (!name) return;
       try {
-        const data = await loadTagsCached();
+        const data = await loadTagsCached(options.sourceFolder);
         const allTags = Array.isArray(data?.tags) ? data.tags : [];
         let tag = allTags.find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
         if (!tag) {
           try {
-            const created = await createTag({ name });
+            const created = await createTag({ name }, options.sourceFolder);
             tag = created?.tag || null;
           } catch (createErr) {
             // 競合(同名タグが既に作成済み)などで失敗した場合は再取得してフォールバック
-            const retryData = await loadTagsCached();
+            const retryData = await loadTagsCached(options.sourceFolder);
             tag = (Array.isArray(retryData?.tags) ? retryData.tags : []).find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
             if (!tag) throw createErr;
           }
@@ -1008,11 +1119,11 @@
         if (!tag?.id) return;
         const ids = new Set((options.getIds() || []).map(id => String(id)));
         ids.add(String(tag.id));
-        options.setIds([...ids]);
+        await Promise.resolve(options.setIds([...ids]));
         ui.input.value = '';
         if (typeof options.onChange === 'function') options.onChange();
         await refresh();
-        await refreshTargetTagOptions(ui.datalist);
+        await refreshTargetTagOptions(ui.datalist, '', options.sourceFolder);
         if (window.MeldexTagManagement && typeof window.MeldexTagManagement.refresh === 'function') {
           window.MeldexTagManagement.refresh();
         }
@@ -1066,6 +1177,7 @@
     invalidateTargetTagsCache,
     addTargetTag,
     removeTargetTag,
+    updateTargetTags,
     searchByTag,
     openTaggedTarget,
     // コンパクト表示

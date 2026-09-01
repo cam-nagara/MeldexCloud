@@ -17,6 +17,7 @@
     'x-account-posts': 'Xアカウント投稿',
     'external-import-set': '外部取り込み',
   };
+  const USER_FACING_CATEGORIES = new Set(Object.keys(CATEGORY_LABELS));
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -38,7 +39,7 @@
   }
 
   function categoryLabel(category) {
-    return CATEGORY_LABELS[category] || category;
+    return CATEGORY_LABELS[category] || '';
   }
 
   function statusLine(entry) {
@@ -60,7 +61,9 @@
   async function loadSchedules() {
     if (!apiReady()) return [];
     const data = await apiFetch('/import-schedules', { silentError: true });
-    return Array.isArray(data?.schedules) ? data.schedules : [];
+    return Array.isArray(data?.schedules)
+      ? data.schedules.filter(entry => USER_FACING_CATEGORIES.has(String(entry?.category || '')))
+      : [];
   }
 
   function textEl(tag, text, className) {
@@ -298,5 +301,8 @@
     return host ? render(host) : Promise.resolve();
   }
 
-  window.MeldexImportScheduleSettings = { render, mount, refresh, isCloudStaticScheduleSurface };
+  window.MeldexImportScheduleSettings = {
+    render, mount, refresh, isCloudStaticScheduleSurface,
+    isUserFacingCategory: category => USER_FACING_CATEGORIES.has(String(category || '')),
+  };
 })();

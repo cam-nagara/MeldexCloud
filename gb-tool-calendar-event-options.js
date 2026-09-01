@@ -33,6 +33,7 @@
       end,
       all_day: defaultAllDay ? 1 : 0,
       color: cal?.color || DEFAULT_EVENT_COLOR,
+      color_override: null,
       calendar_id: cal?.id || '',
       alert_minutes: -1,
       user: this._getUser(),
@@ -68,7 +69,7 @@
       if (created) { delete created._optimistic; delete created._saveState; }
       this._showStatus('イベントを追加しました');
       return id;
-    } catch {
+    } catch (error) {
       this._events = (this._events || []).filter(e => e.id !== id);
       this._render();
       this._showStatus('イベント追加に失敗', true);
@@ -126,6 +127,8 @@
       + (hasOwnCalendarOption ? '' : `<option value="${_calEsc(ev.calendar_id)}" selected>他のメンバーのカレンダー</option>`)
       + (this._calendars || []).map(c => `<option value="${_calEsc(c.id)}" ${ev?.calendar_id === c.id ? 'selected' : ''}>${_calEsc(c.name)}</option>`).join('');
     const creator = _calEventCreator(ev, this._getUser());
+    const usesCalendarColor = ev?.uses_calendar_color !== false && !String(ev?.color_override || '').trim();
+    const eventColor = ev?.color || this._eventColorDefault();
     body.dataset.calEventMembers = JSON.stringify(_calUserListFromValue(ev?.members));
     body.innerHTML = `
       ${_calField('タイトル', `<input data-e2e-id="calendar-event-title" data-cal-event-title type="text" aria-label="タイトル" value="${_calEsc(ev?.title || '')}" placeholder="イベント名">`)}
@@ -134,8 +137,11 @@
       ${_calField('終了', `<input data-e2e-id="calendar-event-end" data-cal-event-end type="${isAllDay ? 'date' : 'datetime-local'}" aria-label="終了" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.end || defaultEnd || ev?.start || defaultStart, new Date(now.getTime() + 3600000)) : endVal)}">`)}
       ${calOpts ? _calField('カレンダー', `<select data-e2e-id="calendar-event-calendar" data-cal-event-calendar class="gb-select" aria-label="カレンダー">${calOpts}</select>`) : ''}
       ${_calField('作成者', `<select data-e2e-id="calendar-event-creator" data-cal-event-creator class="gb-select" aria-label="作成者"><option value="${_calEsc(creator)}">${_calEsc(creator || 'anonymous')}</option></select>`)}
-      ${_calField('メンバー', `<div data-cal-event-members class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div>`)}
-      ${_calField('色', `<button type="button" data-e2e-id="calendar-event-color" data-cal-event-color class="gb-color-swatch gb-color-swatch--field" data-color="${_calEsc(ev?.color || this._eventColorDefault())}" title="イベント色"></button>`)}
+      ${_calField('参加ユーザー', `<div data-cal-event-members class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div>`)}
+      ${_calField('色', `<select data-e2e-id="calendar-event-color-mode" data-cal-event-color-mode class="gb-select" aria-label="イベント色の使い方">
+        <option value="calendar" ${usesCalendarColor ? 'selected' : ''}>カレンダーの色を使用</option>
+        <option value="custom" ${usesCalendarColor ? '' : 'selected'}>個別の色</option>
+      </select><button type="button" data-e2e-id="calendar-event-color" data-cal-event-color class="gb-color-swatch gb-color-swatch--field" data-color="${_calEsc(eventColor)}" title="個別の色"></button>`)}
       ${_calField('場所', `<input data-e2e-id="calendar-event-location" data-cal-event-location type="text" aria-label="場所" value="${_calEsc(ev?.location || '')}">`)}
       ${_calField('URL', `<input data-e2e-id="calendar-event-url" data-cal-event-url type="url" aria-label="URL" value="${_calEsc(ev?.url || '')}" placeholder="https://...">`)}
       ${_calField('アラーム', `<select data-e2e-id="calendar-event-alert" data-cal-event-alert class="gb-select" aria-label="アラーム">
@@ -150,7 +156,7 @@
       <div class="cal-option-actions cal-option-actions--footer">
         <button type="button" class="danger" data-e2e-id="calendar-event-delete" data-cal-event-delete>削除</button>
         <span></span>
-        ${ev?.id ? '<button type="button" data-e2e-id="calendar-event-comment-list" data-cal-event-comment-list>コメント一覧</button><button type="button" data-e2e-id="calendar-event-comment-add" data-cal-event-comment>コメントを追加</button>' : ''}
+        ${ev?.id ? '<button type="button" data-e2e-id="calendar-event-history" data-cal-event-history>版を見る</button><button type="button" data-e2e-id="calendar-event-comment-list" data-cal-event-comment-list>コメント一覧</button><button type="button" data-e2e-id="calendar-event-comment-add" data-cal-event-comment>コメントを追加</button>' : ''}
         <button type="button" class="primary" data-e2e-id="calendar-event-save" data-cal-event-save>保存</button>
       </div>`;
     const allDay = body.querySelector('[data-cal-event-allday]');
@@ -163,10 +169,43 @@
     allDay?.addEventListener('change', () => {
       _calSetEventDateInputMode(this, startInput, endInput, allDay.checked);
     });
-    _calBindSwatch(body.querySelector('[data-cal-event-color]'), ev?.color || this._eventColorDefault());
+    const colorMode = body.querySelector('[data-cal-event-color-mode]');
+    const colorSwatch = body.querySelector('[data-cal-event-color]');
+    _calBindSwatch(colorSwatch, eventColor);
+    const updateColorMode = () => {
+      const inherits = colorMode?.value !== 'custom';
+      if (colorSwatch) {
+        colorSwatch.disabled = inherits;
+        colorSwatch.setAttribute('aria-disabled', inherits ? 'true' : 'false');
+      }
+      if (inherits) {
+        const selected = (this._calendars || []).find(item => item.id === calendarSelect?.value);
+        if (selected?.color) {
+          colorSwatch.dataset.color = selected.color;
+          colorSwatch.style.background = selected.color;
+        }
+      }
+    };
+    colorMode?.addEventListener('change', updateColorMode);
+    calendarSelect?.addEventListener('change', updateColorMode);
+    updateColorMode();
     this._populateEventUserControls(body, ev);
     body.querySelector('[data-cal-event-save]')?.addEventListener('click', () => this._saveEventOptions(ev.id, body));
     body.querySelector('[data-cal-event-delete]')?.addEventListener('click', () => this._deleteEventFromOptions(ev.id));
+    body.querySelector('[data-cal-event-history]')?.addEventListener('click', event => {
+      window.MeldexCalendarItemHistory?.open('event', ev.id, {
+        returnFocus: event.currentTarget,
+        onRestored: async () => {
+          await this._loadEvents();
+          this._renderCalendarList?.();
+          this._render();
+          const restored = (this._events || []).find(item => item.id === ev.id);
+          if (restored) this._showEventOptionsPanel(restored);
+          else body.innerHTML = '<div class="cal-option-empty">この版では予定が存在しません</div>';
+          this._showStatus('予定を復元しました');
+        },
+      }).catch(error => this._showStatus(error?.message || '予定の版を開けませんでした', true));
+    });
     body.querySelector('[data-cal-event-comment]')?.addEventListener('click', (event) => {
       if (typeof addCommentHere !== 'function' || !ev?.id) return;
       const calendarId = ev.calendar_id || body.querySelector('[data-cal-event-calendar]')?.value || '_calendar';
@@ -213,6 +252,9 @@
       end: endValue,
       all_day: allDay ? 1 : 0,
       color: _calGetSwatchValue(body.querySelector('[data-cal-event-color]'), ''),
+      color_override: body.querySelector('[data-cal-event-color-mode]')?.value === 'custom'
+        ? _calGetSwatchValue(body.querySelector('[data-cal-event-color]'), '')
+        : null,
       location: body.querySelector('[data-cal-event-location]')?.value || '',
       url: body.querySelector('[data-cal-event-url]')?.value || '',
       description: body.querySelector('[data-cal-event-desc]')?.value || '',
@@ -238,17 +280,30 @@
     this._renderCalendarList?.();
     this._render();
     this._savingEventIds.add(editId);
+    if (this.el) {
+      this.el.dataset.eventSaveState = 'pending';
+      this.el.dataset.eventSaveMessage = '';
+    }
     try {
       await apiPut('/cal/events/' + editId, data);
+      if (this.el) this.el.dataset.eventSaveState = 'saved';
       this._showStatus('イベントを保存しました');
       this._loadEvents?.().then(() => this._render()).catch(() => {});
-    } catch {
+    } catch (error) {
+      const failureDetail = String(error?.userMessage || error?.message || '').trim();
+      if (this.el) {
+        this.el.dataset.eventSaveState = 'error';
+        this.el.dataset.eventSaveMessage = failureDetail || 'イベントの保存に失敗しました';
+      }
       if (beforeEvent) {
         this._events = (this._events || []).map(event => (event.id === editId ? beforeEvent : event));
       }
       this._renderCalendarList?.();
       this._render();
-      this._showStatus('保存に失敗', true);
+      this._showStatus(
+        failureDetail ? `イベントの保存に失敗しました: ${failureDetail}` : 'イベントの保存に失敗しました',
+        true,
+      );
       this._loadEvents?.().then(() => this._render()).catch(() => {});
     } finally {
       this._savingEventIds.delete(editId);

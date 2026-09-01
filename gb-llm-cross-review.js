@@ -7,7 +7,6 @@
     'preview',
     'chat',
     'calendar',
-    'timer',
     'history',
     'annotation',
     'sticky',
@@ -74,7 +73,7 @@
     const direct = String(tab?.path || '').trim();
     if (direct) return direct;
     const st = tab?.state || {};
-    for (const key of ['path', 'pagePath', 'dbPath', 'smartDbPath', 'boardPath', 'entityPath', 'mediaPath']) {
+    for (const key of ['path', 'pagePath', 'dbPath', 'boardPath', 'entityPath', 'mediaPath']) {
       const value = String(st[key] || '').trim();
       if (value) return value;
     }
@@ -98,12 +97,11 @@
     const raw = String(type || '').trim().toLowerCase();
     const lowerPath = String(path || '').trim().toLowerCase();
     if (['note', 'page', 'editor', 'markdown'].includes(raw)) return 'note';
-    if (['sheet', 'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'table', 'form'].includes(raw)) return 'sheet';
-    if (['smart-sheet', 'smart-db', 'smartdb'].includes(raw)) return 'smart-sheet';
+    if (['sheet', 'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'table', 'form'].includes(raw)) return 'sheet';
     if (['board', 'canvas'].includes(raw)) return 'board';
     if (['scriptnote', 'scenario'].includes(raw)) return 'scriptnote';
     if (lowerPath.endsWith('.mel-scenario') || lowerPath.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lowerPath.endsWith('.mel-sheet') || lowerPath.endsWith('.smart-db.json')) return 'smart-sheet';
+    if (lowerPath.endsWith('.mel-sheet')) return 'sheet';
     if (lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md')) return 'board';
     if (lowerPath.endsWith('.md') || lowerPath.endsWith('.txt') || lowerPath.endsWith('.html')) return 'note';
     return raw || 'unknown';

@@ -1,0 +1,93 @@
+.gb-production-task-topic-resources {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 8px;
+  background: var(--cal-control-bg, var(--bg3));
+}
+
+.gb-production-topic-resource-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gb-production-topic-resource-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.gb-production-topic-resource-open,
+.gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
+.gb-production-topic-resource-actions > button {
+  min-height: 36px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 6px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-control-fg, var(--fg));
+  cursor: pointer;
+}
+
+.gb-production-topic-resource-open {
+  min-width: 0;
+  overflow: hidden;
+  padding-inline: 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-production-topic-resource-empty {
+  display: block !important;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 12px;
+}
+
+.gb-production-task-topic-resources[data-state="loading"] {
+  color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-task-topic-resources[data-state="error"] {
+  border-color: var(--error, #c95a5a);
+}
+
+.gb-production-topic-resource-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gb-production-topic-resource-open:hover,
+.gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"]:hover,
+.gb-production-topic-resource-actions > button:hover {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-accent, var(--accent));
+}
+
+.gb-production-topic-resource-open:focus-visible,
+.gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"]:focus-visible,
+.gb-production-topic-resource-actions > button:focus-visible {
+  outline: 2px solid var(--cal-accent, var(--accent));
+  outline-offset: 2px;
+}
+
+.gb-production-topic-resource-list button:disabled,
+.gb-production-topic-resource-actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  border-color: transparent;
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-production-topic-resource-open,
+  .gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
+  .gb-production-topic-resource-actions > button {
+    min-height: 44px;
+  }
+}

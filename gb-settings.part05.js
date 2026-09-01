@@ -1,8 +1,73 @@
 /* gb-settings.part05.js: appearance tab theme editor integration */
 
-function _settingsThemeAction(iconName, fallback, label, action, danger) {
-  const icon = typeof lucide === 'function' ? lucide(iconName, 14) : fallback;
-  return `<button type="button" class="bd-detail-style-action${danger ? ' bd-detail-style-action--danger' : ''}" data-action="${action}" title="${esc(label)}" aria-label="${esc(label)}">${icon}</button>`;
+function _settingsThemeMenuButton() {
+  const icon = typeof lucide === 'function' ? lucide('moreHorizontal', 16) : '…';
+  return `<button type="button" class="bd-detail-style-action settings-theme-preset-menu-button" data-action="openSettingsThemeMenu(this)" data-e2e-id="settings-theme-preset-menu" title="テーマプリセットの操作" aria-label="テーマプリセットの操作" aria-haspopup="menu" aria-expanded="false">${icon}</button>`;
+}
+
+function openSettingsThemeMenu(anchor) {
+  document.querySelectorAll('.settings-theme-preset-menu').forEach(menu => menu.remove());
+  if (!anchor) return;
+  const custom = _settingsThemeIsCustom();
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu settings-theme-preset-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'テーマプリセットの操作');
+  const actions = [
+    ['plus', '追加', 'create', () => settingsThemeCreate(), false],
+    ['copy', '複製', 'duplicate', () => settingsThemeDuplicate(), false],
+    ['pencil', 'リネーム', 'rename', () => settingsThemeRename(), !custom],
+    ['refreshCw', '更新', 'update', () => settingsThemeReset(), false],
+    ['save', '保存', 'save', () => settingsThemeSave(), !custom],
+    ['trash2', '削除', 'delete', () => settingsThemeDelete(), !custom],
+  ];
+  let dismiss = null;
+  const close = () => {
+    menu.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    if (dismiss) {
+      document.removeEventListener('pointerdown', dismiss, true);
+      document.removeEventListener('keydown', dismiss, true);
+    }
+  };
+  actions.forEach(([iconName, label, action, run, disabled]) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'gb-context-menu-item' + (action === 'delete' ? ' danger' : '');
+    item.dataset.settingsThemeAction = action;
+    item.dataset.e2eId = `settings-theme-preset-action-${action}`;
+    item.setAttribute('role', 'menuitem');
+    item.disabled = !!disabled;
+    item.innerHTML = `${typeof lucide === 'function' ? lucide(iconName, 14) : ''}<span>${label}</span>`;
+    item.addEventListener('click', async () => {
+      if (item.disabled) return;
+      close();
+      await run();
+    });
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  anchor.setAttribute('aria-expanded', 'true');
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, anchor.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.left = `${Math.max(4, rect.right - menu.offsetWidth)}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  }
+  dismiss = event => {
+    if (event.type === 'keydown' && event.key !== 'Escape') return;
+    if (event.type === 'pointerdown' && (menu.contains(event.target) || anchor.contains(event.target))) return;
+    if (event.type === 'keydown') event.preventDefault();
+    close();
+  };
+  setTimeout(() => {
+    if (!menu.isConnected) return;
+    document.addEventListener('pointerdown', dismiss, true);
+    document.addEventListener('keydown', dismiss, true);
+    menu.querySelector('button:not(:disabled)')?.focus();
+  }, 0);
 }
 
 function _settingsThemeCommonFontValue() {
@@ -39,7 +104,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['シナリオ', ['基本テキスト']],
     ['シート', ['ヘッダー', 'エントリ列', 'セル']],
     ['スケジュール', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
-    ['補助パネル', ['チャット本文', 'タイマー']],
+    ['補助パネル', ['チャット本文']],
   ],
   state: [
     ['共通', ['ボタン', 'ボタンホバー', 'ボタン選択', 'ホバー', '選択', 'カーソル', 'フォーカス枠', 'スライダー']],
@@ -82,10 +147,11 @@ function _settingsThemeAccentState() {
   const palette = manager?.getThemeColorSet?.(theme, { ignoreOsAccent: true }) || [];
   const fallback = policy.defaultColor || palette[0] || '#569cd6';
   const current = (getCssVar('--ui-accent') || getCssVar('--accent') || fallback).trim();
+  const osColor = String(manager?.getOsAccentColor?.() || '').trim();
   const usesDefault = current.toLowerCase() === String(fallback).trim().toLowerCase();
   return {
     mode: useOs ? 'os' : (usesDefault ? 'default' : 'custom'),
-    color: current,
+    color: useOs && osColor ? osColor : current,
     defaultColor: fallback,
   };
 }
@@ -94,14 +160,29 @@ function renderSettingsThemeAccentEditor() {
   const state = _settingsThemeAccentState();
   return `<div class="gb-field-row settings-theme-accent-row" data-settings-theme-accent="1">
     <label class="gb-label" for="settings-theme-accent-mode">アクセントカラー</label>
-    <select id="settings-theme-accent-mode" class="gb-select" data-e2e-id="settings-theme-accent-mode" data-onchange="settingsThemeAccentModeChanged(this)">
-      <option value="os"${state.mode === 'os' ? ' selected' : ''}>OSアクセント</option>
-      <option value="default"${state.mode === 'default' ? ' selected' : ''}>既定のアクセント</option>
-      <option value="custom"${state.mode === 'custom' ? ' selected' : ''}>指定カラー</option>
-    </select>
-    <button type="button" class="gb-color-swatch settings-theme-accent-swatch" data-e2e-id="settings-theme-accent-swatch" data-settings-theme-accent-swatch style="background:${esc(state.color)}" title="共通カラーパレットから選択" data-action="settingsThemeChooseAccentColor(this)"></button>
+    <span class="settings-theme-accent-control">
+      <select id="settings-theme-accent-mode" class="gb-select" data-e2e-id="settings-theme-accent-mode" data-onchange="settingsThemeAccentModeChanged(this)">
+        <option value="os"${state.mode === 'os' ? ' selected' : ''}>OSアクセント</option>
+        <option value="default"${state.mode === 'default' ? ' selected' : ''}>既定のアクセント</option>
+        <option value="custom"${state.mode === 'custom' ? ' selected' : ''}>指定カラー</option>
+      </select>
+      <button type="button" class="gb-color-swatch settings-theme-accent-swatch" data-e2e-id="settings-theme-accent-swatch" data-settings-theme-accent-swatch style="background:${esc(state.color)}" title="共通カラーパレットから選択" data-action="settingsThemeChooseAccentColor(this)"></button>
+    </span>
     ${fieldHelp('選択、フォーカス、タブ下線、左アクセントバーなどに共通で使います', { e2eId: 'settings-theme-accent-help' })}
   </div>`;
+}
+
+function _settingsThemeSyncAccentSwatch() {
+  const color = _settingsThemeAccentState().color;
+  document.querySelectorAll('[data-settings-theme-accent-swatch]').forEach(swatch => {
+    swatch.style.background = color;
+    swatch.setAttribute('aria-label', `アクセントカラー ${color}`);
+  });
+}
+
+if (typeof window !== 'undefined' && !window.__settingsThemeAccentSwatchBound) {
+  window.__settingsThemeAccentSwatchBound = true;
+  window.addEventListener('meldex-theme-os-accent-change', () => _settingsThemeSyncAccentSwatch());
 }
 
 function _settingsThemeApplyAccentColor(color) {
@@ -143,6 +224,8 @@ function settingsThemeAccentModeChanged(select) {
     if (mode === 'default') _settingsThemeApplyAccentColor(state.defaultColor);
     else settingsThemeChooseAccentColor(select);
   }
+  _settingsThemeSyncAccentSwatch();
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => _settingsThemeSyncAccentSwatch());
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
 }
 
@@ -175,7 +258,7 @@ const SETTINGS_THEME_PREVIEW_SECTION_MAP = Object.freeze({
   sheet: Object.freeze(['シート']),
   board: Object.freeze(['ボード']),
   calendar: Object.freeze(['スケジュール']),
-  aux: Object.freeze(['フォルダツリー', 'ビューワー', 'オプション', 'チャット', 'タイマー', 'ヒストリー', '注釈', '検索', 'バージョン管理']),
+  aux: Object.freeze(['フォルダツリー', 'ビューワー', 'オプション', 'チャット', 'ヒストリー', 'アノテート', '検索', 'バージョン管理']),
   popup: Object.freeze(['共通']),
 });
 
@@ -188,6 +271,32 @@ const SETTINGS_THEME_PREVIEW_APP_SURFACES = Object.freeze({
   calendar: Object.freeze({ bg: '--cal-content-bg', fg: '--cal-fg' }),
   aux: Object.freeze({ bg: '--preview-bg', fg: '--preview-fg' }),
   popup: Object.freeze({ bg: '--ui-popup-bg', fg: '--fg' }),
+});
+
+const SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS = Object.freeze({
+  folder: 'surface-folder',
+  note: 'surface-note',
+  scriptnote: 'surface-scriptnote',
+  sheet: 'surface-sheet',
+  board: 'surface-board',
+  calendar: 'surface-calendar',
+  aux: 'surface-preview',
+  popup: 'surface-popup',
+});
+
+const SETTINGS_THEME_PREVIEW_SIDE_SURFACES = Object.freeze({
+  options: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
+  viewer: Object.freeze({ bg: '--preview-bg', targetId: 'surface-preview' }),
+  subpanel: Object.freeze({ bg: '--outliner-bg', targetId: 'surface-outliner' }),
+  properties: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
+  tags: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
+  backlinks: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
+  annotation: Object.freeze({ bg: '--annotation-bg', targetId: 'surface-annotation' }),
+  theme: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
+  history: Object.freeze({ bg: '--history-bg', targetId: 'surface-history' }),
+  version: Object.freeze({ bg: '--version-bg', targetId: 'surface-version' }),
+  chat: Object.freeze({ bg: '--chat-bg', targetId: 'surface-chat' }),
+  memo: Object.freeze({ bg: '--detail-bg', targetId: 'surface-detail' }),
 });
 
 const SETTINGS_THEME_STATE_KEYS = Object.freeze({
@@ -210,6 +319,8 @@ const SETTINGS_THEME_STATE_SECTIONS = Object.freeze([
 ]);
 const SETTINGS_THEME_STATES = Object.freeze(['default', 'hover', 'focus', 'selected']);
 let _settingsThemePreviewAppId = 'note';
+let _settingsThemePreviewLeftRailId = 'note';
+let _settingsThemePreviewRightRailId = 'theme';
 
 function _settingsThemeStateKeys(config, section, state) {
   if (state === 'focus') {
@@ -283,15 +394,204 @@ function _settingsThemeStateMatrix(appId) {
   return `<section class="settings-theme-preview-group settings-theme-state-matrix" data-theme-state-matrix="1"><h3>状態プレビュー</h3>${rows}</section>`;
 }
 
+const SETTINGS_THEME_PREVIEW_SAMPLE_SPECS = Object.freeze({
+  folder: Object.freeze([
+    ['card', 'フォルダ', 'カード'], ['border', 'フォルダ', 'カード枠線'],
+    ['hover', 'フォルダ', 'ホバー'], ['selected', 'フォルダ', '選択'],
+    ['meta', 'フォルダ', 'メタ情報'], ['icon', 'フォルダ', 'アイコン'],
+  ]),
+  note: Object.freeze([
+    ['title', 'ノート', 'タイトル'], ['h1', 'ノート', '見出し H1'], ['h2', 'ノート', '見出し H2'],
+    ['h3', 'ノート', '見出し H3'], ['h4', 'ノート', '見出し H4'], ['h5', 'ノート', '見出し H5'],
+    ['h6', 'ノート', '見出し H6'], ['heading-icon', 'ノート', '見出しアイコン不透明度'],
+    ['paragraph', 'ノート', '本文'], ['bullet-list', 'ノート', '本文'], ['number-list', 'ノート', '本文'],
+    ['task-list', 'ノート', '本文'], ['link', '共通', 'リンク'], ['quote', 'ノート', '引用ブロック'],
+    ['quote-cite', 'ノート', '引用元'], ['callout-icon', 'ノート', 'コールアウトアイコン'],
+    ['callout-body', 'ノート', 'コールアウト本文'], ['table-header', 'ノート', '表 見出し'],
+    ['table-cell', 'ノート', '表 セル'], ['table-control', 'ノート', '表 追加ボタン'],
+    ['code', 'ノート', 'コードブロック形状'], ['copy', 'ノート', 'コピーボタン'],
+    ['kbd', 'ノート', 'キーボード表記'], ['details', 'ノート', '開閉ブロック見出し'],
+  ]),
+  scriptnote: Object.freeze([
+    ['scene', 'シナリオ', '基本テキスト'], ['action', 'シナリオ', '基本テキスト'],
+    ['dialogue', 'シナリオ', '基本テキスト'], ['hover', 'シナリオ', 'ホバー'],
+    ['selection', 'シナリオ', 'テキスト選択'], ['ruby', 'シナリオ', 'ルビ'],
+  ]),
+  sheet: Object.freeze([
+    ['header-name', 'シート', 'ヘッダー'], ['header-status', 'シート', 'ヘッダー'],
+    ['entity', 'シート', 'エントリ列'], ['cell', 'シート', 'セル'], ['selected', 'シート', '選択'],
+    ['active', 'シート', 'アクティブセル枠'], ['status', 'シート', '採用ステータス'],
+    ['badge-1', 'シート', 'ソースバッジ 1'], ['badge-2', 'シート', 'ソースバッジ 2'],
+  ]),
+  board: Object.freeze([
+    ['canvas', 'ボード', 'ボード背景'], ['card', 'ボード', '標準フォント'],
+    ['selected', 'ボード', '選択'], ['group', 'ボード', 'グループ'],
+    ['link', 'ボード', 'リンク種別'], ['anchor', 'ボード', 'アンカー'], ['gap', 'ボード', 'カード隙間'],
+  ]),
+  calendar: Object.freeze([
+    ['toolbar', 'スケジュール', 'ツールバー'], ['header', 'スケジュール', '見出し'],
+    ['saturday', 'スケジュール', '土曜'], ['sunday', 'スケジュール', '日曜'],
+    ['cell', 'スケジュール', 'セル'], ['today', 'スケジュール', '今日'],
+    ['time', 'スケジュール', '時刻'], ['event', 'スケジュール', 'イベント'],
+    ['todo', 'スケジュール', 'ToDo'], ['control', 'スケジュール', '操作ボタン'],
+  ]),
+  aux: Object.freeze([
+    ['tree', 'フォルダツリー', 'パネル'], ['viewer', 'ビューワー', 'カード背景'],
+    ['options', 'オプション', 'セクション背景'], ['chat-message', 'チャット', 'メッセージ'],
+    ['chat-input', 'チャット', '入力欄'],
+    ['history', 'ヒストリー', '行背景'], ['annotation', 'アノテート', 'カード背景'],
+    ['version', 'バージョン管理', '行背景'],
+  ]),
+  popup: Object.freeze([
+    ['surface', '共通', 'ポップアップ'], ['menu', '共通', 'ボタン'], ['menu-hover', '共通', 'ボタンホバー'],
+    ['menu-selected', '共通', 'ボタン選択'], ['tooltip', '共通', 'ツールチップ'],
+    ['input', '共通', '通常文字'], ['link', '共通', 'リンク'], ['slider', '共通', 'スライダー'],
+  ]),
+});
+
+function _settingsThemePreviewSample(appId, sampleId, section, label, text, className = '') {
+  return _settingsThemePreviewTarget(section, label, text, className, `${appId}/${sampleId}`);
+}
+
+function _settingsThemePreviewSampleMarkup(appId, sampleId, section, label, markup, className = '') {
+  return _settingsThemePreviewTargetMarkup(section, label, markup, className, `${appId}/${sampleId}`);
+}
+
+function _settingsThemePreviewElement(appId, sampleId, section, label, tagName, content, className = '', options = {}) {
+  const allowedTags = new Set(['a', 'article', 'blockquote', 'code', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'kbd', 'li', 'pre', 'span', 'summary', 'td', 'th']);
+  const tag = allowedTags.has(tagName) ? tagName : 'div';
+  const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
+  const style = def ? _settingsThemePreviewStyle(def) : '';
+  const stableId = `${appId}/${sampleId}`;
+  const actionTitle = `${label}（クリックで書式設定）`;
+  const markup = options.markup === true ? content : esc(content || label);
+  const themeUiTarget = _settingsThemePreviewThemeUiTarget(stableId, section, label);
+  const themeUiState = /選択/.test(label || '') ? 'selected' : (/ホバー/.test(label || '') ? 'hover' : 'normal');
+  const themeUiAttrs = themeUiTarget
+    ? ` data-theme-ui-target-id="${esc(themeUiTarget)}" data-theme-ui-state-id="${esc(themeUiState)}"`
+    : '';
+  return `<${tag} class="settings-theme-preview-hotspot ${className}" tabindex="0" role="button" data-e2e-id="${esc(`settings-theme-preview-${stableId}`)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}"${themeUiAttrs} data-action="openStylePreviewPopup(this)" title="${esc(actionTitle)}" aria-label="${esc(actionTitle)}" style="${esc(style)}">${markup}</${tag}>`;
+}
+
+function _settingsThemePreviewActualSurface(appId) {
+  const sample = (id, section, label, text, className = '') =>
+    _settingsThemePreviewSample(appId, id, section, label, text, className);
+  const sampleMarkup = (id, section, label, markup, className = '') =>
+    _settingsThemePreviewSampleMarkup(appId, id, section, label, markup, className);
+  const icon = (name, size = 16) => typeof lucide === 'function' ? lucide(name, size) : '';
+  if (appId === 'folder') {
+    const folderItem = (id, label, name, type, state = '') => _settingsThemePreviewElement(
+      appId, id, 'フォルダ', label, 'article',
+      `<input class="fv-check" type="checkbox" disabled aria-hidden="true"><div class="fv-thumb"><span class="fv-icon">${icon(type, 28)}</span></div><div class="fv-name">${esc(name)}</div><div class="fv-meta"><span class="fv-meta-item">今日 14:32</span></div>`,
+      `fv-item ${state}`.trim(), { markup: true },
+    );
+    return `<section class="settings-theme-preview-folder-view grid-layout" data-settings-theme-folder-grid aria-label="フォルダ">
+      ${folderItem('card', 'カード', '企画', 'folder')}
+      ${folderItem('border', 'カード枠線', '資料', 'files')}
+      ${folderItem('hover', 'ホバー', '制作中', 'fileClock', 'is-hover')}
+      ${folderItem('selected', '選択', '第1話.md', 'fileText', 'selected')}
+      <div class="settings-theme-folder-meta-row">${_settingsThemePreviewElement(appId, 'icon', 'フォルダ', 'アイコン', 'span', icon('folderOpen', 18), 'fv-icon', { markup: true })}${_settingsThemePreviewElement(appId, 'meta', 'フォルダ', 'メタ情報', 'span', '4項目 · 今日更新', 'fv-meta')}</div>
+    </section>`;
+  }
+  if (appId === 'note') {
+    const toolButton = (id, iconName, label, selected = false) => `<button type="button" class="tb-icon-btn${selected ? ' active' : ''}"${_settingsThemePreviewInteractiveAttributes(`chrome/toolbar/note/${id}`, '共通', selected ? 'ボタン選択' : 'ボタン')} title="${esc(`${label}／クリックで書式設定`)}" aria-label="${esc(`${label}の書式設定`)}"><span class="ico ico-${esc(iconName)}" aria-hidden="true">${icon(iconName, 16)}</span></button>`;
+    return `<section class="settings-theme-preview-note-frame" aria-label="ノート">
+    <div class="gb-toolbar settings-theme-preview-note-toolbar" role="toolbar" aria-label="ノートツールバー">
+      ${toolButton('menu', 'menu', 'メニュー')}${toolButton('folder-tree', 'folderTree', 'フォルダツリー')}
+      <span class="tb-file-title tb-file-title--input settings-theme-preview-hotspot" tabindex="0" role="button"${_settingsThemePreviewInteractiveAttributes('chrome/toolbar/note/title', '共通', '通常文字')} title="ファイル名／クリックで書式設定" aria-label="ファイル名の書式設定">テーマプレビュー.md</span>
+      <span class="sep" aria-hidden="true"></span>
+      ${toolButton('toc', 'listCollapse', '目次', true)}${toolButton('vertical', 'kanban', '縦書き')}${toolButton('indent', 'indentIncrease', '見出しインデント')}${toolButton('links', 'externalLink', '関連リンク')}${toolButton('comments', 'messageSquare', 'コメント')}
+      <span class="sep" aria-hidden="true"></span>
+      ${toolButton('undo', 'undo2', '元に戻す')}${toolButton('redo', 'redo2', 'やり直し')}
+      <span class="settings-theme-preview-toolbar-spacer"></span>
+      ${toolButton('refresh', 'refreshCw', '再読み込み')}${toolButton('search', 'search', '検索')}${toolButton('options', 'slidersHorizontal', 'オプション')}
+    </div>
+    <div class="note-editor-body settings-theme-preview-note-body">
+      <nav class="settings-theme-preview-note-toc" aria-label="目次"><strong>目次</strong><a>見出し 1</a><a>見出し 2</a><a>見出し 3</a></nav>
+      <article data-settings-theme-note-content aria-label="ノート本文">
+        <div class="settings-theme-note-title-row">${_settingsThemePreviewElement(appId, 'heading-icon', 'ノート', '見出しアイコン不透明度', 'span', icon('pilcrow', 16), 'heading-icon', { markup: true })}${_settingsThemePreviewElement(appId, 'title', 'ノート', 'タイトル', 'div', 'ページタイトル', 'note-title')}</div>
+        ${_settingsThemePreviewElement(appId, 'h1', 'ノート', '見出し H1', 'h1', '見出し 1')}
+        ${_settingsThemePreviewElement(appId, 'h2', 'ノート', '見出し H2', 'h2', '見出し 2')}
+        ${_settingsThemePreviewElement(appId, 'h3', 'ノート', '見出し H3', 'h3', '見出し 3')}
+        ${_settingsThemePreviewElement(appId, 'h4', 'ノート', '見出し H4', 'h4', '見出し 4')}
+        ${_settingsThemePreviewElement(appId, 'h5', 'ノート', '見出し H5', 'h5', '見出し 5')}
+        ${_settingsThemePreviewElement(appId, 'h6', 'ノート', '見出し H6', 'h6', '見出し 6')}
+        ${_settingsThemePreviewElement(appId, 'paragraph', 'ノート', '本文', 'div', '本文の段落です。クリックすると実際のノート本文と同じ書式設定を変更できます。')}
+        <ul><li>${_settingsThemePreviewElement(appId, 'bullet-list', 'ノート', '本文', 'span', '箇条書きリスト')}</li></ul>
+        <ol><li>${_settingsThemePreviewElement(appId, 'number-list', 'ノート', '本文', 'span', '番号付きリスト')}</li></ol>
+        <ul class="task-list"><li><input type="checkbox" checked disabled aria-hidden="true">${_settingsThemePreviewElement(appId, 'task-list', 'ノート', '本文', 'span', 'タスクリスト')}</li></ul>
+        <p>${_settingsThemePreviewElement(appId, 'link', '共通', 'リンク', 'span', '関連ページへのリンク', 'auto-link')} ${_settingsThemePreviewElement(appId, 'kbd', 'ノート', 'キーボード表記', 'kbd', 'Ctrl + K')}</p>
+        ${_settingsThemePreviewElement(appId, 'quote', 'ノート', '引用ブロック', 'blockquote', `${esc('引用ブロックの本文')}${_settingsThemePreviewElement(appId, 'quote-cite', 'ノート', '引用元', 'span', '— 引用元', 'settings-theme-note-quote-cite')}`, '', { markup: true })}
+        <aside class="callout-block callout-info">${_settingsThemePreviewElement(appId, 'callout-icon', 'ノート', 'コールアウトアイコン', 'span', icon('info', 16), 'callout-icon', { markup: true })}${_settingsThemePreviewElement(appId, 'callout-body', 'ノート', 'コールアウト本文', 'div', '重要な情報をまとめるコールアウトです。', 'callout-body')}</aside>
+        <table><thead><tr>${_settingsThemePreviewElement(appId, 'table-header', 'ノート', '表 見出し', 'th', '項目')}<th>状態</th></tr></thead><tbody><tr>${_settingsThemePreviewElement(appId, 'table-cell', 'ノート', '表 セル', 'td', '原稿')}<td>進行中</td></tr></tbody></table>
+        ${_settingsThemePreviewElement(appId, 'table-control', 'ノート', '表 追加ボタン', 'div', '+ 行を追加', 'table-add-row')}
+        <pre>${_settingsThemePreviewElement(appId, 'code', 'ノート', 'コードブロック形状', 'code', 'const theme = "Meldex";')}${_settingsThemePreviewElement(appId, 'copy', 'ノート', 'コピーボタン', 'span', 'Copy', 'copy-code-btn')}</pre>
+        <details open>${_settingsThemePreviewElement(appId, 'details', 'ノート', '開閉ブロック見出し', 'summary', '詳細を表示', 'settings-theme-preview-summary')}<p>折りたたみブロックの本文</p></details>
+      </article>
+    </div>
+  </section>`;
+  }
+  if (appId === 'scriptnote') {
+    const row = (id, label, kind, role, text, state = '') => `<div class="sn2-row ${state}" data-kind="${esc(kind)}">
+      <div class="sn2-handle"><input class="sn2-row-check" type="checkbox" disabled aria-hidden="true"><span>⠿</span></div>
+      <div class="sn2-gutter">${id === 'scene' ? '1' : ''}</div><div class="sn2-gutter sn2-gutter2">${id === 'dialogue' ? '2' : ''}</div>
+      <button type="button" class="sn2-role-btn" data-e2e-id="settings-theme-preview-script-role-${esc(id)}" tabindex="-1" aria-hidden="true">${esc(role)}</button>
+      ${_settingsThemePreviewElement(appId, id, 'シナリオ', label, 'div', text, 'sn2-text')}
+      <div class="sn2-row-spacer"></div>
+    </div>`;
+    return `<section class="sn2-editor settings-theme-preview-script" aria-label="シナリオ本文">
+      <div class="sn2-scroll">${row('scene', '基本テキスト', 'heading', '見出し', '書斎・夜')}${row('action', '基本テキスト', 'action', 'ト書き', '机の上で通知ランプが点滅している。')}${row('dialogue', '基本テキスト', 'dialogue', '人物A', '「これでテーマが揃った」')}${row('hover', 'ホバー', 'dialogue', '人物B', 'カット 12', 'is-hover')}${row('selection', 'テキスト選択', 'dialogue', '人物A', '選択中の台詞', 'is-selected')}${row('ruby', 'ルビ', 'dialogue', '人物B', '台詞（せりふ）')}</div>
+    </section>`;
+  }
+  if (appId === 'sheet') return `<section class="settings-theme-preview-sheet-view" aria-label="シート">
+    <div class="db-view-tabs"><button type="button" class="db-view-tab active"${_settingsThemePreviewInteractiveAttributes('chrome/sheet/view/table', '共通', 'パネル内タブ 選択')} title="テーブル／クリックで書式設定">テーブル</button><button type="button" class="db-view-tab"${_settingsThemePreviewInteractiveAttributes('chrome/sheet/view/tree', '共通', 'パネル内タブ 通常')} title="ツリー／クリックで書式設定">ツリー</button></div>
+    <table class="pivot-table"><thead><tr>${_settingsThemePreviewElement(appId, 'header-name', 'シート', 'ヘッダー', 'th', 'トピック名')}${_settingsThemePreviewElement(appId, 'header-status', 'シート', 'ヘッダー', 'th', '状態')}</tr></thead><tbody>
+      <tr>${_settingsThemePreviewElement(appId, 'entity', 'シート', 'エントリ列', 'td', '第1話', 'entity-name-label')}${_settingsThemePreviewElement(appId, 'cell', 'シート', 'セル', 'td', '初稿', 'db-cell')}</tr>
+      <tr class="selected">${_settingsThemePreviewElement(appId, 'selected', 'シート', '選択', 'td', '第2話', 'entity-name-label selected')}${_settingsThemePreviewElement(appId, 'active', 'シート', 'アクティブセル枠', 'td', '編集中', 'db-cell active-cell')}</tr>
+      <tr><td>${_settingsThemePreviewElement(appId, 'status', 'シート', '採用ステータス', 'span', '採用', 'db-status-badge')}</td><td><span class="settings-theme-sheet-badges">${_settingsThemePreviewElement(appId, 'badge-1', 'シート', 'ソースバッジ 1', 'span', '1', 'source-badge')}${_settingsThemePreviewElement(appId, 'badge-2', 'シート', 'ソースバッジ 2', 'span', '2', 'source-badge')}</span></td></tr>
+    </tbody></table>
+  </section>`;
+  if (appId === 'board') return `<section class="settings-theme-preview-board-canvas" data-bd-role="canvas" aria-label="ボード">
+    ${_settingsThemePreviewElement(appId, 'canvas', 'ボード', 'ボード背景', 'span', 'ボードキャンバス', 'settings-theme-board-canvas-label')}
+    <div class="settings-theme-board-group" data-bd-group-color>${_settingsThemePreviewElement(appId, 'group', 'ボード', 'グループ', 'span', '第1幕', 'settings-theme-board-group-label')}
+      ${_settingsThemePreviewElement(appId, 'card', 'ボード', '標準フォント', 'article', '<span class="bd-text">導入</span>', 'bd-node settings-theme-board-node', { markup: true })}
+      ${_settingsThemePreviewElement(appId, 'selected', 'ボード', '選択', 'article', '<span class="bd-text">転換点</span>', 'bd-node bd-selected settings-theme-board-node settings-theme-board-node--selected', { markup: true })}
+      ${_settingsThemePreviewElement(appId, 'gap', 'ボード', 'カード隙間', 'article', '<span class="bd-text">結末</span>', 'bd-node settings-theme-board-node settings-theme-board-node--last', { markup: true })}
+      <div class="settings-theme-board-connection" aria-hidden="true"><span></span>${_settingsThemePreviewElement(appId, 'anchor', 'ボード', 'アンカー', 'span', icon('circleDot', 16), 'bd-anchor', { markup: true })}${_settingsThemePreviewElement(appId, 'link', 'ボード', 'リンク種別', 'span', icon('arrowRight', 18), 'bd-conn-label', { markup: true })}</div>
+    </div>
+  </section>`;
+  if (appId === 'calendar') return `<section class="gb-cal-root settings-theme-preview-calendar" aria-label="スケジュール">
+    <div class="gb-toolbar-cal" role="toolbar" aria-label="スケジュール">${_settingsThemePreviewElement(appId, 'toolbar', 'スケジュール', 'ツールバー', 'span', '2026年 8月', 'gb-cal-toolbar-title')}<div class="gb-cal-toolbar-actions">${_settingsThemePreviewElement(appId, 'control', 'スケジュール', '操作ボタン', 'span', '今日', 'tb-icon-btn')}</div></div>
+    <div class="cal-month-grid settings-theme-calendar-grid">${_settingsThemePreviewElement(appId, 'header', 'スケジュール', '見出し', 'div', '金', 'gb-cal-weekday')}${_settingsThemePreviewElement(appId, 'saturday', 'スケジュール', '土曜', 'div', '土', 'gb-cal-weekday saturday')}${_settingsThemePreviewElement(appId, 'sunday', 'スケジュール', '日曜', 'div', '日', 'gb-cal-weekday sunday')}
+      ${_settingsThemePreviewElement(appId, 'cell', 'スケジュール', 'セル', 'div', '<span class="gb-cal-day-num">28</span>', 'gb-cal-day', { markup: true })}
+      ${_settingsThemePreviewElement(appId, 'today', 'スケジュール', '今日', 'div', '<span class="gb-cal-day-num">29</span>', 'gb-cal-day gb-cal-today', { markup: true })}
+      <div class="gb-cal-day"><span class="gb-cal-day-num">30</span></div>
+    </div>
+    <div class="settings-theme-calendar-agenda">${_settingsThemePreviewElement(appId, 'time', 'スケジュール', '時刻', 'span', '13:00', 'gb-cal-week-time')}${_settingsThemePreviewElement(appId, 'event', 'スケジュール', 'イベント', 'div', '<span class="gb-cal-event-title">レビュー</span>', 'gb-cal-day-event', { markup: true })}<label class="settings-theme-calendar-todo-row"><input type="checkbox" disabled aria-hidden="true">${_settingsThemePreviewElement(appId, 'todo', 'スケジュール', 'ToDo', 'span', '公開準備', 'gb-cal-all-day-task')}</label></div>
+  </section>`;
+  if (appId === 'aux') return `<section class="settings-theme-preview-actual settings-theme-preview-aux-actual" aria-label="補助パネル一覧">
+    ${sampleMarkup('tree', 'フォルダツリー', 'パネル', `${icon('chevronDown', 14)}<span>フォルダツリー</span>`, 'settings-theme-aux-panel')}${sample('viewer', 'ビューワー', 'カード背景', '画像プレビュー', 'settings-theme-aux-panel')}
+    ${sample('options', 'オプション', 'セクション背景', 'オプション', 'settings-theme-aux-panel')}${sample('chat-message', 'チャット', 'メッセージ', '確認しました。', 'settings-theme-aux-panel')}
+    ${sample('chat-input', 'チャット', '入力欄', 'メッセージを入力…', 'settings-theme-aux-panel')}
+    ${sample('history', 'ヒストリー', '行背景', 'テーマを変更', 'settings-theme-aux-panel')}${sample('annotation', 'アノテート', 'カード背景', 'コメント 1件', 'settings-theme-aux-panel')}${sample('version', 'バージョン管理', '行背景', 'v12 · 14:32', 'settings-theme-aux-panel')}
+  </section>`;
+  return `<section class="settings-theme-preview-actual settings-theme-preview-popup-actual" aria-label="ポップアップと操作部品">
+    <div class="settings-theme-popup-card">${sample('surface', '共通', 'ポップアップ', '操作メニュー', 'settings-theme-popup-title')}${sample('menu', '共通', 'ボタン', '開く', 'settings-theme-popup-item')}${sample('menu-hover', '共通', 'ボタンホバー', '名前を変更', 'settings-theme-popup-item is-hover')}${sample('menu-selected', '共通', 'ボタン選択', '選択中', 'settings-theme-popup-item is-selected')}</div>
+    ${sample('tooltip', '共通', 'ツールチップ', 'ツールチップ', 'settings-theme-popup-tooltip')}${sample('input', '共通', '通常文字', '入力フィールド', 'settings-theme-popup-input')}${sample('link', '共通', 'リンク', '詳細を開く', 'settings-theme-popup-link')}${sampleMarkup('slider', '共通', 'スライダー', '<input type="range" min="0" max="100" value="36" disabled aria-hidden="true">', 'settings-theme-popup-slider')}
+  </section>`;
+}
+
 function settingsThemePreviewManifest() {
   return SETTINGS_THEME_PREVIEW_APPS.flatMap(([appId, appLabel]) =>
-    (SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || []).flatMap(section =>
-      (UI_STYLE_SECTIONS?.[section] || []).map((def, index) => {
+    (SETTINGS_THEME_PREVIEW_SAMPLE_SPECS[appId] || []).map(([sampleId, section, label]) => {
+        const index = (UI_STYLE_SECTIONS?.[section] || []).findIndex(def => def?.label === label);
+        const def = index >= 0 ? UI_STYLE_SECTIONS[section][index] : null;
+        if (!def) return null;
         const popupFields = typeof _settingsThemePreviewPopupFields === 'function'
           ? _settingsThemePreviewPopupFields(def)
           : [];
         return {
-          id: `${appId}/${section}/${index}/${def.label}`,
+          id: `${appId}/${sampleId}`,
           appId,
           appLabel,
           section,
@@ -305,8 +605,7 @@ function settingsThemePreviewManifest() {
             ...(Array.isArray(def.numbers) ? def.numbers.map(item => item?.key) : []),
           ].filter(Boolean),
         };
-      })
-    )
+      }).filter(Boolean)
   );
 }
 
@@ -326,51 +625,193 @@ function _settingsThemePreviewStateClass(label) {
   return '';
 }
 
+function _settingsThemePreviewSurfaceAttributes(stableId, label, bgKey, targetId) {
+  const actionTitle = `${label}（空白部分をクリックして背景色を設定）`;
+  return ` data-e2e-id="${esc(`settings-theme-preview-${stableId}`)}" data-style-id="${esc(stableId)}" data-style-label="${esc(label)}" data-style-bg-key="${esc(bgKey)}" data-theme-ui-target-id="${esc(targetId)}" data-theme-ui-state-id="normal" data-style-preview-native="1" data-action="openStylePreviewPopup(this)" title="${esc(actionTitle)}"`;
+}
+
 function _settingsThemePreviewMain(appId) {
-  const entries = settingsThemePreviewManifest().filter(item => item.appId === appId);
-  const sections = (SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || []).map(section => {
-    const targets = entries.filter(item => item.section === section).map(item => {
-      const def = UI_STYLE_SECTIONS[item.section][item.index];
-      return _settingsThemePreviewTarget(
-        item.section,
-        item.label,
-        def?.text || item.label,
-        _settingsThemePreviewStateClass(item.label),
-        item.id,
-      );
-    }).join('');
-    return `<section class="settings-theme-preview-group" data-style-preview-section="${esc(section)}"><h3>${esc(section)}</h3><div class="settings-theme-preview-list">${targets}</div></section>`;
-  }).join('');
   const surface = SETTINGS_THEME_PREVIEW_APP_SURFACES[appId] || SETTINGS_THEME_PREVIEW_APP_SURFACES.note;
-  return `<div class="settings-theme-preview-all" data-style-preview-app="${esc(appId)}" data-style-preview-app-surface="1" style="background:var(${esc(surface.bg)});color:var(${esc(surface.fg)});">${_settingsThemeStateMatrix(appId)}${sections}</div>`;
+  const targetId = SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS[appId] || SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS.note;
+  return `<div class="settings-theme-preview-all settings-theme-preview-panel-surface" data-style-preview-app="${esc(appId)}" data-style-preview-app-surface="1"${_settingsThemePreviewSurfaceAttributes(`surface/main/${appId}`, `${SETTINGS_THEME_PREVIEW_APPS.find(([id]) => id === appId)?.[1] || 'メイン'}パネルの背景`, surface.bg, targetId)} style="background:var(${esc(surface.bg)});color:var(${esc(surface.fg)});">${_settingsThemePreviewActualSurface(appId)}</div>`;
+}
+
+function _settingsThemePreviewTargetMarkup(section, label, markup, className = '', manifestId = '') {
+  const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
+  const style = def ? _settingsThemePreviewStyle(def) : '';
+  const stableId = manifestId || `${section}/${label}`;
+  const e2eId = `settings-theme-preview-${stableId}`;
+  const actionTitle = `${label}（クリックで書式設定）`;
+  return `<button type="button" class="settings-theme-preview-target ${className}" data-e2e-id="${esc(e2eId)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}" data-action="openStylePreviewPopup(this)" title="${esc(actionTitle)}" aria-label="${esc(actionTitle)}" style="${esc(style)}">${markup}</button>`;
+}
+
+const SETTINGS_THEME_PREVIEW_LEFT_RAIL = Object.freeze([
+  ['folder', 'フォルダ', 'folder'], ['note', 'ノート', 'page'], ['scriptnote', 'シナリオ', 'bookOpenText'],
+  ['sheet', 'シート', 'db'], ['board', 'ボード', 'presentation'], ['calendar', 'スケジュール', 'calendar'],
+]);
+
+const SETTINGS_THEME_PREVIEW_RIGHT_RAIL = Object.freeze([
+  ['options', 'オプション', 'slidersHorizontal'], ['viewer', 'ビューワー', 'tvMinimal'],
+  ['subpanel', 'サブパネル', 'panelRightDashed'], ['properties', 'プロパティ', 'info'],
+  ['tags', 'タグ', 'tag'], ['backlinks', 'バックリンク', 'fileSymlink'],
+  ['annotation', 'アノテート', 'squarePen'], ['theme', 'テーマ', 'palette'],
+  ['history', 'ヒストリー', 'history'], ['version', 'バージョン管理', 'gitBranch'],
+  ['chat', 'チャット', 'messagesSquare'], ['memo', 'クイックメモ', 'notebookPen'],
+]);
+
+function _settingsThemePreviewThemeUiTarget(stableId, section, label) {
+  const id = String(stableId || '');
+  if (/^folder\/(card|border|hover|selected)$/.test(id)) return 'folder-panel-folder';
+  if (id.startsWith('chrome/rail/')) return 'collapse-button';
+  if (id.startsWith('chrome/pane/tab/')) return 'panel-tab';
+  if (id.startsWith('chrome/sheet/view/')) return 'inner-tab';
+  if (id.startsWith('chrome/tree/heading/')) return 'folder-section';
+  if (id.startsWith('chrome/tree/item/') || id.startsWith('chrome/tree/selected/')) return 'folder-tree-folder';
+  if (id === 'chrome/tree/panel') return 'surface-outliner';
+  if (section === '共通' && /ボタン/.test(label || '')) return 'button';
+  return '';
+}
+
+function _settingsThemePreviewInteractiveAttributes(stableId, section, label, action = 'openStylePreviewPopup(this)') {
+  const themeUiTarget = _settingsThemePreviewThemeUiTarget(stableId, section, label);
+  const themeUiState = /選択/.test(label || '') ? 'selected' : (/ホバー/.test(label || '') ? 'hover' : 'normal');
+  const themeUiAttrs = themeUiTarget
+    ? ` data-theme-ui-target-id="${esc(themeUiTarget)}" data-theme-ui-state-id="${esc(themeUiState)}"`
+    : '';
+  return ` data-e2e-id="${esc(`settings-theme-preview-${stableId}`)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}" data-style-preview-native="1"${themeUiAttrs} data-action="${esc(action)}"`;
+}
+
+const SETTINGS_THEME_PREVIEW_MAIN_TABS = Object.freeze({
+  folder: ['フォルダ', 'folder'],
+  note: ['テーマプレビュー.md', 'page'],
+  scriptnote: ['第一話.scriptnote', 'bookOpenText'],
+  sheet: ['制作管理', 'db'],
+  board: ['ボード', 'presentation'],
+  calendar: ['スケジュール', 'calendar'],
+  aux: ['補助パネル', 'panelRightDashed'],
+  popup: ['ポップアップ', 'panelTop'],
+});
+
+function _settingsThemePreviewPaneTabs(paneId, label, iconName, options = {}) {
+  const tabAttrs = _settingsThemePreviewInteractiveAttributes(`chrome/pane/tab/${paneId}`, '共通', 'パネル内タブ 選択');
+  const navButton = (direction, icon, text) => `<button type="button" class="gb-pane-nav-btn" aria-disabled="true"${_settingsThemePreviewInteractiveAttributes(`chrome/pane/nav/${paneId}/${direction}`, '共通', 'ボタン')} title="${esc(`${text}／クリックで書式設定`)}" aria-label="${esc(`${text}ボタンの書式設定`)}">${lucide(icon, 18)}</button>`;
+  const more = options.more ? `<button type="button" class="gb-tab-more"${_settingsThemePreviewInteractiveAttributes(`chrome/pane/more/${paneId}`, '共通', 'ボタン')} title="タブメニュー／クリックで書式設定" aria-label="タブメニューボタンの書式設定">${lucide('ellipsis', 14)}</button>` : '';
+  const add = options.add ? `<button type="button" class="gb-pane-btn gb-pane-add-tab"${_settingsThemePreviewInteractiveAttributes(`chrome/pane/add/${paneId}`, '共通', 'ボタン')} title="タブを追加／クリックで書式設定" aria-label="タブ追加ボタンの書式設定">${lucide('plus', 16)}</button>` : '';
+  return `<div class="gb-pane-tabs settings-theme-preview-pane-tabs" role="tablist" aria-label="${esc(`${label}のタブ`)}">
+    <span class="gb-pane-nav-ctrls">${navButton('back', 'arrowLeft', '戻る')}${navButton('forward', 'arrowRight', '進む')}</span>
+    <div class="gb-pane-tabs-scroll"><div class="gb-tab active settings-theme-preview-hotspot" role="tab" aria-selected="true" tabindex="0"${tabAttrs} title="${esc(`${label}／クリックで書式設定`)}"><span class="gb-tab-icon">${lucide(iconName, 14)}</span><span class="gb-tab-label">${esc(label)}</span>${more}</div></div>
+    ${add}
+  </div>`;
+}
+
+function _settingsThemePreviewMainPane(appId) {
+  const [label, iconName] = SETTINGS_THEME_PREVIEW_MAIN_TABS[appId] || SETTINGS_THEME_PREVIEW_MAIN_TABS.note;
+  return `${_settingsThemePreviewPaneTabs(`main/${appId}`, label, iconName, { more: true, add: true })}${_settingsThemePreviewMain(appId)}`;
+}
+
+function _settingsThemePreviewSetRailStyleState(button, active) {
+  if (!button) return;
+  button.dataset.styleSection = '共通';
+  button.dataset.styleLabel = active ? 'ボタン選択' : 'ボタン';
+  button.dataset.themeUiTargetId = 'collapse-button';
+  button.dataset.themeUiStateId = active ? 'selected' : 'normal';
+}
+
+function _settingsThemePreviewRailButton(side, id, label, iconName, activeId) {
+  const icon = typeof lucide === 'function' ? lucide(iconName, side === 'left' ? 20 : 18) : '';
+  const separator = ['subpanel', 'theme', 'version'].includes(id) ? ' gb-rail-separator-after' : '';
+  const paletteIndex = side === 'left' ? Math.max(0, SETTINGS_THEME_PREVIEW_LEFT_RAIL.findIndex(([railId]) => railId === id)) : '';
+  const active = id === activeId;
+  const styleAttrs = _settingsThemePreviewInteractiveAttributes(
+    `chrome/rail/${side}/${id}`,
+    '共通',
+    active ? 'ボタン選択' : 'ボタン',
+    `settingsThemePreviewRailChanged('${side}','${id}',this)`,
+  );
+  return `<button type="button" class="gb-dock-icon${side === 'left' ? ' gb-dock-rail-app' : ''}${active ? ' active' : ''}${separator}"${side === 'left' ? ` data-theme-rail-palette-index="${paletteIndex}"` : ''} data-preview-rail-side="${esc(side)}" data-preview-rail-id="${esc(id)}"${styleAttrs} title="${esc(`${label}／クリックで書式設定`)}" aria-label="${esc(label)}" aria-pressed="${active ? 'true' : 'false'}">${icon}</button>`;
+}
+
+function _settingsThemePreviewTree() {
+  const treeRow = (label, iconName, options = {}) => `<div class="tree-node${options.child ? ' settings-theme-tree-child' : ''}"><div class="tree-node-row settings-theme-preview-hotspot ${options.folder ? 'folder-row' : 'file-row'}${options.selected ? ' selected active' : ''}" role="treeitem" tabindex="0"${options.folder ? ' aria-expanded="true"' : ''}${_settingsThemePreviewInteractiveAttributes(`chrome/tree/${options.selected ? 'selected' : 'item'}/${label}`, 'フォルダツリー', options.selected ? '項目選択' : '項目')} title="${esc(`${label}／クリックで書式設定`)}">
+    <span class="tree-toggle${options.folder ? ' expanded' : ''}">${options.folder ? lucide('chevronRight', 13) : ''}</span>
+    <span class="tree-icon">${lucide(iconName, 15)}</span><span class="tree-label">${esc(label)}</span>
+  </div></div>`;
+  const sectionHeader = (id, label, expanded = false) => `<div class="sidebar-section-header settings-theme-preview-hotspot" role="button" tabindex="0"${_settingsThemePreviewInteractiveAttributes(`chrome/tree/heading/${id}`, 'フォルダツリー', '見出し')} title="${esc(`${label}／クリックで書式設定`)}"><span class="sidebar-section-toggle${expanded ? ' expanded' : ''}">${lucide('chevronRight', 13)}</span><span class="sidebar-section-label">${esc(label)}</span></div>`;
+  return `<div class="gb-tool-outliner settings-theme-preview-outliner settings-theme-preview-panel-surface" data-settings-theme-outliner data-settings-theme-preview-tree-content="folder"${_settingsThemePreviewSurfaceAttributes('surface/tree', 'フォルダツリーパネルの背景', '--outliner-bg', 'surface-outliner')}>
+    <div class="settings-theme-outliner-search"><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/search', '共通', 'ボタン')} tabindex="-1" aria-label="検索の書式設定" title="検索／クリックで書式設定">${lucide('search', 15)}</button><span>エントリも検索</span><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/filter', '共通', 'ボタン')} tabindex="-1" aria-label="絞り込みの書式設定" title="絞り込み／クリックで書式設定">${lucide('filter', 15)}</button></div>
+    ${sectionHeader('recent', '最近使った項目')}
+    ${sectionHeader('favorites', 'お気に入り')}
+    ${sectionHeader('source', 'ソースフォルダ', true)}
+    <div class="sidebar-section-body" role="tree" aria-label="ソースフォルダ">
+      ${treeRow('Meldex プロジェクト', 'folderOpen', { folder: true })}
+      <div class="tree-children">${treeRow('原稿', 'folderOpen', { folder: true, child: true })}${treeRow('第一話.md', 'fileText', { child: true, selected: true })}${treeRow('資料', 'folder', { folder: true, child: true })}</div>
+    </div>
+  </div>`;
+}
+
+function _settingsThemePreviewSide(panelId) {
+  const panels = {
+    options: ['オプション', '表示', '編集', 'ファイル情報'],
+    viewer: ['ビューワー', 'ページプレビュー', '100%', '前へ　次へ'],
+    subpanel: ['サブパネル', 'フォルダツリー', 'ビューワー', 'チャット'],
+    properties: ['プロパティ', '種類　ノート', '更新　今日 14:32', '文字数　1,248'],
+    tags: ['タグ', '# 重要', '# 第1話', '+ タグを追加'],
+    backlinks: ['バックリンク', '企画メモ.md', '第2話.md', '2件の参照'],
+    annotation: ['アノテート', 'コメント 1件', '選択範囲を確認', '解決済みにする'],
+    theme: ['テーマ', 'ダーク', '共通パレット', 'アクセントカラー'],
+    history: ['ヒストリー', '14:32 テーマを変更', '14:28 見出しを編集', '元に戻す'],
+    version: ['バージョン管理', 'v12 現在', 'v11 今日 14:20', '復元ポイントを作成'],
+    chat: ['チャット', '確認しました。', '修正箇所を共有します。', 'メッセージを入力…'],
+    memo: ['クイックメモ', '次回確認すること', '・見出しの余白', 'メモを追加…'],
+  };
+  const rows = panels[panelId] || panels.options;
+  const surface = SETTINGS_THEME_PREVIEW_SIDE_SURFACES[panelId] || SETTINGS_THEME_PREVIEW_SIDE_SURFACES.options;
+  const palette = panelId === 'theme' ? '<div class="settings-theme-side-swatches"><i></i><i></i><i></i><i></i></div>' : '';
+  return `<div class="settings-theme-preview-side-panel settings-theme-preview-panel-surface" data-settings-theme-preview-side-content="${esc(panelId)}"${_settingsThemePreviewSurfaceAttributes(`surface/side/${panelId}`, `${rows[0]}パネルの背景`, surface.bg, surface.targetId)} style="background:var(${esc(surface.bg)});">
+    <div class="gb-panel-header"><div class="gb-panel-title">${esc(rows[0])}</div></div>
+    <div class="gb-panel-body gb-panel-body-scroll gb-panel-body-padded">${palette}
+      ${rows.slice(1).map((row, index) => `<button type="button" class="gb-btn${index === 0 ? ' active' : ''}"${_settingsThemePreviewInteractiveAttributes(`chrome/side/${panelId}/${index}`, '共通', index === 0 ? 'ボタン選択' : 'ボタン')} tabindex="-1" aria-label="${esc(row)}の書式設定" title="${esc(`${row}／クリックで書式設定`)}">${esc(row)}</button>`).join('')}
+    </div>
+  </div>`;
+}
+
+function _settingsThemePreviewSidePane(panelId) {
+  const [, label = 'オプション', iconName = 'slidersHorizontal'] = SETTINGS_THEME_PREVIEW_RIGHT_RAIL.find(([id]) => id === panelId) || [];
+  return `${_settingsThemePreviewPaneTabs(`side/${panelId}`, label, iconName)}${_settingsThemePreviewSide(panelId)}`;
+}
+
+function _settingsThemePreviewRail(side, activeId) {
+  const isLeft = side === 'left';
+  const rail = isLeft ? SETTINGS_THEME_PREVIEW_LEFT_RAIL : SETTINGS_THEME_PREVIEW_RIGHT_RAIL;
+  const bottomIds = new Set(['chat', 'memo']);
+  const topButtons = rail.filter(([id]) => isLeft || !bottomIds.has(id));
+  const bottomButtons = isLeft ? [] : rail.filter(([id]) => bottomIds.has(id));
+  const toggleIcon = lucide(isLeft ? 'panelLeftClose' : 'panelRightClose', 18);
+  return `<aside class="settings-theme-preview-rail settings-theme-preview-rail--${side} settings-theme-preview-panel-surface gb-dock-bar gb-dock-bar-fixed gb-dock-bar-${side}" aria-label="${isLeft ? 'アプリ切替' : '補助パネル切替'}"${_settingsThemePreviewSurfaceAttributes(`surface/rail/${side}`, `${isLeft ? '左' : '右'}レールの背景`, '--ui-dockbar-bg', 'surface-dock')}>
+    <div class="gb-rail-shell-top"><button type="button" class="gb-dock-icon gb-dock-rail-toggle" data-preview-panel-toggle="${side}"${_settingsThemePreviewInteractiveAttributes(`chrome/rail/${side}/toggle`, '共通', 'ボタン', `settingsThemePreviewPanelToggle('${side}',this)`)} title="${isLeft ? '左サイドバー' : '右サイドバー'}を閉じる／クリックで書式設定" aria-label="${isLeft ? '左サイドバー' : '右サイドバー'}を閉じる" aria-expanded="true">${toggleIcon}</button><div class="gb-dock-rail-separator"></div></div>
+    <div class="gb-rail-shell-scroll">${topButtons.map(([id, label, icon]) => _settingsThemePreviewRailButton(side, id, label, icon, activeId)).join('')}</div>
+    <div class="gb-rail-shell-bottom">${bottomButtons.map(([id, label, icon]) => _settingsThemePreviewRailButton(side, id, label, icon, activeId)).join('')}</div>
+  </aside>`;
 }
 
 function renderSettingsThemePreview(appId = 'note') {
+  const leftId = SETTINGS_THEME_PREVIEW_LEFT_RAIL.some(([id]) => id === appId) ? appId : _settingsThemePreviewLeftRailId;
+  _settingsThemePreviewLeftRailId = leftId;
   const options = SETTINGS_THEME_PREVIEW_APPS.map(([id, label]) => `<option value="${id}"${id === appId ? ' selected' : ''}>${label}</option>`).join('');
   return `<section class="gb-section gb-section--boxed settings-theme-preview" data-settings-theme-preview="1">
-    <div class="settings-theme-preview-toolbar"><div class="gb-section-title">プレビュー</div><select class="gb-select" data-e2e-id="settings-theme-preview-app" data-settings-theme-preview-select data-onchange="settingsThemePreviewAppChanged(this.value)">${options}</select></div>
+    <div class="settings-theme-preview-toolbar">
+      <div class="gb-section-title">プレビュー</div>
+      <div class="settings-theme-preview-toolbar-actions">
+        <select class="gb-select" data-e2e-id="settings-theme-preview-app" data-settings-theme-preview-select data-onchange="settingsThemePreviewAppChanged(this.value)">${options}</select>
+        <button type="button" class="gb-btn settings-theme-preview-details-btn" aria-expanded="false" data-action="settingsThemeToggleDetails(this)">詳細設定を開く</button>
+      </div>
+    </div>
     <div class="settings-theme-preview-shell">
-      <aside class="settings-theme-preview-rail settings-theme-preview-rail--left" aria-label="アプリ切替">
-        <button type="button" class="settings-theme-rail-btn${appId === 'folder' ? ' active' : ''}" data-rail-app="folder" data-action="settingsThemePreviewAppChanged('folder')" title="フォルダ" aria-label="フォルダ">${typeof lucide === 'function' ? lucide('folder', 14) : '📁'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'note' ? ' active' : ''}" data-rail-app="note" data-action="settingsThemePreviewAppChanged('note')" title="ノート" aria-label="ノート">${typeof lucide === 'function' ? lucide('fileText', 14) : '📝'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'scriptnote' ? ' active' : ''}" data-rail-app="scriptnote" data-action="settingsThemePreviewAppChanged('scriptnote')" title="シナリオ" aria-label="シナリオ">${typeof lucide === 'function' ? lucide('film', 14) : '🎬'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'sheet' ? ' active' : ''}" data-rail-app="sheet" data-action="settingsThemePreviewAppChanged('sheet')" title="シート" aria-label="シート">${typeof lucide === 'function' ? lucide('table', 14) : '📊'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'board' ? ' active' : ''}" data-rail-app="board" data-action="settingsThemePreviewAppChanged('board')" title="ボード" aria-label="ボード">${typeof lucide === 'function' ? lucide('layoutGrid', 14) : '📋'}</button>
-      </aside>
-      <aside class="settings-theme-preview-tree">
-        ${_settingsThemePreviewTarget('フォルダ', 'カード', 'フォルダツリー：トップ階層', '', 'chrome-tree/folder/card')}
-        ${_settingsThemePreviewTarget('フォルダ', 'カード枠線', 'フォルダツリー：子階層', '', 'chrome-tree/folder/sub')}
-      </aside>
-      <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMain(appId)}</main>
-      <aside class="settings-theme-preview-side">
-        ${_settingsThemePreviewTarget('補助パネル', 'フォルダツリー', '右サイドバー：通常タブ', '', 'chrome-side/aux/folder-tree')}
-        ${_settingsThemePreviewTarget('補助パネル', 'ビューワーカード', '右サイドバー：選択タブ', 'is-selected', 'chrome-side/aux/viewer-card')}
-      </aside>
-      <aside class="settings-theme-preview-rail settings-theme-preview-rail--right" aria-label="補助アプリ切替">
-        <button type="button" class="settings-theme-rail-btn${appId === 'calendar' ? ' active' : ''}" data-rail-app="calendar" data-action="settingsThemePreviewAppChanged('calendar')" title="スケジュール" aria-label="スケジュール">${typeof lucide === 'function' ? lucide('calendar', 14) : '📅'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'aux' ? ' active' : ''}" data-rail-app="aux" data-action="settingsThemePreviewAppChanged('aux')" title="補助パネル" aria-label="補助パネル">${typeof lucide === 'function' ? lucide('sidebar', 14) : '📑'}</button>
-        <button type="button" class="settings-theme-rail-btn${appId === 'popup' ? ' active' : ''}" data-rail-app="popup" data-action="settingsThemePreviewAppChanged('popup')" title="ポップアップ" aria-label="ポップアップ">${typeof lucide === 'function' ? lucide('layers', 14) : '🗂️'}</button>
-      </aside>
+      ${_settingsThemePreviewRail('left', leftId)}
+      <aside class="settings-theme-preview-tree" data-settings-theme-preview-tree>${_settingsThemePreviewPaneTabs('tree', 'フォルダツリー', 'folderTree')}${_settingsThemePreviewTree()}</aside>
+      <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMainPane(appId)}</main>
+      <aside class="settings-theme-preview-side" data-settings-theme-preview-side>${_settingsThemePreviewSidePane(_settingsThemePreviewRightRailId)}</aside>
+      ${_settingsThemePreviewRail('right', _settingsThemePreviewRightRailId)}
     </div>
   </section>`;
 }
@@ -383,6 +824,85 @@ function _activeSettingsThemePreviewRoot() {
   }) || roots[0] || null;
 }
 
+const SETTINGS_THEME_PREVIEW_SHARED_SELECTOR_MAP = Object.freeze([
+  ['#page-content', '[data-settings-theme-note-content]'],
+  ['#folder-grid', '[data-settings-theme-folder-grid]'],
+  ['#sidebar', '[data-settings-theme-outliner]'],
+]);
+
+function _settingsThemePreviewAliasSelector(selectorText) {
+  return String(selectorText || '').split(',').map(selector => selector.trim()).flatMap(selector => {
+    const matches = SETTINGS_THEME_PREVIEW_SHARED_SELECTOR_MAP.filter(([source]) => selector.includes(source));
+    if (!matches.length) return [];
+    let mapped = selector;
+    matches.forEach(([source, target]) => { mapped = mapped.split(source).join(target); });
+    return [mapped];
+  }).join(',');
+}
+
+function _settingsThemePreviewSharedRuleText(rule) {
+  if (!rule) return '';
+  if (rule.type === 1 && rule.selectorText) {
+    const selector = _settingsThemePreviewAliasSelector(rule.selectorText);
+    return selector ? `${selector}{${rule.style?.cssText || ''}}` : '';
+  }
+  let childRules = null;
+  try { childRules = rule.cssRules ? [...rule.cssRules] : null; } catch { childRules = null; }
+  if (!childRules?.length) return '';
+  const inner = childRules.map(_settingsThemePreviewSharedRuleText).filter(Boolean).join('\n');
+  if (!inner) return '';
+  const cssText = String(rule.cssText || '');
+  const brace = cssText.indexOf('{');
+  const prefix = brace >= 0 ? cssText.slice(0, brace).trim() : '';
+  return prefix ? `${prefix}{${inner}}` : inner;
+}
+
+function _settingsThemePreviewEnsureSharedStyles(root) {
+  if (!root || root.querySelector('[data-settings-theme-shared-styles]')) return;
+  const chunks = [];
+  [...document.styleSheets].forEach(sheet => {
+    let rules = null;
+    try { rules = sheet.cssRules ? [...sheet.cssRules] : null; } catch { rules = null; }
+    if (rules?.length) chunks.push(...rules.map(_settingsThemePreviewSharedRuleText).filter(Boolean));
+  });
+  const style = document.createElement('style');
+  style.dataset.settingsThemeSharedStyles = '1';
+  style.textContent = chunks.join('\n');
+  root.prepend(style);
+}
+
+function _bindSettingsThemePreviewHotspots(root) {
+  root?.querySelectorAll?.('.settings-theme-preview-hotspot').forEach(target => {
+    if (target.dataset.settingsThemeHotspotBound === '1') return;
+    target.dataset.settingsThemeHotspotBound = '1';
+    target.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.openStylePreviewPopup?.(target);
+    });
+  });
+}
+
+function settingsThemePreviewPanelToggle(side, previewTarget = null) {
+  if (!['left', 'right'].includes(side)) return;
+  const root = _activeSettingsThemePreviewRoot();
+  if (!root) return;
+  const className = `settings-theme-preview-${side}-collapsed`;
+  const collapsed = root.classList.toggle(className);
+  const button = root.querySelector(`[data-preview-panel-toggle="${side}"]`);
+  if (!button) return;
+  const sideLabel = side === 'left' ? '左サイドバー' : '右サイドバー';
+  const label = `${sideLabel}を${collapsed ? '開く' : '閉じる'}`;
+  button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.innerHTML = lucide(side === 'left'
+    ? (collapsed ? 'panelLeftOpen' : 'panelLeftClose')
+    : (collapsed ? 'panelRightOpen' : 'panelRightClose'), 18);
+  if (previewTarget) window.openStylePreviewPopup?.(previewTarget);
+}
+
 function settingsThemePreviewAppChanged(appId) {
   const root = _activeSettingsThemePreviewRoot();
   const main = root?.querySelector('[data-settings-theme-preview-main]');
@@ -390,36 +910,80 @@ function settingsThemePreviewAppChanged(appId) {
   _settingsThemePreviewAppId = appId;
   const select = root.querySelector('[data-settings-theme-preview-select]');
   if (select && [...select.options].some(option => option.value === appId)) select.value = appId;
-  main.innerHTML = _settingsThemePreviewMain(appId);
-  _bindSettingsThemeStateTargets(main);
+  main.innerHTML = _settingsThemePreviewMainPane(appId);
+  _bindSettingsThemePreviewHotspots(main);
   root.dataset.settingsThemePreviewApp = appId;
   const panel = root.closest('.settings-panel[data-panel="テーマ"]');
   if (panel) panel.dataset.settingsThemePreviewApp = appId;
-  root.querySelectorAll('.settings-theme-rail-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.railApp === appId);
+  const stateCoverage = panel?.querySelector('[data-settings-theme-state-coverage]');
+  if (stateCoverage) {
+    stateCoverage.innerHTML = _settingsThemeStateMatrix(appId);
+    _bindSettingsThemeStateTargets(stateCoverage);
+  }
+  if (SETTINGS_THEME_PREVIEW_LEFT_RAIL.some(([id]) => id === appId)) {
+    _settingsThemePreviewLeftRailId = appId;
+  }
+  root.querySelectorAll('[data-preview-rail-side="left"]').forEach(btn => {
+    const active = btn.dataset.previewRailId === _settingsThemePreviewLeftRailId;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    _settingsThemePreviewSetRailStyleState(btn, active);
   });
+}
+
+function settingsThemePreviewRailChanged(side, id, previewTarget = null) {
+  const root = _activeSettingsThemePreviewRoot();
+  if (!root) return;
+  if (side === 'left') {
+    if (!SETTINGS_THEME_PREVIEW_LEFT_RAIL.some(([railId]) => railId === id)) return;
+    _settingsThemePreviewLeftRailId = id;
+    settingsThemePreviewAppChanged(id);
+  } else {
+    if (!SETTINGS_THEME_PREVIEW_RIGHT_RAIL.some(([railId]) => railId === id)) return;
+    _settingsThemePreviewRightRailId = id;
+    const sidePanel = root.querySelector('[data-settings-theme-preview-side]');
+    if (sidePanel) {
+      sidePanel.innerHTML = _settingsThemePreviewSidePane(id);
+      _bindSettingsThemePreviewHotspots(sidePanel);
+    }
+  }
+  root.querySelectorAll(`[data-preview-rail-side="${side}"]`).forEach(btn => {
+    const active = btn.dataset.previewRailId === id;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    _settingsThemePreviewSetRailStyleState(btn, active);
+  });
+  if (previewTarget) window.openStylePreviewPopup?.(previewTarget);
 }
 
 function refreshSettingsThemePreview() {
   const root = _activeSettingsThemePreviewRoot();
   if (!root) return;
+  _settingsThemeSyncAccentSwatch();
   const appId = root.querySelector('[data-settings-theme-preview-select]')?.value
     || root.dataset.settingsThemePreviewApp
     || _settingsThemePreviewAppId;
   const main = root.querySelector('[data-settings-theme-preview-main]');
   if (main) {
-    main.innerHTML = _settingsThemePreviewMain(appId);
-    _bindSettingsThemeStateTargets(main);
+    main.innerHTML = _settingsThemePreviewMainPane(appId);
+    _bindSettingsThemePreviewHotspots(main);
   }
   root.querySelectorAll('[data-style-section][data-style-label]').forEach(target => {
+    if (target.dataset.stylePreviewNative === '1') return;
     const section = target.dataset.styleSection;
     const label = target.dataset.styleLabel;
     const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
     if (def) target.setAttribute('style', _settingsThemePreviewStyle(def));
   });
-  root.querySelectorAll('.settings-theme-rail-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.railApp === appId);
+  root.querySelectorAll('[data-preview-rail-side]').forEach(btn => {
+    const side = btn.dataset.previewRailSide;
+    const activeId = side === 'left' ? _settingsThemePreviewLeftRailId : _settingsThemePreviewRightRailId;
+    const active = btn.dataset.previewRailId === activeId;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    _settingsThemePreviewSetRailStyleState(btn, active);
   });
+  _settingsThemePreviewEnsureSharedStyles(root);
 }
 
 function _bindSettingsThemeStateTargets(root) {
@@ -428,7 +992,7 @@ function _bindSettingsThemeStateTargets(root) {
     target.dataset.themeStateBound = '1';
     target.addEventListener('click', event => {
       event.stopPropagation();
-      const preview = target.closest('[data-settings-theme-preview]');
+      const preview = target.closest('[data-settings-theme-preview], [data-settings-theme-workspace]');
       const targetId = target.dataset.themeStateId;
       if (!preview || !targetId || preview.dataset.themeStatePopupPending === targetId) return;
       preview.dataset.themeStatePopupPending = targetId;
@@ -449,7 +1013,9 @@ function settingsThemeToggleDetails(button) {
   if (!details) return;
   details.hidden = !details.hidden;
   button.setAttribute('aria-expanded', details.hidden ? 'false' : 'true');
-  button.textContent = details.hidden ? '詳細設定を開く' : '詳細設定を閉じる';
+  const label = details.hidden ? '詳細設定を開く' : '詳細設定を閉じる';
+  button.textContent = label;
+  button.setAttribute('aria-label', label);
 }
 
 function renderSettingsAppearancePanel(currentTheme, options = {}) {
@@ -463,16 +1029,7 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
         <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select" style="flex:1;min-width:180px;">
           ${themeOptions}
         </select>
-        <span class="bd-detail-style-row" style="width:auto;flex:0 0 auto;">
-          ${_settingsThemeAction('plus', '+', '新規カスタムテーマを作成', 'settingsThemeCreate()')}
-          ${_settingsThemeAction('copy', '複製', '選択中テーマを複製', 'settingsThemeDuplicate()')}
-          ${_settingsThemeAction('pencil', '名前', 'テーマ名を変更', 'settingsThemeRename()')}
-          ${_settingsThemeAction('rotateCcw', '戻す', 'デフォルトに戻す', 'settingsThemeReset()')}
-          ${_settingsThemeAction('save', '保存', 'デフォルトとして保存', 'settingsThemeSave()')}
-          ${_settingsThemeAction('trash2', '削除', 'カスタムテーマを削除', 'settingsThemeDelete()', true)}
-          ${_settingsThemeAction(typeof uiTransferIconName === 'function' ? uiTransferIconName('import') : 'download', '読込', 'テーマをインポート', 'settingsThemeImport()')}
-          ${_settingsThemeAction(typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload', '保存', 'テーマをエクスポート', 'settingsThemeExport()')}
-        </span>
+        ${_settingsThemeMenuButton()}
       </div>
     </section>
     <section class="gb-section gb-section--boxed settings-theme-controls" data-settings-view="theme">
@@ -480,7 +1037,6 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor({ id: 'settings-theme-palette-editor' }) : renderThemeColorSetEditor(null, { hideLabel: true })}
       ${renderSettingsThemeAccentEditor()}
     </section>
-    <div class="settings-theme-detail-toggle-row"><button type="button" class="gb-btn" aria-expanded="false" data-action="settingsThemeToggleDetails(this)">詳細設定を開く</button></div>
     <div class="settings-theme-details" data-settings-theme-details hidden>
     <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
       <div class="gb-section-title">自動色の強さ</div>
@@ -506,6 +1062,9 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       <div class="gb-section-title">操作状態</div>
       ${_renderSettingsThemeDetailStyleGroups('state')}
     </section>
+    <div class="settings-theme-state-coverage-panel" data-settings-theme-state-coverage>
+      ${_settingsThemeStateMatrix(options.previewApp || 'note')}
+    </div>
     <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">装飾</div>
       ${_renderSettingsThemeDetailStyleGroups('ornament')}
@@ -539,7 +1098,12 @@ function ensureSettingsThemePanel(panel, options = {}) {
   const hasDeferStyleRows = Object.prototype.hasOwnProperty.call(options, 'deferStyleRows');
   const deferStyleRows = options.deferStyleRows === true
     || (!hasDeferStyleRows && root.dataset.settingsThemeRendered !== '1' && !renderedStyleTab);
-  if (options.force !== true && root.dataset.settingsThemeRendered === '1' && root.querySelector('[data-settings-theme-summary="1"]')) return;
+  if (options.force !== true && root.dataset.settingsThemeRendered === '1' && root.querySelector('[data-settings-theme-summary="1"]')) {
+    const preview = root.querySelector('[data-settings-theme-preview]');
+    _settingsThemePreviewEnsureSharedStyles(preview);
+    _bindSettingsThemePreviewHotspots(preview);
+    return;
+  }
   root.innerHTML = renderSettingsAppearancePanel(selectedId, {
     activeStyleTab,
     deferStyleRows,
@@ -552,6 +1116,9 @@ function ensureSettingsThemePanel(panel, options = {}) {
   root.dataset.settingsThemePreviewApp = previewApp;
   bindSettingsThemePanel(root);
   if (typeof replaceIcons === 'function') replaceIcons(root);
+  const preview = root.querySelector('[data-settings-theme-preview]');
+  _settingsThemePreviewEnsureSharedStyles(preview);
+  _bindSettingsThemePreviewHotspots(preview);
   _settingsThemeReapplyNavigationView(root);
 }
 
@@ -589,13 +1156,13 @@ const SETTINGS_THEME_STYLE_TABS = [
   '補助パネル',
 ];
 const SETTINGS_THEME_STYLE_AUTO_TARGETS = {
-  'フォルダ': ['style-folder', 'folder-panel-folder'],
-  'ノート': ['style-note', 'note-heading', 'note-toc-item'],
-  'シナリオ': ['style-scriptnote', 'scriptnote-type-dialogue', 'scriptnote-type-action', 'scriptnote-type-heading', 'scriptnote-type-summary', 'scriptnote-type-break'],
-  'シート': ['style-sheet'],
-  'ボード': ['style-board'],
-  'スケジュール': ['style-calendar'],
-  '補助パネル': ['style-outliner', 'folder-tree-folder', 'style-preview', 'style-detail', 'style-chat', 'style-timer', 'style-history', 'style-annotation', 'style-search', 'style-version'],
+  'フォルダ': ['surface-folder', 'style-folder', 'folder-panel-folder'],
+  'ノート': ['surface-note', 'style-note', 'note-heading', 'note-toc-item'],
+  'シナリオ': ['surface-scriptnote', 'style-scriptnote', 'scriptnote-type-dialogue', 'scriptnote-type-action', 'scriptnote-type-heading', 'scriptnote-type-summary', 'scriptnote-type-break'],
+  'シート': ['surface-sheet', 'style-sheet'],
+  'ボード': ['surface-board', 'style-board'],
+  'スケジュール': ['surface-calendar', 'style-calendar'],
+  '補助パネル': ['surface-outliner', 'surface-preview', 'surface-detail', 'surface-chat', 'surface-history', 'surface-annotation', 'surface-search', 'surface-version', 'style-outliner', 'folder-tree-folder', 'style-preview', 'style-detail', 'style-chat', 'style-history', 'style-annotation', 'style-search', 'style-version'],
 };
 
 function _settingsThemeStyleTabNames() {
@@ -939,7 +1506,6 @@ function bindSettingsThemePanel(root) {
   });
   if (activeStylePanel) _bindSettingsThemeStylePanel(activeStylePanel);
   if (typeof syncThemeUiApplicationSelectors === 'function') syncThemeUiApplicationSelectors(panel);
-  _settingsThemeRefreshActionStates(panel);
   globalThis.GBUI?.refreshRangeFills?.(panel);
 }
 
@@ -1001,21 +1567,6 @@ function settingsThemeNoteContentMaxWidthChanged(value) {
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
   const input = document.getElementById('settings-note-content-max-width');
   if (input) input.value = String(px);
-}
-
-function _settingsThemeRefreshActionStates(root) {
-  const custom = _settingsThemeIsCustom();
-  // data-action は「探すための目印」として読むだけで、値を差し込んで書き出してはいない。
-  // ただしセレクタ文字列へのテンプレート補間は静的検査（js-template-data-handler）に
-  // 引っかかるため、属性値の比較で同じことをする。
-  const setDisabled = (action, disabled) => {
-    (root || document).querySelectorAll('[data-action]').forEach(btn => {
-      if (btn.getAttribute('data-action') === action) btn.disabled = disabled;
-    });
-  };
-  setDisabled('settingsThemeRename()', !custom);
-  setDisabled('settingsThemeSave()', !custom);
-  setDisabled('settingsThemeDelete()', !custom);
 }
 
 function _settingsThemeRun(message, fn) {

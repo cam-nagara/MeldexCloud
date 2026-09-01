@@ -214,23 +214,79 @@ function bdInitInteraction(root) {
     return preview;
   }
 
-  function lineToolStartPoint(start) {
+  function lineToolStartPoint(start, towardWorld) {
     if (!start) return null;
     if (start.fromPoint && typeof bdNormalizeConnectionPoint === 'function') {
       const point = bdNormalizeConnectionPoint(start.fromPoint);
       if (point) return point;
     }
     if (start.nid) {
-      const n = bd.nodes.find(v => v.id === start.nid);
-      if (!n) return null;
-      const el = start.nodeEl || document.getElementById('bdn-' + start.nid);
-      const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
-      return {
-        x: pos.x + ((el?.offsetWidth || n.w || 100) / 2),
-        y: pos.y + ((el?.offsetHeight || n.h || 60) / 2),
-      };
+      const projected = bdProjectLineDragEndpoint(
+        start.nid, start.nodeEl, start.startWorld, start.pointerType, towardWorld,
+      );
+      if (projected?.point) return projected.point;
     }
     return null;
+  }
+
+  function bdProjectLineDragEndpoint(cardId, cardEl, worldPoint, pointerType, towardWorld) {
+    if (!cardId || !worldPoint || typeof _bdProjectCardOutlineEndpoint !== 'function') return null;
+    const node = bd.nodes.find(item => item.id === cardId);
+    if (!node) return null;
+    const el = cardEl || document.getElementById('bdn-' + cardId);
+    const pos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(node) : { x: node.x, y: node.y };
+    const snapDistance = (pointerType === 'touch' ? 12 : 6) / Math.max(0.05, Number(bd.zoom) || 1);
+    return _bdProjectCardOutlineEndpoint(
+      el, node, pos, worldPoint, null, { snapDistance, towardPoint: towardWorld },
+    );
+  }
+
+  function bdCreateDraggedConnection(start, targetEl, dropWorld) {
+    if (!start || !dropWorld || typeof bdCreateConnection !== 'function') return null;
+    const fromId = start.nid || '';
+    const toId = targetEl?.id?.startsWith('bdn-') ? targetEl.id.slice(4) : '';
+    const fromPoint = fromId ? null : bdNormalizeConnectionPoint(start.fromPoint || start.startWorld);
+    const toPoint = toId ? null : bdNormalizeConnectionPoint(dropWorld);
+    if ((!fromId && !fromPoint) || (!toId && !toPoint)) return null;
+    if (fromId && toId && typeof bdCanCreateConnection === 'function'
+        && !bdCanCreateConnection(fromId, toId)) return null;
+
+    const fromProjection = fromId
+      ? bdProjectLineDragEndpoint(fromId, start.nodeEl, start.startWorld, start.pointerType, dropWorld)
+      : null;
+    const toProjection = toId
+      ? bdProjectLineDragEndpoint(toId, targetEl, dropWorld, start.pointerType, start.startWorld)
+      : null;
+    if ((fromId && !fromProjection) || (toId && !toProjection)) return null;
+
+    if (fromId === toId && fromId && fromProjection?.outlinePosition && toProjection?.outlinePosition
+        && typeof _bdOutlinePathDistance === 'function'
+        && _bdOutlinePathDistance(fromProjection.outlinePosition, toProjection.outlinePosition) < 0.001
+        && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+      toProjection.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+        toProjection.outlinePosition, 'forward', { step: 0.25 },
+      );
+    }
+
+    bdPushUndo();
+    const created = bdCreateConnection(fromId, toId, { fromPoint, toPoint });
+    if (!created) return null;
+    if (fromId && typeof _bdSetConnectionOutlineEndpoint === 'function') {
+      _bdSetConnectionOutlineEndpoint(
+        created, 'from', fromId, bd.nodes.find(item => item.id === fromId), fromProjection,
+      );
+    }
+    if (toId && typeof _bdSetConnectionOutlineEndpoint === 'function') {
+      _bdSetConnectionOutlineEndpoint(
+        created, 'to', toId, bd.nodes.find(item => item.id === toId), toProjection,
+      );
+    }
+    if (typeof bdDrawConns === 'function') {
+      bdDrawConns({ connIds: [created.id], reason: 'pointer-line-create' });
+    }
+    if (typeof bdDirty === 'function') bdDirty();
+    return created;
   }
 
   function eraseConnection(conn) {
@@ -460,7 +516,7 @@ function bdInitInteraction(root) {
             subWidth: ns.cloudSubWidthRatio, subHeight: ns.cloudSubHeightRatio,
           } : undefined);
           if (path && typeof _bdApplyCloudShape === 'function') {
-            _bdApplyCloudShape(el, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '');
+            _bdApplyCloudShape(el, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity);
           }
         }
       }
@@ -545,20 +601,16 @@ function bdInitInteraction(root) {
       return;
     }
 
-    if (e.button===0 && bd.tool === 'add-line' && nodeEl) {
+    if (e.button===0 && bd.tool === 'add-line') {
       e.preventDefault();
-      const nid = nodeEl.id.replace('bdn-','');
-      bdSelect(nid);
-      bd._lineToolDrag = { nid, nodeEl, startX: e.clientX, startY: e.clientY, dragged: false };
-      ensureConnPreview();
-      return;
-    }
-
-    if (e.button===0 && bd.tool === 'add-line' && !nodeEl) {
-      e.preventDefault();
-      const fromPoint = bdScreenToWorld(e.clientX, e.clientY);
-      bdSelect(null);
-      bd._lineToolDrag = { fromPoint, startX: e.clientX, startY: e.clientY, dragged: false };
+      const startWorld = bdScreenToWorld(e.clientX, e.clientY);
+      const nid = nodeEl ? nodeEl.id.replace('bdn-','') : '';
+      if (nid) bdSelect(nid);
+      else bdSelect(null);
+      bd._lineToolDrag = {
+        nid, nodeEl, fromPoint: nid ? null : startWorld, startWorld,
+        startX: e.clientX, startY: e.clientY, pointerType: e.pointerType, dragged: false,
+      };
       ensureConnPreview();
       return;
     }
@@ -619,12 +671,16 @@ function bdInitInteraction(root) {
 
     if (e.button!==0) return;
 
-    // Alt + 左ドラッグ (ノード上): 旧・右ドラッグと同じ接続線作成モード
-    if (e.altKey && nodeEl) {
+    // Alt + 左ドラッグ: カード輪郭上／ボード上の任意点からラインを作成する。
+    if (e.altKey) {
       e.preventDefault();
-      const nid = nodeEl.id.replace('bdn-','');
-      if (!bd.selected.has(nid) && !e.shiftKey) bdSelect(nid);
-      bd._rightDragNode = { nid, startX: e.clientX, startY: e.clientY, nodeEl, dragged: false };
+      const startWorld = bdScreenToWorld(e.clientX, e.clientY);
+      const nid = nodeEl ? nodeEl.id.replace('bdn-','') : '';
+      if (nid && !bd.selected.has(nid) && !e.shiftKey) bdSelect(nid);
+      bd._rightDragNode = {
+        nid, nodeEl, fromPoint: nid ? null : startWorld, startWorld,
+        startX: e.clientX, startY: e.clientY, pointerType: e.pointerType, dragged: false,
+      };
       return;
     }
 
@@ -844,9 +900,9 @@ function bdInitInteraction(root) {
       const dx = e.clientX - (start.startX || e.clientX);
       const dy = e.clientY - (start.startY || e.clientY);
       if (!start.dragged && Math.sqrt(dx*dx+dy*dy) > 4) start.dragged = true;
-      const startPt = lineToolStartPoint(start);
+      const _w = bdScreenToWorld(e.clientX, e.clientY);
+      const startPt = lineToolStartPoint(start, _w);
       if (startPt) {
-        const _w = bdScreenToWorld(e.clientX, e.clientY);
         preview.setAttribute('x1', startPt.x);
         preview.setAttribute('y1', startPt.y);
         preview.setAttribute('x2', _w.x);
@@ -854,7 +910,7 @@ function bdInitInteraction(root) {
       }
     }
     if (erasing) eraseAtClientPoint(e.clientX, e.clientY);
-    // 右ドラッグ接続線
+    // Alt+左ドラッグ接続線
     if (bd._rightDragNode) {
       const rd = bd._rightDragNode;
       const dx = e.clientX - rd.startX, dy = e.clientY - rd.startY;
@@ -865,12 +921,11 @@ function bdInitInteraction(root) {
       if (rd.dragged) {
         const preview = ensureConnPreview();
         if (preview) {
-          const n = bd.nodes.find(v=>v.id===rd.nid);
-          if (n) {
-            const _w = bdScreenToWorld(e.clientX, e.clientY);
-            const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
-            preview.setAttribute('x1', pos.x + (rd.nodeEl.offsetWidth||100)/2);
-            preview.setAttribute('y1', pos.y + (rd.nodeEl.offsetHeight||60)/2);
+          const _w = bdScreenToWorld(e.clientX, e.clientY);
+          const startPt = lineToolStartPoint(rd, _w);
+          if (startPt) {
+            preview.setAttribute('x1', startPt.x);
+            preview.setAttribute('y1', startPt.y);
             preview.setAttribute('x2', _w.x);
             preview.setAttribute('y2', _w.y);
           }

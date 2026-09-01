@@ -77,7 +77,7 @@
       if (ctx.snapshot) payload.target_snapshot = ctx.snapshot;
       const res = await apiPost('/annotations', payload);
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: コメント追加', ctx.filePath || '').catch(() => {});
+        _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
       // 現在開いている関連エディタのバッジを更新
@@ -110,7 +110,7 @@
           }
         } catch {}
       }
-      // 注釈パネルが開いていれば一覧を更新
+      // アノテートパネルが開いていれば一覧を更新
       if (typeof loadRpAnnotationList === 'function') {
         const panel = document.getElementById('right-panel');
         if (panel?.classList.contains('open')) loadRpAnnotationList();

@@ -72,7 +72,6 @@
         deadline: String(latest.deadline_at || _pmCloudPropValue(fm, '締切') || _pmCloudPropValue(fm, '期限') || ''),
         completed_at: String(_pmCloudPropValue(fm, '完了日時') || ''),
         deadline_extension_count: revisions.filter(revision => revision?.change_source === 'deadline-extension').length,
-        has_help_participant: taskSessions.some(session => session.start_reason === 'help-join'),
         participant_actuals: Object.entries(summaries).filter(([userId, value]) => userId !== '__total__' && value && typeof value === 'object')
           .map(([userId, value]) => ({
             user_id: userId,

@@ -1,6 +1,6 @@
 /* 公開 HTML ランタイム生成
  *
- * 役割: 現在のビュー (page/database/csv/smart-db/calendar/entity) を
+ * 役割: 現在のビュー (page/database/csv/calendar/entity) を
  *   現テーマを完全再現した静的 HTML としてエクスポートする。
  *   + 編集不可 (input を span 化 / contenteditable 除去)
  *   + 画像埋込 / フォント埋込 / CSS 変数取込
@@ -150,7 +150,7 @@ const MeldexPublicRuntime = (() => {
   // ==========================================================================
   // ビュータイプごとの入力要素取得・CSS ファイル・追加 CSS を決定
   // ==========================================================================
-  function _resolveViewDef(viewType) {
+  function _resolveViewDef(viewType, publishCfg) {
     if (viewType === 'page' || viewType === 'entity') {
       const el = viewType === 'entity'
         ? document.getElementById('entity-view')
@@ -262,20 +262,6 @@ const MeldexPublicRuntime = (() => {
         notFound: 'CSV が開かれていません',
       };
     }
-    if (viewType === 'smart-db') {
-      const el = (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard')
-        ? document.getElementById('smart-db-dashboard-area')
-        : document.getElementById('smart-db-table');
-      return {
-        el,
-        cssFiles: ['gb-tools.css', 'gb-ui.css'],
-        extraCss:
-          'body { padding: 16px; }\n'
-          + 'table { border-collapse: collapse; table-layout: auto; width: 100%; }\n'
-          + 'th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }\n',
-        notFound: 'スマートシートが開かれていません',
-      };
-    }
     if (viewType === 'calendar') {
       const calRoot = document.querySelector('.gb-cal-root');
       return {
@@ -283,6 +269,61 @@ const MeldexPublicRuntime = (() => {
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss: 'body { padding: 16px; }\n',
         notFound: 'カレンダーが開かれていません',
+      };
+    }
+    if (viewType === 'board') {
+      const snapshot = publishCfg?.board_snapshot;
+      if (snapshot?.schema !== 'meldex.board-publish-snapshot.v1'
+        || snapshot.contextPolicy !== 'saved-active-board'
+        || !snapshot.canvasHtml
+        || !snapshot.bounds?.width
+        || !snapshot.bounds?.height) {
+        return { el: null, cssFiles: [], extraCss: '', notFound: '保存済みボードの公開スナップショットを確認できません' };
+      }
+      const holder = document.createElement('div');
+      holder.innerHTML = snapshot.canvasHtml;
+      const el = holder.firstElementChild;
+      const bounds = snapshot.bounds;
+      return {
+        el,
+        disposeEl: holder,
+        cssFiles: ['gb-tools.css', 'gb-ui.css'],
+        extraCss: 'body { padding: 16px; }\n#bd-canvas { margin: 0 auto; }\n',
+        notFound: 'ボードの公開内容を構築できません',
+        preTransform: (_original, clone) => {
+          clone.style.position = 'relative';
+          clone.style.flex = 'none';
+          clone.style.width = bounds.width + 'px';
+          clone.style.height = bounds.height + 'px';
+          clone.style.overflow = 'hidden';
+          const world = clone.querySelector('[data-bd-role="world"]');
+          if (!world) return;
+          world.style.position = 'absolute';
+          world.style.left = '0';
+          world.style.top = '0';
+          world.style.transformOrigin = '0 0';
+          world.style.transform = `translate(${-bounds.x0}px, ${-bounds.y0}px)`;
+          world.querySelectorAll('[data-bd-role="svg"]').forEach(svg => {
+            svg.setAttribute('width', String(bounds.width));
+            svg.setAttribute('height', String(bounds.height));
+            svg.style.width = bounds.width + 'px';
+            svg.style.height = bounds.height + 'px';
+            svg.style.overflow = 'visible';
+          });
+          const resizeLayer = world.querySelector('[data-bd-role="resize-layer"]');
+          if (resizeLayer) resizeLayer.innerHTML = '';
+          clone.querySelectorAll('.bd-selected, .bd-selection-preview, .bd-drag-preview')
+            .forEach(node => node.classList.contains('bd-selected') ? node.classList.remove('bd-selected') : node.remove());
+        },
+        runtimeExtras: {
+          publish_manifest: {
+            schema: 'meldex.publish-manifest.v1',
+            kind: 'board',
+            context_policy: 'saved-active-board',
+            active_board_view_id: snapshot.activeBoardViewId || '',
+            source_revision: snapshot.sourceRevision || '',
+          },
+        },
       };
     }
     return { el: null, cssFiles: [], extraCss: '', notFound: 'この種別は公開 HTML 未対応です' };
@@ -325,13 +366,14 @@ const MeldexPublicRuntime = (() => {
   // ==========================================================================
   // 公開 HTML 構築メイン: viewType + publish 設定から自己完結 HTML 文字列を返す
   // ==========================================================================
-  async function buildPublishHtml(viewType, publishCfg) {
+  async function buildPublishHtml(viewType, publishCfg, options) {
     publishCfg = publishCfg || {};
+    const assetCollector = options?.assetCollector || null;
     if (typeof MeldexExportHtml === 'undefined') {
       showStatus('HTML 出力エンジンを読み込めませんでした', true);
       return null;
     }
-    const def = _resolveViewDef(viewType);
+    const def = _resolveViewDef(viewType, publishCfg);
     if (!def.el) {
       showStatus(def.notFound || '公開対象が見つかりません', true);
       return null;
@@ -343,7 +385,10 @@ const MeldexPublicRuntime = (() => {
       });
       MeldexExportHtml.convertDataRuby(clone);
       if (typeof def.preTransform === 'function') def.preTransform(def.el, clone);
-      await MeldexExportHtml.embedImages(clone);
+      await MeldexExportHtml.embedImages(clone, assetCollector);
+      MeldexExportHtml.sanitizePublishedClone(clone, {
+        preserveFormControls: !!def.preserveFormControls,
+      });
 
     // CSS: ルート変数 + 追加 CSS ファイル + ビュー固有 CSS + 公開ランタイム CSS
     const varDecls = typeof MeldexExportHtml.collectCssVars === 'function'
@@ -354,19 +399,23 @@ const MeldexPublicRuntime = (() => {
       + ' font-family: var(--ui-font, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif);'
       + ' font-size: var(--ui-font-size, 15px); }\n';
     for (const f of def.cssFiles) {
-      cssText += await MeldexExportHtml.fetchCss(f) + '\n';
+      cssText += await MeldexExportHtml.fetchCss(f, undefined, assetCollector) + '\n';
     }
-    cssText += def.extraCss + '\n';
+    cssText += (MeldexExportHtml.inlineCssAssets
+      ? await MeldexExportHtml.inlineCssAssets(def.extraCss, document.baseURI, assetCollector)
+      : def.extraCss) + '\n';
     // 公開ランタイム用の補助スタイル (メッセージ表示等)
     cssText += '#meldex-publish-msg { margin-top: 10px; color: var(--accent, #4a90d9); font-size: 13px; }\n';
 
     // フォント埋込 (publish 設定で制御)
     const fontCss = publishCfg.embed_font !== false
-      ? await MeldexExportHtml.embedFont()
+      ? await MeldexExportHtml.embedFont(undefined, assetCollector)
       : '';
 
-    // ランタイム設定 (def.runtimeExtras があればマージ)
-    const runtimeCfg = {
+    const isFormPublication = !!def.preserveFormControls && !!clone.querySelector('form[data-publish-form]');
+    // ランタイム設定は公開フォームにだけ埋め込む。通常公開へdb pathやtokenを
+    // 混ぜない。
+    const runtimeCfg = isFormPublication ? {
       db_path: publishCfg.db_path || (typeof state !== 'undefined' && state.currentDbPath) || '',
       form_submit_enabled: !!publishCfg.form_submit_enabled,
       form_submit_token: publishCfg.form_submit_token || '',
@@ -381,15 +430,30 @@ const MeldexPublicRuntime = (() => {
           ? String(publishCfg.server_public_url).replace(/\/+$/, '') + '/api/public-form/submit'
           : ''),
       ...(def.runtimeExtras || {}),
-    };
-    const extraHeadHtml =
-      '<script type="application/json" id="meldex-publish-cfg">'
-      + _jsonForScript(runtimeCfg)
-      + '</script>\n'
-      + '<script>' + RUNTIME_SCRIPT + '</script>';
+    } : {};
+    const connectOrigins = [];
+    if (isFormPublication) {
+      for (const value of [runtimeCfg.submit_url, runtimeCfg.feedback_google_url]) {
+        try {
+          const url = new URL(String(value || ''), document.baseURI);
+          if (url.protocol === 'https:' || url.protocol === 'http:') connectOrigins.push(url.origin);
+        } catch {}
+      }
+    }
+    const assetSource = assetCollector ? "'self' data:" : 'data:';
+    const csp = isFormPublication
+      ? `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; script-src 'unsafe-inline'; connect-src ${Array.from(new Set(connectOrigins)).join(' ') || "'none'"}; form-action 'none'`
+      : `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; media-src ${assetSource}; form-action 'none'`;
+    const extraHeadHtml = '<meta http-equiv="Content-Security-Policy" content="'
+      + MeldexEscape.html(csp) + '">\n'
+      + (isFormPublication
+        ? '<script type="application/json" id="meldex-publish-cfg">'
+          + _jsonForScript(runtimeCfg)
+          + '</script>\n<script>' + RUNTIME_SCRIPT + '</script>'
+        : '');
 
     // body: クローン済み HTML + メッセージ領域
-    const bodyHtml = clone.outerHTML + '\n<div id="meldex-publish-msg"></div>';
+    const bodyHtml = clone.outerHTML + (isFormPublication ? '\n<div id="meldex-publish-msg"></div>' : '');
 
     const title = publishCfg.title || (typeof _getViewTitle === 'function' ? _getViewTitle(viewType) : 'Meldex');
       return MeldexExportHtml.buildHtml(title, bodyHtml, cssText, fontCss, extraHeadHtml);
@@ -401,7 +465,17 @@ const MeldexPublicRuntime = (() => {
     }
   }
 
+  async function buildPublishPackage(viewType, publishCfg) {
+    if (typeof MeldexExportHtml?.createAssetCollector !== 'function') {
+      return { html: await buildPublishHtml(viewType, publishCfg), assets: [] };
+    }
+    const assetCollector = MeldexExportHtml.createAssetCollector();
+    const html = await buildPublishHtml(viewType, publishCfg, { assetCollector });
+    return { html, assets: assetCollector.assets.slice() };
+  }
+
   return {
     buildPublishHtml,
+    buildPublishPackage,
   };
 })();

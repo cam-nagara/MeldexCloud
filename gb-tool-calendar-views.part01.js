@@ -1163,7 +1163,7 @@ CalendarComponent.prototype._renderCalendarList = function() {
       if (cb.checked) this._visibleCalIds.add(c.id); else this._visibleCalIds.delete(c.id);
       if (!cb.checked && this._selectedCalendarId === c.id) this._selectedCalendarId = '';
       this._ensureSelectedCalendar?.();
-      apiPut('/cal/calendars/' + c.id, { visible: cb.checked ? 1 : 0 });
+      apiPut('/cal/calendars/' + c.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: cb.checked ? 1 : 0 });
       this._renderCalendarList();
       this._render();
     });

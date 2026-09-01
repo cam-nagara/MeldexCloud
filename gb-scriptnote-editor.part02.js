@@ -16,6 +16,7 @@
     this.host.innerHTML = '';
     this.host.appendChild(scroll);
     this._bind();
+    this._applyReadOnlyDom();
     this._adjustRubySpacing();
     // 縦書き: ヘッダーの高さを測定し行に適用（ヘッダーと行の下端を揃える）
     // + テキストが折り返して幅が必要な行はmin-widthを拡張
@@ -280,7 +281,11 @@
     if (visCols._text !== false) {
       textDiv = document.createElement('div');
       textDiv.className = 'sn2-text';
-      textDiv.contentEditable = 'true';
+      textDiv.contentEditable = this._readOnly ? 'false' : 'true';
+      textDiv.setAttribute('role', 'textbox');
+      textDiv.setAttribute('aria-multiline', 'true');
+      textDiv.setAttribute('aria-label', `本文、${idx + 1}行、タイプ${row.role || '未設定'}`);
+      textDiv.setAttribute('aria-readonly', this._readOnly ? 'true' : 'false');
       textDiv.dataset.rowId = row.id;
       textDiv.dataset.e2eId = `sn-row-${row.id}-text`;
       // 再描画をまたいでテキストセル範囲選択の表示を復元する
@@ -341,7 +346,7 @@
       if (col.align) cell.dataset.align = col.align;
       if (col.valign) cell.dataset.valign = col.valign;
       const val = row.columns[col.id] ?? '';
-      const colControlLabel = `${col.label || col.id || '列'}列`;
+      const colControlLabel = `${col.label || col.id || '列'}列、${idx + 1}行`;
       if (col.type === 'number') {
         const inp = document.createElement('input');
         inp.type = 'number';
@@ -376,7 +381,10 @@
       } else {
         const inp = document.createElement('div');
         inp.className = 'sn2-custom-text';
-        inp.contentEditable = 'true';
+        inp.contentEditable = this._readOnly ? 'false' : 'true';
+        inp.setAttribute('role', 'textbox');
+        inp.setAttribute('aria-multiline', 'true');
+        inp.setAttribute('aria-readonly', this._readOnly ? 'true' : 'false');
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         inp.setAttribute('aria-label', colControlLabel);
         inp.textContent = val;
@@ -627,7 +635,7 @@
     if (headings.some(h => r.startsWith(h)) || /^\d+\s*[.．]/.test(r)) return 'heading';
     if (typeof SPECIAL_CHARA !== 'undefined' && Array.isArray(SPECIAL_CHARA) && SPECIAL_CHARA.includes(r)) return 'action';
     const actions = ['ト書き', 'ト', '動作', '説明', 'N', 'ナレーション', 'ナレ', 'SE', 'ME', 'M',
-                     'コマ外注釈', '擬音', 'モノローグ', '心の声', 'BGM', 'テロップ', '（間）',
+                     'コマ外アノテート', '擬音', 'モノローグ', '心の声', 'BGM', 'テロップ', '（間）',
                      '地の文', '独白', '傍白', '歌', '群衆'];
     if (actions.includes(r)) return 'action';
     return 'dialogue';
@@ -639,6 +647,20 @@
     if (this._bound) return;
     this._bound = true;
     const host = this.host;
+
+    const blockReadOnlyMutation = (event) => {
+      if (!this._readOnly) return;
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+    };
+    ['beforeinput', 'input', 'paste', 'cut', 'drop'].forEach((type) => {
+      host.addEventListener(type, blockReadOnlyMutation, true);
+    });
+    host.addEventListener('pointerdown', (event) => {
+      if (!this._readOnly) return;
+      if (!event.target.closest?.('.sn2-handle, .sn2-col-resizer, button, input, select, [contenteditable="true"]')) return;
+      blockReadOnlyMutation(event);
+    }, true);
 
     // === ホイール/矩形選択/行コピー/右ドラッグパン → gb-scriptnote-interactions.js に移動 ===
     this._bindInteractionEvents(host);
@@ -882,8 +904,10 @@
     host.addEventListener('input', (e) => {
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
-      this._dirty = true;
-      this._scheduleSave();
+      // DOM上の現在値を先にモデルへ同期してから共通dirty入口へ通す。
+      // これにより最大250msの回復用下書きにも、2秒autosaveにも、
+      // 直前の文字（IME確定文字を含む）が欠けずに入る。
+      this._syncRowFromDom(text, { skipUndo: true });
       // 編集のたびに自動ルビ/自動リンク/縦中横を再適用 (デバウンス)
       // IME 変換中はスキップ (compositionend 側で拾う)
       this._scheduleTextCellLiveResize?.(text);
@@ -922,7 +946,24 @@
     });
 
     host.addEventListener('keydown', (e) => {
-      if (e.isComposing) return;
+      // Chromium/WindowsのIMEでは keydown.isComposing が false のまま
+      // keyCode=229 だけが届く区間がある。compositionイベントで保持した状態も
+      // 併用し、確定Enter/Ctrl+Enter/Undoを行・履歴操作へ流さない。
+      if (e.isComposing || this._imeComposing || e.keyCode === 229) {
+        // 既定のIME確定処理は止めず、同じイベントがdocument側の
+        // ショートカットルーターへ届くことだけを防ぐ。
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (this._readOnly) {
+        const modifyingKey = e.key === 'Enter' || e.key === 'Backspace' || e.key === 'Delete'
+          || e.key.length === 1 || e.ctrlKey || e.metaKey || e.altKey;
+        if (modifyingKey) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
 
       // アクティブセル（クリックで強調表示のみ・未編集）に対する矢印/Tab/Enter/Escapeは
       // ここでナビゲーションとして処理する。編集中のセルや無関係のターゲットには影響しない。

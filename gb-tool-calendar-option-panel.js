@@ -423,7 +423,6 @@
       <div class="cal-option-actions">
         <button type="button" data-cal-settings-action="template">${_calIcon('layoutTemplate')} テンプレート</button>
         <button type="button" data-cal-settings-action="sync">${_calIcon('refreshCw')} 同期</button>
-        <button type="button" data-cal-settings-action="timer">${_calIcon('timer')} タイマー</button>
       </div>`;
     this._renderAttendanceSourceSettings?.(body);
     this._renderShiftTemplateSettings?.(body);
@@ -451,10 +450,6 @@
         const action = btn.dataset.calSettingsAction;
         if (action === 'template') this._showScheduleTemplateModal();
         else if (action === 'sync') this._showSyncModal();
-        else if (action === 'timer') {
-          if (typeof openTimerPanel === 'function') openTimerPanel();
-          else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-        }
       });
     });
   };

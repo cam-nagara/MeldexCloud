@@ -46,6 +46,103 @@
     return (Array.isArray(boardView?.groups) ? boardView.groups : []).map(normalizeGroup);
   }
 
+  const GROUP_VISUAL_FIELDS = Object.freeze([
+    'background', 'backgroundOpacity', 'opacity', 'borderColor', 'borderOpacity', 'borderWidth', 'borderStyle', 'borderRadius',
+    'shadow', 'padding', 'labelColor', 'labelFontSize', 'labelFontFamily', 'labelBold',
+  ]);
+
+  function normalizeGroupStyle(value, idFactory) {
+    const source = clone(value || {});
+    const groupStyleId = String(source.groupStyleId || source.styleId || idFactory?.('group-style') || '');
+    if (!groupStyleId) throw new TypeError('groupStyleId is required');
+    const visualSource = source.visualStyle || source.style || {};
+    const visualStyle = {};
+    GROUP_VISUAL_FIELDS.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(visualSource, key)) visualStyle[key] = clone(visualSource[key]);
+    });
+    ['backgroundOpacity', 'borderOpacity', 'opacity'].forEach(key => {
+      if (visualStyle[key] != null) visualStyle[key] = Math.max(0, Math.min(1, Number(visualStyle[key]) || 0));
+    });
+    return { ...source, groupStyleId, name: String(source.name || 'グループスタイル'), visualStyle };
+  }
+
+  function normalizeGroupStyles(document) {
+    const result = clone(document || {});
+    const seen = new Set();
+    result.groupStyles = (Array.isArray(result.groupStyles) ? result.groupStyles : [])
+      .map(style => normalizeGroupStyle(style))
+      .filter(style => { if (seen.has(style.groupStyleId)) return false; seen.add(style.groupStyleId); return true; });
+    result.activeGroupStyleId = result.groupStyles.some(style => style.groupStyleId === result.activeGroupStyleId)
+      ? result.activeGroupStyleId : (result.groupStyles[0]?.groupStyleId || null);
+    return result;
+  }
+
+  function resolveGroupStyle(document, groupValue) {
+    const group = normalizeGroup(groupValue);
+    const normalized = normalizeGroupStyles(document);
+    const base = normalized.groupStyles.find(style => style.groupStyleId === group.styleRef)?.visualStyle || {};
+    return { ...clone(base), ...clone(group.styleOverrides || {}) };
+  }
+
+  function assertUniqueGroupStyleName(document, name, exceptId) {
+    const wanted = String(name || '').trim().toLocaleLowerCase();
+    if (!wanted) throw new TypeError('group style name is required');
+    if (normalizeGroupStyles(document).groupStyles.some(style => style.groupStyleId !== exceptId
+      && style.name.trim().toLocaleLowerCase() === wanted)) throw new Error('同名のグループスタイルがあります');
+  }
+
+  function createGroupStyle(document, value, idFactory) {
+    const result = normalizeGroupStyles(document);
+    const style = normalizeGroupStyle(value, idFactory);
+    if (result.groupStyles.some(item => item.groupStyleId === style.groupStyleId)) throw new Error('groupStyleId already exists');
+    assertUniqueGroupStyleName(result, style.name);
+    result.groupStyles.push(style);
+    if (!result.activeGroupStyleId) result.activeGroupStyleId = style.groupStyleId;
+    return { document: result, groupStyle: clone(style) };
+  }
+
+  function updateGroupStyle(document, groupStyleId, changes) {
+    const result = normalizeGroupStyles(document);
+    const index = result.groupStyles.findIndex(style => style.groupStyleId === groupStyleId);
+    if (index < 0) throw new RangeError('group style was not found');
+    if (Object.prototype.hasOwnProperty.call(changes || {}, 'name')) assertUniqueGroupStyleName(result, changes.name, groupStyleId);
+    result.groupStyles[index] = normalizeGroupStyle({ ...result.groupStyles[index], ...clone(changes || {}), groupStyleId });
+    return result;
+  }
+
+  function duplicateGroupStyle(document, groupStyleId, value, idFactory) {
+    const source = normalizeGroupStyles(document).groupStyles.find(style => style.groupStyleId === groupStyleId);
+    if (!source) throw new RangeError('group style was not found');
+    return createGroupStyle(document, {
+      ...clone(source), groupStyleId: idFactory?.('group-style'), name: value?.name || `${source.name} のコピー`,
+    }, idFactory);
+  }
+
+  function applyGroupStyle(boardView, groupId, groupStyleId, clearOverrides = false) {
+    return updateGroup(boardView, groupId, { styleRef: groupStyleId || null,
+      styleOverrides: clearOverrides ? {} : clone(groupsOf(boardView).find(group => group.groupId === groupId)?.styleOverrides || {}) });
+  }
+
+  function removeGroupStyle(document, groupStyleId, options) {
+    const result = normalizeGroupStyles(document);
+    const style = result.groupStyles.find(item => item.groupStyleId === groupStyleId);
+    if (!style) throw new RangeError('group style was not found');
+    const affected = (result.boardViews || []).flatMap(view => (view.groups || []).filter(group => group.styleRef === groupStyleId));
+    if (affected.length && !['preserve', 'replace'].includes(options?.mode)) {
+      return { document: result, removed: false, confirmationRequired: true, affectedGroupCount: affected.length };
+    }
+    const replacement = options?.replacementId && result.groupStyles.some(item => item.groupStyleId === options.replacementId)
+      ? options.replacementId : null;
+    (result.boardViews || []).forEach(view => (view.groups || []).forEach(group => {
+      if (group.styleRef !== groupStyleId) return;
+      if (options?.mode === 'preserve') group.styleOverrides = { ...clone(style.visualStyle), ...clone(group.styleOverrides || {}) };
+      group.styleRef = replacement;
+    }));
+    result.groupStyles = result.groupStyles.filter(item => item.groupStyleId !== groupStyleId);
+    if (result.activeGroupStyleId === groupStyleId) result.activeGroupStyleId = replacement || result.groupStyles[0]?.groupStyleId || null;
+    return { document: result, removed: true, confirmationRequired: false, affectedGroupCount: affected.length };
+  }
+
   function createGroup(boardView, value, idFactory) {
     const result = clone(boardView || {});
     result.groups = groupsOf(result);
@@ -222,6 +319,8 @@
 
   global.MeldexBoardGroups = Object.freeze({
     normalizeGroup, createGroup, updateGroup, moveGroup, resizeGroup,
+    GROUP_VISUAL_FIELDS, normalizeGroupStyle, normalizeGroupStyles, resolveGroupStyle,
+    createGroupStyle, updateGroupStyle, duplicateGroupStyle, applyGroupStyle, removeGroupStyle,
     lineImpactForGroup, planGroupRemoval,
     removeGroupFrame, normalizeLibraries, saveTemplate, updateTemplate, duplicateTemplate,
     removeTemplate, applyTemplate, renderOptionsTab, assertUniqueTemplateName,

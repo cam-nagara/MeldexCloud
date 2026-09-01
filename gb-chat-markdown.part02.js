@@ -19,7 +19,7 @@
     if (!clean) return;
     _pushUniquePath(list, clean);
     if (_pathHasExtension(clean) || /[\\/]$/.test(clean)) return;
-    ['.md', '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.smart-db.json', '.scriptnote.json', '.timer.json', '.json', '.csv'].forEach(ext => _pushUniquePath(list, clean + ext));
+    ['.md', '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.scriptnote.json', '.timer.json', '.json', '.csv'].forEach(ext => _pushUniquePath(list, clean + ext));
   }
 
   function _joinWorkspacePath(root, rel) {
@@ -64,7 +64,7 @@
 
   function _workspaceTargetStem(path) {
     const name = _basename(path).toLowerCase();
-    const suffixes = ['.smart-db.json', '.scriptnote.json', '.timer.json', '.mel-scenario', '.mel-board', '.mel-sheet', '.mel-timer', '.board.md', '.md'];
+    const suffixes = ['.scriptnote.json', '.timer.json', '.mel-scenario', '.mel-board', '.mel-sheet', '.mel-timer', '.board.md', '.md'];
     const suffix = suffixes.find(value => name.endsWith(value));
     return suffix ? name.slice(0, -suffix.length) : name;
   }
@@ -321,8 +321,8 @@
 
   function _usesWorkspaceOpenPane(type, ext) {
     if (type === 'chat') return false;
-    if (['folder', 'database', 'smart-db', 'board', 'scriptnote', 'scenario', 'calendar', 'page'].includes(type)) return true;
-    if (['.mel-board', '.mel-sheet', '.mel-scenario', '.smart-db.json', '.scriptnote.json', '.csv', '.html', '.htm', '.pdf'].includes(ext)) return true;
+    if (['folder', 'database', 'board', 'scriptnote', 'scenario', 'calendar', 'page'].includes(type)) return true;
+    if (['.mel-board', '.mel-sheet', '.mel-scenario', '.scriptnote.json', '.csv', '.html', '.htm', '.pdf'].includes(ext)) return true;
     return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext);
   }
 
@@ -344,14 +344,13 @@
     try {
       if (type === 'folder') await openFolder(label, cleanPath, opts);
       else if (type === 'database') await selectDatabase(cleanPath, null, opts);
-      else if (type === 'smart-db' && typeof openSmartDbFile === 'function') await openSmartDbFile(label, cleanPath, opts);
       else if (type === 'board' && typeof openBoard === 'function') await openBoard(label, cleanPath, opts);
       else if ((type === 'scriptnote' || type === 'scenario') && typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(cleanPath, label, opts);
       else if (type === 'calendar' && typeof openCalendarFile === 'function') await openCalendarFile(label, cleanPath, opts);
       else if (type === 'chat' && typeof openSavedChat === 'function') await openSavedChat(cleanPath);
       else if (type === 'page' && typeof openPage === 'function') await openPage(label, cleanPath, opts);
       else if (ext === '.mel-board' && typeof openBoard === 'function') await openBoard(label, cleanPath, opts);
-      else if ((ext === '.mel-sheet' || ext === '.smart-db.json') && typeof openSmartDbFile === 'function') await openSmartDbFile(label, cleanPath, opts);
+      else if (ext === '.mel-sheet' && typeof selectDatabase === 'function') await selectDatabase(cleanPath, null, opts);
       else if ((ext === '.mel-scenario' || ext === '.scriptnote.json') && typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(cleanPath, label, opts);
       else if (ext === '.csv' && typeof openCsvFile === 'function') await openCsvFile(label, cleanPath, opts);
       else if ((ext === '.html' || ext === '.htm') && typeof openHtmlFile === 'function') await openHtmlFile(label, cleanPath, opts);

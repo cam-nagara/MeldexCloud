@@ -98,8 +98,13 @@ function _createAttachmentThumb(item, index) {
   const kind = _attachmentKind(item);
   const label = item?.caption || item?.filename || '';
   if (kind === 'image') {
+    const host = document.createElement('span');
+    host.className = 'gb-image-thumb';
+    host.dataset.meldexImageHost = '1';
+    host.title = label;
+    if (index != null) host.dataset.imageIndex = String(index);
     const img = document.createElement('img');
-    img.className = 'gb-image-thumb';
+    img.className = 'gb-image-thumb-image';
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
@@ -108,7 +113,7 @@ function _createAttachmentThumb(item, index) {
     // フォールバックタイルへ置換する。
     img.style.color = 'transparent';
     img.alt = label;
-    if (index != null) img.dataset.imageIndex = String(index);
+    host.appendChild(img);
     const replaceFailedImage = () => {
       // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
       // 切り替える。原寸も読めない時だけ中立タイルにする。
@@ -122,9 +127,9 @@ function _createAttachmentThumb(item, index) {
       }
       // file: URL は src 代入時に同期的に失敗し、呼出元が DOM へ追加する前に
       // error が届くことがある。親がまだ無い時だけ次の描画まで待つ。
-      if (!img.parentNode) {
+      if (!host.isConnected) {
         requestAnimationFrame(() => {
-          if (img.parentNode) replaceFailedImage();
+          if (host.isConnected) replaceFailedImage();
         });
         return;
       }
@@ -137,7 +142,7 @@ function _createAttachmentThumb(item, index) {
       const caption = document.createElement('span');
       caption.textContent = label || '画像';
       fallback.appendChild(caption);
-      img.replaceWith(_setupAttachmentThumbDrag(fallback, item));
+      host.replaceWith(_setupAttachmentThumbDrag(fallback, item));
     };
     img.addEventListener('error', replaceFailedImage);
     img.addEventListener('load', () => {
@@ -146,8 +151,8 @@ function _createAttachmentThumb(item, index) {
     // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
     // フォールバックの listener を登録してから読み込みを開始する。
     img.src = _imageSrc(item, true);
-    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
-    return _setupAttachmentThumbDrag(img, item);
+    window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
+    return _setupAttachmentThumbDrag(host, item);
   }
   const tile = document.createElement('div');
   tile.className = 'gb-image-thumb gb-attachment-tile';
@@ -554,6 +559,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
       card.className = 'gb-image-gallery-card';
       const thumb = _createAttachmentThumb(item, idx);
       thumb.classList.remove('gb-image-thumb');
+      thumb.classList.add('gb-image-gallery-thumb');
       card.appendChild(thumb);
       const meta = document.createElement('div');
       meta.className = 'gb-image-gallery-meta';

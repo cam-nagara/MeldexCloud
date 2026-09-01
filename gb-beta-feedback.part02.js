@@ -41,6 +41,9 @@
         const settings = await getDebuggerSettings();
         debuggerUrlInput.value = settings.baseUrl || '';
         debuggerSlugInput.value = settings.projectSlug || '';
+        debuggerUrlInput.readOnly = settings.fixed === true;
+        debuggerSlugInput.readOnly = settings.fixed === true;
+        saveDebuggerButton.hidden = settings.fixed === true;
         const queue = settings.configured ? await getDebuggerQueue() : { configured: false };
         status.textContent = _describeDebuggerState({ ...settings, ...queue });
       } catch (error) {
@@ -218,6 +221,7 @@
   function _boot() {
     _installPwaHandlers();
     _bindSettingsObserver();
+    _configureCloudManualReporter();
     _configureCloudCrashReporter();
     if (isTelemetryEnabled()) startTelemetry();
     // 現在の画面を変えずに利用者向け履歴シートを準備し、前回オフラインや

@@ -95,10 +95,43 @@ function _dbLinkDescriptor(valueOrCandidate, fallbackKind) {
   return result;
 }
 
+function _dbLinkPivotDataFor(ctx, dbPath, entityName, propName) {
+  const normalize = value => typeof _dbNormalizePath === 'function'
+    ? _dbNormalizePath(value)
+    : String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const target = normalize(dbPath);
+  const samePath = value => {
+    const candidate = normalize(value);
+    if (!target) return true;
+    if (!candidate) return false;
+    return candidate === target
+      || candidate.endsWith('/' + target)
+      || target.endsWith('/' + candidate);
+  };
+  const candidates = [];
+  const add = (candidateCtx, candidatePath) => {
+    const pivotData = candidateCtx?.pivotData;
+    if (!pivotData || !samePath(candidatePath)) return;
+    if (!candidates.includes(pivotData)) candidates.push(pivotData);
+  };
+  add(ctx, ctx?.dbPath);
+  if (typeof _dbFindPaneContextForPath === 'function') {
+    const pathCtx = _dbFindPaneContextForPath(dbPath);
+    add(pathCtx, pathCtx?.dbPath);
+  }
+  if (typeof _dbPaneContextsForPath === 'function') {
+    try {
+      _dbPaneContextsForPath(dbPath).forEach(candidate => add(candidate, candidate?.dbPath));
+    } catch {}
+  }
+  if (typeof state !== 'undefined') add({ pivotData: state.pivotData }, state.currentDbPath);
+  return candidates.find(pivotData => Array.isArray(pivotData?.entities?.[entityName]?.[propName]))
+    || candidates[0]
+    || null;
+}
+
 function _dbMultiLinkValuesFor(ctx, dbPath, entityName, propName) {
-  const pivotData = (ctx && ctx.pivotData)
-    || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null)
-    || (typeof state !== 'undefined' ? state.pivotData : null);
+  const pivotData = _dbLinkPivotDataFor(ctx, dbPath, entityName, propName);
   const values = pivotData?.entities?.[entityName]?.[propName];
   return Array.isArray(values) ? values : [];
 }
@@ -382,7 +415,7 @@ async function _dbLinkCommitValue(args) {
 }
 
 function _dbLinkExistingValueFor(ctx, dbPath, entityName, propName) {
-  const pivotData = (ctx && ctx.pivotData) || (typeof state !== 'undefined' ? state.pivotData : null);
+  const pivotData = _dbLinkPivotDataFor(ctx, dbPath, entityName, propName);
   const entData = pivotData?.entities?.[entityName];
   const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
   return (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
@@ -614,7 +647,7 @@ function _dbLinkShowMultiEditor(anchorEl, dbPath) {
     const list = document.createElement('textarea');
     list.className = 'gb-input'; list.rows = 7; list.spellcheck = false;
     list.dataset.e2eId = 'db-multi-link-targets';
-    list.placeholder = 'Source/ノート.md\nSource/シート.smart-db.json\nhttps://example.com';
+    list.placeholder = 'Source/ノート.md\nSource/シート.mel-sheet\nhttps://example.com';
     const status = document.createElement('div');
     status.className = 'db-link-editor-status'; status.setAttribute('role', 'status');
     const pick = document.createElement('button');
@@ -808,9 +841,13 @@ async function startDbLinkCellPick(val, entityPath, propName, dbPath, ctx, ancho
 function decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath, options) {
   if (!td || td._dbLinkDropBound) return;
   td._dbLinkDropBound = true;
+  // 共通D&D routerがtopic placementより先に既存リンク挿入を選べる正本marker。
+  td.dataset.meldexDropRoute = 'node-link';
   const highlightOn = () => td.classList.add('db-link-drop-target');
   const highlightOff = () => td.classList.remove('db-link-drop-target');
   td.addEventListener('dragover', (e) => {
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')
+        && MeldexDnD.resolveTargetRoute?.(e)?.kind !== 'node-link') return;
     if (!_dbLinkDndAcceptable(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -818,6 +855,8 @@ function decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath, options) 
   });
   td.addEventListener('dragleave', highlightOff);
   td.addEventListener('drop', async (e) => {
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')
+        && MeldexDnD.resolveTargetRoute?.(e)?.kind !== 'node-link') return;
     if (!_dbLinkDndAcceptable(e)) return;
     e.preventDefault();
     e.stopPropagation();

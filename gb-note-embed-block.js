@@ -316,7 +316,7 @@
   function _bindTransfer() {
     document.addEventListener('drop', async (event) => {
       const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
-      const data = event.dataTransfer?.getData(MIME);
+      const data = event.dataTransfer?.getData?.(MIME);
       if (!editable || !data) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -326,8 +326,8 @@
     });
     document.addEventListener('paste', (event) => {
       const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
-      const custom = event.clipboardData?.getData(MIME);
-      const markdown = event.clipboardData?.getData('text/plain') || '';
+      const custom = event.clipboardData?.getData?.(MIME);
+      const markdown = event.clipboardData?.getData?.('text/plain') || '';
       const parsed = custom ? _payload(custom) : _serializer().parseMarkdown(markdown)[0];
       const sel = global.getSelection?.();
       if (!editable || !parsed?.editable || !sel?.rangeCount) return;

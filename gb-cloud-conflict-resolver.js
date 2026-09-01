@@ -27,6 +27,7 @@
   let _overlay = null;
   let _conflicts = [];
   let _selectedPath = '';
+  let _selectedDetail = null;
   let _detailRequestSeq = 0;
   let _conflictTotal = 0;
   let _conflictTruncated = false;
@@ -458,6 +459,7 @@
 
   async function selectConflict(path) {
     _selectedPath = String(path || '');
+    _selectedDetail = null;
     _renderConflictList();
     _setStatus('読み込み中...');
     _setResolveButtonState(null);
@@ -467,6 +469,7 @@
     try {
       const detail = await _api().requestJson(`/cloud/conflict-detail?path=${encodeURIComponent(_selectedPath)}`);
       if (!_overlay || requestSeq !== _detailRequestSeq) return;
+      _selectedDetail = detail;
       const originalMeta = _overlay.querySelector('[data-conflict-meta="original"]');
       const conflictMeta = _overlay.querySelector('[data-conflict-meta="conflict"]');
       _setMeta(originalMeta, '元ファイル', detail.original);
@@ -503,8 +506,13 @@
   async function _resolve(action) {
     if (!_selectedPath) return;
     const targetPath = _selectedPath;
+    const reviewedDetail = _selectedDetail;
     const button = _overlay?.querySelector?.(`[data-conflict-action="${action}"]`);
     if (button?.disabled) return;
+    if (!reviewedDetail?.conflict?.revision || !reviewedDetail?.conflict?.sha256) {
+      _setStatus('競合詳細を再読込してから解消してください', true);
+      return;
+    }
     const label = action === 'keep_original' ? '元ファイル' : (action === 'merge_sqlite_sheet' ? 'シートのマージ結果' : '競合コピー');
     const ok = await _confirmResolve(label);
     if (!ok) return;
@@ -513,7 +521,14 @@
     try {
       await _api().requestJson('/cloud/conflict-resolve', {
         method: 'POST',
-        body: { conflict_path: targetPath, action },
+        body: {
+          conflict_path: targetPath,
+          action,
+          conflict_revision: reviewedDetail.conflict.revision,
+          conflict_sha256: reviewedDetail.conflict.sha256,
+          original_revision: reviewedDetail.original?.revision || '',
+          original_sha256: reviewedDetail.original?.sha256 || '',
+        },
       });
       if (_conflictTotal > 0) _conflictTotal = Math.max(0, _conflictTotal - 1);
       _conflicts = _conflicts.filter((item) => item.path !== targetPath);

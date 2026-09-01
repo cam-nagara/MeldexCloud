@@ -3,6 +3,10 @@
   'use strict';
 
   const LEGACY_PATH_T = Object.freeze({ top: 0, right: 0.25, bottom: 0.5, left: 0.75 });
+  const LEGACY_ANCHOR_ALIASES = Object.freeze({
+    'top-center': 'top', 'right-center': 'right',
+    'bottom-center': 'bottom', 'left-center': 'left',
+  });
 
   function clone(value) {
     if (Array.isArray(value)) return value.map(clone);
@@ -128,20 +132,69 @@
     return { x, y, ratio, distanceSquared: (point.x - x) ** 2 + (point.y - y) ** 2 };
   }
 
+  function intersectDragSegment(point, toward, first, second) {
+    const dragX = toward.x - point.x; const dragY = toward.y - point.y;
+    const edgeX = second.x - first.x; const edgeY = second.y - first.y;
+    const denominator = dragX * edgeY - dragY * edgeX;
+    if (Math.abs(denominator) < 1e-9) return null;
+    const offsetX = first.x - point.x; const offsetY = first.y - point.y;
+    const dragRatio = (offsetX * edgeY - offsetY * edgeX) / denominator;
+    const edgeRatio = (offsetX * dragY - offsetY * dragX) / denominator;
+    if (dragRatio < -1e-7 || dragRatio > 1 + 1e-7 || edgeRatio < -1e-7 || edgeRatio > 1 + 1e-7) return null;
+    return {
+      x: point.x + dragX * dragRatio,
+      y: point.y + dragY * dragRatio,
+      ratio: Math.max(0, Math.min(1, edgeRatio)),
+      dragRatio: Math.max(0, Math.min(1, dragRatio)),
+      distanceSquared: 0,
+    };
+  }
+
   function projectPointToOutline(shape, boundsValue, pointValue, options) {
     const bounds = normalizedBounds(boundsValue);
     const point = { x: Number(pointValue?.x) || 0, y: Number(pointValue?.y) || 0 };
     const points = outlinePoints(shape, bounds, options);
     const metrics = pathMetrics(points);
     let best = null;
-    for (let index = 0; index < points.length - 1; index += 1) {
-      const candidate = { ...projectToSegment(point, points[index], points[index + 1]), segment: index };
-      const tied = best && Math.abs(candidate.distanceSquared - best.distanceSquared) <= 0.25;
-      if (!best || candidate.distanceSquared < best.distanceSquared
-          || (tied && index === options?.previousSegment)) best = candidate;
+    const toward = options?.towardPoint && {
+      x: Number(options.towardPoint.x) || 0,
+      y: Number(options.towardPoint.y) || 0,
+    };
+    const useDragIntersection = toward && Math.hypot(toward.x - point.x, toward.y - point.y) > 1e-7;
+    if (useDragIntersection) {
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const intersection = intersectDragSegment(point, toward, points[index], points[index + 1]);
+        if (!intersection) continue;
+        const candidate = { ...intersection, segment: index };
+        if (!best || candidate.dragRatio < best.dragRatio) best = candidate;
+      }
     }
-    const length = metrics.lengths[best.segment]
+    if (!best) {
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const candidate = { ...projectToSegment(point, points[index], points[index + 1]), segment: index };
+        const tied = best && Math.abs(candidate.distanceSquared - best.distanceSquared) <= 0.25;
+        if (!best || candidate.distanceSquared < best.distanceSquared
+            || (tied && index === options?.previousSegment)) best = candidate;
+      }
+    }
+    let length = metrics.lengths[best.segment]
       + (metrics.lengths[best.segment + 1] - metrics.lengths[best.segment]) * best.ratio;
+    const snapDistance = Math.max(0, Number(options?.snapDistance) || 0);
+    if (snapDistance > 0) {
+      let snapped = null;
+      Object.values(LEGACY_PATH_T).forEach((pathT) => {
+        const candidate = pointAtPathT(shape, bounds, pathT, options);
+        const distanceSquared = (best.x - candidate.x) ** 2 + (best.y - candidate.y) ** 2;
+        if (distanceSquared <= snapDistance ** 2
+            && (!snapped || distanceSquared < snapped.distanceSquared)) {
+          snapped = { ...candidate, pathT, distanceSquared };
+        }
+      });
+      if (snapped) {
+        best = { ...best, x: snapped.x, y: snapped.y, segment: snapped.segment };
+        length = snapped.pathT * metrics.total;
+      }
+    }
     const pathT = length / metrics.total;
     return {
       point: { x: best.x, y: best.y },
@@ -153,20 +206,22 @@
   }
 
   function legacyAnchorToOutline(anchor) {
-    if (!Object.prototype.hasOwnProperty.call(LEGACY_PATH_T, anchor)) return null;
-    return { mode: 'outline', pathT: LEGACY_PATH_T[anchor], legacyAnchor: anchor };
+    const canonical = LEGACY_ANCHOR_ALIASES[anchor] || anchor;
+    if (!Object.prototype.hasOwnProperty.call(LEGACY_PATH_T, canonical)) return null;
+    return { mode: 'outline', pathT: LEGACY_PATH_T[canonical], legacyAnchor: anchor };
   }
 
   function projectLegacyAnchor(shape, boundsValue, anchor, options) {
     const bounds = normalizedBounds(boundsValue);
+    const canonical = LEGACY_ANCHOR_ALIASES[anchor] || anchor;
     const points = {
       top: { x: bounds.x + bounds.w / 2, y: bounds.y },
       right: { x: bounds.x + bounds.w, y: bounds.y + bounds.h / 2 },
       bottom: { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h },
       left: { x: bounds.x, y: bounds.y + bounds.h / 2 },
     };
-    if (!points[anchor]) return null;
-    const projected = projectPointToOutline(shape, bounds, points[anchor], options);
+    if (!points[canonical]) return null;
+    const projected = projectPointToOutline(shape, bounds, points[canonical], options);
     projected.outlinePosition.legacyAnchor = anchor;
     return projected;
   }
@@ -204,7 +259,14 @@
 
   function endpointFromLegacy(line, side, topicRefByLegacyId) {
     const endpoint = line?.[`${side}Endpoint`];
-    if (endpoint) return normalizeEndpoint(endpoint);
+    if (endpoint) {
+      const normalized = normalizeEndpoint(endpoint);
+      if (normalized.targetKind === 'topic' && typeof normalized.targetRef === 'string'
+          && topicRefByLegacyId?.[normalized.targetRef]) {
+        normalized.targetRef = clone(topicRefByLegacyId[normalized.targetRef]);
+      }
+      return normalized;
+    }
     const point = line?.[`${side}Point`];
     if (point) return normalizeEndpoint({ targetKind: 'point', targetRef: point });
     const legacyId = line?.[side];

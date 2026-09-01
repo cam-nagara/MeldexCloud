@@ -2,6 +2,9 @@
   function _updatePaneNavButtons(paneId) {
     const paneInfo = _paneMap[paneId];
     const paneNode = paneInfo?.node || findNode(_root, paneId)?.node;
+    const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+      ? GBPanelSet.rightRailNavigationState(paneId)
+      : null;
     // 戻る/進む履歴はタブ単位（②タブ別ナビ履歴、2026-07-21）。ペインではなく
     // 「今アクティブなタブ」の navHistory/navIndex を読む。
     const activeTab = Array.isArray(paneNode?.tabs) ? paneNode.tabs[paneNode.activeTabIndex] : null;
@@ -10,19 +13,22 @@
     const backBtn = paneInfo?.el?.querySelector('.gb-pane-nav-back');
     const forwardBtn = paneInfo?.el?.querySelector('.gb-pane-nav-forward');
     const navCtrls = paneInfo?.el?.querySelector('.gb-pane-nav-ctrls');
-    // 戻る/進むは遷移先が存在する場合のみ表示（履歴がない時は非表示で幅を節約）
-    const backHidden = navIndex <= 0;
-    const forwardHidden = navIndex < 0 || navIndex >= history.length - 1;
+    // 戻る/進むは常に同じ場所へ表示する。履歴端では無効化し、操作の存在と位置を
+    // 失わせない（2026-08-26: 履歴が無い時に親ごと隠れて「機能が消えた」と見える回帰を修正）。
+    const backDisabled = railState ? !railState.canBack : navIndex <= 0;
+    const forwardDisabled = railState ? !railState.canForward : (navIndex < 0 || navIndex >= history.length - 1);
     if (backBtn) {
-      backBtn.disabled = backHidden;
-      backBtn.style.display = backHidden ? 'none' : '';
+      backBtn.disabled = backDisabled;
+      backBtn.style.display = '';
+      backBtn.setAttribute('aria-disabled', backDisabled ? 'true' : 'false');
     }
     if (forwardBtn) {
-      forwardBtn.disabled = forwardHidden;
-      forwardBtn.style.display = forwardHidden ? 'none' : '';
+      forwardBtn.disabled = forwardDisabled;
+      forwardBtn.style.display = '';
+      forwardBtn.setAttribute('aria-disabled', forwardDisabled ? 'true' : 'false');
     }
     if (navCtrls) {
-      navCtrls.style.display = (backHidden && forwardHidden) ? 'none' : '';
+      navCtrls.style.display = '';
     }
   }
 

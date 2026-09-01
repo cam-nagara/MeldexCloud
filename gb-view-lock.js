@@ -5,11 +5,11 @@
  *
  * 要点:
  * - 各ビュー（ノート / シナリオ / シート全サブビュー / カレンダー / ビューワー等）で、
- *   注釈レイヤの座標系が崩れる操作（フィルタ・折り畳み・viewMode 切替等）を
- *   「ロック」状態のあいだブロックする。スクロールは注釈レイヤ側で追従するため許可する。
+ *   アノテートレイヤの座標系が崩れる操作（フィルタ・折り畳み・viewMode 切替等）を
+ *   「ロック」状態のあいだブロックする。スクロールはアノテートレイヤ側で追従するため許可する。
  * - ブロック時はユーザー指示 §8.4 の確認ダイアログを出し、「はい」で解除 + 操作を通す。
  * - 表示ロックは既定OFF。ユーザーがロックアイコンを押した時点の表示状態を
- *   view_lock.state に保存する。注釈ストロークの一筆目では自動ロックしない。
+ *   view_lock.state に保存する。アノテートストロークの一筆目では自動ロックしない。
  * - ロック状態はサーバ (view_lock テーブル) にペイン単位 (view_key = target_path#pane_id) で永続化。
  * - ボード (Canvas) は座標系が内部に閉じているため requiresViewLock=false。
  *
@@ -18,7 +18,7 @@
  *   viewKey(target, paneId)    : "target#paneId" の view_key
  *   get(viewKey)               : サーバから view_lock を取得（キャッシュ込み）
  *   invalidate(viewKey?)       : キャッシュ無効化
- *   isLocked(viewKey)          : 同期判定（キャッシュ経由）。未取得なら false
+ *   isLocked(viewKey)          : 同期判定（キャッシュ経由）。未取得・取得失敗は true
  *   engage(viewKey, kind, getState)
  *                              : 互換API。既定OFF維持のため自動ロックせず true を返す。
  *   guardAction(viewKey, kind) : ロック中の表示変更操作を通す前に呼ぶ。解除ダイアログ表示。
@@ -40,7 +40,7 @@
   ]);
 
   // サーバ応答キャッシュ
-  const _cache = new Map(); // viewKey → { locked, state, target_kind, ts }
+  const _cache = new Map(); // viewKey → { status, locked, state, target_kind, ts }
   const _inflight = new Map(); // viewKey → Promise
   let _hudHostSeq = 0;
   let _hudIconSeq = 0;
@@ -71,6 +71,7 @@
         const raw = await apiFetch('/view-lock?view_key=' + encodeURIComponent(vk));
         const entry = {
           view_key: vk,
+          status: raw?.locked ? 'locked' : 'unlocked',
           locked: !!raw?.locked,
           state: raw?.state || {},
           target_kind: raw?.target_kind || '',
@@ -81,8 +82,18 @@
         };
         _cache.set(vk, entry);
         return entry;
-      } catch (_) {
-        return { view_key: vk, locked: false, state: {}, target_kind: '' };
+      } catch (error) {
+        const entry = {
+          view_key: vk,
+          status: 'error',
+          locked: true,
+          state: {},
+          target_kind: '',
+          error: String(error?.message || error || 'view lock fetch failed'),
+        };
+        _cache.set(vk, entry);
+        _notifyChange(vk);
+        return entry;
       } finally {
         _inflight.delete(vk);
       }
@@ -91,11 +102,11 @@
     return p;
   }
 
-  // 同期判定。キャッシュに載っていれば即返す。未取得なら false（安全側）。
+  // 同期判定。状態を確認できない間は fail-closed として編集を止める。
   function isLocked(vk) {
     if (!vk) return false;
     const e = _cache.get(vk);
-    return !!(e && e.locked);
+    return !e || e.status === 'error' || !!e.locked;
   }
 
   async function putLock(vk, target, paneId, kind, locked, state, user) {
@@ -114,6 +125,7 @@
       // 新しい状態をキャッシュに入れ直す
       _cache.set(vk, {
         view_key: vk,
+        status: locked ? 'locked' : 'unlocked',
         locked: !!locked,
         state: state || {},
         target_kind: kind || '',
@@ -130,7 +142,7 @@
   }
 
   // 互換API。表示ロックはユーザーが明示的にロックアイコンから有効化する。
-  // 注釈ストロークの一筆目では自動ロックも確認ダイアログも出さない。
+  // アノテートストロークの一筆目では自動ロックも確認ダイアログも出さない。
   async function engage(vk, kind, getState) {
     if (!vk) return true; // view_key が取れないビューはガード対象外
     await get(vk);
@@ -140,13 +152,14 @@
   // §8.4 ロック中の操作ブロック。解除を促し、解除したら true。キャンセルなら false。
   async function guardAction(vk, kind) {
     if (!vk) return true;
-    if (!isLocked(vk)) {
-      // キャッシュに無い場合は非同期取得。ここは同期判定なので false 相当＝通過扱い
-      const e = await get(vk);
-      if (!e?.locked) return true;
+    const entry = _cache.get(vk) || await get(vk);
+    if (entry?.status === 'error') {
+      if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。通信状態を確認して再試行してください', true);
+      return false;
     }
+    if (!entry?.locked) return true;
     const ok = await cfConfirm(
-      'このビューは注釈のため表示ロックされています。表示ロックを解除すると既存の注釈位置がズレる可能性があります（注釈自体は削除されません）。表示ロックを解除しますか？'
+      'このビューはアノテートのため表示ロックされています。表示ロックを解除すると既存のアノテート位置がズレる可能性があります（アノテート自体は削除されません）。表示ロックを解除しますか？'
     );
     if (!ok) return false;
     const cur = _cache.get(vk) || {};
@@ -163,11 +176,15 @@
   // ロック切替（UI アイコンから）
   async function toggle(vk, kind, getState) {
     if (!vk) return;
-    await get(vk);
+    const loaded = await get(vk);
+    if (loaded?.status === 'error') {
+      if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。再試行してください', true);
+      return;
+    }
     const cur = _cache.get(vk) || {};
     if (cur.locked) {
       const ok = await cfConfirm(
-        'このビューの表示ロックを解除します。解除後はフィルタ・折り畳み・表示モード等の変更が自由に行えますが、既存の注釈位置がズレる可能性があります。解除しますか？'
+        'このビューの表示ロックを解除します。解除後はフィルタ・折り畳み・表示モード等の変更が自由に行えますが、既存のアノテート位置がズレる可能性があります。解除しますか？'
       );
       if (!ok) return;
       const target = cur.target_path || (vk.split('#')[0] || '');
@@ -228,7 +245,7 @@
 
   function _resolveHudContainer(hostEl) {
     if (!hostEl) return null;
-    const directToolbar = hostEl.querySelector(':scope > .gb-toolbar, :scope > .smart-db-toolbar, :scope > [id$="-toolbar"]');
+    const directToolbar = hostEl.querySelector(':scope > .gb-toolbar, :scope > [id$="-toolbar"]');
     if (directToolbar) return directToolbar;
     const first = hostEl.firstElementChild;
     if (!first) return hostEl;
@@ -270,22 +287,33 @@
       try { btn._viewLockUnsubscribe(); } catch (_) {}
       btn._viewLockUnsubscribe = null;
     }
-    btn._viewLockClickHandler = (ev) => {
+    btn._viewLockClickHandler = async (ev) => {
       ev.preventDefault(); ev.stopPropagation();
-      toggle(vk, kind, getState);
+      if (_cache.get(vk)?.status === 'error') invalidate(vk);
+      await toggle(vk, kind, getState);
+      render();
     };
     btn.addEventListener('click', btn._viewLockClickHandler);
     const render = () => {
       const entry = _cache.get(vk);
+      const status = entry?.status || 'unknown';
       const locked = !!(entry && entry.locked);
       btn.innerHTML = _viewLockIconMarkup(locked);
-      btn.title = locked
+      btn.title = status === 'error'
+        ? '表示ロック状態を取得できません（クリックで再試行）'
+        : status === 'unknown'
+          ? '表示ロック状態を確認中です'
+          : locked
         ? '表示ロック中です（クリックで解除）'
         : '表示ロックを有効にする';
       btn.setAttribute('aria-label', locked ? '表示ロックを解除' : '表示ロックを有効にする');
+      if (status === 'error') btn.setAttribute('aria-label', '表示ロック状態を再取得');
       btn.setAttribute('aria-pressed', locked ? 'true' : 'false');
+      btn.setAttribute('aria-busy', status === 'unknown' ? 'true' : 'false');
       btn.dataset.viewLockState = locked ? 'locked' : 'unlocked';
+      if (status === 'error' || status === 'unknown') btn.dataset.viewLockState = status;
       btn.classList.toggle('vl-lock-icon-locked', locked);
+      btn.classList.toggle('vl-lock-icon-error', status === 'error');
       btn.style.color = '';
     };
     render();
@@ -295,7 +323,7 @@
     return { el: btn, viewKey: vk, refresh: render };
   }
 
-  // 旧API名との互換用。スクロールは注釈レイヤ側で追従できるため、ロック中も止めない。
+  // 旧API名との互換用。スクロールはアノテートレイヤ側で追従できるため、ロック中も止めない。
   // ここでは現在位置だけ記録し、表示状態の変更ガードは installInteractionInterceptor に委ねる。
   function guardScrollContainer(containerEl, vk, kind) {
     if (!containerEl || !vk) return;
@@ -359,6 +387,49 @@
         else el.textContent = String(value);
       }
     };
+    const captureInputReplay = (e, el) => {
+      if (e.type !== 'beforeinput' && e.type !== 'paste') return null;
+      const data = e.type === 'paste'
+        ? String(e.clipboardData?.getData?.('text/plain') || '')
+        : String(e.data ?? '');
+      const hasTextValue = typeof el?.value === 'string';
+      if (hasTextValue) {
+        const start = Number.isInteger(el.selectionStart) ? el.selectionStart : el.value.length;
+        const end = Number.isInteger(el.selectionEnd) ? el.selectionEnd : start;
+        return { kind: 'value', data, start, end, inputType: e.inputType || (e.type === 'paste' ? 'insertFromPaste' : 'insertText') };
+      }
+      if (isEditableHost(el) && typeof window.getSelection === 'function') {
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+        return { kind: 'contenteditable', data, range, inputType: e.inputType || (e.type === 'paste' ? 'insertFromPaste' : 'insertText') };
+      }
+      return null;
+    };
+    const dispatchInput = (el, replay) => {
+      const init = { bubbles: true, inputType: replay.inputType, data: replay.data };
+      const InputCtor = (typeof window.InputEvent === 'function') ? window.InputEvent : (typeof InputEvent === 'function' ? InputEvent : Event);
+      el.dispatchEvent(new InputCtor('input', init));
+    };
+    const replayInput = (el, replay) => {
+      if (!el?.isConnected || !replay) return;
+      if (replay.kind === 'value') {
+        if (typeof el.setRangeText === 'function') el.setRangeText(replay.data, replay.start, replay.end, 'end');
+        else el.value = String(el.value || '').slice(0, replay.start) + replay.data + String(el.value || '').slice(replay.end);
+        dispatchInput(el, replay);
+        return;
+      }
+      const range = replay.range;
+      if (!range || !range.commonAncestorContainer?.isConnected) return;
+      range.deleteContents();
+      const textNode = document.createTextNode(replay.data);
+      range.insertNode(textNode);
+      range.setStartAfter(textNode);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      dispatchInput(el, replay);
+    };
     const resolveGuardElement = (target, eventType) => {
       if (!isElementNode(target)) return null;
       if (eventType === 'pointerdown') return target.closest(`${pointerGuardSel}, ${interactiveSel}`);
@@ -408,6 +479,7 @@
           return;
         }
         const prevValue = el._vlPrevValue !== undefined ? el._vlPrevValue : readValue(el);
+        const inputReplay = captureInputReplay(e, el);
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         guardAction(info.viewKey, info.kind).then((ok) => {
@@ -420,6 +492,8 @@
               el.dispatchEvent(new Event('change', { bubbles: true }));
             } else if (e.type === 'click' && el.isConnected && typeof el.click === 'function') {
               el.click();
+            } else if (inputReplay) {
+              replayInput(el, inputReplay);
             }
           } catch (_) {}
           finally {

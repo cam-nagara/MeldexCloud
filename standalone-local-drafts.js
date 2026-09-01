@@ -245,6 +245,9 @@
 
     async function discardCurrent() {
       clearTimeout(state.timer);
+      if (state.savePromise) await state.savePromise.catch(() => false);
+      if (state.syncPromise) await state.syncPromise.catch(() => false);
+      clearTimeout(state.timer);
       const currentId = recordId();
       await deleteSnapshot(currentId).catch(() => {});
       if (state.snapshotId && state.snapshotId !== currentId) {

@@ -1,10 +1,10 @@
-/* viewer-annotation-legacy.js — Meldexビューワー: 旧座標系（coordinateSpaceを持たない）注釈の
+/* viewer-annotation-legacy.js — Meldexビューワー: 旧座標系（coordinateSpaceを持たない）アノテートの
    後方互換オーバーレイ。
    計画: app/docs/viewer-stability-common-ui-gap-fix-plan-2026-08-04.md「実装変更 > 3」
    「旧形式は初回安定表示シーンの画面座標を逆行列でメディア座標へ変換しメモリ上で追従」
 
    方針（前身計画からの変更点）:
-     - 旧仕様の注釈は、以前は「#display全体を基準にした固定オーバーレイ」（ズーム/パン/反転には
+     - 旧仕様のアノテートは、以前は「#display全体を基準にした固定オーバーレイ」（ズーム/パン/反転には
        追従しない）にそのまま描画していた。今回、対象シーン（viewer-annotation-scene.js）が
        読み込まれるたびに、旧座標（#display基準の生CSS px、#displayの現在のrotate/flipのみ
        反映済み）を、非表示の参照フレームSVGのgetScreenCTM()でクライアント座標へ、続けて
@@ -133,7 +133,7 @@
     if (scene.isPdf && scene.pageIndex != null) newData.pageIndex = scene.pageIndex;
     const tail = _convertLegacyTail(scene, data);
     if (tail) newData.tail = tail;
-    NotesEngine()?.render?.(scene, { id: item.id, color: item.color }, newData);
+    return NotesEngine()?.render?.(scene, { id: item.id, color: item.color }, newData) || null;
   }
 
   // rebuild()は互換のため残置（viewer-annotation-scene.jsのrebuild()から無条件で呼ばれる）。
@@ -142,16 +142,28 @@
 
   function setItemsForPath(path, items) {
     const scene = SceneEngine()?.findSceneByPath?.(path);
-    if (!scene) return; // 対象シーンが見つからない場合は何もしない（旧データは無変更のまま）
+    if (!scene) return { sceneFound: false, notes: 0, strokes: 0, rects: 0 };
+    const summary = { sceneFound: true, notes: 0, strokes: 0, rects: 0 };
     (items || []).forEach(item => {
       let data = {};
       try { data = item.data ? (typeof item.data === 'string' ? JSON.parse(item.data) : item.data) : {}; }
       catch { return; }
-      if (_isNoteItem(item, data)) { _renderConvertedNote(scene, item, data); return; }
+      if (_isNoteItem(item, data)) {
+        if (_renderConvertedNote(scene, item, data)) summary.notes += 1;
+        return;
+      }
       if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') return;
-      if (item.type === 'rect' && data.width != null && data.height != null) { _renderConvertedRect(scene, item, data); return; }
-      if (data.points) _renderConvertedStroke(scene, item, data);
+      if (item.type === 'rect' && data.width != null && data.height != null) {
+        _renderConvertedRect(scene, item, data);
+        summary.rects += 1;
+        return;
+      }
+      if (data.points) {
+        _renderConvertedStroke(scene, item, data);
+        summary.strokes += 1;
+      }
     });
+    return summary;
   }
 
   // 旧ストローク/矩形/付箋は、変換後はすべてシーン本体（scene.strokesG / NotesEngine管理下）

@@ -8,7 +8,7 @@ function _getActiveViewLockInfo() {
   const kindMap = {
     page: 'page', entity: 'page',
     database: 'db', pivot: 'db', tree: 'db', gallery: 'db', kanban: 'db', timeline: 'db',
-    chart: 'db', graph: 'db', form: 'db', 'smart-db': 'db',
+    chart: 'db', graph: 'db', form: 'db',
     scriptnote: 'scriptnote', calendar: 'calendar',
     media: 'media', folder: 'folder',
     compare: 'compare',

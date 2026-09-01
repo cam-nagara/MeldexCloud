@@ -170,6 +170,8 @@ class ScriptNoteComponent extends ToolComponent {
     super(paneId, tabId);
     this._editor = null;
     this._toolbarBound = false;
+    this._fileLockChangeHandler = () => this._syncReadOnlyFromFileLock();
+    window.addEventListener?.('meldex:file-locks-updated', this._fileLockChangeHandler);
   }
 
   create() {
@@ -199,10 +201,10 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-icon-btn" data-sn-action="undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button><span class="ico ico-undo2"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button><span class="ico ico-redo2"></span></button>
   <div class="sep"></div>
-  <button type="button" class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き" aria-label="横書き"><span class="ico ico-textAlignStart"></span></button>
-  <button type="button" class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き" aria-label="縦書き"><span class="ico ico-kanban"></span></button>
-  <button type="button" class="tb-icon-btn" data-sn-action="wrap" id="btn-wrap" title="折返し" aria-label="折返し"><span class="ico ico-wrapText"></span></button>
-  <button type="button" class="tb-icon-btn" data-sn-action="mergeDisplay" id="btn-merge-display" title="前行と同じタイプ/ガター値を省略表示（まとめて表示）" aria-label="まとめ表示"><span class="ico ico-rows3"></span></button>
+  <button type="button" class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き" aria-label="横書き" aria-pressed="true"><span class="ico ico-textAlignStart"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き" aria-label="縦書き" aria-pressed="false"><span class="ico ico-kanban"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="wrap" id="btn-wrap" title="折返し" aria-label="折返し" aria-pressed="false"><span class="ico ico-wrapText"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="mergeDisplay" id="btn-merge-display" title="前行と同じタイプ/ガター値を省略表示（まとめて表示）" aria-label="まとめ表示" aria-pressed="false"><span class="ico ico-rows3"></span></button>
   <div class="sep"></div>
   <button type="button" class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
   <div class="tb-spacer"></div>
@@ -268,12 +270,61 @@ class ScriptNoteComponent extends ToolComponent {
     // destroy()時のみ_restoreDetailPanel()を呼ぶ
   }
 
-  destroy() {
-    if (this._editor) { this._editor.flush(); this._editor.destroy(); this._editor = null; }
+  destroy(options = {}) {
+    // destroy()内でPromiseを投げっぱなしにすると409/保存失敗より先にDOMと
+    // 下書きを破棄する。呼出元は共通safe removalでflushをawaitした証明を渡す。
+    if (this._editor && options.skipFlush !== true) {
+      if (typeof showStatus === 'function') {
+        showStatus('シナリオの保存確認前には画面を破棄できません', true);
+      }
+      return false;
+    }
+    if (this._editor) { this._editor.destroy(); this._editor = null; }
+    window.removeEventListener?.('meldex:file-locks-updated', this._fileLockChangeHandler);
     this._restoreDetailPanel();
     // SEP WebSocket の参照カウントを減らす（最後のコンポーネント破棄で WS を閉じる）
     if (typeof _sn2SepRelease === 'function') _sn2SepRelease();
     super.destroy();
+    return true;
+  }
+
+  _syncReadOnlyFromFileLock() {
+    const path = this._editor?._path || this.state?.scenarioPath || '';
+    let locked = false;
+    try { locked = !!(path && typeof isItemLocked === 'function' && isItemLocked(path)); } catch {}
+    this._editor?.setReadOnly?.(locked);
+    if (!this.el) return locked;
+    this.el.dataset.fileReadOnly = locked ? 'true' : 'false';
+    const title = this.el.querySelector?.('#title-input');
+    const layout = this.el.querySelector?.('#scenario-note-layout-select');
+    if (title) title.disabled = locked;
+    if (layout) layout.disabled = locked;
+    const mutationActions = new Set([
+      'saveTemplate', 'manageTemplates', 'undo', 'redo', 'horizontal', 'vertical',
+      'wrap', 'mergeDisplay', 'addColumn', 'search',
+    ]);
+    const actionControls = this.el.querySelectorAll?.('[data-sn-action]') || [];
+    actionControls.forEach((button) => {
+      if (mutationActions.has(button.dataset.snAction || '')) button.disabled = locked;
+    });
+    return locked;
+  }
+
+  _syncEditorToggleButtons() {
+    if (!this.el || !this._editor?.doc) return;
+    const editorState = this._editor.doc.editor || {};
+    const states = {
+      '#btn-horizontal': (editorState.viewMode || 'horizontal') === 'horizontal',
+      '#btn-vertical': editorState.viewMode === 'vertical',
+      '#btn-wrap': !!editorState.wrapMode,
+      '#btn-merge-display': !!editorState.mergeDisplay,
+    };
+    Object.entries(states).forEach(([selector, pressed]) => {
+      const button = this.el.querySelector(selector);
+      if (!button) return;
+      button.classList.toggle('active', pressed);
+      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    });
   }
 
   // 遷移前flush契約（計画書「閲覧・編集・保存」節）。gb-subpanel.js /
@@ -597,17 +648,16 @@ class ScriptNoteComponent extends ToolComponent {
         }
         this._editor._render();
         this._editor._markDirty();
-        this.el.querySelector('#btn-horizontal')?.classList.toggle('active', action === 'horizontal');
-        this.el.querySelector('#btn-vertical')?.classList.toggle('active', action === 'vertical');
+        this._syncEditorToggleButtons();
         return;
       }
       if (action === 'wrap') {
         if (!this._editor?.doc) return;
         this._editor._pushUndo('折り返し切替');
         this._editor.doc.editor.wrapMode = !this._editor.doc.editor.wrapMode;
-        btn.classList.toggle('active', !!this._editor.doc.editor.wrapMode);
         this._editor._render();
         this._editor._markDirty();
+        this._syncEditorToggleButtons();
         return;
       }
       if (action === 'mergeDisplay') {
@@ -615,9 +665,9 @@ class ScriptNoteComponent extends ToolComponent {
         if (!this._editor.doc.editor) this._editor.doc.editor = {};
         this._editor._pushUndo('まとめ表示切替');
         this._editor.doc.editor.mergeDisplay = !this._editor.doc.editor.mergeDisplay;
-        btn.classList.toggle('active', !!this._editor.doc.editor.mergeDisplay);
         this._editor._render();
         this._editor._markDirty();
+        this._syncEditorToggleButtons();
         // 詳細パネルのテーマタブチェックボックスも同期
         const detailCb = document.querySelector('input[data-setting="mergeDisplay"]');
         if (detailCb) detailCb.checked = !!this._editor.doc.editor.mergeDisplay;
@@ -1269,6 +1319,19 @@ class ScriptNoteComponent extends ToolComponent {
     const previousPath = this._editor?._path || this.state.scenarioPath || '';
     const previousLabel = this.state.label || this._editor?.doc?.title || (previousPath ? previousPath.split('/').pop().replace(/\.\w+$/, '') : '');
     const fallbackLabel = nextPath ? nextPath.split('/').pop().replace(/\.\w+$/, '') : '';
+    // 通常の対象切替では、現行シナリオのIME/DOM入力とautosaveを確定してから
+    // 次のファイルを読む。競合レビューからの再読込は直前に回復用下書きを明示保存
+    // しているため、conflictGeneration付き経路だけこのflushを重ねない。
+    if (previousPath && nextPath !== previousPath && conflictGeneration == null && this._editor) {
+      const flushed = await this.flush();
+      if (flushed === false) {
+        if (typeof showStatus === 'function') {
+          showStatus('シナリオを保存できなかったため、切り替えを中止しました', true);
+        }
+        return false;
+      }
+      if (isStaleLoad()) return false;
+    }
     const showGlobalLoading = !options.silent && !options.skipGlobalUi
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
     if (showGlobalLoading) showLoading('シナリオを読み込み中...');
@@ -1302,6 +1365,7 @@ class ScriptNoteComponent extends ToolComponent {
       }
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
+      this._syncReadOnlyFromFileLock();
 
       // UI反映
       const titleInput = this.el?.querySelector?.('#title-input');
@@ -1311,14 +1375,7 @@ class ScriptNoteComponent extends ToolComponent {
       if (layoutSel) layoutSel.value = parsed.layoutMode || 'manga';
       this.state.noteLayoutMode = parsed.layoutMode || 'manga';
       this._syncTabStateFromScenario();
-      // ボタン状態同期
-      const vm = parsed.editor?.viewMode || 'horizontal';
-      const wm = parsed.editor?.wrapMode ?? true;
-      const md = !!parsed.editor?.mergeDisplay;
-      this.el?.querySelector('#btn-horizontal')?.classList.toggle('active', vm === 'horizontal');
-      this.el?.querySelector('#btn-vertical')?.classList.toggle('active', vm === 'vertical');
-      this.el?.querySelector('#btn-wrap')?.classList.toggle('active', !!wm);
-      this.el?.querySelector('#btn-merge-display')?.classList.toggle('active', md);
+      this._syncEditorToggleButtons();
 
       // ナビゲーション登録
       if (!options.skipSaveLastView && typeof saveLastView === 'function') {
@@ -1335,7 +1392,7 @@ class ScriptNoteComponent extends ToolComponent {
       // ヒストリースコープ設定
       if (typeof historySetScope === 'function') historySetScope(this._editor._historyScope());
       if (this._skipDetailSync !== true && this._active) this._syncDetailPanel();
-      // 注釈フローティング UI を再評価（targetPath を新ファイルに合わせ、ボタン表示を更新）
+      // アノテートフローティング UI を再評価（targetPath を新ファイルに合わせ、ボタン表示を更新）
       // showView 経由ではコンポーネントタイプは早期 return するため、ここで明示的に呼ぶ
       if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountFloatingAnnotationUi === 'function') {
         GBPaneBridge.mountFloatingAnnotationUi();

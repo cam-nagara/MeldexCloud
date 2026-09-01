@@ -1,3 +1,97 @@
+      if (typeof global.computeThemeColorSetFromSlots === 'function') {
+        const next = global.computeThemeColorSetFromSlots(undefined, slots);
+        if (Array.isArray(next) && next.length) {
+          setThemeColorSet(next, { save: true, immediateTargets: true });
+          return next;
+        }
+      }
+    } else if (options.preserveStored !== true) {
+      writeStoredThemeColorSlotSettings(null);
+    }
+    return null;
+  }
+
+  function applyThemeColorExtraSlotSettingsFromTheme(themeDef, options = {}) {
+    let slots = themeColorExtraSlotSettingsFromTheme(themeDef, null);
+    let hasStored = false;
+    try { hasStored = localStorage.getItem(THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY) != null; } catch {}
+    if (options.preserveStored === true && hasStored) {
+      slots = compactThemeColorExtraSlotSettings(readStoredThemeColorExtraSlotSettings());
+    }
+    if (slots) {
+      writeStoredThemeColorExtraSlotSettings(slots);
+      return slots;
+    }
+    if (options.preserveStored !== true) {
+      writeStoredThemeColorExtraSlotSettings(null);
+    }
+    return null;
+  }
+
+  function applyThemeUiSettingsFromTheme(themeDef, options = {}) {
+    const ui = themeDef?.ui || {};
+    const applications = normalizeThemeUiApplications(ui.themeUiApplications);
+    const autoTone = normalizeThemeUiAutoTone(ui.themeUiAutoTone);
+    let wroteApplications = false;
+    let wroteAutoTone = false;
+    try {
+      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_APPLICATIONS_KEY) == null) {
+        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(applications));
+        wroteApplications = true;
+      }
+    } catch {}
+    try {
+      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_AUTO_TONE_KEY) == null) {
+        localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(autoTone));
+        wroteAutoTone = true;
+      }
+    } catch {}
+    // 書き込みがあったら CSS rules を再生成してランタイムへ反映 (以前は localStorage のみ
+    // 更新されて `meldex-theme-ui-applications-style` が古い状態のままだった)
+    if (wroteApplications || wroteAutoTone) {
+      applyThemeUiApplications(applications, { forceTargets: true });
+      if (wroteApplications && typeof dispatchThemeUiApplicationsChange === 'function') {
+        dispatchThemeUiApplicationsChange({ applications, fromTheme: true });
+      }
+      if (wroteAutoTone && typeof dispatchThemeUiAutoToneChange === 'function') {
+        dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });
+      }
+    }
+  }
+
+  function normalizeCustomThemePayload(themeDef, fallbackName) {
+    const src = themeDef && typeof themeDef === 'object' ? clone(themeDef) : {};
+    const topLevelCssVars = {};
+    Object.entries(src).forEach(([key, value]) => {
+      if (key.startsWith('--') && value) topLevelCssVars[key] = value;
+    });
+    const base = getThemeById(src.defaultThemeId || src.id || getDefaultThemeId());
+    const next = {
+      ...base,
+      ...src,
+      id: src.id && !String(src.id).startsWith('builtin-') ? String(src.id) : newCustomThemeId('custom'),
+      name: String(src.name || fallbackName || 'カスタムテーマ').trim() || 'カスタムテーマ',
+      builtIn: false,
+      ui: {
+        ...(base.ui || {}),
+        ...(src.ui || {}),
+        cssVars: { ...(base.ui?.cssVars || {}), ...(src.ui?.cssVars || {}), ...topLevelCssVars },
+        themeUiApplications: normalizeThemeUiApplications(src.themeUiApplications || src.ui?.themeUiApplications || base.ui?.themeUiApplications),
+        themeUiAutoTone: normalizeThemeUiAutoTone(src.themeUiAutoTone || src.ui?.themeUiAutoTone || base.ui?.themeUiAutoTone),
+      },
+      board: { ...(base.board || {}), ...(src.board || {}) },
+    };
+    setThemeColorSetOnTheme(next, rawThemeColorSetFromTheme(src) || base.ui?.colorSet);
+    setThemeColorSlotSettingsOnTheme(next, themeColorSlotSettingsFromTheme(src, base.ui?.themeColorSlotSettings));
+    setThemeColorExtraSlotSettingsOnTheme(next, themeColorExtraSlotSettingsFromTheme(src, base.ui?.themeColorExtraSlotSettings));
+    setThemeOsAccentOnTheme(next, themeOsAccentFromTheme(src, base.ui?.useOsAccentColor));
+    setThemeStandardPaletteAdjustOnTheme(next, themeStandardPaletteAdjustFromTheme(src, base.ui?.standardPaletteAdjust));
+    return next;
+  }
+
+  function createCustomThemeFromCurrent(name) {
+    const label = String(name || '').trim();
+    if (!label) return null;
     const source = getThemeById(getDefaultThemeId());
     const colorSet = getThemeColorSet(null, { ignoreOsAccent: true });
     const useOsAccentColor = getUseOsAccentColor();

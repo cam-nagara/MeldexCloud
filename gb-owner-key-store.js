@@ -14,6 +14,24 @@
   const WRAP_KEY_SECRET = 'meldex-owner-key-wrap-v2';
   let _dbPromise = null;
 
+  function _workspaceScope() {
+    let workspace = null;
+    try { workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
+    let activeId = '';
+    try { activeId = _safeText(window.MeldexWorkspaces?.getActiveId?.() || ''); } catch {}
+    if (!workspace && !activeId) return { id: 'local-device', allowLegacyClaim: true };
+    const id = _safeText(
+      workspace.workspaceId || workspace.workspace_id || workspace.stableId
+      || activeId || ''
+    );
+    if (!id) throw new Error('安定したワークスペースIDを取得できません');
+    return { id, allowLegacyClaim: workspace?.ownerKeyLegacyClaim === true };
+  }
+
+  function _rowId() {
+    return `${KEY_ID}:${_workspaceScope().id}`;
+  }
+
   function _bytesToBase64(bytes) {
     let text = '';
     new Uint8Array(bytes || []).forEach(byte => { text += String.fromCharCode(byte); });
@@ -50,22 +68,7 @@
   }
 
   function _workspaceSaltText() {
-    let workspace = null;
-    try { workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
-    let globalState = null;
-    try { globalState = typeof state !== 'undefined' ? state : null; } catch {}
-    const path = _safeText(
-      workspace?.path
-      || workspace?.vaultPath
-      || workspace?.sourceFolder
-      || globalState?.vaultPath
-      || window.MeldexDropboxAuth?.getVaultPath?.()
-      || ''
-    );
-    const account = _safeText(workspace?.accountId || workspace?.ownerId || workspace?.accountName || '');
-    const origin = _safeText(window.location?.origin || 'local-device');
-    const parts = [account, path].filter(Boolean);
-    return `${KDF_SALT}:${parts.join('|') || origin || 'local-device'}`;
+    return `${KDF_SALT}:${_workspaceScope().id}`;
   }
 
   async function _saltBytesFromText(saltText) {
@@ -117,9 +120,9 @@
     return _dbPromise;
   }
 
-  async function _readRow(db) {
+  async function _readRow(db, id = _rowId()) {
     return new Promise((resolve, reject) => {
-      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(KEY_ID);
+      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
     });
@@ -153,7 +156,8 @@
       new TextEncoder().encode(JSON.stringify(payload))
     );
     return {
-      id: KEY_ID,
+      id: _rowId(),
+      workspaceId: _workspaceScope().id,
       schema: ENVELOPE_SCHEMA,
       encrypted: true,
       kdf: {
@@ -210,7 +214,21 @@
         return raw;
       }
     }
-    if (fallbackValue) {
+    const scope = _workspaceScope();
+    if (!row && scope.allowLegacyClaim) {
+      const legacyRow = await _readRow(db, KEY_ID);
+      if (legacyRow) {
+        const raw = await _decryptStoredKey(legacyRow);
+        await _writeStoredKey(raw);
+        await new Promise((resolve, reject) => {
+          const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(KEY_ID);
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error || new Error('IndexedDB legacy delete failed'));
+        });
+        return raw;
+      }
+    }
+    if (fallbackValue && scope.allowLegacyClaim) {
       const raw = _normalizeRawKey(fallbackValue);
       await _writeStoredKey(raw);
       return raw;
@@ -279,7 +297,7 @@
     try {
       const db = await _openDb();
       await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(KEY_ID);
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(_rowId());
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
@@ -301,5 +319,6 @@
     KDF_ITERATIONS,
     KDF_SALT,
     LEGACY_KDF_SALT,
+    workspaceScope: _workspaceScope,
   };
 })();

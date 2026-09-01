@@ -1,3 +1,103 @@
+        try { localStorage.setItem(THEME_COLOR_SET_KEY, JSON.stringify(colors)); } catch {}
+      }
+      _pushThemeSettingsHistory('設定: テーマカラーセット変更', before, [THEME_COLOR_SET_KEY], '', options);
+      if (options.bindTargets !== false) bindPaletteTargets(colors);
+      if (options.renderBoard !== false) scheduleBoardRender();
+      global.dispatchEvent(new CustomEvent('meldex-theme-color-set-change', { detail: { colorSet: colors } }));
+    }, options.delay == null ? 120 : Math.max(0, options.delay));
+  }
+
+  function cancelThemeColorSetCommit() {
+    clearTimeout(_themeColorSetCommitTimer);
+    _themeColorSetCommitTimer = 0;
+    _themeColorSetCommitToken += 1;
+  }
+
+  function resetThemeColorSet(options = {}) {
+    return setThemeColorSet(resolveThemeColorSet(getThemeById(getDefaultThemeId())), options);
+  }
+
+/* === gb-theme-manager.part02.js === */
+/* gb-theme-manager.part02.js: split from gb-theme-manager.js */
+  function _themeUiSlotColorCss(options = {}) {
+    return options.rootVars === true
+      ? 'var(--theme-palette-0,#569cd6)'
+      : 'var(--theme-slot-color,var(--accent))';
+  }
+
+  function _themeUiAutoMixCss(toneColor, amount, options = {}) {
+    const percent = _normalizeThemeUiTonePercent(amount, 30);
+    return `color-mix(in srgb, ${_themeUiSlotColorCss(options)} ${100 - percent}%, ${toneColor} ${percent}%)`;
+  }
+
+  function _themeUiColorCss(value, autoTone, options = {}) {
+    const normalized = _normalizeThemeUiValue(value);
+    if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized === THEME_UI_VALUE_AUTO) return _themeUiSlotColorCss(options);
+    if (normalized === THEME_UI_VALUE_AUTO_LIGHT) return _themeUiAutoMixCss('white', autoTone?.light, options);
+    if (normalized === THEME_UI_VALUE_AUTO_DARK) return _themeUiAutoMixCss('black', autoTone?.dark, options);
+    if (normalized === THEME_UI_VALUE_OS_ACCENT) return THEME_OS_ACCENT_CSS;
+    if (normalized.startsWith(THEME_UI_VALUE_COLOR_PREFIX)) return normalized.slice(THEME_UI_VALUE_COLOR_PREFIX.length);
+    return `var(--theme-palette-${normalized},${_themeUiSlotColorCss(options)})`;
+  }
+
+  const THEME_UI_SELECTED_SELECTOR_SUFFIXES = Object.freeze([
+    '.active',
+    '.selected',
+    '.gb-inner-tab-active',
+    '.gb-panel-tab-active',
+    '[aria-selected="true"]',
+    '[data-selected="1"]',
+  ]);
+
+  function _themeUiSelectedSelectors(base) {
+    return THEME_UI_SELECTED_SELECTOR_SUFFIXES.map(suffix => `${base}${suffix}`);
+  }
+
+  function _themeUiNormalSelector(base) {
+    const selectedExclusions = THEME_UI_SELECTED_SELECTOR_SUFFIXES
+      .map(suffix => `:not(${suffix})`)
+      .join('');
+    return `${base}:not(:hover)${selectedExclusions}`;
+  }
+
+  function _themeUiStateSelector(targetId, stateId) {
+    const base = `[data-theme-palette-target="${targetId}"]`;
+    if (stateId === 'hover') return `${base}:hover`;
+    if (stateId === 'selected') {
+      return _themeUiSelectedSelectors(base).join(',');
+    }
+    if (stateId === 'normal') return _themeUiNormalSelector(base);
+    return base;
+  }
+
+  function _themeUiExpandChildSelector(selector, childSelector) {
+    if (!childSelector) return selector;
+    const bases = String(selector || '').split(',').map(item => item.trim()).filter(Boolean);
+    const children = String(childSelector || '').split(',').map(item => item.trim()).filter(Boolean);
+    if (!bases.length || !children.length) return selector;
+    return bases.flatMap(base => [base, ...children.map(child => `${base} ${child}`)]).join(',');
+  }
+
+  function _themeUiVarRule(target, stateId, propId, colorCss) {
+    const raw = target?.vars?.[stateId]?.[propId];
+    const keys = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    const declarations = keys
+      .filter(key => /^--[a-z0-9-]+$/i.test(String(key || '')))
+      .map(key => `${key}:${colorCss}!important`)
+      .join(';');
+    return declarations ? `:root{${declarations}}` : '';
+  }
+
+  function _themeUiNoteHeadingAccentRule(selector, colorCss) {
+    const levels = ['title', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+    const declarations = levels.map(level => `--page-${level}-accent-color:${colorCss}!important`).join(';');
+    return `${selector}{${declarations}}`;
+  }
+
+  function _themeUiRuleForProp(selector, target, stateId, propId, colorCss) {
+    if (!selector || !colorCss) return '';
+    if (target?.vars) return _themeUiVarRule(target, stateId, propId, colorCss);
     selector = _themeUiExpandChildSelector(selector, target?.childSelector);
     const targetId = target?.id || '';
     if (propId === 'fg') {
@@ -9,6 +109,9 @@
     if (propId === 'underline') {
       if (targetId === 'section-bar') {
         return `${selector}{border-left-color:${colorCss}!important}`;
+      }
+      if (targetId === 'folder-tree-folder') {
+        return `${selector}{outline-color:${colorCss}!important}`;
       }
       if (targetId === 'note-heading') {
         return _themeUiNoteHeadingAccentRule(selector, colorCss);
@@ -162,6 +265,7 @@
     fallback('--ui-bg-control', '--bg3', '#2d2d2d');
     fallback('--ui-bg-control-hover', '--bg4', '#3e3e3e');
     if (!next['--ui-bg-control-active']) next['--ui-bg-control-active'] = 'color-mix(in srgb, var(--accent) 18%, var(--bg3))';
+    fallback('--ui-control-active-fg', '--fg', '#ffffff');
     fallback('--ui-popup-bg', '--bg2', '#252525');
     fallback('--ui-accent', '--accent', '#569cd6');
     if (!next['--accent-bg']) next['--accent-bg'] = 'color-mix(in srgb, var(--accent) 12%, transparent)';
@@ -475,16 +579,6 @@
     fallback('--chat-active-bg', '--ui-accent', '#2563eb');
     fallback('--chat-active-fg', '--ui-fg-strong', '#ffffff');
     fallback('--chat-accent', '--accent', '#569cd6');
-    fallback('--timer-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-panel-bg', '--bg2', '#252525');
-    fallback('--timer-display-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-fg', '--fg', '#d4d4d4');
-    fallback('--timer-muted-fg', '--fg2', '#969696');
-    fallback('--timer-border', '--border', '#333333');
-    fallback('--timer-hover-bg', '--ui-hover-bg', '#3e3e3e');
-    fallback('--timer-active-bg', '--ui-accent', '#2563eb');
-    fallback('--timer-active-fg', '--ui-fg-strong', '#ffffff');
-    fallback('--timer-accent', '--accent', '#569cd6');
     fallback('--history-bg', '--content-bg', '#1e1e1e');
     fallback('--history-row-bg', '--bg2', '#252525');
     fallback('--history-fg', '--fg', '#d4d4d4');
@@ -804,97 +898,3 @@
     }
     if (slots) {
       writeStoredThemeColorSlotSettings(slots);
-      if (typeof global.computeThemeColorSetFromSlots === 'function') {
-        const next = global.computeThemeColorSetFromSlots(undefined, slots);
-        if (Array.isArray(next) && next.length) {
-          setThemeColorSet(next, { save: true, immediateTargets: true });
-          return next;
-        }
-      }
-    } else if (options.preserveStored !== true) {
-      writeStoredThemeColorSlotSettings(null);
-    }
-    return null;
-  }
-
-  function applyThemeColorExtraSlotSettingsFromTheme(themeDef, options = {}) {
-    let slots = themeColorExtraSlotSettingsFromTheme(themeDef, null);
-    let hasStored = false;
-    try { hasStored = localStorage.getItem(THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY) != null; } catch {}
-    if (options.preserveStored === true && hasStored) {
-      slots = compactThemeColorExtraSlotSettings(readStoredThemeColorExtraSlotSettings());
-    }
-    if (slots) {
-      writeStoredThemeColorExtraSlotSettings(slots);
-      return slots;
-    }
-    if (options.preserveStored !== true) {
-      writeStoredThemeColorExtraSlotSettings(null);
-    }
-    return null;
-  }
-
-  function applyThemeUiSettingsFromTheme(themeDef, options = {}) {
-    const ui = themeDef?.ui || {};
-    const applications = normalizeThemeUiApplications(ui.themeUiApplications);
-    const autoTone = normalizeThemeUiAutoTone(ui.themeUiAutoTone);
-    let wroteApplications = false;
-    let wroteAutoTone = false;
-    try {
-      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_APPLICATIONS_KEY) == null) {
-        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(applications));
-        wroteApplications = true;
-      }
-    } catch {}
-    try {
-      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_AUTO_TONE_KEY) == null) {
-        localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(autoTone));
-        wroteAutoTone = true;
-      }
-    } catch {}
-    // 書き込みがあったら CSS rules を再生成してランタイムへ反映 (以前は localStorage のみ
-    // 更新されて `meldex-theme-ui-applications-style` が古い状態のままだった)
-    if (wroteApplications || wroteAutoTone) {
-      applyThemeUiApplications(applications, { forceTargets: true });
-      if (wroteApplications && typeof dispatchThemeUiApplicationsChange === 'function') {
-        dispatchThemeUiApplicationsChange({ applications, fromTheme: true });
-      }
-      if (wroteAutoTone && typeof dispatchThemeUiAutoToneChange === 'function') {
-        dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });
-      }
-    }
-  }
-
-  function normalizeCustomThemePayload(themeDef, fallbackName) {
-    const src = themeDef && typeof themeDef === 'object' ? clone(themeDef) : {};
-    const topLevelCssVars = {};
-    Object.entries(src).forEach(([key, value]) => {
-      if (key.startsWith('--') && value) topLevelCssVars[key] = value;
-    });
-    const base = getThemeById(src.defaultThemeId || src.id || getDefaultThemeId());
-    const next = {
-      ...base,
-      ...src,
-      id: src.id && !String(src.id).startsWith('builtin-') ? String(src.id) : newCustomThemeId('custom'),
-      name: String(src.name || fallbackName || 'カスタムテーマ').trim() || 'カスタムテーマ',
-      builtIn: false,
-      ui: {
-        ...(base.ui || {}),
-        ...(src.ui || {}),
-        cssVars: { ...(base.ui?.cssVars || {}), ...(src.ui?.cssVars || {}), ...topLevelCssVars },
-        themeUiApplications: normalizeThemeUiApplications(src.themeUiApplications || src.ui?.themeUiApplications || base.ui?.themeUiApplications),
-        themeUiAutoTone: normalizeThemeUiAutoTone(src.themeUiAutoTone || src.ui?.themeUiAutoTone || base.ui?.themeUiAutoTone),
-      },
-      board: { ...(base.board || {}), ...(src.board || {}) },
-    };
-    setThemeColorSetOnTheme(next, rawThemeColorSetFromTheme(src) || base.ui?.colorSet);
-    setThemeColorSlotSettingsOnTheme(next, themeColorSlotSettingsFromTheme(src, base.ui?.themeColorSlotSettings));
-    setThemeColorExtraSlotSettingsOnTheme(next, themeColorExtraSlotSettingsFromTheme(src, base.ui?.themeColorExtraSlotSettings));
-    setThemeOsAccentOnTheme(next, themeOsAccentFromTheme(src, base.ui?.useOsAccentColor));
-    setThemeStandardPaletteAdjustOnTheme(next, themeStandardPaletteAdjustFromTheme(src, base.ui?.standardPaletteAdjust));
-    return next;
-  }
-
-  function createCustomThemeFromCurrent(name) {
-    const label = String(name || '').trim();
-    if (!label) return null;

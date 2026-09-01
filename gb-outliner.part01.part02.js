@@ -1,4 +1,4 @@
-  row.draggable = !itemLocked && !item._isRoot && item.type !== 'entity';
+  row.draggable = !itemLocked && !item._isRoot;
   row.tabIndex = -1;
 
   const isFolder = item.type === 'folder';
@@ -165,10 +165,19 @@
         childrenDiv.appendChild(spinner);
         try {
           if (currentIsDB) {
-            const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
+            const [pivotData] = await Promise.all([
+              apiFetch('/pivot?path=' + encodeURIComponent(item.path)),
+              window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, {
+                reason: 'outliner-expand',
+              }) || Promise.resolve(null),
+            ]);
+            window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
-            const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            const entityItems = entityNames.map(name => ({
+              name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+              entityData: pivotData.entities[name],
+            }));
             // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
             const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
             if (attachmentFolder) {
@@ -423,6 +432,16 @@
   });
 
   row.addEventListener('dragover', (e) => {
+    const topicMime = window.MeldexTopicPlacementUI?.MIME;
+    if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
+      if (item.type === 'database' || item.type === 'board') {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+        clearDragIndicators();
+        row.classList.add('drag-over-inside');
+      }
+      return;
+    }
     e.preventDefault();
     if (!draggedNode) {
       const externalItems = _outlinerExternalDragItems(e);
@@ -468,6 +487,13 @@
   });
 
   row.addEventListener('drop', async (e) => {
+    const topicMime = window.MeldexTopicPlacementUI?.MIME;
+    if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
+      e.preventDefault();
+      e.stopPropagation();
+      clearDragIndicators();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {

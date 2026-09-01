@@ -445,7 +445,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="トピック追加" aria-label="トピック追加">${_bdIcon('credit-card', 16)}</button>
-      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル" aria-label="カードスタイル" aria-haspopup="menu" aria-expanded="false">
+      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="トピックスタイル" aria-label="トピックスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
@@ -574,12 +574,12 @@ function _bdCardPathShapePreviewHtml(style, common) {
   const textColor = _bdPresetSafeCssColor(style.textColor, 'var(--fg)');
   const borderWidth = _bdPresetClampedNumber(style.borderWidth, 0, 0, 24);
   const strokeAttrs = borderWidth > 0
-    ? `stroke="${_bdEscAttr(borderColor)}" stroke-width="${borderWidth * 2}"`
+    ? `stroke="${_bdEscAttr(borderColor)}" stroke-opacity="${_bdNormalizeStyleOpacity(style.borderOpacity, 1)}" stroke-width="${borderWidth * 2}"`
     : 'stroke="none"';
   const joinAttrs = shape === 'thorn' || shape === 'thorn-curve'
     ? 'stroke-linejoin="miter" stroke-miterlimit="40"'
     : 'stroke-linejoin="round"';
-  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(textColor)};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
+  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(textColor)};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" fill-opacity="${_bdNormalizeStyleOpacity(style.bgOpacity, 1)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
 }
 
 // テキストフチを text-shadow の多方向重ねで擬似描画する。
@@ -629,13 +629,21 @@ function _bdCardStylePreviewHtml(style) {
     const pathHtml = _bdCardPathShapePreviewHtml(style, { fontCss, shadowCss });
     if (pathHtml) return pathHtml;
   }
-  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(bgColor)};color:${_bdEscAttr(textColor)};border:${borderWidth}px solid ${_bdEscAttr(borderColor)};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
+  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(_bdColorWithOpacity(bgColor, style.bgOpacity))};color:${_bdEscAttr(textColor)};border:${borderWidth}px solid ${_bdEscAttr(_bdColorWithOpacity(borderColor, style.borderOpacity))};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
 }
 
 function _bdLineStylePreviewHtml(style) {
   if (!style) return '<span class="bd-style-line-preview-empty"></span>';
   const color = _bdPresetSafeCssColor(style.color, 'var(--accent)');
-  const strokeWidth = _bdPresetClampedNumber(style.width, 2, 0, 24);
+  const sourceStrokeWidth = typeof _bdNormalizeLineWidth === 'function'
+    ? _bdNormalizeLineWidth(style.width, 2)
+    : _bdPresetClampedNumber(style.width, 2, 0, 200);
+  // 200pxまでの保存値を保持したまま、20px高のプレビューへ同率縮小する。
+  const geometry = typeof _bdArrowMarkerGeometry === 'function'
+    ? _bdArrowMarkerGeometry(sourceStrokeWidth)
+    : { axisLength: 14, crossSpan: Math.max(8, sourceStrokeWidth + 8), refX: 3, refY: Math.max(8, sourceStrokeWidth + 8) / 2 };
+  const previewScale = Math.min(1, 12 / Math.max(12, geometry.crossSpan));
+  const strokeWidth = sourceStrokeWidth * previewScale;
   const dash = style.style === 'dashed' ? 'stroke-dasharray="6 3"' : '';
   // v0.5.320: 旧 free-bezier → curve、orthogonal-curve → orthogonal に統合。
   // 直角線のコーナー半径 >0 ならプレビューでも角丸表示。
@@ -649,11 +657,14 @@ function _bdLineStylePreviewHtml(style) {
     : pathType === 'straight'
       ? 'M6,10 L50,10'
       : 'M6,14 C18,4 38,4 50,14';
-  const markerSize = Math.max(7, Math.min(12, strokeWidth * 2.2 + 2));
-  const refX = Math.max(1, Math.min(markerSize * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  const markerAxisLength = geometry.axisLength * previewScale;
+  const markerCrossSpan = geometry.crossSpan * previewScale;
+  const refX = geometry.refX * previewScale;
+  const refY = geometry.refY * previewScale;
   const markerId = `bd-preview-arrow-${Math.random().toString(36).slice(2, 8)}`;
   const pathId = `bd-preview-path-${Math.random().toString(36).slice(2, 8)}`;
-  const marker = `<marker id="${markerId}" markerWidth="${markerSize}" markerHeight="${markerSize}" refX="${refX}" refY="${markerSize / 2}" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0,0 L${markerSize - 1},${markerSize / 2} L0,${markerSize} Z" fill="${_bdEscAttr(color)}"/></marker>`;
+  const colorOpacity = _bdNormalizeStyleOpacity(style.colorOpacity, 1);
+  const marker = `<marker id="${markerId}" markerWidth="${markerAxisLength}" markerHeight="${markerCrossSpan}" refX="${refX}" refY="${refY}" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0,0 L${Math.max(0, markerAxisLength - previewScale)},${refY} L0,${markerCrossSpan} Z" fill="${_bdEscAttr(color)}" fill-opacity="${colorOpacity}"/></marker>`;
   const markerAttrs = strokeWidth > 0 ? [
     (style.arrow === 'start' || style.arrow === 'both') ? `marker-start="url(#${markerId})"` : '',
     (style.arrow === 'end' || style.arrow === 'both') ? `marker-end="url(#${markerId})"` : '',
@@ -690,7 +701,7 @@ function _bdLineStylePreviewHtml(style) {
       labelSvg = `${bgRect}${borderRect}<text x="28" y="12" text-anchor="middle" dominant-baseline="middle" fill="${_bdEscAttr(labelTextColor)}" font-size="9" ${fontAttr} ${strokeAttr}>Aa</text>`;
     }
   }
-  return `<svg width="62" height="20" viewBox="0 0 56 20" fill="none" xmlns="http://www.w3.org/2000/svg"><defs>${marker}</defs><path id="${pathId}" d="${d}" stroke="${_bdEscAttr(color)}" stroke-width="${strokeWidth}" ${dash} stroke-linecap="${style.arrow ? 'butt' : 'round'}" stroke-linejoin="round" ${markerAttrs}/>${labelSvg}</svg>`;
+  return `<svg width="62" height="20" viewBox="0 0 56 20" fill="none" xmlns="http://www.w3.org/2000/svg"><defs>${marker}</defs><path id="${pathId}" d="${d}" stroke="${_bdEscAttr(color)}" stroke-opacity="${colorOpacity}" stroke-width="${strokeWidth}" ${dash} stroke-linecap="${style.arrow ? 'butt' : 'round'}" stroke-linejoin="round" ${markerAttrs}/>${labelSvg}</svg>`;
 }
 
 function _bdStylePickerLargePreviewHtml(kind, style) {

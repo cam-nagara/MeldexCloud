@@ -39,6 +39,7 @@ const VIEW_TYPES = [
   {mode:'kanban', icon:'columns', label:'カンバン'},
   {mode:'calendar', icon:'calendar', label:'カレンダー'},
   {mode:'timeline', icon:'clock', label:'タイムライン'},
+  {mode:'gantt', icon:'ganttChart', label:'ガント'},
   {mode:'chart', icon:'barChart2', label:'チャート'},
   {mode:'graph', icon:'gitBranch', label:'グラフ'},
   {mode:'form', icon:'clipboardList', label:'フォーム'},
@@ -81,7 +82,7 @@ function startSavedViewInlineRename(tab, idx, ctx) {
 function _getViewAddMenuGroups(isCalendarCapable) {
   const groupModes = [
     ['pivot', 'tree', 'gallery', 'kanban'],
-    ['calendar', 'timeline'],
+    ['calendar', 'timeline', 'gantt'],
     ['chart', 'graph'],
     ['form'],
   ];
@@ -210,7 +211,10 @@ function renderDbViewTabs(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const views = getSavedViews(dbPath);
-  const curIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : getCurrentViewIdx(dbPath);
+  const cfg = getDbViewConfig(dbPath);
+  const curIdx = typeof _getCurrentDbViewIndexFromConfig === 'function'
+    ? _getCurrentDbViewIndexFromConfig(cfg, { ctx })
+    : (Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : getCurrentViewIdx(dbPath));
   const tabs = _paneEl(ctx, '.db-view-tabs') || (!ctx ? document.getElementById('db-view-tabs') : null);
   const select = _paneEl(ctx, '.db-view-select') || (!ctx ? document.getElementById('db-view-select') : null);
   _renderDbViewSelect(select, ctx, views, curIdx);
@@ -331,6 +335,24 @@ function renderDbViewTabs(ctx) {
   });
 
   // + ボタン（ビュータイプ選択ドロップダウン付き）
+  const canEditLayout = MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath, ctx) !== true;
+  if (canEditLayout && typeof togglePropertyLayoutEditMode === 'function') {
+    const reorderBtn = document.createElement('button');
+    reorderBtn.type = 'button';
+    reorderBtn.className = 'view-tab-add tb-icon-btn db-column-reorder-toggle';
+    reorderBtn.dataset.e2eId = `db-column-reorder-${e2eScope}`;
+    const editing = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(dbPath);
+    const label = editing ? '列の並べ替えを完了' : '列を並べ替える';
+    reorderBtn.innerHTML = lucide(editing ? 'check' : 'listOrdered', 16);
+    reorderBtn.title = label;
+    reorderBtn.setAttribute('aria-label', label);
+    reorderBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    reorderBtn.addEventListener('click', () => {
+      togglePropertyLayoutEditMode(dbPath);
+      renderDbViewTabs(ctx);
+    });
+    tabs.appendChild(reorderBtn);
+  }
   const addBtn = document.createElement('button');
   addBtn.className = 'view-tab-add tb-icon-btn';
   _markDbViewToolbarAction(addBtn);
@@ -798,7 +820,6 @@ async function _showDbConfigModal(dbPath, ctx) {
       finishRetry();
       return;
     }
-    modalApi.close('saved');
     try {
       await selectDatabase(dbPath, localCtx, {
         silent: true,
@@ -811,9 +832,11 @@ async function _showDbConfigModal(dbPath, ctx) {
       }
     } catch (error) {
       console.warn('シート設定保存後の表示更新に失敗:', error);
+      modalApi.close('saved');
       showStatus('シート設定は保存しましたが、表示を更新できませんでした', true);
       return;
     }
+    modalApi.close('saved');
     showStatus('シート設定を保存しました');
   });
   modalApi.open();
@@ -857,6 +880,7 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name, ctx) {
     : null;
   const paneData = ctx?.dbPath === dbPath ? ctx.pivotData : null;
   const viewState = {
+    id: typeof _newDbSavedViewId === 'function' ? _newDbSavedViewId() : ('view_' + Date.now()),
     name,
     viewMode,
     hiddenCols: _cloneDbViewArray(activeView?.hiddenCols),
@@ -925,6 +949,10 @@ function _initDbViewTypeSpecific(viewMode, dbPath, pivotData) {
       return typeof _normalizeDbTimelineTypeSpecific === 'function'
         ? _normalizeDbTimelineTypeSpecific({})
         : { timeProp: '', endProp: '', rowProp: '_entity', scale: 'day', direction: 'horizontal', colWidths: {}, rowHeights: {}, cardProps: [] };
+    case 'gantt':
+      return typeof _normalizeDbTimelineTypeSpecific === 'function'
+        ? _normalizeDbTimelineTypeSpecific({ rowProp: '_entity', direction: 'horizontal', progressProp: '' })
+        : { timeProp: '', endProp: '', rowProp: '_entity', scale: 'day', direction: 'horizontal', colWidths: {}, rowHeights: {}, cardProps: [], progressProp: '' };
     case 'chart':
       return { chartType: 'bar', xProperty: '', yAggregation: 'count', yProperty: null, showLabels: true, showLegend: true, palette: 'single', singleColor: '' };
     case 'graph':
@@ -987,6 +1015,7 @@ function _cloneSavedViewState(view) {
     cloned = JSON.parse(JSON.stringify(view || {}));
   }
   if (!cloned || typeof cloned !== 'object') cloned = {};
+  cloned.id = typeof _newDbSavedViewId === 'function' ? _newDbSavedViewId() : ('view_' + Date.now());
   if (cloned.formConfig) {
     cloned.formConfig.id = 'form_' + Date.now();
   }
@@ -1078,6 +1107,7 @@ function loadSavedView(idx, ctx, options = {}) {
   const before = options.skipHistory ? null : (typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null);
   setCurrentViewIdx(dbPath, idx, { skipHistory: true });
   ctx.currentViewIdx = idx;
+  ctx.currentViewId = String(v.id || '');
   if (Object.prototype.hasOwnProperty.call(v, 'filter') && typeof setFilter === 'function') {
     setFilter(v.filter || 'disabled', { skipReload: true, dbPath, ctx });
   }
@@ -1087,12 +1117,17 @@ function loadSavedView(idx, ctx, options = {}) {
 
   const targetView = v.viewMode === 'calendar' ? 'timeline' : (v.viewMode || 'pivot');
   ctx.viewMode = targetView;
+  const targetsCurrentDb = typeof state === 'undefined'
+    || !ctx?.dbPath
+    || ctx.dbPath === state.currentDbPath;
+  if (!ctx?.embedded && targetsCurrentDb && typeof state !== 'undefined') state.view = targetView;
   showView(targetView, ctx);
   if (typeof _renderDbViewTabsSafely === 'function') _renderDbViewTabsSafely(ctx);
   else renderDbViewTabs(ctx);
   if (targetView === 'gallery') renderGallery(ctx);
   else if (targetView === 'kanban') renderKanban(ctx);
   else if (targetView === 'timeline') renderTimeline(ctx);
+  else if (targetView === 'gantt' && typeof renderGantt === 'function') renderGantt(ctx);
   else if (targetView === 'chart' && typeof renderChart === 'function') renderChart(ctx);
   else if (targetView === 'graph' && typeof renderGraph === 'function') renderGraph(ctx);
   else if (targetView === 'form' && typeof renderDbFormView === 'function') renderDbFormView(ctx);

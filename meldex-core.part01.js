@@ -777,13 +777,13 @@ function rgbToHex(rgb) {
 // ============================================================
 const FILE_TYPE_LABELS = {
   folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
-  entity: 'ページ', 'smart-db': 'スマートシート', chat: 'チャット',
+  entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
   archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','smart-db','scenario','chat']);
+const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -821,7 +821,7 @@ const LUCIDE = {
   mousePointer: '<path d="M12.586 12.586 19 19"/><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/>',
   creditCard: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   spline: '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
-  // 注釈フロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
+  // アノテートフロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
   // spline（曲線）から activity（角のはっきりした折れ線）へ差し替えるために追加。
   // パス値は vendor/lucide-icons.js の LUCIDE_FULL['activity'] と同一。
   activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
@@ -887,6 +887,7 @@ const LUCIDE = {
   eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   lasso: '<path d="M7 22a5 5 0 0 1-2-4"/><path d="M7 16.93c.96.43 1.96.74 2.99.91"/><path d="M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-3.34-.46"/>',
   stickyNote: '<path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/>',
+  squarePen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
   clipboardList: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
   crosshair: '<circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/>',
   save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
@@ -1028,14 +1029,16 @@ const UI_TYPE_ICONS = {
   scriptnote: 'bookOpenText',
   board: 'presentation',
   calendar: 'calendar',
-  'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
   subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
+  information: 'info',
+  backlinks: 'fileSymlink',
+  'file-theme': 'palette',
   chat: 'messagesSquare',
   tags: 'tag',
-  annotation: 'stickyNote',
+  annotation: 'squarePen',
   sticky: 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
@@ -1120,6 +1123,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';

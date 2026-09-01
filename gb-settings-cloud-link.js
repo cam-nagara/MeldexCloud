@@ -707,8 +707,7 @@
       try {
         // apiFetch は Content-Type ヘッダを自動付与しない。文字列bodyのみだと
         // ブラウザのfetchはデフォルトで text/plain を付けるため、FastAPI側の
-        // dict Body解析が失敗し422になる（test_meldex_smart_sheet_filter_save_content_type.py
-        // に記録された既知の失敗パターンと同じ）。明示的にJSONヘッダを付ける。
+        // dict Body解析が失敗し422になるため、明示的にJSONヘッダを付ける。
         const validated = await apiFetch('/dropbox-link/pick-workspace-folder', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

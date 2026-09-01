@@ -14,6 +14,7 @@ const GBAppLayouts = (() => {
     gallery: 'database',
     kanban: 'database',
     timeline: 'database',
+    gantt: 'database',
     tasks: 'database',
     shifts: 'database',
     calendar: 'database',
@@ -23,7 +24,7 @@ const GBAppLayouts = (() => {
 
   const UTILITY_TYPES = new Set([
     'outliner', 'detail', 'preview', 'chat', 'calendar',
-    'history', 'annotation', 'sticky', 'tags', 'search', 'version', 'timer',
+    'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
   let _initialized = false;
@@ -77,17 +78,37 @@ const GBAppLayouts = (() => {
     };
   }
 
-  function _restoreLayoutStorageSnapshot(snapshot) {
-    if (!snapshot?.storage) return false;
-    (snapshot.keys || Object.keys(snapshot.storage)).forEach((key) => {
-      const value = Object.prototype.hasOwnProperty.call(snapshot.storage, key) ? snapshot.storage[key] : null;
+  function _applyLayoutStorageValues(snapshot) {
+    (snapshot.keys || Object.keys(snapshot.storage || {})).forEach((key) => {
+      const value = Object.prototype.hasOwnProperty.call(snapshot.storage || {}, key) ? snapshot.storage[key] : null;
       if (value === null || value === undefined) localStorage.removeItem(key);
       else localStorage.setItem(key, value);
     });
+  }
+
+  async function _restoreLayoutStorageSnapshot(snapshot) {
+    if (!snapshot?.storage) return false;
+    const before = _captureLayoutStorageSnapshot(snapshot.keys || Object.keys(snapshot.storage));
     if (snapshot.layout && typeof GBLayout !== 'undefined' && typeof GBLayout.restoreLayoutSnapshot === 'function') {
-      GBLayout.restoreLayoutSnapshot(snapshot.layout);
+      const restored = await GBLayout.restoreLayoutSnapshot(snapshot.layout);
+      if (restored !== true) {
+        throw new Error('編集中の画面を保存できなかったため、レイアウト履歴を適用しませんでした');
+      }
     }
-    syncButtons();
+    try {
+      // live layoutのflush/apply成功後だけ、再読込用storage世代を切り替える。
+      _applyLayoutStorageValues(snapshot);
+    } catch (error) {
+      try {
+        if (before.layout && typeof GBLayout !== 'undefined'
+          && typeof GBLayout.restoreLayoutSnapshot === 'function') {
+          await GBLayout.restoreLayoutSnapshot(before.layout);
+        }
+        _applyLayoutStorageValues(before);
+      } catch (_) {}
+      throw error;
+    }
+    try { syncButtons(); } catch (_) {}
     return true;
   }
 
@@ -286,7 +307,7 @@ const GBAppLayouts = (() => {
       GBTabs.createTab('チャット', 'chat', ''),
       GBTabs.createTab('カレンダー', 'calendar', ''),
       GBTabs.createTab('ヒストリー', 'history', ''),
-      GBTabs.createTab('注釈', 'annotation', ''),
+      GBTabs.createTab('アノテート', 'annotation', ''),
     ], 0);
     utilityPane.collapsed = true;
     utilityPane._savedRatio = 0.75;
@@ -544,7 +565,7 @@ function _autoSaveCurrentAppLayout() {
 }
 
 // レイアウト関連のローカル設定をすべて初期化する（設定画面の「レイアウトを初期化」）
-function resetLayoutToDefault() {
+async function resetLayoutToDefault() {
   const layoutKeys = [
     'gb:layout', 'gb:layout:active-pane', 'gb:app-layouts', 'gb:app-layout-active', 'gb:layout-source',
     'gb:app-layout-type-bindings',
@@ -563,20 +584,50 @@ function resetLayoutToDefault() {
   const before = typeof GBAppLayouts?.captureLayoutStorageSnapshot === 'function'
     ? GBAppLayouts.captureLayoutStorageSnapshot(layoutKeys)
     : null;
-  layoutKeys.forEach((k) => localStorage.removeItem(k));
-  for (let i = localStorage.length - 1; i >= 0; i -= 1) {
-    const k = localStorage.key(i);
-    if (k && (k.startsWith('sidebar-section-') || k.startsWith('fv-panel-cfg:'))) {
-      localStorage.removeItem(k);
-    }
-  }
   let restoredDefaultLayout = false;
   if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.resetDefaultLayout === 'function') {
-    GBPaneBridge.resetDefaultLayout({ skipHistory: true });
-    restoredDefaultLayout = true;
+    restoredDefaultLayout = await GBPaneBridge.resetDefaultLayout({ skipHistory: true }) === true;
   }
   if (!restoredDefaultLayout && typeof GBLayout !== 'undefined' && typeof GBLayout.resetLayout === 'function') {
-    GBLayout.resetLayout({ skipHistory: true });
+    restoredDefaultLayout = await GBLayout.resetLayout({ skipHistory: true }) === true;
+  }
+  if (!restoredDefaultLayout) {
+    if (typeof showStatus === 'function') {
+      showStatus('編集中の画面を保存できなかったため、レイアウトを初期化しませんでした', true);
+    }
+    return false;
+  }
+  try {
+    // flushとdefault layout適用が完了してから、旧storageだけを削除する。
+    layoutKeys.forEach((k) => localStorage.removeItem(k));
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('sidebar-section-') || k.startsWith('fv-panel-cfg:'))) {
+        localStorage.removeItem(k);
+      }
+    }
+    if (typeof GBAppLayouts?.setLayoutSource === 'function') GBAppLayouts.setLayoutSource('custom');
+    else localStorage.setItem('gb:layout-source', 'custom');
+    if (typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
+      await Promise.resolve(GBLayout.saveLayout({ immediate: true }));
+    }
+  } catch (error) {
+    let rollbackFailed = false;
+    try {
+      if (before && typeof GBAppLayouts?.restoreLayoutStorageSnapshot === 'function') {
+        await GBAppLayouts.restoreLayoutStorageSnapshot(before);
+      }
+    } catch (_) {
+      rollbackFailed = true;
+    }
+    if (typeof showStatus === 'function') {
+      showStatus(
+        'レイアウト設定の初期化に失敗しました'
+          + (rollbackFailed ? '。保存前状態を自動復元できませんでした' : ''),
+        true,
+      );
+    }
+    return false;
   }
   if (typeof GBAppLayouts?.syncButtons === 'function') GBAppLayouts.syncButtons();
   if (before && typeof GBAppLayouts?.pushLayoutStorageHistory === 'function') {
@@ -588,4 +639,5 @@ function resetLayoutToDefault() {
     );
   }
   if (typeof showStatus === 'function') showStatus('レイアウトを初期化しました');
+  return true;
 }

@@ -31,12 +31,18 @@
     return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset)).toISOString().slice(0, 10);
   }
 
-  function state(rows, user, timestamp) {
+  function sameScope(row, scope) {
+    return String(row?.workspace_id || '') === String(scope?.workspace_id || '')
+      && String(row?.member_id || '') === String(scope?.member_id || '');
+  }
+
+  function state(rows, user, timestamp, scope = null) {
     const day = String(timestamp || '').slice(0, 10);
     const previous = dayOffset(day, -1);
     const targetEpoch = Date.parse(timestamp);
     const latest = (Array.isArray(rows) ? rows : [])
-      .filter(row => row.user === user && String(row.timestamp || '').slice(0, 10) >= previous
+      .filter(row => row.user === user && (!scope || sameScope(row, scope))
+        && String(row.timestamp || '').slice(0, 10) >= previous
         && String(row.timestamp || '').slice(0, 10) <= day && TIME_ENTRY_TYPES.includes(row.type)
         && !Number.isNaN(Date.parse(row.timestamp)) && Date.parse(row.timestamp) <= targetEpoch)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
@@ -44,12 +50,12 @@
     return ({ clock_in: 'working', break_start: 'away', break_end: 'working', clock_out: 'off' })[latest?.type] || 'initial';
   }
 
-  function assertNormalAction(rows, user, type, timestamp, now = Date.now()) {
+  function assertNormalAction(rows, user, type, timestamp, now = Date.now(), scope = null) {
     if (Math.abs(now - Date.parse(timestamp)) > 5 * 60 * 1000) {
       fail('打刻時刻が現在時刻から離れています。時刻設定を確認してください', 400, 'CLOCK_TIMESTAMP_OUT_OF_RANGE');
     }
     const allowed = { initial: ['clock_in'], working: ['clock_out', 'break_start'], away: ['break_end'], off: ['clock_in'] };
-    if (!allowed[state(rows, user, timestamp)].includes(type)) {
+    if (!allowed[state(rows, user, timestamp, scope)].includes(type)) {
       fail('現在の勤務状態ではこの打刻はできません', 409, 'CLOCK_STATE_CONFLICT');
     }
   }
@@ -58,10 +64,13 @@
     const targets = new Map();
     entries.filter(Boolean).forEach((entry) => {
       const user = String(entry.user || '');
+      const workspace_id = String(entry.workspace_id || '');
+      const member_id = String(entry.member_id || '');
       const day = String(entry.timestamp || '').slice(0, 10);
       if (!user || !strictDate(day)) return;
       [day, dayOffset(day, -1)].forEach((candidate) => {
-        if (candidate) targets.set(`${user}\u0000${candidate}`, { user, day: candidate });
+        if (candidate) targets.set(`${workspace_id}\u0000${member_id}\u0000${user}\u0000${candidate}`,
+          { user, day: candidate, workspace_id, member_id });
       });
     });
     return [...targets.values()];
@@ -326,22 +335,34 @@
 
   function createMutationService(deps) {
     const { readStore, writeStore, deriveEvent, randomId, nowIso } = deps;
+    const scopeForUser = typeof deps.scopeForUser === 'function' ? deps.scopeForUser : (() => ({ workspace_id: '', member_id: '' }));
+    const targetKey = target => [String(target.workspace_id || ''), String(target.member_id || ''), String(target.user || '')].join('\u0000');
+    const eventId = target => {
+      if (!target.workspace_id && !target.member_id) return `attendance:${target.user}:${target.day}`;
+      return `attendance:${encodeURIComponent(target.workspace_id || '')}:${encodeURIComponent(target.member_id || target.user)}:${target.day}`;
+    };
 
     async function ensureCalendars(targets) {
       const calendars = await readStore('calendars');
       let changed = false;
       const byUser = new Map();
-      for (const { user } of targets) {
-        if (byUser.has(user)) continue;
-        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user);
+      for (const target of targets) {
+        const { user } = target;
+        const key = targetKey(target);
+        if (byUser.has(key)) continue;
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user
+          && String(row.workspace_id || '') === String(scope.workspace_id || '')
+          && String(row.member_id || '') === String(scope.member_id || ''));
         if (!calendar) {
           const now = nowIso();
           calendar = { id: randomId('attendance-cal'), name: `実績: ${user}`, color: '#6a9955', user,
-            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin', created: now, modified: now };
+            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin',
+            workspace_id: String(scope.workspace_id || ''), member_id: String(scope.member_id || ''), created: now, modified: now };
           calendars.push(calendar);
           changed = true;
         }
-        byUser.set(user, calendar.id);
+        byUser.set(key, calendar.id);
       }
       if (changed) await writeStore('calendars', calendars);
       return byUser;
@@ -350,20 +371,26 @@
     async function sync(timeRows, targets) {
       if (!targets.length) return;
       const events = await readStore('events');
-      for (const { user, day } of targets) {
-        const existing = events.find(row => row.id === `attendance:${user}:${day}`);
+      for (const target of targets) {
+        const existing = events.find(row => row.id === eventId(target));
         if (existing && existing.calendar_source !== 'attendance') {
           fail('勤怠由来予定IDが通常予定と衝突しています', 409, 'ATTENDANCE_EVENT_COLLISION');
         }
       }
       const calendarIds = await ensureCalendars(targets);
-      for (const { user, day } of targets) {
-        const id = `attendance:${user}:${day}`;
+      for (const target of targets) {
+        const { user, day } = target;
+        const id = eventId(target);
         const index = events.findIndex(row => row.id === id);
         const existing = index >= 0 ? events[index] : null;
-        const derived = deriveEvent(timeRows, user, day, existing);
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        const derived = deriveEvent(timeRows, user, day, existing, scope);
         if (derived) {
-          derived.calendar_id = calendarIds.get(user) || existing?.calendar_id || '';
+          derived.id = id;
+          derived.calendar_id = calendarIds.get(targetKey(target)) || existing?.calendar_id || '';
+          derived.color_override = null;
+          derived.workspace_id = String(scope.workspace_id || existing?.workspace_id || '');
+          derived.member_id = String(scope.member_id || existing?.member_id || '');
           if (index >= 0) events[index] = derived;
           else events.push(derived);
         } else if (index >= 0) {

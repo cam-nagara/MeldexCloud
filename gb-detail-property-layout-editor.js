@@ -52,9 +52,9 @@ async function _loadPropertyLayoutMetadata(dbPath, options = {}) {
   }
 }
 
-async function getPropertyLayoutForEdit(dbPath, allProps) {
+async function getPropertyLayoutForEdit(dbPath, allProps, options = {}) {
   await _loadPropertyLayoutMetadata(dbPath, { force: !_propertyLayoutIsCurrentDb(dbPath) });
-  return getPropertyLayout(dbPath, allProps);
+  return getPropertyLayout(dbPath, allProps, options);
 }
 
 function normalizePropertyLayout(layout, allProps) {
@@ -74,25 +74,36 @@ function normalizePropertyLayout(layout, allProps) {
   return { order, hidden, groups };
 }
 
-function getPropertyLayout(dbPath, allProps) {
+function getPropertyLayout(dbPath, allProps, options = {}) {
   const backend = _propertyLayoutCachedMetadata(dbPath)?.property_layout || null;
-  const local = dbPath && typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath).propertyLayout : null;
-  return normalizePropertyLayout(backend || local || null, allProps || []);
+  const cfg = dbPath && typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+    ? _getCurrentDbViewConfigEntryFromConfig(cfg, options)
+    : null;
+  return normalizePropertyLayout(view?.propertyLayout || cfg.propertyLayout || backend || null, allProps || []);
 }
 
-async function savePropertyLayout(dbPath, layout) {
+async function savePropertyLayout(dbPath, layout, options = {}) {
   if (!dbPath) return false;
   const normalized = normalizePropertyLayout(layout);
+  const cfg = getDbViewConfig(dbPath);
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+    ? _getCurrentDbViewConfigEntryFromConfig(cfg, options)
+    : null;
+  if (!view) return false;
+  const previous = view.propertyLayout == null ? null : normalizePropertyLayout(view.propertyLayout);
+  view.propertyLayout = normalized;
   try {
-    await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_layout: normalized });
-    const cfg = getDbViewConfig(dbPath);
-    cfg.propertyLayout = normalized;
-    cfg.entryPropOrder = normalized.order;
-    saveDbViewConfig(dbPath, cfg);
-    const metadata = _propertyLayoutCachedMetadata(dbPath) || {};
-    _propertyLayoutSetCachedMetadata(dbPath, { ...metadata, property_layout: normalized });
+    const saved = await saveDbViewConfigImmediate(dbPath, cfg, {
+      ctx: options.ctx,
+      historyLabel: options.historyLabel || 'シート表示: 列レイアウト',
+      historyDetail: options.historyDetail || '',
+    });
+    if (!saved) throw new Error('表示設定の保存に失敗しました');
     return true;
   } catch (err) {
+    if (previous == null) delete view.propertyLayout;
+    else view.propertyLayout = previous;
     console.warn('property_layout 保存失敗:', err);
     showStatus('列レイアウトを保存できませんでした', true);
     return false;
@@ -156,6 +167,28 @@ function setPropertyLayoutEditMode(dbPath, enabled) {
   const key = 'gb:prop-layout-edit:' + (dbPath || '');
   if (enabled) sessionStorage.setItem(key, '1');
   else sessionStorage.removeItem(key);
+}
+
+function rerenderPropertyLayoutsForDb(dbPath) {
+  document.querySelectorAll('.meldex-entity-detail-props').forEach(grid => {
+    const root = grid.closest?.('[data-path]');
+    const entityPath = root?.dataset?.path || '';
+    const parent = typeof _entityParentDir === 'function' ? _entityParentDir(entityPath) : '';
+    if (_propertyLayoutPathKey(parent) !== _propertyLayoutPathKey(dbPath)) return;
+    root?._meldexEntityDetailController?.ready?.then?.(() => {});
+    if (typeof renderEntityPropsGridInto === 'function' && root?._meldexEntityDetailController) {
+      root._meldexEntityDetailController.rerender?.();
+    }
+  });
+  document.dispatchEvent(new CustomEvent('meldex:property-layout-mode', {
+    detail: { dbPath, editing: isPropertyLayoutEditMode(dbPath) },
+  }));
+}
+
+function togglePropertyLayoutEditMode(dbPath) {
+  setPropertyLayoutEditMode(dbPath, !isPropertyLayoutEditMode(dbPath));
+  rerenderPropertyLayoutsForDb(dbPath);
+  return isPropertyLayoutEditMode(dbPath);
 }
 
 function _nextLayoutTemplateName(existing) {
@@ -258,10 +291,6 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts, appendTarget)
     b.addEventListener('click', (event) => action(event, b));
     return b;
   };
-  toolbar.appendChild(btn(editMode ? '完了' : '並べ替え', editMode ? 'check' : 'listOrdered', () => {
-    setPropertyLayoutEditMode(dbPath, !editMode);
-    renderEntityPropsGridInto(grid, data, entityPath, opts);
-  }));
   if (editMode) {
     const scope = document.createElement('select');
     scope.className = 'gb-select gb-select-sm';
@@ -270,7 +299,7 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts, appendTarget)
     scope.innerHTML = '<option value="sheet">シート</option><option value="global">全体</option>';
     toolbar.appendChild(scope);
     toolbar.appendChild(btn('テンプレート保存', 'save', async () => {
-      const layout = await getPropertyLayoutForEdit(dbPath, Object.keys(data.properties || {}));
+      const layout = await getPropertyLayoutForEdit(dbPath, Object.keys(data.properties || {}), { ctx: opts?.ctx });
       const now = new Date().toISOString();
       if (scope.value === 'global') {
         const list = await _loadGlobalPropertyLayoutTemplates();
@@ -291,17 +320,17 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts, appendTarget)
       const templates = sheet.concat(global);
       if (!templates.length) { showStatus('テンプレートがありません'); return; }
       showPropertyLayoutTemplateMenu(button || toolbar, templates, async (tmpl) => {
-        if (!await savePropertyLayout(dbPath, tmpl)) return;
+        if (!await savePropertyLayout(dbPath, tmpl, { ctx: opts?.ctx })) return;
         renderEntityPropsGridInto(grid, data, entityPath, opts);
         showStatus('レイアウトテンプレートを適用しました');
       });
     }));
     toolbar.appendChild(btn('リセット', 'rotateCcw', async () => {
-      if (!await savePropertyLayout(dbPath, { order: Object.keys(data.properties || {}), hidden: [], groups: [] })) return;
+      if (!await savePropertyLayout(dbPath, { order: Object.keys(data.properties || {}), hidden: [], groups: [] }, { ctx: opts?.ctx })) return;
       renderEntityPropsGridInto(grid, data, entityPath, opts);
     }));
   }
-  (appendTarget || grid).appendChild(toolbar);
+  if (toolbar.childElementCount) (appendTarget || grid).appendChild(toolbar);
 }
 
 function _focusPropertyLayoutMenuAnchor(anchor) {

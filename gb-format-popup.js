@@ -42,6 +42,9 @@
   const OVERFLOW_OPTS = [
     { v: '', l: '自動' }, { v: 'wrap', l: '折返' }, { v: 'overflow', l: '溢出' }, { v: 'clip', l: '切詰' },
   ];
+  const BORDER_STYLE_OPTS = [
+    { v: 'none', l: 'なし' }, { v: 'dotted', l: '点線' }, { v: 'dashed', l: '破線' }, { v: 'solid', l: '実線' },
+  ];
 
   const DEFAULT_FIELDS = [
     'textColor', 'fontSize', 'fontFamily',
@@ -380,14 +383,14 @@
    * @param {Object} [options.values] 現在値
    *   bgColor, textColor, fontWeight, fontStyle, fontSize, fontFamily,
    *   textStrokeColor, textStrokeWidth, leftAccent, underline, accentColor,
-   *   borderColor, borderWidth, caretColor, caretWidth,
+   *   borderColor, borderWidth, borderStyle, caretColor, caretWidth,
    *   textBefore, textAfter, textAlign, textValign, textOverflow,
    *   underline, strike
    * @param {string[]} [options.fields] 表示するフィールド（省略時は全項目）
    * @param {(prop: string, value: any, popup: HTMLElement) => void} options.onChange
    *   値変更時コールバック。prop: 'bgColor'/'textColor'/'fontWeight'/'fontStyle'/
    *   'fontSize'/'fontFamily'/'textStrokeColor'/'textStrokeWidth'/
-   *   'leftAccent'/'accentColor'/'borderColor'/'borderWidth'/'caretColor'/'caretWidth'/
+   *   'leftAccent'/'accentColor'/'borderColor'/'borderWidth'/'borderStyle'/'caretColor'/'caretWidth'/
    *   'textBefore'/'textAfter'/'textAlign'/'textValign'/'textOverflow'/'underline'/'strike'
    * @param {() => void} [options.onReset] リセット。省略時はリセットボタン非表示
    * @param {Object} [options.bulk] { enabled, label, onToggle(enabled) } 全行適用トグル
@@ -427,6 +430,8 @@
 
     const popup = document.createElement('div');
     popup.className = POPUP_CLASS + (options.className ? ' ' + options.className : '');
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-modal', 'false');
     let outsideCloseHandler = null;
     let escapeCloseHandler = null;
     popup._gbFmtCleanup = () => {
@@ -492,6 +497,11 @@
     if (fields.has('borderWidth')) {
       const wInput = _makeNumInput('線の太さ', values.borderWidth, (v) => emit('borderWidth', v), { min: 0, max: 20, width: 54 });
       row1.appendChild(_makeGroup([wInput, _makeLabel('px')]));
+    }
+    if (fields.has('borderStyle')) {
+      const styleSelect = _makeSelect(BORDER_STYLE_OPTS, values.borderStyle || 'none', (v) => emit('borderStyle', v));
+      styleSelect.title = '枠線の表示と線種';
+      row1.appendChild(_makeGroup([_makeLabel('線種'), styleSelect]));
     }
     if (fields.has('caretWidth')) {
       const cInput = _makeNumInput('カーソル太さ', values.caretWidth, (v) => emit('caretWidth', v), { min: 1, max: 20, width: 54 });

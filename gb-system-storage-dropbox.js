@@ -288,6 +288,17 @@
     async _assertCompatibilityWriteAllowed(kind) {
       if (this._environment !== 'dropbox-shared-workspace' || _migrationWriteScopeDepth > 0) return;
       const contract = _contract();
+      if (kind === contract.SystemStorageKind.ADMIN_TAG_DICTIONARY) {
+        const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+        const role = String(state.access?.role || state.role || state.access || '').trim().toLowerCase();
+        if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+          const denied = new contract.SystemStorageWriteError('管理者タグ辞書を変更できるのはowner／adminだけです');
+          denied.status = 403;
+          denied.code = 'admin_tag_dictionary_forbidden';
+          denied.meldexCode = 'admin_tag_dictionary_forbidden';
+          throw denied;
+        }
+      }
       if (kind === contract.SystemStorageKind.MIGRATION_LEDGER) return;
       const migration = window.MeldexSidecarMigration;
       const provider = this._compatibilityLockProvider || window.MeldexStorageAdapter?.getProvider?.();

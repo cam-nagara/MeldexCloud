@@ -123,6 +123,10 @@ function _bindSettingsThemePaletteEditor(root) {
     }
     const adjust = getStandardPaletteAdjust();
     adjust[key] = parseInt(value, 10);
+    if (key === 'hueStart' || key === 'hueEnd') {
+      const fullHueRange = Math.abs(Number(adjust.hueEnd) - Number(adjust.hueStart)) === 360;
+      adjust.hueWrap = !fullHueRange && Number(adjust.hueStart) > Number(adjust.hueEnd);
+    }
     setStandardPaletteAdjust(adjust);
     _settingsThemePaletteMatrixRender(root);
     _settingsThemePaletteSyncSliders(root);
@@ -167,6 +171,21 @@ function _bindSettingsThemePaletteEditor(root) {
       }
     });
   }
+  root.querySelector('[data-theme-hue-swap]')?.addEventListener('click', () => {
+    if (_settingsThemeIsReadonlyElement(root)) {
+      _settingsThemePromptDuplicateForEdit();
+      return;
+    }
+    const adjust = getStandardPaletteAdjust();
+    const hueStart = adjust.hueStart;
+    adjust.hueStart = adjust.hueEnd;
+    adjust.hueEnd = hueStart;
+    setStandardPaletteAdjust(adjust);
+    _settingsThemePaletteMatrixRender(root);
+    _settingsThemePaletteSyncSliders(root);
+    _syncThemeColorSetFromPalette();
+    if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
+  });
   root.querySelector('[data-theme-palette-reset]')?.addEventListener('click', () => {
     if (_settingsThemeIsReadonlyElement(root)) {
       _settingsThemePromptDuplicateForEdit();
@@ -541,7 +560,16 @@ function _settingsThemePreviewPopupFields(def) {
   if (def.width) fields.push(isCaret ? 'caretWidth' : 'borderWidth');
   if (_settingsThemePreviewExtraKey(def, 'leftAccent', '-left-accent')) fields.push('leftAccent');
   if (_settingsThemePreviewExtraKey(def, 'underline', '-underline')) fields.push('underline');
+  if (!isCaret && !def.line) fields.push('accentColor');
   return [...new Set(fields)];
+}
+
+function _settingsThemePreviewAccentKey(def) {
+  if (def?.accent) return def.accent;
+  const generated = _settingsThemePreviewExtraKey(def, 'accent', '-accent-color');
+  return /^--(?:page-(?:title|text|h[1-6]|quote|quote-cite|link)|db-(?:th|entity|cell))-accent-color$/.test(generated)
+    ? generated
+    : '--ui-accent';
 }
 
 function openStylePreviewPopup(previewEl) {
@@ -569,6 +597,7 @@ function openStylePreviewPopup(previewEl) {
   const strokeWidthKey = _settingsThemePreviewExtraKey(def, 'strokeWidth', '-stroke-width');
   const leftAccentKey = _settingsThemePreviewExtraKey(def, 'leftAccent', '-left-accent');
   const underlineKey = _settingsThemePreviewExtraKey(def, 'underline', '-underline');
+  const accentKey = _settingsThemePreviewAccentKey(def);
   const values = {
     textColor: def.fg && !isCaret ? getCssVar(def.fg) : '',
     bgColor: def.bg ? getCssVar(def.bg) : '',
@@ -584,6 +613,7 @@ function openStylePreviewPopup(previewEl) {
     caretWidth: def.width && isCaret ? parseFloat(getCssVar(def.width)) || 0 : 0,
     leftAccent: leftAccentKey ? _settingsThemePreviewActiveFlag(getCssVar(leftAccentKey)) : false,
     underline: underlineKey ? _settingsThemePreviewActiveFlag(getCssVar(underlineKey)) : false,
+    accentColor: accentKey ? getCssVar(accentKey) : '',
   };
   popupOpen(previewEl, {
     fields,
@@ -623,15 +653,28 @@ function openStylePreviewPopup(previewEl) {
         setColorSetting(leftAccentKey, value ? THEME_STYLE_LEFT_ACCENT_WIDTH : '0');
       } else if (prop === 'underline' && underlineKey) {
         setColorSetting(underlineKey, value ? THEME_STYLE_UNDERLINE_WIDTH : '0');
+      } else if (prop === 'accentColor' && accentKey) {
+        if (accentKey === '--ui-accent' && /^#[0-9a-f]{6}$/i.test(String(value || ''))
+          && typeof _settingsThemeApplyAccentColor === 'function') {
+          if (typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getUseOsAccentColor?.()) {
+            MeldexThemeManager.setUseOsAccentColor(false);
+          }
+          _settingsThemeApplyAccentColor(value);
+        } else {
+          setColorSetting(accentKey, value || '');
+        }
       }
       if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
     },
     onReset() {
       [
         def.fg, def.bg, def.bold, def.italic, def.fontSize, def.font,
-        def.line, def.width, strokeKey, strokeWidthKey, leftAccentKey, underlineKey,
+        def.line, def.width, strokeKey, strokeWidthKey, leftAccentKey, underlineKey, accentKey,
       ].filter(Boolean)
-        .forEach(key => document.documentElement.style.removeProperty(key));
+        .forEach(key => {
+          if (typeof applySettingsThemeStyleSetting === 'function') applySettingsThemeStyleSetting(key, '', { markDirty: false });
+          else document.documentElement.style.removeProperty(key);
+        });
       if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
       if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
     },

@@ -118,7 +118,7 @@ let _annViewLockCleanupDone = false;
 
 function _removeDetachedViewLockIcons() {
   document.querySelectorAll('.vl-lock-icon').forEach(el => {
-    // 注釈ツールバー内のスクリーンショット・表示切替・全削除は、表示ロックと
+    // アノテートツールバー内のスクリーンショット・表示切替・全削除は、表示ロックと
     // 同じ外観を共有する正規ボタン。ツールバー外に残った旧ロックだけを除去する。
     if (el.id !== 'ann-view-lock-btn' && !el.closest('#ann-toolbar')) el.remove();
   });
@@ -204,15 +204,15 @@ window.addEventListener('resize', () => {
 let _overlayVisible = true;
 const _ANNOTATION_TARGET_VIEW_TYPES = new Set([
   'entity', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
-  'chart', 'graph', 'form', 'smart-db', 'compare', 'board', 'folder',
+  'chart', 'graph', 'form', 'compare', 'board', 'folder',
   'media', 'html', 'csv', 'scriptnote', 'calendar',
 ]);
 const _ANNOTATION_DB_VIEW_TYPES = new Set([
-  'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+  'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
 ]);
 // ビューワー安定化計画(app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3」):
 // #html-iframe が信頼済みの内部ビューワー(viewer.html。画像/PDF)を表示している場合、
-// 'html' ビューも「注釈編集を埋め込みサーフェス（iframe内蔵の注釈コントローラー）へ委譲する」
+// 'html' ビューも「アノテート編集を埋め込みサーフェス（iframe内蔵のアノテートコントローラー）へ委譲する」
 // 対象として扱う。外部URL・任意HTMLファイルのプレビュー（同じ#html-iframe/'html'ビューを使う）は
 // _gbIsTrustedInternalViewerUrl が false を返すため対象外のまま。
 function _getTrustedViewerIframeElement() {
@@ -223,7 +223,7 @@ function _getTrustedViewerIframeElement() {
 }
 function _usesEmbeddedAnnotationSurface(viewName) {
   if (viewName === 'board') return true;
-  if (viewName === 'html') return !!_getTrustedViewerIframeElement();
+  if (viewName === 'html' || viewName === 'media') return !!_getTrustedViewerIframeElement();
   return false;
 }
 function _getActiveAnnotationTab() {
@@ -278,7 +278,7 @@ function _forEachStandaloneAnnotationNote(callback) {
 // 自前でシーンごとに読み込む設計のため未配線のまま。'ann-set-visibility'/'ann-set-opacity' は
 // ビューワー側では完全スナップショットの一部（visible/opacity）として扱うため、ここで
 // viewer-ann-set-state と同じ完全スナップショットへ合流させて配送する — 部分メッセージを
-// 乱送しない設計（ビューワー残課題修正計画2026-08-04「3. 注釈座標と親画面連携」）。
+// 乱送しない設計（ビューワー残課題修正計画2026-08-04「3. アノテート座標と親画面連携」）。
 function _dispatchAnnotationMessageToViewerIframe(msg) {
   if (msg?.type !== 'ann-set-state' && msg?.type !== 'ann-set-visibility' && msg?.type !== 'ann-set-opacity') return false;
   const iframe = _getTrustedViewerIframeElement();
@@ -302,7 +302,7 @@ function _dispatchAnnotationMessageToViewerIframe(msg) {
 function _dispatchEmbeddedAnnotationMessage(msg) {
   const viewName = _getAnnotationViewName();
   if (!_usesEmbeddedAnnotationSurface(viewName)) return false;
-  if (viewName === 'html') return _dispatchAnnotationMessageToViewerIframe(msg);
+  if (viewName === 'html' || viewName === 'media') return _dispatchAnnotationMessageToViewerIframe(msg);
   const bridge = _getBoardAnnotationControl();
   if (bridge && typeof bridge.handleMessage === 'function') {
     bridge.handleMessage(msg);
@@ -311,7 +311,7 @@ function _dispatchEmbeddedAnnotationMessage(msg) {
   return false;
 }
 
-// ビューワー(viewer.html)からのpostMessage受信: iframe内蔵の注釈コントローラーが
+// ビューワー(viewer.html)からのpostMessage受信: iframe内蔵のアノテートコントローラーが
 // 実際にactive/drawing状態を変えた時（Aキー・右クリックメニュー・右サイドバー経由も含む）に
 // 親側の右下フロートボタン／フローティングツールバーの見た目を追従させる。
 // event.source === iframe.contentWindow と同一オリジンを検証してから適用する。
@@ -333,21 +333,26 @@ window.addEventListener('message', (ev) => {
   }
 });
 
-// ビューワーiframe内の注釈保存結果を受け取る。失敗時のみ共通通知UIへ表示し、成功時は
+// ビューワーiframe内のアノテート保存結果を受け取る。失敗時のみ共通通知UIへ表示し、成功時は
 // 保存済み状態の更新だけを行う（通知は出さない。ビューワー残課題修正計画2026-08-04「3」）。
 const _VIEWER_ANN_ERROR_CODE_MESSAGES = {
-  forbidden: '権限がないため注釈を保存できませんでした',
-  not_found: '対象のファイルが見つからないため注釈を保存できませんでした',
-  conflict: '他の変更と競合したため注釈を保存できませんでした（再読み込みしてください）',
-  server_error: 'サーバーエラーのため注釈を保存できませんでした',
-  http_error: '通信エラーのため注釈を保存できませんでした',
-  network_error: 'ネットワークに接続できないため注釈を保存できませんでした',
-  timeout: 'タイムアウトしたため注釈を保存できませんでした',
-  unknown_error: '注釈を保存できませんでした',
+  forbidden: '権限がないためアノテートを保存できませんでした',
+  not_found: '対象のファイルが見つからないためアノテートを保存できませんでした',
+  conflict: '他の変更と競合したためアノテートを保存できませんでした（再読み込みしてください）',
+  server_error: 'サーバーエラーのためアノテートを保存できませんでした',
+  http_error: '通信エラーのためアノテートを保存できませんでした',
+  network_error: 'ネットワークに接続できないためアノテートを保存できませんでした',
+  timeout: 'タイムアウトしたためアノテートを保存できませんでした',
+  unknown_error: 'アノテートを保存できませんでした',
 };
 const _VIEWER_ANN_ACTION_LABELS = { create: '作成', update: '更新', delete: '削除' };
 function _handleViewerAnnotationSaveResult(msg) {
   if (msg?.ok) {
+    const history = msg.history && typeof msg.history === 'object' ? msg.history : null;
+    if (history && (history.before || history.after)) {
+      const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg.action] || '更新';
+      _pushAnnotationHistory(`アノテート: ${actionLabel}`, history.before || null, history.after || null, 'ビューワー');
+    }
     // チャット側は対象パスが一致するサムネイルだけを再取得する。revisionは
     // 不透明値として扱い、別画像や元画像のキャッシュは無効化しない。
     const targets = Array.isArray(msg.invalidatedTargets) && msg.invalidatedTargets.length
@@ -363,7 +368,7 @@ function _handleViewerAnnotationSaveResult(msg) {
   }
   const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg?.action] || '';
   const baseMessage = _VIEWER_ANN_ERROR_CODE_MESSAGES[msg?.errorCode] || _VIEWER_ANN_ERROR_CODE_MESSAGES.unknown_error;
-  const text = actionLabel ? `注釈の${actionLabel}に失敗しました（${baseMessage}）` : baseMessage;
+  const text = actionLabel ? `アノテートの${actionLabel}に失敗しました（${baseMessage}）` : baseMessage;
   if (typeof showStatus === 'function') showStatus(text, true);
 }
 function toggleOverlayVisibility() {
@@ -381,8 +386,8 @@ function toggleOverlayVisibility() {
   if (btn) {
     btn.classList.toggle('active', _overlayVisible);
     _setAnnotationUtilityIcon(btn, _overlayVisible ? 'eye' : 'eyeOff');
-    btn.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
-    btn.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
+    btn.title = _overlayVisible ? 'アノテート表示中' : 'アノテート非表示中';
+    btn.setAttribute('aria-label', _overlayVisible ? 'アノテートを非表示にする' : 'アノテートを表示する');
   }
   _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-visibility', visible: _overlayVisible });
 }
@@ -452,6 +457,7 @@ function closeAnnotationToolbar() {
     overlay.style.cursor = '';
   }
   if (typeof ann !== 'undefined') ann.active = false;
+  if (typeof _discardEmptyAnnotationDrafts === 'function') _discardEmptyAnnotationDrafts('toolbar-close');
   _refreshAnnFloatingViewLockButton({ force: true });
   if (typeof _syncAnnStateToIframe === 'function') _syncAnnStateToIframe();
 }
@@ -539,7 +545,6 @@ function _getScrollContainerForView(viewName) {
   if (viewName === 'timeline') return document.getElementById('timeline-view');
   if (viewName === 'chart') return document.getElementById('chart-view');
   if (viewName === 'graph') return document.getElementById('graph-view');
-  if (viewName === 'smart-db') return document.getElementById('smart-db-table-area') || document.getElementById('smart-db-view');
   if (viewName === 'compare') return document.getElementById('compare-view');
   if (viewName === 'folder') return document.getElementById('folder-grid');
   if (viewName === 'media') return document.getElementById('media-view');
@@ -614,7 +619,7 @@ function _setupOverlayScroll(viewName) {
   _annScrollHandler();
 
   // Audit-P2 H-7: view_lock 対応ビューの scroll container にガードを設置する。
-  // UI は注釈フロートバー内の #ann-view-lock-btn に集約する。
+  // UI はアノテートフロートバー内の #ann-view-lock-btn に集約する。
   if (typeof ViewLock !== 'undefined' && typeof _getActiveViewLockInfo === 'function') {
     const info = _getActiveViewLockInfo();
     if (info) {
@@ -790,18 +795,23 @@ function _refreshAnnotationHistoryTarget(row) {
   }
 }
 
-async function _restoreAnnotationHistoryRow(row) {
+async function _restoreAnnotationHistoryRow(row, expectedRow) {
   const payload = _normalizeAnnotationHistoryRow(row);
   if (!payload?.id) return false;
+  const expected = _normalizeAnnotationHistoryRow(expectedRow);
+  if (expected?.modified) payload.expected_modified = expected.modified;
+  else payload.expected_absent = true;
   await apiPost('/annotations/restore', payload);
   _refreshAnnotationHistoryTarget(payload);
   return true;
 }
 
-async function _deleteAnnotationHistoryRow(row) {
+async function _deleteAnnotationHistoryRow(row, expectedRow) {
   const annId = typeof row === 'string' ? row : row?.id;
   if (!annId) return false;
-  await apiDelete('/annotations/' + encodeURIComponent(annId));
+  const expected = _normalizeAnnotationHistoryRow(expectedRow || (typeof row === 'object' ? row : null));
+  const suffix = expected?.modified ? '?expected_modified=' + encodeURIComponent(expected.modified) : '';
+  await apiDelete('/annotations/' + encodeURIComponent(annId) + suffix);
   _refreshAnnotationHistoryTarget(typeof row === 'object' ? row : null);
   return true;
 }
@@ -821,8 +831,8 @@ function _pushAnnotationHistory(label, beforeRow, afterRow, detail) {
   const scope = (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
   historyPush(
     label,
-    () => before ? _restoreAnnotationHistoryRow(before) : _deleteAnnotationHistoryRow(after),
-    () => after ? _restoreAnnotationHistoryRow(after) : _deleteAnnotationHistoryRow(before),
+    () => before ? _restoreAnnotationHistoryRow(before, after) : _deleteAnnotationHistoryRow(after, after),
+    () => after ? _restoreAnnotationHistoryRow(after, before) : _deleteAnnotationHistoryRow(before, before),
     scope,
     _annotationHistoryDetail(after || before, detail)
   );
@@ -839,12 +849,13 @@ async function _applyAnnotationHistoryRows(targetRows, previousRows) {
   const target = _normalizeAnnotationHistoryRows(targetRows);
   const previous = _normalizeAnnotationHistoryRows(previousRows);
   const targetIds = new Set(target.map(row => String(row.id)));
+  const previousById = new Map(previous.map(row => [String(row.id), row]));
   for (const row of target) {
-    await apiPost('/annotations/restore', row);
+    await _restoreAnnotationHistoryRow(row, previousById.get(String(row.id)) || null);
   }
   for (const row of previous) {
     if (targetIds.has(String(row.id))) continue;
-    await apiDelete('/annotations/' + encodeURIComponent(row.id));
+    await _deleteAnnotationHistoryRow(row, row);
   }
   _refreshAnnotationHistoryTarget(target[0] || previous[0] || null);
   return true;
@@ -864,7 +875,7 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
   if (beforeKey && beforeKey === afterKey) return false;
   const scope = (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
   historyPush(
-    label || '注釈: 一括更新',
+    label || 'アノテート: 一括更新',
     () => _applyAnnotationHistoryRows(before, after),
     () => _applyAnnotationHistoryRows(after, before),
     scope,
@@ -875,7 +886,7 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
 
 async function _pushAnnotationCreateHistory(annId, label, detail) {
   const after = await _fetchAnnotationHistoryRow(annId);
-  return _pushAnnotationHistory(label || '注釈: 作成', null, after, detail);
+  return _pushAnnotationHistory(label || 'アノテート: 作成', null, after, detail);
 }
 
 async function _putAnnotationWithHistory(annId, body, label, detail) {
@@ -894,7 +905,7 @@ async function _putAnnotationWithHistory(annId, body, label, detail) {
   if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
     _trayAnnotationHost.modified = String(after?.modified || '');
   }
-  _pushAnnotationHistory(label || '注釈: 更新', before, after, detail);
+  _pushAnnotationHistory(label || 'アノテート: 更新', before, after, detail);
   return after;
 }
 
@@ -979,9 +990,6 @@ function getAnnotationTarget() {
   if (viewName === 'entity') return tabPath('entityPath') || statePath('currentEntityPath');
   if (viewName === 'page') return tabPath('pagePath') || statePath('currentPagePath');
   if (_ANNOTATION_DB_VIEW_TYPES.has(viewName)) {
-    if (viewName === 'smart-db') {
-      return tabPath('smartDbPath', 'dbPath') || statePath('currentSmartDb')?._filePath || statePath('currentDbPath');
-    }
     return tabPath('dbPath') || statePath('currentDbPath');
   }
   if (viewName === 'board') {
@@ -1006,6 +1014,41 @@ function getAnnotationTarget() {
   return '';
 }
 
+function openCurrentAnnotationVersions() {
+  const target = String(getAnnotationTarget() || '').trim();
+  if (!target) {
+    if (typeof showStatus === 'function') showStatus('バージョン管理を開く対象がありません', true);
+    return false;
+  }
+  if (typeof openVersionTab !== 'function') {
+    if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
+    return false;
+  }
+  openVersionTab(target, 'annotations');
+  return true;
+}
+
+(function _installAnnotationVersionButton() {
+  const install = () => {
+    if (document.querySelector('[data-annotation-version-button]')) return;
+    const panel = document.getElementById('rp-annotation');
+    const header = panel?.querySelector('[data-annotation-toolbar]');
+    if (!header) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-xs';
+    button.dataset.annotationVersionButton = '';
+    button.dataset.e2eId = 'annotation-open-version-history';
+    button.title = '現在の対象のアノテートバージョン';
+    button.setAttribute('aria-label', '現在の対象のアノテートバージョン');
+    button.innerHTML = typeof lucide === 'function' ? lucide('gitBranch', 12) : '版';
+    button.addEventListener('click', openCurrentAnnotationVersions);
+    header.querySelector('span')?.insertAdjacentElement('afterend', button);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
+  else install();
+})();
+
 function toggleAnnotation() {
   // 後方互換: Alt+Aで呼ばれる
   toggleAnnotationToolbar();
@@ -1019,7 +1062,7 @@ const _ANN_TOOL_GROUPS = {
   ],
   line: [
     // 折れ線のアイコンは spline（曲線。折れ線を表せていなかった）から activity
-    // （角のはっきりした折れ線）へ変更（注釈フロートパレット改修計画2026-08-13 §1-3）。
+    // （角のはっきりした折れ線）へ変更（アノテートフロートパレット改修計画2026-08-13 §1-3）。
     { tool: 'polyline', label: '折れ線', icon: 'activity' },
     { tool: 'ellipse-line', label: '円形', icon: 'circle' },
     { tool: 'rect-line', label: '矩形', icon: 'square' },
@@ -1036,7 +1079,7 @@ const _ANN_TOOL_GROUPS = {
 const _ANN_TOOL_GROUP_LABELS = { stroke: 'ストローク', line: 'ライン', fill: '塗りつぶし' };
 
 // グループボタンの中身（アイコン・title・aria-label）を、選択中メンバーへ合わせて描き直す。
-// 注釈フロートパレット改修計画2026-08-13 §1-2: 従来は data-tool 属性だけ書き換えていて
+// アノテートフロートパレット改修計画2026-08-13 §1-2: 従来は data-tool 属性だけ書き換えていて
 // ボタンの見た目（アイコン）が選択中ツールに追従しなかった。
 function _applyAnnotationGroupButtonIcon(button, group, member) {
   if (!button || !member) return;
@@ -1048,6 +1091,7 @@ function _applyAnnotationGroupButtonIcon(button, group, member) {
 }
 
 function _annotationSelectTool(tool, sourceButton) {
+  if (tool !== 'sticky' && typeof _discardEmptyAnnotationDrafts === 'function') _discardEmptyAnnotationDrafts('tool-change');
   ann.tool = tool;
   document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
     const group = button.dataset.annToolGroup;
@@ -1072,7 +1116,7 @@ function _openAnnotationToolPopup(button, group) {
   const menu = document.createElement('div');
   menu.className = 'ann-tool-popup';
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', button.getAttribute('aria-label') || '注釈ツール');
+  menu.setAttribute('aria-label', button.getAttribute('aria-label') || 'アノテートツール');
   items.forEach(item => {
     const option = document.createElement('button');
     option.type = 'button';
@@ -1119,13 +1163,13 @@ function _initAnnotationToolGroups() {
   _applyAnnotationGroupButtonIcon(fill, 'fill', _ANN_TOOL_GROUPS.fill[0]);
 }
 
-// 注釈フロートパレットのユーティリティボタン（.vl-lock-icon 相当）のアイコンを、
+// アノテートフロートパレットのユーティリティボタン（.vl-lock-icon 相当）のアイコンを、
 // .ico span を使わず JS が直接描いた SVG へ置き換えるための共通ヘルパー。
 // 共通アイコン展開処理（meldex-core の replaceIcons()）は、ツールバー外と判定した
 // .ico span へインラインで width:18px; height:18px; を書き込む。このボタン群は
 // CSS（.vl-lock-icon svg / .vl-lock-icon .ico）でアイコンを14pxに縮めて表示するため、
 // .ico span を残したままだとインラインstyleがCSSに勝ち、枠だけ18pxのまま残って
-// アイコンの中心が上に2pxズレる（注釈フロートパレット改修計画2026-08-13 §1-1）。
+// アイコンの中心が上に2pxズレる（アノテートフロートパレット改修計画2026-08-13 §1-1）。
 // .ico span 自体を持たせない（button.innerHTML を直接SVGへ置き換える）ことで、
 // replaceIcons() が後から何度走っても影響を受けない構造にする。
 function _setAnnotationUtilityIcon(button, iconName, size = 14) {
@@ -1202,7 +1246,7 @@ function _bindAnnotationColorControl() {
 }
 _bindAnnotationColorControl();
 _bindAnnotationWidthControls();
-// 注釈ツールバーから右サイドバーを開く導線は重複するため撤去する。HTML生成物を
+// アノテートツールバーから右サイドバーを開く導線は重複するため撤去する。HTML生成物を
 // 直接編集せず、正本スクリプトの初期化時に既存ボタンだけを除去する。
 if (!_isTrayAnnotationPaletteHost()) {
   document.querySelector('#ann-toolbar [data-action="openRightPanelTab(\'annotation\')"]')?.remove();
@@ -1211,8 +1255,8 @@ if (!_isTrayAnnotationPaletteHost()) {
   const overlayButton = document.getElementById('btn-overlay-toggle');
   _styleAnnotationUtilityButtons();
   if (overlayButton) {
-    overlayButton.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
-    overlayButton.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
+    overlayButton.title = _overlayVisible ? 'アノテート表示中' : 'アノテート非表示中';
+    overlayButton.setAttribute('aria-label', _overlayVisible ? 'アノテートを非表示にする' : 'アノテートを表示する');
   }
 }
 document.getElementById('ann-opacity').oninput = function() {
@@ -1242,63 +1286,41 @@ function _trayAnnotationPaletteState() {
   };
 }
 
-function _trayAnnotationPaletteBridge(action) {
+let _trayAnnotationPaletteChannel = null;
+function _trayAnnotationPaletteTarget() {
+  try {
+    return String(new URLSearchParams(location.search).get('screenshot_path') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function _trayAnnotationPaletteBridge(action, extraState = {}) {
   const command = String(action || '').trim();
+  const targetPath = _trayAnnotationPaletteTarget();
+  if (!targetPath) return Promise.resolve(false);
+  try {
+    if (!_trayAnnotationPaletteChannel && typeof BroadcastChannel === 'function') {
+      _trayAnnotationPaletteChannel = new BroadcastChannel('meldex-tray-screenshot-annotation');
+    }
+    _trayAnnotationPaletteChannel?.postMessage({
+      type: 'tray-screenshot-annotation-state',
+      action: command,
+      targetPath,
+      active: true,
+      ..._trayAnnotationPaletteState(),
+      ...(extraState || {}),
+    });
+  } catch {}
   try {
     const call = window.pywebview?.api?.tray_annotation_palette_action;
     if (typeof call === 'function') {
-      return Promise.resolve(call(command, _trayAnnotationPaletteState()));
+      return Promise.resolve(call(command, { targetPath, ..._trayAnnotationPaletteState(), ...(extraState || {}) }));
     }
   } catch (error) {
-    if (typeof showStatus === 'function') showStatus(`注釈ツールを操作できませんでした: ${error?.message || error}`, true);
+    if (typeof showStatus === 'function') showStatus(`アノテートツールを操作できませんでした: ${error?.message || error}`, true);
   }
-  return Promise.resolve(false);
-}
-
-function _showTrayAnnotationScreenshotMenu(button) {
-  document.querySelectorAll('.tray-annotation-screenshot-menu').forEach(menu => menu.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tray-annotation-screenshot-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'スクリーンショット撮影');
-  [
-    ['全画面', 'screenshot-full'],
-    ['範囲を選択', 'screenshot-region'],
-    ['ウィンドウを選択', 'screenshot-window'],
-  ].forEach(([label, action]) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'gb-context-menu-item';
-    item.setAttribute('role', 'menuitem');
-    item.textContent = label;
-    item.addEventListener('click', () => {
-      menu.remove();
-      button.setAttribute('aria-expanded', 'false');
-      _trayAnnotationPaletteBridge(action);
-    });
-    menu.appendChild(item);
-  });
-  button.setAttribute('aria-haspopup', 'menu');
-  button.setAttribute('aria-expanded', 'true');
-  document.body.appendChild(menu);
-  if (typeof positionPopup === 'function') {
-    positionPopup(menu, button.getBoundingClientRect(), { prefer: 'below', gap: 4 });
-  }
-  menu.querySelector('button')?.focus();
-  const close = event => {
-    if (event.key === 'Escape' || (event.type === 'pointerdown' && !menu.contains(event.target) && event.target !== button)) {
-      if (event.key === 'Escape') event.preventDefault();
-      menu.remove();
-      button.setAttribute('aria-expanded', 'false');
-      requestAnimationFrame(() => button.focus());
-      document.removeEventListener('keydown', close, true);
-      document.removeEventListener('pointerdown', close, true);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('keydown', close, true);
-    document.addEventListener('pointerdown', close, true);
-  }, 0);
+  return Promise.resolve(true);
 }
 
 function _isTrayAnnotationPaletteUiNode(node, shell) {
@@ -1310,6 +1332,8 @@ function _isTrayAnnotationPaletteUiNode(node, shell) {
 
 function _initTrayAnnotationPaletteHost() {
   if (!_isTrayAnnotationPaletteHost()) return false;
+  const screenshotPath = _trayAnnotationPaletteTarget();
+  if (!screenshotPath) return false;
   const toolbar = document.getElementById('ann-toolbar');
   if (!toolbar || toolbar.dataset.trayPaletteInitialized === '1') return false;
   toolbar.dataset.trayPaletteInitialized = '1';
@@ -1323,7 +1347,7 @@ function _initTrayAnnotationPaletteHost() {
   });
   const shell = document.createElement('main');
   shell.className = 'tray-annotation-palette-shell';
-  shell.setAttribute('aria-label', '常駐の注釈ツール');
+  shell.setAttribute('aria-label', '常駐のアノテートツール');
   Object.assign(shell.style, {
     position: 'fixed',
     inset: '0',
@@ -1355,27 +1379,32 @@ function _initTrayAnnotationPaletteHost() {
     attributeFilter: ['class', 'style'],
   });
   document.body.classList.add('ann-toolbar-active');
-  const paletteLockButton = document.getElementById('ann-view-lock-btn');
-  const keepPaletteLockEnabled = () => {
-    if (!paletteLockButton?.disabled) return;
-    paletteLockButton.disabled = false;
-    paletteLockButton.removeAttribute('aria-disabled');
-    paletteLockButton.title = '注釈対象の表示をロック／解除';
-    paletteLockButton.setAttribute('aria-label', paletteLockButton.title);
-  };
-  keepPaletteLockEnabled();
-  if (paletteLockButton) {
-    new MutationObserver(keepPaletteLockEnabled).observe(paletteLockButton, {
-      attributes: true,
-      attributeFilter: ['disabled', 'aria-disabled'],
-    });
-  }
+  // 常駐パレットは撮影済みスクリーンショットへの描画だけを担う。付箋、再撮影、
+  // 本体パネル、表示ロック、全削除は本体側の操作なので、この小窓には出さない。
+  for (const selector of [
+    '.ann-tool[data-tool="sticky"]',
+    '[aria-label="スクリーンショット撮影"]',
+    '[data-action*="openRightPanelTab"]',
+    '#ann-view-lock-btn',
+    '[data-action="annClear()"]',
+  ]) toolbar.querySelector(selector)?.remove();
+  const separators = [...toolbar.children].filter(el => (
+    el.tagName === 'DIV' && el.style.width === '1px' && !el.classList.contains('ft-drag')
+  ));
+  separators.forEach((separator, index) => {
+    const previous = separator.previousElementSibling;
+    const next = separator.nextElementSibling;
+    const previousIsSeparator = previous?.tagName === 'DIV' && previous.style.width === '1px';
+    if (!previous || !next || previousIsSeparator || index > 0 && separator === separators[separators.length - 1]) {
+      separator.remove();
+    }
+  });
 
   const status = document.createElement('div');
   status.className = 'tray-annotation-palette-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  status.textContent = '描画ツールはMeldexの注釈可能な画面で使います。付箋と撮影は本体を閉じたまま使えます。';
+  status.textContent = '常駐アプリで撮影したスクリーンショットに書き込みます。';
   Object.assign(status.style, {
     position: 'fixed',
     left: '12px',
@@ -1389,23 +1418,12 @@ function _initTrayAnnotationPaletteHost() {
   });
   shell.appendChild(status);
 
-  const restoreButton = document.createElement('button');
-  restoreButton.type = 'button';
-  restoreButton.id = 'tray-annotation-restore-stickies';
-  restoreButton.dataset.e2eId = 'tray-annotation-restore-stickies';
-  restoreButton.className = 'vl-lock-icon ann-tool';
-  restoreButton.title = '閉じた付箋を再表示';
-  restoreButton.setAttribute('aria-label', restoreButton.title);
-  restoreButton.innerHTML = typeof lucide === 'function' ? lucide('stickyNote', 14) : '';
-  restoreButton.addEventListener('click', () => _trayAnnotationPaletteBridge('restore-stickies'));
-  toolbar.appendChild(restoreButton);
-
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.id = 'tray-annotation-palette-close';
   closeButton.dataset.e2eId = 'tray-annotation-palette-close';
   closeButton.className = 'vl-lock-icon ann-tool';
-  closeButton.title = '注釈ツールを閉じる';
+  closeButton.title = 'アノテートツールを閉じる';
   closeButton.setAttribute('aria-label', closeButton.title);
   closeButton.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '';
   closeButton.addEventListener('click', () => _trayAnnotationPaletteBridge('close'));
@@ -1430,35 +1448,16 @@ function _initTrayAnnotationPaletteHost() {
   toolbar.addEventListener('click', event => {
     const target = event.target.closest('button');
     if (!target) return;
-    if (target === restoreButton || target === closeButton) return;
-    if (target.matches('[aria-label="スクリーンショット撮影"]')) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      _showTrayAnnotationScreenshotMenu(target);
-      return;
-    }
-    if (target.matches('[data-action*="openRightPanelTab"]')) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      _trayAnnotationPaletteBridge('annotation');
-      return;
-    }
+    if (target === closeButton) return;
     if (target.id === 'btn-overlay-toggle') {
       event.preventDefault();
       event.stopImmediatePropagation();
-      _trayAnnotationPaletteBridge('overlay');
-      return;
-    }
-    if (target.id === 'ann-view-lock-btn') {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      _trayAnnotationPaletteBridge('lock');
-      return;
-    }
-    if (target.matches('[data-action="annClear()"]')) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      _trayAnnotationPaletteBridge('clear');
+      const visible = !target.classList.contains('active');
+      target.classList.toggle('active', visible);
+      _setAnnotationUtilityIcon(target, visible ? 'eye' : 'eyeOff');
+      target.title = visible ? 'アノテート表示中' : 'アノテート非表示中';
+      target.setAttribute('aria-label', visible ? 'アノテートを非表示にする' : 'アノテートを表示する');
+      _trayAnnotationPaletteBridge('overlay', { visible });
       return;
     }
     if (target.matches('.ann-tool[data-tool]') && !target.dataset.annToolGroup) {
@@ -1466,20 +1465,29 @@ function _initTrayAnnotationPaletteHost() {
       event.stopImmediatePropagation();
       const tool = target.dataset.tool;
       _annotationSelectTool(tool, target);
-      _trayAnnotationPaletteBridge(tool === 'sticky' ? 'sticky' : tool);
+      _trayAnnotationPaletteBridge(tool);
     }
   }, true);
   document.addEventListener('click', event => {
     const option = event.target.closest('[data-ann-select-tool]');
-    if (!option) return;
-    _trayAnnotationPaletteBridge(option.dataset.annSelectTool);
+    if (option) {
+      _trayAnnotationPaletteBridge(option.dataset.annSelectTool);
+      return;
+    }
+    if (event.target.closest('#ann-color-swatch,.gb-color-palette,.color-palette')) {
+      requestAnimationFrame(() => _trayAnnotationPaletteBridge('state'));
+    }
   }, true);
+  toolbar.querySelectorAll('[data-ann-width-tool],#ann-opacity').forEach(input => {
+    input.addEventListener('input', () => _trayAnnotationPaletteBridge('state'));
+  });
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !document.querySelector('.gb-context-menu,.ann-tool-popup,.gb-color-palette,.color-palette')) {
       event.preventDefault();
       _trayAnnotationPaletteBridge('close');
     }
   });
+  _trayAnnotationPaletteBridge('state');
   toolbar.querySelector('.ann-tool[data-tool]')?.focus();
   return true;
 }

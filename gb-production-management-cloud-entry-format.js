@@ -11,7 +11,15 @@
     const all = [];
     const seenKeys = new Set();
     const migratedLegacyPaths = new Set();
-    const sheets = await _pmCloudTaskSheetNames(provider, internals);
+    const works = await _pmCloudListEntries(provider, internals, '作品リスト');
+    const workBySheet = new Map();
+    works.forEach(work => {
+      const sheet = _pmCloudPropValue(work.frontmatter, 'タスクリストシート');
+      const title = work.name || _pmCloudPropValue(work.frontmatter, '作品タイトル_話数')
+        || _pmCloudPropValue(work.frontmatter, '作品タイトル');
+      if (sheet && title) workBySheet.set(String(sheet), String(title));
+    });
+    const sheets = await _pmCloudTaskSheetNames(provider, internals, works);
     const orderedSheets = [...sheets.filter(sheet => sheet !== 'タスクリスト'), ...sheets.filter(sheet => sheet === 'タスクリスト')];
     for (const sheet of orderedSheets) {
       const entries = await _pmCloudListEntries(provider, internals, sheet);
@@ -21,7 +29,11 @@
         if (key && seenKeys.has(key)) return;
         if (key) seenKeys.add(key);
         if (sheet !== 'タスクリスト' && entry.frontmatter?.migrated_from) migratedLegacyPaths.add(String(entry.frontmatter.migrated_from));
-        all.push({ ...entry, sheet });
+        const inferredWorkTitle = workBySheet.get(String(sheet))
+          || (sheet === 'タスクリスト' || sheet === 'タスクリスト_未分類'
+            ? ''
+            : String(sheet).replace(/^タスクリスト_/, ''));
+        all.push({ ...entry, sheet, inferredWorkTitle });
       });
     }
     return all;
@@ -44,6 +56,11 @@
         }
       });
     }
+    if (!properties['作品タイトル'] && !properties['作品タイトル_話数'] && entry?.inferredWorkTitle) {
+      // 旧タスクは作品列を持たないことがある。所属する登録済みタスクシートから
+      // 読み取り時だけ補完し、利用者のMarkdown自体は書き換えない。
+      properties['作品タイトル'] = String(entry.inferredWorkTitle);
+    }
     const sheet = String(entry?.sheet || entry?.frontmatter?.category || '');
     return {
       id: String(entry?.frontmatter?.id || ''),
@@ -54,6 +71,7 @@
       modified: String(entry?.frontmatter?.modified || ''),
       entry_revision: _pmCloudEntryRevision(entry?.frontmatter),
       transport_revision: entry?.transportRevision || null,
+      topicRef: entry?.frontmatter?.topicRef || null,
       properties,
     };
   }

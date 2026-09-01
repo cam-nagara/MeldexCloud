@@ -5,13 +5,13 @@
    ============================== */
 // 既知タイプのラベル辞書（表示順序も兼ねる）
 const GF_TYPE_LABELS = {
-  page: 'ノート', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー', database: 'シート', 'smart-db': 'スマートシート',
+  page: 'ノート', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー', database: 'シート',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3Dモデル',
   document: '文書', archive: 'アーカイブ', app: 'アプリ', chat: 'チャット', unknown: 'その他',
 };
 // 既知タイプの表示順序
-const GF_TYPE_ORDER = ['page','scriptnote','board','calendar','database','smart-db','chat','image','video','audio','html','csv','psd','clip','3d','document','archive','app','unknown'];
+const GF_TYPE_ORDER = ['page','scriptnote','board','calendar','database','chat','image','video','audio','html','csv','psd','clip','3d','document','archive','app','unknown'];
 const GF_HIDDEN_TYPE_ALIASES = {
   scenario: 'scriptnote',
 };
@@ -799,7 +799,6 @@ function _globalFilterTypeKeys(type) {
   const normalized = String(type || '');
   if (normalized === 'scriptnote') return ['scriptnote', 'scenario'];
   if (normalized === 'scenario') return ['scenario', 'scriptnote'];
-  if (normalized === 'smart-db') return ['smart-db'];
   return [normalized];
 }
 
@@ -955,7 +954,7 @@ function _showHomeAddMenu(e) {
   const r = btn.getBoundingClientRect();
   menu.style.left = (r.left / _z) + 'px';
   menu.style.top = (r.bottom / _z) + 'px';
-  [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']].forEach(([label,type,icon]) => {
+  [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
     el.innerHTML = '<span class="menu-icon">' + lucide(icon, 14) + '</span>' + label;
@@ -971,7 +970,7 @@ function _showHomeAddMenu(e) {
 
 // セクション状態復元
 function restoreSidebarSections() {
-  for (const name of ['recent', 'favorites', 'workspaces', 'home', 'smart-db', 'roots']) {
+  for (const name of ['recent', 'favorites', 'workspaces', 'home', 'roots']) {
     const state = localStorage.getItem('sidebar-section-' + name);
     const body = document.getElementById('body-' + name);
     const toggle = document.getElementById('toggle-' + name);
@@ -1012,9 +1011,9 @@ function _outlinerMediaTypeFromPath(path, type) {
 function _outlinerStoredItemType(item) {
   const type = String(item?.type || '');
   const lower = String(item?.path || '').toLowerCase();
-  if (type === 'smart-db' || lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (type === 'database' || lower.endsWith('.mel-sheet')) return 'database';
   if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
-  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
   if (type === 'csv' || lower.endsWith('.csv')) return 'csv';
   if (type === 'html' || lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
@@ -1066,7 +1065,7 @@ async function _openStoredOutlinerItem(item, opts) {
   const name = _outlinerStoredItemName(item);
   const type = await _outlinerResolveStoredItemType(item);
   const openOpts = opts || { fromExplorer: true };
-  if (!path && type !== 'smart-db') return;
+  if (!path) return;
   if (type === 'folder') openFolder(name, path, openOpts);
   else if (type === 'database') selectDatabase(path, null, openOpts);
   else if (type === 'entity') { if (typeof selectEntity === 'function') selectEntity(path, openOpts); }
@@ -1075,10 +1074,6 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (type === 'board') openBoard(name, path, openOpts);
   else if (type === 'calendar') openCalendarFile(name, path, openOpts);
   else if (type === 'chat') { if (typeof openSavedChat === 'function') openSavedChat(path); else openPage(name, path, openOpts); }
-  else if (type === 'smart-db') {
-    if (path.startsWith('smart-db:') && typeof selectSmartDb === 'function') selectSmartDb(path.replace('smart-db:', ''), null, openOpts);
-    else if (typeof openSmartDbFile === 'function') openSmartDbFile(name, path, openOpts);
-  }
   else if (type === 'image' || type === 'video' || type === 'audio') openMedia(name, path, type, openOpts);
   else if (type === 'pdf' || (type === 'document' && path.toLowerCase().endsWith('.pdf'))) {
     if (typeof openViewer === 'function') openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);

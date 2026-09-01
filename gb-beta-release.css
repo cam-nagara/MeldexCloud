@@ -155,7 +155,7 @@
 .meldex-beta-consent-modal button.primary:disabled {
   opacity: 1 !important;
   filter: none !important;
-  border-color: color-mix(in srgb, var(--border) 70%, var(--fg) 20%) !important;
+  border-color: transparent !important;
   background: color-mix(in srgb, var(--bg3) 82%, var(--fg) 8%) !important;
   color: var(--fg2) !important;
 }
@@ -264,7 +264,7 @@
 .meldex-install-button:disabled {
   cursor: default;
   color: var(--fg2);
-  border-color: var(--border);
+  border-color: transparent;
   background: var(--bg3);
 }
 

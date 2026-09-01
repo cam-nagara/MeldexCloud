@@ -1,5 +1,5 @@
 async function annClear() {
-  if (!await cfConfirm('この画面の注釈をすべて削除しますか？')) return;
+  if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return;
   const embedded = _usesEmbeddedAnnotationSurface(_getAnnotationViewName());
   const overlay = embedded ? null : document.getElementById('ann-overlay');
   const bridge = embedded ? _getBoardAnnotationControl() : null;
@@ -63,16 +63,16 @@ async function annClear() {
     } catch {}
   }
   if (typeof _pushAnnotationBatchHistory === 'function') {
-    _pushAnnotationBatchHistory('注釈: 全削除', historyBefore, historyAfter, ann.targetPath);
+    _pushAnnotationBatchHistory('アノテート: 全削除', historyBefore, historyAfter, ann.targetPath);
   }
   _markAnnotationMutated(ann.targetPath);
   if (failedCount) {
     if (typeof loadAnnotations === 'function' && !embedded) loadAnnotations();
     else if (embedded && typeof _loadAnnotationsToIframe === 'function') _loadAnnotationsToIframe();
-    showStatus(`注釈を一部削除できませんでした（${failedCount}件）`, true);
+    showStatus(`アノテートを一部削除できませんでした（${failedCount}件）`, true);
     return;
   }
-  showStatus('注釈を全削除しました');
+  showStatus('アノテートを全削除しました');
 }
 
 // Alt+A → gb-shortcuts.js の中央ハンドラに移行済み
@@ -90,7 +90,7 @@ function jumpToAnnotation(targetPath) {
   // ターゲットパスからビューを推定して移動
   document.querySelector('.modal-overlay')?.remove();
   if (!targetPath) {
-    showStatus('注釈の対象ファイルが見つかりません', true);
+    showStatus('アノテートの対象ファイルが見つかりません', true);
     return;
   }
   if (targetPath === 'calendar:panel') {
@@ -99,11 +99,9 @@ function jumpToAnnotation(targetPath) {
   } else if (targetPath.startsWith('compare:')) {
     const pair = targetPath.slice('compare:'.length).split('|');
     if (pair[0] && pair[1] && typeof openCompareView === 'function') openCompareView(pair[0], pair[1]).catch?.(() => {});
-    else showStatus('比較ビューの注釈対象が見つかりません', true);
-  } else if (targetPath.endsWith('.mel-sheet') || targetPath.endsWith('.smart-db.json')) {
-    const label = targetPath.split('/').pop().replace(/\.mel-sheet$/i, '').replace(/\.smart-db\.json$/i, '');
-    if (typeof openSmartDbFile === 'function') openSmartDbFile(label, targetPath);
-    else selectDatabase(targetPath);
+    else showStatus('比較ビューのアノテート対象が見つかりません', true);
+  } else if (targetPath.endsWith('.mel-sheet')) {
+    selectDatabase(targetPath);
   } else if (targetPath.endsWith('.mel-board') || targetPath.endsWith('.board.md')) {
     const label = targetPath.split('/').pop().replace(/\.mel-board$/i, '').replace(/\.board\.md$/i, '');
     if (typeof openBoard === 'function') openBoard(label, targetPath);

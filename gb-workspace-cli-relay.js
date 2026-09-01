@@ -163,6 +163,146 @@
       + '_' + _randomHex(6);
   }
 
+  function _canonicalSigningValue(value) {
+    if (Array.isArray(value)) return value.map(_canonicalSigningValue);
+    if (!value || typeof value !== 'object') return value;
+    return Object.keys(value).sort().reduce((result, key) => {
+      result[key] = _canonicalSigningValue(value[key]);
+      return result;
+    }, {});
+  }
+
+  function _base64Url(bytes) {
+    let binary = '';
+    new Uint8Array(bytes).forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function _base64UrlBytes(value) {
+    const raw = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4));
+    return Uint8Array.from(binary, char => char.charCodeAt(0));
+  }
+
+  function _unsignedSigningPayload(payload) {
+    const copy = { ...(payload || {}) };
+    delete copy.signature;
+    delete copy.signature_scheme;
+    return copy;
+  }
+
+  async function _sha256KeyId(publicBytes) {
+    const digest = await crypto.subtle.digest('SHA-256', publicBytes);
+    return 'ed25519:' + Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _generateSigningKey() {
+    const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+    const publicBytes = await crypto.subtle.exportKey('raw', pair.publicKey);
+    return { privateKey: pair.privateKey, publicKey: pair.publicKey, public_key: _base64Url(publicBytes), key_id: await _sha256KeyId(publicBytes) };
+  }
+
+  async function _signV2Payload(payload, privateKey, expectedKeyId) {
+    if (!payload || payload.type !== 'workspace-cli-request' || payload.version !== 2) {
+      throw new Error('旧形式または不正なrequestは署名できません');
+    }
+    if (!privateKey || privateKey.type !== 'private' || privateKey.extractable) {
+      throw new Error('端末ローカルの非export鍵が必要です');
+    }
+    const unsigned = { ..._unsignedSigningPayload(payload), key_id: String(expectedKeyId || '') };
+    if (!/^ed25519:[a-f0-9]{64}$/.test(unsigned.key_id)) throw new Error('端末公開鍵IDが不正です');
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(unsigned)));
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, bytes);
+    return { ...unsigned, signature_scheme: 'ed25519-v1', signature: _base64Url(signature) };
+  }
+
+  async function _signEnrollmentPayload(payload, keyPair) {
+    if (!payload || payload.type !== 'workspace-cli-enrollment-request' || payload.version !== 1) {
+      throw new Error('端末登録申請の形式が不正です');
+    }
+    if (!keyPair?.privateKey || keyPair.privateKey.extractable || keyPair.key_id !== payload.key_id
+      || keyPair.public_key !== payload.public_key) {
+      throw new Error('端末登録申請と端末ローカル鍵が一致しません');
+    }
+    const unsigned = _unsignedSigningPayload(payload);
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(unsigned)));
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, keyPair.privateKey, bytes);
+    return { ...unsigned, signature_scheme: 'ed25519-v1', signature: _base64Url(signature) };
+  }
+
+  async function _verifyOwnerPin(pin, expectedWorkspaceId, pinnedKeyId) {
+    if (!pin || pin.type !== 'workspace-cli-owner-pin' || pin.version !== 1
+      || pin.workspace_id !== expectedWorkspaceId || pin.signature_scheme !== 'ed25519-v1') return false;
+    const publicBytes = _base64UrlBytes(pin.public_key);
+    const keyId = await _sha256KeyId(publicBytes);
+    if (keyId !== pin.key_id || (pinnedKeyId && keyId !== pinnedKeyId)) return false;
+    const publicKey = await crypto.subtle.importKey('raw', publicBytes, { name: 'Ed25519' }, false, ['verify']);
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(_unsignedSigningPayload(pin))));
+    return crypto.subtle.verify({ name: 'Ed25519' }, publicKey, _base64UrlBytes(pin.signature), bytes);
+  }
+
+  async function _verifySignedValue(value, publicKeyValue) {
+    if (!value || value.signature_scheme !== 'ed25519-v1') return false;
+    const publicKey = await crypto.subtle.importKey(
+      'raw', _base64UrlBytes(publicKeyValue), { name: 'Ed25519' }, false, ['verify'],
+    );
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(_unsignedSigningPayload(value))));
+    return crypto.subtle.verify({ name: 'Ed25519' }, publicKey, _base64UrlBytes(value.signature), bytes);
+  }
+
+  async function _sha256Hex(value) {
+    const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _validateSignedRequestV2(request, ledger, ownerPin, expectedWorkspaceId, pinnedOwnerKeyId) {
+    if (!await _verifyOwnerPin(ownerPin, expectedWorkspaceId, pinnedOwnerKeyId)) throw new Error('所有者公開鍵pinが一致しません');
+    if (!ledger || ledger.type !== 'workspace-cli-key-ledger' || ledger.version !== 1
+      || ledger.workspace_id !== expectedWorkspaceId || ledger.owner_key_id !== ownerPin.key_id
+      || !await _verifySignedValue(ledger, ownerPin.public_key)) throw new Error('所有者署名済み端末台帳が不正です');
+    if (!request || request.type !== 'workspace-cli-request' || request.version !== 2
+      || request.workspace_id !== expectedWorkspaceId || request.responder_policy_version !== 'answer-only-v2'
+      || request.read_only !== true || String(request.source_folder || '') !== '') {
+      throw new Error('旧形式・ローカルpath付き・answer-onlyでない依頼は利用できません');
+    }
+    if (['path', 'relative_path', 'attachment_path'].some(key => Object.prototype.hasOwnProperty.call(request, key))) {
+      throw new Error('添付pathの直接指定は利用できません');
+    }
+    const entries = Array.isArray(ledger.keys) ? ledger.keys : [];
+    const device = entries.find(item => item?.key_id === request.key_id && item?.kind === 'device' && !item?.revoked_at);
+    if (!device || device.user_id !== request.user_id || device.device_id !== request.device_id
+      || !await _verifySignedValue(request, device.public_key)) throw new Error('未登録・失効・改ざんされた端末依頼です');
+    const node = entries.find(item => item?.kind === 'node' && item?.node_id === request.target_node_id && !item?.revoked_at);
+    if (!node) throw new Error('未登録または失効済みの管理者PCです');
+    const issued = Date.parse(request.issued_at || '');
+    const expires = Date.parse(request.expires_at || '');
+    const now = Date.now();
+    if (!Number.isFinite(issued) || !Number.isFinite(expires) || issued > now + 60000 || expires <= now
+      || expires <= issued || expires - issued > 30 * 60 * 1000) throw new Error('依頼の時刻または期限が不正です');
+    if (!request.text || await _sha256Hex(request.text) !== request.text_sha256) throw new Error('依頼本文が改ざんされています');
+    if (!Array.isArray(request.attachments_manifest)
+      || await _sha256Hex(new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(request.attachments_manifest)))) !== request.attachments_manifest_sha256
+      || request.attachments_manifest.some(item => !item || 'relative_path' in item || 'path' in item)) {
+      throw new Error('添付manifestが改ざんされています');
+    }
+    if (!request.context_snapshot || request.context_snapshot.sha256 !== request.context_snapshot_sha256) {
+      throw new Error('回答用文脈snapshotが不正です');
+    }
+    return true;
+  }
+
+  // Phase 4A protocol adapter only. UIや自動enrollmentはPhase 4Bまで追加しない。
+  // privateKeyは非export CryptoKeyのまま端末ローカルで扱い、共有フォルダへは公開鍵だけを出す。
+  window.__MeldexWorkspaceCliSigningProtocol = Object.freeze({
+    canonicalize: value => JSON.stringify(_canonicalSigningValue(value)),
+    generateSigningKey: _generateSigningKey,
+    signEnrollmentRequest: _signEnrollmentPayload,
+    signRequestV2: _signV2Payload,
+    verifyOwnerPin: _verifyOwnerPin,
+    validateSignedRequestV2: _validateSignedRequestV2,
+  });
+
   async function _writeChatMessage(provider, sourceFolder, roomPath, from, text, now) {
     const roomDir = _roomDir(roomPath, sourceFolder);
     await _directoryHandle(provider, roomDir, true);
@@ -187,42 +327,16 @@
     return ageMs <= thresholdMs;
   }
 
-  // Phase 2: Cloud/スマホ(ブラウザ直結・バックエンド無し)でも、管理者PCが共有フォルダへ書いた
-  // 在席ファイルを直接読んで同じ稼働判定を行う。設定の読み書きはこのブリッジでは扱わない。
+  // Phase 2: Cloud直結ではowner鍵pin/端末承認UIがまだ無いため、共有presenceを信用しない。
+  // 署名らしいフィールドの存在確認だけでは偽装を防げないので、Phase 4の明示登録まで常に停止中を返す。
   async function _dropboxWorkspaceCliPresence(url) {
-    const provider = await _requirePwaProvider('read');
-    const sourceFolder = _requestSourceFolder(url, {});
-    const presenceDirPath = _joinPath(sourceFolder, PRESENCE_DIR);
-    let entries = [];
-    try {
-      entries = await _listDirectoryEntries(provider, presenceDirPath);
-    } catch {
-      entries = [];
-    }
-    const nowMs = Date.now();
-    const nodes = [];
-    for (const entry of entries) {
-      if (!/\.json$/i.test(entry?.name || '')) continue;
-      const data = await _readJsonSafe(provider, _joinPath(presenceDirPath, entry.name), null);
-      if (!data || data.type !== 'workspace-cli-presence') continue;
-      nodes.push({
-        node_id: String(data.node_id || entry.name.replace(/\.json$/i, '')),
-        node_name: String(data.node_name || '管理者PC'),
-        updated_at: String(data.updated_at || ''),
-        heartbeat_interval_seconds: _presenceHeartbeatInterval(data),
-        assistant_label: String(data.assistant_label || ''),
-        online: _presenceIsOnline(data, nowMs),
-      });
-    }
-    nodes.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-    const onlineNodes = nodes.filter(node => node.online);
-    const newest = onlineNodes[0] || nodes[0] || null;
     return {
-      online: onlineNodes.length > 0,
-      node_name: newest ? newest.node_name : '',
-      updated_at: newest ? newest.updated_at : '',
-      stale_after_seconds: (newest ? _presenceHeartbeatInterval(newest) : PRESENCE_DEFAULT_INTERVAL_SECONDS) * 3 + PRESENCE_STALE_GRACE_SECONDS,
-      nodes,
+      online: false,
+      node_name: '',
+      updated_at: '',
+      stale_after_seconds: PRESENCE_DEFAULT_INTERVAL_SECONDS * 3 + PRESENCE_STALE_GRACE_SECONDS,
+      nodes: [],
+      unavailable_reason: 'device-signing-not-enrolled',
     };
   }
 
@@ -231,52 +345,36 @@
     if (pathname === '/workspace-cli/presence' && method === 'GET') {
       return _dropboxWorkspaceCliPresence(url);
     }
-    if (pathname !== '/workspace-cli/request' || method !== 'POST') {
+    if (pathname === '/workspace-cli/request' && method === 'POST') {
+      throw new Error('旧外部中継入口は廃止されました。端末署名済みv2入口を使用してください');
+    }
+    if (pathname !== '/workspace-cli/request-v2/accept' || method !== 'POST') {
       throw new Error('クラウドモードでは管理者PCの中継設定は変更できません');
     }
+    const request = body?.signed_request;
+    if (!request) throw new Error('この端末は管理者AIへの依頼用にまだ登録されていません');
     const provider = await _requirePwaProvider('readwrite');
-    const user = _currentUser(url, body || {});
-    const sourceFolder = _requestSourceFolder(url, body || {});
-    const roomPath = await _assertRoomAccess(provider, body?.room || 'general', user, sourceFolder);
-    const text = String(body?.text || '').trim();
-    if (!text) throw new Error('依頼内容を入力してください');
-    const providerKey = String(body?.provider || 'codex').trim();
-    if (!PROVIDER_LABELS[providerKey]) throw new Error('未対応のCLIです');
-    const requesterRole = _currentWorkspaceCliRole(sourceFolder);
-    const readOnly = !_isAdminRole(requesterRole);
-    if (readOnly && providerKey !== 'codex') {
-      throw new Error('管理者以外は読み取り専用で実行できるCodex CLIだけ利用できます');
-    }
-    const now = new Date();
-    const requestId = _requestId(now);
-    const requestPath = _joinPath(sourceFolder, REQUEST_DIR, requestId + '.json');
+    const sourceFolder = _requestSourceFolder(url, request);
+    const workspaceId = String(request.workspace_id || '').trim();
+    if (!workspaceId) throw new Error('署名依頼のworkspace IDがありません');
+    const pinPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/owner-pin.json');
+    const ledgerPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/key-ledger.json');
+    const ownerPin = await _readJsonSafe(provider, pinPath, null);
+    const ledger = await _readJsonSafe(provider, ledgerPath, null);
+    const storageKey = 'meldex-workspace-cli-owner-pin:' + workspaceId;
+    const pinnedOwnerKeyId = String(localStorage.getItem(storageKey) || '');
+    if (!pinnedOwnerKeyId) throw new Error('このワークスペースの所有者公開鍵を確認していません');
+    await _validateSignedRequestV2(request, ledger, ownerPin, workspaceId, pinnedOwnerKeyId);
+    const user = _currentUser(url, {});
+    if (user !== request.user_id) throw new Error('ログイン利用者と署名端末の利用者が一致しません');
+    const roomPath = await _assertRoomAccess(provider, request.room, user, sourceFolder);
+    if (roomPath !== request.room) throw new Error('署名依頼のルームが一致しません');
+    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(request.id)) throw new Error('署名依頼IDが不正です');
+    const requestPath = _joinPath(sourceFolder, REQUEST_DIR, request.id + '.json');
+    if (await _readJsonSafe(provider, requestPath, null)) throw new Error('同じ署名依頼は既に存在します');
     await _directoryHandle(provider, _joinPath(sourceFolder, REQUEST_DIR), true);
-    const payload = {
-      type: 'workspace-cli-request',
-      version: 1,
-      id: requestId,
-      status: 'pending',
-      requested_at: now.toISOString(),
-      workspace_id: String(body?.workspace_id || body?.workspaceId || ''),
-      source_folder: sourceFolder,
-      room: roomPath,
-      provider: providerKey,
-      provider_label: PROVIDER_LABELS[providerKey],
-      from: user,
-      requester_role: requesterRole || 'member',
-      read_only: readOnly,
-      text,
-    };
-    await provider.writeText(requestPath, JSON.stringify(payload, null, 2));
-    await _writeChatMessage(
-      provider,
-      sourceFolder,
-      roomPath,
-      user,
-      `CLIへ依頼しました（${PROVIDER_LABELS[providerKey]}）。\n管理者PCが起動中で、中継設定が有効な場合、このルームに返答されます。${readOnly ? '\n管理者以外の依頼は読み取り専用で処理されます。' : ''}\n\n${text}`,
-      now,
-    );
-    return { ok: true, request_id: requestId, status: 'pending', room: roomPath };
+    await provider.writeText(requestPath, JSON.stringify(request, null, 2));
+    return { ok: true, request_id: request.id, attempt_id: request.attempt_id, status: 'queued', room: roomPath };
   });
 })();
 
@@ -289,8 +387,15 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
-  function _teamInputPayload() {
-    const input = document.getElementById('team-input');
+  function _workspaceCliChatElement(event, id) {
+    const actionTarget = event?.currentTarget instanceof Element
+      ? event.currentTarget
+      : (event?.target instanceof Element ? event.target.closest('[data-action]') : null);
+    const chatRoot = actionTarget?.closest?.('[id="rp-chat"]');
+    return chatRoot?.querySelector?.(`[id="${id}"]`) || document.getElementById(id);
+  }
+
+  function _teamInputPayload(input = document.getElementById('team-input')) {
     const text = String(input?.value || '').trim();
     const atts = Array.isArray(window._teamPendingAttachments) ? window._teamPendingAttachments : (typeof _teamPendingAttachments !== 'undefined' ? _teamPendingAttachments : []);
     if (!text && atts.length === 0) return { text: '', originalText: text, attachments: [] };
@@ -307,15 +412,15 @@
     return { text: finalText, originalText: text, attachments: atts.slice() };
   }
 
-  function _button() {
-    return document.getElementById('team-workspace-cli-btn')
+  function _button(event) {
+    return _workspaceCliChatElement(event, 'team-workspace-cli-btn')
       || document.querySelector('[data-action="sendWorkspaceCliRelayRequestClick(event)"]');
   }
 
   // Phase 4: 提供元選択メニューを廃止し、押すとそのまま依頼が飛ぶ。どのCLI/モデルを使うかは
   // 管理者が設定→AI→CLIチャット節の中継設定で選ぶ(既定 Codex CLI)。ここではproviderを
   // 送らず、サーバー側(非管理者は常にCodex CLI読み取り専用、管理者は中継設定の選択)に委ねる。
-  async function _sendWorkspaceCliRelayRequest() {
+  async function _sendWorkspaceCliRelayRequest(event) {
     if (typeof _chatRequireSourceFolder === 'function' && !_chatRequireSourceFolder()) return false;
     if (!window._teamCurrentRoom && typeof _teamCurrentRoom === 'undefined') {
       if (typeof showStatus === 'function') showStatus('ルームを選択してください', true);
@@ -326,13 +431,13 @@
       if (typeof showStatus === 'function') showStatus('ルームを選択してください', true);
       return false;
     }
-    const input = document.getElementById('team-input');
-    const payload = _teamInputPayload();
+    const input = _workspaceCliChatElement(event, 'team-input');
+    const payload = _teamInputPayload(input);
     if (!payload.text) {
       if (typeof showStatus === 'function') showStatus('依頼内容を入力してください', true);
       return false;
     }
-    const sendBtn = _button();
+    const sendBtn = _button(event);
     const inputWasDisabled = !!input?.disabled;
     const sendWasDisabled = !!sendBtn?.disabled;
     if (input) input.disabled = true;
@@ -392,7 +497,7 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     _workspaceCliPresenceOfflineNotice();
-    return _sendWorkspaceCliRelayRequest();
+    return _sendWorkspaceCliRelayRequest(event);
   }
 
   function _workspaceRows(config) {

@@ -1,42 +1,3 @@
-      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
-      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
-        editor.doc.title = exactLabel;
-        const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
-          ? editor.host.closest('.gb-scriptnote-root')
-          : null;
-        const titleInput = scriptNoteRoot ? scriptNoteRoot.querySelector('#title-input') : null;
-        // プログラムによる value 代入は change イベントを発火しないため、
-        // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
-        if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
-      }
-      if (editor && mapped === newPath && (options.etag || options.transport_revision)) {
-        editor._lastSavedEtag = options.etag || options.transport_revision;
-        if (editor._lastSavedTransportRevision) {
-          editor._lastSavedTransportRevision = options.transport_revision || options.etag;
-        }
-      }
-    });
-  }
-
-  if (legacyTabsChanged) renderTabs();
-  if (layoutChanged && typeof GBLayout !== 'undefined') {
-    if (typeof GBLayout.render === 'function') GBLayout.render();
-    if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
-  }
-  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
-}
-
-function purgeAppPathReferences(paths) {
-  const deletedPaths = (Array.isArray(paths) ? paths : [paths])
-    .map(path => String(path || '').trim())
-    .filter(Boolean);
-  if (!deletedPaths.length) return;
-  let recentChanged = false;
-  let layoutChanged = false;
-  let legacyTabsChanged = false;
-  let clearedCurrentView = false;
-  _cancelDeletedPathAutosaves(deletedPaths);
-  const activePathKey = {
     pivot: 'currentDbPath',
     gallery: 'currentDbPath',
     kanban: 'currentDbPath',
@@ -134,12 +95,6 @@ function purgeAppPathReferences(paths) {
       if (key === activePathKey) clearedCurrentView = true;
     }
   });
-  const smartDbRuntimePath = state.currentSmartDb?._filePath || _smartDbIdPath(state.currentSmartDb?.id);
-  if (smartDbRuntimePath && _matchesDeletedPaths(smartDbRuntimePath, deletedPaths)) {
-    state.currentSmartDb = null;
-    state.smartDbData = null;
-    if (state.view === 'smart-db') clearedCurrentView = true;
-  }
   if (!state.currentDbPath) {
     state.pivotData = null;
     state.dbMetadata = null;
@@ -330,7 +285,7 @@ function _forcedNavPush(entry, paneId) {
 }
 
 function _getDbViewScrollContainer(ctx, viewMode) {
-  const mode = ['calendar', 'tasks', 'shifts'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
+  const mode = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
   const names = {
     pivot: 'pivot-view',
     tree: 'tree-view',
@@ -424,7 +379,6 @@ function navOpen(entry, opts) {
     return openArchiveFolder(entry.archivePath, entry.member || '', o);
   }
   if (entry.type === 'calendar') return openCalendarFile(entry.label, entry.path, o);
-  if (entry.type === 'smart-db' && typeof openSmartDbFile === 'function') return openSmartDbFile(entry.label, entry.path, o);
 }
 function _withNavFlag(result) {
   if (result && typeof result.then === 'function') {
@@ -443,8 +397,6 @@ let state = {
   currentEntityPath: null, // 現在選択中のエントリパス
   currentPagePath: null, // 現在選択中のページパス
   currentBoardPath: null, // 現在選択中のボードパス
-  currentSmartDb: null, // 現在選択中のスマートDB定義
-  smartDbData: null, // スマートDBのAPIレスポンス
   pivotData: null,
   filter: 'disabled', // 'disabled' | 'all' | 'adopted' | 'nobotsu'
   view: 'pivot', // 'pivot' | 'entity' | 'page'
@@ -813,82 +765,114 @@ navPush = function(entry, paneId) {
 // 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
 // ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
 function _applyNavEntryToBoundTab(navState, entry) {
-  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return;
-  if (typeof GBLayout === 'undefined') return;
+  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return true;
+  if (typeof GBLayout === 'undefined') return true;
   const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
   const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
-  if (!tab) return;
+  if (!tab) return true;
   const nextType = typeof _normalizeOpenTypeForNav === 'function'
     ? _normalizeOpenTypeForNav(entry.type)
     : entry.type;
   const typeChanged = tab.type !== nextType;
-  if (typeChanged && typeof removeComponentInstance === 'function') {
-    removeComponentInstance(tab.id);
-  }
-  tab.type = nextType;
-  tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
-  tab.path = entry.path || entry.dbPath || '';
-  tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
-    ? GBTabs.tabIcon(nextType)
-    : tab.icon;
-  tab.state = {
-    ...(typeChanged ? {} : (tab.state || {})),
-    ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
-    ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+  const applyEntry = () => {
+    tab.type = nextType;
+    tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
+    tab.path = entry.path || entry.dbPath || '';
+    tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
+      ? GBTabs.tabIcon(nextType)
+      : tab.icon;
+    tab.state = {
+      ...(typeChanged ? {} : (tab.state || {})),
+      ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+      ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+    };
+    if (typeChanged) GBLayout.render();
+    else {
+      const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+      if (labelEl) labelEl.textContent = tab.label;
+    }
+    return true;
   };
-  if (typeChanged) GBLayout.render();
-  else {
-    const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
-    if (labelEl) labelEl.textContent = tab.label;
+  if (typeChanged && typeof removeComponentInstance === 'function') {
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+    if (component && typeof removeComponentInstanceSafely === 'function') {
+      return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);
+    }
+    if (removeComponentInstance(tab.id) === false) return false;
   }
+  return applyEntry();
+}
+
+function _finishPaneHistoryNavigation(navState, nextIndex, entry) {
+  navState.index = nextIndex;
+  navNavigating = true;
+  if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+  _withNavFlag(navOpen(entry));
+  if (navState.kind === 'legacy') {
+    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
+    if (tab) { _activeTabId = tab.id; renderTabs(); }
+  }
+  _refreshPaneNavUi(navState.paneId);
+  _persistPaneNavState(navState);
+  return true;
+}
+
+function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
+  if (!applied || typeof applied.then !== 'function') {
+    return applied === false ? false : _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }
+  navNavigating = true;
+  applied.then((ok) => {
+    if (!ok) {
+      navNavigating = false;
+      return;
+    }
+    _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }).catch((error) => {
+    navNavigating = false;
+    if (typeof showStatus === 'function') showStatus('画面遷移前の保存に失敗しました: ' + (error?.message || error), true);
+  });
+  return true;
 }
 
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
+  if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
   const navState = _getNavState(paneId);
   if (navState.index <= 0) return false;
-  navState.index -= 1;
-  const entry = navState.history[navState.index];
+  const nextIndex = navState.index - 1;
+  const entry = navState.history[nextIndex];
   if (!entry) return false;
-  navNavigating = true;
   try {
-    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-    _applyNavEntryToBoundTab(navState, entry);
-    _withNavFlag(navOpen(entry));
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
   } catch (e) {
     navNavigating = false;
     throw e;
   }
-  if (navState.kind === 'legacy') {
-    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
-    if (tab) { _activeTabId = tab.id; renderTabs(); }
-  }
-  _refreshPaneNavUi(navState.paneId);
-  _persistPaneNavState(navState);
-  return true;
 }
 function navForward(paneId) {
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
+  if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
   const navState = _getNavState(paneId);
   if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
-  navState.index += 1;
-  const entry = navState.history[navState.index];
+  const nextIndex = navState.index + 1;
+  const entry = navState.history[nextIndex];
   if (!entry) return false;
-  navNavigating = true;
   try {
-    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-    _applyNavEntryToBoundTab(navState, entry);
-    _withNavFlag(navOpen(entry));
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
   } catch (e) {
     navNavigating = false;
     throw e;
   }
-  if (navState.kind === 'legacy') {
-    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
-    if (tab) { _activeTabId = tab.id; renderTabs(); }
-  }
-  _refreshPaneNavUi(navState.paneId);
-  _persistPaneNavState(navState);
-  return true;
 }
 
 function showPaneNavHistoryDropdown(e, paneId, direction) {
@@ -898,3 +882,19 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
   const navState = _getNavState(paneId);
   const items = [];
   if (direction === 'back') {
+    for (let i = navState.index - 1; i >= Math.max(0, navState.index - 15); i--) items.push({ index: i, entry: navState.history[i] });
+  } else {
+    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
+  }
+  if (items.length === 0) return;
+
+  const dd = document.createElement('div');
+  dd.className = 'ab-dropdown nav-history-dropdown';
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
+  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
+  items.forEach(({ index, entry }) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');

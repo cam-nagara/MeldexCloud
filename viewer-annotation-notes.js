@@ -1,5 +1,5 @@
 /* viewer-annotation-notes.js — Meldexビューワー: 新座標系(media-pixel-v1)の付箋＋しっぽ。
-   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. 注釈の画像追従」
+   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. アノテートの画像追従」
    方針:
      - 付箋本体・文字・しっぽ・ハンドルは、対応するシーン(viewer-annotation-scene.js)のSVG内
        <foreignObject> として描画する。SVGのviewBoxスケーリングにより、フィット倍率×ズーム×
@@ -25,6 +25,12 @@
 
   function _clampMin(value, min) { return Math.max(min, Number(value) || 0); }
 
+  function _setSaveState(entry, state) {
+    entry.note.dataset.saveState = state;
+    entry.note.setAttribute('aria-label', state === 'unsaved' ? '未保存の付箋' : '付箋');
+    entry.retryButton.hidden = state !== 'unsaved';
+  }
+
   function _buildNoteDom(scene, annId, data, color) {
     const fo = document.createElementNS(NS, 'foreignObject');
     fo.classList.add('viewer-ann-note-fo');
@@ -45,6 +51,13 @@
     textarea.value = data.text || '';
     note.appendChild(textarea);
 
+    const retryButton = document.createElementNS(XHTML, 'button');
+    retryButton.className = 'viewer-ann-save-retry';
+    retryButton.type = 'button';
+    retryButton.textContent = '未保存・再試行';
+    retryButton.hidden = true;
+    note.appendChild(retryButton);
+
     const tailShape = document.createElementNS(NS, 'polygon');
     tailShape.classList.add('viewer-ann-tail-shape');
     const handleStart = document.createElementNS(NS, 'circle');
@@ -55,7 +68,7 @@
     handleEnd.dataset.tailHandle = 'end';
 
     fo.appendChild(note);
-    return { fo, note, textarea, tailShape, handleStart, handleEnd };
+    return { fo, note, textarea, retryButton, tailShape, handleStart, handleEnd };
   }
 
   function _updateTailDom(scene, entry) {
@@ -85,8 +98,8 @@
     entry.handleEnd.setAttribute('cx', ex); entry.handleEnd.setAttribute('cy', ey); entry.handleEnd.setAttribute('r', handleR);
     entry.handleStart.classList.add('viewer-ann-tail-handle');
     entry.handleEnd.classList.add('viewer-ann-tail-handle');
-    // ハンドルは注釈モードON時のみ操作可能にする（徹底チェック2026-08-02: 以前は_ann.activeに
-    // 関係なく常時autoだったため、注釈OFF時もこの円が下のページ送り領域・パン操作のクリックを
+    // ハンドルはアノテートモードON時のみ操作可能にする（徹底チェック2026-08-02: 以前は_ann.activeに
+    // 関係なく常時autoだったため、アノテートOFF時もこの円が下のページ送り領域・パン操作のクリックを
     // 奪っていた）。tailShape自体は装飾のみで常にnone（既存のまま変更なし）。
     const active = !!SceneEngine().ann().active;
     entry.tailShape.style.pointerEvents = 'none';
@@ -96,12 +109,22 @@
 
   async function _persist(entry) {
     if (!entry.annId) return;
+    const intent = ++entry.saveIntent;
+    _setSaveState(entry, 'saving');
+    const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
+    const after = { ...(before || {}), id: entry.annId, target_path: entry.targetPath, type: 'comment', shape: 'sticky', color: entry.color, data: { ...entry.data } };
     try {
       const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: { ...entry.data } });
-      window.__viewerAnnotationReportSave?.(true, 'update', null, result);
+      if (intent !== entry.saveIntent) return;
+      after.modified = result?.modified || after.modified || '';
+      entry.historyRow = after;
+      window.__viewerAnnotationReportSave?.(true, 'update', null, result, { before, after });
+      _setSaveState(entry, 'saved');
     } catch (error) {
+      if (intent !== entry.saveIntent) return;
       _saveFailed(error);
       window.__viewerAnnotationReportSave?.(false, 'update', error);
+      _setSaveState(entry, 'unsaved');
     }
   }
 
@@ -224,6 +247,7 @@
 
   async function _deleteEntry(scene, entry) {
     try {
+      const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
       const result = entry.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(entry.annId)) : null;
       entry.resizeObserver?.disconnect();
       entry.fo.remove();
@@ -231,7 +255,7 @@
       entry.handleStart.remove();
       entry.handleEnd.remove();
       scene.notes = (scene.notes || []).filter(n => n !== entry);
-      window.__viewerAnnotationReportSave?.(true, 'delete', null, result);
+      window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
     } catch (error) {
       _saveFailed(error, '付箋を削除できませんでした');
       window.__viewerAnnotationReportSave?.(false, 'delete', error);
@@ -242,15 +266,19 @@
     const dom = _buildNoteDom(scene, item.id, data, item.color);
     const entry = {
       annId: item.id, data: { ...data }, color: item.color,
-      fo: dom.fo, note: dom.note, textarea: dom.textarea,
+      targetPath: scene.path,
+      historyRow: { ...item, target_path: item.target_path || scene.path, data: { ...data } },
+      fo: dom.fo, note: dom.note, textarea: dom.textarea, retryButton: dom.retryButton,
       tailShape: dom.tailShape, handleStart: dom.handleStart, handleEnd: dom.handleEnd,
-      saveTimer: 0,
+      saveTimer: 0, saveIntent: 0,
     };
     scene.notesG.appendChild(entry.fo);
     entry.note.style.pointerEvents = SceneEngine().ann().active ? 'auto' : 'none';
     _updateTailDom(scene, entry);
     _installDrag(scene, entry);
     _installTailDrag(scene, entry);
+    entry.retryButton.addEventListener('click', () => _persist(entry));
+    _setSaveState(entry, 'saved');
     scene.notes = scene.notes || [];
     scene.notes.push(entry);
     return entry;
@@ -266,11 +294,19 @@
     if (scene.isPdf && scene.pageIndex != null) data.pageIndex = scene.pageIndex;
     const color = SceneEngine().ann().color;
     try {
-      const res = await window.apiPost('/annotations', {
+      const row = {
         target_path: scene.path, type: 'comment', shape: 'sticky', data, color, opacity: SceneEngine().ann().opacity, user: _user(),
-      });
-      render(scene, { id: res?.id, color }, data);
-      window.__viewerAnnotationReportSave?.(true, 'create', null, res);
+      };
+      const res = await window.apiPost('/annotations', row);
+      const after = {
+        ...row,
+        id: res?.id || '',
+        created: res?.created || '',
+        modified: res?.modified || res?.created || '',
+        data: { ...data },
+      };
+      render(scene, after, data);
+      window.__viewerAnnotationReportSave?.(true, 'create', null, res, { before: null, after });
     } catch (error) {
       _saveFailed(error, '付箋作成に失敗しました');
       window.__viewerAnnotationReportSave?.(false, 'create', error);
@@ -305,10 +341,23 @@
     return false;
   }
 
+  function hasUnsaved() {
+    return (SceneEngine().getScenes() || []).some(scene =>
+      (scene.notes || []).some(entry => entry.note?.dataset?.saveState === 'unsaved')
+    );
+  }
+
+  window.addEventListener?.('beforeunload', event => {
+    if (!hasUnsaved()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
   window.MeldexViewerAnnotationNotes = {
     render,
     createAt,
     setInteractive,
     eraseAt,
+    hasUnsaved,
   };
 })();

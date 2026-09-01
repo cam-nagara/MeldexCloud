@@ -82,7 +82,7 @@ function _bdOpenExternalActionUrl(path) {
   return false;
 }
 
-const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
+const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'html', 'folder', 'calendar', 'csv', 'media', 'board']);
 const _BD_DEFAULT_OPEN_TARGET_KEY = 'gb:board-default-open-target:v1';
 const _BD_VALID_OPEN_TARGETS = new Set(['main', 'right-sidebar']);
 const _bdResolvedLinkTypeCache = new Map();
@@ -371,7 +371,7 @@ function _bdPaneActiveType(pane) {
 }
 
 function _bdIsUtilityPane(pane) {
-  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'calendar', 'timer']);
+  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'calendar']);
   return utilityTypes.has(_bdPaneActiveType(pane));
 }
 
@@ -406,8 +406,8 @@ function _bdInferLinkType(path, explicitType) {
   const ext = _bdLinkExt(lower);
   if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
   if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || ext === 'board') return 'board';
-  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
-  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (lower.endsWith('.mel-sheet')) return 'database';
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (ext === 'md' || ext === 'txt') return 'page';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'csv') return 'csv';
@@ -434,12 +434,11 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (_bdIsExternalUrl(nextPath)) return { type: 'html', label: nextLabel, path: nextPath, urlExternal: true };
   if (explicitType === 'scriptnote') return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (explicitType === 'board') return { type: 'board', label: nextLabel, path: nextPath };
-  if (explicitType === 'timer') return { type: 'timer', label: nextLabel, path: nextPath };
+  if (explicitType === 'timer' || explicitType === 'unsupported') return { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
   if (explicitType === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (explicitType === 'html') return { type: 'html', label: nextLabel, path: nextPath };
   if (explicitType === 'entity') return { type: 'entity', label: nextLabel, path: nextPath };
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
-  if (explicitType === 'smart-db') return { type: 'smart-db', label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
   if (explicitType === 'pdf' || (explicitType === 'document' && ext === 'pdf')) {
@@ -453,8 +452,8 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
   if (ext === 'board') return { type: 'board', label: nextLabel, path: nextPath };
-  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return { type: 'smart-db', label: nextLabel, path: nextPath };
-  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return { type: 'timer', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-sheet')) return { type: 'database', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
   if (ext === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (ext === 'html' || ext === 'htm') return { type: 'html', label: nextLabel, path: nextPath };
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
@@ -570,7 +569,7 @@ function _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState) {
   const activeTab = tabs[index];
   if (!activeTab || activeTab.pinned) return '';
   if (activeTab.path && activeTab.path !== entry.path) {
-    const dbTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const dbTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
     if (dbTypes.has(activeTab.type) && typeof _navPushWithViewState === 'function') {
       const paneCtx = typeof getPaneContext === 'function' ? getPaneContext(targetPaneId) : null;
       _navPushWithViewState({
@@ -662,10 +661,6 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
   const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));
-  if (standaloneType === 'smart-db' && _bdIsStandaloneBoardSurface()) {
-    if (typeof showStatus === 'function') showStatus('スマートシートはMeldex本体で開いてください', true);
-    return false;
-  }
   return MeldexBoardOpenTarget.open(path, opts.target, {
     ...opts,
     label,
@@ -1016,12 +1011,19 @@ function _bdStandaloneUrlForEntry(entry) {
   const viewerUrl = _bdStandaloneViewerUrl(entry);
   if (viewerUrl) return viewerUrl;
   if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
+  if (entry.type === 'scriptnote') {
+    const query = new URLSearchParams({
+      single: '1',
+      open: 'scriptnote',
+      path: entry.path,
+      label: entry.label || String(entry.path).split(/[/\\]/).pop() || '',
+    });
+    return 'Meldex.html?' + query.toString();
+  }
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
     return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
   }
   if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (entry.type === 'timer') return 'timer-standalone.html?open=' + encodeURIComponent(entry.path);
   return '';
 }
 
@@ -1162,9 +1164,8 @@ function _bdFileIcon(ext, path, linkType) {
   if (_bdIsExternalUrl(path)) return 'globe';
   if (explicitType === 'scriptnote') return byType('scriptnote', 'bookOpenText');
   if (explicitType === 'board') return byType('board', 'presentation');
-  if (explicitType === 'timer') return byType('timer', 'timer');
+  if (explicitType === 'timer' || explicitType === 'unsupported') return 'fileQuestion';
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return byType('database', 'db');
-  if (explicitType === 'smart-db') return byType('smart-db', 'databaseSearch');
   if (explicitType === 'csv') return 'table';
   if (explicitType === 'html') return 'globe';
   if (explicitType === 'folder') return byType('folder', 'folder');
@@ -1172,8 +1173,8 @@ function _bdFileIcon(ext, path, linkType) {
   // 複合拡張子（アプリ種別）を優先判定
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return byType('scriptnote', 'bookOpenText');
   if (name.endsWith('.mel-board') || name.endsWith('.board.json') || name.endsWith('.canvas.json')) return byType('board', 'presentation');
-  if (name.endsWith('.mel-sheet') || name.endsWith('.smart-db.json')) return byType('smart-db', 'databaseSearch');
-  if (name.endsWith('.mel-timer') || name.endsWith('.timer.json')) return byType('timer', 'timer');
+  if (name.endsWith('.mel-sheet')) return byType('database', 'db');
+  if (name.endsWith('.mel-timer') || name.endsWith('.timer.json')) return 'fileQuestion';
   const nextExt = String(ext || '').toLowerCase();
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(nextExt)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(nextExt)) return 'clapperboard';
@@ -1182,9 +1183,9 @@ function _bdFileIcon(ext, path, linkType) {
   if (nextExt === 'csv') return 'table';
   if (nextExt === 'board') return byType('board', 'presentation');
   if (nextExt === 'mel-board') return byType('board', 'presentation');
-  if (nextExt === 'mel-sheet') return byType('smart-db', 'databaseSearch');
+  if (nextExt === 'mel-sheet') return byType('database', 'db');
   if (nextExt === 'mel-scenario') return byType('scriptnote', 'bookOpenText');
-  if (nextExt === 'mel-timer') return byType('timer', 'timer');
+  if (nextExt === 'mel-timer') return 'fileQuestion';
   if (nextExt === 'json') return 'fileText';
   if (nextExt === 'pdf') return 'fileText';
   return 'file';

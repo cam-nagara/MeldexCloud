@@ -232,10 +232,10 @@ function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
     div.style.borderColor = 'transparent';
     div.style.borderWidth = '0px';
     div.style.borderStyle = 'solid';
-  } else if (nodeStyle.bgColor) div.style.background = nodeStyle.bgColor;
+  } else if (nodeStyle.bgColor) div.style.background = _bdColorWithOpacity(nodeStyle.bgColor, nodeStyle.bgOpacity);
   if (nodeStyle.textColor) div.style.color = nodeStyle.textColor;
   if (!isImageNode && (nodeStyle.borderColor || nodeStyle.borderWidth)) {
-    div.style.borderColor = nodeStyle.borderColor || 'transparent';
+    div.style.borderColor = _bdColorWithOpacity(nodeStyle.borderColor || 'transparent', nodeStyle.borderOpacity);
     div.style.borderWidth = (nodeStyle.borderWidth || 0) + 'px';
     div.style.borderStyle = 'solid';
   }
@@ -290,8 +290,6 @@ function bdAppendNodeHuds(div, node, opts) {
   if (opts.showStatus && !opts.fastCardRender) bdAppendStatusHud(div, node);
   if (opts.showMarkers && typeof BD_MARKERS !== 'undefined') bdAppendMarkerHud(div, node);
   if (!opts.fastCardRender) bdAppendCommentHud(div, node);
-  const anchorPositions = (opts.fastCardRender || opts.showAnchors === false) ? [] : ['top', 'bottom', 'left', 'right'];
-  anchorPositions.forEach(pos => bdAppendAnchorHud(div, node, pos));
   if (node.link || node.imageSourcePath || node.img) bdAppendLinkBadge(div, node, opts.showStatus);
   if (opts.showMenuButtons) bdAppendCardMenuButton(div, node);
 }
@@ -505,19 +503,41 @@ function bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up,
   if (typeof bdPushUndo === 'function') bdPushUndo();
   const conn = (typeof bdCreateConnection === 'function') ? bdCreateConnection(fromNid, toId, { label: '' }) : null;
   if (!conn) return;
-  if (fromAnchor) conn.fromAnchor = fromAnchor;
-  const hitHud = target?.closest?.('.bd-anchor-hud');
-  const hudPos = hitHud ? ['top', 'bottom', 'left', 'right'].find(p => hitHud.classList.contains(p)) : null;
-  if (hudPos && typeof _bdHudPosToAnchorName === 'function') {
-    conn.toAnchor = _bdHudPosToAnchorName(hudPos);
-  } else if (typeof _bdFindNearestAnchor === 'function') {
-    const toNode = bd.nodes.find(nn => nn.id === toId);
-    if (toNode) conn.toAnchor = _bdFindNearestAnchor(cardEl, toNode, { x: toNode.x, y: toNode.y }, getWorld(up.clientX, up.clientY));
-  }
-  // v0.5.332: 自己ループで両端が同じアンカーに落ちたら対向アンカーへ自動振り替え (零長線防止)
-  if (toId === fromNid && conn.fromAnchor && conn.fromAnchor === conn.toAnchor
-      && typeof _bdOppositeAnchor === 'function') {
-    conn.toAnchor = _bdOppositeAnchor(conn.fromAnchor);
+  const fromNode = bd.nodes.find(nn => nn.id === fromNid);
+  const toNode = bd.nodes.find(nn => nn.id === toId);
+  if (typeof _bdProjectCardOutlineEndpoint === 'function'
+      && typeof _bdSetConnectionOutlineEndpoint === 'function' && fromNode && toNode) {
+    const fromEl = document.getElementById('bdn-' + fromNid);
+    const fromPos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(fromNode) : { x: fromNode.x, y: fromNode.y };
+    const toPos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(toNode) : { x: toNode.x, y: toNode.y };
+    const fromPoint = typeof _bdGetCardAnchorPoint === 'function'
+      ? _bdGetCardAnchorPoint(fromNode, fromEl, fromPos, fromAnchor)
+      : { x: fromPos.x, y: fromPos.y };
+    const fromProjected = _bdProjectCardOutlineEndpoint(fromEl, fromNode, fromPos, fromPoint);
+    const toProjected = _bdProjectCardOutlineEndpoint(
+      cardEl, toNode, toPos, getWorld(up.clientX, up.clientY),
+    );
+    if (fromProjected) _bdSetConnectionOutlineEndpoint(conn, 'from', fromNid, fromNode, fromProjected);
+    if (toProjected) {
+      if (toId === fromNid && fromProjected?.outlinePosition
+          && typeof _bdOutlinePathDistance === 'function'
+          && _bdOutlinePathDistance(fromProjected.outlinePosition, toProjected.outlinePosition) < 0.001
+          && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+        toProjected.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+          toProjected.outlinePosition, 'forward', { step: 0.25 },
+        );
+      }
+      _bdSetConnectionOutlineEndpoint(conn, 'to', toId, toNode, toProjected);
+    }
+  } else {
+    if (fromAnchor) conn.fromAnchor = fromAnchor;
+    if (typeof _bdFindNearestAnchor === 'function' && toNode) {
+      conn.toAnchor = _bdFindNearestAnchor(
+        cardEl, toNode, { x: toNode.x, y: toNode.y }, getWorld(up.clientX, up.clientY),
+      );
+    }
   }
   if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'anchor-connect');
   else if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'anchor-connect' });
@@ -693,7 +713,7 @@ function bdAppendCardMenuButton(div, node) {
   menuBtn.type = 'button';
   menuBtn.className = 'bd-card-menu-btn';
   menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
-  menuBtn.textContent = '...';
+  menuBtn.innerHTML = '<span></span><span></span><span></span>';
   menuBtn.title = 'トピックメニュー';
   menuBtn.setAttribute('aria-label', 'トピックメニュー');
   menuBtn.setAttribute('aria-haspopup', 'menu');
@@ -930,7 +950,7 @@ function bdApplyNodeDynamicShape(div, node) {
         subWidth: ns.cloudSubWidthRatio,
         subHeight: ns.cloudSubHeightRatio,
       } : undefined);
-      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '');
+      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity);
     }
   }
   if ((shape === 'ellipse' || shape === 'cloud' || shape === 'thorn' || shape === 'thorn-curve' || shape === 'fluffy') && typeof _bdComputeShapePadding === 'function') {

@@ -1,9 +1,6 @@
 /* 公開 HTML 設定 */
 
 function getCurrentPublishContext() {
-  if (state?.view === 'smart-db' && state.currentSmartDb) {
-    return { kind: 'smart-db', label: state.currentSmartDb.name || 'スマートシート', path: state.currentSmartDb._filePath || state.currentSmartDb.id || '' };
-  }
   if (state.currentDbPath && (state?.view === 'pivot' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(getCurrentViewMode(state.currentDbPath)))) {
     return { kind: 'database', label: state.currentDbPath.split('/').pop() || 'シート', path: state.currentDbPath };
   }
@@ -27,7 +24,14 @@ function getCurrentPublishContext() {
   // ボード / シナリオはタブ単位で複数開けるため、アクティブタブから対象を判定する
   const tab = (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function') ? GBTabs.getActiveTab() : null;
   if (tab?.type === 'board' && tab.path) {
-    return { kind: 'board', label: 'ボード', path: tab.path };
+    return {
+      kind: 'board',
+      label: tab.label || tab.path.split('/').pop()?.replace(/\.[^.]+$/, '') || 'ボード',
+      path: tab.path,
+      paneId: (typeof GBLayout !== 'undefined' && GBLayout.activePane) ? String(GBLayout.activePane) : '',
+      tabId: String(tab.id || ''),
+      viewId: String((typeof bd !== 'undefined' && bd?.activeBoardViewId) || ''),
+    };
   }
   if (tab?.type === 'scriptnote' && tab.path) {
     return { kind: 'scriptnote', label: 'シナリオ', path: tab.path };
@@ -35,9 +39,166 @@ function getCurrentPublishContext() {
   return { kind: '', label: '未選択', path: '' };
 }
 
+function _publishContextError(message) {
+  if (typeof showStatus === 'function') showStatus(message, true);
+  return null;
+}
+
+function _publishOptionPathForContext(kind, path) {
+  if (kind === 'database'
+    && typeof GbBacklinks !== 'undefined'
+    && typeof GbBacklinks.dbFolderNotePath === 'function') {
+    return String(GbBacklinks.dbFolderNotePath(path) || '');
+  }
+  return String(path || '');
+}
+
+// 公開開始時に表示対象と OptionTarget を一度だけ束ねる。以後の非同期工程は
+// この immutable snapshot を使い、工程ごとに現在値との一致だけを検証する。
+function createPublishContextSnapshot(expectedKind) {
+  const visible = getCurrentPublishContext();
+  const kind = String(visible?.kind || '');
+  const path = String(visible?.path || '');
+  if (!kind || !path) return _publishContextError('公開対象が選択されていません');
+  if (expectedKind && String(expectedKind) !== kind) {
+    return _publishContextError('表示中の対象と公開種別が一致しません');
+  }
+
+  const option = (typeof GBOptionTargetContext !== 'undefined' && typeof GBOptionTargetContext.get === 'function')
+    ? GBOptionTargetContext.get()
+    : null;
+  const targets = Array.isArray(option?.targets) ? option.targets : [];
+  const optionTargetPath = _publishOptionPathForContext(kind, path);
+  if (targets.length > 1) return _publishContextError('公開対象が複数選択されているため処理を停止しました');
+  if (targets.length === 1) {
+    const target = targets[0] || {};
+    if (String(target.path || '') !== optionTargetPath || String(target.kind || '') !== kind) {
+      return _publishContextError('表示中の対象と選択対象が一致しないため処理を停止しました');
+    }
+  }
+
+  return Object.freeze({
+    kind,
+    path,
+    label: String(visible.label || ''),
+    paneId: String(visible.paneId || ''),
+    tabId: String(visible.tabId || ''),
+    viewId: String(visible.viewId || ''),
+    selectionRevision: Number.isFinite(option?.selectionRevision) ? option.selectionRevision : null,
+    optionTargetCount: targets.length,
+    optionTargetPath,
+  });
+}
+
+function _publishBoardCanvasSnapshot() {
+  const canvas = document.getElementById('bd-canvas');
+  if (!canvas || typeof canvas.cloneNode !== 'function') return null;
+  const clone = canvas.cloneNode(true);
+  // 公開対象は保存されたボード文書だけ。選択、フォーカス、ドラッグ中の
+  // クロームは利用者の一時UI状態なので、スナップショット固定前に除去する。
+  clone.querySelectorAll(
+    '.bd-selected, .bd-selection-preview, .bd-drag-preview, [data-bd-role="resize-layer"], [data-export-remove]'
+  ).forEach(node => {
+    if (node.matches?.('.bd-selected')) node.classList.remove('bd-selected');
+    else if (node.matches?.('[data-bd-role="resize-layer"]')) node.innerHTML = '';
+    else node.remove();
+  });
+  clone.querySelectorAll('[aria-selected="true"]').forEach(node => node.removeAttribute('aria-selected'));
+  return clone.outerHTML;
+}
+
+// ボードの公開正本は「保存済みのアクティブボード＋表示中の保存ビュー」の
+// 固定スナップショット。ここで既存 bdSave/CAS を必ず通し、DOMだけを先行公開しない。
+async function preparePublishContextSnapshot(snapshot) {
+  if (!snapshot || !isPublishContextSnapshotCurrent(snapshot, true)) return null;
+  if (snapshot.kind !== 'board') return snapshot;
+  if (typeof bd === 'undefined' || String(bd.path || '') !== snapshot.path || typeof bdToMd !== 'function') {
+    return _publishContextError('アクティブボードを確認できないため公開を停止しました');
+  }
+  const openSeq = Number(bd._openSeq) || 0;
+  if (bd.dirty) {
+    if (typeof bdSave !== 'function' || !await bdSave()) {
+      return _publishContextError('ボードを保存できないため公開を停止しました');
+    }
+  }
+  if (!isPublishContextSnapshotCurrent(snapshot, true)
+    || String(bd.path || '') !== snapshot.path
+    || (Number(bd._openSeq) || 0) !== openSeq
+    || bd.dirty) {
+    return _publishContextError('ボードが保存中に変更されたため公開を停止しました');
+  }
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const documentKey = coordinator?.documentKeyForPath?.(snapshot.path) || snapshot.path;
+  if (coordinator?.getConflict?.(documentKey)) {
+    return _publishContextError('ボードの保存競合が未解決のため公開を停止しました');
+  }
+  const bounds = (typeof _bdExportImageBounds === 'function') ? _bdExportImageBounds() : null;
+  const canvasHtml = _publishBoardCanvasSnapshot();
+  if (!bounds || !canvasHtml) {
+    return _publishContextError('公開できるボード内容がありません');
+  }
+  const board = Object.freeze({
+    schema: 'meldex.board-publish-snapshot.v1',
+    contextPolicy: 'saved-active-board',
+    openSeq,
+    documentKey,
+    sourceRevision: String(bd.lastSavedTransportRevision || bd.lastSavedEtag || ''),
+    activeBoardViewId: String(bd.activeBoardViewId || snapshot.viewId || ''),
+    document: bdToMd(),
+    canvasHtml,
+    bounds: Object.freeze({
+      x0: Number(bounds.x0) || 0,
+      y0: Number(bounds.y0) || 0,
+      width: Number(bounds.width) || 0,
+      height: Number(bounds.height) || 0,
+    }),
+  });
+  return Object.freeze({ ...snapshot, viewId: board.activeBoardViewId, board });
+}
+if (typeof window !== 'undefined') window.preparePublishContextSnapshot = preparePublishContextSnapshot;
+
+function isPublishContextSnapshotCurrent(snapshot, reportError) {
+  let valid = !!snapshot?.kind && !!snapshot?.path;
+  const current = valid ? getCurrentPublishContext() : null;
+  valid = valid
+    && String(current?.kind || '') === snapshot.kind
+    && String(current?.path || '') === snapshot.path;
+
+  if (valid && snapshot.selectionRevision !== null) {
+    const option = (typeof GBOptionTargetContext !== 'undefined' && typeof GBOptionTargetContext.get === 'function')
+      ? GBOptionTargetContext.get()
+      : null;
+    const targets = Array.isArray(option?.targets) ? option.targets : [];
+    valid = option?.selectionRevision === snapshot.selectionRevision
+      && targets.length === snapshot.optionTargetCount
+      && targets.length <= 1;
+    if (valid && targets.length === 1) {
+      valid = String(targets[0]?.path || '') === snapshot.optionTargetPath
+        && String(targets[0]?.kind || '') === snapshot.kind;
+    }
+  }
+
+  if (valid && snapshot.kind === 'board' && snapshot.board) {
+    valid = typeof bd !== 'undefined'
+      && String(bd.path || '') === snapshot.path
+      && (Number(bd._openSeq) || 0) === snapshot.board.openSeq
+      && !bd.dirty
+      && typeof bdToMd === 'function'
+      && bdToMd() === snapshot.board.document;
+  }
+
+  if (!valid && reportError && typeof showStatus === 'function') {
+    showStatus('公開対象が処理中に変更されたため、生成・保存を停止しました', true);
+  }
+  return valid;
+}
+if (typeof window !== 'undefined') {
+  window.createPublishContextSnapshot = createPublishContextSnapshot;
+  window.isPublishContextSnapshotCurrent = isPublishContextSnapshotCurrent;
+}
+
 function getPublishConfigForContext(ctx) {
   if (ctx?.kind === 'database') return state.dbMetadata?.publish || {};
-  if (ctx?.kind === 'smart-db') return state.currentSmartDb?.publish || {};
   // entity / page / csv / calendar は localStorage にファイルパス単位で保存
   if (ctx?.path) {
     try { return JSON.parse(localStorage.getItem('gb:publish:' + ctx.path) || '{}'); } catch { return {}; }
@@ -47,7 +208,11 @@ function getPublishConfigForContext(ctx) {
 
 async function assertPublishAllowedForContext(ctx) {
   const target = ctx || (typeof getCurrentPublishContext === 'function' ? getCurrentPublishContext() : null);
-  if (!target?.path || typeof apiFetch !== 'function') return true;
+  if (!target?.path) return false;
+  if (typeof apiFetch !== 'function') {
+    if (typeof showStatus === 'function') showStatus('公開権限をサーバ側で確認できないため処理を停止しました', true);
+    return false;
+  }
   try {
     const data = await apiFetch('/status_policies/resolve?path=' + encodeURIComponent(target.path));
     const policy = data?.policy || {};
@@ -64,20 +229,30 @@ async function assertPublishAllowedForContext(ctx) {
 }
 if (typeof window !== 'undefined') window.assertPublishAllowedForContext = assertPublishAllowedForContext;
 
+async function assertPublishSourceRevisionCurrent(ctx) {
+  if (!ctx?.path || ctx.kind !== 'board' || !ctx.board) return true;
+  if (!ctx.board.sourceRevision || typeof apiFetch !== 'function') {
+    return !!_publishContextError('ボードの保存revisionを確認できないため公開を停止しました');
+  }
+  try {
+    const current = await apiFetch('/file?path=' + encodeURIComponent(ctx.path) + '&metadata_only=1', {
+      silentError: true,
+    });
+    const revision = String(current?.transport_revision || current?.etag || current?.revision || '');
+    if (!revision || revision !== String(ctx.board.sourceRevision)) {
+      return !!_publishContextError('ボードが別の端末で更新されたため、再読込してから公開してください');
+    }
+    return true;
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('ボードrevisionの再確認に失敗しました: ' + (error?.message || error), true);
+    return false;
+  }
+}
+if (typeof window !== 'undefined') window.assertPublishSourceRevisionCurrent = assertPublishSourceRevisionCurrent;
+
 async function savePublishConfigForContext(ctx, cfg) {
   if (!ctx?.kind) return false;
   const next = { ...(cfg || {}) };
-  if (ctx.kind === 'smart-db') {
-    state.currentSmartDb.publish = next;
-    if (Array.isArray(next.views_enabled)) next.views_enabled = next.views_enabled.filter(v => v !== 'form');
-    if (typeof saveSmartDbDef === 'function') {
-      await saveSmartDbDef(state.currentSmartDb);
-      if (typeof _runSmartDbBasePostCommitEffects === 'function') {
-        _runSmartDbBasePostCommitEffects(state.currentSmartDb);
-      }
-    }
-    return true;
-  }
   if (ctx.kind === 'database') {
     if (!state.dbMetadata) state.dbMetadata = {};
     state.dbMetadata.publish = next;
@@ -117,8 +292,9 @@ function _publishEntityNameSourceForContext(ctx, prev) {
   }
 }
 
-function renderPublishSettingsPanel() {
-  const ctx = getCurrentPublishContext();
+function renderPublishSettingsPanel(contextSnapshot) {
+  const ctx = contextSnapshot || createPublishContextSnapshot();
+  if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar'].includes(ctx.kind);
@@ -149,19 +325,30 @@ function bindPublishSettingsPanel(root, options) {
   const opts = options || {};
   const panel = root.querySelector('#publish-settings-panel');
   if (!panel) return;
-  const ctx = { kind: panel.dataset.kind || '', path: panel.dataset.path || '', label: '' };
+  const ctx = opts.contextSnapshot;
+  if (!ctx || !isPublishContextSnapshotCurrent(ctx, true)) return;
   const token = panel.querySelector('#publish-form-token');
   panel.querySelector('#publish-token-btn')?.addEventListener('click', () => { if (token) token.value = _publishToken(); });
   const runPublishAction = async (button, changePath) => {
     if (button?.disabled) return;
     opts.onBusyChange?.(true);
     try {
-      await savePublishSettingsFromPanel(root);
+      if (!isPublishContextSnapshotCurrent(ctx, true)) return;
+      await savePublishSettingsFromPanel(root, ctx);
+      if (!isPublishContextSnapshotCurrent(ctx, true)) return;
       if (typeof MeldexExportHtml !== 'undefined') {
-        await MeldexExportHtml.publishCurrentView(ctx.kind, changePath ? { changePath: true } : undefined);
+        const publishSnapshot = typeof preparePublishContextSnapshot === 'function'
+          ? await preparePublishContextSnapshot(ctx)
+          : ctx;
+        if (!publishSnapshot) return;
+        await MeldexExportHtml.publishCurrentView(ctx.kind, {
+          changePath: !!changePath,
+          contextSnapshot: publishSnapshot,
+        });
       }
       if (changePath) {
-        const cfg = getPublishConfigForContext(getCurrentPublishContext());
+        if (!isPublishContextSnapshotCurrent(ctx, true)) return;
+        const cfg = getPublishConfigForContext(ctx);
         const pathInput = panel.querySelector('#publish-html-path');
         if (pathInput) pathInput.value = cfg.html_path || '';
       }
@@ -177,19 +364,19 @@ function bindPublishSettingsPanel(root, options) {
   updateButton?.addEventListener('click', () => runPublishAction(updateButton, false));
 }
 
-// ファイル単位の「公開設定」モーダル。各アプリ (ノート/シナリオ/シート/ボード/スマートシート) の
+// ファイル単位の「公開設定」モーダル。各アプリ（ノート／シナリオ／シート／ボード）の
 // メニューボタンから呼ばれる。対象はアクティブなファイルコンテキスト。
 function showPublishSettingsModal(options) {
   const opts = options || {};
   showPublishSettingsModal._activeDialog?.close?.('superseded');
-  const ctx = getCurrentPublishContext();
-  if (!ctx.kind) {
+  const ctx = createPublishContextSnapshot();
+  if (!ctx) {
     if (typeof showStatus === 'function') showStatus('公開設定の対象ファイルがありません', true);
     return;
   }
   const content = document.createElement('div');
   content.className = 'gb-publish-settings-body';
-  content.innerHTML = renderPublishSettingsPanel();
+  content.innerHTML = renderPublishSettingsPanel(ctx);
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'gb-btn';
@@ -225,7 +412,7 @@ function showPublishSettingsModal(options) {
   dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'publish-settings-close-icon');
   closeButton.addEventListener('click', () => dialogApi.close('close-button'));
   if (typeof replaceIcons === 'function') replaceIcons();
-  bindPublishSettingsPanel(o, { onBusyChange: setBusy });
+  bindPublishSettingsPanel(o, { onBusyChange: setBusy, contextSnapshot: ctx });
   dialogApi.open();
 }
 if (typeof window !== 'undefined') window.showPublishSettingsModal = showPublishSettingsModal;
@@ -244,10 +431,11 @@ async function publishCurrentPageView() {
 }
 if (typeof window !== 'undefined') window.publishCurrentPageView = publishCurrentPageView;
 
-async function savePublishSettingsFromPanel(root) {
+async function savePublishSettingsFromPanel(root, contextSnapshot) {
   const panel = (root || document).querySelector('#publish-settings-panel');
   if (!panel) return true;
-  const ctx = getCurrentPublishContext();
+  const ctx = contextSnapshot || createPublishContextSnapshot();
+  if (!ctx || !isPublishContextSnapshotCurrent(ctx, true)) return false;
   const prev = getPublishConfigForContext(ctx);
   const isDb = ctx.kind === 'database';
   const serverUrlInput = panel.querySelector('#publish-server-url');
@@ -274,6 +462,7 @@ async function savePublishSettingsFromPanel(root) {
     submit_url: submitUrl,
     submit_method: prev.submit_method || 'tunnel',
   };
+  if (!isPublishContextSnapshotCurrent(ctx, true)) return false;
   await savePublishConfigForContext(ctx, cfg);
   return true;
 }

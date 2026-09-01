@@ -24,7 +24,7 @@
     const ext = (name || '').split('.').pop()?.toLowerCase();
     if (kind === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
     if (kind === 'pdf' || ext === 'pdf') return 'fileText';
-    if (kind === 'board' || ext === 'mel-board') return 'layout';
+    if (kind === 'board' || ext === 'mel-board') return 'kanban';
     if (kind === 'scenario' || ext === 'mel-scenario') return 'bookOpen';
     if (kind === 'sheet' || ['mel-sheet', 'csv', 'tsv'].includes(ext)) return 'table';
     if (kind === 'video' || ['mp4', 'webm', 'mov'].includes(ext)) return 'film';
@@ -48,6 +48,13 @@
     }
     if ((ext === 'mel-sheet' || ext === 'csv') && typeof selectDatabase === 'function') {
       selectDatabase(path);
+      return;
+    }
+    if (ext === 'md' && /(?:^|\/)\_chat\/llm\//.test(_normalizePath(path))) {
+      if (typeof window.openSavedChat === 'function') window.openSavedChat(path);
+      else if (typeof window.openChatHistoryItem === 'function') window.openChatHistoryItem(path);
+      else if (typeof window.openEntityChatForPath === 'function') window.openEntityChatForPath(path);
+      else if (typeof showStatus === 'function') showStatus('保存済みチャットを開けません', true);
       return;
     }
     if (ext === 'md' && typeof openPage === 'function') {
@@ -289,7 +296,7 @@
 
     const title = document.createElement('div');
     title.className = 'meldex-entity-attachments-title';
-    title.innerHTML = `${_icon('paperclip', 14)} <span>添付ファイル</span>`;
+    title.innerHTML = `${_icon('link2', 14)} <span>リンクファイル</span>`;
 
     header.appendChild(title);
 
@@ -304,8 +311,9 @@
       addBtn.type = 'button';
       addBtn.className = 'entity-create-action-btn meldex-entity-attachment-add-btn';
       addBtn.dataset.e2eId = 'entity-attachment-add-btn';
-      addBtn.title = 'ファイルを添付または新規作成';
-      addBtn.innerHTML = `${_icon('plus', 12)} <span>添付を追加</span>`;
+      addBtn.title = '既存ファイルをリンクまたは新規作成';
+      addBtn.ariaLabel = 'リンクを追加';
+      addBtn.innerHTML = `${_icon('plus', 12)} <span>リンクを追加</span>`;
 
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
@@ -323,10 +331,10 @@
             formData.append('mode', 'move');
             await apiPostForm('/sheet-entry/upload-intake', formData);
           } catch (err) {
-            if (typeof showStatus === 'function') showStatus('添付の追加に失敗しました: ' + (err.message || err), true);
+            if (typeof showStatus === 'function') showStatus('リンクの追加に失敗しました: ' + (err.message || err), true);
           }
         }
-        if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルを添付しました`);
+        if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
         if (typeof options.onReload === 'function') options.onReload();
       });
 
@@ -341,7 +349,7 @@
             expected_revision: data?.revision != null ? data.revision : undefined,
           });
           if (res?.ok) {
-            if (typeof showStatus === 'function') showStatus(`「${label}」を作成して添付しました`);
+            if (typeof showStatus === 'function') showStatus(`「${label}」を作成してリンクしました`);
             if (typeof options.onReload === 'function') options.onReload();
           }
         } catch (err) {
@@ -371,13 +379,14 @@
         menu.style.minWidth = '180px';
 
         const menuItems = [
-          { icon: 'paperclip', label: 'ファイルを選択...', action: () => fileInput.click() },
+          { id: 'link-existing', icon: 'link2', label: '既存ファイルをリンク...', action: () => fileInput.click() },
           { divider: true },
-          { icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
-          { icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
-          { icon: 'layout', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
-          { icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
-          { icon: 'table', label: '新規スマートシート', action: () => handleCreateNew('smart-db', 'スマートシート') },
+          { id: 'create-note', icon: 'fileText', label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
+          { id: 'create-chat', icon: 'messageSquare', label: '新規チャット', action: () => handleCreateNew('chat', 'チャット') },
+          { id: 'create-database', icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
+          { id: 'create-scriptnote', icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
+          { id: 'create-board', icon: 'kanban', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
+          { id: 'create-folder', icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
         ];
 
         menuItems.forEach((item) => {
@@ -392,6 +401,7 @@
           const row = document.createElement('button');
           row.type = 'button';
           row.className = 'ab-dropdown-item';
+          if (item.id) row.dataset.e2eId = `entity-attachment-${item.id}`;
           row.style.display = 'flex';
           row.style.alignItems = 'center';
           row.style.gap = '8px';
@@ -436,7 +446,7 @@
     if (attachments.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'meldex-entity-attachments-empty';
-      empty.textContent = '添付ファイルはありません（ファイルをドロップして添付）';
+      empty.textContent = 'リンクファイルはありません（ファイルをドロップしてリンク）';
       list.appendChild(empty);
     } else {
       attachments.forEach((item) => {
@@ -469,11 +479,17 @@
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'meldex-entity-attachment-del-btn';
-          delBtn.title = '添付を解除';
+          const deletesLinkedFile = item.mode !== 'link';
+          delBtn.title = deletesLinkedFile ? 'リンク先ファイルを削除' : 'リンクを外す';
+          delBtn.ariaLabel = delBtn.title;
           delBtn.innerHTML = _icon('trash2', 12);
           delBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            if (!confirm(`添付「${item.name || item.path}」を解除しますか？`)) return;
+            const targetName = item.name || item.path;
+            const question = deletesLinkedFile
+              ? `リンク先ファイル「${targetName}」を削除し、リンク一覧から外しますか？`
+              : `リンク「${targetName}」を外しますか？（リンク先ファイルは削除されません）`;
+            if (!confirm(question)) return;
             try {
               const res = await apiPost('/sheet-entry/detach', {
                 entry_path: entryPath,
@@ -485,16 +501,18 @@
                 if (res.delete_warning) {
                   const warnDetail = typeof res.delete_warning === 'string' ? res.delete_warning : JSON.stringify(res.delete_warning);
                   const msg = warnDetail.includes('一時退避ファイルの確定削除に失敗しました')
-                    ? `添付情報は解除されましたが、${warnDetail}`
-                    : `添付情報は解除されましたが、一時退避ファイルの確定削除に失敗しました: ${warnDetail}`;
+                    ? `リンクは外れましたが、${warnDetail}`
+                    : `リンクは外れましたが、一時退避ファイルの確定削除に失敗しました: ${warnDetail}`;
                   if (typeof showStatus === 'function') showStatus(msg, true);
                 } else {
-                  if (typeof showStatus === 'function') showStatus('添付を解除しました');
+                  if (typeof showStatus === 'function') {
+                    showStatus(deletesLinkedFile ? 'リンク先ファイルを削除しました' : 'リンクを外しました');
+                  }
                 }
                 if (typeof options.onReload === 'function') options.onReload();
               }
             } catch (err) {
-              if (typeof showStatus === 'function') showStatus('添付の解除に失敗しました: ' + (err.message || err), true);
+              if (typeof showStatus === 'function') showStatus('リンクを外せませんでした: ' + (err.message || err), true);
             }
           });
           row.appendChild(delBtn);
@@ -528,7 +546,7 @@
             formData.append('mode', e.altKey ? 'link' : 'move');
             await apiPostForm('/sheet-entry/upload-intake', formData);
           }
-          if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルを添付しました`);
+          if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
           if (typeof options.onReload === 'function') options.onReload();
         }
       });
@@ -726,7 +744,7 @@
         const attachments = Array.isArray(frontmatter?.entry_attachments) ? frontmatter.entry_attachments : [];
         const target = attachments.find(a => a.id === attachmentId);
         if (!target) {
-          throw _httpError(404, '指定された添付が見つかりません');
+          throw _httpError(404, '指定されたリンクファイルが見つかりません');
         }
         const remaining = attachments.filter(a => a.id !== attachmentId);
 
@@ -734,7 +752,7 @@
         if (deleteFile && target && target.mode !== 'link') {
           const validated = _validateAttachmentPathToDelete(target.path, entryPath, frontmatter);
           if (!validated) {
-            throw _httpError(400, 'トピック専用の添付領域外のファイルは削除できません');
+            throw _httpError(400, 'トピック専用のリンクファイル領域外のファイルは削除できません');
           }
           normTargetToDelete = validated;
         }
@@ -789,7 +807,7 @@
                 // 物理削除失敗かつ補償復元も失敗した場合は複合報告
                 const combined = _httpError(
                   500,
-                  `添付ファイル物理削除に失敗し (${delErr.message || delErr})、メタデータ復元にも失敗しました (${compErr.message || compErr})`
+                  `リンク先ファイルの削除に失敗し (${delErr.message || delErr})、リンク情報の復元にも失敗しました (${compErr.message || compErr})`
                 );
                 combined.originalError = delErr;
                 combined.compensationError = compErr;
@@ -824,8 +842,6 @@
         db: 'database',
         scenario: 'scriptnote',
         script: 'scriptnote',
-        smartsheet: 'smart-db',
-        smart_sheet: 'smart-db',
       };
       itemType = typeAlias[itemType] || itemType;
 
@@ -851,13 +867,40 @@
       }
 
       let createdPath = '';
+      let createdContent = null;
       let kind = 'file';
+      let linkMode = false;
 
       if (itemType === 'folder') {
         const name = await uniqueName(label, '');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'folder';
         await provider.mkdir(createdPath);
+      } else if (itemType === 'note') {
+        const name = await uniqueName(label, '.md');
+        createdPath = `${attachmentDir}/${name}`;
+        kind = 'note';
+        linkMode = true;
+        const documentId = global.crypto?.randomUUID ? global.crypto.randomUUID() : `note-${Date.now()}`;
+        createdContent = `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(documentId)}\n---\n# ${name.replace(/\.md$/, '')}\n\n`;
+        await provider.writeText(createdPath, createdContent);
+      } else if (itemType === 'chat') {
+        const rawUser = String(global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous');
+        const safeUser = rawUser.replace(/[\\/:*?"<>|]/g, '_') || 'anonymous';
+        const safeLabel = label.replace(/[\\/:*?"<>|]/g, '_') || 'チャット';
+        const chatDir = `_chat/llm/${safeUser}`;
+        let chatName = `${safeLabel}.md`;
+        let chatIndex = 1;
+        while (await provider.statPath(`${chatDir}/${chatName}`).catch(() => null)) {
+          chatName = `${safeLabel} (${chatIndex}).md`;
+          chatIndex += 1;
+        }
+        createdPath = `${chatDir}/${chatName}`;
+        kind = 'chat';
+        linkMode = true;
+        const created = new Date().toISOString();
+        createdContent = `---\ntype: chat\nprovider: ''\nmodel: ''\ncreated: ${created}\ntags: []\nuser: ${JSON.stringify(safeUser)}\nowner: ${JSON.stringify(safeUser)}\ntitle: ${JSON.stringify(safeLabel)}\nmessages: []\n---\n\n`;
+        await provider.writeText(createdPath, createdContent);
       } else if (itemType === 'database') {
         const name = await uniqueName(label, '');
         createdPath = `${attachmentDir}/${name}`;
@@ -886,22 +929,6 @@
         kind = 'board';
         const boardContent = `---\ntype: board\nschema_version: 1\nxmind:\n  n0: {autoStyle: true}\n---\n# ${name.replace(/\.mel-board$/, '')}\n\n`;
         await provider.writeText(createdPath, boardContent);
-      } else if (itemType === 'smart-db') {
-        const name = await uniqueName(label, '.mel-sheet');
-        createdPath = `${attachmentDir}/${name}`;
-        kind = 'smart-sheet';
-        const smartDoc = {
-          type: 'smart-db',
-          schema_version: 1,
-          name: name.replace(/\.mel-sheet$/, ''),
-          sourceType: 'db-entities',
-          sources: [],
-          filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-          views: { table: {} },
-          activeView: 'table',
-          created: new Date().toISOString(),
-        };
-        await provider.writeText(createdPath, JSON.stringify(smartDoc, null, 2));
       } else {
         throw _httpError(400, `未対応のファイルタイプです: ${itemType}`);
       }
@@ -912,7 +939,7 @@
         path: createdPath,
         name: createdPath.split('/').pop(),
         kind: kind,
-        mode: 'move',
+        mode: linkMode ? 'link' : 'move',
         created_at: new Date().toISOString(),
       };
 
@@ -926,7 +953,15 @@
       try {
         await provider.writeText(entryPath, frontmatterLite.frontmatterText(updated, textBody));
       } catch (err) {
-        try { await provider.deletePath(createdPath); } catch (_) {}
+        let compensated = false;
+        try {
+          const safeToDelete = createdContent == null || await provider.readText(createdPath) === createdContent;
+          if (safeToDelete) {
+            await provider.deletePath(createdPath);
+            compensated = true;
+          }
+        } catch (_) {}
+        if (!compensated) err.orphanPath = createdPath;
         throw err;
       }
 
@@ -935,6 +970,7 @@
         entry_path: entryPath,
         attachment: attachmentItem,
         revision: currentRevision + 1,
+        created: linkMode ? { kind, path: createdPath } : undefined,
       };
     }
 

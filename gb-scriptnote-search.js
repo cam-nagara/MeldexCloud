@@ -99,6 +99,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${match.rowId}"]`);
     const textEl = rowEl?.querySelector('.sn2-text');
     if (!textEl) return;
+    // 検索結果の選択は書式編集の意思表示ではない。共通の選択範囲書式
+    // ポップアップを抑止し、検索／置換パネルだけを維持する。
+    window.GBTextSelectionFormat?.suppressFor?.(600);
     textEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
     this._selectVisibleTextRange(textEl, match.start, match.end);
   },
@@ -186,7 +189,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         <button type="button" class="sn2-header-popup-item" data-sn-search-replace-all>全置換</button>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;">
-        <span class="sn2-search-count" style="font-size:11px;color:var(--fg2);">0 / 0</span>
+        <span class="sn2-search-count" style="font-size:11px;color:var(--fg2);white-space:nowrap;">0 / 0</span>
         <button type="button" class="sn2-header-popup-item" data-sn-search-close>閉じる</button>
       </div>`;
     const queryInput = popup.querySelector('.sn2-search-input');
@@ -212,6 +215,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btnReplaceAll.disabled = disabled;
     };
 
+    let queryNeedsActivation = false;
     const syncState = (preferred = null, focusCurrent = true) => {
       this._searchState.query = queryInput.value;
       this._searchState.replace = replaceInput.value;
@@ -225,6 +229,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       const currentQuery = queryInput.value;
       if (this._searchState.query !== currentQuery || !Array.isArray(this._searchState.matches)) {
         syncState(null, focusCurrent);
+        queryNeedsActivation = false;
+        return true;
+      }
+      if (queryNeedsActivation) {
+        queryNeedsActivation = false;
+        if (focusCurrent && this._searchState.matches.length) {
+          this._activateSearchMatch(this._searchState.matches[this._searchState.index]);
+        }
         return true;
       }
       if (!this._searchState.matches.length) {
@@ -238,7 +250,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     queryInput.addEventListener('compositionstart', () => { queryComposing = true; });
     queryInput.addEventListener('compositionend', () => {
       queryComposing = false;
-      syncState(null, true);
+      syncState(null, false);
+      queryNeedsActivation = true;
+    });
+    queryInput.addEventListener('input', () => {
+      if (!queryComposing) {
+        syncState(null, false);
+        queryNeedsActivation = true;
+      }
     });
     replaceInput.addEventListener('input', () => {
       this._searchState.replace = replaceInput.value;

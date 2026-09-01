@@ -34,6 +34,7 @@
       scopeId: raw.scopeId ? String(raw.scopeId) : '',
       fileType: raw.fileType ? String(raw.fileType) : '',
       kind: raw.kind ? String(raw.kind) : 'file',
+      contextPath: raw.contextPath ? String(raw.contextPath) : '',
     };
   }
 
@@ -41,6 +42,20 @@
     if (!raw) return [];
     const list = Array.isArray(raw) ? raw : [raw];
     return list.map(_normalizeOneTarget).filter(Boolean);
+  }
+
+  function _sameTargets(left, right) {
+    if (left.length !== right.length) return false;
+    return left.every(function (target, index) {
+      const other = right[index];
+      return !!other
+        && target.path === other.path
+        && target.assetId === other.assetId
+        && target.scopeId === other.scopeId
+        && target.fileType === other.fileType
+        && target.kind === other.kind
+        && target.contextPath === other.contextPath;
+    });
   }
 
   /**
@@ -52,9 +67,23 @@
    * @returns {number} 更新後の selectionRevision
    */
   function setOptionTarget(raw, origin) {
-    _targets = _normalizeTargets(raw);
-    _origin = origin ? String(origin) : '';
+    const nextTargets = _normalizeTargets(raw);
+    const nextOrigin = origin ? String(origin) : '';
+    // レスポンシブUIの再配置や独立パネルの再描画は、同じ対象を再通知することがある。
+    // 実対象が変わっていない再通知でselectionRevisionを進めると、公開やバックリンクの
+    // 正当な非同期処理を「対象切替」と誤判定するため、同値setは冪等に扱う。
+    if (_sameTargets(_targets, nextTargets)) {
+      _origin = nextOrigin || _origin;
+      return _selectionRevision;
+    }
+    _targets = nextTargets;
+    _origin = nextOrigin;
     _selectionRevision += 1;
+    try {
+      global.document?.dispatchEvent?.(new CustomEvent('meldex:option-target-changed', {
+        detail: getOptionTarget(),
+      }));
+    } catch {}
     return _selectionRevision;
   }
 
@@ -80,10 +109,84 @@
     return revision === _selectionRevision;
   }
 
+  function _basename(value) {
+    const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return normalized.split('/').pop() || normalized;
+  }
+
+  function describeOptionTarget(rawContext, options) {
+    const ctx = rawContext && Array.isArray(rawContext.targets) ? rawContext : getOptionTarget();
+    const targets = Array.isArray(ctx.targets) ? ctx.targets : [];
+    const config = options || {};
+    if (config.scopeLabel) {
+      return {
+        kind: 'scope',
+        label: String(config.scopeLabel),
+        title: String(config.scopeTitle || config.scopeLabel),
+        count: 0,
+        path: '',
+      };
+    }
+    if (targets.length > 1) {
+      return {
+        kind: 'multiple',
+        label: `複数選択（${targets.length}件）`,
+        title: targets.map(target => target.contextPath || target.path || '').filter(Boolean).join('\n'),
+        count: targets.length,
+        path: '',
+      };
+    }
+    const target = targets[0];
+    if (!target) {
+      return {
+        kind: 'empty',
+        label: 'ファイルが選択されていません',
+        title: 'ファイルが選択されていません',
+        count: 0,
+        path: '',
+      };
+    }
+    const path = String(target.contextPath || target.path || '');
+    return {
+      kind: target.kind || 'file',
+      label: _basename(path) || path,
+      title: path,
+      count: 1,
+      path,
+    };
+  }
+
+  function renderTargetHeader(container, rawContext, options) {
+    if (!container) return null;
+    let header = container.querySelector?.(':scope > [data-context-target-header]') || null;
+    if (!header) {
+      header = global.document?.createElement?.('div') || null;
+      if (!header) return null;
+      header.className = 'gb-context-target-header';
+      header.dataset.contextTargetHeader = '1';
+      header.innerHTML = '<div class="gb-context-target-header__caption"></div><div class="gb-context-target-header__name"></div>';
+      container.prepend(header);
+    }
+    const descriptor = describeOptionTarget(rawContext, options);
+    const caption = header.querySelector('.gb-context-target-header__caption');
+    const name = header.querySelector('.gb-context-target-header__name');
+    if (caption) caption.textContent = String(options?.caption || '対象');
+    if (name) {
+      name.textContent = descriptor.label;
+      name.title = descriptor.title || descriptor.label;
+      name.setAttribute('aria-label', descriptor.title || descriptor.label);
+    }
+    header.dataset.contextTargetKind = descriptor.kind;
+    header.title = descriptor.title || descriptor.label;
+    return descriptor;
+  }
+
   global.GBOptionTargetContext = Object.freeze({
     set: setOptionTarget,
     clear: clearOptionTarget,
     get: getOptionTarget,
+    describe: describeOptionTarget,
+    renderHeader: renderTargetHeader,
     revision: getSelectionRevision,
     isCurrentRevision: isCurrentRevision,
   });

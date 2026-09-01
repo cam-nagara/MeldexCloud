@@ -69,7 +69,7 @@
       const toolbar = document.getElementById('ann-toolbar');
       if (!toolbar?.classList.contains('visible') && typeof toggleAnnotationToolbar === 'function') toggleAnnotationToolbar();
       const sticky = _visible('#ann-toolbar .ann-tool[data-tool="sticky"]');
-      if (!sticky) return _unavailable(target, '注釈を開きました。対象ファイルを選び、付箋を選択してください。');
+      if (!sticky) return _unavailable(target, 'アノテートを開きました。対象ファイルを選び、付箋を選択してください。');
       sticky.click();
       return _handled(target, sticky);
     }
@@ -79,7 +79,7 @@
       if (!toolbar?.classList.contains('visible') && typeof toggleAnnotationToolbar === 'function') {
         toggleAnnotationToolbar();
       }
-      if (!toolbar) return _unavailable(target, '注釈ツールを開けませんでした。');
+      if (!toolbar) return _unavailable(target, 'アノテートツールを開けませんでした。');
       const params = new URLSearchParams(location.search);
       const annotationTool = String(params.get('annotation_tool') || 'annotation').trim();
       const color = String(params.get('annotation_color') || '').trim();

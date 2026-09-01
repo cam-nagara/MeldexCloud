@@ -260,7 +260,15 @@
       '作業規模リスト': scale,
       '対象数': _pmCloudPropValue(frontmatter, '対象数'),
     };
-    await _pmCloudApplyTaskDurations(provider, internals, [row]);
+    let templateId = '';
+    const workTitle = String(_pmCloudPropValue(frontmatter, '作品タイトル')
+      || _pmCloudPropValue(frontmatter, '作品タイトル_話数') || '').trim();
+    if (workTitle) {
+      const work = (await _pmCloudListEntries(provider, internals, '作品リスト'))
+        .find(entry => entry.name === workTitle || _pmCloudPropValue(entry.frontmatter, '作品タイトル_話数') === workTitle);
+      templateId = String(_pmCloudPropValue(work?.frontmatter, '使用する作業テンプレート') || '');
+    }
+    await _pmCloudApplyTaskDurations(provider, internals, [row], templateId);
     // 計算結果が既存値と同じなら書き込まない（Desktopの unchanged 判定と同じ。無用な
     // frontmatter更新・modified更新・下流フックの発火を避ける）。
     const currentValue = String(_pmCloudPropValue(frontmatter, '目標作業時間_値') || '');
@@ -424,30 +432,8 @@
       modified = true;
     }
 
-    if (changedProperty === '作業参加者') {
-      const requested = String(_pmCloudPropValue(frontmatter, '作業参加者') || '')
-        .split(/[,、;]+/).map(value => value.trim()).filter(Boolean);
-      const requestedSet = new Set(requested);
-      const openHelpers = (timeRecords.sessions || []).filter(session => session?.start_reason === 'help-join'
-        && !session.ended_at && !session.deleted_at);
-      openHelpers.filter(session => !requestedSet.has(String(session.participant_user_id || ''))).forEach((session) => {
-        timeRecords = Engine.handleParticipantLeave(
-          timeRecords, session.participant_user_id, actorUser, nowIso, true,
-        ).records;
-      });
-      if (Engine.isActiveWorkingStatus(canonicalStatus)) {
-        const openIds = new Set(openHelpers.map(session => String(session.participant_user_id || '')));
-        requested.filter(userId => !openIds.has(userId)).forEach((userId) => {
-          timeRecords = Engine.handleParticipantJoin(
-            timeRecords, userId, userId, actorUser, nowIso, true,
-          ).records;
-        });
-      }
-      modified = true;
-    }
-
     if (Engine.isActiveWorkingStatus(canonicalStatus)
-        && ['状況', '担当者', '作業参加者'].includes(changedProperty)) {
+        && ['状況', '担当者'].includes(changedProperty)) {
       const activeUsers = (timeRecords.sessions || []).filter(session => !session?.ended_at && !session?.deleted_at)
         .map(session => String(session?.participant_user_id || '').trim()).filter(Boolean);
       const switchedUsers = new Set(await _pmCloudCloseOtherTaskSessions(

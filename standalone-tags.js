@@ -8,6 +8,8 @@
   let targetRow = null;
   let targetEditor = null;
   let targetPath = '';
+  let targetToggle = null;
+  let targetEditorExpanded = false;
   let observer = null;
 
   function isCloudMode() {
@@ -54,7 +56,34 @@
 
   function updateVisibility() {
     if (button) button.hidden = false;
-    if (targetRow) targetRow.hidden = !targetPath;
+    if (targetRow) targetRow.hidden = !targetPath || (targetToggle && !targetEditorExpanded);
+    if (targetToggle) {
+      const expanded = Boolean(targetPath && targetEditorExpanded);
+      targetToggle.hidden = !targetPath;
+      targetToggle.setAttribute('aria-expanded', String(expanded));
+      targetToggle.setAttribute('aria-label', expanded ? 'このシートのタグを閉じる' : 'このシートのタグを開く');
+      targetToggle.title = expanded ? 'このシートのタグを閉じる' : 'このシートのタグを開く';
+    }
+  }
+
+  function toggleTargetEditor(force) {
+    if (!targetToggle || !targetPath) return false;
+    targetEditorExpanded = typeof force === 'boolean' ? force : !targetEditorExpanded;
+    updateVisibility();
+    if (targetEditorExpanded) targetEditor?.querySelector('input, button, select, [tabindex]')?.focus?.();
+    else targetToggle.focus?.();
+    return targetEditorExpanded;
+  }
+
+  function bindTargetToggle() {
+    const next = document.querySelector('[data-sa-inline-tags-toggle]');
+    if (!next) return false;
+    if (targetToggle === next) return true;
+    targetToggle = next;
+    targetToggle.addEventListener('click', () => toggleTargetEditor());
+    targetEditorExpanded = false;
+    updateVisibility();
+    return true;
   }
 
   function ensureTargetRow() {
@@ -64,6 +93,7 @@
     if (!header?.parentNode && !viewerControls?.parentNode) return false;
     targetRow = document.createElement('section');
     targetRow.className = 'sa-inline-tags' + (viewerControls ? ' sa-inline-tags-viewer' : '');
+    targetRow.id = targetToggle?.getAttribute('aria-controls') || 'standalone-inline-tags';
     targetRow.dataset.e2eId = 'standalone-inline-tags';
     targetRow.setAttribute('aria-label', 'このファイルのタグ');
     targetEditor = document.createElement('div');
@@ -76,18 +106,25 @@
   }
 
   function setTargetPath(path) {
-    targetPath = String(path || '').replace(/\\/g, '/');
+    const nextPath = String(path || '').replace(/\\/g, '/');
+    if (nextPath !== targetPath && targetToggle) targetEditorExpanded = false;
+    targetPath = nextPath;
     if (!ensureTargetRow()) return;
-    targetRow.hidden = !targetPath;
     targetEditor.dataset.globalTagsTargetPath = targetPath;
     if (targetPath && typeof window.renderGlobalTagTargetEditor === 'function') {
       window.renderGlobalTagTargetEditor(targetEditor, targetPath, { compact: true, boxed: false });
     } else {
       targetEditor.replaceChildren();
     }
+    updateVisibility();
   }
 
   function insertButton() {
+    if (document.body?.dataset?.standaloneTagsButton === 'hidden') {
+      button?.remove();
+      button = null;
+      return true;
+    }
     if (button?.isConnected) {
       updateVisibility();
       return true;
@@ -172,6 +209,7 @@
   }
 
   function initialize() {
+    bindTargetToggle();
     watchInsertion();
     ensureTargetRow();
     window.addEventListener('meldex:standalone-cloud-ready', () => {
@@ -186,6 +224,7 @@
     close: closeDialog,
     refresh: updateVisibility,
     setTargetPath,
+    toggleTargetEditor,
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
   else initialize();

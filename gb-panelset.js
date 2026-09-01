@@ -8,6 +8,161 @@
 
   let _groupIdCounter = 0;
   let _panelsetIdCounter = 0;
+  const _rightRailHistory = new Map();
+
+  function _rightRailButtons() {
+    return Array.from(document.querySelectorAll('.gb-dock-fixed-right .gb-dock-icon[data-panelset-id]'));
+  }
+
+  function _nodeContainsId(node, targetId) {
+    if (!node) return false;
+    if (node.id === targetId) return true;
+    if (node.type === 'split') return (node.children || []).some(child => _nodeContainsId(child, targetId));
+    if (node.type === 'panelset') return (node.groups || []).some(group => _nodeContainsId(group?.root, targetId));
+    return false;
+  }
+
+  function _findRightRailPanelset(node, targetId) {
+    if (!node) return null;
+    if (node.type === 'panelset') {
+      if (_fixedDockSide(node) === 'right' && (node.id === targetId || _nodeContainsId(node, targetId))) return node;
+      for (const group of node.groups || []) {
+        const nested = _findRightRailPanelset(group?.root, targetId);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (node.type === 'split') {
+      for (const child of node.children || []) {
+        const nested = _findRightRailPanelset(child, targetId);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  function _rightRailContext(targetId, tabId) {
+    const id = String(targetId || '');
+    const requestedTabId = String(tabId || '');
+    const button = _rightRailButtons().find(btn => {
+      if (requestedTabId && btn.dataset.tabId !== requestedTabId) return false;
+      return btn.dataset.panelsetId === id || btn.dataset.paneId === id;
+    }) || null;
+    const panelsetNode = _findRightRailPanelset(GBLayout?.root, button?.dataset?.panelsetId || id);
+    if (!panelsetNode || panelsetNode.type !== 'panelset') return null;
+    return { panelsetId: panelsetNode.id, panelsetNode, button };
+  }
+
+  function _activeRightRailEntry(panelsetNode) {
+    const activeButton = _rightRailButtons().find(btn => (
+      btn.dataset.panelsetId === panelsetNode.id && btn.classList.contains('active')
+    ));
+    if (activeButton) {
+      return {
+        groupId: activeButton.dataset.groupId || '',
+        paneId: activeButton.dataset.paneId || '',
+        tabId: activeButton.dataset.tabId || '',
+      };
+    }
+    const group = (panelsetNode.groups || []).find(item => item?.id === panelsetNode.activeGroupId);
+    const pane = group?.root ? _collectPanesInGroup(group.root)[0] : null;
+    const tab = pane?.tabs?.[pane.activeTabIndex] || null;
+    if (!group || !pane || !tab) return null;
+    return { groupId: group.id, paneId: pane.id, tabId: tab.id || '' };
+  }
+
+  function _rightRailEntryFromButton(button) {
+    if (!button) return null;
+    return {
+      groupId: button.dataset.groupId || '',
+      paneId: button.dataset.paneId || '',
+      tabId: button.dataset.tabId || '',
+    };
+  }
+
+  function _sameRightRailEntry(left, right) {
+    return !!left && !!right
+      && left.groupId === right.groupId
+      && left.paneId === right.paneId
+      && left.tabId === right.tabId;
+  }
+
+  function _rightRailState(panelsetId) {
+    let state = _rightRailHistory.get(panelsetId);
+    if (!state) {
+      state = { entries: [], index: -1 };
+      _rightRailHistory.set(panelsetId, state);
+    }
+    return state;
+  }
+
+  function recordRightRailSwitch(targetId, tabId) {
+    const context = _rightRailContext(targetId, tabId);
+    if (!context?.button) return false;
+    const current = _activeRightRailEntry(context.panelsetNode);
+    const next = _rightRailEntryFromButton(context.button);
+    if (!current || !next || _sameRightRailEntry(current, next)) return false;
+    const state = _rightRailState(context.panelsetId);
+    if (!state.entries.length) {
+      state.entries.push(current);
+      state.index = 0;
+    } else if (!_sameRightRailEntry(state.entries[state.index], current)) {
+      state.entries.splice(state.index + 1);
+      state.entries.push(current);
+      state.index = state.entries.length - 1;
+    }
+    state.entries.splice(state.index + 1);
+    state.entries.push(next);
+    if (state.entries.length > 50) state.entries.splice(0, state.entries.length - 50);
+    state.index = state.entries.length - 1;
+    return true;
+  }
+
+  function _resolveRightRailEntry(panelsetNode, entry) {
+    const group = (panelsetNode.groups || []).find(item => item?.id === entry?.groupId);
+    if (!group?.root) return null;
+    const pane = _collectPanesInGroup(group.root).find(item => item?.id === entry.paneId);
+    const tabIndex = pane?.tabs?.findIndex(tab => (tab?.id || '') === entry.tabId) ?? -1;
+    if (!pane || tabIndex < 0) return null;
+    return { group, pane, tabIndex };
+  }
+
+  function rightRailNavigationState(targetId) {
+    const context = _rightRailContext(targetId);
+    if (!context) return null;
+    const state = _rightRailState(context.panelsetId);
+    return {
+      panelsetId: context.panelsetId,
+      canBack: state.index > 0,
+      canForward: state.index >= 0 && state.index < state.entries.length - 1,
+      index: state.index,
+      length: state.entries.length,
+    };
+  }
+
+  function navigateRightRail(targetId, direction) {
+    const context = _rightRailContext(targetId);
+    if (!context) return false;
+    const state = _rightRailState(context.panelsetId);
+    const delta = direction < 0 ? -1 : 1;
+    let nextIndex = state.index + delta;
+    while (nextIndex >= 0 && nextIndex < state.entries.length) {
+      const resolved = _resolveRightRailEntry(context.panelsetNode, state.entries[nextIndex]);
+      if (resolved) {
+        state.index = nextIndex;
+        context.panelsetNode.activeGroupId = resolved.group.id;
+        resolved.pane.activeTabIndex = resolved.tabIndex;
+        context.panelsetNode.collapsed = false;
+        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+        return true;
+      }
+      state.entries.splice(nextIndex, 1);
+      if (delta < 0) state.index = Math.min(state.index - 1, state.entries.length - 1);
+      nextIndex = state.index + delta;
+    }
+    return false;
+  }
 
   function _isFreeLayoutUiEnabled() {
     if (typeof GBLayout === 'undefined') return true;
@@ -245,7 +400,7 @@
   }
 
   // パネルセット内の特定グループを閉じる。残り 1 件になれば自動解体。
-  function closeGroup(panelsetNode, groupId) {
+  async function closeGroup(panelsetNode, groupId) {
     if (!panelsetNode || !groupId) return;
     const idx = (panelsetNode.groups || []).findIndex(g => g && g.id === groupId);
     if (idx < 0) return;
@@ -259,7 +414,9 @@
         if (n.type === 'split' && Array.isArray(n.children)) n.children.forEach(walk);
         if (n.type === 'panelset' && Array.isArray(n.groups)) n.groups.forEach(g2 => { if (g2?.root) walk(g2.root); });
       })(group.root);
-      ids.forEach(id => removeComponentInstance(id));
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(ids)) return false;
+      ids.forEach(id => removeComponentInstance(id, { skipFlush: true }));
     }
     panelsetNode.groups.splice(idx, 1);
     if (panelsetNode.groups.length === 0) {
@@ -275,6 +432,7 @@
     }
     if (typeof GBLayout?.render === 'function') GBLayout.render();
     if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+    return true;
   }
 
   // 列ヘッダとして panelset のタブバーを描画（上端・横帯）
@@ -628,17 +786,19 @@
     database: 'db',
     board: 'presentation',
     calendar: 'calendar',
-    'smart-db': 'databaseSearch',
     // 補助パネル
     outliner: 'folderTree',
     preview: 'tvMinimal',
     detail: 'slidersHorizontal',
     version: 'gitBranch',
     chat: 'messagesSquare',
-    timer: 'timer',
     history: 'history',
-    annotation: 'stickyNote',
+    annotation: 'squarePen',
     tags: 'tag',
+    information: 'info',
+    backlinks: 'fileSymlink',
+    'file-theme': 'palette',
+    subpanel: 'panelRight',
     // その他
     search: 'search',
   };
@@ -726,8 +886,13 @@
     return collapsed ? '右サイドバーを開く' : '右サイドバーを閉じる';
   }
 
+  function _toggleRailIcon(side, collapsed) {
+    if (side === 'left') return collapsed ? 'panelLeftOpen' : 'panelLeftClose';
+    return collapsed ? 'panelRightOpen' : 'panelRightClose';
+  }
+
   function _renderRailToggle(panelsetNode, side) {
-    const iconName = side === 'left' ? 'panelLeft' : 'panelRight';
+    const iconName = _toggleRailIcon(side, !!panelsetNode.collapsed);
     const btn = _railButton(
       'gb-dock-icon gb-dock-rail-toggle',
       iconName,
@@ -751,7 +916,6 @@
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
-    { type: 'smart-db', label: 'スマートシート', icon: 'smart-db' },
   ]);
 
   function _mainPaneIdForRailApp() {
@@ -849,7 +1013,6 @@
 
   function _rightRailStandaloneUrl(tab) {
     const type = tab?.type || '';
-    if (type === 'timer') return 'timer-standalone.html';
     if (type === 'preview') return 'viewer.html';
     return '';
   }
@@ -923,16 +1086,10 @@
     });
   }
 
-  // 右レールの一番下に置くクイックメモ。メインパネルや右サイドバーを占領せず、
-  // 作業領域の上へフロートパネルとして一時的に開く。
-  // Cloud静的版はローカルAPIが無く保存できないため、ボタン自体を出さない。
+  // 右レールの一番下に置くクイックメモ。Desktop はローカル保存、Cloud は
+  // standalone の Cloud adapter を使い、同じUIから別契約を明示的に選ぶ。
   function _isQuickMemoRailAvailable() {
-    if (typeof GBQuickMemoPanel === 'undefined') return false;
-    try {
-      return !!document.body && document.body.dataset.cloudMode !== 'dropbox';
-    } catch {
-      return false;
-    }
+    return typeof GBQuickMemoPanel !== 'undefined';
   }
 
   function _appendRightRailQuickMemo(dockBar) {
@@ -1107,6 +1264,7 @@
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
           const activateFixedTab = () => {
+            if (fixedSide === 'right') recordRightRailSwitch(pane.id, tab.id || '');
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
             if (panelsetNode.collapsed) {
@@ -1203,13 +1361,9 @@
         if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
       }
     });
-    if (fixedSide === 'right') {
-      const optionButton = dockBar.querySelector('.gb-dock-icon[data-tab-type="detail"]');
-      const firstPanelButton = dockBar.querySelector('.gb-dock-icon:not(.gb-dock-rail-toggle)');
-      if (optionButton && firstPanelButton && optionButton !== firstPanelButton) {
-        dockBar.insertBefore(optionButton, firstPanelButton);
-      }
-      _appendRightRailQuickMemo(dockBar);
+    if (fixedSide === 'right') _appendRightRailQuickMemo(dockBar);
+    if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {
+      window.GBRailContract.decorate(dockBar, fixedSide);
     }
     // ==== 本体 ====
     const body = document.createElement('div');
@@ -1262,5 +1416,8 @@
     reorderOrMoveGroup,
     dropGroupOnPane,
     insertGroupAsColumn,
+    recordRightRailSwitch,
+    rightRailNavigationState,
+    navigateRightRail,
   };
 })();

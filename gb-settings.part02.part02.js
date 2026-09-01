@@ -147,12 +147,24 @@ function renderSettingsThemePaletteEditor(options = {}) {
       <input type="range" min="${min}" max="${max}" step="1" data-e2e-id="settings-theme-palette-slider-${key}" data-theme-palette-slider="${key}">
       <input type="number" min="${min}" max="${max}" step="1" class="gb-input-sm cs-theme-palette-slider-num" data-e2e-id="settings-theme-palette-slider-num-${key}" data-theme-palette-slider-num="${key}">
     </label>`;
+  const hueRange = `
+    <fieldset class="cs-theme-hue-range" data-theme-hue-range>
+      <legend class="cs-theme-palette-slider-label">色相範囲</legend>
+      <div class="cs-theme-hue-range-track">
+        <span class="cs-theme-hue-range-fill cs-theme-hue-range-fill--primary" aria-hidden="true"></span>
+        <span class="cs-theme-hue-range-fill cs-theme-hue-range-fill--wrap" aria-hidden="true"></span>
+        <input type="range" min="0" max="360" step="1" aria-label="色相の始点" data-e2e-id="settings-theme-palette-slider-hueStart" data-theme-palette-slider="hueStart">
+        <input type="range" min="0" max="360" step="1" aria-label="色相の終点" data-e2e-id="settings-theme-palette-slider-hueEnd" data-theme-palette-slider="hueEnd">
+      </div>
+      <label class="cs-theme-hue-range-number"><span>始点</span><input type="number" min="0" max="360" step="1" class="gb-input-sm cs-theme-palette-slider-num" data-e2e-id="settings-theme-palette-slider-num-hueStart" data-theme-palette-slider-num="hueStart"></label>
+      <label class="cs-theme-hue-range-number"><span>終点</span><input type="number" min="0" max="360" step="1" class="gb-input-sm cs-theme-palette-slider-num" data-e2e-id="settings-theme-palette-slider-num-hueEnd" data-theme-palette-slider-num="hueEnd"></label>
+    </fieldset>`;
   const actionsHtml = `<div class="cs-theme-palette-slider-actions">
+    <button type="button" class="cs-toggle" data-e2e-id="settings-theme-palette-hue-swap" data-theme-hue-swap title="色相範囲の始点と終点を反転">始点と終点を反転</button>
     <button type="button" class="cs-toggle" data-e2e-id="settings-theme-palette-reset" data-theme-palette-reset title="色相・彩度・明度・明暗比の調整値をリセット">調整をリセット</button>
   </div>`;
   const slidersHtml = `<div class="cs-theme-palette-sliders">
-    ${slider('hueStart', '色相 始', '-360', '360')}
-    ${slider('hueEnd', '色相 終', '-360', '360')}
+    ${hueRange}
     ${slider('saturation', '彩度', '0', '100')}
     ${slider('brightness', '明度', '-100', '100')}
     ${slider('contrast', '明暗比', '0', '100')}
@@ -505,6 +517,23 @@ function _settingsThemePaletteSyncSliders(root) {
     if (slider) slider.value = String(value);
     if (num) num.value = String(value);
   });
+  const normalizeHue = value => ((Number(value) % 360) + 360) % 360;
+  const huePercent = value => Math.max(0, Math.min(100, (Number(value) || 0) / 360 * 100));
+  const hueStartPercent = huePercent(adjust.hueStart);
+  const hueEndPercent = huePercent(adjust.hueEnd);
+  const hueLowPercent = Math.min(hueStartPercent, hueEndPercent);
+  const hueHighPercent = Math.max(hueStartPercent, hueEndPercent);
+  const rawHueSpan = Number(adjust.hueEnd) - Number(adjust.hueStart);
+  const fullHueRange = Math.abs(rawHueSpan) === 360;
+  const wrapsHueRange = !fullHueRange && adjust.hueWrap === true;
+  const primaryLeft = fullHueRange ? 0 : (wrapsHueRange ? hueHighPercent : hueLowPercent);
+  const primaryWidth = fullHueRange ? 100 : (wrapsHueRange ? 100 - hueHighPercent : hueHighPercent - hueLowPercent);
+  const wrapWidth = wrapsHueRange ? hueLowPercent : 0;
+  root.style.setProperty('--settings-theme-slider-hue', String(normalizeHue(adjust.hueStart)));
+  root.style.setProperty('--settings-theme-slider-saturation', String(Math.max(0, Math.min(100, Number(adjust.saturation) || 0))));
+  root.style.setProperty('--settings-theme-hue-range-primary-left', `${primaryLeft}%`);
+  root.style.setProperty('--settings-theme-hue-range-primary-width', `${Math.max(0, primaryWidth)}%`);
+  root.style.setProperty('--settings-theme-hue-range-wrap-width', `${Math.max(0, wrapWidth)}%`);
   if (globalThis.GBUI && typeof globalThis.GBUI.refreshRangeFills === 'function') {
     globalThis.GBUI.refreshRangeFills(root);
   }

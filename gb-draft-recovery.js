@@ -221,7 +221,7 @@
       const pc = document.getElementById('page-content');
       if (pc && pc.dataset.path === item.path) pc.dataset.lastSavedEtag = res.etag || pc.dataset.lastSavedEtag || '';
     }
-    if (typeof showStatus === 'function') showStatus('未保存ドラフトを上書き保存しました');
+    if (typeof showStatus === 'function') showStatus('保存されていない編集内容を上書き保存しました');
   }
 
   async function _fileExists(path) {
@@ -238,7 +238,7 @@
   async function _saveDraftAs(item) {
     if (typeof cfPrompt !== 'function' || typeof apiPut !== 'function') return false;
     const fallback = String(item.path || '').replace(/(\.[^/.]+)?$/, '_recovered$1');
-    const nextPath = await cfPrompt('未保存ドラフトを別名で保存', fallback);
+    const nextPath = await cfPrompt('保存されていない編集内容を別名で保存', fallback);
     if (!nextPath) return false;
     const exists = await _fileExists(nextPath);
     if (exists) {
@@ -254,7 +254,7 @@
       ...(exists ? { force_overwrite: true } : { create_only: true }),
     });
     await clearDraft(item.path, item.storageKey);
-    if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
+    if (typeof showStatus === 'function') showStatus('保存されていない編集内容を別名保存しました');
     return true;
   }
 
@@ -337,13 +337,13 @@
         <div class="draft-recovery-actions">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} のドラフトを破棄">破棄</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} の保存されていない変更を破棄">破棄</button>
         </div>
       </div>`).join('');
     const body = document.createElement('div');
     body.className = 'draft-recovery-content';
     body.innerHTML = `
-      <div id="draft-recovery-description" class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
+      <div id="draft-recovery-description" class="gb-section-desc">前回終了時に保存されなかった編集内容があります。</div>
       <div class="draft-recovery-list">${rows}</div>`;
     const discardAllButton = document.createElement('button');
     discardAllButton.type = 'button';
@@ -363,7 +363,7 @@
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: 'draft-recovery',
-      title: '未保存の編集があります',
+      title: '未保存の変更',
       body,
       footer: [discardAllButton, spacer, closeButton],
       variant: 'mobile-sheet',
@@ -394,13 +394,13 @@
       if (!action) return;
       if (action === 'close') { modalApi.close('close-button'); return; }
       if (action === 'discard-all') {
-        if (!await _confirmDiscard('未保存ドラフトをすべて破棄しますか？')) return;
+        if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
         busy = true;
         try {
           await clearAllDrafts();
           busy = false;
           modalApi.close('discard-all');
-          if (typeof showStatus === 'function') showStatus('未保存ドラフトをすべて破棄しました');
+          if (typeof showStatus === 'function') showStatus('保存されていない変更をすべて破棄しました');
         } finally {
           busy = false;
         }
@@ -421,7 +421,7 @@
             modalApi.close('save-as');
           }
         } else if (action === 'discard') {
-          if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
+          if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の保存されていない変更を破棄しますか？この操作は元に戻せません。`)) return;
           await clearDraft(item.path, item.storageKey);
           button.closest('[data-draft-row]')?.remove();
           if (!overlay.querySelector('[data-draft-row]')) {

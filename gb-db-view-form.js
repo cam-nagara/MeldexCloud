@@ -546,9 +546,7 @@ function _betaFeedbackDeliveryMessage(result, isCloud) {
   if (result?.reason === 'debugger-not-configured') {
     return '端末内に保存しました。開発者への送信先が設定されていません。';
   }
-  if (isCloud || result?.reason === 'cloud-send-needs-desktop-server') {
-    return '端末内に保存しました。Cloud版からは、このフィードバックを開発者へ送信していません。';
-  }
+  if (isCloud) return '端末内に保存しました。開発者への送信結果を確認できませんでした。送信履歴から再送できます。';
   return '端末内に保存しました。開発者への送信結果を確認できませんでした。';
 }
 
@@ -569,12 +567,10 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (isBetaFeedback) {
       const acceptedAt = new Date().toISOString();
       fields['送信元'] = isCloudFeedback ? 'Meldex Cloudフィードバックフォーム' : 'Meldexフィードバックフォーム';
-      fields['送信状態'] = isCloudFeedback ? '端末内に保存' : '送信待ち';
+      fields['送信状態'] = '送信待ち';
       fields['送信受付日時'] = acceptedAt;
       fields['対象バージョン'] = String(window.__meldexVersionCache?.version || '');
-      fields['送信結果・失敗理由'] = isCloudFeedback
-        ? 'Cloud版からは、このフィードバックを開発者へ送信していません。'
-        : 'Debuggerの送信結果を確認しています。';
+      fields['送信結果・失敗理由'] = '開発者への送信結果を確認しています。';
     }
     for (const prop of cfg.required || []) {
       const type = propTypes[prop]?.type || 'text';

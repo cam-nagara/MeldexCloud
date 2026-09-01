@@ -3,7 +3,7 @@
   'use strict';
 
   const MIME = 'application/x-meldex-topic-view+json';
-  const TYPES = Object.freeze({ sheet: ['database', 'smart-db'], board: ['board'] });
+  const TYPES = Object.freeze({ sheet: ['database'], board: ['board'] });
 
   function _leaf(path) {
     return String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '無題';
@@ -28,15 +28,57 @@
     });
   }
 
-  function _viewId(document, resourceType) {
-    const rows = resourceType === 'sheet' ? document?.sheetViews : document?.boardViews;
-    const view = Array.isArray(rows) ? rows[0] : null;
+  function _viewRows(viewDocument, resourceType) {
+    const rows = resourceType === 'sheet' ? viewDocument?.sheetViews : viewDocument?.boardViews;
+    return (Array.isArray(rows) ? rows : []).filter(row => row && typeof row === 'object');
+  }
+
+  function _rowViewId(view) {
     return String(view?.viewId || view?.sheetViewId || view?.boardViewId || '').trim();
   }
 
-  function _blockFrom(document, resourceType, selection, archiveRelativePath) {
-    const viewId = _viewId(document, resourceType);
-    if (!document?.documentId || !viewId) {
+  async function _chooseViewId(viewDocument, resourceType, preferredViewId) {
+    const rows = _viewRows(viewDocument, resourceType);
+    const requested = String(preferredViewId || (resourceType === 'sheet'
+      ? viewDocument?.activeSheetViewId : viewDocument?.activeBoardViewId)
+      || viewDocument?.activeView || '');
+    if (requested && rows.some(row => _rowViewId(row) === requested)) return requested;
+    if (rows.length <= 1 || !global.GBUI?.createModal || typeof global.document === 'undefined') {
+      return _rowViewId(rows[0]);
+    }
+    return new Promise(resolve => {
+      const body = global.document.createElement('div');
+      const label = global.document.createElement('label');
+      label.textContent = '表示するビュー';
+      const select = global.document.createElement('select');
+      select.className = 'gb-select'; select.setAttribute('aria-label', '移動先のビュー');
+      rows.forEach((row, index) => {
+        const option = global.document.createElement('option');
+        option.value = _rowViewId(row);
+        option.textContent = String(row.name || row.label || row.title || `ビュー ${index + 1}`);
+        select.appendChild(option);
+      });
+      label.appendChild(select); body.appendChild(label);
+      const choose = global.document.createElement('button');
+      choose.type = 'button'; choose.className = 'gb-btn gb-btn-primary'; choose.textContent = 'このビューを選択';
+      const cancel = global.document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+      let settled = false;
+      const modal = global.GBUI.createModal({
+        id: 'meldex-topic-target-view', title: '移動先のビュー', body,
+        footer: [cancel, choose], variant: 'mobile-sheet',
+        onClose: () => { if (!settled) resolve(''); },
+      });
+      const finish = value => { settled = true; modal.close('submit'); resolve(value); };
+      choose.addEventListener('click', () => finish(select.value));
+      cancel.addEventListener('click', () => finish(''));
+      modal.open();
+    });
+  }
+
+  async function _blockFrom(viewDocument, resourceType, selection, archiveRelativePath, preferredViewId) {
+    const viewId = await _chooseViewId(viewDocument, resourceType, preferredViewId);
+    if (!viewDocument?.documentId || !viewId) {
       throw new Error('選択した項目には埋め込み可能なビューがありません');
     }
     const logicalPath = _logicalPath(selection);
@@ -47,7 +89,7 @@
       blockId: global.crypto?.randomUUID?.() || ('embed-' + Date.now().toString(36)),
       resourceType,
       sourceId: String(selection.sourceId),
-      documentId: String(document.documentId),
+      documentId: String(viewDocument.documentId),
       viewId,
       legacyPath: logicalPath,
       dbPath: resourceType === 'sheet' ? logicalPath : undefined,
@@ -72,7 +114,8 @@
           sourceId: selection.sourceId, relativePath,
         });
         if (opened?.viewDocument) {
-          return _blockFrom(opened.viewDocument, resourceType, selection, relativePath);
+          return await _blockFrom(opened.viewDocument, resourceType, selection, relativePath,
+            selection?.viewId || selection?.currentViewId);
         }
       } catch (_) {
         // Legacy JSON files used the same suffix; the additive migration below is authoritative.
@@ -86,13 +129,14 @@
     const archiveRelativePath = migration?.archiveRelativePath;
     if (!document || !archiveRelativePath) throw new Error('ビュー参照の作成結果を確認できません');
     const registered = await _post('/topic-views/migration/open', {
-      sourceId: selection.sourceId, relativePath: archiveRelativePath,
+      sourceId: selection.sourceId, relativePath: archiveRelativePath, legacyPath: relativePath,
     });
     const verified = registered?.viewDocument;
     if (!verified || verified.documentId !== document.documentId) {
       throw new Error('作成したビューの読み戻し確認に失敗しました');
     }
-    return _blockFrom(verified, resourceType, selection, archiveRelativePath);
+    return _blockFrom(verified, resourceType, selection, archiveRelativePath,
+      selection?.viewId || selection?.currentViewId);
   }
 
   async function _selectionForPath(path) {
@@ -195,7 +239,7 @@
   }
 
   function transferPayloadForNode(node) {
-    const resourceType = node?.type === 'database' || node?.type === 'smart-db' ? 'sheet'
+    const resourceType = node?.type === 'database' ? 'sheet'
       : node?.type === 'board' ? 'board' : '';
     if (!resourceType || !node?.path) return null;
     return { kind: 'meldex-topic-view-selection-v1', resourceType, path: node.path, label: node.name || _leaf(node.path) };
@@ -212,6 +256,6 @@
   if (typeof document !== 'undefined') _bindDragSource();
   global.MeldexTopicViewPicker = {
     MIME, open, openExisting, requestCreate, resolveSelection, resolveTransferPayload,
-    transferPayloadForNode, relativePath: _relativePath,
+    transferPayloadForNode, relativePath: _relativePath, blockFromDocument: _blockFrom,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

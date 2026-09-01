@@ -2,7 +2,7 @@
    回転/反転・スライドショー・HUD・フォルダナビゲーション）。計画: viewer-stability-common-ui-gap-fix-plan-2026-08-04.md。
    分割元: viewer.html。PDF描画責務は viewer-pdf-renderer.js へ分離済み。関連: viewer-scene-utils.js
    （純粋ヘルパー）/ viewer-controls.js・viewer-context-menu.js（入力配線、本ファイルへ発呼のみ）/
-   viewer-annotations.js（注釈、本ファイルへコールバック登録）。公開: window.MeldexViewerScene。
+   viewer-annotations.js（アノテート、本ファイルへコールバック登録）。公開: window.MeldexViewerScene。
    `viewer-layout-resize` / notifyResize() は寸法変更通知を受けて再フィット・状態復元する。 */
 (function () {
   'use strict';
@@ -77,19 +77,26 @@
   let reversePlay = false;  // 逆再生
   let timer = null;
   let activeLayer = 'A';
-  let mode = localStorage.getItem('viewer-mode') || 'single';
-  let speed = parseFloat(localStorage.getItem('viewer-speed') || '3');
-  let fadeMs = parseInt(localStorage.getItem('viewer-fade') || '300');
+  const storedMode = localStorage.getItem('viewer-mode');
+  let mode = ['single', 'spread', 'manga'].includes(storedMode) ? storedMode : 'single';
+  const storedSpeed = Number.parseFloat(localStorage.getItem('viewer-speed') || '3');
+  let speed = Number.isFinite(storedSpeed) && storedSpeed >= 0.5 && storedSpeed <= 60 ? storedSpeed : 3;
+  const storedFade = Number.parseInt(localStorage.getItem('viewer-fade') || '300', 10);
+  let fadeMs = Number.isFinite(storedFade) && storedFade >= 0 && storedFade <= 5000 ? storedFade : 300;
   let bgBlur = localStorage.getItem('viewer-bg') !== 'false';
   let hudVisible = localStorage.getItem('viewer-hud') === 'true';
   let zoom = 1;
-  let fitMode = localStorage.getItem('viewer-fit') || 'original_contain'; // 'original_contain' | 'contain' | 'width' | 'height' | 'none'
+  const storedFit = localStorage.getItem('viewer-fit');
+  let fitMode = ['original_contain', 'contain', 'width', 'height', 'none'].includes(storedFit) ? storedFit : 'original_contain';
   let flipH = false, flipV = false, rotateDeg = 0;
   let pdfDoc = null;
   let showGroupToken = 0;
   let collectionLoadToken = 0;
   let deferredSingleFileFolderRefresh = null;
   let viewerLoadingToken = 0;
+  let targetGeneration = 0;
+  let sheetContextTimer = 0;
+  let retryCurrentTarget = null;
 
   document.getElementById('sel-mode').value = mode;
   document.getElementById('speed').value = speed;
@@ -112,11 +119,34 @@
     const loading = document.getElementById('viewer-loading');
     const text = document.getElementById('viewer-loading-text');
     if (text) text.textContent = message;
-    if (loading) loading.classList.remove('hidden');
+    if (loading) {
+      loading.dataset.state = 'loading';
+      loading.classList.remove('hidden');
+      loading.querySelector('.viewer-loading-card')?.setAttribute('role', 'status');
+    }
+    document.getElementById('viewer-retry')?.classList.add('hidden');
     const counter = document.getElementById('counter');
     if (counter && items.length === 0) counter.textContent = message;
     return token;
   }
+
+  function showViewerStableState(kind, message, retry = null) {
+    const loading = document.getElementById('viewer-loading');
+    const text = document.getElementById('viewer-loading-text');
+    const retryButton = document.getElementById('viewer-retry');
+    viewerLoadingToken++;
+    if (text) text.textContent = message;
+    if (loading) {
+      loading.dataset.state = kind;
+      loading.classList.remove('hidden');
+      loading.querySelector('.viewer-loading-card')?.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    }
+    retryCurrentTarget = typeof retry === 'function' ? retry : null;
+    retryButton?.classList.toggle('hidden', !retryCurrentTarget);
+    if (retryCurrentTarget) retryButton?.focus({ preventScroll: true });
+  }
+
+  document.getElementById('viewer-retry')?.addEventListener('click', () => retryCurrentTarget?.());
 
   function hideViewerLoading(token) {
     if (!token || token !== viewerLoadingToken) return;
@@ -245,6 +275,13 @@
 
   function requestSheetContext() {
     if (!sheetContextId || window.parent === window) return false;
+    const generation = targetGeneration;
+    showViewerLoading('シートの画像を読み込み中...');
+    clearTimeout(sheetContextTimer);
+    sheetContextTimer = setTimeout(() => {
+      if (generation !== targetGeneration || !sheetContextId) return;
+      showViewerStableState('error', 'シートから応答がありませんでした', requestSheetContext);
+    }, 5000);
     parent.postMessage({
       type: 'viewer-sheet-context-request',
       contextId: sheetContextId,
@@ -255,16 +292,21 @@
   function applySheetContextPayload(message) {
     if (!sheetContextId || message?.contextId !== sheetContextId) return false;
     if (message.boundary) {
-      if (message.message) flashStatus(message.message);
+      clearTimeout(sheetContextTimer);
+      showViewerStableState('empty', message.message || 'これ以上の画像はありません', requestSheetContext);
       return true;
     }
     const nextItems = Array.isArray(message.images)
       ? message.images.map(makeSheetContextImageItem).filter(item => item && (item.url || item.path))
       : [];
     if (!nextItems.length) {
-      flashStatus(message.message || 'このセルに画像はありません');
+      clearTimeout(sheetContextTimer);
+      items = [];
+      updateViewerPositionControls();
+      showViewerStableState('empty', message.message || 'このセルに画像はありません', requestSheetContext);
       return true;
     }
+    clearTimeout(sheetContextTimer);
     pause();
     items = nextItems;
     idx = Math.max(0, Math.min(items.length - 1, Number(message.startIndex) || 0));
@@ -349,22 +391,25 @@
   // init()と「iframe再利用の開き直し要求」(項目7)の共通本体。target = { folderPath, pdfPath,
   // singleFile, multiFilePaths, sheetContextId }。呼び出し前にモジュール変数へ反映してから呼ぶこと
   // （refreshViewerModeFlags()も呼び出し側の責務）。戻り値: 表示対象を確定できたか。
-  async function loadResolvedTarget() {
+  async function loadResolvedTarget(generation = targetGeneration) {
     pdfDoc = null;
     renderCache.clear();
     if (isPdf) {
       showViewerLoading('PDFを読み込み中...');
       try {
-        pdfDoc = await PdfRenderer.openDocument(Utils.fileRawUrlForPath(pdfPath));
+        const openedPdf = await PdfRenderer.openDocument(Utils.fileRawUrlForPath(pdfPath));
+        if (generation !== targetGeneration) return false;
+        pdfDoc = openedPdf;
         items = [];
         for (let i = 1; i <= pdfDoc.numPages; i++) items.push({type: 'pdf-page', pageNum: i, url: '', w: 0, h: 0, path: pdfPath});
         const size0 = await PdfRenderer.getPageNaturalSize(pdfDoc, 1);
+        if (generation !== targetGeneration) return false;
         items[0].w = size0.width; items[0].h = size0.height;
         applyFit();
       } catch (e) {
-        showViewerLoading('PDF読み込み失敗');
+        if (generation !== targetGeneration) return false;
+        showViewerStableState('error', 'PDFを読み込めませんでした: ' + (e?.message || e), () => retryTarget(generation));
         document.getElementById('hud-info').textContent = 'PDF読み込み失敗: ' + e.message;
-        clearViewerContent();
         return false;
       }
     } else if (isMulti) {
@@ -391,26 +436,24 @@
       try {
         data = await Utils.fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(folderPath) + '&include_videos=1');
       } catch (e) {
-        showViewerLoading('画像一覧読み込み失敗');
+        if (generation !== targetGeneration) return false;
+        showViewerStableState('error', '画像一覧を読み込めませんでした: ' + (e?.message || e), () => retryTarget(generation));
         document.getElementById('hud-info').textContent = '画像一覧読み込み失敗: ' + (e?.message || e);
-        clearViewerContent();
         return false;
       }
       if (loadToken !== collectionLoadToken) return false;
       items = data.map(it => makeImageItem(it.path, it.name));
       if (items.length === 0) {
-        showViewerLoading('画像がありません');
+        showViewerStableState('empty', 'このフォルダに表示できるファイルはありません', () => retryTarget(generation));
         document.getElementById('hud-info').textContent = '画像がありません';
-        clearViewerContent();
         return false;
       }
       idx = 0;
       preloadNearbyImageMeta(0, items);
     } else if (sheetContextId) {
-      showViewerLoading('シートの画像を読み込み中...');
       requestSheetContext();
     } else {
-      showViewerLoading('表示するファイルがありません');
+      showViewerStableState('empty', '表示するファイルがありません');
       document.getElementById('hud-info').textContent = '画像またはPDFを開いてください';
       clearViewerContent();
       return false;
@@ -428,9 +471,20 @@
     return true;
   }
 
+  async function retryTarget(expectedGeneration = targetGeneration) {
+    if (expectedGeneration !== targetGeneration) return;
+    const generation = ++targetGeneration;
+    showGroupToken++;
+    collectionLoadToken++;
+    await loadResolvedTarget(generation);
+  }
+
   async function init() {
     await viewerPreparation;
-    await loadResolvedTarget();
+    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+    await loadSiblingFolders();
+    const generation = ++targetGeneration;
+    await loadResolvedTarget(generation);
   }
 
   // ============================================================
@@ -444,6 +498,7 @@
   // fitMode・表示モード(mode)は維持する。ページ遷移は行わない。
   async function reopenWithUrl(urlString) {
     const sp = new URL(String(urlString || ''), location.origin).searchParams;
+    if (window.MeldexViewerAnnotationNotes?.hasUnsaved?.()) flashStatus('未保存のアノテートがあります');
     pause();
     showGroupToken++;
     collectionLoadToken++;
@@ -461,8 +516,13 @@
     multiFilePaths = target.multiFilePaths;
     sheetContextId = target.sheetContextId;
     refreshViewerModeFlags();
-    await loadResolvedTarget();
-    loadSiblingFolders();
+    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+    _siblingFolders = [];
+    _siblingIdx = -1;
+    clearTimeout(sheetContextTimer);
+    const generation = ++targetGeneration;
+    await loadResolvedTarget(generation);
+    if (generation === targetGeneration) loadSiblingFolders();
   }
 
   function rawItemUrl(item) { return item?.url || item?.path || ''; }
@@ -566,7 +626,7 @@
   }
 
   function updateViewerPositionControls() {
-    document.getElementById('counter').textContent = (idx + 1) + ' / ' + items.length;
+    document.getElementById('counter').textContent = items.length ? (idx + 1) + ' / ' + items.length : '0 / 0';
     const seekBar = document.getElementById('seek-bar');
     seekBar.max = Math.max(0, items.length - 1);
     seekBar.value = idx;
@@ -612,6 +672,17 @@
     if (!isPdf) {
       await Promise.all(group.map(i => ensureItemUrl(items[i])));
       if (token !== showGroupToken) return;
+    }
+    if (isPdf && fitMode !== 'none') {
+      await Promise.all(group.map(async i => {
+        if (items[i].w && items[i].h) return;
+        const size = await PdfRenderer.getPageNaturalSize(pdfDoc, items[i].pageNum);
+        items[i].w = size.width;
+        items[i].h = size.height;
+      }));
+      if (token !== showGroupToken) return;
+      zoom = computeFitZoomForPdfGroup(group);
+      renderCache.clear();
     }
     const target = activeLayer === 'A' ? 'B' : 'A';
     const layer = document.getElementById('layer' + target);
@@ -673,7 +744,7 @@
       document.getElementById(bgT).style.backgroundImage = Utils.cssUrl(displayItemUrl(items[group[0]]));
       document.getElementById(bgT).classList.add('show');
       document.getElementById(bgO).classList.remove('show');
-    } else if (isSingleMediaTakeover) {
+    } else {
       document.getElementById('bgA')?.classList.remove('show');
       document.getElementById('bgB')?.classList.remove('show');
     }
@@ -702,7 +773,17 @@
         if (el.tagName === 'VIDEO') return window.MeldexViewerVideo.waitForVideoReady(el);
         if (el.tagName === 'AUDIO') return window.MeldexViewerAudio.waitForAudioReady(el);
         return waitForViewerImage(el);
-      })).then(swapLayers);
+      })).then(results => {
+        if (token !== showGroupToken) return;
+        if (results.some(ok => !ok)) {
+          showViewerStableState('error', 'メディアを読み込めませんでした', () => {
+            showViewerLoading('メディアを再読み込み中...');
+            showGroup(idx);
+          });
+          return;
+        }
+        swapLayers();
+      });
     } else {
       swapLayers();
     }
@@ -848,9 +929,19 @@
     return PdfRenderer.computeFitZoom(fitMode, pageW, pageH, vw, vh);
   }
 
+  function computeFitZoomForPdfGroup(group = getGroup(idx)) {
+    const pages = group.map(i => items[i]).filter(item => item?.w && item?.h);
+    if (!pages.length) return zoom;
+    if (pages.length === 1) return computeFitZoomForPdfPage(pages[0].w, pages[0].h);
+    const d = document.getElementById('display');
+    const width = pages.reduce((sum, page) => sum + page.w, 0);
+    const height = Math.max(...pages.map(page => page.h));
+    return PdfRenderer.computeFitZoom(fitMode, width, height, d.clientWidth - 16, d.clientHeight - 16);
+  }
+
   function applyFit() {
     if (isPdf && items.length > 0 && items[0].w) {
-      zoom = computeFitZoomForPdfPage(items[0].w, items[0].h);
+      zoom = computeFitZoomForPdfGroup();
       renderCache.clear();
     } else {
       zoom = 1;
@@ -858,7 +949,7 @@
   }
 
   // 既存canvasを再利用しbacking storeだけ更新する非破壊PDFズーム適用（DOM再構築なし）。
-  // ページ・パン・回転・反転・注釈状態は変更しない。refitPdfForResize()とズーム系(item 2)が共用する。
+  // ページ・パン・回転・反転・アノテート状態は変更しない。refitPdfForResize()とズーム系(item 2)が共用する。
   function applyPdfZoomInPlace(newZoom) {
     if (Math.abs(newZoom - zoom) < 0.0005) { zoom = newZoom; return; }
     zoom = newZoom;
@@ -884,9 +975,9 @@
   // リサイズ後の非破壊PDF再フィット。fitMode==='none'では倍率を変えない。
   function refitPdfForResize() {
     if (!isPdf || !items.length || fitMode === 'none') return;
-    const pageW = items[0].w, pageH = items[0].h;
-    if (!pageW || !pageH) return;
-    applyPdfZoomInPlace(computeFitZoomForPdfPage(pageW, pageH));
+    const group = getGroup(idx);
+    if (!group.every(i => items[i]?.w && items[i]?.h)) return;
+    applyPdfZoomInPlace(computeFitZoomForPdfGroup(group));
   }
 
   function setFitUI() {
@@ -1056,18 +1147,20 @@
     applyViewerTransform();
   }
   function setOriginal() {
-    fitMode = 'none'; zoom = 1; renderCache.clear(); applyFit(); setFitUI(); showGroup(idx);
+    setFitMode('none');
   }
 
   function setSpeed(value) {
-    speed = parseFloat(value);
+    const requested = Number.parseFloat(value);
+    speed = Number.isFinite(requested) ? Math.max(0.5, Math.min(60, requested)) : 3;
     document.getElementById('speed').value = speed;
     document.getElementById('speed-label').textContent = speed.toFixed(1) + 's';
     localStorage.setItem('viewer-speed', speed);
     if (playing) scheduleNext();
   }
   function setFadeMs(value) {
-    fadeMs = parseInt(value, 10);
+    const requested = Number.parseInt(value, 10);
+    fadeMs = Number.isFinite(requested) ? Math.max(0, Math.min(5000, requested)) : 300;
     document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
     localStorage.setItem('viewer-fade', fadeMs);
   }
@@ -1278,6 +1371,8 @@
 
   async function goToFolder(nextFolderPath) {
     pause();
+    const generation = ++targetGeneration;
+    showGroupToken++;
     const loadToken = ++collectionLoadToken;
     _currentFolderPath = nextFolderPath;
     flashStatus('フォルダ: ' + nextFolderPath.split('/').pop());
@@ -1285,9 +1380,12 @@
     // 新しいフォルダの画像を読み込み
     try {
       const data = await Utils.fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(nextFolderPath) + '&include_videos=1');
-      if (loadToken !== collectionLoadToken) return;
+      if (loadToken !== collectionLoadToken || generation !== targetGeneration) return;
       items = data.map(it => makeImageItem(it.path, it.name));
-      if (items.length === 0) { showViewerLoading('画像がありません'); flashStatus('画像がありません'); return; }
+      if (items.length === 0) {
+        showViewerStableState('empty', 'このフォルダに表示できるファイルはありません', () => goToFolder(nextFolderPath));
+        return;
+      }
       idx = 0;
       preloadNearbyImageMeta(0, items);
       showGroup(0);
@@ -1295,8 +1393,8 @@
       // 兄弟フォルダ一覧を更新
       loadSiblingFolders();
     } catch(e) {
-      showViewerLoading('フォルダ読み込みエラー');
-      flashStatus('フォルダ読み込みエラー');
+      if (generation !== targetGeneration) return;
+      showViewerStableState('error', 'フォルダを読み込めませんでした: ' + (e?.message || e), () => goToFolder(nextFolderPath));
     }
   }
 
@@ -1334,7 +1432,7 @@
     prevGroup, nextGroup, shiftBackward, shiftForward, goToIndex, prevFolder, nextFolder,
     // 表示状態の参照
     getGroup, currentDisplayOrder, itemAnnotationPath,
-    // 単独ビューワーの右サイドバー「情報」タブが、表示中のファイルを知るために使う
+    // 単独ビューワーの右サイドバー「プロパティ」タブが、表示中のファイルを知るために使う
     currentPath: currentViewerPathForFolderNavigation,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,

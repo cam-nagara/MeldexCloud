@@ -68,8 +68,8 @@
     _annotationFab.id = 'cloud-mobile-board-annotation-fab';
     _annotationFab.className = 'cloud-mobile-board-annotation-fab';
     _annotationFab.type = 'button';
-    _annotationFab.setAttribute('aria-label', '注釈ツールを開く');
-    _annotationFab.innerHTML = `<span class="cloud-mobile-icon" aria-hidden="true">${_renderIcon('penLine', 22)}</span>`;
+    _annotationFab.setAttribute('aria-label', 'アノテートツールを開く');
+    _annotationFab.innerHTML = `<span class="cloud-mobile-icon" aria-hidden="true">${_renderIcon('squarePen', 22)}</span>`;
     _annotationFab.addEventListener('click', openAnnotation);
     _annotationFab.hidden = true;
     document.body.appendChild(_annotationFab);
@@ -116,6 +116,8 @@
 
   function _switchBoardStyleTab(attempt) {
     _ensureDetailShell();
+    if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
+    if (typeof renderFileStyleTab === 'function') renderFileStyleTab('board');
     const line = _hasLineSelection();
     const node = _hasNodeSelection();
     if ((line || node) && typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
@@ -130,7 +132,13 @@
     const tabName = line ? 'board-line' : (node ? 'board-card' : 'board-card-style');
     const active = document.querySelector(`[data-detail-tab="${tabName}"].active, [data-detail-tab="${tabName}"].gb-inner-tab-active`);
     const hasTarget = _scrollStyleTargetIntoView(tabName);
-    if ((!active || !hasTarget) && attempt < 8) setTimeout(() => _switchBoardStyleTab(attempt + 1), 80);
+    if ((!active || !hasTarget) && attempt < 8) {
+      setTimeout(() => {
+        const current = document.querySelector('[data-detail-tab].active, [data-detail-tab].gb-inner-tab-active');
+        if (current && current.dataset.detailTab !== tabName) return;
+        _switchBoardStyleTab(attempt + 1);
+      }, 80);
+    }
   }
 
   function _bind() {
@@ -152,7 +160,7 @@
 
   function openStyle() {
     const opened = _openVisibleToolTab('detail');
-    setTimeout(() => _switchBoardStyleTab(0), 40);
+    _switchBoardStyleTab(0);
     return opened || true;
   }
 

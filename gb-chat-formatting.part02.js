@@ -224,11 +224,14 @@
     if (!files.length) return false;
     event.preventDefault();
     event.stopPropagation();
-    for (const file of files) await _chatUploadAttachment(file);
-    if (typeof showStatus === 'function') {
-      showStatus(files.length === 1 ? 'クリップボードから添付しました' : files.length + '件を添付しました');
+    let uploaded = 0;
+    for (const file of files) {
+      if (await _chatUploadAttachment(file)) uploaded += 1;
     }
-    return true;
+    if (uploaded > 0 && typeof showStatus === 'function') {
+      showStatus(uploaded === 1 ? 'クリップボードから添付しました' : uploaded + '件を添付しました');
+    }
+    return uploaded > 0;
   }
 
   function _bindRichInput(editor, input) {

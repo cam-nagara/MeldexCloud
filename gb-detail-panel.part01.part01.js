@@ -24,6 +24,7 @@ function _normalizeDetailTab(tab) {
     'board-card-style',
     'board-line-style',
     'board-depth-style',
+    'board-group-style',
     'backlinks',
     'publish',
     'sn2-main',
@@ -41,22 +42,16 @@ function _normalizeDetailTab(tab) {
 // 対象タイプの主要タブ) を保持する。互換性が無い場合のみ defaultTab にフォールバック。
 function _resolveDetailTabForType(type, defaultTab) {
   const cur = (typeof _currentDetailTab !== 'undefined') ? _currentDetailTab : null;
-  // ショートカットキーはどのアプリでも同じ内容なので、対象が変わっても開いたままにする
-  if (cur === 'shortcuts') return cur;
-  if (cur === 'file-style') return cur;
-  const backlinksTypes = new Set(['page', 'database', 'board']);
-  if (cur === 'backlinks' && backlinksTypes.has(type)) return cur;
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'scriptnote']);
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'scriptnote']);
   if (cur === 'publish' && publishTypes.has(type)) return cur;
   const compatible = {
-    page: ['note-editor', 'publish'],
-    folder: ['note-editor'],
-    database: ['db-property-settings', 'db-tree', 'publish', 'note-editor'],
-    board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'note-editor'],
-    calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish', 'note-editor'],
-    csv: ['publish', 'note-editor'],
-    'smart-db': ['publish', 'note-editor'],
-    scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish', 'note-editor'],
+    page: ['publish'],
+    folder: [],
+    database: ['db-property-settings', 'db-tree', 'publish'],
+    board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
+    calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
+    csv: ['publish'],
+    scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
   const valid = compatible[type] || [];
   if (valid.includes(cur)) return cur;
@@ -87,7 +82,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -148,24 +143,26 @@ function _detailTabButtonHtml(tab, className, label) {
 
 function _detailTabShellHtml() {
   return `
+    <div class="gb-context-target-header" data-context-target-header="1">
+      <div class="gb-context-target-header__caption">対象</div>
+      <div class="gb-context-target-header__name">ファイルが選択されていません</div>
+    </div>
     <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
       ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', '列設定')}
       ${_detailTabButtonHtml('db-tree', 'detail-tab-db-tree', 'ツリー')}
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
       ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
-      ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'カード')}
+      ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
-      ${_detailTabButtonHtml('file-style', 'detail-tab-file-style', 'テーマ')}
       ${_detailTabButtonHtml('publish', 'detail-tab-publish', '公開')}
-      ${_detailTabButtonHtml('board-card-style', 'detail-tab-board-style detail-tab-board-card-style', 'カードスタイル')}
+      ${_detailTabButtonHtml('board-card-style', 'detail-tab-board-style detail-tab-board-card-style', 'トピックスタイル')}
       ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
       ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
-      ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
-      ${_detailTabButtonHtml('shortcuts', 'detail-tab-shortcuts', 'ショートカットキー')}
-      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', '情報')}
+      ${_detailTabButtonHtml('board-group-style', 'detail-tab-board-style detail-tab-board-group-style', 'グループスタイル')}
     </nav>
+    <!-- moved to independent right-rail panels; hosts remain for legacy split compatibility -->
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-db-tree" class="gb-panel-body-scroll" hidden></div>
@@ -178,6 +175,7 @@ function _detailTabShellHtml() {
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-depth-style" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-board-group-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-note" class="gb-panel-body" hidden>
       <div id="board-note-editable" class="gb-contenteditable-body" contenteditable="true"></div>
     </div>
@@ -489,7 +487,7 @@ function showDbTabs(visible) {
 }
 
 // ボード内のカード/ライン/スタイル管理 タブの個別表示切替。
-// visibility は { card, line, cardStyle, lineStyle, depthStyle } を取り、未指定は既存状態を維持する
+// visibility は { card, line, cardStyle, lineStyle, depthStyle, groupStyle } を取り、未指定は既存状態を維持する
 // (undefined → そのまま、true/false で明示切替)。古い (boolean) 形式での呼び出しは主要な
 // card/line タブにのみ適用し、スタイル管理系は boolean 時のみ追従 (ボード非表示時は全て隠す)。
 function showBoardTabs(visibility) {
@@ -498,7 +496,7 @@ function showBoardTabs(visibility) {
   const norm = (typeof visibility === 'boolean')
     ? {
         card: visibility, line: visibility,
-        cardStyle: visibility, lineStyle: visibility, depthStyle: visibility,
+        cardStyle: visibility, lineStyle: visibility, depthStyle: visibility, groupStyle: visibility,
       }
     : (visibility || {});
   const map = {
@@ -507,6 +505,7 @@ function showBoardTabs(visibility) {
     cardStyle: '.detail-tab-board-card-style',
     lineStyle: '.detail-tab-board-line-style',
     depthStyle: '.detail-tab-board-depth-style',
+    groupStyle: '.detail-tab-board-group-style',
   };
   Object.entries(map).forEach(([key, sel]) => {
     if (norm[key] === undefined) return;
@@ -518,6 +517,7 @@ function showBoardTabs(visibility) {
   if (_currentDetailTab === 'board-card-style' && norm.cardStyle === false) switchDetailTab(null);
   if (_currentDetailTab === 'board-line-style' && norm.lineStyle === false) switchDetailTab(null);
   if (_currentDetailTab === 'board-depth-style' && norm.depthStyle === false) switchDetailTab(null);
+  if (_currentDetailTab === 'board-group-style' && norm.groupStyle === false) switchDetailTab(null);
 }
 
 function setBoardDetailTabContent(contents) {
@@ -529,6 +529,7 @@ function setBoardDetailTabContent(contents) {
     cardStyle: 'detail-tab-board-card-style',
     lineStyle: 'detail-tab-board-line-style',
     depthStyle: 'detail-tab-board-depth-style',
+    groupStyle: 'detail-tab-board-group-style',
   };
   Object.entries(map).forEach(([key, id]) => {
     if (!Object.prototype.hasOwnProperty.call(contents || {}, key)) return;
@@ -538,9 +539,9 @@ function setBoardDetailTabContent(contents) {
 }
 
 function clearBoardDetailTabContent() {
-  // カード/ライン タブに加え、スタイル管理タブ 3 つも stale データを捨てる。
+  // カード/ライン タブに加え、スタイル管理タブ 4 つも stale データを捨てる。
   // ボード切替時に前ボードの style 一覧/選択が残らないようにするため。
-  setBoardDetailTabContent({ card: '', line: '', cardStyle: '', lineStyle: '', depthStyle: '' });
+  setBoardDetailTabContent({ card: '', line: '', cardStyle: '', lineStyle: '', depthStyle: '', groupStyle: '' });
 }
 
 function clearBoardDetailTabs() {
@@ -729,7 +730,7 @@ const _FS_FIELDS = {
       { key: '--bd-group-color',       label: 'グループ色', type: 'color' },
       { key: '--bd-anchor-color',      label: 'アンカー色', type: 'color' },
       { key: '--bd-link-type-icon-color', label: 'リンク種別アイコン', type: 'color' },
-      { key: '--bd-gap-siblings',      label: '同階層カード間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
+      { key: '--bd-gap-siblings',      label: '同階層トピック間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
       { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 50, applyCustom: 'gapLevels' },
       { key: '--bd-auto-align',        label: '自動整列',             type: 'checkbox', on: '1', off: '0', defaultOn: true, applyCustom: 'autoAlign' },
     ],
@@ -819,7 +820,7 @@ function _fsStyleHistoryScope(ctx) {
   if (ctx === 'db') return s?.currentDbPath ? 'db:' + String(s.currentDbPath).replace(/\\/g, '/') : '';
   if (ctx === 'page') {
     const path = s?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
-    return path ? 'page:' + String(path).split('/').pop() : '';
+    return path ? 'page:' + String(path).replace(/\\/g, '/').replace(/^\/+/, '') : '';
   }
   if (ctx === 'folder') {
     const path = (typeof _folderPath !== 'undefined' ? _folderPath : '') || '';
@@ -830,7 +831,21 @@ function _fsStyleHistoryScope(ctx) {
 
 function _fsMarkStyleVersionDirty(ctx) {
   if (ctx === 'folder' || typeof markAutoVersionDirty !== 'function') return;
-  try { markAutoVersionDirty(); } catch {}
+  const s = (typeof state !== 'undefined') ? state : null;
+  let path = '';
+  let type = 'file';
+  if (ctx === 'page') {
+    path = s?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
+  } else if (ctx === 'db') {
+    path = s?.currentDbPath || '';
+    type = 'db';
+  } else if (ctx === 'board') {
+    path = (typeof bd !== 'undefined' && bd?.path) || s?.currentBoardPath || '';
+  } else if (ctx === 'scriptnote') {
+    path = _getScriptNoteEditorForFileStyle?.()?._path || '';
+  }
+  if (!path) return;
+  try { markAutoVersionDirty(path, type); } catch {}
 }
 
 function _fsPersistStyleDirect(ctx, adapter, style, options = {}) {
@@ -1114,6 +1129,7 @@ function _fsGetFrontmatterAdapter(ctx) {
 function _fsGetAdapter(ctx) {
   return (ctx === 'scriptnote') ? _fsGetScriptnoteAdapter() : _fsGetFrontmatterAdapter(ctx);
 }
+if (typeof window !== 'undefined') window._fsGetAdapter = _fsGetAdapter;
 
 function _fsReadFieldValue(field, adapter) {
   const raw = adapter.get(field);

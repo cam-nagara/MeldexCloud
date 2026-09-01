@@ -1,3 +1,7 @@
+
+  function _confirmEmbeddedNoteDelete(onOk) {
+    const message = 'この付箋を削除しますか？';
+    if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(message, onOk);
       return;
     }
@@ -374,7 +378,7 @@
       const menu = document.createElement('div');
       menu.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-context-menu annotation-note-context-menu';
       menu.setAttribute('role', 'menu');
-      menu.setAttribute('aria-label', '注釈付箋メニュー');
+      menu.setAttribute('aria-label', 'アノテート付箋メニュー');
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
@@ -608,7 +612,7 @@
     moreBtn.className = 'note-more-btn';
     moreBtn.dataset.annMore = '1';
     moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
-    moreBtn.setAttribute('aria-label', '注釈メニュー');
+    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
     moreBtn.title = 'メニュー';
     moreBtn.innerHTML = lucide('moreHorizontal', 16);
     _normalizeEmbeddedNoteIcon(moreBtn, 16);
@@ -894,7 +898,3 @@
         _anchoredAnnotationEntries.delete(entry);
         return;
       }
-      const nodeEl = _boardAnnotationNode(anchor);
-      if (!nodeEl) {
-        if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
-        return;

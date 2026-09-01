@@ -56,25 +56,10 @@
     if (bd._lineToolDrag) {
       const start = bd._lineToolDrag;
       document.getElementById('bd-conn-preview')?.remove();
-      const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-      const dropW = bdScreenToWorld(e.clientX, e.clientY);
-      let created = null;
-      if (targetEl) {
-        const toId = targetEl.id.replace('bdn-','');
-        if (start.nid) {
-          if ((start.dragged || toId !== start.nid) && bdCanCreateConnection(start.nid, toId)) {
-            bdPushUndo();
-            created = bdCreateConnection(start.nid, toId);
-          }
-        } else if (start.fromPoint) {
-          bdPushUndo();
-          created = bdCreateConnection('', toId, { fromPoint: start.fromPoint });
-        }
-      } else if (start.dragged || start.nid) {
-        bdPushUndo();
-        if (start.nid) created = bdCreateConnection(start.nid, '', { toPoint: dropW });
-        else created = bdCreateConnection('', '', { fromPoint: start.fromPoint, toPoint: dropW });
-      }
+      const targetEl = start.dragged
+        ? boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY)) : null;
+      const created = start.dragged
+        ? bdCreateDraggedConnection(start, targetEl, bdScreenToWorld(e.clientX, e.clientY)) : null;
       if (created) showStatus('ラインを追加しました');
       bd._lineToolDrag = null;
     }
@@ -83,16 +68,9 @@
       const rd = bd._rightDragNode;
       document.getElementById('bd-conn-preview')?.remove();
       if (rd.dragged) {
-        // ドロップ先ノードを検出してライン作成
         const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-        if (targetEl) {
-          const toId = targetEl.id.replace('bdn-','');
-          if (bdCanCreateConnection(rd.nid, toId)) { bdPushUndo(); if (bdCreateConnection(rd.nid, toId)) showStatus('ラインを追加しました'); }
-        } else {
-          const dropW = bdScreenToWorld(e.clientX, e.clientY);
-          bdPushUndo();
-          if (bdCreateConnection(rd.nid, '', { toPoint: dropW })) showStatus('ラインを追加しました');
-        }
+        const created = bdCreateDraggedConnection(rd, targetEl, bdScreenToWorld(e.clientX, e.clientY));
+        if (created) showStatus('ラインを追加しました');
       }
       // ドラッグしなかった場合は何もしない (ノード選択は pointerdown 時に済んでいる)
       bd._rightDragNode = null;
@@ -122,7 +100,7 @@
       // 移動量が小さければ右クリックメニュー。nid があればノードメニュー、なければ空白メニュー
       if (bd._rightClickPos) {
         const dx=Math.abs(e.clientX-bd._rightClickPos.x), dy=Math.abs(e.clientY-bd._rightClickPos.y);
-        // 注釈ツールバーオン時はボードの右クリックメニューを出さない (注釈描画の邪魔になるため)
+        // アノテートツールバーオン時はボードの右クリックメニューを出さない (アノテート描画の邪魔になるため)
         if (dx<15 && dy<15 && !bdIsAnnotationModeActive()) {
           const menuNid = bd._rightClickPos.nid;
           // ノード上で右クリックした場合、そのノードが未選択なら選択してからメニューを出す
@@ -911,6 +889,7 @@ function bdInitKeyboard(root) {
           bd._activeNode = next;
           bdApplySelectionDomClass();
           if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+          if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(next);
         }
         return;
       }
@@ -918,7 +897,11 @@ function bdInitKeyboard(root) {
       // 矢印のみ: アクティブノード移動
       const active = bd._activeNode || (bd.selected.size===1 ? [...bd.selected][0] : null);
       const next = bdFindNearest(active || (bd.nodes[0]?.id), arrow);
-      if (next) { bdSelect(next); bd._activeNode = next; }
+      if (next) {
+        bdSelect(next);
+        bd._activeNode = next;
+        if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(next);
+      }
       return;
     }
 

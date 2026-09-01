@@ -2,7 +2,7 @@
   regId('rab-calendar',        { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regId('rab-chat',            { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regId('rab-tags',            { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
-  regId('rab-annotation',      { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regId('rab-annotation',      { label: 'アノテート',       desc: '右サイドバーにアノテート一覧を表示します' });
   regId('rab-history',         { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // 右アクティビティバー: data-rp-tab
@@ -10,7 +10,7 @@
   regData('rp-tab', 'calendar',   { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regData('rp-tab', 'tags',       { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
-  regData('rp-tab', 'annotation', { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regData('rp-tab', 'annotation', { label: 'アノテート',       desc: '右サイドバーにアノテート一覧を表示します' });
   regData('rp-tab', 'history',    { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // data-action だけを持つボタンでもヒントを拾えるようにする
@@ -21,8 +21,8 @@
   regAction('showusermenu',       { label: 'ユーザー',   desc: 'ユーザー設定を開きます' });
   regAction('showsettingsmodal',  { label: '設定',       desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regAction('togglesidebar',      { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
-  regAction('toggleannotationtoolbar', { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regAction('toggleoverlayvisibility', { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regAction('toggleannotationtoolbar', { label: 'アノテートツール', desc: '手描きアノテートツールバーを開閉します', shortcutId: 'global.annotation' });
+  regAction('toggleoverlayvisibility', { label: 'アノテート表示/非表示', desc: '描き込んだアノテートの表示/非表示を切り替えます' });
   regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
   regAction('togglerightpaneltab',{ label: '右サイドバータブ', desc: '指定した右サイドバーのタブを開閉します' });
 
@@ -46,7 +46,7 @@
   regAction('showfolderdisplaysettings', { label: '表示設定', desc: 'フォルダビューの並び順・表示項目を変更します' });
   regAction('showfolderpanelsettings',   { label: 'フォルダオプション', desc: 'フォルダビュー全般のオプションを開きます' });
   regAction('fvbulkslideshow',   { label: 'スライドショー', desc: '選択したファイルをスライドショーで表示します' });
-  regAction('fvbulkboard',       { label: 'ボードへ並べる', desc: '選択したファイルをカードとしてボードに配置します' });
+  regAction('fvbulkboard',       { label: 'ボードへ並べる', desc: '選択したファイルをトピックとしてボードに配置します' });
   regAction('fvbulkdelete',      { label: '一括削除',   desc: '選択したファイルをまとめて削除します' });
   regAction('fvbulkcopypath',    { label: 'パスコピー', desc: '選択したファイルのパスをクリップボードにコピーします' });
   regAction('fvbulkdeselect',    { label: '選択解除',   desc: 'ファイルの選択を解除します' });
@@ -91,7 +91,7 @@
   regData('sn-action', 'search',        { label: '検索 / 置換', desc: 'シナリオ本文を検索または置換します', shortcutId: 'scenario.search' });
   regData('sn-action', 'detail',        { label: 'オプション', desc: 'シナリオの表示オプションを開きます' });
 
-  // ====== Registry seed (B5: シート / スマートシート / カレンダー) ======
+  // ====== Registry seed (B5: シート / カレンダー) ======
   regAction('showcolumndisplayordermodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
   regAction('showcolvisibilitymodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
   regAction('showdbsearchmodal',  { label: 'シート横断検索', desc: '複数のシートをまたいで値を検索します' });
@@ -106,7 +106,6 @@
   regData('cal-action', 'prev',          { label: '前へ',     desc: '前の期間（日/週/月）に移動します', shortcutId: 'cal.prev' });
   regData('cal-action', 'next',          { label: '次へ',     desc: '次の期間（日/週/月）に移動します', shortcutId: 'cal.next' });
   regData('cal-action', 'template',      { label: 'テンプレート', desc: 'カレンダーテンプレートを開きます' });
-  regData('cal-action', 'timer',         { label: 'タイマー', desc: '作業タイマーを開きます' });
   regData('cal-action', 'production',    { label: '制作管理', desc: '制作管理パネルを開きます' });
   regData('cal-action', 'sync',          { label: '外部同期', desc: 'Googleカレンダー等と同期します' });
   regData('cal-action', 'sidebarOnly',   { label: 'サイドバーのみ', desc: 'メイン領域を隠してサイドバーのみ表示します' });
@@ -117,41 +116,41 @@
   regData('cal-action', 'createCalendar',{ label: 'カレンダー作成', desc: '新しいカレンダーを作成します' });
 
   // ====== Registry seed (B6: ボード) ======
-  regData('bd-tool', 'select',     { label: '選択',     desc: 'カードやラインの選択・移動を行います' });
-  regData('bd-tool', 'add-card',   { label: 'カード追加', desc: 'クリック位置に新しいカードを追加します' });
-  regData('bd-tool', 'add-line',   { label: 'ライン追加', desc: 'カードからカードへラインを引きます' });
-  regData('bd-tool', 'erase',      { label: '消しゴム', desc: 'カードやラインをクリックで削除します' });
-  regData('bd-action', 'pick-card-style',     { label: 'カードスタイル', desc: '適用するカードスタイルを選びます' });
-  regData('bd-action', 'manage-card-styles',  { label: 'カードスタイル管理', desc: 'カードスタイルの追加・編集・削除を行います' });
+  regData('bd-tool', 'select',     { label: '選択',     desc: 'トピックやラインの選択・移動を行います' });
+  regData('bd-tool', 'add-card',   { label: 'トピック追加', desc: 'クリック位置に新しいトピックを追加します' });
+  regData('bd-tool', 'add-line',   { label: 'ライン追加', desc: 'トピックからトピックへラインを引きます' });
+  regData('bd-tool', 'erase',      { label: '消しゴム', desc: 'トピックやラインをクリックで削除します' });
+  regData('bd-action', 'pick-card-style',     { label: 'トピックスタイル', desc: '適用するトピックスタイルを選びます' });
+  regData('bd-action', 'manage-card-styles',  { label: 'トピックスタイル管理', desc: 'トピックスタイルの追加・編集・削除を行います' });
   regData('bd-action', 'pick-line-style',     { label: 'ラインスタイル', desc: '適用するラインスタイルを選びます' });
   regData('bd-action', 'manage-line-styles',  { label: 'ラインスタイル管理', desc: 'ラインスタイルの追加・編集・削除を行います' });
-  regData('bd-action', 'filters',             { label: 'フィルタ', desc: 'タグや関連でボードのカードを絞り込みます' });
-  regData('bd-action', 'find-replace',        { label: '検索 / 置換', desc: 'ボード内のカード本文を検索または置換します', shortcutId: 'global.search' });
+  regData('bd-action', 'filters',             { label: 'フィルタ', desc: 'タグや関連でボードのトピックを絞り込みます' });
+  regData('bd-action', 'find-replace',        { label: '検索 / 置換', desc: 'ボード内のトピック本文を検索または置換します', shortcutId: 'global.search' });
   regData('bd-action', 'detail',              { label: 'オプション', desc: 'ボードの表示オプションを開きます' });
   regData('bd-action', 'zoom-select', { label: '表示倍率', desc: '表示倍率を一覧から選びます' });
   regData('bd-action', 'zoom-out',    { label: 'ズームアウト', desc: '表示倍率を下げます', shortcutId: 'board.zoomOut' });
   regData('bd-action', 'zoom-in',     { label: 'ズームイン', desc: '表示倍率を上げます', shortcutId: 'board.zoomIn' });
   regData('bd-action', 'zoom-100',    { label: '100%表示', desc: '表示倍率を100%に戻します', shortcutId: 'board.zoom100' });
-  regData('bd-action', 'fit',         { label: '全体表示', desc: 'すべてのカードが収まる倍率に合わせます', shortcutId: 'board.zoomFit' });
+  regData('bd-action', 'fit',         { label: '全体表示', desc: 'すべてのトピックが収まる倍率に合わせます', shortcutId: 'board.zoomFit' });
   regData('bd-action', 'reset-rotation', { label: '回転リセット', desc: 'ボードの回転を0度に戻します' });
   regData('bd-action', 'bg-color',        { label: '背景色',     desc: 'ボードの背景色を変更します' });
   regData('bd-action', 'set-bg-image',    { label: '背景画像',   desc: 'ボードの背景に画像を設定します' });
   regData('bd-action', 'clear-bg-image',  { label: '背景画像クリア', desc: 'ボードの背景画像を解除します' });
   regId('bd-zoom-slider',  { label: '倍率スライダー', desc: 'ドラッグでボードの表示倍率を調整します' });
   regId('bd-rot-slider',   { label: '回転スライダー', desc: 'ドラッグでボードの回転角度を調整します' });
-  regAction('bdopenfindbar', { label: '検索 / 置換', desc: 'ボード内のカード本文を検索または置換します', shortcutId: 'global.search' });
+  regAction('bdopenfindbar', { label: '検索 / 置換', desc: 'ボード内のトピック本文を検索または置換します', shortcutId: 'global.search' });
 
-  // ====== Registry seed (B7: 注釈・チャット・LLM・チームチャット・DM) ======
-  regData('tool', 'pen',     { label: 'ペン',       desc: 'ペンで自由に注釈を書き込みます' });
-  regData('tool', 'marker',  { label: 'マーカー',   desc: '半透明のマーカーで注釈を書き込みます' });
+  // ====== Registry seed (B7: アノテート・チャット・LLM・チームチャット・DM) ======
+  regData('tool', 'pen',     { label: 'ペン',       desc: 'ペンで自由にアノテートを書き込みます' });
+  regData('tool', 'marker',  { label: 'マーカー',   desc: '半透明のマーカーでアノテートを書き込みます' });
   regData('tool', 'lasso',   { label: '塗りつぶし', desc: '囲んだ範囲を半透明色で塗ります' });
-  regData('tool', 'eraser',  { label: '消しゴム',   desc: '描き込んだ注釈を消します' });
-  regData('tool', 'sticky',  { label: '付箋',       desc: '紙の付箋のような注釈を貼り付けます' });
-  regId('ann-color-swatch',  { label: '注釈色',     desc: '注釈ペン・マーカー・付箋の色を変更します' });
-  regId('ann-opacity',       { label: '不透明度',   desc: '注釈の不透明度を調整します' });
-  regAction('annclear',      { label: '注釈全削除', desc: '現在のページの注釈をすべて削除します' });
-  regAction('newrpcomment',  { label: '注釈コメント追加', desc: '新しい注釈コメントを作成します', shortcutId: 'global.addComment' });
-  regAction('loadrpannotationlist', { label: '注釈一覧更新', desc: '注釈一覧を最新状態に更新します' });
+  regData('tool', 'eraser',  { label: '消しゴム',   desc: '描き込んだアノテートを消します' });
+  regData('tool', 'sticky',  { label: '付箋',       desc: '紙の付箋のようなアノテートを貼り付けます' });
+  regId('ann-color-swatch',  { label: 'アノテート色',     desc: 'アノテートペン・マーカー・付箋の色を変更します' });
+  regId('ann-opacity',       { label: '不透明度',   desc: 'アノテートの不透明度を調整します' });
+  regAction('annclear',      { label: 'アノテート全削除', desc: '現在のページのアノテートをすべて削除します' });
+  regAction('newrpcomment',  { label: 'アノテートコメント追加', desc: '新しいアノテートコメントを作成します', shortcutId: 'global.addComment' });
+  regAction('loadrpannotationlist', { label: 'アノテート一覧更新', desc: 'アノテート一覧を最新状態に更新します' });
   regAction('chatsend',      { label: '送信',       desc: 'チャットメッセージを送信します' });
   regAction('chatclear',     { label: '新しいチャット', desc: '新しいチャットセッションを開始します' });
   regAction('chatsave',      { label: 'チャット保存', desc: '現在のチャットを保存します' });
@@ -221,19 +220,19 @@
   regAction('switchdetailtab',       { label: 'タブ切替',     desc: 'オプションパネルの表示タブを切り替えます' });
   regAction('switchsettingstab',     { label: '設定タブ切替', desc: '設定ダイアログの表示タブを切り替えます' });
   regAction('switchsettingsthemestyletab', { label: 'スタイル切替', desc: 'テーマ設定のスタイルタブを切り替えます' });
-  regAction('switchcstab',           { label: 'スタイル切替', desc: 'カードスタイル編集のタブを切り替えます' });
+  regAction('switchcstab',           { label: 'スタイル切替', desc: 'トピックスタイル編集のタブを切り替えます' });
   regAction('switchrighttab',        { label: '右サイドバー切替', desc: '右サイドバーの表示タブを切り替えます' });
 
   // 履歴パネル
   regAction('historypanelclear',     { label: '履歴クリア',   desc: '操作履歴の表示をすべてクリアします' });
   regAction('historypaneljump',      { label: '履歴ジャンプ', desc: 'この操作時点の状態に戻します' });
 
-  // 注釈マネージャ
-  regAction('openannotationmanager', { label: '注釈マネージャ', desc: '注釈の一覧管理画面を開きます' });
-  regAction('loadannotationlist',    { label: '注釈一覧更新', desc: '注釈一覧を最新状態に更新します' });
+  // アノテートマネージャ
+  regAction('openannotationmanager', { label: 'アノテートマネージャ', desc: 'アノテートの一覧管理画面を開きます' });
+  regAction('loadannotationlist',    { label: 'アノテート一覧更新', desc: 'アノテート一覧を最新状態に更新します' });
   regAction('loadrpstickylist',      { label: '付箋一覧更新', desc: '付箋一覧を最新状態に更新します' });
-  regAction('jumptoannotation',      { label: '注釈へ移動',   desc: 'この注釈の位置へジャンプします' });
-  regAction('deleteannotationfrommanager', { label: '注釈削除', desc: 'この注釈を削除します' });
+  regAction('jumptoannotation',      { label: 'アノテートへ移動',   desc: 'このアノテートの位置へジャンプします' });
+  regAction('deleteannotationfrommanager', { label: 'アノテート削除', desc: 'このアノテートを削除します' });
   regAction('deletenote',            { label: 'コメント削除', desc: 'このコメントを削除します' });
 
   // テーマ・配色・スタイル
@@ -247,7 +246,7 @@
   regAction('openrtcolorpalette',    { label: '色を選択',     desc: 'テキスト用カラーパレットを開きます' });
   regAction('openstylebgonlypalette',{ label: '背景色を選択', desc: '背景色専用のカラーパレットを開きます' });
   regAction('openstylepreviewpopup', { label: 'プレビュー',   desc: 'スタイルのプレビューを表示します' });
-  regAction('togglecsstyle',         { label: 'スタイル切替', desc: 'カードスタイルの有効/無効を切り替えます' });
+  regAction('togglecsstyle',         { label: 'スタイル切替', desc: 'トピックスタイルの有効/無効を切り替えます' });
   regAction('togglelinevisibility',  { label: 'ライン表示',   desc: 'このライン種類の表示/非表示を切り替えます' });
 
   // ファイル別スタイル / プリセット
@@ -295,38 +294,36 @@
   regAction('settingsthemeboardchoosebgimage', { label: '背景画像を選択', desc: 'ボードの既定背景画像を選択します' });
   regAction('settingsthemeboardclearbgimage',  { label: '背景画像クリア', desc: 'ボードの既定背景画像を解除します' });
 
-  // スマートシート
-  regAction('setsmartdbactiveview',  { label: 'ビュー切替',   desc: 'スマートシートの表示ビューを切り替えます' });
 
   // ====== Registry seed (B11: ボード詳細・カレンダー詳細・バージョンアクション) ======
   // ボード スタイル/状態 操作
-  regData('bd-action', 'manage-statuses',     { label: 'ステータス管理', desc: 'カードのステータス候補を追加・編集・削除します' });
+  regData('bd-action', 'manage-statuses',     { label: 'ステータス管理', desc: 'トピックのステータス候補を追加・編集・削除します' });
   regData('bd-action', 'manage-depth-styles', { label: '階層スタイル管理', desc: '階層ごとの既定スタイルを管理します' });
   regData('bd-action', 'save-depth-styles',   { label: '階層スタイル保存', desc: '現在の階層別スタイルを保存します' });
   regData('bd-action', 'reset-depth-styles',  { label: '階層スタイルリセット', desc: '階層別スタイルを初期状態に戻します' });
-  regData('bd-action', 'save-card-style',         { label: 'カードスタイル保存', desc: '現在のカードスタイルを上書き保存します' });
-  regData('bd-action', 'save-card-style-as-new',  { label: '別名保存',     desc: '現在のカードスタイルを別名で新規保存します' });
-  regData('bd-action', 'save-node-card-style',        { label: 'カード固有スタイル保存', desc: 'このカード固有のスタイルを保存します' });
-  regData('bd-action', 'save-node-card-style-as-new', { label: '別名保存',           desc: 'このカード固有のスタイルを別名で保存します' });
+  regData('bd-action', 'save-card-style',         { label: 'トピックスタイル保存', desc: '現在のトピックスタイルを上書き保存します' });
+  regData('bd-action', 'save-card-style-as-new',  { label: '別名保存',     desc: '現在のトピックスタイルを別名で新規保存します' });
+  regData('bd-action', 'save-node-card-style',        { label: 'トピック固有スタイル保存', desc: 'このトピック固有のスタイルを保存します' });
+  regData('bd-action', 'save-node-card-style-as-new', { label: '別名保存',           desc: 'このトピック固有のスタイルを別名で保存します' });
   regData('bd-action', 'save-line-style',         { label: 'ラインスタイル保存', desc: '現在のラインスタイルを上書き保存します' });
   regData('bd-action', 'save-line-style-as-new',  { label: '別名保存',     desc: '現在のラインスタイルを別名で新規保存します' });
   regData('bd-action', 'save-conn-line-style',        { label: 'ライン固有スタイル保存', desc: 'このライン固有のスタイルを保存します' });
   regData('bd-action', 'save-conn-line-style-as-new', { label: '別名保存',         desc: 'このライン固有のスタイルを別名で保存します' });
-  regData('bd-action', 'reset-card-style',         { label: 'カードスタイルリセット', desc: 'カードスタイルを既定値に戻します' });
-  regData('bd-action', 'reset-node-card-style',    { label: 'カード固有解除', desc: 'このカードの固有スタイルを解除して既定に戻します' });
+  regData('bd-action', 'reset-card-style',         { label: 'トピックスタイルリセット', desc: 'トピックスタイルを既定値に戻します' });
+  regData('bd-action', 'reset-node-card-style',    { label: 'トピック固有解除', desc: 'このトピックの固有スタイルを解除して既定に戻します' });
   regData('bd-action', 'reset-line-style',         { label: 'ラインスタイルリセット', desc: 'ラインスタイルを既定値に戻します' });
   regData('bd-action', 'reset-conn-style',         { label: 'ライン固有解除', desc: 'このラインの固有スタイルを解除して既定に戻します' });
   regData('bd-action', 'reset-conn-line-style',    { label: 'ラインスタイル解除', desc: 'ラインのスタイル設定を解除します' });
   regData('bd-action', 'reset-conn-bends',         { label: 'ライン形状リセット', desc: 'ラインの曲げ・分岐形状を初期化します' });
   regData('bd-action', 'reset-style',              { label: 'スタイル全リセット', desc: '選択中のスタイル設定をすべて既定に戻します' });
-  regData('bd-action', 'open-link',                { label: 'リンクを開く', desc: 'カードに設定されたリンク先を開きます' });
+  regData('bd-action', 'open-link',                { label: 'リンクを開く', desc: 'トピックに設定されたリンク先を開きます' });
 
   // カレンダー追加操作（B5未網羅分）
   regData('cal-action', 'addEvent',  { label: 'イベント追加', desc: 'この日付にイベントを追加します' });
   regData('cal-action', 'addTask',   { label: 'ToDo追加',   desc: 'この日付にToDoを追加します' });
 
   // ====== Registry seed (B12: 主要 input / slider / select) ======
-  // 注釈ツール幅・不透明度
+  // アノテートツール幅・不透明度
   regId('ann-width-pen',     { label: 'ペンの太さ',     desc: 'ペンで描く線の太さを調整します' });
   regId('ann-width-marker',  { label: 'マーカーの太さ', desc: 'マーカーで描く線の太さを調整します' });
   regId('ann-width-eraser',  { label: '消しゴムサイズ', desc: '消しゴムで消す範囲の大きさを調整します' });
@@ -334,17 +331,12 @@
   regId('chat-input',           { label: 'メッセージ', desc: 'チャットに送るメッセージを入力します。Enter または送信ボタンで確定' });
   regId('chat-search-input',    { label: 'チャット検索', desc: 'このチャット内のメッセージをキーワードで検索します' });
   regId('chat-attachment-file', { label: '添付ファイル', desc: 'チャットに添付するファイルを選択します' });
-  // 注釈・コメント検索
-  regId('rp-ann-search',  { label: '注釈検索', desc: '注釈一覧を本文で検索します' });
+  // アノテート・コメント検索
+  regId('rp-ann-search',  { label: 'アノテート検索', desc: 'アノテート一覧を本文で検索します' });
   // フォルダフィルタ
   regId('gf-search-entities', { label: 'フィルタ検索', desc: 'フィルタ対象の項目をキーワードで絞り込みます' });
   // HTMLビューア
   regId('html-url-bar', { label: 'URL', desc: '表示するURLを入力します。Enterで移動' });
-  // タイマー
-  regId('inp-h',       { label: '時',   desc: 'タイマーの時間（時）を設定します' });
-  regId('inp-m',       { label: '分',   desc: 'タイマーの時間（分）を設定します' });
-  regId('inp-s',       { label: '秒',   desc: 'タイマーの時間（秒）を設定します' });
-  regId('inp-countup', { label: 'カウントアップ', desc: 'チェックすると経過時間を計測するモードになります' });
   regId('seek-bar',    { label: '再生位置', desc: 'ドラッグして再生位置を移動します' });
   regId('fade',        { label: 'フェード時間', desc: '画像切替時のフェード時間（秒）を設定します' });
   // ノート余白
@@ -354,7 +346,7 @@
   // タイトル変更
   regId('title-input', { label: 'タイトル', desc: 'ファイルのタイトルを入力します' });
   // ファイル選択（XLSX取込・画像添付）
-  regId('xlsx-import-input', { label: 'Excel取込', desc: 'シートに取り込むXLSXファイルを選択します' });
+  regId('xlsx-import-input', { label: 'Excelからシナリオを作成', desc: '新しいシナリオを作成するXLSXファイルを選択します' });
   regId('gb-img-file-input', { label: '画像選択',  desc: '挿入する画像ファイルを選択します' });
   regId('avatar-upload-input', { label: 'アイコン画像', desc: 'プロフィール用の画像ファイルを選択します' });
   // 一括列幅
@@ -367,7 +359,7 @@
 
   // ====== Registry seed (B13: 画像ビューワー・スライドショー・CSP連携・ボード検索) ======
   // ボード検索バー
-  regId('bd-find-q',           { label: '検索ワード',     desc: 'ボード内のカード本文から検索するキーワードを入力します' });
+  regId('bd-find-q',           { label: '検索ワード',     desc: 'ボード内のトピック本文から検索するキーワードを入力します' });
   regId('bd-find-r',           { label: '置換ワード',     desc: '見つかった文字列を置き換える文字列を入力します' });
   regId('bd-find-prev',        { label: '前の一致',       desc: '前の検索一致箇所へジャンプします' });
   regId('bd-find-next',        { label: '次の一致',       desc: '次の検索一致箇所へジャンプします' });
@@ -427,7 +419,6 @@
   regId('cal-today',      { label: '今日',         desc: '表示位置を今日に戻します', shortcutId: 'cal.today' });
   regId('cal-mode',       { label: '表示モード',   desc: '日 / 週 / 月などの表示モードを切り替えます' });
   regId('cal-start-day',  { label: '週の開始曜日', desc: 'カレンダーの週の開始曜日を選びます' });
-  regId('cal-timer',      { label: 'タイマー',     desc: '作業タイマーを開きます' });
   regId('cal-sync',       { label: '外部同期',     desc: '外部カレンダーと同期します' });
   regId('cal-title',      { label: '期間表示',     desc: '現在表示している期間を示します' });
   // カレンダーイベント詳細
@@ -459,7 +450,7 @@
   regId('sn-save-ok',               { label: '保存',           desc: 'プリセットを保存します' });
   regId('sn-save-cancel',           { label: 'キャンセル',     desc: '保存をキャンセルします' });
 
-  // ====== Registry seed (B14: 検索/置換UI、CSV、チャット選択、注釈フィルタ) ======
+  // ====== Registry seed (B14: 検索/置換UI、CSV、チャット選択、アノテートフィルタ) ======
   // ソースフォルダ全文検索パネル
   regId('sp-query',         { label: '検索ワード',     desc: 'ソースフォルダ全体から検索するキーワードを入力します' });
   regId('sp-replace',       { label: '置換ワード',     desc: '見つかった文字列を置き換える文字列を入力します' });
@@ -488,13 +479,13 @@
   regId('team-attachment-file', { label: '添付ファイル', desc: 'チームチャットに添付するファイルを選択します' });
   regId('team-send-btn',        { label: '送信', desc: 'チームチャットへメッセージを送信します' });
 
-  // 注釈パネルのフィルタ
-  regId('rp-ann-view',    { label: '表示形式',   desc: '注釈一覧の表示形式（リスト/カード等）を切り替えます' });
-  regId('rp-ann-sort',    { label: '並び順',     desc: '注釈一覧の並び順を切り替えます' });
-  regId('rp-ann-type',    { label: '種類フィルタ', desc: '表示する注釈の種類で絞り込みます' });
-  regId('rp-ann-scope',   { label: '範囲フィルタ', desc: '表示する注釈の対象範囲で絞り込みます' });
-  regId('rp-ann-status',  { label: 'ステータス', desc: '表示する注釈のステータスで絞り込みます（解決/未解決等）' });
-  regId('rp-ann-user',    { label: 'ユーザー',   desc: '注釈を作成したユーザーで絞り込みます' });
+  // アノテートパネルのフィルタ
+  regId('rp-ann-view',    { label: '表示形式',   desc: 'アノテート一覧の表示形式（リスト/カード等）を切り替えます' });
+  regId('rp-ann-sort',    { label: '並び順',     desc: 'アノテート一覧の並び順を切り替えます' });
+  regId('rp-ann-type',    { label: '種類フィルタ', desc: '表示するアノテートの種類で絞り込みます' });
+  regId('rp-ann-scope',   { label: '範囲フィルタ', desc: '表示するアノテートの対象範囲で絞り込みます' });
+  regId('rp-ann-status',  { label: 'ステータス', desc: '表示するアノテートのステータスで絞り込みます（解決/未解決等）' });
+  regId('rp-ann-user',    { label: 'ユーザー',   desc: 'アノテートを作成したユーザーで絞り込みます' });
 
   // バージョンアクション（data-version-action）
   regData('version-action', 'save',            { label: '手動保存',     desc: '現在のファイル状態をバージョンとして保存します' });

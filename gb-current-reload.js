@@ -3,7 +3,7 @@
   'use strict';
 
   const DB_VIEW_TYPES = new Set([
-    'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
+    'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt',
     'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form',
   ]);
   const LEGACY_CONTAINER_IDS = {
@@ -14,13 +14,13 @@
     media: 'media-view',
     csv: 'csv-view',
     html: 'html-view',
-    'smart-db': 'db-view-container',
     database: 'db-view-container',
     db: 'db-view-container',
     pivot: 'db-view-container',
     gallery: 'db-view-container',
     kanban: 'db-view-container',
     timeline: 'db-view-container',
+    gantt: 'db-view-container',
     calendar: 'db-view-container',
     tasks: 'db-view-container',
     shifts: 'db-view-container',
@@ -58,7 +58,7 @@
   function _tabPath(tab) {
     const state = tab?.state || {};
     return tab?.path || state.boardPath || state.folderPath || state.pagePath || state.scenarioPath
-      || state.csvPath || state.dbPath || state.smartDbPath || state.mediaPath || state.calendarPath || '';
+      || state.csvPath || state.dbPath || state.mediaPath || state.calendarPath || '';
   }
 
   function _tabLabel(tab, path) {
@@ -145,7 +145,6 @@
       if (type === 'entity' && typeof selectEntity === 'function') return _handled(() => selectEntity(path, opts));
       if (type === 'media' && typeof openMedia === 'function') return _handled(() => openMedia(label, path, tab?.state?.mediaType || 'image', opts));
       if (type === 'csv' && typeof openCsvFile === 'function') return _handled(() => openCsvFile(label, path, opts));
-      if (type === 'smart-db' && typeof openSmartDbFile === 'function') return _handled(() => openSmartDbFile(label, path, opts));
       if (type === 'board' && typeof openBoard === 'function') return _handled(() => openBoard(label, path, opts));
       if (type === 'html' && tab?.state?.urlExternal && typeof openViewer === 'function') {
         openViewer(path, opts);

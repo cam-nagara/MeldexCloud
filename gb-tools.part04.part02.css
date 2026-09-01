@@ -15,6 +15,13 @@
 .gb-prop-layout-toolbar,
 .gb-prop-group-title { grid-column: 1 / -1; }
 .gb-prop-layout-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+@media (pointer: coarse), (max-width: 640px) {
+  .gb-prop-layout-toolbar .gb-select,
+  .gb-prop-layout-toolbar .gb-btn {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+}
 .gb-prop-group-title { margin: 8px 0 2px; padding-bottom: 3px; border-bottom: 1px solid var(--border); color: var(--fg2); font-size: 12px; }
 .entry-prop-card.layout-editing { border-color: var(--border); }
 .gb-prop-hide-btn { align-self: flex-start; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--fg2); cursor: pointer; }
@@ -52,6 +59,19 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg3);
+}
+.gb-image-thumb > .gb-image-thumb-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: inherit;
+  border: 0;
+  border-radius: inherit;
+  background: inherit;
+}
+.gb-image-gallery-thumb {
+  display: block;
+  position: relative;
 }
 .gb-image-more { flex: 0 0 auto; margin-left: 2px; padding: 1px 6px; border-radius: 10px; background: var(--bg4); color: var(--fg2); font-size: 11px; }
 /* 動画・PDFは縮小画像を作らないため、種別アイコンとファイル名のタイルで表す */

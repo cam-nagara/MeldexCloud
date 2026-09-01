@@ -31,6 +31,10 @@
           return;
         }
         if (!_isDropboxConflictName(entry.name)) continue;
+        try {
+          const snapshot = await _readConflictSnapshot(provider, nextPath);
+          if (_resolvedConflictTombstone(snapshot.bytes)) continue;
+        } catch {}
         total += 1;
         if (items.length >= maxItems) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
@@ -79,6 +83,9 @@
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
+      const conflictSnapshot = await _readConflictSnapshot(provider, conflictPath);
+      if (_resolvedConflictTombstone(conflictSnapshot.bytes)) throw new Error('この競合コピーは解消済みです');
+      const originalSnapshot = originalEntry?.kind === 'file' ? await _readConflictSnapshot(provider, originalPath) : null;
       const conflictStats = await _fileStats(conflictEntry.handle).catch(() => ({ size: 0, modified: '' }));
       const originalStats = originalEntry?.kind === 'file'
         ? await _fileStats(originalEntry.handle).catch(() => ({ size: 0, modified: '' }))
@@ -96,6 +103,8 @@
           content: '',
           truncated: false,
           length: 0,
+          revision: originalSnapshot?.revision || '',
+          sha256: originalSnapshot?.sha256 || '',
         },
         conflict: {
           path: conflictPath,
@@ -106,15 +115,17 @@
           content: '',
           truncated: false,
           length: 0,
+          revision: conflictSnapshot.revision,
+          sha256: conflictSnapshot.sha256,
         },
       };
       if (textLike) {
-        const conflictPreview = await _textPreview(provider, conflictPath, 200000);
+        const conflictPreview = _conflictSnapshotPreview(conflictSnapshot, 200000);
         payload.conflict.content = conflictPreview.content;
         payload.conflict.truncated = conflictPreview.truncated;
         payload.conflict.length = conflictPreview.length;
         if (originalEntry?.kind === 'file') {
-          const originalPreview = await _textPreview(provider, originalPath, 200000);
+          const originalPreview = _conflictSnapshotPreview(originalSnapshot, 200000);
           payload.original.content = originalPreview.content;
           payload.original.truncated = originalPreview.truncated;
           payload.original.length = originalPreview.length;
@@ -140,27 +151,86 @@
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
+      const expectedConflictRevision = String(body?.conflict_revision || '').trim();
+      const expectedConflictSha256 = String(body?.conflict_sha256 || '').trim();
+      const expectedOriginalRevision = String(body?.original_revision || '').trim();
+      const expectedOriginalSha256 = String(body?.original_sha256 || '').trim();
+      if (!expectedConflictRevision || !expectedConflictSha256) {
+        const error = new Error('競合詳細を再読込してから解消してください');
+        error.status = 428;
+        error.code = 'precondition_required';
+        throw error;
+      }
+      const conflictSnapshot = await _readConflictSnapshot(provider, conflictPath);
+      const originalSnapshot = originalEntry?.kind === 'file' ? await _readConflictSnapshot(provider, originalPath) : null;
+      if (conflictSnapshot.revision !== expectedConflictRevision || conflictSnapshot.sha256 !== expectedConflictSha256
+        || String(originalSnapshot?.revision || '') !== expectedOriginalRevision
+        || String(originalSnapshot?.sha256 || '') !== expectedOriginalSha256) {
+        const error = new Error('比較後に原本または競合コピーが更新されました。詳細を再確認してください');
+        error.status = 409;
+        error.code = 'conflict_generation_changed';
+        throw error;
+      }
       const backups = {};
       const backupStamp = _conflictBackupStamp();
 
       if (action === 'keep_original') {
         if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
-        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
-        await provider.deletePath(conflictPath);
-        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+        backups.conflict = await _backupConflictSide(
+          provider,
+          'discarded-conflict',
+          conflictPath,
+          backupStamp,
+          conflictSnapshot,
+        );
+        const retired = await _retireResolvedConflict(provider, conflictSnapshot, action, backups.conflict);
+        return { ok: true, action, original_path: originalPath, backups, ...retired };
       }
 
-      backups.conflict = await _backupConflictSide(provider, 'applied-conflict', conflictPath, backupStamp);
-      if (originalEntry?.kind === 'file') {
-        backups.original = await _backupConflictSide(provider, 'replaced-original', originalPath, backupStamp);
-        const conflictFile = await provider.downloadAsFile(conflictPath);
-        await provider.downloadAsFile(originalPath).catch(() => null);
-        await provider.overwriteBytes(originalPath, new Uint8Array(await conflictFile.arrayBuffer()));
-        await provider.deletePath(conflictPath);
-      } else {
-        await provider.movePath(conflictPath, originalPath);
+      if (originalEntry?.kind !== 'file') {
+        const error = new Error('元ファイルがない競合コピーの安全な適用はデスクトップ版で行ってください');
+        error.status = 409;
+        error.code = 'missing_original_requires_desktop';
+        throw error;
       }
-      return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+      backups.conflict = await _backupConflictSide(
+        provider,
+        'applied-conflict',
+        conflictPath,
+        backupStamp,
+        conflictSnapshot,
+      );
+      backups.original = await _backupConflictSide(
+        provider,
+        'replaced-original',
+        originalPath,
+        backupStamp,
+        originalSnapshot,
+      );
+      const applied = await provider.uploadBytesConditional(originalPath, conflictSnapshot.bytes, originalSnapshot.revision);
+      const appliedRevision = String(applied?.revision || applied?.rev || '').trim();
+      if (!appliedRevision) {
+        const error = new Error('競合コピー適用後の原本世代を確認できません');
+        error.status = 503;
+        error.code = 'strict_cas_unavailable';
+        throw error;
+      }
+      let retired;
+      try {
+        retired = await _retireResolvedConflict(provider, conflictSnapshot, action, backups.conflict);
+      } catch (error) {
+        try {
+          await provider.uploadBytesConditional(originalPath, originalSnapshot.bytes, appliedRevision);
+        } catch (rollbackError) {
+          const failed = new Error('競合解消の補償復旧に失敗しました。両世代のbackupを保持しています');
+          failed.status = 500;
+          failed.code = 'conflict_resolution_compensation_failed';
+          failed.backups = backups;
+          throw failed;
+        }
+        throw error;
+      }
+      return { ok: true, action, original_path: originalPath, backups, ...retired };
     }
 
     if (pathname === '/home-folder' && method === 'PUT') {

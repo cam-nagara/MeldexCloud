@@ -336,9 +336,9 @@ const AnnotationStickyTail = (() => {
     return !!toolbar && toolbar.classList.contains('visible');
   }
 
-  // 起点が注釈の付箋以外（例: ボードのカード）の場合、端点ハンドルをドラッグしてよい条件が
-  // 「注釈ツールバーが開いている」では意味を持たない。install() の canDragHandles オプションで
-  // 差し替え可能にし、未指定時は注釈の現行挙動 (_isAnnotationToolbarActive) をそのまま使う。
+  // 起点がアノテートの付箋以外（例: ボードのカード）の場合、端点ハンドルをドラッグしてよい条件が
+  // 「アノテートツールバーが開いている」では意味を持たない。install() の canDragHandles オプションで
+  // 差し替え可能にし、未指定時はアノテートの現行挙動 (_isAnnotationToolbarActive) をそのまま使う。
   function _installDrag(note, persist, options = {}) {
     const canDragHandles = typeof options.canDragHandles === 'function' ? options.canDragHandles : _isAnnotationToolbarActive;
     const dragExcludeSelector = options.dragExcludeSelector || 'button,.ann-note-resize-handle,.gb-fmt-popup';
@@ -528,7 +528,7 @@ const AnnotationStickyTail = (() => {
     if (!note || note._annTailInstalled) return;
     note._annTailInstalled = true;
     // legacyFallback: data.tailX/data.tailY だけがある場合に旧形式のしっぽとみなして
-    // data.tail へ変換するか。注釈の付箋は既定 true (現行どおり)。ボードのカードは
+    // data.tail へ変換するか。アノテートの付箋は既定 true (現行どおり)。ボードのカードは
     // false を渡す。ボードには tailX/tailY を使う別概念「バルーン」が既にあり、
     // 変換すると誤ってしっぽ扱いになり保存時にバルーンのデータが消える。
     // install() 時点だけの判定にせず ctx へ保持する: _setTail/_removeTail も
@@ -541,7 +541,7 @@ const AnnotationStickyTail = (() => {
       persist: options.persist,
       getColor: options.getColor,
       // followTarget: 追従先が移動したとき起点要素自身も一緒に動かすか。
-      // 注釈の付箋は既定 true (現行どおり)。ボードのカードは false を渡し、
+      // アノテートの付箋は既定 true (現行どおり)。ボードのカードは false を渡し、
       // カードが追従先の移動につられて勝手に動くのを防ぐ。
       followTarget: options.followTarget !== false,
       legacyFallback,

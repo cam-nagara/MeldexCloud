@@ -355,7 +355,7 @@ function _dpBindAutoSave(el) {
       startAutoVersion(autoVersionPath, 'file');
       el._autoVersionPath = autoVersionPath;
     }
-    if (autoVersionPath && typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+    if (autoVersionPath && typeof markAutoVersionDirty === 'function') markAutoVersionDirty(autoVersionPath, 'file');
     // パネル固有のタイマー（グローバル共有を避ける）
     clearTimeout(el._autoSaveTimer);
     el._autoSaveTimer = setTimeout(() => { if (_splitDirty) _dpSave(el); }, 2000);
@@ -397,6 +397,7 @@ async function _dpSave(el) {
     _splitDirty = false;
     return true;
   }
+  const previousMd = el.dataset.lastSavedMd || '';
   try {
     // 工程1項目9・11: 詳細パネル内ノートも保存コーディネーター経由で送信する。
     // メインパネルのノートと同じdocumentKey（正規化パス）を共有するため、
@@ -417,6 +418,13 @@ async function _dpSave(el) {
     if (el.dataset.path === payload.path) {
       el.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : payload.content;
       el.dataset.lastSavedEtag = (res && res.etag) || '';
+    }
+    if (!res?.joined) {
+      const savedMd = (res && res.savedMd != null) ? res.savedMd : payload.content;
+      const detail = typeof summarizeHistoryTextChange === 'function'
+        ? summarizeHistoryTextChange(previousMd, savedMd)
+        : '内容を更新';
+      window.MeldexNoteHistory?.recordSavedEdit?.(payload.path, previousMd, savedMd, detail);
     }
     if (el.dataset.path === payload.path && el.innerHTML === payload.html) _splitDirty = false;
     return true;

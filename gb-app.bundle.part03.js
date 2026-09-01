@@ -1,28 +1,10 @@
-    for (let i = navState.index - 1; i >= Math.max(0, navState.index - 15); i--) items.push({ index: i, entry: navState.history[i] });
-  } else {
-    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
-  }
-  if (items.length === 0) return;
-
-  const dd = document.createElement('div');
-  dd.className = 'ab-dropdown nav-history-dropdown';
-  dd.setAttribute('role', 'menu');
-  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
-  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
-  items.forEach(({ index, entry }) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'ab-dropdown-item';
-    item.setAttribute('role', 'menuitem');
     item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
     item.title = entry.path || '';
-    item.addEventListener('click', () => {
-      navState.index = index;
-      navNavigating = true;
+    item.addEventListener('click', async () => {
       try {
-        if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-        _applyNavEntryToBoundTab(navState, entry);
-        _withNavFlag(navOpen(entry));
+        const applied = await _applyNavEntryToBoundTab(navState, entry);
+        if (!applied) return;
+        _finishPaneHistoryNavigation(navState, index, entry);
       } catch (e) {
         navNavigating = false;
         throw e;
@@ -92,14 +74,23 @@ function showNavHistoryDropdown(e, direction) {
 
 function updateNavBreadcrumb() {}
 
-let _pointerNavPaneId = null;
+let _pointerNavTargetId = null;
+
+function _pointerNavigationTargetId(target) {
+  const fixedRightDock = target?.closest?.('.gb-dock-fixed-right[data-panelset-id]');
+  if (fixedRightDock?.dataset?.panelsetId) return fixedRightDock.dataset.panelsetId;
+  return target?.closest?.('.gb-pane')?.dataset?.paneId || null;
+}
 
 function _handlePointerNavigationButtons(e) {
   if (e.button !== 3 && e.button !== 4) return;
-  const ae = document.activeElement;
-  if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
-  const paneId = _pointerNavPaneId || e.target?.closest?.('.gb-pane')?.dataset?.paneId || undefined;
-  _pointerNavPaneId = null;
+  const paneId = _pointerNavTargetId || _pointerNavigationTargetId(e.target) || undefined;
+  _pointerNavTargetId = null;
+  // 以前フォーカスしていた入力欄ではなく、実際にサイドボタンを押した場所で判定する。
+  // 入力後に表や本文へマウスを移しても activeElement は入力欄のまま残るため、旧判定では
+  // 戻る/進むが永続的に無効になっていた。入力要素そのものの上で押した時だけ保護する。
+  const editableTarget = e.target?.closest?.('input, textarea, select, [contenteditable="true"]');
+  if (editableTarget) return;
   if (e.button === 3) {
     if (navBack(paneId)) e.preventDefault();
   } else if (e.button === 4) {
@@ -109,12 +100,12 @@ function _handlePointerNavigationButtons(e) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button === 3 || e.button === 4) {
-    _pointerNavPaneId = e.target?.closest?.('.gb-pane')?.dataset?.paneId || null;
+    _pointerNavTargetId = _pointerNavigationTargetId(e.target);
     e.preventDefault();
   }
 }, true);
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
-window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
+window.addEventListener('pointercancel', () => { _pointerNavTargetId = null; }, true);
 
 // esc() は meldex-core.js で定義済み
 function saveLastView(obj) {
@@ -190,7 +181,6 @@ const STARTUP_LAYOUT_UTILITY_TAB_TYPES = new Set([
   'preview',
   'chat',
   'calendar',
-  'timer',
   'history',
   'annotation',
   'sticky',
@@ -247,7 +237,6 @@ const _apiFetchObservedGetEndpoints = new Set([
   '/check-type',
   '/file',
   '/file-meta',
-  '/smart-db',
   '/global-index',
 ]);
 
@@ -687,6 +676,8 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBoth('path');
     addBody('entry_path');
     addBody('folder_path');
+  } else if (route === '/replace-batch') {
+    (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/upload-file') {
     addBoth('path');
     addBody('dir');
@@ -739,7 +730,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('db_path');
   } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
     addBoth('db_path');
-  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
+  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder' || route === '/version/delete-db') {
     addBody('path');
   }
 
@@ -767,7 +758,7 @@ function _apiUsesTransientActiveLock(path) {
   return new Set([
     '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore',
+    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
   ]).has(route);
 }
 
@@ -898,3 +889,12 @@ function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
     }, timeout);
     Promise.resolve(promise).then((value) => {
       if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
+      resolve(value);
+    }).catch((error) => {
+      if (settled) return;
+      settled = true;

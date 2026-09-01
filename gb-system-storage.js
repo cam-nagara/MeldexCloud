@@ -19,7 +19,7 @@
  *
  * ## Phase 1bの範囲(重要)
  *
- * このモジュール(と姉妹モジュール)は「層の新設」のみを行う。既存の注釈・
+ * このモジュール(と姉妹モジュール)は「層の新設」のみを行う。既存のアノテート・
  * タグ・ロック等の呼び出し元をこの層へ載せ替える配線変更は、Phase 3
  * (ローカル/単独アプリ)・Phase 4(Cloud/Dropbox共有)で別途行う。
  * 既存ファイル(gb-active-lock-store.js 等)は変更しない。
@@ -45,6 +45,9 @@
   const SystemStorageKind = Object.freeze({
     ANNOTATIONS: 'annotations',
     TAGS: 'tags',
+    // 共有ワークスペースごとの管理者タグ辞書。個人TAGSとは保存境界を分け、
+    // owner/adminだけが書ける（Dropboxアダプターでも強制する）。
+    ADMIN_TAG_DICTIONARY: 'admin-tag-dictionary',
     EDIT_LOCKS: 'edit-locks',
     VIEW_LOCKS: 'view-locks',
     REFERENCE_CONFIRMATIONS: 'reference-confirmations',
@@ -84,6 +87,8 @@
     PORTABLE_KNOWLEDGE_ARTIFACTS: 'portable-knowledge-artifacts',
     // devices: 端末ごとの索引台帳(1端末=1文書。CASで安全に上書きする)。
     PORTABLE_KNOWLEDGE_DEVICES: 'portable-knowledge-devices',
+    // Web Clipper owner鍵の一回限り端末登録と、所有者が失効できる端末台帳。
+    WEBCLIP_OWNER_DEVICES: 'webclip-owner-devices',
   });
 
   const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
@@ -220,10 +225,11 @@
   const DEFAULT_RETENTION_POLICIES = Object.freeze({
     [SystemStorageKind.ANNOTATIONS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.TAGS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.ADMIN_TAG_DICTIONARY]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.EDIT_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.VIEW_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.REFERENCE_CONFIRMATIONS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
-    [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: 20, retentionDays: null },
+    [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.CONFLICT_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.FOLDER_ASSOCIATIONS]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PROFILES_WORKSPACE]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
@@ -246,6 +252,7 @@
     // 大きく見積もる。世代掃除は無し(現状の仕様どおり。将来のGC課題は別途)。
     [SystemStorageKind.PORTABLE_KNOWLEDGE_ARTIFACTS]: { maxDocumentBytes: 8_000_000, maxTotalBytes: 2_000_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PORTABLE_KNOWLEDGE_DEVICES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.WEBCLIP_OWNER_DEVICES]: { maxDocumentBytes: 500_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
   });
 
   function retentionPolicyFor(kind) {

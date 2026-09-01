@@ -1,3 +1,269 @@
+        const entry = await _resolveEntryHandle(provider, linked.path);
+        if (!entry) continue;
+        const item = await _buildBrowseItem(provider, linked.path, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+        if (!item) continue;
+        if (_isBrowseContainerItem(item)) {
+          items.push({ ...item, linked: true, exists: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
+          continue;
+        }
+        if (foldersOnly) continue;
+        if (item) items.push({ ...item, linked: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
+      }
+      return items;
+    }
+    if (pathname === '/check-type' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      const entry = await _resolveEntryHandle(provider, targetPath);
+      if (!entry) return { type: 'unknown', exists: false };
+      if (entry.kind === 'directory') {
+        return { type: await _classifyDirectoryType(provider, targetPath), exists: true };
+      }
+      return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown', exists: true };
+    }
+    if (pathname === '/images-in-folder' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      // include_videos=1 はビューワーのフォルダ内前後移動用（サーバー版 /api/images-in-folder と同じ拡張子集合）
+      const includeVideos = url.searchParams.get('include_videos') === '1';
+      const videoExts = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
+      const entries = await _listDirectoryEntries(provider, targetPath);
+      const items = [];
+      for (const entry of entries) {
+        if (entry.handle.kind !== 'file') continue;
+        const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
+        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext))) continue;
+        const itemPath = entry.path || _joinPath(targetPath, entry.name);
+        const stats = await _fileStats(entry.handle);
+        items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
+      }
+      return items;
+    }
+
+    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
+      let meta = writeMeta?.meta || writeMeta || null;
+      if (!meta?.id && typeof provider?.getMetadata === 'function') {
+        meta = await provider.getMetadata(filePath).catch(() => meta);
+      }
+      if (!meta?.id) {
+        const stat = typeof provider?.statPath === 'function'
+          ? await provider.statPath(filePath).catch(() => null)
+          : null;
+        meta = stat?.meta || meta;
+      }
+      const token = String(etag || '');
+      const providerId = String(meta?.id || '');
+      const identity = window.MeldexDocumentIdentity;
+      const identityFormat = identity?.formatForPath?.(filePath);
+      let content = fileContent;
+      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+        content = await provider.readText(filePath).catch(() => '');
+      }
+      const documentId = identityFormat
+        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        : '';
+      return {
+        etag: token,
+        transport_revision: { transport: 'dropbox-rev', token },
+        ...(documentId ? {
+          document_id: documentId,
+          document_key: `document:${documentId}`,
+        } : {}),
+        ...(providerId ? {
+          provider_id: providerId,
+          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
+        } : {}),
+      };
+    }
+
+    function _throwPreconditionRequired(filePath, currentEtag) {
+      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
+      error.status = 428;
+      error.code = 'precondition_required';
+      error.meldexCode = 'precondition_required';
+      error.detail = {
+        code: 'precondition_required',
+        path: _normalizeFolderPath(filePath),
+        current_etag: String(currentEtag || ''),
+      };
+      throw error;
+    }
+
+    function _dropboxTransportRevisionToken(bodyValue) {
+      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
+      let transport = '';
+      let token = '';
+      if (revision && typeof revision === 'object') {
+        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        token = String(revision.token || revision.revision || revision.etag || '').trim();
+      } else {
+        const raw = String(revision || '').trim();
+        if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('dropbox-rev:')) {
+          transport = 'dropbox-rev';
+          token = raw.slice('dropbox-rev:'.length);
+        } else {
+          transport = 'dropbox-rev';
+          token = raw;
+        }
+      }
+      if (transport && transport !== 'dropbox-rev') {
+        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
+        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        throw error;
+      }
+      return token;
+    }
+
+    if (pathname === '/file' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      if (!filePath) throw new Error('path は必須です');
+      if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
+      const entry = await _resolveEntryHandle(provider, filePath);
+      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
+      if (_boolParam(url.searchParams.get('metadata_only'))) {
+        const etag = await _fileEtag(provider, filePath, entry);
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
+        return {
+          path: filePath,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          size: Number(stats.size || 0),
+        };
+      }
+      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
+        const file = await provider.downloadAsFile(filePath);
+        const bytes = await file.arrayBuffer();
+        const view = new Uint8Array(bytes);
+        const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+        let content;
+        let encoding = bom ? 'utf-8-bom' : 'utf-8';
+        try {
+          content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+          content = new TextDecoder('shift_jis', { fatal: true }).decode(bytes);
+          encoding = 'cp932';
+        }
+        const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
+        const etag = await _fileEtag(provider, filePath, entry);
+        return {
+          path: filePath,
+          content,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          encoding,
+          bom,
+          delimiter: dialect.delimiter || ',',
+          newline: dialect.newline || '\n',
+        };
+      }
+      const etag = await _fileEtag(provider, filePath, entry);
+      const content = await provider.readText(filePath);
+      return {
+        path: filePath,
+        content,
+        ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
+      };
+    }
+
+    if (pathname === '/file' && (method === 'PUT' || method === 'POST')) {
+      const provider = await _requirePwaProvider('readwrite');
+      const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      if (!filePath) throw new Error('path は必須です');
+      if (_isProductionFolderNotePath(filePath)) {
+        throw new Error('制作管理の列定義ファイルは汎用ファイル保存から変更できません');
+      }
+      let content = String(body?.content ?? '');
+      _rejectProductionLegacyEntryContent(filePath, content);
+      const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
+      const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
+      const createOnly = !!(body?.create_only || body?.createOnly);
+      const explicitEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      const transportEtag = _dropboxTransportRevisionToken(body);
+      if (explicitEtag && transportEtag && explicitEtag !== transportEtag) {
+        const error = new Error('if_match_etagとtransport_revisionが一致しません');
+        error.status = 400; error.code = 'revision_field_mismatch'; error.meldexCode = 'revision_field_mismatch';
+        throw error;
+      }
+      const expectedEtag = explicitEtag || transportEtag;
+      const entry = await _resolveEntryHandle(provider, filePath);
+      if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
+      if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
+      if ((createOnly && entry) || (expectedEtag && !entry)) {
+        _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
+      }
+      if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
+        _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
+      }
+      if (expectedEtag && entry) {
+        const currentEtag = await _fileEtag(provider, filePath, entry);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
+      }
+      let commitEtag = expectedEtag;
+      if (forceOverwrite && entry && !commitEtag) {
+        if (typeof provider.refreshMetadata !== 'function') {
+          const error = new Error('厳密な競合検出に必要な最新revisionを取得できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        const freshMeta = await provider.refreshMetadata(filePath);
+        commitEtag = await _fileEtag(provider, filePath, entry, freshMeta);
+        if (!commitEtag) {
+          const error = new Error('厳密な競合検出に必要な最新revisionを確認できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+      }
+      const currentContent = entry ? await provider.readText(filePath) : '';
+      await _assertNoBoardTypeDowngrade(provider, filePath, content);
+      const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
+      let docIdentityFmt = incomingIdentityFmt;
+      if (incomingIdentityFmt) {
+        let existingDocumentId = '';
+        if (entry) {
+          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
+          docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
+          existingDocumentId = String(
+            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            || '',
+          );
+        }
+        if (docIdentityFmt) {
+          content = window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
+            content,
+            docIdentityFmt,
+            existingDocumentId,
+          ).text;
+        }
+      }
+      const history = await _prepareCloudFileEdit(
+        provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
+      );
+      let writeMeta;
+      try {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          const error = new Error('この保存先は厳密なrevision条件付き保存に対応していません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        writeMeta = await provider.uploadBytesConditional(
+          filePath,
+          new TextEncoder().encode(content),
+          entry ? commitEtag : null,
+        );
+      } catch (error) {
+        await _abortCloudFileEdit(history);
+        throw error;
+      }
+      const etag = await _fileEtag(provider, filePath, null, writeMeta);
+      const historySyncPending = await _commitCloudFileEdit(history, etag);
+      return {
+        ok: true,
+        ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        history_recorded: !historySyncPending,
+        history_sync_pending: historySyncPending,
+      };
+    }
 
     if (pathname === '/upload-file' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -249,9 +515,9 @@
       const screenshotBytes = _decodeUploadData(dataUrl);
       const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
       const annotationTarget = sourceTarget || targetPath;
-      // 注釈recordはbytes publish前に確定させ、identity claimと同じ
+      // アノテートrecordはbytes publish前に確定させ、identity claimと同じ
       // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
-      // 管理データ一元化計画 §10.1)。これにより注釈書込みの失敗も
+      // 管理データ一元化計画 §10.1)。これによりアノテート書込みの失敗も
       // aftercare_pending化され、identity claimと同じdrain/復帰対象になる。
       const annRecord = _mergeAnnotationRecord(null, {
         type: 'screenshot',
@@ -290,7 +556,7 @@
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
       const existing = await _readAnnotationRecord(provider, id);
-      if (!existing) throw new Error('注釈が見つかりません');
+      if (!existing) throw new Error('アノテートが見つかりません');
       const updateBody = {};
       ANNOTATION_UPDATE_KEYS.forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(body || {}, key)) updateBody[key] = body[key];
@@ -423,7 +689,6 @@
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
-        'smart-db': ['スマートシート', 'Phase 4'],
       }[type];
       if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
       if (type === 'folder') {
@@ -478,19 +743,6 @@
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
-      }
-      if (type === 'smart-db') {
-        const labelName = await _uniqueName(provider, parent, label, '.json');
-        const targetPath = _joinPath(parent, labelName + '.json');
-        await provider.writeJson(targetPath, {
-          type: 'smart-db',
-          name: labelName,
-          filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-          views: { table: {} },
-          activeView: 'table',
-          created: new Date().toISOString(),
-        });
-        return { ok: true, node: { type: _phase1SurfaceType('smart-db', 'file'), label: labelName, path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -646,255 +898,3 @@
     }
 
 /* === gb-data-access-dropbox-fileops-copy-routes.js === */
-/* Dropbox Cloud duplicate/save-as route orchestration continuation. */
-    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination) {
-      if (!operationId) throw Object.assign(new Error('operation_id は必須です'), { status: 400 });
-      const journal = window.MeldexCloudCopyOperationJournal;
-      if (!journal) throw Object.assign(new Error('Cloudファイル操作履歴を利用できません'), { status: 503 });
-      return journal.withFlight(provider, operationId, operation, payload, async identity => {
-        let record = await journal.load(provider, operationId, operation, payload, identity);
-        if (record?.state === 'completed') return record.result;
-        let destPath = String(record?.intent?.destination || '');
-        let destName = _basename(destPath);
-        if (!record) {
-          ({ destPath, destName } = await chooseDestination());
-          record = await journal.prepare(provider, operationId, operation, payload, {
-            source: payload.path, destination: destPath, kind: source.kind,
-            provider_id: '', provider_rev: '', manifest_digest: '', aftercare_completed: [],
-          }, identity);
-        }
-        if (!destPath) throw new Error('prepared Cloudファイル操作の保存先が不正です');
-        const proof = record.intent.publish_proof || null;
-        const stagingPrefix = `.${_basename(destPath)}.meldex-copy-`;
-        const stagingCandidates = proof ? (await _freshDirectEntries(provider, _dirname(destPath)))
-          .map(entry => _joinPath(_dirname(destPath), entry.name))
-          .filter(path => _basename(path).startsWith(stagingPrefix) && _basename(path).endsWith('.tmp')
-            && path === proof.staging_path) : [];
-        if (stagingCandidates.length > 1) {
-          throw Object.assign(new Error('prepared Cloud複製の一時候補が複数あるため自動再開できません'), { status: 409 });
-        }
-        const destinationExists = await _freshPathExists(provider, destPath);
-        if (destinationExists && stagingCandidates.length) {
-          throw Object.assign(new Error('prepared Cloud複製のfinalとstagingが同時に存在します'), { status: 409 });
-        }
-        if (!destinationExists && stagingCandidates.length === 1) {
-          const stagingPath = stagingCandidates[0];
-          const stagingProof = source.kind === 'directory'
-            ? await _cloudFolderIdentityProof(provider, stagingPath)
-            : await _providerObjectIdentity(provider, stagingPath, null).then(value => ({
-                provider_id: value.id, provider_rev: value.rev, manifest_digest: '',
-              }));
-          if (stagingPath !== proof.staging_path || stagingProof.provider_id !== proof.provider_id
-              || stagingProof.provider_rev !== proof.provider_rev
-              || stagingProof.manifest_digest !== proof.manifest_digest) {
-            throw Object.assign(new Error('prepared Cloud複製のstagingがpublish proofと一致しません'), { status: 409 });
-          }
-          await provider.movePathNoReplace(stagingPath, destPath);
-        }
-        let ownership = await _providerObjectIdentity(provider, destPath, null).catch(() => null);
-        const ownershipComplete = ownership?.id && (source.kind === 'directory' || ownership?.rev);
-        if (ownershipComplete && !record.intent.provider_id && proof) {
-          const freshProof = source.kind === 'directory'
-            ? await _cloudFolderIdentityProof(provider, destPath)
-            : { provider_id: ownership.id, provider_rev: ownership.rev, manifest_digest: '' };
-          if (freshProof.provider_id !== proof.provider_id
-              || freshProof.provider_rev !== proof.provider_rev
-              || freshProof.manifest_digest !== proof.manifest_digest) {
-            throw Object.assign(new Error('prepared Cloud複製先がpublish proofと一致しません'), { status: 409 });
-          }
-          record.intent = { ...record.intent, provider_id: ownership.id,
-            provider_rev: ownership.rev || '', manifest_digest: freshProof.manifest_digest || '' };
-          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-        } else if (!ownershipComplete) {
-          const orphan = record.intent.orphan_staging;
-          if (orphan?.path) {
-            const currentOrphan = await _providerObjectIdentity(provider, orphan.path, null)
-              .catch(() => null);
-            if (currentOrphan?.id) {
-              if (currentOrphan.id !== orphan.provider_id
-                  || (orphan.provider_rev && currentOrphan.rev !== orphan.provider_rev)) {
-                throw Object.assign(new Error('前回の孤立一時項目がforeign変更されています'), { status: 409 });
-              }
-              throw Object.assign(new Error('前回の孤立一時項目が保全されています'), {
-                status: 503, meldexCode: 'copy_staging_orphan_retained',
-              });
-            }
-            record.intent = { ...record.intent };
-            delete record.intent.orphan_staging;
-            await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-          }
-          let transaction;
-          try {
-            transaction = await _copyPathWithIdentityTransaction(
-              provider, payload.path, destPath, source.kind, {
-                persistPublishProof: async publishProof => {
-                  record.intent = { ...record.intent, publish_proof: publishProof };
-                  await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-                },
-              },
-            );
-          } catch (error) {
-            if (error?.meldexOrphanStaging) {
-              record.intent = { ...record.intent,
-                orphan_staging: error.meldexOrphanStaging };
-              await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-            }
-            throw error;
-          }
-          ownership = transaction.ownership;
-          if (!ownership?.id || (source.kind !== 'directory' && !ownership?.rev)) {
-            throw new Error('Cloud複製先のprovider identityを確認できません');
-          }
-          record.intent = {
-            ...record.intent, provider_id: ownership.id, provider_rev: ownership.rev,
-            manifest_digest: transaction.manifest_digest || '',
-          };
-          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-          record = await journal.load(provider, operationId, operation, payload);
-        } else if (ownership.id !== record.intent.provider_id
-            || (source.kind !== 'directory' && ownership.rev !== record.intent.provider_rev)) {
-          throw Object.assign(new Error('prepared Cloud複製先が後続更新と競合しています'), { status: 409 });
-        }
-        const folderCheckpoint = source.kind === 'directory'
-          ? () => _cloudFolderIdentityProof(provider, destPath) : null;
-        if (folderCheckpoint && record.intent.manifest_digest
-            && !record.intent.aftercare_in_progress) {
-          const current = await folderCheckpoint();
-          const expected = record.intent.aftercare_manifest_digest || record.intent.manifest_digest;
-          if (current.manifest_digest !== expected) {
-            throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
-          }
-        }
-        record = await journal.runAftercare(provider, operationId, operation, payload, record, [
-          { name: 'csv-sidecars', run: () => _relocateCsvSidecars(
-            provider, payload.path, destPath, source.kind === 'directory', true,
-          ) },
-          { name: 'path-mutation-hooks', run: () => _runPathMutationHooks({
-            action: 'copy', oldPath: payload.path, newPath: destPath,
-            isFolder: source.kind === 'directory', operationId,
-          }) },
-          { name: 'identity-claims', run: () => _claimPublishedCloudIdentities(
-            provider, destPath, source.kind,
-          ) },
-        ], folderCheckpoint);
-        const result = { ok: true, operation_id: operationId, new_path: destPath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
-          provider_id: ownership.id, provider_rev: ownership.rev,
-          manifest_digest: record.intent.manifest_digest || '' };
-        return journal.complete(provider, operationId, operation, payload, result);
-      });
-    }
-    if (pathname === '/outliner/duplicate' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const operationId = String(body?.operation_id || '').trim();
-      const payload = { path: sourcePath };
-      return runCloudIdentityCopyOperation(provider, 'duplicate', operationId, payload, source, async () => {
-        const sourceName = _basename(sourcePath); const sourceSplit = _splitNameAndExt(sourceName);
-        let destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${sourceSplit.ext}` : `${sourceName}_copy`;
-        let destPath = _joinPath(_dirname(sourcePath), destName);
-        for (let counter = 2; await _freshPathExists(provider, destPath); counter += 1) {
-          destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${counter}${sourceSplit.ext}` : `${sourceName}_copy${counter}`;
-          destPath = _joinPath(_dirname(sourcePath), destName);
-        }
-        await _directoryHandle(provider, _dirname(destPath), true);
-        return { destName, destPath };
-      });
-    }
-
-    if (pathname === '/outliner/save-as' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const sourceName = _basename(sourcePath); const sourceSplit = _splitNameAndExt(sourceName);
-      const newName = _validateItemName(String(body?.new_name || (source.kind === 'file' ? sourceSplit.stem : sourceName)).replace(/[\\/]/g, '').replace(/\.\./g, '').trim(), 'new_name');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || _dirname(sourcePath));
-      const operationId = String(body?.operation_id || '').trim();
-      const payload = { path: sourcePath, new_name: newName, dest_folder: destFolder };
-      return runCloudIdentityCopyOperation(provider, 'save-as', operationId, payload, source, async () => {
-        let destName = source.kind === 'file' ? newName + sourceSplit.ext : newName;
-        let destPath = _joinPath(destFolder, destName);
-        for (let counter = 2; await _freshPathExists(provider, destPath); counter += 1) {
-          destName = source.kind === 'file' ? `${newName}_${counter}${sourceSplit.ext}` : `${newName}_${counter}`;
-          destPath = _joinPath(destFolder, destName);
-        }
-        await _directoryHandle(provider, destFolder, true);
-        return { destName, destPath };
-      });
-    }
-
-/* === gb-data-access-dropbox-fileops-move-route.js === */
-/* gb-data-access-dropbox-fileops move-route continuation. */
-    if (pathname === '/outliner/move' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
-      _rejectProductionStructureMutation(sourcePath, '移動');
-      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
-        throw new Error('制作管理の管理リストエントリの配置は変更できません');
-      }
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      const destEntry = await _resolveEntryHandle(provider, destFolder);
-      if (!source) throw new Error('見つかりません');
-      if (!destEntry || destEntry.kind !== 'directory') throw new Error(`移動先フォルダが見つかりません: ${destFolder}`);
-      if (source.kind === 'directory' && (destFolder === sourcePath || destFolder.startsWith(sourcePath + '/'))) throw new Error('フォルダ自身の中には移動できません');
-      await _rejectNonEntryIntoSheet(provider, destFolder, sourcePath, source.kind === 'directory');
-      if (destFolder === _dirname(sourcePath)) {
-        return {
-          ok: true,
-          unchanged: true,
-          new_path: sourcePath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
-          file_id: _fnvFileId(sourcePath),
-          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
-        };
-      }
-      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
-      const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
-        action: 'move', oldPath: sourcePath, newPath: conflict.path,
-        isFolder: source.kind === 'directory',
-      });
-      await _moveEntry(provider, sourcePath, conflict.path);
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
-      ));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
-          : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
-      ));
-      await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _updateAnnotationsForPathMutation(provider, {
-        action: 'move', oldPath: sourcePath, newPath: conflict.path,
-        isFolder: source.kind === 'directory', annotationPlan,
-      });
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
-      });
-      return {
-        ok: true,
-        new_path: conflict.path,
-        new_name: source.kind === 'file' ? _splitNameAndExt(_basename(conflict.path)).stem : _basename(conflict.path),
-        file_id: _fnvFileId(conflict.path),
-        relocate,
-        ..._resultWarnings(warnings),
-      };
-    }
-
-/* === gb-data-access-dropbox-fileops-identity-claims.js === */
-/* gb-data-access-dropbox-fileops identity claim continuation. */
-    function _settingsEntryIdForClaim(text) {
-      const normalized = String(text || '').replace(/\r\n/g, '\n').replace(/^\ufeff/, '');
-      if (!normalized.startsWith('---\n')) return '';
-      const end = normalized.indexOf('\n---', 4);
-      if (end < 0) return '';
-      const values = {};
-      for (const line of normalized.slice(4, end).split('\n')) {
-        if (!line || /^\s/.test(line) || !line.includes(':')) continue;
-        const split = line.indexOf(':');

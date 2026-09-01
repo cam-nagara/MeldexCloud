@@ -332,8 +332,6 @@ function setActivePaneById(paneId) {
     else state.filter = ctx.filter;
     state.currentEntityPath = ctx.entityPath;
     state.view = ctx.viewMode;
-    if (ctx.smartDb !== undefined) state.currentSmartDb = ctx.smartDb;
-    if (ctx.smartDbData !== undefined) state.smartDbData = ctx.smartDbData;
   }
 
   // ビジュアルインジケーター更新

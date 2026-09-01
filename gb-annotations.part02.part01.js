@@ -26,7 +26,7 @@ async function eraseAtPoint(cx, cy) {
         try {
           const before = await _fetchAnnotationHistoryRow(annId).catch(() => null);
           await apiDelete('/annotations/' + encodeURIComponent(annId));
-          _pushAnnotationHistory('注釈: 消しゴム削除', before, null, annId);
+          _pushAnnotationHistory('アノテート: 消しゴム削除', before, null, annId);
         } catch {
           showStatus('削除に失敗', true);
           return;
@@ -42,30 +42,43 @@ async function eraseAtPoint(cx, cy) {
 
 // 付箋/コメント作成
 async function createNote(cx, cy, shape) {
+  _discardEmptyAnnotationDrafts('new-draft');
   const pt = _toContentCoords(cx, cy);
   const x = pt.x, y = pt.y;
   const targetPath = _resolveAnnotationWriteTarget();
   if (!targetPath) {
-    showStatus('注釈の保存先が見つかりません', true);
+    showStatus('アノテートの保存先が見つかりません', true);
     return;
   }
 
   const noteData = { x, y, width: 180, height: 100, text: '', html: '', user: getUsername() };
-  try {
-    const res = await apiPost('/annotations', {
-      target_path: targetPath,
-      type: 'comment',
-      shape,
-      data: noteData,
-      color: ann.color,
-      opacity: ann.opacity,
-      user: getUsername(),
-    });
-    renderNote(res.id, shape, noteData, ann.color, ann.opacity, getUsername(), res.created);
-    _setAnnotationRenderedTarget(targetPath);
-    _markAnnotationMutated(targetPath);
-    _pushAnnotationCreateHistory(res.id, '注釈: 付箋追加', targetPath).catch(() => {});
-  } catch(e) { showStatus('付箋作成に失敗', true); }
+  const draftId = `draft-${globalThis.crypto?.randomUUID?.() || Date.now().toString(36)}`;
+  renderNote(draftId, shape, noteData, ann.color, ann.opacity, getUsername(), '', {
+    draft: true,
+    targetPath,
+  });
+  _setAnnotationRenderedTarget(targetPath);
+}
+
+function _discardEmptyAnnotationDrafts(reason = '') {
+  let removed = 0;
+  document.querySelectorAll('.ann-note[data-draft="1"]').forEach(note => {
+    const editor = note.querySelector('.ann-note-editor');
+    if (_annotationReadableTextFromEditor(editor).trim()) return;
+    note._annCancelPendingSave?.();
+    note.dataset.discardReason = reason;
+    note.remove();
+    removed += 1;
+  });
+  return removed;
+}
+
+if (!document.__meldexAnnotationDraftEscapeBound) {
+  document.__meldexAnnotationDraftEscapeBound = true;
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || document.querySelector('.gb-context-menu,.ann-tool-popup,.gb-color-palette,.color-palette')) return;
+    if (_discardEmptyAnnotationDrafts('escape')) event.preventDefault();
+  });
 }
 
 function _annotationNoteUserName(user, data) {
@@ -198,7 +211,14 @@ let _annSelectionPopupTimer = 0;
 
 function _scheduleAnnotationSelectionPopup(editor, scheduleSave) {
   clearTimeout(_annSelectionPopupTimer);
-  _annSelectionPopupTimer = window.setTimeout(() => _showAnnotationSelectionPopup(editor, scheduleSave), 40);
+  // Phone編集バーのselectionchange処理と競合しても選択を失わないよう、イベント時点の
+  // Range/座標を同期取得する。40ms後に現在selectionを再読込すると、実際には選択済みでも
+  // モバイル側のUI更新でcollapsedになりポップアップが出ないことがある。
+  const captured = _getAnnotationSelectionRange(editor);
+  _annSelectionPopupTimer = window.setTimeout(
+    () => _showAnnotationSelectionPopup(editor, scheduleSave, captured),
+    40,
+  );
 }
 
 function _getAnnotationSelectionRange(editor) {
@@ -210,8 +230,20 @@ function _getAnnotationSelectionRange(editor) {
     : range.commonAncestorContainer.parentElement;
   if (!root || !editor.contains(root)) return null;
   const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height);
-  const rect = rects[0] || range.getBoundingClientRect();
-  if (!rect || (!rect.width && !rect.height)) return null;
+  let rect = rects[0] || range.getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) {
+    // Phoneのcontenteditableでは仮想キーボード／選択ハンドル更新中に、有効な
+    // Rangeでも一時的に0x0 rectを返すことがある。選択自体は維持し、エディタ内の
+    // 安定点をポップアップanchorにする。
+    const editorRect = editor.getBoundingClientRect();
+    if (!editorRect?.width || !editorRect?.height) return null;
+    const left = editorRect.left + Math.min(16, editorRect.width / 2);
+    const top = editorRect.top + Math.min(20, editorRect.height / 2);
+    rect = {
+      left, top, right: left + 1, bottom: top + 18, width: 1, height: 18,
+      x: left, y: top, toJSON: () => ({}),
+    };
+  }
   const avoidRect = rects.length
     ? rects.reduce((acc, r) => ({
       left: Math.min(acc.left, r.left),
@@ -366,9 +398,9 @@ function _applyAnnotationSelectionFormat(range, prop, value) {
   }
 }
 
-function _showAnnotationSelectionPopup(editor, scheduleSave) {
+function _showAnnotationSelectionPopup(editor, scheduleSave, capturedSelection) {
   if (typeof openFormatPopup !== 'function') return;
-  const selectionInfo = _getAnnotationSelectionRange(editor);
+  const selectionInfo = capturedSelection || _getAnnotationSelectionRange(editor);
   if (!selectionInfo) return;
   const savedRange = selectionInfo.range.cloneRange();
   const anchor = { getBoundingClientRect: () => selectionInfo.rect };
@@ -479,13 +511,13 @@ function addNoteTail(note, annId, data, initTailX, initTailY) {
     target: null,
   }, () => {
     const editor = note.querySelector('.ann-note-editor');
-    _putAnnotationWithHistory(annId, { data: _annotationNotePayload(data, editor, note) }, '注釈: 付箋更新', annId)
+    _putAnnotationWithHistory(annId, { data: _annotationNotePayload(data, editor, note) }, 'アノテート: 付箋更新', annId)
       .catch(error => _reportAnnotationSaveFailure(error));
   });
 }
 
 let _annLastSaveFailureAt = 0;
-function _reportAnnotationSaveFailure(error, message = '注釈の保存に失敗しました') {
+function _reportAnnotationSaveFailure(error, message = 'アノテートの保存に失敗しました') {
   const now = Date.now();
   if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
     showStatus(message, true);
@@ -556,24 +588,38 @@ function _trayAnnotationBridgeCall(method, ...args) {
   return Promise.resolve(false);
 }
 
-function renderNote(id, shape, data, color, opacity, user, created) {
-  // v5.0: 付箋は現在の注釈ホスト（アクティブなペイン）に配置する
+function renderNote(id, shape, data, color, opacity, user, created, options = {}) {
+  let noteId = id;
+  let createInFlight = null;
+  // v5.0: 付箋は現在のアノテートホスト（アクティブなペイン）に配置する
   const mainArea = _getStandaloneAnnotationHost();
   const note = document.createElement('div');
   note.className = 'ann-note ' + shape;
-  note.dataset.annId = id;
-  note.dataset.e2eId = `annotation-note-${id}`;
+  // Meldex本体と常駐付箋で同じDOM/CSS契約を共有する。常駐側はこの renderNote を
+  // そのまま使い、別デザインの付箋コンポーネントを持たない。
+  note.dataset.annotationUi = 'meldex-sticky';
+  note.dataset.annId = noteId;
+  note.dataset.e2eId = `annotation-note-${noteId}`;
+  if (options.draft) {
+    note.dataset.draft = '1';
+    note.dataset.saveState = 'draft';
+  }
   note._annData = data;
   // 座標欠落時のフォールバック（NaNpx 防止）
-  const isTrayHostNote = _isTrayAnnotationHost() && String(id) === _trayAnnotationHost.annotationId;
+  const isTrayHostNote = _isTrayAnnotationHost() && String(noteId) === _trayAnnotationHost.annotationId;
   const baseX = isTrayHostNote ? 0 : (Number.isFinite(data.x) ? data.x : 0);
   const baseY = isTrayHostNote ? 0 : (Number.isFinite(data.y) ? data.y : 0);
   note.dataset.baseY = baseY; // スクロール同期用の基準Y
-  note.draggable = true;
+  // HTML draggableの祖先内では、Chromeのcoarse pointer/Phoneでcontenteditableの
+  // テキスト選択がcollapsedへ戻される。Phoneは付箋の専用pointer移動を使うため、
+  // 外部D&D用draggableはDesktopだけで有効にする。
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches
+    || Math.max(0, Number(window.innerWidth) || 0) <= 640;
+  note.draggable = !coarsePointer;
   note.addEventListener('dragstart', (e) => {
-    const text = data.text || '付箋注釈';
-    e.dataTransfer.setData('text/plain', '[注釈: ' + text.substring(0, 30) + '](annotation:' + id + ')');
-    e.dataTransfer.setData('application/x-annotation', JSON.stringify({ id, text, shape }));
+    const text = data.text || '付箋アノテート';
+    e.dataTransfer.setData('text/plain', '[アノテート: ' + text.substring(0, 30) + '](annotation:' + noteId + ')');
+    e.dataTransfer.setData('application/x-annotation', JSON.stringify({ id: noteId, text, shape }));
   });
   note.dataset.baseX = baseX;
   // スクロール分を引いて画面上の位置を計算
@@ -609,6 +655,12 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   const actions = document.createElement('div');
   actions.className = 'ann-note-actions';
   header.appendChild(headerLabel);
+  const saveState = document.createElement('span');
+  saveState.className = 'ann-note-save-state';
+  saveState.setAttribute('role', 'status');
+  saveState.setAttribute('aria-live', 'polite');
+  saveState.textContent = options.draft ? '未保存' : '';
+  header.appendChild(saveState);
   header.appendChild(actions);
   note.appendChild(header);
 
@@ -629,7 +681,52 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     if (isTrayHostNote && data._desktop) {
       _trayAnnotationBridgeCall('tray_annotation_resize', d.width, d.height);
     }
-    return _putAnnotationWithHistory(id, _trayAnnotationUpdateBody(data, d), '注釈: 付箋更新', id)
+    if (note.dataset.draft === '1') {
+      if (!d.text.trim() && !d.html.replace(/<br\s*\/?\s*>|&nbsp;|\s/gi, '')) return Promise.resolve(false);
+      if (createInFlight) return createInFlight;
+      note.dataset.saveState = 'saving';
+      saveState.textContent = '保存中';
+      note.setAttribute('aria-busy', 'true');
+      createInFlight = apiPost('/annotations', {
+        client_request_id: id,
+        target_path: options.targetPath || _resolveAnnotationWriteTarget(),
+        type: 'comment',
+        shape,
+        data: { ...d, clientRequestId: id },
+        color,
+        opacity,
+        user: getUsername(),
+      }).then(res => {
+        noteId = res.id;
+        delete note.dataset.draft;
+        note.dataset.annId = noteId;
+        note.dataset.e2eId = `annotation-note-${noteId}`;
+        note.dataset.saveState = 'saved';
+        saveState.textContent = '保存済み';
+        note.removeAttribute('aria-busy');
+        note.removeAttribute('aria-invalid');
+        note.classList.remove('ann-note-save-error');
+        editor.dataset.e2eId = `annotation-note-${noteId}-editor`;
+        const menuButton = note.querySelector('.note-more-btn');
+        if (menuButton) menuButton.dataset.e2eId = `annotation-note-${noteId}-menu`;
+        const targetPath = options.targetPath || _resolveAnnotationWriteTarget();
+        _setAnnotationRenderedTarget(targetPath);
+        _markAnnotationMutated(targetPath);
+        if (!res.idempotent) _pushAnnotationCreateHistory(noteId, 'アノテート: 付箋追加', targetPath).catch(() => {});
+        return true;
+      }).catch(error => {
+        note.dataset.saveState = 'error';
+        saveState.textContent = '未保存・再試行できます';
+        note.removeAttribute('aria-busy');
+        note.setAttribute('aria-invalid', 'true');
+        note.classList.add('ann-note-save-error');
+        _reportAnnotationSaveFailure(error);
+        if (typeof showStatus === 'function') showStatus('付箋を保存できませんでした。入力内容は保持されています。再入力またはフォーカス移動で再試行できます', true);
+        return false;
+      }).finally(() => { createInFlight = null; });
+      return createInFlight;
+    }
+    return _putAnnotationWithHistory(noteId, _trayAnnotationUpdateBody(data, d), 'アノテート: 付箋更新', noteId)
       .catch(error => {
         _reportAnnotationSaveFailure(error);
         return false;
@@ -639,7 +736,8 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     cancelPendingSave();
     saveTimer = setTimeout(persist, 600);
   };
-  editor = _createAnnotationEditor(data, scheduleSave, id);
+  editor = _createAnnotationEditor(data, scheduleSave, noteId);
+  editor.setAttribute('aria-label', '付箋の本文');
   note.appendChild(editor);
 
   // ドラッグ移動
@@ -709,7 +807,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 
   // フキダシのしっぽ復元（保存データにtailがあれば）
   if (typeof AnnotationStickyTail === 'undefined' && data.tailX !== undefined && data.tailY !== undefined) {
-    addNoteTail(note, id, data, data.tailX, data.tailY);
+    addNoteTail(note, noteId, data, data.tailX, data.tailY);
   }
 
   // 右クリックメニュー（色変更・フキダシしっぽ・削除）
@@ -721,7 +819,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu _note-ctx-menu annotation-note-context-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '注釈付箋メニュー');
+    menu.setAttribute('aria-label', 'アノテート付箋メニュー');
     menu.style.position = 'fixed';
     menu.style.zIndex = '210';
     const hasTail = !!noteEl.querySelector('.ann-tail,.ann-tail-shape');
@@ -741,7 +839,14 @@ function renderNote(id, shape, data, color, opacity, user, created) {
       document.removeEventListener('keydown', onGlobalKeyDown, true);
       tailTrig?.setAttribute('aria-expanded', 'false');
       removeMenus();
-      if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
+      if (restoreFocus && restoreTarget?.isConnected) {
+        // Chromeはフォーカス中の menuitem を削除したイベントの終了時に、
+        // 同期的に復帰したフォーカスを body へ戻すことがある。メニュの
+        // DOM削除が確定した次フレームで開き元へ戻す。
+        requestAnimationFrame(() => {
+          if (restoreTarget.isConnected) restoreTarget.focus?.({ preventScroll: true });
+        });
+      }
     };
     const hideTailPanel = () => {
       clearTimeout(closeTimer);
@@ -847,14 +952,16 @@ function renderNote(id, shape, data, color, opacity, user, created) {
           delete data.tail;
           delete data.tailX;
           delete data.tailY;
-          _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id)
+          if (noteEl.dataset.draft === '1') persist();
+          else _putAnnotationWithHistory(noteId, { data: _annotationNotePayload(data, editor, noteEl) }, 'アノテート: 付箋更新', noteId)
             .catch(error => _reportAnnotationSaveFailure(error));
         } else {
           if (!noteEl.querySelector('.ann-tail,.ann-tail-shape')) {
             data.tailX = 0;
             data.tailY = 60;
-            addNoteTail(noteEl, id, data, data.tailX, data.tailY);
-            _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id)
+            addNoteTail(noteEl, noteId, data, data.tailX, data.tailY);
+            if (noteEl.dataset.draft === '1') persist();
+            else _putAnnotationWithHistory(noteId, { data: _annotationNotePayload(data, editor, noteEl) }, 'アノテート: 付箋更新', noteId)
               .catch(error => _reportAnnotationSaveFailure(error));
           }
         }
@@ -903,13 +1010,19 @@ function renderNote(id, shape, data, color, opacity, user, created) {
         const colorBody = isTrayHostNote
           ? { color: newColor, ..._trayAnnotationUpdateBody(data, _annotationNotePayload(data, editor, noteEl)) }
           : { color: newColor };
-        _putAnnotationWithHistory(id, colorBody, '注釈: 色変更', id)
+        if (noteEl.dataset.draft === '1') persist();
+        else _putAnnotationWithHistory(noteId, colorBody, 'アノテート: 色変更', noteId)
           .catch(error => _reportAnnotationSaveFailure(error));
       });
     });
     deleteItem.addEventListener('click', () => {
       closeMenu(false);
-      deleteNote(id, noteEl, { data, editor });
+      if (noteEl.dataset.draft === '1') {
+        cancelPendingSave();
+        noteEl.remove();
+      } else {
+        deleteNote(noteId, noteEl, { data, editor });
+      }
     });
     setTimeout(() => {
       document.addEventListener('pointerdown', onGlobalPointerDown, true);
@@ -930,8 +1043,8 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
   moreBtn.className = 'note-more-btn';
-  moreBtn.dataset.e2eId = `annotation-note-${id}-menu`;
-  moreBtn.setAttribute('aria-label', '注釈メニュー');
+  moreBtn.dataset.e2eId = `annotation-note-${noteId}-menu`;
+  moreBtn.setAttribute('aria-label', 'アノテートメニュー');
   moreBtn.title = 'メニュー';
   moreBtn.innerHTML = lucide('moreHorizontal', 16);
   moreBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _showAnnotationNoteContextMenu(ev, note); });
@@ -941,7 +1054,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     closeBtn.type = 'button';
     closeBtn.className = 'ann-note-window-close-btn';
     closeBtn.dataset.annWindowClose = '1';
-    closeBtn.dataset.e2eId = `annotation-note-${id}-close`;
+    closeBtn.dataset.e2eId = `annotation-note-${noteId}-close`;
     closeBtn.setAttribute('aria-label', '付箋を閉じる');
     closeBtn.title = '付箋を閉じる';
     closeBtn.innerHTML = lucide('x', 14);
@@ -958,7 +1071,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 }
 
 async function deleteNote(id, el, options = {}) {
-  if (!options.skipConfirm && typeof cfConfirm === 'function' && !await cfConfirm('この注釈を削除しますか？')) return false;
+  if (!options.skipConfirm && typeof cfConfirm === 'function' && !await cfConfirm('このアノテートを削除しますか？')) return false;
   const isNote = el?.classList?.contains('ann-note');
   const previousParent = el?.parentNode || null;
   const previousNextSibling = el?.nextSibling || null;
@@ -984,10 +1097,10 @@ async function deleteNote(id, el, options = {}) {
         await apiPut('/annotations/' + encodeURIComponent(id), { data: payload });
       }
       const after = await _fetchAnnotationHistoryRow(id).catch(() => null);
-      _pushAnnotationHistory('注釈: 削除', before, after, id);
+      _pushAnnotationHistory('アノテート: 削除', before, after, id);
     } else {
       await apiDelete('/annotations/' + encodeURIComponent(id));
-      _pushAnnotationHistory('注釈: 削除', before, null, id);
+      _pushAnnotationHistory('アノテート: 削除', before, null, id);
     }
     if (typeof showStatus === 'function') showStatus('削除しました');
     if (_isTrayAnnotationHost() && String(id) === _trayAnnotationHost.annotationId) {
@@ -1016,6 +1129,7 @@ async function deleteNote(id, el, options = {}) {
 
 // アノテーション読み込み
 async function loadAnnotations() {
+  _discardEmptyAnnotationDrafts('target-change');
   const layer = document.getElementById('ann-layer');
   const targetPath = ann.targetPath;
   const loadSeq = ++_annLoadSeq;

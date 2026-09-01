@@ -32,7 +32,6 @@
   function extension(path) {
     const name = basename(path).toLowerCase();
     if (name.endsWith('.scriptnote.json')) return '.scriptnote';
-    if (name.endsWith('.smart-db.json')) return '.mel-sheet';
     const index = name.lastIndexOf('.');
     return index >= 0 ? name.slice(index) : '';
   }
@@ -82,7 +81,7 @@
     if (ext === '.mel-sheet' || ext === '.csv' || ext === '.tsv') return 'sheet';
     if (ext === '.mel-scenario') return 'scenario';
     if (ext === '.scriptnote') return 'scriptnote';
-    if (ext === '.mel-timer') return 'timer';
+    if (ext === '.mel-timer') return 'unsupported';
     return 'note';
   }
 
@@ -229,14 +228,14 @@
 
     const nodes = annId ? [{
       id: annId,
-      label: (bodyText || annType || '注釈').slice(0, 500),
+      label: (bodyText || annType || 'アノテート').slice(0, 500),
       type: 'annotation',
     }] : [];
 
     const edges = (annId && targetPath) ? [{
       from: targetPath,
       to: annId,
-      label: '注釈',
+      label: 'アノテート',
       type: 'annotates',
     }] : [];
 
@@ -261,7 +260,7 @@
       source_refs: [{ path: targetPath, kind: 'annotation' }],
       warnings: [],
       metadata: {
-        title: `注釈 (${basename(targetPath) || targetPath})`,
+        title: `アノテート (${basename(targetPath) || targetPath})`,
         target_path: targetPath,
         annotation_id: annId,
         annotation_type: annType,

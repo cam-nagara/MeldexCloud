@@ -6,8 +6,8 @@
     includeTasteFiltered: false,
     loadToken: 0,
     updatingIds: new Set(),
-    pendingCount: 0,
   };
+  const pendingByRoot = new WeakMap();
   let dialogApi = null;
 
   function ideaEsc(value) {
@@ -57,10 +57,10 @@
       initialFocus: '[data-idea-status]',
       returnFocus: restoreTarget,
       closeLabel: '閉じる',
-      onBeforeClose: () => state.pendingCount === 0,
+      onBeforeClose: () => pendingCountFor(root) === 0,
       onClose: () => {
         state.loadToken += 1;
-        state.pendingCount = 0;
+        pendingByRoot.delete(root);
         dialogApi = null;
       },
     });
@@ -85,20 +85,54 @@
   function syncDialogBusy(root) {
     const overlay = root?.closest?.('[data-idea-inbox="1"]') || dialogApi?.overlay;
     if (!overlay) return;
-    const busy = state.pendingCount > 0;
+    const busy = pendingCountFor(root) > 0;
     overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
     const closeButton = overlay.querySelector('[data-idea-close]');
     if (closeButton) closeButton.disabled = busy;
   }
 
+  function pendingStateFor(root) {
+    let pending = pendingByRoot.get(root);
+    if (!pending) {
+      pending = { operations: new Set(), loadOperation: null };
+      pendingByRoot.set(root, pending);
+    }
+    return pending;
+  }
+
+  function pendingCountFor(root) {
+    return pendingByRoot.get(root)?.operations.size || 0;
+  }
+
   function beginPending(root) {
-    state.pendingCount += 1;
+    const pending = pendingStateFor(root);
+    const operation = Symbol('idea-inbox-pending');
+    pending.operations.add(operation);
+    syncDialogBusy(root);
+    return operation;
+  }
+
+  function endPending(root, operation) {
+    const pending = pendingByRoot.get(root);
+    if (pending) {
+      pending.operations.delete(operation);
+      if (pending.loadOperation === operation) pending.loadOperation = null;
+    }
     syncDialogBusy(root);
   }
 
-  function endPending(root) {
-    state.pendingCount = Math.max(0, state.pendingCount - 1);
+  function beginLoadPending(root) {
+    // 一覧要求は同じモーダル本文内でだけ置き換える。短時間に閉じて
+    // 開き直した場合も、古いrootのfetch完了を現在のbusy数へ混ぜない。
+    const pending = pendingStateFor(root);
+    if (pending.loadOperation) {
+      pending.operations.delete(pending.loadOperation);
+    }
+    const operation = Symbol('idea-inbox-load-pending');
+    pending.operations.add(operation);
+    pending.loadOperation = operation;
     syncDialogBusy(root);
+    return operation;
   }
 
   function renderRoot(root) {
@@ -160,7 +194,7 @@
     const token = ++state.loadToken;
     const status = state.status;
     const includeTasteFiltered = state.includeTasteFiltered;
-    beginPending(root);
+    const pendingOperation = beginLoadPending(root);
     try {
       const payload = await ideaApi('/idea_inbox?status=' + encodeURIComponent(status) + (includeTasteFiltered ? '&include_taste_filtered=true' : ''));
       if (token !== state.loadToken) return;
@@ -171,14 +205,14 @@
       if (token !== state.loadToken) return;
       setAlert(root, '読み込みに失敗: ' + (err.message || err), true, () => loadIdeas(root));
     } finally {
-      endPending(root);
+      endPending(root, pendingOperation);
     }
   }
 
   async function mineIdeas(root, rebuild) {
     if (state.busy) return;
     state.busy = true;
-    beginPending(root);
+    const pendingOperation = beginPending(root);
     setAlert(root, rebuild ? '概念インデックスを再構築しています...' : '連想を生成しています...');
     try {
       await ideaApi('/idea_inbox/mine', {
@@ -192,7 +226,7 @@
       setAlert(root, '生成に失敗: ' + (err.message || err), true, () => mineIdeas(root, rebuild));
     } finally {
       state.busy = false;
-      endPending(root);
+      endPending(root, pendingOperation);
     }
   }
 
@@ -279,7 +313,7 @@
     const itemId = Number(id);
     if (!Number.isFinite(itemId) || state.updatingIds.has(itemId)) return;
     state.updatingIds.add(itemId);
-    beginPending(root);
+    const pendingOperation = beginPending(root);
     renderList(root);
     setAlert(root, '状態を保存中...');
     try {
@@ -293,7 +327,7 @@
     } finally {
       state.updatingIds.delete(itemId);
       renderList(root);
-      endPending(root);
+      endPending(root, pendingOperation);
     }
   }
 

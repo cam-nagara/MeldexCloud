@@ -777,13 +777,13 @@ function rgbToHex(rgb) {
 // ============================================================
 const FILE_TYPE_LABELS = {
   folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
-  entity: 'ページ', 'smart-db': 'スマートシート', chat: 'チャット',
+  entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
   archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','smart-db','scenario','chat']);
+const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -821,7 +821,7 @@ const LUCIDE = {
   mousePointer: '<path d="M12.586 12.586 19 19"/><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/>',
   creditCard: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   spline: '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
-  // 注釈フロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
+  // アノテートフロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
   // spline（曲線）から activity（角のはっきりした折れ線）へ差し替えるために追加。
   // パス値は vendor/lucide-icons.js の LUCIDE_FULL['activity'] と同一。
   activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
@@ -887,6 +887,7 @@ const LUCIDE = {
   eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   lasso: '<path d="M7 22a5 5 0 0 1-2-4"/><path d="M7 16.93c.96.43 1.96.74 2.99.91"/><path d="M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-3.34-.46"/>',
   stickyNote: '<path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/>',
+  squarePen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
   clipboardList: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
   crosshair: '<circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/>',
   save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
@@ -1028,14 +1029,16 @@ const UI_TYPE_ICONS = {
   scriptnote: 'bookOpenText',
   board: 'presentation',
   calendar: 'calendar',
-  'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
   subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
+  information: 'info',
+  backlinks: 'fileSymlink',
+  'file-theme': 'palette',
   chat: 'messagesSquare',
   tags: 'tag',
-  annotation: 'stickyNote',
+  annotation: 'squarePen',
   sticky: 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
@@ -1120,6 +1123,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -1664,7 +1668,7 @@ function initIframeMarkup(scrollContainer) {
   }
 
   let _annLastSaveFailureAt = 0;
-  function _reportMarkupSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -1690,7 +1694,7 @@ function initIframeMarkup(scrollContainer) {
     return template.innerHTML;
   }
 
-  function _parseMarkupAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -1712,7 +1716,7 @@ function initIframeMarkup(scrollContainer) {
     if (!boardMode || typeof apiPost !== 'function') return false;
     apiPost('/annotations', payload).then((res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? '注釈: 付箋追加' : '注釈: 描画追加';
+        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
         _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
       }
       onSaved?.(res);
@@ -1731,7 +1735,7 @@ function initIframeMarkup(scrollContainer) {
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
-      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? '注釈: 色変更' : '注釈: 付箋更新';
+      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
       Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
     } else {
       apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
@@ -1746,10 +1750,10 @@ function initIframeMarkup(scrollContainer) {
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
       onDeleted?.();
     })().catch((error) => {
-      _reportMarkupSaveFailure(error, '注釈を削除できませんでした');
+      _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
     });
     return true;
@@ -2168,7 +2172,7 @@ function initIframeMarkup(scrollContainer) {
       const menu = document.createElement('div');
       menu.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-context-menu annotation-note-context-menu';
       menu.setAttribute('role', 'menu');
-      menu.setAttribute('aria-label', '注釈付箋メニュー');
+      menu.setAttribute('aria-label', 'アノテート付箋メニュー');
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
@@ -2402,7 +2406,7 @@ function initIframeMarkup(scrollContainer) {
     moreBtn.className = 'note-more-btn';
     moreBtn.dataset.annMore = '1';
     moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
-    moreBtn.setAttribute('aria-label', '注釈メニュー');
+    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
     moreBtn.title = 'メニュー';
     moreBtn.innerHTML = lucide('moreHorizontal', 16);
     _normalizeEmbeddedNoteIcon(moreBtn, 16);
@@ -2945,7 +2949,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   svg.appendChild(hitRect);
   const layer = document.createElementNS(_svgNS, 'g');
   svg.appendChild(layer);
-  container.style.position = 'relative';
+  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.appendChild(svg);
 
   function _pathD(pts) {
@@ -2966,7 +2970,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   }
 
   let _saLastSaveFailureAt = 0;
-  function _saReportSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _saReportSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _saLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -3051,7 +3055,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     return typeof getTargetPath === 'function' ? String(getTargetPath() || '') : '';
   }
 
-  function _saParseAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _saParseAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -3081,9 +3085,32 @@ function initStandaloneMarkup(container, getTargetPath) {
     return { ...data, text: textarea.value, width, height };
   }
 
+  function _saClampNotePosition(x, y, width, height) {
+    const scrollLeft = container.scrollLeft || 0;
+    const scrollTop = container.scrollTop || 0;
+    const viewportWidth = Math.max(0, container.clientWidth || 0);
+    const viewportHeight = Math.max(0, container.clientHeight || 0);
+    const maxX = scrollLeft + Math.max(0, viewportWidth - Math.max(0, width || 0));
+    const maxY = scrollTop + Math.max(0, viewportHeight - Math.max(0, height || 0));
+    return {
+      x: Math.min(Math.max(Number(x) || 0, scrollLeft), maxX),
+      y: Math.min(Math.max(Number(y) || 0, scrollTop), maxY),
+    };
+  }
+
+  function _saFitNoteData(data) {
+    const viewportWidth = Math.max(120, container.clientWidth || 180);
+    const viewportHeight = Math.max(60, container.clientHeight || 100);
+    data.width = Math.min(viewportWidth, Math.max(120, Number(data.width) || 180));
+    data.height = Math.min(viewportHeight, Math.max(60, Number(data.height) || 100));
+    Object.assign(data, _saClampNotePosition(data.x, data.y, data.width, data.height));
+    return data;
+  }
+
   function _applyStandaloneNoteSize(note, textarea, data) {
-    const width = Math.max(120, Number(data.width) || 180);
-    const height = Math.max(60, Number(data.height) || 100);
+    _saFitNoteData(data);
+    const width = data.width;
+    const height = data.height;
     note.style.width = width + 'px';
     note.style.minHeight = height + 'px';
     textarea.style.height = Math.max(40, height - 16) + 'px';
@@ -3095,10 +3122,10 @@ function initStandaloneMarkup(container, getTargetPath) {
     if (_ann.tool === 'sticky') {
       const targetPath = _saCurrentTargetPath();
       if (!targetPath) {
-        _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+        _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
         return;
       }
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '' };
+      const noteData = _saFitNoteData({ x: pt.x, y: pt.y, width: 180, height: 100, text: '' });
       try {
         const res = await apiPost('/annotations', { target_path: targetPath, type: 'comment', shape: 'sticky', data: noteData, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
         if (_saCurrentTargetPath() !== targetPath) return;
@@ -3115,7 +3142,7 @@ function initStandaloneMarkup(container, getTargetPath) {
             if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
             el.remove();
           } catch (error) {
-            _saReportSaveFailure(error, '注釈を削除できませんでした');
+            _saReportSaveFailure(error, 'アノテートを削除できませんでした');
           }
           break;
         }
@@ -3132,7 +3159,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     }
     const targetPath = _saCurrentTargetPath();
     if (!targetPath) {
-      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+      _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
       return;
     }
     _ann.drawing = true;
@@ -3199,10 +3226,11 @@ function initStandaloneMarkup(container, getTargetPath) {
   function _renderNote(annId, data, color) {
     const note = document.createElement('div');
     note.className = 'sa-note'; note.dataset.annId = annId;
-    note.style.cssText = `position:absolute;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
+    _saFitNoteData(data);
+    note.style.cssText = `position:absolute;box-sizing:border-box;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
     const textarea = document.createElement('textarea');
     textarea.value = data.text || '';
-    textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
+    textarea.style.cssText = 'box-sizing:border-box;width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
     note.style.pointerEvents = _ann.active ? 'auto' : 'none';
     _applyStandaloneNoteSize(note, textarea, data);
     textarea.onblur = async () => {
@@ -3251,8 +3279,9 @@ function initStandaloneMarkup(container, getTargetPath) {
       };
       const onMove = (e2) => {
         const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
-        note.style.left = pt.x + 'px';
-        note.style.top = pt.y + 'px';
+        const fitted = _saClampNotePosition(pt.x, pt.y, note.offsetWidth, note.offsetHeight);
+        note.style.left = fitted.x + 'px';
+        note.style.top = fitted.y + 'px';
       };
       const onUp = async () => {
         document.removeEventListener('pointermove', onMove);
@@ -3302,7 +3331,7 @@ function initStandaloneMarkup(container, getTargetPath) {
       });
       _syncStandaloneNoteInteractivity();
     } catch (error) {
-      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, '注釈を読み込めませんでした');
+      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, 'アノテートを読み込めませんでした');
     }
   }
 
@@ -3470,7 +3499,7 @@ function createMarkupToolbar(markup, parentEl) {
   tb.className = 'sa-toolbar sa-markup-toolbar';
   tb.dataset.markupToolbar = '1';
   tb.setAttribute('role', 'toolbar');
-  tb.setAttribute('aria-label', '注釈ツールバー');
+  tb.setAttribute('aria-label', 'アノテートツールバー');
   let palette = null;
   let closePaletteTimer = null;
   let paletteOutsideHandler = null;
@@ -3505,7 +3534,7 @@ function createMarkupToolbar(markup, parentEl) {
   colorBtn.type = 'button';
   colorBtn.className = 'sa-markup-color-btn';
   colorBtn.title = '色';
-  colorBtn.setAttribute('aria-label', '注釈色');
+  colorBtn.setAttribute('aria-label', 'アノテート色');
   colorBtn.setAttribute('aria-haspopup', 'dialog');
   colorBtn.setAttribute('aria-expanded', 'false');
   const colorSwatch = document.createElement('span');
@@ -3517,13 +3546,13 @@ function createMarkupToolbar(markup, parentEl) {
     palette = document.createElement('div');
     palette.className = 'sa-palette sa-markup-palette';
     palette.setAttribute('role', 'dialog');
-    palette.setAttribute('aria-label', '注釈色');
+    palette.setAttribute('aria-label', 'アノテート色');
     PALETTE_COLORS.forEach(c => {
       const dot = document.createElement('button');
       dot.type = 'button';
       dot.className = 'sa-markup-color-dot';
       dot.title = c;
-      dot.setAttribute('aria-label', `注釈色 ${c}`);
+      dot.setAttribute('aria-label', `アノテート色 ${c}`);
       dot.style.background = c;
       dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
       palette.appendChild(dot);

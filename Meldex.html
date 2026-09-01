@@ -56,7 +56,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="apple-touch-icon" sizes="120x120" href="Meldex_apple_touch_icon_120.png">
 <link rel="apple-touch-icon" href="Meldex_apple_touch_icon_180.png">
 <link rel="manifest" href="manifest.json">
-<script src="meldex-cloud-runtime-01.js?v=0fa7b41ef2873758"></script>
+<script src="meldex-cloud-runtime-01.js?v=8c14c732123e2f7d"></script>
 <script>
 (function () {
   function isHardReloadShortcut(event) {
@@ -168,7 +168,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=d16f73e56a2c3cde"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=5973ff6c8759a3fa"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=d370f7cf0cc53ae7"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=e2de33ea37cbe44b"></script>
+
 
 
 
@@ -185,6 +186,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-accessibility.css">
 <link rel="stylesheet" href="gb-activity-bar.css">
 <link rel="stylesheet" href="gb-layout.css">
+<link rel="stylesheet" href="gb-rail-shell.css">
 <link rel="stylesheet" href="gb-db-timeline.css">
 <link rel="stylesheet" href="gb-db-column-filter.css">
 <link rel="stylesheet" href="gb-db-tree-view.css">
@@ -199,12 +201,13 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-cloud-mobile.css">
 <link rel="stylesheet" href="gb-cloud-mobile-explorer.css">
 <link rel="stylesheet" href="gb-cloud-conflict-resolver.css">
-<script src="meldex-cloud-runtime-05.js?v=91b35878edf0ebd4"></script>
+<script src="meldex-cloud-runtime-05.js?v=0be7ee1355b445c8"></script>
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-note-block-menu.css">
 <link rel="stylesheet" href="gb-note-embed-block.css">
 <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-view.css">
+<link rel="stylesheet" href="gb-production-topic-resources.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-create.css">
 <link rel="stylesheet" href="gb-scheduler-ui.css">
 <link rel="stylesheet" href="gb-ui.css">
@@ -220,8 +223,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-board-depth-presets.css">
 <link rel="stylesheet" href="gb-board-topic-views.css">
 <link rel="stylesheet" href="gb-chat-rules.css">
-<link rel="stylesheet" href="gb-chat-target-controls.css">
-<link rel="stylesheet" href="gb-db-smart-chat-history.css">
+<link rel="stylesheet" href="gb-chat-target-controls.css"><link rel="stylesheet" href="gb-chat-external-responder-ui.css">
 <link rel="stylesheet" href="gb-llm-cross-review.css">
 <link rel="stylesheet" href="gb-format-popup.css">
 <link rel="stylesheet" href="gb-db-filter-dialog.css">
@@ -254,7 +256,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div id="sidebar-search-bar" style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;">
     <input type="search" id="sidebar-search-input" aria-label="フォルダツリーを検索" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
     <button type="button" id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" aria-label="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
-    <button type="button" id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="全文検索" aria-label="全文検索を開く" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="ソースフォルダを全文検索" aria-label="ソースフォルダを全文検索" aria-controls="search-panel" aria-expanded="false" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-tree-display" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="表示設定" aria-label="フォルダツリーの表示設定" data-action="showTreeDisplaySettings(event)"><span class="ico ico-layoutGrid" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ" aria-label="フィルタ表示を切り替える" data-action="toggleGlobalFilterPopup(event)"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
@@ -279,7 +281,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       </div>
     </div>
     <div class="sp-results" id="sp-results" style="max-height:30vh;overflow-y:auto;"></div>
-    <div class="sp-status" id="sp-status"></div>
+    <div class="sp-status" id="sp-status" role="status" aria-live="polite"></div>
   </div>
   <div id="global-filter-bar" style="border-bottom:1px solid var(--border);padding:4px 8px;flex-shrink:0;font-size:11px;">
     <!-- フィルタのトリガーボタン（funnelアイコン1個）は renderGlobalFilterUI()（gb-outliner-search.part01.part01.js）が
@@ -289,7 +291,6 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       <label class="gf-search-entities-label" style="display:flex;align-items:center;gap:2px;cursor:pointer;color:var(--fg2);font-size:11px;"><input type="checkbox" id="gf-search-entities" data-e2e-id="global-filter-search-entities" aria-label="エントリも検索" data-onchange="setTreeSearchIncludeEntities(this.checked)"> エントリも検索</label>
     </div>
   </div>
-  <div id="section-smart-db" style="display:none;"><div id="body-smart-db"></div></div>
   <div id="tree-scroll-container" style="flex:1;overflow-y:auto;min-height:0;overflow-anchor:none;">
     <div id="section-recent" class="sidebar-section" style="border-bottom:1px solid var(--border);">
       <div class="sidebar-section-header" data-sidebar-section="recent" data-e2e-id="sidebar-section-recent-header">
@@ -457,25 +458,6 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       <div id="chart-view"></div>
       <div id="graph-view"></div>
       <div id="form-view" class="form-view" style="display:none;flex:1;overflow:auto;"></div>
-      <div id="smart-db-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
-        <div class="smart-db-toolbar">
-          <button type="button" class="tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'smart-db')"><span class="ico ico-menu"></span></button>
-          <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('smart-db', event)"><span class="ico ico-folderTree"></span></button>
-          <div class="smart-db-view-tabs" id="smart-db-view-tabs" role="tablist" aria-label="スマートシートビュー">
-            <button type="button" class="smart-db-view-tab active" data-smart-db-view="table" data-action="setSmartDbActiveView('table')" role="tab" aria-selected="true">表</button>
-            <button type="button" class="smart-db-view-tab" data-smart-db-view="dashboard" data-action="setSmartDbActiveView('dashboard')" role="tab" aria-selected="false">ダッシュボード</button>
-          </div>
-          <div class="tb-spacer"></div>
-          <button type="button" class="tb-icon-btn" data-e2e-id="smart-db-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
-          <button type="button" class="tb-icon-btn" title="フィルタ設定" aria-label="フィルタ設定" data-action="state.currentSmartDb && showSmartDbFilterModal(state.currentSmartDb.id)"><span class="ico ico-slidersHorizontal"></span></button>
-        </div>
-        <div id="smart-db-table-area" class="smart-db-table-area">
-          <table id="smart-db-table" class="smart-db-table" role="table" aria-label="スマートシート">
-            <thead></thead><tbody></tbody>
-          </table>
-        </div>
-        <div id="smart-db-dashboard-area" class="smart-db-dashboard-area" hidden></div>
-      </div>
     <div id="compare-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;"></div>
     <div id="entity-view">
       <div id="entity-parent-link" style="padding:6px 12px 0;font-size:12px;color:var(--fg2);min-height:0;"></div>
@@ -524,7 +506,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <div id="page-content" contenteditable="true"></div>
       </div>
       <svg id="ann-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;z-index:50;pointer-events:none;overflow:visible;"><rect width="100%" height="100%" fill="transparent"/><g id="ann-layer"></g></svg>
-      <button id="btn-tb-annotation" class="annotation-fab" type="button" title="注釈 (Alt+A)" aria-label="注釈" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></button>
+      <button id="btn-tb-annotation" class="annotation-fab" type="button" title="アノテート (Alt+A)" aria-label="アノテート" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg></button>
     </div>
     <div id="media-view" style="display:none;flex-direction:column;flex:1;overflow:auto;align-items:center;justify-content:center;background:var(--preview-bg,var(--content-bg,var(--bg)));padding:16px;">
       <div id="media-title" style="font-size:16px;font-weight:bold;margin-bottom:12px;color:var(--fg);text-align:center;"></div>
@@ -610,7 +592,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       </div><!-- /main-views -->
     </div><!-- /main-center-row -->
   </div><!-- /main-area -->
-  <div id="ann-toolbar" class="floating-toolbar" role="toolbar" aria-label="注釈ツール">
+  <div id="ann-toolbar" class="floating-toolbar" role="toolbar" aria-label="アノテートツール">
     <div class="ft-drag" title="ドラッグで移動"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>
     <button type="button" class="ann-tool active" data-tool="pen" title="ペン (筆圧)" aria-label="ペン"><span class="ico ico-pencil"></span></button>
     <label class="ann-width-control" title="ペンの太さ"><input type="range" id="ann-width-pen" aria-label="ペンの太さ" data-ann-width-tool="pen" min="1" max="16" step="1" value="3"><span id="ann-width-pen-label">3</span></label>
@@ -627,10 +609,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <input type="range" id="ann-opacity" aria-label="全体の不透明度" min="0" max="1" step="0.05" value="1" title="全体の不透明度" style="width:60px;">
     <span id="ann-opacity-label" style="font-size:10px;color:var(--fg2);min-width:28px;">100%</span>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button type="button" title="注釈パネル" aria-label="注釈パネル" data-action="openRightPanelTab('annotation')"><span class="ico ico-clipboardList"></span></button>
+    <button type="button" title="アノテートパネル" aria-label="アノテートパネル" data-action="openRightPanelTab('annotation')"><span class="ico ico-squarePen"></span></button>
     <button type="button" title="スクリーンショット撮影" aria-label="スクリーンショット撮影" data-action="showScreenshotMenu(event)"><span class="ico ico-camera"></span></button>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button id="ann-view-lock-btn" class="vl-lock-icon ann-tool" type="button" title="表示ロック（注釈対象ビュー）" aria-label="表示ロック" disabled><span class="ico ico-unlock"></span></button>
+    <button id="ann-view-lock-btn" class="vl-lock-icon ann-tool" type="button" title="表示ロック（アノテート対象ビュー）" aria-label="表示ロック" disabled><span class="ico ico-unlock"></span></button>
     <button type="button" id="btn-overlay-toggle" title="オーバーレイ表示中" aria-label="オーバーレイ表示" class="active" data-action="toggleOverlayVisibility()"><span class="ico ico-eye"></span></button>
     <button type="button" title="全削除" aria-label="全削除" style="color:var(--red);" data-action="annClear()"><span class="ico ico-trash2"></span></button>
   </div>
@@ -663,7 +645,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <div class="rp-tab" data-rp-tab="calendar" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-calendar" data-action="switchRightTab('calendar')"><span class="ico ico-calendar" style="width:14px;height:14px;"></span> スケジュール</div>
     <div class="rp-tab active" data-rp-tab="chat" role="tab" tabindex="0" aria-selected="true" aria-controls="rp-chat" data-action="switchRightTab('chat')"><span class="ico ico-messagesSquare" style="width:14px;height:14px;"></span> チャット</div>
     <div class="rp-tab" data-rp-tab="tags" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-tags" data-action="switchRightTab('tags')"><span class="ico ico-tags" style="width:14px;height:14px;"></span> タグ</div>
-    <div class="rp-tab" data-rp-tab="annotation" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-annotation" data-action="switchRightTab('annotation')"><span class="ico ico-stickyNote" style="width:14px;height:14px;"></span> 注釈</div>
+    <div class="rp-tab" data-rp-tab="annotation" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-annotation" data-action="switchRightTab('annotation')"><span class="ico ico-squarePen" style="width:14px;height:14px;"></span> アノテート</div>
     <div class="rp-tab" data-rp-tab="history" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-history" data-action="switchRightTab('history')"><span class="ico ico-history" style="width:14px;height:14px;"></span> 履歴</div>
   </div>
   <div id="rp-calendar" class="rp-content" style="flex:1;overflow:hidden;display:flex;"></div>
@@ -748,9 +730,11 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
             <select id="team-room-select" class="team-room-select" data-e2e-id="team-room-select" title="ルームを選択" aria-label="ルームを選択" style="flex:1;min-width:120px;padding:2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;">
               <option value="">ルームを選択</option>
             </select>
-            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-room-add-button" title="ルームを追加" aria-label="ルームを追加" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showCreateRoomModal()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-dm-start-button" title="DMを開始" aria-label="DMを開始" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="showDirectMessageModal()"><span class="ico ico-user" style="width:12px;height:12px;"></span> DM</button>
-            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-solo-room-button" title="自分専用のルームを作ります。あとから他のメンバーを招待できます" aria-label="自分だけのルーム" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="createSoloTeamRoom()"><span class="ico ico-lock" style="width:12px;height:12px;"></span> 自分だけ</button>
+            <div class="team-room-toolbar-actions" aria-label="ルーム操作">
+              <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-room-add-button" title="ルームを追加" aria-label="ルームを追加" data-action="showCreateRoomModal()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+              <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-dm-start-button" title="DMを開始" aria-label="DMを開始" data-action="showDirectMessageModal()"><span class="ico ico-user" style="width:12px;height:12px;"></span> DM</button>
+              <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-solo-room-button" title="自分専用のルームを作ります。あとから他のメンバーを招待できます" aria-label="自分だけのルーム" data-action="createSoloTeamRoom()"><span class="ico ico-lock" style="width:12px;height:12px;"></span> 自分だけ</button>
+            </div>
           </div>
           <div id="team-room-list" style="font-size:12px;"></div>
         </div>
@@ -780,23 +764,27 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   </div>
   <div id="rp-tags" class="rp-content" style="flex:1;overflow:hidden;"></div>
   <div id="rp-annotation" class="rp-content">
-    <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
-      <span style="font-size:13px;font-weight:bold;flex:1;">注釈管理</span>
+    <div class="gb-context-target-header" data-context-target-header="1"><div class="gb-context-target-header__caption">対象</div><div class="gb-context-target-header__name">ファイルが選択されていません</div></div>
+    <div data-annotation-toolbar style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
+      <span style="font-size:13px;font-weight:bold;flex:1;">アノテート管理</span>
       <button type="button" title="新規コメント" aria-label="新規コメント" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="newRpComment()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
       <button type="button" title="更新" aria-label="更新" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="loadRpAnnotationList()"><span class="ico ico-refreshCw" style="width:12px;height:12px;"></span></button>
     </div>
     <div style="padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;gap:4px;flex-wrap:wrap;">
-      <input id="rp-ann-search" type="text" aria-label="注釈を検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
+      <input id="rp-ann-search" type="text" aria-label="アノテートを検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
       <select id="rp-ann-view" title="表示" aria-label="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
       <select id="rp-ann-sort" title="並び替え" aria-label="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
       <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option><option value="screenshot">スクリーンショット</option></select>
       <select id="rp-ann-scope" title="対象ファイル" aria-label="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
       <select id="rp-ann-status" title="状態" aria-label="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
       <select id="rp-ann-user" title="ユーザー" aria-label="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
+      <label style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:var(--fg2);">開始日 <input id="rp-ann-date-from" type="date" aria-label="アノテートの開始日" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>
+      <label style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:var(--fg2);">終了日 <input id="rp-ann-date-to" type="date" aria-label="アノテートの終了日" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>
     </div>
     <div id="rp-ann-list" style="flex:1;overflow-y:auto;padding:8px;"></div>
   </div>
   <div id="rp-history" class="rp-content" style="flex:1;overflow-y:auto;">
+    <div class="gb-context-target-header" data-context-target-header="1"><div class="gb-context-target-header__caption">対象</div><div class="gb-context-target-header__name">ファイルが選択されていません</div></div>
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
       <span style="font-size:13px;font-weight:bold;flex:1;">操作履歴</span>
       <button type="button" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="meldexUndo()" data-undo-button data-e2e-id="rp-history-undo"><span class="ico ico-arrowLeftS" style="width:12px;height:12px;"></span> 戻す</button>
@@ -811,11 +799,21 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <button id="rab-calendar" type="button" title="スケジュール" aria-label="スケジュール" aria-pressed="false" data-action="toggleRightPanelTab('calendar')"><span class="ico ico-calendar"></span></button>
   <button id="rab-chat" type="button" title="チャット" aria-label="チャット" aria-pressed="false" data-action="toggleRightPanelTab('chat')"><span class="ico ico-messagesSquare"></span></button>
   <button id="rab-tags" type="button" title="タグ" aria-label="タグ" aria-pressed="false" data-action="toggleRightPanelTab('tags')"><span class="ico ico-tag"></span></button>
-  <button id="rab-annotation" type="button" title="注釈" aria-label="注釈" aria-pressed="false" data-action="toggleRightPanelTab('annotation')"><span class="ico ico-stickyNote"></span></button>
+  <button id="rab-annotation" type="button" title="アノテート" aria-label="アノテート" aria-pressed="false" data-action="toggleRightPanelTab('annotation')"><span class="ico ico-squarePen"></span></button>
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-07.js?v=92403f99cc182e7e"></script>
+<script src="meldex-cloud-runtime-07.js?v=33313a3bc5963af4"></script>
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -840,7 +838,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-08.js?v=3654d478d61a4204"></script>
+<script src="meldex-cloud-runtime-08.js?v=ae97ee4239a7b5e7"></script>
 
 
 
@@ -850,6 +848,9 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
   
   
+
+
+
 
 
 
@@ -914,7 +915,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-09.js?v=78caeb2696a153b9"></script>
+<script src="meldex-cloud-runtime-09.js?v=b4f3680575a5a636"></script>
+
 
 
 

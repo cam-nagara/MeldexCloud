@@ -53,19 +53,19 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
-  // 以前は「情報」を出せる場合に note-editor を開いていたが、hasInformation() は
-  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「情報」タブへ
-  // 飛んでいた (2026-08-13 ユーザー指摘)。「情報」はタブから明示的に開く。
+  // 以前は「プロパティ」を出せる場合に note-editor を開いていたが、hasInformation() は
+  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「プロパティ」タブへ
+  // 飛んでいた (2026-08-13 ユーザー指摘)。「プロパティ」はタブから明示的に開く。
   const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-card'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'board-card')
       : 'board-card');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -77,14 +77,14 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'board-line')
       : 'board-line');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -97,31 +97,34 @@ function _bdSetBoardPrimaryTab() {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // デフォルトはテーマタブ。ユーザーが backlinks / board-note / スタイル管理タブを選んでいた場合は尊重。
   const nextTab = typeof _bdResolveCurrentBoardTab === 'function'
-    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
+    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'file-style')
     : 'file-style';
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
 
-// 3つのスタイル管理タブ (カードスタイル / ラインスタイル / 階層別スタイル) のコンテンツを
+// スタイル管理タブ (カード / ライン / 階層別 / グループ) のコンテンツを
 // 初期化 / 再描画する。各タブは一度レンダー済みなら以後のイベント反映で済むため毎回は再描画しない。
 function _bdEnsureBoardStyleManagerTabs() {
   const renderers = [
     { id: 'detail-tab-board-card-style', kind: 'card' },
     { id: 'detail-tab-board-line-style', kind: 'line' },
     { id: 'detail-tab-board-depth-style', kind: 'depth' },
+    { id: 'detail-tab-board-group-style', kind: 'group' },
   ];
   renderers.forEach(entry => {
     const el = document.getElementById(entry.id);
     if (!el) return;
     // 既にレンダー済みなら skip (子要素が存在する)
     if (el.childElementCount > 0) return;
-    if (entry.kind === 'depth') {
+    if (entry.kind === 'group') {
+      window.MeldexBoardTopicIntegration?.mountGroupControls?.(el, bd, { panel: true });
+    } else if (entry.kind === 'depth') {
       if (typeof _bdRenderDepthStyleInPanel === 'function') _bdRenderDepthStyleInPanel(el);
     } else {
       if (typeof _bdRenderStyleManagerInPanel === 'function') _bdRenderStyleManagerInPanel(entry.kind, el, null);
@@ -175,7 +178,7 @@ function _bdBuildNodeDetailHtml(node) {
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
       </div>
       <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードスタイル</div>
+        <div class="bd-detail-section-title">トピックスタイル</div>
         <div class="bd-detail-style-row">
           ${_bdDetailStyleTriggerHtml('card', node.cardStyle || bd.activeCardStyle, 'data-bd-node-style-pick')}
           <button type="button" class="bd-detail-style-action" data-bd-action="save-node-card-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
@@ -195,7 +198,7 @@ function _bdBuildNodeDetailHtml(node) {
         </div>
       </div>
       <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードサイズ</div>
+        <div class="bd-detail-section-title">トピックサイズ</div>
         <label class="bd-detail-field"><span>幅</span><input type="number" class="gb-fmt-num" min="40" value="${Math.round(node.w || style.width || 160)}" data-bd-field="w"></label>
         <label class="bd-detail-field"><span>高さ</span><input type="number" class="gb-fmt-num" min="0" value="${Math.round(node.h || 0)}" data-bd-field="h"></label>
       </div>
@@ -245,7 +248,7 @@ function _bdBuildNodeDetailHtml(node) {
 
 function bdClearConnectionStyleOverrides(conn) {
   [
-    'color', 'width', 'style', 'arrow', 'straight', 'pathType',
+    'color', 'colorOpacity', 'width', 'style', 'arrow', 'straight', 'pathType',
     'branchRatio', 'cornerRadius',
     'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
     'fontBold', 'fontItalic',
@@ -510,7 +513,8 @@ function _bdUpdateConnectionFromField(conn, field, value) {
     case 'width': {
       const num = parseInt(value, 10);
       if (!Number.isFinite(num) || num <= 0) delete conn.width;
-      else conn.width = Math.max(1, num);
+      else conn.width = typeof _bdNormalizeLineWidth === 'function'
+        ? _bdNormalizeLineWidth(num, 1) : Math.max(1, Math.min(200, num));
       break;
     }
     case 'styleRef':
@@ -672,7 +676,7 @@ function _bdBindNodeDetailPanel(nodeId) {
         // widget は effective style（base + node の個別 override）を表示する。
         const eff = typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(node) : {};
         const displayStyle = { ...baseCardStyle };
-        ['bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius', 'fontSize',
+        ['bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius', 'fontSize',
          'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape', 'width',
          'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
          'cloudSubWidthRatio', 'cloudSubHeightRatio']
@@ -711,7 +715,7 @@ function _bdBindNodeDetailPanel(nodeId) {
       bdPushUndo();
       if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(target);
       rerenderNodeDetail();
-      showStatus(`カードスタイル「${style.name}」の個別設定をクリアしました`);
+      showStatus(`トピックスタイル「${style.name}」の個別設定をクリアしました`);
     });
     root.querySelector('[data-bd-action="manage-card-styles"]')?.addEventListener('click', () => {
       bdOpenCardStyleManager();
@@ -805,7 +809,7 @@ function _bdBindConnectionDetailPanel(connId) {
         // widget は effective style（base + conn の個別 override）を表示する
         const eff = typeof bdGetConnectionStyle === 'function' ? bdGetConnectionStyle(conn) : {};
         const displayStyle = { ...baseLineStyle };
-        ['color', 'width', 'style', 'arrow', 'pathType',
+        ['color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType',
          'branchRatio', 'cornerRadius',
          'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
          'fontBold', 'fontItalic',

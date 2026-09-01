@@ -1,10 +1,10 @@
 # Meldex（メルデックス） 利用規約
 
-最終更新日: 2026-05-17
+最終更新日: 2026-08-29
 
 配布者: cam-nagara / Meldex 開発者  
-公式情報: https://github.com/cam-nagara/Meldex  
-問い合わせ: GitHub Issues または Meldex ベータ配布ページに記載された連絡先
+公式情報: https://cam-nagara.github.io/MeldexCloud/
+問い合わせ: Meldex 内のフィードバック、または Meldex BETA 配布ページの送信フォーム
 
 ## ベータ版について
 

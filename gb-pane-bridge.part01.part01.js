@@ -27,13 +27,11 @@ const GBPaneBridge = (() => {
     gallery:    'db-view-container',
     kanban:     'db-view-container',
     timeline:   'db-view-container',
+    gantt:      'db-view-container',
     chart:      'db-view-container',
     graph:      'db-view-container',
     form:       'db-view-container',
-    'smart-db': 'db-view-container',
-    // 比較は pathA/pathB の2入力が必須で、単一 path しか持たないタブの
-    // 永続化・復帰契約には載せられない。openCompareView(pathA, pathB) の
-    // 専用表示として扱い、LEGACY_CONTAINERS には登録しない。
+    compare:    'compare-view',
     entity:     'entity-view',
     page:       'page-view',
     media:      'media-view',
@@ -49,14 +47,17 @@ const GBPaneBridge = (() => {
     gallery:    'gallery-view',
     kanban:     'kanban-view',
     timeline:   'timeline-view',
+    gantt:      'timeline-view',
     chart:      'chart-view',
     graph:      'graph-view',
     form:       'form-view',
-    'smart-db': 'smart-db-view',
   };
 
   // ToolComponentで描画するタイプ（レガシーコンテナを使わない、独自DOM生成）
-  const COMPONENT_TYPES = new Set(['calendar', 'search', 'scriptnote', 'version', 'board', 'timer']);
+  const COMPONENT_TYPES = new Set([
+    'calendar', 'search', 'scriptnote', 'version', 'board', 'system-sheet',
+    'information', 'backlinks', 'file-theme',
+  ]);
 
   // 右パネルから移行するコンテナ（レガシーコンテナとして管理）
   const RP_CONTAINERS = {
@@ -80,9 +81,8 @@ const GBPaneBridge = (() => {
     preview: 'ビューワー',
     subpanel: 'サブパネル',
     calendar: 'スケジュール',
-    timer: 'タイマー',
     chat: 'チャット',
-    annotation: '注釈',
+    annotation: 'アノテート',
     history: 'ヒストリー',
     sticky: '付箋',
     tags: 'タグ',
@@ -96,11 +96,11 @@ const GBPaneBridge = (() => {
     gallery: 'シート',
     kanban: 'シート',
     timeline: 'シート',
+    gantt: 'シート',
     chart: 'シート',
     graph: 'シート',
     form: 'シート',
     board: 'ボード',
-    'smart-db': 'スマートシート',
     folder: 'フォルダ',
     entity: 'エントリ',
     media: 'メディア',
@@ -194,7 +194,7 @@ const GBPaneBridge = (() => {
   }
 
   function _isPathScopedLegacyType(type) {
-    return ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'entity', 'page', 'media', 'html', 'folder', 'board'].includes(type);
+    return ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'entity', 'page', 'media', 'html', 'folder', 'board'].includes(type);
   }
 
   function _legacySnapshotKey(tab) {
@@ -450,10 +450,10 @@ const GBPaneBridge = (() => {
     gallery: ['#gallery-view'],
     kanban: ['#kanban-view'],
     timeline: ['#timeline-view'],
+    gantt: ['#timeline-view'],
     chart: ['#chart-view'],
     graph: ['#graph-view'],
     form: ['#form-view'],
-    'smart-db': ['#smart-db-view'],
     detail: _detailScrollSelectors.slice(1),
     preview: ['#gb-preview-pane'],
     subpanel: ['#gb-subpanel-content'],
@@ -597,6 +597,13 @@ const GBPaneBridge = (() => {
   function _renderSnapshotIntoHost(host, snapshot) {
     if (!host || !snapshot) return;
     host.replaceChildren(snapshot.cloneNode(true));
+    // canvas の cloneNode はイベントリスナーを複製しない。プレビューへ
+    // 復元したミニマップだけ、実要素へ操作ハンドラを再接続する。
+    if (typeof _bdBindPreviewMinimapInteraction === 'function') {
+      host.querySelectorAll?.('.bd-minimap').forEach((canvas) => {
+        _bdBindPreviewMinimapInteraction(canvas);
+      });
+    }
   }
 
   function _mergedSnapshotClone(viewName, sourceClone, targetTab, existingClone) {
@@ -827,8 +834,7 @@ const GBPaneBridge = (() => {
     let currentPath = '';
     if (viewName === 'page' || viewName === 'media' || viewName === 'html') currentPath = state.currentPagePath;
     else if (viewName === 'entity') currentPath = state.currentEntityPath;
-    else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) currentPath = state.currentDbPath;
-    else if (viewName === 'smart-db') currentPath = state.currentSmartDb?._filePath || '';
+    else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) currentPath = state.currentDbPath;
     else if (viewName === 'folder' && typeof _folderPath !== 'undefined') currentPath = _folderPath;
     else if (viewName === 'csv' && typeof _csvPath !== 'undefined') currentPath = _csvPath;
     if (_normalizeLegacyLivePath(currentPath) !== expected) return false;
@@ -847,7 +853,7 @@ const GBPaneBridge = (() => {
     const paneRenderCtx = paneCtx || (pane?.id ? { paneId: pane.id, containerEl: paneContentEl, tableId: 'pivot-table' } : null);
     if (paneRenderCtx) {
       paneRenderCtx.containerEl = paneContentEl || paneRenderCtx.containerEl;
-      if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) {
+      if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) {
         paneRenderCtx.dbPath = path || paneRenderCtx.dbPath;
       }
     }
@@ -874,7 +880,7 @@ const GBPaneBridge = (() => {
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
-    if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) {
+    if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) {
       scopedBridgeOpts.requestedViewMode = tab.state?.viewMode || viewName;
     }
     if (viewName === 'folder' && tab.state?.selectedPath) {
@@ -890,7 +896,6 @@ const GBPaneBridge = (() => {
         const prevEntityPath = state.currentEntityPath;
         const prevBoardPath = state.currentBoardPath;
         const prevCsvPath = (typeof _csvPath !== 'undefined') ? _csvPath : '';
-        const prevSmartDbPath = state.currentSmartDb?._filePath || (state.currentSmartDb?.id ? 'smart-db:' + state.currentSmartDb.id : '');
         if (viewEl) {
           viewEl.dataset.gbLegacyView = viewName;
           viewEl.dataset.gbLegacyPath = path;
@@ -929,12 +934,17 @@ const GBPaneBridge = (() => {
         // 共有する。同じ競合を予防的に塞ぐ（needsLiveReload || prevView !== 'csv' で
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
-        else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
           else if (typeof openHtmlFile === 'function') openHtmlFile(label, path, scopedBridgeOpts);
+        }
+        else if (viewName === 'compare' && typeof openCompareView === 'function' && (needsLiveReload || prevView !== 'compare')) {
+          const encodedPaths = path.startsWith('compare:') ? path.slice('compare:'.length).split('|') : [];
+          const pathA = tab.state?.pathA || encodedPaths[0] || '';
+          const pathB = tab.state?.pathB || encodedPaths[1] || '';
+          if (pathA && pathB) await openCompareView(pathA, pathB, { ...scopedBridgeOpts, skipShowView: true });
         }
         else {
           state.view = viewName;
@@ -943,12 +953,22 @@ const GBPaneBridge = (() => {
           else if (viewName === 'board') state.currentBoardPath = path;
         }
         if (!isCurrentLoadJob()) return;
+        // selectDatabase() 等の非同期描画はサブビューの display を再設定する。
+        // 共有 db-view-container を別ペインへ移した直後は、mount開始時に選んだ
+        // calendar/timeline 面がロード完了時に再び隠れることがあるため、現在の
+        // load job とペインに対して最後に表示面を確定する。
+        if (containerId === 'db-view-container' && pane?.id && typeof _ensureDbSubviewVisibleForPane === 'function') {
+          const finalViewName = typeof _resolveDbPaneDisplayView === 'function'
+            ? _resolveDbPaneDisplayView(viewName, tab)
+            : resolvedViewName;
+          _ensureDbSubviewVisibleForPane(pane.id, paneContentEl, finalViewName, tab);
+        }
         const boundViewEl = document.getElementById(containerId);
         if (boundViewEl && _legacyLoadJobs.get(containerId)?.token === token) {
           boundViewEl.dataset.gbLegacyView = viewName;
           boundViewEl.dataset.gbLegacyPath = path;
         }
-        // レガシー種別（page/entity/board/folder/csv/smart-db/database等）のタブは
+        // レガシー種別（page/entity/board/folder/csv/database等）のタブは
         // ここまで非同期（Promise.resolve().then）。この時点まで state.currentPagePath 等が
         // 未更新のため、refreshPaneAfterTabSwitch 内の同期呼び出しは間に合わない
         // （state更新前に走ってしまう）。実際に state が確定したこの完了時点で追従を同期する。

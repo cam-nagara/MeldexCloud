@@ -35,7 +35,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       const msg = document.createElement('div');
       msg.className = 'user-empty-msg';
       msg.style.cssText = 'padding:8px;color:var(--fg2);font-size:12px;text-align:center;';
-      msg.textContent = 'ユーザーが登録されていません。設定 → ワークスペースでメンバーを追加してください';
+      msg.textContent = 'ユーザーが登録されていません。設定 → ユーザーで登録してください';
       dd.appendChild(msg);
       return;
     }

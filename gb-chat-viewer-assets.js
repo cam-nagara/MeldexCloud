@@ -55,7 +55,7 @@
     if (!badge && visible) {
       badge = document.createElement('span');
       badge.dataset.chatAnnotationBadge = 'true';
-      badge.textContent = '注釈あり';
+      badge.textContent = 'アノテートあり';
       badge.style.cssText = 'position:absolute;right:6px;bottom:6px;padding:2px 6px;border-radius:999px;background:rgba(20,20,20,.78);color:#fff;font-size:11px;pointer-events:none;';
       wrapper.style.position = wrapper.style.position || 'relative';
       wrapper.appendChild(badge);

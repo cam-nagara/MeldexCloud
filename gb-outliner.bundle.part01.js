@@ -367,7 +367,8 @@ async function loadOutliner(options) {
 
   const loadGeneration = ++_outlinerLoadGeneration;
   const loadPromise = (async () => {
-    showLoading('フォルダを読み込み中...');
+    const useLoadingIndicator = !opts.suppressLoading;
+    if (useLoadingIndicator) showLoading('フォルダを読み込み中...');
     let rendered = false;
     try {
       // フォルダツリー改修Phase4: 再読込前に未開始のサムネイル/形式アイコン取得と
@@ -429,7 +430,7 @@ async function loadOutliner(options) {
       return { rendered };
     } finally {
       if (typeof _logPerfEvent === 'function') _logPerfEvent('outliner.load.total', perfStartedAt);
-      hideLoading();
+      if (useLoadingIndicator) hideLoading();
     }
   })();
   _outlinerLoadInFlight = loadPromise;
@@ -897,4 +898,3 @@ function _outlinerExternalDragItems(event, payloadOverride) {
   let payload = payloadOverride || null;
   try {
     if (!payload) {
-      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';

@@ -239,7 +239,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   document.body.appendChild(popup);
   _bdStyleManagerPopup = popup;
   _bdStyleManagerPopupAnchor = currentAnchor;
-  _bdConfigureStyleManagerPopup(popup, `${kind === 'card' ? 'カード' : 'ライン'}スタイル管理`, currentAnchor);
+  _bdConfigureStyleManagerPopup(popup, `${kind === 'card' ? 'トピック' : 'ライン'}スタイル管理`, currentAnchor);
   _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const render = () => {
@@ -250,7 +250,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
     const activeRef = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
     const activeStyleId = bd[activeRef] || '';
     const currentId = opts.currentId || activeStyleId;
-    const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
+    const itemLabel = kind === 'card' ? 'トピックスタイル' : 'ラインスタイル';
     const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     const copyIcon = typeof lucide === 'function' ? lucide('copy', 14) : '複製';
     const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
@@ -386,7 +386,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       live._default = _bdCloneStyleForDefault(live);
       _bdSaveGlobalStyleDefault(kind, live);
       bdDirty();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
       render();
     });
 
@@ -400,7 +400,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       if (typeof opts.onSelect === 'function') opts.onSelect(live.id);
       render();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」をデフォルトに戻しました`);
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトに戻しました`);
     });
 
     popup.querySelector('[data-bd-popup-delete]')?.addEventListener('click', async () => {
@@ -410,7 +410,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
       const usage = _bdCountStyleUsage(kind, live.id);
       const usageMsg = usage > 0 ? `\n\nこのスタイルは ${usage} 個の${unitLabel}で使用中です。削除すると、それらは別のスタイルに切り替わります。` : '';
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
+      const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
       if (!ok) return;
       const arr = liveArr();
       const liveIndex = arr.findIndex(style => style.id === live.id);
@@ -437,7 +437,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       opts.currentId = fallbackId;
       if (typeof opts.onSelect === 'function') opts.onSelect(fallbackId);
       render();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しました`);
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しました`);
     });
   };
 
@@ -468,7 +468,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   const selected = displayStyles.find(s => s.id === effectiveId) || displayStyles[0];
   if (kind === 'card') _bdLastCardEditId = selected.id;
   else _bdLastLineEditId = selected.id;
-  const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
+  const itemLabel = kind === 'card' ? 'トピックスタイル' : 'ラインスタイル';
   const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
   const activeStyleId = bd[activeRef] || '';
   const isSelectedActive = selected.id === activeStyleId;
@@ -578,7 +578,7 @@ function _bdStyleRefOptions(kind) {
   const styles = typeof _bdDisplayedManagedStyles === 'function'
     ? _bdDisplayedManagedStyles(kind)
     : (kind === 'card' ? (bd.cardStyles || []) : (bd.lineStyles || []));
-  const label = kind === 'card' ? '個別カード設定' : '個別ライン設定';
+  const label = kind === 'card' ? '個別トピック設定' : '個別ライン設定';
   return [
     { v: '', l: label },
     ...(styles || []).map(style => ({ v: style.id || '', l: style.name || style.id || 'スタイル' })),
@@ -624,7 +624,7 @@ function _bdAppendDepthStyleRefRow(container, kind, selected, liveDepth, onApply
   if (!container || !fmt) return;
   const row = fmt.makeRow({ wrap: true });
   row.classList.add('bd-depth-style-ref-row');
-  const label = fmt.makeLabel(kind === 'card' ? '元カードスタイル' : '元ラインスタイル');
+  const label = fmt.makeLabel(kind === 'card' ? '元トピックスタイル' : '元ラインスタイル');
   const value = kind === 'card' ? (selected.cardStyleRef || '') : (selected.lineStyleRef || '');
   const select = fmt.makeSelect({
     opts: _bdStyleRefOptions(kind),
@@ -834,7 +834,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     // カードスタイル部
     const cardHeader = document.createElement('div');
     cardHeader.className = 'bd-detail-section-title';
-    cardHeader.textContent = 'カードスタイル';
+    cardHeader.textContent = 'トピックスタイル';
     depthFieldsEl.appendChild(cardHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'card', selected, liveDepth, () => {
       applyDepthStyles();

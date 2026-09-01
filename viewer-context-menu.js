@@ -53,7 +53,7 @@
       ] },
       ...(annotationsAvailable() ? [
         sep(),
-        { label: '注釈', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+        { label: 'アノテート', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
       ] : []),
       ...(window.MeldexStandaloneDefaultApps?.isAvailable?.() ? [
         sep(),

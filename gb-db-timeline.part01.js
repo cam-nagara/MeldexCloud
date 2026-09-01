@@ -7,8 +7,13 @@ const TL_SCALES = [
   {value:'millennium',label:'千年'}, {value:'ten_thousand',label:'万年'},
 ];
 
+function _timelineConfigType(options = {}) {
+  return options.viewType === 'gantt' || options.ctx?.viewMode === 'gantt' ? 'gantt' : 'timeline';
+}
+
 function getTimelineConfig(dbPath, options = {}) {
-  const cfg = getCurrentDbViewTypeSpecific(dbPath, 'timeline', { ctx: options.ctx || null }) || {};
+  const configType = _timelineConfigType(options);
+  const cfg = getCurrentDbViewTypeSpecific(dbPath, configType, { ctx: options.ctx || null }) || {};
   return typeof _normalizeDbTimelineTypeSpecific === 'function'
     ? _normalizeDbTimelineTypeSpecific(cfg)
     : {
@@ -29,16 +34,46 @@ function getTimelineConfig(dbPath, options = {}) {
     };
 }
 function setTimelineConfig(dbPath, cfg, options = {}) {
+  const configType = _timelineConfigType(options);
   const label = options.historyLabel || options.label || '';
   const normalized = typeof _normalizeDbTimelineTypeSpecific === 'function'
     ? _normalizeDbTimelineTypeSpecific(cfg)
     : { ...(cfg || {}) };
-  setCurrentDbViewTypeSpecific(dbPath, 'timeline', normalized, {
+  setCurrentDbViewTypeSpecific(dbPath, configType, normalized, {
     ctx: options.ctx || null,
     historyLabel: label,
     detail: options.detail || '',
     skipHistory: options.skipHistory === true || !label,
   });
+}
+
+function renderGantt(ctx) {
+  ctx = ctx || _currentPaneState();
+  if (ctx) ctx.viewMode = 'gantt';
+  return renderTimeline(ctx);
+}
+
+function _appendGanttUnscheduled(container, entries, dbPath, ctx) {
+  if (!container || !entries?.length) return;
+  const unscheduled = document.createElement('section');
+  unscheduled.className = 'tl-gantt-unscheduled';
+  unscheduled.dataset.e2eId = 'gantt-unscheduled';
+  const heading = document.createElement('div');
+  heading.className = 'tl-gantt-unscheduled-title';
+  heading.textContent = `未スケジュール (${entries.length})`;
+  unscheduled.appendChild(heading);
+  const list = document.createElement('div');
+  list.className = 'tl-gantt-unscheduled-list';
+  entries.forEach(entry => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tl-gantt-unscheduled-item';
+    button.innerHTML = `<span>${esc(entry.name)}</span><small>${esc(entry.reason)}</small>`;
+    button.addEventListener('click', () => selectEntity(_entityPath(dbPath, entry.name, ctx?.pivotData)));
+    list.appendChild(button);
+  });
+  unscheduled.appendChild(list);
+  container.appendChild(unscheduled);
 }
 
 function _timelineColKey(col) {
@@ -623,6 +658,8 @@ function _cancelTimelineEntitySingleClick(el) {
 
 function renderTimeline(ctx) {
   ctx = ctx || _currentPaneState();
+  const isGantt = ctx?.viewMode === 'gantt'
+    || (typeof getCurrentViewMode === 'function' && getCurrentViewMode(ctx?.dbPath || state.currentDbPath, { ctx }) === 'gantt');
   const data = ctx.pivotData || state.pivotData;
   const container = typeof _dbViewSurfaceEl === 'function'
     ? _dbViewSurfaceEl(ctx, '.timeline-view', 'timeline-view')
@@ -634,6 +671,7 @@ function renderTimeline(ctx) {
   container.style.display = '';
   if (!data || !data.entities) { container.innerHTML = ''; return; }
   const dbPath = ctx.dbPath || state.currentDbPath;
+  container.dataset.dbTimeView = isGantt ? 'gantt' : 'timeline';
   if (typeof syncDbCellDisplayToolbar === 'function') syncDbCellDisplayToolbar(dbPath);
 
   // カレンダーソースDBの場合はカレンダーモードに分岐
@@ -653,7 +691,8 @@ function renderTimeline(ctx) {
     }
   }
 
-  let cfg = getTimelineConfig(dbPath, { ctx });
+  let cfg = getTimelineConfig(dbPath, { ctx, viewType: isGantt ? 'gantt' : 'timeline' });
+  if (isGantt) cfg = { ...cfg, rowProp: '_entity', direction: 'horizontal' };
   const calendarSystem = typeof _timelineActiveCalendarSystem === 'function'
     ? _timelineActiveCalendarSystem(cfg)
     : null;
@@ -670,6 +709,7 @@ function renderTimeline(ctx) {
   const schemaProps = Object.keys(propTypes || {});
   const timelineProps = Array.from(new Set([...props, ...schemaProps, cfg.timeProp, cfg.endProp, cfg.rowProp].filter(p => p && p !== '_entity')));
   const dateProps = timelineProps.filter(p => (propTypes?.[p]?.type || '') === 'date');
+  const numberProps = timelineProps.filter(p => ['number', 'formula'].includes(propTypes?.[p]?.type || ''));
   if (cfg.timeProp && !dateProps.includes(cfg.timeProp)) cfg = { ...cfg, timeProp: '' };
   if (cfg.endProp && !dateProps.includes(cfg.endProp)) cfg = { ...cfg, endProp: '' };
   const timePropOptions = dateProps.length
@@ -677,6 +717,7 @@ function renderTimeline(ctx) {
       + dateProps.map(p => `<option value="${esc(p)}" ${cfg.timeProp===p?'selected':''}>${esc(p)}</option>`).join('')
     : '<option value="">(日時列なし)</option>';
   const endPropOptions = dateProps.map(p => `<option value="${esc(p)}" ${cfg.endProp===p?'selected':''}>${esc(p)}</option>`).join('');
+  const progressPropOptions = numberProps.map(p => `<option value="${esc(p)}" ${cfg.progressProp===p?'selected':''}>${esc(p)}</option>`).join('');
 
   container.innerHTML = '';
 
@@ -698,12 +739,13 @@ function renderTimeline(ctx) {
 
   // 時間軸プロパティ
   settings.innerHTML = `
+    ${isGantt ? `<span class="tl-view-kind" data-e2e-id="gantt-view-label">${lucide('ganttChart', 14)} ガント</span>` : ''}
     <label>開始日時: <select id="tl-time-prop" class="gb-select">${timePropOptions}</select></label>
     <label>終了日時: <select id="tl-end-prop" class="gb-select">
       <option value="" ${!cfg.endProp?'selected':''}>(なし)</option>
       ${endPropOptions}
     </select></label>
-    <label>行/列軸: <select id="tl-row-prop" class="gb-select">
+    <label${isGantt ? ' hidden' : ''}>行/列軸: <select id="tl-row-prop" class="gb-select">
       <option value="_entity" ${cfg.rowProp==='_entity'?'selected':''}>トピック名</option>
       ${timelineProps.map(p => `<option value="${esc(p)}" ${cfg.rowProp===p?'selected':''}>${esc(p)}</option>`).join('')}
     </select></label>
@@ -712,7 +754,8 @@ function renderTimeline(ctx) {
     <button type="button" id="tl-calendar-open" class="tl-nav-btn" title="暦プリセットと暦体系を編集">暦: ${esc(calendarName)}</button>
     <label>単位: <select id="tl-scale" class="gb-select">${typeof _timelineScaleOptionsHtml === 'function' ? _timelineScaleOptionsHtml(calendarSystem, cfg.scale) : TL_SCALES.map(s => `<option value="${s.value}" ${cfg.scale===s.value?'selected':''}>${s.label}</option>`).join('')}</select></label>
     <label${timeStepStyle}>時間間隔(分): <input type="number" id="tl-time-step-minutes" class="gb-input tl-number-input tl-step-input" min="1" max="1440" step="1" value="${esc(_timelineTimeStepMinutes(cfg))}"></label>
-    <label>方向: <select id="tl-direction" class="gb-select">
+    ${isGantt ? `<label>進捗: <select id="tl-progress-prop" class="gb-select"><option value="">(なし)</option>${progressPropOptions}</select></label>` : ''}
+    <label${isGantt ? ' hidden' : ''}>方向: <select id="tl-direction" class="gb-select">
       <option value="horizontal" ${cfg.direction==='horizontal'?'selected':''}>→ 横方向（時間が右）</option>
       <option value="vertical" ${cfg.direction==='vertical'?'selected':''}>↓ 縦方向（時間が下）</option>
     </select></label>
@@ -744,17 +787,18 @@ function renderTimeline(ctx) {
       displayEnd: settings.querySelector('#tl-display-end')?.value || '',
       timeStepMinutes: _timelineTimeStepMinutes({ timeStepMinutes: settings.querySelector('#tl-time-step-minutes')?.value || cfg.timeStepMinutes || 1 }),
       scale: settings.querySelector('#tl-scale').value,
-      direction: settings.querySelector('#tl-direction').value,
+      direction: isGantt ? 'horizontal' : settings.querySelector('#tl-direction').value,
+      progressProp: settings.querySelector('#tl-progress-prop')?.value || '',
     }, {
-      label: 'シート表示: タイムライン設定',
+      label: isGantt ? 'シート表示: ガント設定' : 'シート表示: タイムライン設定',
       detail: el?.closest('label')?.textContent?.split(':')[0]?.trim() || '',
       ctx,
     });
-    renderTimeline(ctx);
+    if (isGantt) renderGantt(ctx); else renderTimeline(ctx);
   };
 
   // 設定変更イベント
-  ['tl-time-prop','tl-end-prop','tl-row-prop','tl-display-start','tl-display-end','tl-scale','tl-time-step-minutes','tl-direction'].forEach(id => {
+  ['tl-time-prop','tl-end-prop','tl-row-prop','tl-display-start','tl-display-end','tl-scale','tl-time-step-minutes','tl-direction','tl-progress-prop'].forEach(id => {
     const el = settings.querySelector('#' + id);
     if (el && !el.dataset.tlCalendarDateHidden) el.onchange = () => applyTimelineSettingsChange(el);
   });
@@ -790,6 +834,7 @@ function renderTimeline(ctx) {
 
   // データ収集: 各エントリの時間値と行値を取得
   const entries = [];
+  const unscheduledEntries = [];
   if (cfg.timeProp) entityNames.forEach(name => {
     const ed = entitiesMap[name];
     const timeVals = filterValues(ed[cfg.timeProp] || [], undefined, ctx?.filter);
@@ -812,7 +857,10 @@ function renderTimeline(ctx) {
       const rv = filterValues(ed[cfg.rowProp] || [], undefined, ctx?.filter);
       rowVal = rv.length > 0 ? rv[0].value : '(未設定)';
     }
-    if (timeVal) entries.push({ name, timeVal, endVal, rowVal, data: ed, filterMode: ctx?.filter });
+    const progressRaw = cfg.progressProp ? _timelineEntryPropDisplay({ data: ed, filterMode: ctx?.filter }, cfg.progressProp, ctx?.filter) : '';
+    const progress = Math.max(0, Math.min(100, Number.parseFloat(progressRaw) || 0));
+    if (timeVal) entries.push({ name, timeVal, endVal, rowVal, data: ed, filterMode: ctx?.filter, progress });
+    else if (isGantt) unscheduledEntries.push({ name, data: ed, reason: cfg.timeProp ? `${cfg.timeProp}が未設定` : '開始日時列が未設定' });
   });
 
   const timeGroups = new Set(explicitTimeArr);
@@ -828,7 +876,8 @@ function renderTimeline(ctx) {
   const rowArr = _applyTimelineRowOrder(rowArrBase, cfg);
 
   if (timeArr.length === 0 || rowArr.length === 0) {
-    container.insertAdjacentHTML('beforeend', '<div style="padding:24px;color:var(--fg2);">データがありません</div>');
+    if (isGantt && unscheduledEntries.length) _appendGanttUnscheduled(container, unscheduledEntries, dbPath, ctx);
+    else container.insertAdjacentHTML('beforeend', '<div style="padding:24px;color:var(--fg2);">データがありません</div>');
     return;
   }
 
@@ -870,6 +919,7 @@ function renderTimeline(ctx) {
     th.dataset.tlColIndex = String(ci);
     th.dataset.tlValue = String(col);
     th.title = String(col);
+    if (isGantt && isHorizontal && roundTimelineValue(new Date().toISOString()) === col) th.classList.add('tl-today-column');
     if (!isHorizontal) _bindTimelineHeaderReorder(th, dbPath, cfg, rowArr, col, ctx);
     _bindTimelineColumnResize(th, grid, dbPath, cfg, cols, col, ctx);
     grid.appendChild(th);
@@ -884,6 +934,17 @@ function renderTimeline(ctx) {
     const rowLabel = rowHeaderKind === 'time' ? displayTimelineGroup(row) : row;
     if (typeof _setupTimelineHeaderCell === 'function') _setupTimelineHeaderCell(rh, rowLabel, { dbPath, cfg, ctx, value: row, kind: rowHeaderKind, isRowHeader: true, axisValues: rowArr, timeValues: timeArr }, axisColors);
     else rh.textContent = rowLabel;
+    if (isGantt && entitiesMap[row] && Array.isArray(cfg.cardProps) && cfg.cardProps.length) {
+      const details = cfg.cardProps.slice(0, 2)
+        .map(prop => _timelineEntryPropDisplay({ data: entitiesMap[row], filterMode: ctx?.filter }, prop, ctx?.filter))
+        .filter(Boolean);
+      if (details.length) {
+        const meta = document.createElement('span');
+        meta.className = 'tl-gantt-row-meta';
+        meta.textContent = details.join(' · ');
+        rh.appendChild(meta);
+      }
+    }
     rh.style.gridRow = (ri + 2) + ''; rh.style.gridColumn = '1';
     rh.dataset.tlValue = String(row);
     rh.title = String(row);
@@ -897,6 +958,7 @@ function renderTimeline(ctx) {
       cell.style.gridRow = (ri + 2) + ''; cell.style.gridColumn = (ci + 2) + '';
       cell.dataset.row = row; cell.dataset.col = col;
       cell.dataset.tlColIndex = String(ci);
+      if (isGantt && isHorizontal && roundTimelineValue(new Date().toISOString()) === col) cell.classList.add('tl-today-column');
       if (typeof _applyTimelineVisibleColor === 'function') _applyTimelineVisibleColor(cell, axisColors, isHorizontal ? row : col, isHorizontal ? col : row);
 
       // D&D: ドロップ先
@@ -1043,6 +1105,7 @@ function renderTimeline(ctx) {
       }).forEach(e => {
         const card = document.createElement('div');
         card.className = 'tl-card';
+        if (isGantt) card.classList.add('tl-gantt-milestone');
         card.dataset.entity = e.name;
         card.dataset.entityName = e.name;
         card.dataset.meldexEntityPath = _entityPath(dbPath, e.name, ctx?.pivotData);
@@ -1095,6 +1158,7 @@ function renderTimeline(ctx) {
 
       const bar = document.createElement('div');
       bar.className = 'tl-bar';
+      if (isGantt) bar.classList.add('tl-gantt-bar');
       bar.dataset.entity = e.name;
 
       if (isHorizontal) {
@@ -1114,6 +1178,13 @@ function renderTimeline(ctx) {
       // リサイズハンドル
       const handleL = document.createElement('div');
       handleL.className = 'tl-bar-handle tl-bar-handle-left';
+      if (isGantt && cfg.progressProp) {
+        const progress = document.createElement('span');
+        progress.className = 'tl-gantt-progress';
+        progress.style.width = `${e.progress}%`;
+        progress.title = `${cfg.progressProp}: ${e.progress}%`;
+        bar.appendChild(progress);
+      }
       const label = document.createElement('span');
       label.className = 'tl-bar-label';
       _renderTimelineEntityContent(label, e, cfg, { titleClass: 'tl-bar-title', dbPath, propTypes, editable: true, ctx, filter: ctx?.filter });
@@ -1261,6 +1332,10 @@ function renderTimeline(ctx) {
   }
 
   container.appendChild(grid);
+
+  if (isGantt && unscheduledEntries.length) {
+    _appendGanttUnscheduled(container, unscheduledEntries, dbPath, ctx);
+  }
 
   // 依存矢印の描画（ペアリレーションが設定されている場合）
   requestAnimationFrame(() => _renderDependencyArrows(grid, dbPath, entitiesMap, entries));

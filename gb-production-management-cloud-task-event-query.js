@@ -28,20 +28,20 @@
     if (planned && user && planned.includes('|')) {
       const [start, end] = planned.split('|', 2);
       const segments = _pmCloudTaskSegments(_pmCloudPropValue(fm, '作業予定区間'), start, end);
-      const calendarId = await _pmEnsureCloudCalendar(provider, internals, `作業予定: ${user}`, '#569cd6', 'production-task', user);
+      const scope = _pmCloudMemberScope(user, fm || {});
+      const calendarId = await _pmEnsureCloudCalendar(provider, internals, `作業予定: ${user}`, '#569cd6', 'production-task', user, fm || {});
       const key = _pmCloudPropValue(fm, '作成キー');
       const work = _pmCloudPropValue(fm, '作品タイトル');
       const locked = /^(true|1|yes|on)$/i.test(_pmCloudPropValue(fm, '再計算ロック'));
       const now = new Date().toISOString();
-      // 制作管理UX改善計画（2026-08-04）§6-3: タスクの「対象色」をイベント色へ反映する
-      // （未設定時は現行の既定色）。カレンダー自体の既定色は変えない（Desktop
-      // meldex_production_management._upsert_work_event と同じ方針）。
-      const eventColor = String(_pmCloudPropValue(fm, '対象色') || '').trim() || '#569cd6';
+      // 対象色がある時だけ個別色とし、空なら作業予定カレンダーの色を継承する。
+      // nullable override はDesktopのmeldex_calendar_mutation_serviceと同じ契約。
+      const eventColorOverride = String(_pmCloudPropValue(fm, '対象色') || '').trim();
       segments.forEach((segment, index) => {
         const id = index ? `${baseId}:part:${index + 1}` : baseId;
         const old = before.find(event => String(event?.id || '') === id);
         const detail = ['元シート: ' + path, work && '作品タイトル: ' + work, key && '作成キー: ' + key, locked && '再計算ロック: true', segments.length > 1 && `作業区間: ${index + 1}/${segments.length}`].filter(Boolean).join('\n');
-        events.push({ id, title: internals._basename(path).replace(/\.md$/i, ''), start: segment.start, end: segment.end, all_day: 0, color: eventColor, description: detail, location: '', url: key ? `production-task-key:${key}` : '', recurrence: '', external_id: taskId, calendar_source: 'production-task', user, creator: user, calendar_id: calendarId, alert_minutes: -1, created: old?.created || now, modified: now });
+        events.push({ id, title: internals._basename(path).replace(/\.md$/i, ''), start: segment.start, end: segment.end, all_day: 0, color: eventColorOverride || old?.color || '#569cd6', color_override: eventColorOverride || null, description: detail, location: '', url: key ? `production-task-key:${key}` : '', recurrence: '', external_id: taskId, calendar_source: 'production-task', user, creator: user, calendar_id: calendarId, workspace_id: scope.workspace_id, member_id: scope.member_id, alert_minutes: -1, created: old?.created || now, modified: now });
       });
     }
     await _pmWriteCalendarStore(provider, internals, 'events', events);
@@ -101,7 +101,9 @@
       // 分類（作業対象・作業内容・作業規模）が揃っている場合のみ、目標作業時間_値／
       // 目標作業時間を計算式（基準×内容倍率×規模倍率×対象数）で上書きする。分類が1つでも
       // 欠けている場合はテンプレートの目標作業時間_値（分類が無い場合の手動指定値）を温存する。
-      await _pmCloudApplyTemplateInstanceDuration(provider, internals, props);
+      const selectedTemplateId = String((work && _pmCloudPropValue(work.frontmatter, '使用する作業テンプレート'))
+        || _pmCloudPropValue(template.frontmatter, '作業テンプレート') || '');
+      await _pmCloudApplyTemplateInstanceDuration(provider, internals, props, selectedTemplateId);
       const name = String(body?.task_name || overrides.name_override || overrides.name || props['タスク名'] || _pmCloudPropValue(template.frontmatter, 'テンプレート名') || '無題タスク').trim() || '無題タスク';
       delete props['タスク名'];
       const surface = String(body?.drop?.surface || body?.surface || 'list').toLowerCase();

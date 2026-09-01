@@ -54,7 +54,7 @@
   cursor: default;
   color: var(--ui-disabled-fg, var(--fg2));
   background: var(--ui-disabled-bg, var(--bg2));
-  border-color: var(--ui-disabled-border, var(--border));
+  border-color: transparent;
 }
 
 .chat-target-clear,

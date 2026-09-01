@@ -8,10 +8,6 @@
   let SIDEBAR_ID_SEQ = 0;
   const MODES = [
     ['detail', '詳細', 'fileText'],
-    ['project', 'プロジェクト', 'folderKanban'],
-    ['taskSettings', 'タスク設定', 'listChecks'],
-    ['allocation', '割り当て', 'calendarClock'],
-    ['calendar', 'カレンダー', 'calendarDays'],
   ];
   // production-tasklist-redesign-plan-2026-07-15 3.2章: 大分類=作品そのものになったため、
   // レベル列は新規タスクリストシートの 中分類/小分類/詳細分類（旧: 単位レベル1/2/3）を指す。
@@ -54,13 +50,6 @@
 
   function workTitle(row) {
     return prop(row, '作品タイトル') || row?.name || prop(row, '作品タイトル_話数');
-  }
-
-  function collaborationPath(row) {
-    const path = String(row?.path || '').trim();
-    if (!path || /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(path)) return path;
-    const home = String(typeof _homeFolderPath !== 'undefined' ? _homeFolderPath || '' : window._homeFolderPath || '').replace(/[\\/]+$/, '');
-    return home ? `${home}/${path.replace(/^[\\/]+/, '')}` : path;
   }
 
   function componentFor(options = {}) {
@@ -520,6 +509,124 @@
     return section;
   }
 
+  function taskTopicResources(row) {
+    const host = document.createElement('section');
+    host.className = 'gb-production-task-topic-resources';
+    host.dataset.e2eId = 'gb-production-task-topic-resources';
+    host.dataset.state = 'loading';
+    host.setAttribute('aria-busy', 'true');
+    host.setAttribute('aria-label', 'タスクのノートとチャット');
+    const state = document.createElement('p');
+    state.className = 'gb-production-sidebar-readonly-value';
+    state.setAttribute('role', 'status');
+    state.textContent = 'リンク済みノートとチャットを読み込み中…';
+    host.appendChild(state);
+    const entryPath = String(row?.path || '').trim();
+    let loadSeq = 0;
+    const pendingCreation = new Map();
+    const render = async () => {
+      const seq = ++loadSeq;
+      host.dataset.state = 'loading';
+      host.setAttribute('aria-busy', 'true');
+      if (!entryPath || typeof apiFetch !== 'function') {
+        host.dataset.state = 'error';
+        host.setAttribute('aria-busy', 'false');
+        state.textContent = 'このタスクの関連リソースを読み込めませんでした';
+        return;
+      }
+      try {
+        const data = await apiFetch('/entity?path=' + encodeURIComponent(entryPath), { silentError: true });
+        if (seq !== loadSeq || !host.isConnected) return;
+        const topicRef = data?.topicRef || data?.frontmatter?.topicRef || row?.topicRef || null;
+        if (!topicRef?.sourceId || !topicRef?.topicId) throw new Error('タスクのTopicRefを確認できませんでした');
+        host.dataset.topicSourceId = String(topicRef.sourceId);
+        host.dataset.topicId = String(topicRef.topicId);
+        const topicPath = '/topic-stores/' + encodeURIComponent(topicRef.sourceId)
+          + '/topics/' + encodeURIComponent(topicRef.topicId);
+        const topicData = await apiFetch(topicPath, { silentError: true });
+        const topic = topicData?.topic || topicData?.record;
+        if (!topic) throw new Error('関連リソースの正本を読み込めませんでした');
+        const availability = window.MeldexProductionUiAvailability?.current?.() || {};
+        const resources = Array.isArray(topic.resources) ? topic.resources : [];
+        host.dataset.state = resources.length ? 'ready' : 'empty';
+        host.setAttribute('aria-busy', 'false');
+        const heading = document.createElement('strong');
+        heading.textContent = '関連ノート・チャット';
+        const list = document.createElement('ul');
+        list.className = 'gb-production-topic-resource-list';
+        if (!resources.length) {
+          const empty = document.createElement('li');
+          empty.className = 'gb-production-topic-resource-empty';
+          empty.textContent = '関連リソースはまだありません';
+          list.appendChild(empty);
+        }
+        resources.forEach((resource, index) => {
+          const item = document.createElement('li');
+          const link = document.createElement('button');
+          link.type = 'button'; link.className = 'gb-production-topic-resource-open';
+          const href = String(resource?.href || resource?.path || resource?.url || '').trim();
+          link.textContent = String(resource?.label || resource?.title || href || '関連リソース');
+          link.dataset.e2eId = 'gb-production-topic-resource-open';
+          link.dataset.resourcePath = href;
+          link.addEventListener('click', () => {
+            window.MeldexSheetEntryAttachments?.openAttachment?.({
+              path: href, name: href.split('/').pop(),
+              kind: String(resource?.resourceType || '').includes('chat') ? 'chat' : 'note',
+            }, entryPath);
+          });
+          const detach = document.createElement('button');
+          detach.type = 'button'; detach.textContent = 'リンク解除'; detach.disabled = !!availability.blocked;
+          detach.dataset.e2eId = 'gb-production-topic-resource-detach';
+          detach.dataset.resourcePath = href;
+          detach.addEventListener('click', async () => {
+            const next = resources.filter((_value, resourceIndex) => resourceIndex !== index);
+            await apiFetch(topicPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true, body: JSON.stringify({
+              mutationId: 'production-resource-detach-' + Date.now() + '-' + index,
+              baseRevision: topic.revision,
+              changes: { resources: next },
+            }) });
+            render();
+          });
+          item.append(link, detach); list.appendChild(item);
+        });
+        const actions = document.createElement('div');
+        actions.className = 'gb-production-topic-resource-actions';
+        const createResource = async (kind, defaultLabel) => {
+          const label = window.prompt?.(`${defaultLabel}の名前を入力してください`, defaultLabel);
+          if (label == null) return;
+          const key = kind + '\0' + String(label);
+          const mutationId = pendingCreation.get(key)
+            || `production-resource-create-${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          pendingCreation.set(key, mutationId);
+          await apiFetch('/production-management/topic-resources/create', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, silentError: true,
+            body: JSON.stringify({ topicRef, type: kind, label: String(label).trim() || defaultLabel, mutation_id: mutationId }),
+          });
+          pendingCreation.delete(key);
+          await render();
+        };
+        [['note', '新規ノート'], ['chat', '新規チャット']].forEach(([kind, label]) => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.textContent = label; button.disabled = !!availability.blocked;
+          button.dataset.e2eId = `gb-production-topic-create-${kind}`;
+          button.addEventListener('click', () => createResource(kind, label).catch(error => {
+            if (typeof showStatus === 'function') showStatus(error?.message || `${label}を作成できませんでした`, true);
+          }));
+          actions.appendChild(button);
+        });
+        host.replaceChildren(heading, list, actions);
+      } catch (error) {
+        if (seq !== loadSeq || !host.isConnected) return;
+        host.dataset.state = 'error';
+        host.setAttribute('aria-busy', 'false');
+        host.replaceChildren(state);
+        state.textContent = error?.message || 'このタスクの関連リソースを読み込めませんでした';
+      }
+    };
+    queueMicrotask(render);
+    return host;
+  }
+
   function taskDetail(content, row, options) {
     content.replaceChildren();
     if (!row) {
@@ -593,14 +700,6 @@
       formatScheduleHoursDisplay(prop(row, '作業時間_実績') || prop(row, '実績作業時間')),
       { e2eId: 'gb-production-task-detail-actual-hours' },
     ));
-    buildField(
-      '作業参加者',
-      '応援参加者',
-      'text',
-      null,
-      undefined,
-      '作業中のタスクへ途中参加するメンバーを、カンマ区切りで指定します',
-    );
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
@@ -659,7 +758,6 @@
     collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
     collaboration.setAttribute('role', 'group');
     collaboration.setAttribute('aria-label', 'タスクについて相談・確認');
-    const chatPath = collaborationPath(row);
     const runCollaboration = async (control, failureMessage, callback) => {
       if (control.dataset.busy === 'true') return;
       control.dataset.busy = 'true';
@@ -673,29 +771,8 @@
         control.setAttribute('aria-busy', 'false');
       }
     };
-    const chat = button('チャット', 'messageSquare', () => runCollaboration(chat, 'このタスクのチャットを開けません', async () => {
-      if (!chatPath || typeof window.openEntityChatForPath !== 'function') throw new Error('このタスクのチャットを開けません');
-      const opened = await window.openEntityChatForPath(chatPath);
-      if (opened === false) throw new Error('このタスクのチャットを開けません');
-      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
-        detail: { kind: 'chat', path: row.path, resolvedPath: chatPath },
-      }));
-      status('このタスクのチャットを開きました');
-    }));
-    chat.dataset.e2eId = 'gb-production-task-collaboration-chat';
-    chat.dataset.gbTooltip = 'このタスクのチャットで相談し、ファイルを共有します';
-    const note = button('ノート', 'fileText', () => runCollaboration(note, 'このタスクのノートを開けません', async () => {
-      if (!row.path || typeof openPage !== 'function') throw new Error('このタスクのノートを開けません');
-      await openPage(row.name || '制作タスク', row.path);
-      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
-        detail: { kind: 'note', path: row.path },
-      }));
-      status('このタスクのノートを開きました');
-    }));
-    note.dataset.e2eId = 'gb-production-task-collaboration-note';
-    note.dataset.gbTooltip = 'このタスクのノートを開きます';
-    const annotation = button('注釈', 'messagesSquare', () => runCollaboration(annotation, 'このタスクの注釈を開けません', async () => {
-      if (!row.path || typeof openPage !== 'function' || typeof openRightPanelTab !== 'function') throw new Error('このタスクの注釈を開けません');
+    const annotation = button('アノテート', 'squarePen', () => runCollaboration(annotation, 'このタスクのアノテートを開けません', async () => {
+      if (!row.path || typeof openPage !== 'function' || typeof openRightPanelTab !== 'function') throw new Error('このタスクのアノテートを開けません');
       await openPage(row.name || '制作タスク', row.path);
       openRightPanelTab('annotation', { surface: 'main' });
       const annotationOpened = document.getElementById('right-panel')?.classList.contains('open')
@@ -704,11 +781,11 @@
         document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
           detail: { kind: 'annotation', path: row.path },
         }));
-        status('このタスクの注釈を開きました');
-      } else throw new Error('このタスクの注釈を開けません');
+        status('このタスクのアノテートを開きました');
+      } else throw new Error('このタスクのアノテートを開けません');
     }));
     annotation.dataset.e2eId = 'gb-production-task-collaboration-annotation';
-    annotation.dataset.gbTooltip = 'このタスクの注釈を開きます';
+    annotation.dataset.gbTooltip = 'このタスクのアノテートを開きます';
     const notifications = button('通知', 'bell', () => runCollaboration(notifications, '通知を確認できません', async () => {
       const calendar = componentFor(options);
       if (typeof calendar?._checkAlarms !== 'function') throw new Error('通知を確認できません');
@@ -717,7 +794,7 @@
     }));
     notifications.dataset.e2eId = 'gb-production-task-collaboration-notifications';
     notifications.dataset.gbTooltip = '現在の通知を確認します';
-    collaboration.append(chat, note, annotation, notifications);
+    collaboration.append(annotation, notifications);
     form.appendChild(actions);
     form.appendChild(collaboration);
     window.MeldexProductionUiAvailability?.markWriteForm?.(form);
@@ -777,67 +854,39 @@
         if (savingState) savingState.saveInFlight = false;
       }
     });
-    content.append(header, form, classificationEditor(row, component, options));
+    content.append(header, form, taskTopicResources(row), classificationEditor(row, component, options));
   }
 
   function buildShell(body, state, options) {
     body.replaceChildren();
     const shell = document.createElement('div');
     shell.className = 'gb-production-sidebar';
-    const tabs = document.createElement('div');
-    tabs.className = 'gb-production-sidebar-tabs';
-    tabs.setAttribute('role', 'tablist');
-    tabs.setAttribute('aria-label', 'スケジュールのオプション');
     state.sidebarDomId = state.sidebarDomId || `gb-production-sidebar-${++SIDEBAR_ID_SEQ}`;
     const panelId = `${state.sidebarDomId}-panel`;
-    const activateMode = (key, focusAfterActivation = false) => {
-      if (state.mode === key) return;
-      runAfterDiscardConfirmation(body, false, () => render(body, {
-        ...options,
-        mode: key,
-        focusSidebarMode: focusAfterActivation ? key : '',
-      }));
-    };
-    MODES.forEach(([key, label, iconName]) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.className = 'gb-production-sidebar-tab' + (state.mode === key ? ' is-active' : '');
-      tab.dataset.productionSidebarMode = key;
-      tab.dataset.e2eId = `gb-production-sidebar-${key}`;
-      tab.id = `${state.sidebarDomId}-tab-${key}`;
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-controls', panelId);
-      tab.setAttribute('aria-selected', state.mode === key ? 'true' : 'false');
-      tab.tabIndex = state.mode === key ? 0 : -1;
-      tab.append(icon(iconName), document.createTextNode(label));
-      tab.addEventListener('click', () => activateMode(key));
-      tabs.appendChild(tab);
+    const entrances = document.createElement('div');
+    entrances.className = 'gb-production-sidebar-entrances';
+    entrances.setAttribute('role', 'group');
+    entrances.setAttribute('aria-label', '制作管理の主要操作');
+    const project = button('プロジェクト', 'folderKanban', () => {
+      runAfterDiscardConfirmation(body, false, () => options.component?._selectProductionTab?.('works'));
     });
-    tabs.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      const tabButtons = [...tabs.querySelectorAll('[role="tab"]')].filter(tab => !tab.disabled);
-      const currentIndex = tabButtons.indexOf(event.target.closest('[role="tab"]'));
-      if (currentIndex < 0 || !tabButtons.length) return;
-      event.preventDefault();
-      const nextIndex = event.key === 'Home' ? 0
-        : event.key === 'End' ? tabButtons.length - 1
-        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabButtons.length) % tabButtons.length;
-      const nextMode = tabButtons[nextIndex].dataset.productionSidebarMode;
-      tabButtons[nextIndex].focus();
-      activateMode(nextMode, true);
+    project.dataset.e2eId = 'gb-production-sidebar-open-projects';
+    const settings = button('制作設定', 'settings2', () => {
+      window.MeldexProductionSettingsDialog?.open?.({ trigger: settings, component: options.component });
     });
+    settings.dataset.e2eId = 'gb-production-sidebar-open-settings';
+    const allocation = button('自動割り当て', 'calculator', () => {
+      const selectedTaskPaths = state.row?.path ? [state.row.path] : [];
+      window.MeldexSchedulerUi?.openAutoAllocation?.({ selectedTaskPaths });
+    });
+    allocation.dataset.e2eId = 'gb-production-sidebar-open-allocation';
+    entrances.append(project, settings, allocation);
     const content = document.createElement('div');
     content.className = 'gb-production-sidebar-content';
     content.id = panelId;
-    content.setAttribute('role', 'tabpanel');
-    content.setAttribute('aria-labelledby', `${state.sidebarDomId}-tab-${state.mode}`);
-    shell.append(tabs, content);
+    content.setAttribute('aria-label', '選択中の制作タスク');
+    shell.append(entrances, content);
     body.appendChild(shell);
-    if (options.focusSidebarMode === state.mode) {
-      queueMicrotask(() => body.querySelector(
-        `[data-production-sidebar-mode="${state.mode}"]`
-      )?.focus?.());
-    }
     return content;
   }
 
@@ -846,7 +895,10 @@
     notice.className = 'gb-production-task-list-sidebar-note';
     notice.dataset.e2eId = 'gb-production-task-list-sidebar-note';
     const title = document.createElement('strong');
-    title.innerHTML = 'タスクリストは表で編集します ' + fieldHelp('タスク詳細は、カレンダー上の制作予定を選んだときだけ表示されます。');
+    title.innerHTML = 'タスクリストは表で編集します ' + fieldHelp(
+      'タスク詳細は、カレンダー上の制作予定を選んだときだけ表示されます。',
+      { e2eId: 'gb-production-task-list-sidebar-help' },
+    );
     notice.append(title);
     content.appendChild(notice);
   }
@@ -946,21 +998,11 @@
   }
 
   function showTemplates(component) {
-    const body = optionBody(true);
-    if (!body) return;
-    runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'taskSettings', component });
-      openMobileProductionDrawer(body, 'タスク設定');
-    });
+    window.MeldexProductionSettingsDialog?.open?.({ component });
   }
 
   function showActions(component) {
-    const body = optionBody(true);
-    if (!body) return;
-    runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'allocation', component });
-      openMobileProductionDrawer(body, '割り当て');
-    });
+    window.MeldexProductionSettingsDialog?.open?.({ component });
   }
 
   function prepareTaskListSurface(component, onConfirmed) {

@@ -18,6 +18,8 @@
   /* ポップアップ共通背景（ドロップダウン・コンテキストメニュー・書式ポップアップ） */
   --ui-popup-bg: var(--bg2);
   --ui-bg-control-active: color-mix(in srgb, var(--accent) 18%, var(--bg3));
+  --ui-control-active-bg: color-mix(in srgb, var(--ui-bg-control-active) 94%, #000);
+  --ui-control-active-fg: var(--ui-fg-strong, var(--ui-fg-default));
   --ui-bg-selected: color-mix(in srgb, var(--accent) 24%, transparent);
   --ui-fg-default: var(--fg);
   --ui-fg-muted: var(--fg2);
@@ -37,10 +39,118 @@
   --ui-range-track-bg: color-mix(in srgb, var(--ui-border) 65%, var(--ui-toolbar-bg));
   --ui-border: color-mix(in srgb, var(--border) 55%, var(--fg2) 28%);
   --ui-border-strong: color-mix(in srgb, var(--border) 40%, var(--fg2) 45%);
-  /* ポップアップの外周は種類にかかわらず同じ明るさへ揃える。 */
-  --ui-popup-border: var(--ui-border-strong);
+  /* 全テーマプリセットで、ポップアップの外周はアクセントカラーを既定値にする。 */
+  --ui-popup-border: var(--ui-accent);
   --ui-accent: var(--accent);
   --ui-accent-fg: var(--ui-fg-strong);
+  --ui-button-fg: var(--ui-fg-default);
+  --ui-button-bg: var(--ui-bg-control);
+  --ui-button-border: var(--ui-border);
+  --ui-button-border-width: 1px;
+  --ui-button-left-accent: 0px;
+  --ui-button-underline: 0px;
+  --ui-button-accent-color: var(--ui-accent);
+  --ui-button-font: inherit;
+  --ui-button-font-size: var(--ui-font-13);
+  --ui-button-line-height: 100%;
+  --ui-button-font-weight: var(--ui-weight-medium);
+  --ui-button-font-style: normal;
+  --ui-button-hover-fg: var(--ui-hover-fg);
+  --ui-button-hover-bg: var(--ui-bg-control-hover);
+  --ui-button-hover-border: var(--ui-button-border);
+  --ui-button-hover-border-width: var(--ui-button-border-width);
+  --ui-button-hover-left-accent: 0px;
+  --ui-button-hover-underline: 0px;
+  --ui-button-hover-accent-color: var(--ui-accent);
+  --ui-button-hover-font: var(--ui-button-font);
+  --ui-button-hover-font-size: var(--ui-button-font-size);
+  --ui-button-hover-line-height: var(--ui-button-line-height);
+  --ui-button-hover-font-weight: var(--ui-button-font-weight);
+  --ui-button-hover-font-style: var(--ui-button-font-style);
+  --ui-button-active-fg: var(--ui-accent-fg);
+  --ui-button-active-bg: var(--ui-bg-control-active);
+  --ui-button-active-border: var(--ui-button-border);
+  --ui-button-active-border-width: var(--ui-button-border-width);
+  --ui-button-active-left-accent: 0px;
+  --ui-button-active-underline: 0px;
+  --ui-button-active-accent-color: var(--ui-accent);
+  --ui-button-active-font: var(--ui-button-font);
+  --ui-button-active-font-size: var(--ui-button-font-size);
+  --ui-button-active-line-height: var(--ui-button-line-height);
+  --ui-button-active-font-weight: var(--ui-button-font-weight);
+  --ui-button-active-font-style: var(--ui-button-font-style);
+  --ui-dock-button-fg: var(--ui-fg-default);
+  --ui-dock-button-bg: var(--ui-bg-control);
+  --ui-dock-button-border: transparent;
+  --ui-dock-button-border-width: 0px;
+  --ui-dock-button-left-accent: 0px;
+  --ui-dock-button-underline: 0px;
+  --ui-dock-button-accent-color: var(--ui-accent);
+  --ui-dock-button-font: inherit;
+  --ui-dock-button-font-size: var(--ui-font-13);
+  --ui-dock-button-line-height: 100%;
+  --ui-dock-button-font-weight: var(--ui-weight-medium);
+  --ui-dock-button-font-style: normal;
+  --ui-dock-button-hover-fg: var(--ui-fg-default);
+  --ui-dock-button-hover-bg: var(--ui-bg-control-hover);
+  --ui-dock-button-hover-border: var(--ui-dock-button-border);
+  --ui-dock-button-hover-border-width: var(--ui-dock-button-border-width);
+  --ui-dock-button-hover-left-accent: 0px;
+  --ui-dock-button-hover-underline: 0px;
+  --ui-dock-button-hover-accent-color: var(--ui-accent);
+  --ui-dock-button-hover-font: var(--ui-dock-button-font);
+  --ui-dock-button-hover-font-size: var(--ui-dock-button-font-size);
+  --ui-dock-button-hover-line-height: var(--ui-dock-button-line-height);
+  --ui-dock-button-hover-font-weight: var(--ui-dock-button-font-weight);
+  --ui-dock-button-hover-font-style: var(--ui-dock-button-font-style);
+  --ui-dock-button-active-fg: var(--ui-accent-fg);
+  --ui-dock-button-active-bg: color-mix(in srgb, var(--ui-accent) 94%, #000);
+  --ui-dock-button-active-border: transparent;
+  --ui-dock-button-active-border-width: 0px;
+  --ui-dock-button-active-left-accent: 2px;
+  --ui-dock-button-active-underline: 0px;
+  --ui-dock-button-active-accent-color: var(--ui-accent);
+  --ui-dock-button-active-font: var(--ui-dock-button-font);
+  --ui-dock-button-active-font-size: var(--ui-dock-button-font-size);
+  --ui-dock-button-active-line-height: var(--ui-dock-button-line-height);
+  --ui-dock-button-active-font-weight: var(--ui-dock-button-font-weight);
+  --ui-dock-button-active-font-style: var(--ui-dock-button-font-style);
+  --ui-pane-tab-fg: var(--ui-fg-muted);
+  --ui-pane-tab-bg: transparent;
+  --ui-pane-tab-border: var(--ui-border);
+  --ui-pane-tab-border-width: 0px;
+  --ui-pane-tab-left-accent: 0px;
+  --ui-pane-tab-underline: 0px;
+  --ui-pane-tab-accent-color: var(--ui-accent);
+  --ui-pane-tab-font: inherit;
+  --ui-pane-tab-font-size: var(--ui-font-11);
+  --ui-pane-tab-line-height: 100%;
+  --ui-pane-tab-font-weight: var(--ui-weight-regular);
+  --ui-pane-tab-font-style: normal;
+  --ui-pane-tab-hover-fg: var(--ui-hover-fg);
+  --ui-pane-tab-hover-bg: var(--ui-hover-bg);
+  --ui-pane-tab-hover-border: var(--ui-pane-tab-border);
+  --ui-pane-tab-hover-border-width: var(--ui-pane-tab-border-width);
+  --ui-pane-tab-hover-left-accent: 0px;
+  --ui-pane-tab-hover-underline: 0px;
+  --ui-pane-tab-hover-accent-color: var(--ui-accent);
+  --ui-pane-tab-hover-font: var(--ui-pane-tab-font);
+  --ui-pane-tab-hover-font-size: var(--ui-pane-tab-font-size);
+  --ui-pane-tab-hover-line-height: var(--ui-pane-tab-line-height);
+  --ui-pane-tab-hover-font-weight: var(--ui-pane-tab-font-weight);
+  --ui-pane-tab-hover-font-style: var(--ui-pane-tab-font-style);
+  --ui-pane-tab-active-fg: var(--ui-fg-default);
+  --ui-pane-tab-active-bg: var(--ui-bg-panel);
+  --ui-pane-tab-active-border: var(--ui-pane-tab-border);
+  --ui-pane-tab-active-border-width: var(--ui-pane-tab-border-width);
+  --ui-pane-tab-active-left-accent: 0px;
+  --ui-pane-tab-active-underline: var(--ui-accent);
+  --ui-pane-tab-active-underline-width: 2px;
+  --ui-pane-tab-active-font: var(--ui-pane-tab-font);
+  --ui-pane-tab-active-font-size: var(--ui-pane-tab-font-size);
+  --ui-pane-tab-active-line-height: var(--ui-pane-tab-line-height);
+  --ui-pane-tab-active-font-weight: var(--ui-weight-regular);
+  --ui-pane-tab-active-font-style: var(--ui-pane-tab-font-style);
   --ui-inner-tabbar-bg: var(--ui-bg-panel);
   --ui-inner-tabbar-border: var(--ui-border);
   --ui-inner-tabbar-border-width: 1px;
@@ -56,9 +166,34 @@
   --ui-inner-tab-padding-x: var(--ui-space-5);
   --ui-inner-tab-font: inherit;
   --ui-inner-tab-font-size: var(--ui-font-12);
+  --ui-inner-tab-line-height: 100%;
   --ui-inner-tab-font-weight: var(--ui-weight-medium);
+  --ui-inner-tab-font-style: normal;
+  --ui-inner-tab-border: transparent;
+  --ui-inner-tab-border-width: 0px;
+  --ui-inner-tab-left-accent: 0px;
+  --ui-inner-tab-underline: 0px;
+  --ui-inner-tab-accent-color: var(--ui-accent);
+  --ui-inner-tab-hover-border: transparent;
+  --ui-inner-tab-hover-border-width: 0px;
+  --ui-inner-tab-hover-left-accent: 0px;
+  --ui-inner-tab-hover-underline: 0px;
+  --ui-inner-tab-hover-accent-color: var(--ui-accent);
+  --ui-inner-tab-hover-font: var(--ui-inner-tab-font);
+  --ui-inner-tab-hover-font-size: var(--ui-inner-tab-font-size);
+  --ui-inner-tab-hover-line-height: var(--ui-inner-tab-line-height);
+  --ui-inner-tab-hover-font-weight: var(--ui-inner-tab-font-weight);
+  --ui-inner-tab-hover-font-style: var(--ui-inner-tab-font-style);
   --ui-inner-tab-active-font-weight: var(--ui-weight-semibold);
+  --ui-inner-tab-active-font: var(--ui-inner-tab-font);
+  --ui-inner-tab-active-font-size: var(--ui-inner-tab-font-size);
+  --ui-inner-tab-active-line-height: var(--ui-inner-tab-line-height);
+  --ui-inner-tab-active-font-style: var(--ui-inner-tab-font-style);
+  --ui-inner-tab-active-border: transparent;
+  --ui-inner-tab-active-border-width: 0px;
+  --ui-inner-tab-active-left-accent: 0px;
   --ui-inner-tab-underline-width: 2px;
+  --ui-inner-tab-active-underline-width: var(--ui-inner-tab-underline-width);
   --ui-danger: var(--red);
   --ui-warning: var(--orange);
   --ui-success: var(--green);
@@ -202,13 +337,15 @@
   gap: var(--ui-space-3);
   height: var(--ui-h-md);
   padding: 0 var(--ui-space-5);
-  font-size: var(--ui-font-13);
-  font-weight: var(--ui-weight-medium);
-  font-family: inherit;
-  line-height: 1;
-  color: var(--ui-fg-default);
-  background: var(--ui-bg-control);
-  border: 1px solid var(--ui-border);
+  font-size: var(--ui-button-font-size);
+  font-weight: var(--ui-button-font-weight);
+  font-style: var(--ui-button-font-style);
+  font-family: var(--ui-button-font);
+  line-height: var(--ui-button-line-height);
+  color: var(--ui-button-fg);
+  background: var(--ui-button-bg);
+  border: var(--ui-button-border-width) solid var(--ui-button-border);
+  box-shadow: inset var(--ui-button-left-accent) 0 0 var(--ui-button-accent-color), inset 0 calc(-1 * var(--ui-button-underline)) 0 var(--ui-button-accent-color);
   border-radius: var(--ui-radius-sm);
   cursor: pointer;
   white-space: nowrap;
@@ -216,8 +353,35 @@
   box-sizing: border-box;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.gb-btn:hover { background: var(--ui-bg-control-hover); }
-.gb-btn:active { background: var(--ui-bg-control-active); }
+.gb-btn > svg,
+.gb-btn > .ico {
+  flex: 0 0 auto;
+}
+.gb-btn:hover {
+  color: var(--ui-button-hover-fg);
+  background: var(--ui-button-hover-bg);
+  border: var(--ui-button-hover-border-width) solid var(--ui-button-hover-border);
+  box-shadow: inset var(--ui-button-hover-left-accent) 0 0 var(--ui-button-hover-accent-color), inset 0 calc(-1 * var(--ui-button-hover-underline)) 0 var(--ui-button-hover-accent-color);
+  font-style: var(--ui-button-hover-font-style);
+  font-weight: var(--ui-button-hover-font-weight);
+  font-size: var(--ui-button-hover-font-size);
+  font-family: var(--ui-button-hover-font);
+  line-height: var(--ui-button-hover-line-height);
+}
+.gb-btn:active,
+.gb-btn.active,
+.gb-btn.selected,
+.gb-btn[aria-pressed="true"] {
+  color: var(--ui-button-active-fg);
+  background: var(--ui-button-active-bg);
+  border: var(--ui-button-active-border-width) solid var(--ui-button-active-border);
+  box-shadow: inset var(--ui-button-active-left-accent) 0 0 var(--ui-button-active-accent-color), inset 0 calc(-1 * var(--ui-button-active-underline)) 0 var(--ui-button-active-accent-color);
+  font-style: var(--ui-button-active-font-style);
+  font-weight: var(--ui-button-active-font-weight);
+  font-size: var(--ui-button-active-font-size);
+  font-family: var(--ui-button-active-font);
+  line-height: var(--ui-button-active-line-height);
+}
 .gb-btn:focus-visible {
   outline: none;
   border-color: var(--ui-accent);
@@ -228,7 +392,8 @@
 .gb-btn.is-disabled {
   color: var(--ui-disabled-fg) !important;
   background: var(--ui-disabled-bg) !important;
-  border-color: var(--ui-disabled-border) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
   opacity: 1;
   pointer-events: none;
 }
@@ -422,9 +587,9 @@
 }
 .tb-icon-btn.active,
 .tb-icon-btn[aria-pressed="true"] {
-  background: var(--ui-bg-control-active);
+  background: var(--ui-control-active-bg, var(--ui-bg-control-active));
   border-color: var(--ui-accent);
-  color: var(--ui-control-active-fg, var(--ui-accent));
+  color: var(--ui-control-active-fg, var(--ui-fg-default));
 }
 .tb-icon-btn svg,
 .tb-icon-btn .ico {
@@ -458,9 +623,9 @@
 }
 .tb-text-btn.active,
 .tb-text-btn[aria-pressed="true"] {
-  background: var(--ui-bg-control-active);
+  background: var(--ui-control-active-bg, var(--ui-bg-control-active));
   border-color: var(--ui-accent);
-  color: var(--ui-control-active-fg, var(--ui-accent));
+  color: var(--ui-control-active-fg, var(--ui-fg-default));
 }
 .tb-text-btn svg,
 .tb-text-btn .ico {
@@ -911,7 +1076,9 @@
 .gb-panel-tab:hover .gb-panel-tab-close { opacity: 0.6; }
 .gb-panel-tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 
-.gb-inner-tab {
+.gb-inner-tab,
+.view-tab,
+.settings-theme-preview-sheet-view .db-view-tab {
   appearance: none;
   -webkit-appearance: none;
   display: inline-flex;
@@ -923,25 +1090,43 @@
   font-family: var(--ui-inner-tab-font, inherit);
   font-size: var(--ui-inner-tab-font-size);
   font-weight: var(--ui-inner-tab-font-weight);
-  line-height: 1;
+  font-style: var(--ui-inner-tab-font-style);
+  line-height: var(--ui-inner-tab-line-height);
   color: var(--ui-inner-tab-fg);
   background: var(--ui-inner-tab-bg);
-  border-top: none;
-  border-left: none;
-  border-right: none;
-  border-bottom: var(--ui-inner-tab-underline-width) solid transparent;
+  border: var(--ui-inner-tab-border-width) solid var(--ui-inner-tab-border);
+  box-shadow: inset var(--ui-inner-tab-left-accent) 0 0 var(--ui-inner-tab-accent-color), inset 0 calc(-1 * var(--ui-inner-tab-underline)) 0 var(--ui-inner-tab-accent-color);
   cursor: pointer;
   text-align: left;
   user-select: none;
   white-space: nowrap;
   box-sizing: border-box;
 }
-.gb-inner-tab:hover { background: var(--ui-inner-tab-hover-bg); color: var(--ui-inner-tab-hover-fg); }
+.gb-inner-tab:hover,
+.view-tab:hover,
+.settings-theme-preview-sheet-view .db-view-tab:hover {
+  color: var(--ui-inner-tab-hover-fg);
+  background: var(--ui-inner-tab-hover-bg);
+  border: var(--ui-inner-tab-hover-border-width) solid var(--ui-inner-tab-hover-border);
+  box-shadow: inset var(--ui-inner-tab-hover-left-accent) 0 0 var(--ui-inner-tab-hover-accent-color), inset 0 calc(-1 * var(--ui-inner-tab-hover-underline)) 0 var(--ui-inner-tab-hover-accent-color);
+  font-style: var(--ui-inner-tab-hover-font-style);
+  font-weight: var(--ui-inner-tab-hover-font-weight);
+  font-size: var(--ui-inner-tab-hover-font-size);
+  font-family: var(--ui-inner-tab-hover-font);
+  line-height: var(--ui-inner-tab-hover-line-height);
+}
 .gb-inner-tab.gb-inner-tab-active,
-.gb-inner-tab-active {
+.gb-inner-tab-active,
+.view-tab.active,
+.settings-theme-preview-sheet-view .db-view-tab.active {
   color: var(--ui-inner-tab-active-fg);
   font-weight: var(--ui-inner-tab-active-font-weight);
-  border-bottom: var(--ui-inner-tab-underline-width) solid var(--ui-inner-tab-active-underline);
+  font-style: var(--ui-inner-tab-active-font-style);
+  font-family: var(--ui-inner-tab-active-font);
+  font-size: var(--ui-inner-tab-active-font-size);
+  line-height: var(--ui-inner-tab-active-line-height);
+  border: var(--ui-inner-tab-active-border-width) solid var(--ui-inner-tab-active-border);
+  box-shadow: inset var(--ui-inner-tab-active-left-accent) 0 0 var(--ui-inner-tab-active-underline), inset 0 calc(-1 * var(--ui-inner-tab-active-underline-width)) 0 var(--ui-inner-tab-active-underline);
   background: var(--ui-inner-tab-active-bg);
 }
 .gb-inner-tab-icon {

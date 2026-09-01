@@ -957,11 +957,12 @@ function _renderTeamAttachments() {
       if (typeof _chatCleanupUploadedAttachments === 'function') _chatCleanupUploadedAttachments(removed);
       _renderTeamAttachments();
     });
-    chip.appendChild(img);
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'chat-attachment-image-host' });
+    chip.appendChild(imageHost || img);
     chip.appendChild(label);
     chip.appendChild(close);
     bar.appendChild(chip);
-    window.MeldexImageLoading?.track?.(img);
+    window.MeldexImageLoading?.track?.(img, { host: imageHost });
   });
 }
 window._renderTeamAttachments = _renderTeamAttachments;
@@ -995,8 +996,9 @@ function _renderTeamMessageWithImages(container, text) {
           else window.open(url, '_blank');
         });
       }
-      container.appendChild(img);
-      window.MeldexImageLoading?.track?.(img);
+      const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'chat-message-image-host' });
+      container.appendChild(imageHost || img);
+      window.MeldexImageLoading?.track?.(img, { host: imageHost });
     } else {
       const seg = document.createElement('span');
       seg.textContent = m[0];
@@ -1330,8 +1332,9 @@ function _chatRenderStructuredMessage(div, content, isUser) {
           });
         }
         img.onerror = () => { img.style.display = 'none'; };
-        imgWrap.appendChild(img);
-        window.MeldexImageLoading?.track?.(img, { errorMode: 'silent' });
+        const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'chat-message-image-host' });
+        imgWrap.appendChild(imageHost || img);
+        window.MeldexImageLoading?.track?.(img, { host: imageHost, errorMode: 'silent' });
       }
       div.appendChild(imgWrap);
       return;

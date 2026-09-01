@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.358",
+    "semver": "0.7.365",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -10,6 +10,10 @@
   "betaFeedback": {
     "googleWebAppUrl": "https://script.google.com/macros/s/AKfycbwwt2QNHhABaxGOki7Gpw-Hm6Lnlqnc0uA1LwKncNrNilptWwj6U5-xQeWJj5cZQrzyRw/exec",
     "feedbackFormUrl": ""
+  },
+  "debuggerReporting": {
+    "baseUrl": "https://debugger-api-staging.dlc-cherry.workers.dev",
+    "projectSlug": "meldex"
   },
   "updateCheck": {
     "url": "",
@@ -107,11 +111,6 @@
       "windowsAsset": "MeldexViewer.zip",
       "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexViewer.zip"
     },
-    "timer": {
-      "cloudUrl": "apps/timer/",
-      "windowsAsset": "MeldexTimer.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexTimer.zip"
-    },
     "quick-memo": {
       "cloudUrl": "apps/quick-memo/",
       "windowsAsset": "MeldexQuickMemo.zip",
@@ -132,6 +131,10 @@
     betaFeedback: Object.freeze({
       googleWebAppUrl: String(config.betaFeedback?.googleWebAppUrl || ''),
       feedbackFormUrl: String(config.betaFeedback?.feedbackFormUrl || ''),
+    }),
+    debuggerReporting: Object.freeze({
+      baseUrl: String(config.debuggerReporting?.baseUrl || ''),
+      projectSlug: String(config.debuggerReporting?.projectSlug || ''),
     }),
     updateCheck: Object.freeze({
       url: String(config.updateCheck?.url || ''),

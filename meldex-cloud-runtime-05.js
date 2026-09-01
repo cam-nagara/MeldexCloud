@@ -12,7 +12,6 @@
     ['シナリオ', 'scriptnote', 'bookPlus'],
     ['シート', 'database', 'tableProperties'],
     ['ボード', 'board', 'presentation'],
-    ['スマートシート', 'smart-db', 'database'],
     ['カレンダー', 'calendar', 'calendarPlus'],
   ];
   const CONTAINER_TYPES = new Set(['folder', 'database']);
@@ -417,7 +416,6 @@
     const type = String(item?.type || '').toLowerCase();
     if (type === 'folder') return 'folder';
     if (type === 'database') return 'table2';
-    if (type === 'smart-db') return 'database';
     if (type === 'page') return 'fileText';
     if (type === 'scriptnote' || type === 'scenario') return 'bookOpenText';
     if (type === 'board') return 'presentation';
@@ -436,7 +434,6 @@
     const labels = {
       folder: 'フォルダ',
       database: 'シート',
-      'smart-db': 'スマートシート',
       page: 'ノート',
       scriptnote: 'シナリオ',
       scenario: 'シナリオ',

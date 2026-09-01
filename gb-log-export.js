@@ -50,7 +50,7 @@
       const prefix = /^[\s("'`]/.test(match) ? match[0] : '';
       return prefix + '[redacted-path]';
     });
-    text = text.replace(/[^\s"'<>:]+?\.(?:md|json|scriptnote\.json|smart-db\.json|board\.md|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)\b/giu, '[redacted-file]');
+    text = text.replace(/[^\s"'<>:]+?\.(?:md|json|scriptnote\.json|board\.md|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)\b/giu, '[redacted-file]');
     text = text.replace(/\b(?:path|file|filename|folder|title|name|content|body|prompt)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
     return text.slice(0, 1200);
   }

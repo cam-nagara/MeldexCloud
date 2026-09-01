@@ -363,7 +363,7 @@
   // 異なる）ホストへは触れない（計画書§5工程1-10「片方が未編集なら他方の
   // 保存結果を追従する。双方が異なる未保存内容を持つ場合だけ、ローカル分岐
   // として扱う」）。
-  function _renderSavedMarkdownIntoCleanHost(host, path, md) {
+  function renderSavedMarkdownIntoCleanHost(host, path, md) {
     if (typeof window.mdToHtml !== 'function') return false;
     const raw = String(md || '');
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
@@ -412,7 +412,7 @@
       // baselineだけを新内容へ進めてDOMを古いまま残すと、次のblurで古いDOMが
       // 「新baselineからの編集」と判定され、新etag付きで直前の保存を巻き戻す。
       // 未編集・非フォーカスのホストは表示本文も同じ保存結果へ追従させる。
-      if (!_renderSavedMarkdownIntoCleanHost(host, path, md)) return;
+      if (!renderSavedMarkdownIntoCleanHost(host, path, md)) return;
       host.dataset.lastSavedMd = md;
       host.dataset.lastSavedEtag = etag || '';
       if (coordinator.normalizeTransportRevision) {
@@ -538,6 +538,7 @@
     isUnchanged,
     registerHost,
     performSave,
+    renderSavedMarkdownIntoCleanHost,
     reportSaveFailureConflict,
     isConflictPending,
     getConflictFocusTarget,

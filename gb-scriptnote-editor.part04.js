@@ -557,7 +557,7 @@
       if (annData) {
         try {
           const ann = JSON.parse(annData);
-          this._pushUndo('注釈テキスト挿入');
+          this._pushUndo('アノテートテキスト挿入');
           document.execCommand('insertText', false, ann.text || '[メモ]');
           this._syncRowFromDom(textDiv, { skipUndo: true });
         } catch {}
@@ -583,7 +583,36 @@
   }
 
   _markDirty(options = {}) {
+    if (this._readOnly) {
+      // 詳細パネル等の間接入口が先にモデルを書き換えても、ロック取得時の
+      // スナップショットへ戻してdirty化・下書き・PUTを発生させない。
+      if (this._readOnlySnapshot) {
+        try {
+          this.doc = createScriptNoteDoc(JSON.parse(this._readOnlySnapshot));
+          this._calcCache = null;
+          this._render();
+        } catch {}
+      }
+      if (typeof showStatus === 'function') showStatus('編集ロック中のため変更できません', true);
+      return false;
+    }
     this._dirty = true;
+    // 本体の2秒autosaveより先に、通常編集を回復用ストアへ退避する。
+    // MeldexDraftRecovery.queueDraft()側が同一pathを250msでデバウンスするため、
+    // 連続入力でIndexedDB書込を増やさず、保存・遷移失敗時にも直近内容を残せる。
+    if (this._path && this.doc) {
+      try {
+        const draftJson = JSON.stringify(serializeScriptNoteDoc(this.doc), null, 2);
+        window.MeldexDraftRecovery?.queueDraft?.(
+          this._path,
+          draftJson,
+          this._lastSavedEtag || '',
+        );
+      } catch (_) {
+        // 下書き直列化の失敗で編集操作自体を壊さない。本体save()/flush()側でも
+        // 失敗時にsaveDraft()をawaitし、閉鎖・遷移を停止する。
+      }
+    }
     this._scheduleSave();
     // sync-from-dom の最中（= 既に _pushUndo 処理中のフラッシュ経路）では
     // デバウンス undo を仕込み直さない。再発火ループ防止。
@@ -596,7 +625,7 @@
   }
 
   _scheduleSave() {
-    if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+    if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty(this._path, 'file');
     if (this._saveTimer) clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => { this._saveTimer = null; this.save(); }, 2000);
   }

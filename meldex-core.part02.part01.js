@@ -400,7 +400,7 @@ function initIframeMarkup(scrollContainer) {
   }
 
   let _annLastSaveFailureAt = 0;
-  function _reportMarkupSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -426,7 +426,7 @@ function initIframeMarkup(scrollContainer) {
     return template.innerHTML;
   }
 
-  function _parseMarkupAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -448,7 +448,7 @@ function initIframeMarkup(scrollContainer) {
     if (!boardMode || typeof apiPost !== 'function') return false;
     apiPost('/annotations', payload).then((res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? '注釈: 付箋追加' : '注釈: 描画追加';
+        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
         _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
       }
       onSaved?.(res);
@@ -467,7 +467,7 @@ function initIframeMarkup(scrollContainer) {
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
-      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? '注釈: 色変更' : '注釈: 付箋更新';
+      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
       Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
     } else {
       apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
@@ -482,10 +482,10 @@ function initIframeMarkup(scrollContainer) {
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
       onDeleted?.();
     })().catch((error) => {
-      _reportMarkupSaveFailure(error, '注釈を削除できませんでした');
+      _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
     });
     return true;
@@ -904,7 +904,7 @@ function initIframeMarkup(scrollContainer) {
       const menu = document.createElement('div');
       menu.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-context-menu annotation-note-context-menu';
       menu.setAttribute('role', 'menu');
-      menu.setAttribute('aria-label', '注釈付箋メニュー');
+      menu.setAttribute('aria-label', 'アノテート付箋メニュー');
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
@@ -1138,7 +1138,7 @@ function initIframeMarkup(scrollContainer) {
     moreBtn.className = 'note-more-btn';
     moreBtn.dataset.annMore = '1';
     moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
-    moreBtn.setAttribute('aria-label', '注釈メニュー');
+    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
     moreBtn.title = 'メニュー';
     moreBtn.innerHTML = lucide('moreHorizontal', 16);
     _normalizeEmbeddedNoteIcon(moreBtn, 16);

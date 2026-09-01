@@ -27,7 +27,7 @@
       .uks-unindexed-box{display:grid;gap:6px;padding:10px 12px;border:1px solid var(--border-warning, #d97706);border-radius:10px;background:var(--bg3);font-size:12px;line-height:1.5}
       .uks-unindexed-title{font-weight:600;color:var(--warning, #d97706);display:flex;align-items:center;gap:6px}
       .uks-unindexed-list{display:grid;gap:4px;font-size:11.5px;color:var(--fg2)}
-      .uks-actions .gb-btn{min-height:var(--ui-h-touch,44px)!important;white-space:normal}
+      .uks-actions .gb-btn,.uks-migration-head .gb-btn{min-height:var(--ui-h-touch,44px)!important;white-space:normal}
       @media (max-width:480px){.uks-card{padding:12px}.uks-head{align-items:flex-start}.uks-actions{display:grid;grid-template-columns:1fr;width:100%}.uks-actions .gb-btn{width:100%}.uks-count{flex:1;min-width:0}}
     `;
     document.head.appendChild(style);
@@ -83,7 +83,7 @@
     const kinds = coverage?.by_kind || {};
     const imageCount = Number(kinds.image || 0);
     const legacyCount = Number(kinds['legacy-knowledge'] || 0);
-    const structureCount = ['sheet', 'smart-sheet', 'board', 'scenario'].reduce((sum, key) => sum + Number(kinds[key] || 0), 0);
+    const structureCount = ['sheet', 'board', 'scenario'].reduce((sum, key) => sum + Number(kinds[key] || 0), 0);
     const values = [
       [Number(coverage?.total || 0), '参照可能'],
       [structureCount, '構造データ'],

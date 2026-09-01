@@ -7,7 +7,7 @@
   function isTextLikePath(path) {
     const lower = String(path || '').toLowerCase();
     return /\.(?:md|json|txt|csv|html?|js|css|mel-board|mel-sheet|mel-scenario|mel-timer)$/.test(lower)
-      || /\.(?:scriptnote|smart-db|timer)\.json$/.test(lower);
+      || /\.(?:scriptnote|timer)\.json$/.test(lower);
   }
 
   function _normalize(items) {

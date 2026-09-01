@@ -92,7 +92,7 @@ function bdOpenFilterMenu(anchor) {
   });
   // 表示モード: 既定 false / ON で有効（計画書 §4-3-A）
   const modes = [
-    { key: '_showShadow', label: 'カード影' },
+    { key: '_showShadow', label: 'トピック影' },
     { key: '_textRotateOnLine', label: 'ライン上テキスト回転' },
   ];
   modes.forEach(({ key, label }) => {

@@ -99,13 +99,81 @@
   const THEME_UI_STATE_NORMAL = 'normal';
   const THEME_UI_STATE_HOVER = 'hover';
   const THEME_UI_STATE_SELECTED = 'selected';
-  const BUTTON_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG]);
+  const BUTTON_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const BUTTON_UI_STATES = Object.freeze([THEME_UI_STATE_NORMAL, THEME_UI_STATE_HOVER, THEME_UI_STATE_SELECTED]);
   const TAB_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const SIMPLE_UI_STATES = Object.freeze([THEME_UI_STATE_NORMAL, THEME_UI_STATE_HOVER]);
   const STYLE_TARGET_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const STYLE_TARGET_STATES = BUTTON_UI_STATES;
   const STYLE_TARGET_PROP_LABELS = Object.freeze({ fg: '文字', bg: '背景色', underline: '線/アクセント色' });
+  const BUTTON_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-button-fg', bg: '--ui-button-bg', border: '--ui-button-border', borderWidth: '--ui-button-border-width',
+      leftAccent: '--ui-button-left-accent', underline: '--ui-button-underline', accent: '--ui-button-accent-color',
+      bold: '--ui-button-font-weight', italic: '--ui-button-font-style', font: '--ui-button-font', fontSize: '--ui-button-font-size', lineHeight: '--ui-button-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border', borderWidth: '--ui-button-hover-border-width',
+      leftAccent: '--ui-button-hover-left-accent', underline: '--ui-button-hover-underline', accent: '--ui-button-hover-accent-color',
+      bold: '--ui-button-hover-font-weight', italic: '--ui-button-hover-font-style', font: '--ui-button-hover-font', fontSize: '--ui-button-hover-font-size', lineHeight: '--ui-button-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', border: '--ui-button-active-border', borderWidth: '--ui-button-active-border-width',
+      leftAccent: '--ui-button-active-left-accent', underline: '--ui-button-active-underline', accent: '--ui-button-active-accent-color',
+      bold: '--ui-button-active-font-weight', italic: '--ui-button-active-font-style', font: '--ui-button-active-font', fontSize: '--ui-button-active-font-size', lineHeight: '--ui-button-active-line-height',
+    }),
+  });
+  const DOCK_BUTTON_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-dock-button-fg', bg: '--ui-dock-button-bg', border: '--ui-dock-button-border', borderWidth: '--ui-dock-button-border-width',
+      leftAccent: '--ui-dock-button-left-accent', underline: '--ui-dock-button-underline', accent: '--ui-dock-button-accent-color',
+      bold: '--ui-dock-button-font-weight', italic: '--ui-dock-button-font-style', font: '--ui-dock-button-font', fontSize: '--ui-dock-button-font-size', lineHeight: '--ui-dock-button-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border', borderWidth: '--ui-dock-button-hover-border-width',
+      leftAccent: '--ui-dock-button-hover-left-accent', underline: '--ui-dock-button-hover-underline', accent: '--ui-dock-button-hover-accent-color',
+      bold: '--ui-dock-button-hover-font-weight', italic: '--ui-dock-button-hover-font-style', font: '--ui-dock-button-hover-font', fontSize: '--ui-dock-button-hover-font-size', lineHeight: '--ui-dock-button-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', border: '--ui-dock-button-active-border', borderWidth: '--ui-dock-button-active-border-width',
+      leftAccent: '--ui-dock-button-active-left-accent', underline: '--ui-dock-button-active-underline', accent: '--ui-dock-button-active-accent-color',
+      bold: '--ui-dock-button-active-font-weight', italic: '--ui-dock-button-active-font-style', font: '--ui-dock-button-active-font', fontSize: '--ui-dock-button-active-font-size', lineHeight: '--ui-dock-button-active-line-height',
+    }),
+  });
+  const PANEL_TAB_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-pane-tab-fg', bg: '--ui-pane-tab-bg', border: '--ui-pane-tab-border', borderWidth: '--ui-pane-tab-border-width',
+      leftAccent: '--ui-pane-tab-left-accent', underline: '--ui-pane-tab-underline', accent: '--ui-pane-tab-accent-color',
+      bold: '--ui-pane-tab-font-weight', italic: '--ui-pane-tab-font-style', font: '--ui-pane-tab-font', fontSize: '--ui-pane-tab-font-size', lineHeight: '--ui-pane-tab-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border', borderWidth: '--ui-pane-tab-hover-border-width',
+      leftAccent: '--ui-pane-tab-hover-left-accent', underline: '--ui-pane-tab-hover-underline', accent: '--ui-pane-tab-hover-accent-color',
+      bold: '--ui-pane-tab-hover-font-weight', italic: '--ui-pane-tab-hover-font-style', font: '--ui-pane-tab-hover-font', fontSize: '--ui-pane-tab-hover-font-size', lineHeight: '--ui-pane-tab-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', border: '--ui-pane-tab-active-border', borderWidth: '--ui-pane-tab-active-border-width',
+      leftAccent: '--ui-pane-tab-active-left-accent', underline: '--ui-pane-tab-active-underline-width', accent: '--ui-pane-tab-active-underline',
+      bold: '--ui-pane-tab-active-font-weight', italic: '--ui-pane-tab-active-font-style', font: '--ui-pane-tab-active-font', fontSize: '--ui-pane-tab-active-font-size', lineHeight: '--ui-pane-tab-active-line-height',
+    }),
+  });
+  const INNER_TAB_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-inner-tab-fg', bg: '--ui-inner-tab-bg', border: '--ui-inner-tab-border', borderWidth: '--ui-inner-tab-border-width',
+      leftAccent: '--ui-inner-tab-left-accent', underline: '--ui-inner-tab-underline', accent: '--ui-inner-tab-accent-color',
+      bold: '--ui-inner-tab-font-weight', italic: '--ui-inner-tab-font-style', font: '--ui-inner-tab-font', fontSize: '--ui-inner-tab-font-size', lineHeight: '--ui-inner-tab-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border', borderWidth: '--ui-inner-tab-hover-border-width',
+      leftAccent: '--ui-inner-tab-hover-left-accent', underline: '--ui-inner-tab-hover-underline', accent: '--ui-inner-tab-hover-accent-color',
+      bold: '--ui-inner-tab-hover-font-weight', italic: '--ui-inner-tab-hover-font-style', font: '--ui-inner-tab-hover-font', fontSize: '--ui-inner-tab-hover-font-size', lineHeight: '--ui-inner-tab-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', border: '--ui-inner-tab-active-border', borderWidth: '--ui-inner-tab-active-border-width',
+      leftAccent: '--ui-inner-tab-active-left-accent', underline: '--ui-inner-tab-active-underline-width', accent: '--ui-inner-tab-active-underline',
+      bold: '--ui-inner-tab-active-font-weight', italic: '--ui-inner-tab-active-font-style', font: '--ui-inner-tab-active-font', fontSize: '--ui-inner-tab-active-font-size', lineHeight: '--ui-inner-tab-active-line-height',
+    }),
+  });
   const APP_STYLE_UI_TARGETS = Object.freeze([
     { id: 'style-folder', group: 'style', app: 'フォルダ', label: 'フォルダ', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, vars: {
       normal: { fg: '--fv-item-fg', bg: '--fv-item-bg', underline: '--fv-item-border' },
@@ -157,17 +225,12 @@
       hover: { fg: '--chat-muted-fg', bg: '--chat-message-bg' },
       selected: { fg: '--chat-active-fg', bg: '--chat-active-bg', underline: '--chat-accent' },
     } },
-    { id: 'style-timer', group: 'style', app: 'タイマー', label: 'タイマー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'リスト', selected: '実行中/操作' }, vars: {
-      normal: { fg: '--timer-fg', underline: '--timer-border' },
-      hover: { fg: '--timer-muted-fg', bg: '--timer-hover-bg' },
-      selected: { fg: '--timer-active-fg', bg: '--timer-active-bg', underline: '--timer-accent' },
-    } },
     { id: 'style-history', group: 'style', app: 'ヒストリー', label: 'ヒストリー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: '行', selected: '強調' }, vars: {
       normal: { fg: '--history-fg', underline: '--history-border' },
       hover: { bg: '--history-hover-bg' },
       selected: { fg: '--history-active-fg', bg: '--history-active-bg', underline: '--history-accent' },
     } },
-    { id: 'style-annotation', group: 'style', app: '注釈', label: '注釈', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'カード', selected: '付箋/ツール' }, vars: {
+    { id: 'style-annotation', group: 'style', app: 'アノテート', label: 'アノテート', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'カード', selected: '付箋/ツール' }, vars: {
       normal: { fg: '--annotation-fg', underline: '--annotation-border' },
       hover: { bg: '--annotation-hover-bg' },
       selected: { fg: '--annotation-note-fg', bg: '--annotation-note-bg', underline: '--annotation-accent' },
@@ -194,19 +257,50 @@
     { id: 'scriptnote-type-summary', group: 'style', app: 'シナリオ', label: 'タイプ管理: プロット', props: STYLE_TARGET_PROPS, states: SIMPLE_UI_STATES, propLabels: STYLE_TARGET_PROP_LABELS, childSelector: '.sn2-detail-cell-input, .sn2-detail-cell-label, .sn2-detail-cell-preview' },
     { id: 'scriptnote-type-break', group: 'style', app: 'シナリオ', label: 'タイプ管理: 区切り', props: STYLE_TARGET_PROPS, states: SIMPLE_UI_STATES, propLabels: STYLE_TARGET_PROP_LABELS, childSelector: '.sn2-detail-cell-input, .sn2-detail-cell-label, .sn2-detail-cell-preview' },
   ]);
+  const PANEL_SURFACE_UI_TARGETS = Object.freeze([
+    { id: 'surface-dock', group: 'ui', label: '左右レールの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-dockbar-bg' } } },
+    { id: 'surface-popup', group: 'ui', label: 'ポップアップの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-popup-bg' } } },
+    { id: 'surface-folder', group: 'style', app: 'フォルダ', label: 'フォルダパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--fv-panel-bg' } } },
+    { id: 'surface-note', group: 'style', app: 'ノート', label: 'ノートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--page-text-bg' } } },
+    { id: 'surface-scriptnote', group: 'style', app: 'シナリオ', label: 'シナリオパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--sn2-page-bg' } } },
+    { id: 'surface-sheet', group: 'style', app: 'シート', label: 'シートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--db-row-bg' } } },
+    { id: 'surface-board', group: 'style', app: 'ボード', label: 'ボードパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--bd-bg' } } },
+    { id: 'surface-calendar', group: 'style', app: 'スケジュール', label: 'スケジュールパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--cal-content-bg' } } },
+    { id: 'surface-outliner', group: 'style', app: 'フォルダツリー', label: 'フォルダツリーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--outliner-bg' } } },
+    { id: 'surface-preview', group: 'style', app: 'ビューワー', label: 'ビューワーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--preview-bg' } } },
+    { id: 'surface-detail', group: 'style', app: 'オプション', label: 'オプションパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--detail-bg' } } },
+    { id: 'surface-chat', group: 'style', app: 'チャット', label: 'チャットパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--chat-bg' } } },
+    { id: 'surface-history', group: 'style', app: 'ヒストリー', label: 'ヒストリーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--history-bg' } } },
+    { id: 'surface-annotation', group: 'style', app: 'アノテート', label: 'アノテートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--annotation-bg' } } },
+    { id: 'surface-search', group: 'style', app: '検索', label: '検索パネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--search-bg' } } },
+    { id: 'surface-version', group: 'style', app: 'バージョン管理', label: 'バージョン管理パネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--version-bg' } } },
+  ]);
   const THEME_UI_TARGETS = Object.freeze([
     { id: 'left-chrome', group: 'ui', label: '左クロームのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'button', group: 'ui', label: '共通ボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, vars: {
-      normal: { fg: '--ui-fg-default', bg: '--ui-bg-control' },
-      hover: { fg: '--ui-hover-fg', bg: '--ui-bg-control-hover' },
-      selected: { fg: '--ui-accent-fg', bg: ['--ui-accent', '--ui-bg-control-active', '--accent'] },
+    { id: 'button', group: 'ui', label: '共通ボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, formatVars: BUTTON_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-button-fg', bg: '--ui-button-bg', underline: '--ui-button-accent-color' },
+      hover: { fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', underline: '--ui-button-hover-accent-color' },
+      selected: { fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', underline: '--ui-button-active-accent-color' },
     } },
-    { id: 'panel-tab', group: 'ui', label: 'パネルタブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'inner-tab', group: 'ui', label: 'パネル内タブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'collapse-button', group: 'ui', label: '折りたたみバーのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
+    { id: 'panel-tab', group: 'ui', label: 'パネルタブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES, formatVars: PANEL_TAB_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-pane-tab-fg', bg: '--ui-pane-tab-bg', underline: '--ui-pane-tab-accent-color' },
+      hover: { fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', underline: '--ui-pane-tab-hover-accent-color' },
+      selected: { fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', underline: '--ui-pane-tab-active-underline' },
+    } },
+    { id: 'inner-tab', group: 'ui', label: 'パネル内タブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES, formatVars: INNER_TAB_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-inner-tab-fg', bg: '--ui-inner-tab-bg', underline: '--ui-inner-tab-accent-color' },
+      hover: { fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', underline: '--ui-inner-tab-hover-accent-color' },
+      selected: { fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', underline: '--ui-inner-tab-active-underline' },
+    } },
+    { id: 'collapse-button', group: 'ui', label: 'レールのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, formatVars: DOCK_BUTTON_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-dock-button-fg', bg: '--ui-dock-button-bg', underline: '--ui-dock-button-accent-color' },
+      hover: { fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', underline: '--ui-dock-button-hover-accent-color' },
+      selected: { fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', underline: '--ui-dock-button-active-accent-color' },
+    } },
     { id: 'folder-section', group: 'ui', label: 'フォルダツリーの見出し', props: BUTTON_UI_PROPS, states: SIMPLE_UI_STATES },
     { id: 'folder', group: 'ui', label: 'フォルダツリー項目', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
     { id: 'section-bar', group: 'ui', label: 'パネル内セクション', props: TAB_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { underline: '左アクセント色' } },
+    ...PANEL_SURFACE_UI_TARGETS,
     ...APP_STYLE_UI_TARGETS,
     ...SEQUENTIAL_STYLE_UI_TARGETS,
   ]);
@@ -222,7 +316,7 @@
   ]);
   const PALETTE_TARGET_SPECS = Object.freeze([
     ['.left-chrome-command-trigger, .left-chrome-user, .left-chrome-help, .left-chrome-trash, .left-chrome-settings, .left-chrome-floating-btn', 'left-chrome'],
-    ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'pane-tab'],
+    ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'panel-tab'],
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
     ['.gb-panelset-tabbar > button, .gb-panelset-tabbar > .gb-panel-tab', 'panelset-tab'],
     ['.gb-split-collapsed-icon, .gb-split-expand-btn, .gb-dock-icon, .gb-pane-collapsed > .gb-pane-tabs .gb-tab, .gb-pane-collapse', 'collapse-button'],
@@ -256,7 +350,7 @@
   const COMMON_INTEGRATED_APP_STYLE_KEYS = Object.freeze([
     '--page-text-bg', '--sn2-page-bg', '--db-row-bg', '--fv-panel-bg',
     '--cal-content-bg', '--preview-bg', '--detail-bg', '--chat-bg',
-    '--timer-bg', '--history-bg', '--annotation-bg', '--search-bg',
+    '--history-bg', '--annotation-bg', '--search-bg',
     '--version-bg',
     '--cal-scroll-thumb', '--cal-scroll-thumb-hover',
     '--fv-item-border', '--fv-item-hover-bg', '--fv-item-selected-fg', '--fv-item-selected-bg',
@@ -282,7 +376,7 @@
   const THEME_OS_ACCENT_TEXT_STYLE_KEYS = Object.freeze([
     '--ui-selection-fg', '--ui-accent-fg',
     '--cal-accent-fg', '--cal-mini-selected-fg',
-    '--chat-active-fg', '--timer-active-fg', '--version-active-fg',
+    '--chat-active-fg', '--version-active-fg',
   ]);
   const THEME_UI_AUTO_TONE_DEFAULT = Object.freeze({ light: 30, dark: 30 });
 
@@ -300,7 +394,7 @@
     '--ui-header-fg': '#969696', '--ui-header-bg': '#181c22',
     '--ui-toolbar-fg': '#d4d4d4', '--ui-toolbar-bg': '#111419',
     '--ui-hover-fg': '#d4d4d4', '--ui-hover-bg': '#242a32',
-    '--ui-accent': '#569cd6',
+    '--ui-accent': '#569cd6', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#ffffff', '--ui-selection-bg': '#264f78',
     '--ui-range-fill-bg': '#569cd6', '--ui-range-track-bg': '#2a2a2a',
@@ -308,6 +402,7 @@
     '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
     '--db-th-fg': '#969696', '--db-th-bg': '#181c22', '--db-entity-fg': '#d4d4d4', '--db-entity-bg': '#0b0d10',
     '--db-cell-fg': '#d4d4d4', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#ffffff', '--db-selection-color': '#264f78',
     '--page-title-fg': '#d4d4d4', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #569cd6)', '--page-h2-fg': 'var(--theme-palette-1, #4ec9b0)', '--page-h3-fg': 'var(--theme-palette-2, #dcdcaa)', '--page-h4-fg': 'var(--theme-palette-3, #6a9955)', '--page-h5-fg': 'var(--theme-palette-4, #ce9178)', '--page-h6-fg': 'var(--theme-palette-5, #6fa8dc)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#d4d4d4', '--page-text-bg': '#0f1216', '--page-link-fg': 'var(--link-fg)',
@@ -327,13 +422,14 @@
     '--ui-header-fg': '#555555', '--ui-header-bg': '#ebebeb',
     '--ui-toolbar-fg': '#1e1e1e', '--ui-toolbar-bg': '#f5f5f5',
     '--ui-hover-fg': '#1e1e1e', '--ui-hover-bg': '#d4d4d4',
-    '--ui-fg-strong': '#ffffff',
+    '--ui-accent-fg': '#ffffff', '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#1e1e1e', '--ui-selection-bg': '#bbdefb',
     '--ui-range-fill-bg': '#0055aa', '--ui-range-track-bg': '#d6d6d6',
     '--editor-caret-color': '#0055aa', '--editor-caret-width': '2px', '--a11y-focus-ring': THEME_OS_ACCENT_CSS,
     '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
     '--db-th-fg': '#555555', '--db-th-bg': '#ebebeb', '--db-entity-fg': '#1e1e1e', '--db-entity-bg': '#ffffff',
     '--db-cell-fg': '#1e1e1e', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#1e1e1e', '--db-selection-color': '#bbdefb',
     '--page-title-fg': '#1e1e1e', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #0055aa)', '--page-h2-fg': 'var(--theme-palette-1, #007050)', '--page-h3-fg': 'var(--theme-palette-2, #b45309)', '--page-h4-fg': 'var(--theme-palette-3, #2e7d32)', '--page-h5-fg': 'var(--theme-palette-4, #1565c0)', '--page-h6-fg': 'var(--theme-palette-5, #7c3aed)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#1e1e1e', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
@@ -353,12 +449,13 @@
     '--ui-header-fg': '#5b6475', '--ui-header-bg': '#eef1f5',
     '--ui-toolbar-fg': '#2f3440', '--ui-toolbar-bg': '#f6f7f9',
     '--ui-hover-fg': '#2f3440', '--ui-hover-bg': '#eef1f5',
-    '--ui-fg-strong': '#ffffff',
+    '--ui-accent-fg': '#ffffff', '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#2f3440', '--ui-selection-bg': '#eadcff',
     '--ui-range-fill-bg': '#8e44ad', '--ui-range-track-bg': '#e4e8f0',
     '--editor-caret-color': '#8e44ad', '--editor-caret-width': '2px',
     '--db-th-fg': '#5b6475', '--db-th-bg': '#eef1f5', '--db-entity-fg': '#2f3440', '--db-entity-bg': '#ffffff',
     '--db-cell-fg': '#2f3440', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#2f3440', '--db-selection-color': '#eadcff',
     '--page-title-fg': '#2f3440', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #9b59b6)', '--page-h2-fg': 'var(--theme-palette-1, #1abc9c)', '--page-h3-fg': 'var(--theme-palette-2, #f39c12)', '--page-h4-fg': 'var(--theme-palette-3, #e74c3c)', '--page-h5-fg': 'var(--theme-palette-4, #3498db)', '--page-h6-fg': 'var(--theme-palette-5, #7f8c8d)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#2f3440', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
@@ -378,13 +475,14 @@
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#4f7f3b',
+    '--ui-accent': '#4f7f3b', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
     '--editor-caret-color': '#6fa85a', '--editor-caret-width': '2px',
     '--db-th-fg': '#aab3aa', '--db-th-bg': '#242824', '--db-entity-fg': '#d9ddd8', '--db-entity-bg': '#101210',
     '--db-cell-fg': '#d9ddd8', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#f2f6f1', '--db-selection-color': '#2d472b',
     '--page-title-fg': '#d9ddd8', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #6fa85a)', '--page-h2-fg': 'var(--theme-palette-1, #8dbf70)', '--page-h3-fg': 'var(--theme-palette-2, #b88a4a)', '--page-h4-fg': 'var(--theme-palette-3, #90b870)', '--page-h5-fg': 'var(--theme-palette-4, #6898b0)', '--page-h6-fg': 'var(--theme-palette-5, #d06050)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#d9ddd8', '--page-text-bg': '#101210', '--page-link-fg': 'var(--link-fg)',
@@ -610,9 +708,13 @@
       const num = Number(value);
       return Number.isFinite(num) ? Math.max(min, Math.min(max, Math.round(num))) : fallback;
     };
+    const hueStart = clamp(src.hueStart, -360, 360, 0);
+    const hueEnd = clamp(src.hueEnd, -360, 360, 320);
+    const fullHueRange = Math.abs(hueEnd - hueStart) === 360;
     return {
-      hueStart: clamp(src.hueStart, -360, 360, 0),
-      hueEnd: clamp(src.hueEnd, -360, 360, 320),
+      hueStart,
+      hueEnd,
+      hueWrap: typeof src.hueWrap === 'boolean' ? src.hueWrap : (!fullHueRange && hueStart > hueEnd),
       saturation: clamp(src.saturation, 0, 100, 50),
       brightness: clamp(src.brightness, -100, 100, 0),
       contrast: clamp(src.contrast, 0, 100, 50),

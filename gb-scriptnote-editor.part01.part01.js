@@ -163,6 +163,9 @@ class ScriptNoteEditor {
     this._lastSavedEtag = '';
     this._lastSavedTransportRevision = '';
     this._dirty = false;
+    this._readOnly = false;
+    this._readOnlySnapshot = '';
+    this._readOnlyDisabledState = new WeakMap();
     this._saveTimer = null;
     this._bound = false;
     this._roleMenu = null;
@@ -267,6 +270,59 @@ class ScriptNoteEditor {
     return serializeScriptNoteDoc(this.doc);
   }
 
+  setReadOnly(readOnly) {
+    const next = !!readOnly;
+    if (next === this._readOnly) {
+      if (next && this.doc && !this._readOnlySnapshot) {
+        this._readOnlySnapshot = JSON.stringify(serializeScriptNoteDoc(this.doc));
+      }
+      this._applyReadOnlyDom?.();
+      return;
+    }
+    if (next && this.doc) {
+      // 外部でロックされた瞬間にDOM上の入力を失わない。dirtyは維持し、
+      // 以後の変更操作だけを止める。
+      try { this._syncAllFromDom(); } catch {}
+    }
+    this._readOnly = next;
+    this._readOnlySnapshot = next && this.doc
+      ? JSON.stringify(serializeScriptNoteDoc(this.doc))
+      : '';
+    if (next && this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this.doc) this._render();
+    else this._applyReadOnlyDom?.();
+  }
+
+  _applyReadOnlyDom() {
+    if (!this.host) return;
+    const readOnly = !!this._readOnly;
+    this.host.dataset.readOnly = readOnly ? 'true' : 'false';
+    this.host.setAttribute('aria-readonly', readOnly ? 'true' : 'false');
+    this.host.querySelectorAll('.sn2-text, .sn2-custom-text').forEach((el) => {
+      el.contentEditable = readOnly ? 'false' : 'true';
+      el.setAttribute('aria-readonly', readOnly ? 'true' : 'false');
+    });
+    this.host.querySelectorAll('button, input, select, textarea').forEach((el) => {
+      if (readOnly) {
+        if (!this._readOnlyDisabledState.has(el)) this._readOnlyDisabledState.set(el, !!el.disabled);
+        el.disabled = true;
+      } else if (this._readOnlyDisabledState.has(el)) {
+        el.disabled = this._readOnlyDisabledState.get(el);
+        this._readOnlyDisabledState.delete(el);
+      }
+    });
+    this.host.querySelectorAll('[draggable="true"]').forEach((el) => {
+      el.draggable = !readOnly;
+    });
+    this.host.querySelectorAll('.sn2-handle, .sn2-col-resizer').forEach((el) => {
+      el.style.pointerEvents = readOnly ? 'none' : '';
+      el.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+    });
+  }
+
   _showConflictPending(documentKey, path) {
     window.MeldexConflictPendingBanner?.show?.(documentKey, {
       label: '競合を保留中',
@@ -285,6 +341,63 @@ class ScriptNoteEditor {
     this._showConflictPending(documentKey, path);
   }
 
+  async _chooseConflictAction() {
+    if (!window.GBUI?.createModal) {
+      const overwrite = typeof cfConfirm === 'function'
+        ? await cfConfirm('このシナリオは他の場所で更新されています。今の編集内容で上書きしますか？')
+        : false;
+      return overwrite ? 'overwrite' : 'defer';
+    }
+    return new Promise((resolve) => {
+      let selected = 'defer';
+      let finished = false;
+      const description = document.createElement('div');
+      description.className = 'gb-section-desc';
+      description.id = 'scriptnote-conflict-description';
+      description.textContent = '自分の未保存内容と、相手が保存した最新版があります。残し方を選んでください。';
+      const makeButton = (action, label, primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gb-btn gb-btn-sm' + (primary ? ' gb-btn-primary' : '');
+        button.dataset.conflictAction = action;
+        button.dataset.e2eId = `scriptnote-conflict-${action}`;
+        button.textContent = label;
+        return button;
+      };
+      const overwrite = makeButton('overwrite', '自分の編集で上書き', true);
+      const reload = makeButton('reload', '相手の最新版を再読込');
+      const saveAs = makeButton('save-as', '別名保存');
+      const defer = makeButton('defer', '保留');
+      const modalApi = window.GBUI.createModal({
+        id: 'scriptnote-conflict-dialog',
+        title: 'シナリオの保存競合',
+        body: description,
+        footer: [overwrite, reload, saveAs, defer],
+        variant: 'standard',
+        geometryKey: 'scriptnote-conflict-dialog',
+        initialFocus: overwrite,
+        returnFocus: this.host,
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          if (finished) return;
+          finished = true;
+          resolve(selected);
+        },
+      });
+      modalApi.overlay.dataset.e2eId = 'scriptnote-conflict-dialog-overlay';
+      modalApi.modal.dataset.e2eId = 'scriptnote-conflict-dialog';
+      modalApi.modal.setAttribute('aria-describedby', description.id);
+      modalApi.overlay.addEventListener('click', (event) => {
+        const action = event.target?.closest?.('[data-conflict-action]')?.dataset?.conflictAction;
+        if (!action || finished) return;
+        selected = action;
+        modalApi.close('choice');
+      });
+      modalApi.open();
+    });
+  }
+
   async _reviewConflict(path, documentKey) {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     const record = coordinator?.requestConflictReview?.(documentKey) || null;
@@ -292,14 +405,16 @@ class ScriptNoteEditor {
     const generation = record?.generation ?? null;
     window.MeldexConflictPendingBanner?.hide?.(documentKey);
     try {
-      const keepLocal = typeof cfConfirm === 'function'
-        ? await cfConfirm('このシナリオは他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は失われます）')
-        : false;
+      const action = await this._chooseConflictAction();
       if (this._path !== path) {
         this._restoreConflictReview(documentKey, record, path);
         return;
       }
-      if (keepLocal) {
+      if (action === 'defer') {
+        this._restoreConflictReview(documentKey, record, path);
+        return;
+      }
+      if (action === 'overwrite') {
         const json = JSON.stringify(this.collectDoc(), null, 2);
         const result = await apiPut('/file?path=' + encodeURIComponent(path), {
           content: json,
@@ -324,6 +439,57 @@ class ScriptNoteEditor {
         if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
         await window.MeldexDraftRecovery?.markSynced?.(path);
         if (typeof showStatus === 'function') showStatus('自分の編集でシナリオを上書き保存しました');
+        return;
+      }
+
+      if (action === 'save-as') {
+        const localJson = JSON.stringify(this.collectDoc(), null, 2);
+        await window.MeldexDraftRecovery?.saveDraft?.(path, localJson, this._lastSavedEtag || '');
+        const fallback = path.replace(/\.scriptnote\.json$/i, '_copy.scriptnote.json')
+          .replace(/\.mel-scenario$/i, '_copy.mel-scenario');
+        const nextPath = typeof cfPrompt === 'function'
+          ? await cfPrompt('別名保存', fallback === path ? path + '_copy' : fallback)
+          : '';
+        if (!nextPath) {
+          this._restoreConflictReview(documentKey, record, path);
+          return;
+        }
+        const targetExists = typeof _sn2ScriptNoteFileExists === 'function'
+          ? await _sn2ScriptNoteFileExists(nextPath)
+          : false;
+        if (targetExists && typeof cfConfirm === 'function' && !await cfConfirm(
+          '同名のシナリオが既にあります。上書きしますか？',
+          { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' },
+        )) {
+          this._restoreConflictReview(documentKey, record, path);
+          return;
+        }
+        const exportDoc = JSON.parse(localJson);
+        const prepared = typeof _sn2PrepareSaveAsDocument === 'function'
+          ? await _sn2PrepareSaveAsDocument(exportDoc, nextPath, path, targetExists)
+          : { doc: exportDoc, text: localJson, independentCopy: true };
+        const result = await apiPut('/file?path=' + encodeURIComponent(nextPath), {
+          content: prepared.text,
+          ...(targetExists ? { force_overwrite: true } : { create_only: true }),
+        });
+        if (this._path !== path) throw new Error('表示中のシナリオが切り替わったため、別名保存結果を確定できません');
+        const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+        if (coordinator && !resolved) throw new Error('シナリオの競合状態が更新されました');
+        this.doc = createScriptNoteDoc(prepared.doc || exportDoc);
+        const component = typeof getActiveScriptNoteComponent === 'function'
+          ? getActiveScriptNoteComponent()
+          : null;
+        if (typeof _sn2SetActiveScriptNotePath === 'function') {
+          _sn2SetActiveScriptNotePath({ comp: component?._editor === this ? component : null, editor: this }, nextPath, result || {});
+        } else {
+          this._path = nextPath;
+          this._dirty = false;
+          this._lastSavedEtag = result?.etag || '';
+        }
+        this._render();
+        if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+        await window.MeldexDraftRecovery?.markSynced?.(path);
+        if (typeof showStatus === 'function') showStatus('シナリオを別名で保存しました');
         return;
       }
 
@@ -362,7 +528,19 @@ class ScriptNoteEditor {
   }
 
   async save() {
-    if (!this._path || !this.doc) return true;
+    if (!this.doc) return true;
+    if (this._readOnly) {
+      if (this._dirty && typeof showStatus === 'function') {
+        showStatus('編集ロック中です。未保存の内容は保持しています。ロック解除後に保存してください', true);
+      }
+      return !this._dirty;
+    }
+    if (!this._path) {
+      if (this._dirty && typeof showStatus === 'function') {
+        showStatus('保存先が未確定のシナリオは閉じられません。名前を付けて保存してください', true);
+      }
+      return !this._dirty;
+    }
     const savePath = this._path;
     const json = JSON.stringify(this.collectDoc(), null, 2);
     const prevIds = this._lastSavedRowIds || new Set();
@@ -392,7 +570,7 @@ class ScriptNoteEditor {
         : await sendFn();
       if (saveResult?.conflictPending) {
         this._dirty = true;
-        window.MeldexDraftRecovery?.queueDraft?.(savePath, json, this._lastSavedEtag || '');
+        await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
         this._showConflictPending(documentKey, savePath);
         return false;
       }
@@ -414,6 +592,9 @@ class ScriptNoteEditor {
         this._lastSavedRowIds = currIds;
         if (unchanged) this._dirty = false;
       }
+      // 保存要求と現在内容が一致する時だけ回復用下書きを同期済みにする。
+      // 保存中に追加編集された場合は、その新しい下書きを消さない。
+      if (unchanged) await window.MeldexDraftRecovery?.markSynced?.(savePath);
       // 削除された行IDを抽出し、該当コメントを孤児化 (annotation_unification_plan.md §5.3)
       const removed = [...prevIds].filter(id => !currIds.has(id));
       if (removed.length > 0) {
@@ -448,11 +629,12 @@ class ScriptNoteEditor {
           localEtag: this._lastSavedTransportRevision || this._lastSavedEtag || '',
           serverDetail: (e && e.meldexDetail && typeof e.meldexDetail === 'object') ? e.meldexDetail : null,
         });
-        window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
+        await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
         this._showConflictPending(documentKey, savePath);
         showStatus('シナリオは上書きされていません。別の端末で更新されています。最新のシナリオを開き直してから編集内容を反映してください', true);
         return false;
       }
+      await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
       if (typeof showStatus === 'function') showStatus('保存失敗: ' + e.message, true);
       return false;
     }

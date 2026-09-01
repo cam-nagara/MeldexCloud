@@ -391,7 +391,6 @@
       ['シナリオ', 'scriptnote', 'bookOpenText'],
       ['シート', 'database', 'table2'],
       ['ボード', 'board', 'presentation'],
-      ['スマートシート', 'smart-db', 'database'],
     ];
     const filtered = window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
     const menu = document.createElement('div');
@@ -430,6 +429,7 @@
   function _ensurePaneTreeBackButtons() {
     if (!document.body) return;
     document.querySelectorAll('.gb-pane-tabs').forEach((tabBar) => {
+      if (tabBar.closest('.settings-theme-preview-shell')) return;
       let button = Array.from(tabBar.children).find(el => el.classList?.contains('cloud-mobile-pane-tree-back'));
       if (!button) {
         button = document.createElement('button');

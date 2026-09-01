@@ -522,12 +522,12 @@
 
   function openProductionStaffAdd(options = {}) {
     if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return null;
-    const { body, close } = _pmModal('メンバーを追加', '640px', {
+    const { body, close } = _pmModal('ユーザーを追加', '640px', {
       trigger: options?.trigger,
       e2eId: 'production-staff-add-dialog-overlay',
       dialogE2eId: 'production-staff-add-dialog',
     });
-    const name = _pmInput('text', '', 'メンバー名');
+    const name = _pmInput('text', '', 'ユーザー名');
     name.dataset.e2eId = 'production-staff-name';
     const user = document.createElement('select');
     user.className = 'gb-select gb-select-sm gb-production-input';
@@ -578,7 +578,7 @@
           }
           const exists = staffList.some(row => String(row?.display || row?.entry_name || '').trim() === staffName);
           if (exists && typeof cfConfirm === 'function') {
-            const ok = await cfConfirm('同じ名前のメンバーがあります。入力内容で既存メンバーを更新しますか？');
+            const ok = await cfConfirm('同じ名前のユーザーがあります。入力内容で既存ユーザーを更新しますか？');
             if (!ok) return;
           }
         }
@@ -589,11 +589,11 @@
           google_url: googleUrl.value, caldav_url: caldavUrl.value, sync_enabled: syncEnabled.checked,
         });
         if (result.ok) {
-          _pmStatus(`メンバーを追加しました: ${result.staff}`);
+          _pmStatus(`${user.value ? 'アカウントユーザー' : '仮ユーザー'}を追加しました: ${result.staff}`);
           _pmShowRecalcBanner();
           close();
         } else {
-          _pmStatus(result.message || 'メンバーを追加できませんでした', true);
+          _pmStatus(result.message || 'ユーザーを追加できませんでした', true);
         }
       } catch (error) {
         _pmStatus(error?.message || String(error), true);
@@ -602,7 +602,7 @@
       }
     });
     body.append(
-      _pmField('メンバー名', name), _pmField('ユーザー（未連携可）', user),
+      _pmField('ユーザー名', name), _pmField('アカウントユーザー（任意）', user),
       _pmField('表示名', display),
       _pmField('作業可能時間', workHours), _pmField('休憩時間', breakHours), _pmField('休日', holidays),
       _pmField('参加開始日', activeFrom), _pmField('参加終了日', activeTo),
@@ -633,7 +633,7 @@
     banner.setAttribute('aria-label', '制作管理の自動割り当て案内');
     const text = document.createElement('span');
     text.className = 'gb-production-recalc-banner-text';
-    text.textContent = 'メンバーを追加しました。自動割り当てしますか？';
+    text.textContent = 'ユーザーを追加しました。自動割り当てしますか？';
     const open = _pmButton('自動割り当てを確認', true);
     open.dataset.e2eId = 'production-recalc-banner-open';
     const close = _pmButton('閉じる');

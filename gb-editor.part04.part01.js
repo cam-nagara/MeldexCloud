@@ -10,7 +10,6 @@
     doFileSearch(1);
   });
   q.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeFileSearch(); e.preventDefault(); return; }
     // Enter（Shift なし）: 次の検索結果へジャンプ。Shift+Enter: 改行入力
     if (e.key === 'Enter' && !e.shiftKey) {
       if (isComposingQuery(e)) return;
@@ -21,14 +20,11 @@
   });
   q.addEventListener('input', () => autoResize(q));
 
-  r.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeFileSearch(); e.preventDefault(); }
-  });
   r.addEventListener('input', () => autoResize(r));
 });
 
 function closeFileSearch() {
-  document.getElementById('file-search-bar').classList.remove('open');
+  document.querySelectorAll('[id="file-search-bar"]').forEach(bar => bar.classList.remove('open'));
   clearFileSearchHighlights();
 }
 
@@ -195,11 +191,11 @@ async function _commitFileSearchReplacement(editable) {
     // 同期済みにする。dataset更新だけを現表示pathでガードし、旧ノートを次回
     // 起動時に未保存候補として誤復元しない。
     await window.MeldexDraftRecovery?.markSynced?.(path);
-    if (typeof historyPush === 'function') {
+    if (!res?.joined) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(previousMd, md)
         : '内容を置換';
-      historyPush('ページ編集', null, null, 'page:' + path.split('/').pop(), detail);
+      window.MeldexNoteHistory?.recordSavedEdit?.(path, previousMd, md, detail);
     }
     showStatus('ノートを保存しました', false, { passiveSave: true });
     return res;

@@ -21,7 +21,7 @@ const GBSubPanel = (() => {
   const CONTENT_ID = 'gb-subpanel-content';
   const INNER_PANE_ID = 'gb-subpanel-inner-pane';
   const EMPTY_MESSAGE = 'リンクのメニューから「右サイドバーで開く」を選ぶと、ここに表示されます。';
-  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const MAX_HISTORY = 50;
 
   let _root = null;
@@ -120,25 +120,6 @@ const GBSubPanel = (() => {
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.checkAvailability === 'function') {
       entry.availability = await GBLinkRouter.checkAvailability(entry.path);
     }
-    if (entry.type === 'timer' && !entry.state?._timerFileLoaded && entry.availability?.exists !== false) {
-      try {
-        const base = typeof API_BASE !== 'undefined' ? API_BASE : '';
-        const response = await fetch(base + '/file-raw?path=' + encodeURIComponent(entry.path), { cache: 'no-store' });
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const contract = window.MeldexTimerFileContract;
-        if (!contract?.parse) throw new Error('タイマーファイル契約を初期化できません');
-        const normalized = contract.parse(await response.text());
-        entry.state = {
-          ...normalized.timer,
-          ...entry.state,
-          _timerFileLoaded: true,
-          _timerFileStyle: normalized.style,
-        };
-        if (normalized.name && (!target || typeof target !== 'object' || !target.label)) entry.label = normalized.name;
-      } catch (error) {
-        entry.loadError = error?.message || 'タイマーファイルを読み込めませんでした';
-      }
-    }
     return entry;
   }
 
@@ -194,7 +175,7 @@ const GBSubPanel = (() => {
 
   function _sheetViewElements(root) {
     if (!root) return [];
-    return [...root.querySelectorAll('.pivot-view,.tree-view,.gallery-view,.kanban-view,.timeline-view,.chart-view,.graph-view,.form-view,.smart-db-view')];
+    return [...root.querySelectorAll('.pivot-view,.tree-view,.gallery-view,.kanban-view,.timeline-view,.chart-view,.graph-view,.form-view')];
   }
 
   function _captureViewerFrameState(frame) {
@@ -233,7 +214,7 @@ const GBSubPanel = (() => {
     if (noteRoot) live._subpanelSurface = { scroll: _surfaceScrollState(noteRoot), selection: _captureSelection(noteRoot) };
     else if (csvRoot) live._subpanelSurface = { scroll: _surfaceScrollState(csvRoot) };
     else if (folderRoot) live._subpanelSurface = { scroll: _surfaceScrollState(folderRoot) };
-    else if (_sheetEmbed?.ctx || DB_VIEW_TYPES.has(_current.type) || _current.type === 'smart-db') {
+    else if (_sheetEmbed?.ctx || DB_VIEW_TYPES.has(_current.type)) {
       const sheetCtx = _sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null);
       live.viewMode = sheetCtx?.viewMode || live.viewMode || _current.type;
       live.selectedEntities = [...(sheetCtx?._selectedEntities || [])];
@@ -362,7 +343,10 @@ const GBSubPanel = (() => {
         GBPaneBridge.retractPaneContent(_pane.id);
       }
       const tabId = _pane.tabs?.[0]?.id || '';
-      if (tabId && typeof removeComponentInstance === 'function') removeComponentInstance(tabId);
+      // _guardedTransition/_flushBeforeTransitionで保存成功を確認済み。
+      if (tabId && typeof removeComponentInstance === 'function') {
+        removeComponentInstance(tabId, { skipFlush: true });
+      }
       if (typeof GBLayout !== 'undefined' && GBLayout.paneMap) delete GBLayout.paneMap[_pane.id];
     }
     _pane = null;

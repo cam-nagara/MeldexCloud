@@ -153,10 +153,12 @@ function _sn2JoinPath(folder = '', fileName = '') {
   return f ? f + '/' + n : n;
 }
 
-function _sn2SetActiveScriptNotePath(ctx, targetPath) {
+function _sn2SetActiveScriptNotePath(ctx, targetPath, saveResult = {}) {
   const { comp, editor } = ctx || {};
   if (!editor || !targetPath) return;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
   const oldPath = editor._path || '';
+  const oldDocumentKey = coordinator && oldPath ? coordinator.documentKeyForPath(oldPath) : '';
   if (editor._saveTimer) {
     clearTimeout(editor._saveTimer);
     editor._saveTimer = null;
@@ -164,6 +166,23 @@ function _sn2SetActiveScriptNotePath(ctx, targetPath) {
   if (oldPath && oldPath !== targetPath && typeof _sn2Editors !== 'undefined') delete _sn2Editors[oldPath];
   editor._path = targetPath;
   editor._dirty = false;
+  // 「名前を付けて保存」は別文書を作るため、元ファイルのetag/revisionを
+  // 新しい保存先へ持ち越さない。PUT応答の新しい文書IDとrevisionを次回保存の
+  // CAS基準として即座に確定する。
+  editor._lastSavedEtag = saveResult?.etag || '';
+  editor._lastSavedTransportRevision = coordinator && (saveResult?.transport_revision || saveResult?.etag)
+    ? coordinator.normalizeTransportRevision(
+      coordinator.currentTransportName(),
+      saveResult.transport_revision || saveResult.etag,
+    )
+    : (saveResult?.transport_revision || saveResult?.etag || '');
+  if (coordinator) {
+    const targetDocumentKey = coordinator.bindDocumentIdentity(targetPath, saveResult || {});
+    if (oldDocumentKey && oldDocumentKey !== targetDocumentKey) {
+      coordinator.unregisterParticipant?.(oldDocumentKey, editor);
+    }
+    coordinator.registerParticipant?.(targetDocumentKey, editor);
+  }
   if (typeof createScriptNoteRowIdSet === 'function') editor._lastSavedRowIds = createScriptNoteRowIdSet(editor.doc);
   if (typeof _sn2Editors !== 'undefined') {
     _sn2Editors[targetPath] = editor;
@@ -209,6 +228,46 @@ async function _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath = '', optio
     okLabel: '上書き',
     cancelLabel: 'キャンセル',
   });
+}
+
+async function _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targetExists) {
+  const text = JSON.stringify(exportDoc, null, 2);
+  const independentCopy = String(targetPath || '').replace(/\\/g, '/') !== String(sourcePath || '').replace(/\\/g, '/');
+  if (!independentCopy) return { doc: exportDoc, text, documentId: '', independentCopy: false };
+
+  const identity = window.MeldexDocumentIdentity;
+  const format = identity?.formatForPath?.(targetPath, text) || null;
+  if (!format) {
+    // .scriptnote.json等の旧形式は文書ID基盤の対象外。元の.mel-scenario由来IDを
+    // 持ち込むと保存直後と再読込後でdocumentKeyが変わるため、IDだけを除外する。
+    const legacyDoc = JSON.parse(text);
+    if (legacyDoc?.meldex && typeof legacyDoc.meldex === 'object') {
+      delete legacyDoc.meldex.document_id;
+      if (Object.keys(legacyDoc.meldex).length === 1 && legacyDoc.meldex.metadata_version != null) {
+        delete legacyDoc.meldex;
+      }
+    }
+    return { doc: legacyDoc, text: JSON.stringify(legacyDoc, null, 2), documentId: '', independentCopy: true };
+  }
+  let documentId = '';
+  if (targetExists && typeof apiFetch === 'function') {
+    try {
+      const current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
+      documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
+    } catch {}
+  }
+  if (!documentId) {
+    documentId = identity?.newDocumentId?.() || '';
+  }
+  if (!documentId) return { doc: exportDoc, text, documentId: '', independentCopy: true };
+
+  const doc = JSON.parse(text);
+  doc.meldex = {
+    ...(doc.meldex && typeof doc.meldex === 'object' ? doc.meldex : {}),
+    metadata_version: 1,
+    document_id: documentId,
+  };
+  return { doc, text: JSON.stringify(doc, null, 2), documentId, independentCopy: true };
 }
 
 async function _sn2FetchCssWithImports(url, seen = new Set()) {
@@ -258,13 +317,38 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
     ? editor.collectDoc()
     : (typeof serializeScriptNoteDoc === 'function' ? serializeScriptNoteDoc(editor.doc) : editor.doc);
   clearPendingSave();
+  const normalizedSourcePath = String(sourcePath || '').replace(/\\/g, '/');
+  const normalizedTargetPath = String(targetPath || '').replace(/\\/g, '/');
+  if (normalizedSourcePath && normalizedSourcePath === normalizedTargetPath) {
+    // 既定名のまま保存してもforce_overwriteでCASを迂回しない。通常保存キューの
+    // etag/transport_revision検証をそのまま通す。
+    const saved = typeof editor.save === 'function' ? await editor.save() : false;
+    return saved !== false;
+  }
   if (!(await _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath, options))) return false;
   const targetExists = await _sn2ScriptNoteFileExists(targetPath);
-  await apiPut('/file?path=' + encodeURIComponent(targetPath), {
-    content: JSON.stringify(exportDoc, null, 2),
+  const prepared = await _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targetExists);
+  const rawSaveResult = await apiPut('/file?path=' + encodeURIComponent(targetPath), {
+    content: prepared.text,
     ...(targetExists ? { force_overwrite: true } : { create_only: true }),
   });
-  _sn2SetActiveScriptNotePath(ctx, targetPath);
+  const documentId = rawSaveResult?.document_id || prepared.documentId || '';
+  const saveResult = documentId ? { ...(rawSaveResult || {}), document_id: documentId } : (rawSaveResult || {});
+  if (prepared.independentCopy && editor.doc) {
+    if (prepared.documentId) {
+      editor.doc.meldex = {
+        ...(prepared.doc?.meldex || editor.doc.meldex || {}),
+        metadata_version: 1,
+        document_id: documentId || prepared.documentId,
+      };
+    } else if (prepared.doc?.meldex && typeof prepared.doc.meldex === 'object') {
+      // 旧形式へ切り替えた後の通常保存でも、元.mel-scenarioの文書IDを再混入させない。
+      editor.doc.meldex = { ...prepared.doc.meldex };
+    } else {
+      delete editor.doc.meldex;
+    }
+  }
+  _sn2SetActiveScriptNotePath(ctx, targetPath, saveResult);
   return true;
 }
 

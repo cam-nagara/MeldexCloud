@@ -269,6 +269,7 @@
     _container.style.display = 'flex';
     _container.style.flexDirection = 'column';
     _container.style.minHeight = '0';
+    window.GBOptionTargetContext?.renderHeader?.(_container);
 
     const panelTabs = window.MeldexTagPanelTabs?.createTabBar?.(() => render());
     if (panelTabs) _container.appendChild(panelTabs);
@@ -750,6 +751,7 @@
   }
 
   function renderGroupNode(group, groupsById, depth, budget) {
+    const adminGroup = group?._dictionary_scope === 'admin';
     const wrap = document.createElement('div');
     wrap.style.marginLeft = (depth * 12) + 'px';
     const key = rowKey('group', group.id);
@@ -763,7 +765,14 @@
     actions.className = 'gb-tag-group-actions';
     const displayPreferences = window.MeldexTagDisplayPreferences;
     const explicitlyHidden = displayPreferences?.isGroupExplicitlyHidden?.(group.id, _state.sourceFolder) === true;
-    actions.append(
+    if (adminGroup) {
+      const marker = document.createElement('span');
+      marker.className = 'gb-tag-source-marker is-admin';
+      marker.textContent = '管';
+      marker.title = '管理者辞書のグループ（この画面では読み取り専用）';
+      marker.setAttribute('aria-label', marker.title);
+      actions.appendChild(marker);
+    } else actions.append(
       iconButton(
         explicitlyHidden ? 'eye-off' : 'eye',
         explicitlyHidden ? 'このタググループをメインパネルに表示' : 'このタググループをメインパネルで非表示',
@@ -786,10 +795,12 @@
     bindRowKeyboard(head, event => {
       setSelectionFromEvent(event, key);
       refreshTreeContent();
-    }, event => openGroupMenu(event.currentTarget, group));
-    bindRowMenu(head, event => openGroupMenu(event.currentTarget, group));
-    bindDragSource(head, 'group', group.id);
-    bindDropTarget(head, group.id, 'group');
+    }, adminGroup ? null : event => openGroupMenu(event.currentTarget, group));
+    if (!adminGroup) {
+      bindRowMenu(head, event => openGroupMenu(event.currentTarget, group));
+      bindDragSource(head, 'group', group.id);
+      bindDropTarget(head, group.id, 'group');
+    }
     wrap.appendChild(head);
     if (!group.collapsed) {
       // タグ用の入れ物（格子並び）と子グループ用の入れ物（全幅の縦並び）を分ける。
@@ -890,6 +901,7 @@
         event.stopPropagation();
         activate(event);
       } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+        if (typeof openMenuForRow !== 'function') return;
         event.preventDefault();
         event.stopPropagation();
         openMenuForRow(event);
@@ -1421,7 +1433,10 @@
   }
 
   async function onDeleteTag(tag) {
-    if (!await confirmAsync('タグ「' + tag.name + '」を削除しますか？\nこのタグを付けたファイルからもタグが外れます。')) return;
+    const duplicateMessage = tag?._dictionary_scope === 'duplicate'
+      ? '\n自分の分だけ削除します。管理者タグとしては残るため、表示は残ります。'
+      : '\nこのタグを付けたファイルからもタグが外れます。';
+    if (!await confirmAsync('タグ「' + tag.name + '」を削除しますか？' + duplicateMessage)) return;
     try { await api().deleteTag(tag.id, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'タグを削除できませんでした'); }
   }
@@ -1443,10 +1458,24 @@
   }
 
   function openAddMenu(anchor, groupId) {
-    window.MeldexTagManagementOverlays.openMenu(anchor, [
+    const items = [
       ['tag', 'タグを追加', () => onAddTag(groupId)],
       ['folder-plus', groupId ? 'サブグループを追加' : '最上位グループを追加', () => onAddGroup(groupId)],
-    ], { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
+    ];
+    if (!groupId && window.MeldexAdminTagDictionary?.roleState?.().canManage) {
+      items.push(['shield-plus', '管理者タグを追加', () => onAddAdminTag()]);
+    }
+    window.MeldexTagManagementOverlays.openMenu(anchor, items, { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
+  }
+
+  async function onAddAdminTag() {
+    const name = String(await promptAsync('管理者タグ名', '') || '').trim();
+    if (!name) return;
+    try {
+      await window.MeldexAdminTagDictionary.createTag({ name });
+      api()?.invalidateTagsCatalogCache?.(_state.sourceFolder);
+      await refresh(false);
+    } catch (err) { reportError(err, '管理者タグを追加できませんでした'); }
   }
 
   function openGroupMenu(anchor, group) {
@@ -1458,14 +1487,24 @@
   }
 
   function openTagMenu(anchor, tag) {
-    window.MeldexTagManagementOverlays.openMenu(anchor, [
+    const base = [
       ['filter', '現在のフォルダをこのタグで絞り込み', () => applyTagFilter(tag)],
       ['search', 'このタグの項目を全検索', () => showSearchForTag(tag)],
-      ['pencil', '名前を変更', () => promptRenameTag(tag)],
-      ['languages', '別名を編集', () => promptAliasesTag(tag)],
-      ['sparkles', tag.auto_assign ? '自動付与の許可を外す' : '自動付与を許可', () => toggleAutoAssignTag(tag)],
-      ['trash-2', '削除', () => onDeleteTag(tag), true],
-    ], { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
+    ];
+    const adminOnly = tag?._dictionary_scope === 'admin';
+    if (adminOnly && !window.MeldexAdminTagDictionary?.roleState?.().canManage) {
+      base.push(['shield', '管理者タグ（読み取り専用）', () => {
+        if (typeof showStatus === 'function') showStatus('管理者タグを編集・削除できるのはowner／adminだけです');
+      }]);
+    } else {
+      base.push(
+        ['pencil', '名前を変更', () => promptRenameTag(tag)],
+        ['languages', '別名を編集', () => promptAliasesTag(tag)],
+        ['sparkles', tag.auto_assign ? '自動付与の許可を外す' : '自動付与を許可', () => toggleAutoAssignTag(tag)],
+        ['trash-2', '削除', () => onDeleteTag(tag), true],
+      );
+    }
+    window.MeldexTagManagementOverlays.openMenu(anchor, base, { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
   }
 
   async function showSearchForTag(tag) {

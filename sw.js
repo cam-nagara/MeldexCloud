@@ -12,7 +12,6 @@ let activeOfflineCacheName = '';
 let activeOfflineVersion = '';
 const MELDEX_STANDALONE_ROUTES = Object.freeze([
   './apps/viewer/',
-  './apps/timer/',
   './apps/quick-memo/',
 ]);
 

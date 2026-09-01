@@ -15,12 +15,11 @@ const GBDocking = (() => {
     board: 'ボード',
     calendar: 'スケジュール',
     preview: 'ビューワー',
-    'smart-db': 'スマートシート',
     folder: 'フォルダ',
     outliner: 'フォルダツリー',
     chat: 'チャット',
     history: 'ヒストリー',
-    annotation: '注釈',
+    annotation: 'アノテート',
     detail: 'オプション',
     search: '検索',
   };

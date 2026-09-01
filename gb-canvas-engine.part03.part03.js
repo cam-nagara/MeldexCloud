@@ -20,13 +20,14 @@ function bdFinishEdit() {
     const el = document.querySelector('.bd-node.bd-editing');
     let editedNode = null;
     let changed = false;
+    let beforeText = '';
     if (el) {
       el.classList.remove('bd-editing');
       const txt = el.querySelector('.bd-text');
       txt.contentEditable = 'false';
       editedNode = bd.nodes.find(v=>v.id===bd.editing);
       if (editedNode) {
-        const beforeText = editedNode.text || '';
+        beforeText = editedNode.text || '';
         const nextText = txt.innerText.trim();
         changed = nextText !== beforeText;
         if (changed) {
@@ -41,7 +42,15 @@ function bdFinishEdit() {
       if (caret) caret.remove();
     }
     bd.editing = null;
-    if (changed) bdDirty();
+    if (changed && editedNode?._topicCanonicalOnly && editedNode?.topicRef) {
+      const attemptedText = editedNode.text;
+      void window.MeldexTopicPlacementUI.updateProjectedBoardText(editedNode, attemptedText)
+        .catch((error) => {
+          if (editedNode.text === attemptedText) editedNode.text = beforeText;
+          if (typeof showStatus === 'function') showStatus(error?.message || 'トピックの保存に失敗しました', true);
+          if (typeof bdRender === 'function') bdRender();
+        });
+    } else if (changed) bdDirty();
     // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
     if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
     if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');

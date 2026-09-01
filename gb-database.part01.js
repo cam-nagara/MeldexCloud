@@ -210,7 +210,7 @@ async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
-  const requestedViewMode = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']
+  const requestedViewMode = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']
     .includes(String(openOpts.requestedViewMode || '').trim())
     ? String(openOpts.requestedViewMode).trim()
     : '';
@@ -235,8 +235,6 @@ async function selectDatabase(dbPath, ctx, opts) {
   const previousGlobal = syncGlobalState ? {
     currentDbPath: state.currentDbPath,
     currentEntityPath: state.currentEntityPath,
-    currentSmartDb: state.currentSmartDb,
-    smartDbData: state.smartDbData,
     pivotData: state.pivotData,
     dbMetadata: state.dbMetadata,
     filter: state.filter,
@@ -278,8 +276,6 @@ async function selectDatabase(dbPath, ctx, opts) {
   ctx.dbPath = dbPath;
   ctx.entityPath = null;
   ctx.pivotData = null;
-  ctx.smartDb = null;
-  ctx.smartDbData = null;
   // Unified Topic migration is additive and intentionally off the Sheet load
   // critical path. The unchanged legacy Sheet remains the fallback.
   void window.GbTopicLiveBridge?.migrateOpenedSheet?.(dbPath, {
@@ -290,18 +286,8 @@ async function selectDatabase(dbPath, ctx, opts) {
   // グローバルstate同期（非スコープ化コードの互換性）
   if (syncGlobalState) {
     state.currentDbPath = dbPath;
-    state.currentSmartDb = null;
-    state.smartDbData = null;
     state.currentEntityPath = null;
     state.pivotData = null;
-  }
-  // スマートシートからの遷移時、smart-db-view の表示が残ると通常シートが見えなくなる。
-  // pane-bridge の DB_SUB_VIEWS 切替が走らないケースに備えて明示的に隠す。
-  if (!openOpts.skipGlobalUi) {
-    const _smartDbViewEl = document.getElementById('smart-db-view');
-    if (_smartDbViewEl && _smartDbViewEl.style.display !== 'none') {
-      _smartDbViewEl.style.display = 'none';
-    }
   }
   const dbLoadSeq = (ctx._dbLoadSeq || 0) + 1;
   ctx._dbLoadSeq = dbLoadSeq;
@@ -504,6 +490,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+    window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
     if (window.GbDbEntryIdentity) window.GbDbEntryIdentity.registerPivot(dbPath, pivotData);
     ctx.pivotData = pivotData;
@@ -562,6 +549,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     else if (dbViewMode === 'gallery') renderGallery(ctx);
     else if (dbViewMode === 'kanban') renderKanban(ctx);
     else if (dbViewMode === 'timeline' || dbViewMode === 'calendar' || dbViewMode === 'tasks' || dbViewMode === 'shifts') renderTimeline(ctx);
+    else if (dbViewMode === 'gantt' && typeof renderGantt === 'function') renderGantt(ctx);
     else if (dbViewMode === 'chart' && typeof renderChart === 'function') renderChart(ctx);
     else if (dbViewMode === 'graph' && typeof renderGraph === 'function') renderGraph(ctx);
     else if (dbViewMode === 'form' && typeof renderDbFormView === 'function') renderDbFormView(ctx);

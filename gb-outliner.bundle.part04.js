@@ -1,3 +1,50 @@
+  if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
+  if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
+  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+    jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
+      skipShowView: true,
+      skipSaveLastView: true,
+      skipNavPush: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    })).catch(() => {}));
+  }
+  await Promise.allSettled(jobs);
+}
+
+async function deleteOutlinerItemsWithHistory(items, options = {}) {
+  const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
+  if (requestedTargets.some(item => item.linked)) {
+    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
+    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
+  }
+  const targets = _prepareOutlinerDeleteTargets(requestedTargets);
+  if (!targets.length) {
+    return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
+  }
+
+  const targetPaths = targets.map(item => item.path).filter(Boolean);
+  _markOutlinerDeletePending(targetPaths);
+  if (typeof options.onOptimisticDelete === 'function') {
+    try { options.onOptimisticDelete(targets); } catch {}
+  }
+
+  const results = await _deleteOutlinerTargetsSequentially(targets, {
+    confirmation: options.confirmation,
+    onSuccess: (item, response) => {
+      if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
+    },
+    onFailure: (item, reason) => {
+      if (typeof options.onItemDeleteFailed === 'function') options.onItemDeleteFailed(item, reason);
+    },
+  });
+  const succeeded = [];
+  const skipped = [];
+  const failed = [];
+  results.forEach((result, index) => {
+    const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
+    if (!trashRef) {
+      if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
       else failed.push(targets[index]);
       return;
     }
@@ -282,7 +329,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -448,11 +495,24 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
   }
 
+  if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
+    const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
+    if (topicSource) {
+      window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
+        addMenuItem(item.label, () => {
+          closeTreeContextMenu();
+          item.action();
+        }, null, item.icon);
+      });
+      addSep();
+    }
+  }
+
   // --- 新規作成サブメニュー ---
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,
@@ -838,63 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
             return;
           }
           await MeldexExportSave.saveUrl(ei.url, {
-            filename: ei.filename,
-            extension: ei.extension,
-            dialogTitle: `${ei.label}として保存`,
-            filetypes: ei.filetypes,
-            okMessage: `${ei.label} として保存しました`,
-            errorMessage: `${ei.label} の保存に失敗しました`,
-            path: nodeData.path,
-            title: nodeData.name || '無題',
-          });
-          },
-        });
-      });
-      addSep();
-    }
-  }
-
-  // --- 所属フォルダ（リンク登録） ---
-  if (!isEntity && nodeData.path) {
-    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
-    addMenuItem(linkLabel, () => {
-      closeTreeContextMenu();
-      showAddFolderLinkModal(nodeData.path, null);
-    }, null, 'link2');
-  }
-
-  // --- 色設定 ---
-  addSep();
-  {
-    const currentColor = getNodeColor(nodeData.path);
-    const colorItem = _outlinerAppendMenuItem(menu, {
-      html: '',
-      action: () => {
-        openColorPalette(swatch, currentColor, (c) => {
-          closeTreeContextMenu();
-          applyColorToSelection(c || null);
-        });
-      },
-    });
-    const swatch = document.createElement('span');
-    swatch.className = 'gb-color-swatch gb-color-swatch--inline';
-    swatch.setAttribute('aria-hidden', 'true');
-    setColorSwatchValue(swatch, currentColor || 'var(--fg)');
-    colorItem.appendChild(swatch);
-    const clbl = document.createElement('span');
-    clbl.textContent = isMulti ? `色設定（${selectedCount}件）` : '色設定';
-    colorItem.appendChild(clbl);
-  }
-
-  // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---
-  // （ワークスペースはソースフォルダ設定に保存されないため、出しても無効操作になる）
-  if (nodeData._isRoot && !isMulti && (nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
-    addSep();
-    addMenuItem('ワークスペースの管理...', () => {
-      closeTreeContextMenu();
-      if (typeof openWorkspaceSettings === 'function') openWorkspaceSettings();
-    }, null, 'usersRound');
-  }
-
-  // --- ルートフォルダのパス変更 ---
-  if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {

@@ -25,6 +25,10 @@
       feedbackSheetName: 'feedback',
       feedbackFormUrl: '',
     },
+    debuggerReporting: {
+      baseUrl: '',
+      projectSlug: '',
+    },
     updateCheck: {
       url: '',
       pageUrl: '',
@@ -33,6 +37,8 @@
 
   releaseConfig.betaFeedback.googleWebAppUrl = _runtimeString(['betaFeedback', 'googleWebAppUrl'], releaseConfig.betaFeedback.googleWebAppUrl);
   releaseConfig.betaFeedback.feedbackFormUrl = _runtimeString(['betaFeedback', 'feedbackFormUrl'], releaseConfig.betaFeedback.feedbackFormUrl);
+  releaseConfig.debuggerReporting.baseUrl = _runtimeString(['debuggerReporting', 'baseUrl'], releaseConfig.debuggerReporting.baseUrl);
+  releaseConfig.debuggerReporting.projectSlug = _runtimeString(['debuggerReporting', 'projectSlug'], releaseConfig.debuggerReporting.projectSlug);
   releaseConfig.updateCheck.url = _runtimeString(['updateCheck', 'url'], releaseConfig.updateCheck.url);
   releaseConfig.updateCheck.pageUrl = _runtimeString(['updateCheck', 'pageUrl'], releaseConfig.updateCheck.pageUrl);
 
@@ -47,10 +53,9 @@
       'カレンダー',
       'Google/Microsoftカレンダー連携',
       'iPhone向けICS購読',
-      'スマートシート',
       'クラウド版フルチャット',
       '暗号化APIキーCloud保存',
-      '注釈',
+      'アノテート',
       'バージョン管理',
       'フィードバック送信',
       'Dropbox競合検知/解決',
@@ -66,6 +71,7 @@
   window.MeldexReleaseConfig = Object.freeze({
     ...releaseConfig,
     betaFeedback: Object.freeze(releaseConfig.betaFeedback),
+    debuggerReporting: Object.freeze(releaseConfig.debuggerReporting),
     updateCheck: Object.freeze(releaseConfig.updateCheck),
   });
 
@@ -3154,7 +3160,6 @@
     if (lower.endsWith('.mel-scenario')) return '.mel-scenario';
     if (lower.endsWith('.mel-timer')) return '.mel-timer';
     if (lower.endsWith('.scriptnote.json')) return '.scriptnote.json';
-    if (lower.endsWith('.smart-db.json')) return '.smart-db.json';
     if (lower.endsWith('.timer.json')) return '.timer.json';
     const firstDot = safeName.indexOf('.');
     if (firstDot <= 0) return '';
@@ -4844,9 +4849,9 @@
       const normalized = _normalizeRelativePath(relativePath);
       const lower = normalized.toLowerCase();
       if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
-      if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+      if (lower.endsWith('.mel-sheet')) return 'database';
       if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
-      if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+      if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
       if (!lower.endsWith('.md')) return 'scenario';
       const typeInfo = await _fetchJson('/check-type', { query: { path: normalized }, allowStatus: [404] });
       return String(typeInfo?.type || '') === 'board' ? 'board' : 'page';
@@ -5632,7 +5637,7 @@
     }
   }
 
-  async function getAll() {
+  async function getAll(options = {}) {
     try {
       const db = await _openDb();
       await _migrateFallbackToDb(db);
@@ -5649,7 +5654,8 @@
         };
         req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
       });
-    } catch {
+    } catch (err) {
+      if (options?.strict) throw _storageUnavailableError(err);
       return {};
     }
   }
@@ -5678,6 +5684,34 @@
     return { ok: true, saved: entries.length };
   }
 
+  async function restoreMany(snapshot, names) {
+    const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    const keyNames = [...new Set((Array.isArray(names) ? names : Object.keys(source))
+      .map(_normalizeKeyName).filter(Boolean))];
+    if (!keyNames.length) return { ok: true, restored: 0 };
+    try {
+      const db = await _openDb();
+      await _migrateFallbackToDb(db);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const updatedAt = new Date().toISOString();
+        keyNames.forEach((name) => {
+          const value = String(source[name] || '').trim();
+          if (value) store.put({ name, value, updatedAt });
+          else store.delete(name);
+        });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB restore failed'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB restore aborted'));
+      });
+    } catch (err) {
+      _removeFallback();
+      throw _storageUnavailableError(err);
+    }
+    return { ok: true, restored: keyNames.length };
+  }
+
   async function deleteKey(name) {
     const keyName = _normalizeKeyName(name);
     if (!keyName) return { ok: true };
@@ -5694,6 +5728,12 @@
       throw _storageUnavailableError(err);
     }
     return { ok: true };
+  }
+
+  async function deleteProvider(provider) {
+    const keyName = _providerKey(provider);
+    if (!keyName) throw new Error('削除対象のプロバイダーが不明です');
+    return deleteKey(keyName);
   }
 
   async function getForProvider(provider) {
@@ -5748,7 +5788,9 @@
     providerKey: _providerKey,
     getAll,
     setMany,
+    restoreMany,
     deleteKey,
+    deleteProvider,
     getForProvider,
     hasProvider,
     configuredProviders,
@@ -6974,7 +7016,48 @@
   const PWA_ROOTS_KEY = 'meldex-cloud-outliner-roots';
   const PWA_HOME_KEY = 'meldex-cloud-home-folder';
   const PWA_UI_CONFIG_KEY = 'meldex-cloud-ui-config';
+  const PWA_UI_CONFIG_HISTORY_KEY = 'meldex-cloud-ui-config-history-v1';
   const PWA_FOLDER_LINKS_KEY = 'meldex-cloud-folder-links';
+
+  function _pwaStableJson(value) {
+    if (Array.isArray(value)) return '[' + value.map(_pwaStableJson).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + _pwaStableJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function _pwaUiConfigRevision(value) {
+    const bytes = new TextEncoder().encode(_pwaStableJson(value && typeof value === 'object' ? value : {}));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function _pwaUiConfigVersionId() {
+    if (typeof crypto?.randomUUID === 'function') {
+      return 'uicv_' + crypto.randomUUID().replace(/-/g, '');
+    }
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return 'uicv_' + [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _pwaCaptureUiConfigVersion(snapshot, label) {
+    const value = snapshot && typeof snapshot === 'object'
+      ? JSON.parse(JSON.stringify(snapshot))
+      : {};
+    const sourceRevision = await _pwaUiConfigRevision(value);
+    const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+    const rows = Array.isArray(history) ? history : [];
+    if (rows[0]?.sourceRevision === sourceRevision) {
+      return { versionId: rows[0].versionId, previousRows: rows, changed: false };
+    }
+    const versionId = _pwaUiConfigVersionId();
+    rows.unshift({ versionId, sourceRevision, label: label || '設定変更前', actor: 'Cloud', createdAt: new Date().toISOString(), snapshot: value });
+    const nextRows = rows.slice(0, 30);
+    _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, nextRows);
+    return { versionId, previousRows: rows.slice(1), changed: true };
+  }
   const PWA_FOLDER_LINKS_FILE = '_meldex/folder-links.json';
   const FOLDER_LINKS_DOCUMENT_ID = 'cloud-folder-links';
   const PWA_TRASH_DIR = '_trash';
@@ -7024,6 +7107,26 @@
     } catch {}
   }
 
+  function _requiredReadJson(key, fallbackValue) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallbackValue;
+      return JSON.parse(raw);
+    } catch {
+      throw _httpError(409, '保存されている設定履歴の整合性を確認できません');
+    }
+  }
+
+  function _requiredWriteJson(key, value) {
+    const serialized = JSON.stringify(value);
+    try {
+      localStorage.setItem(key, serialized);
+      if (localStorage.getItem(key) !== serialized) throw new Error('write verification failed');
+    } catch {
+      throw _httpError(507, '設定を端末へ保存できません。空き容量とブラウザの保存許可を確認してください');
+    }
+  }
+
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
   }
@@ -7061,7 +7164,6 @@
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
     if (lower.endsWith('.mel-timer')) return { stem: safeName.slice(0, -10), ext: '.mel-timer' };
     if (lower.endsWith('.scriptnote.json')) return { stem: safeName.slice(0, -16), ext: '.scriptnote.json' };
-    if (lower.endsWith('.smart-db.json')) return { stem: safeName.slice(0, -14), ext: '.smart-db.json' };
     if (lower.endsWith('.timer.json')) return { stem: safeName.slice(0, -11), ext: '.timer.json' };
     const index = safeName.lastIndexOf('.');
     if (index <= 0) return { stem: safeName, ext: '' };
@@ -7149,7 +7251,7 @@
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
     return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
-      || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.smart-db.json') || path.toLowerCase().endsWith('.timer.json');
+      || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
   function _isExcludedWorkspacePath(path) {
@@ -7830,9 +7932,9 @@
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
     if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
-    if (ext === '.mel-sheet') return _phase1SurfaceType('smart-db', 'file');
+    if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
-    if (ext === '.mel-timer') return 'timer';
+    if (ext === '.mel-timer') return 'unsupported';
     if (ext === '.md') {
       if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
@@ -7840,17 +7942,15 @@
       if (frontmatterType === 'chat') return _phase1SurfaceType('chat', 'file');
       return 'page';
     }
-    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.smart-db.json') || lowerName.endsWith('.timer.json')) {
+    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.timer.json')) {
       if (lowerName.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lowerName.endsWith('.scenario.json')) return 'scenario';
-      if (lowerName.endsWith('.smart-db.json')) return _phase1SurfaceType('smart-db', 'file');
-      if (lowerName.endsWith('.timer.json')) return 'timer';
+      if (lowerName.endsWith('.timer.json')) return 'unsupported';
       const parsed = await _readJsonSafe(provider, relativePath, null);
       if (parsed && typeof parsed === 'object') {
         if (parsed.fileType === 'meldex-scriptnote') return 'scriptnote';
         if (parsed.fileType === 'meldex-scenario' || parsed.type === 'scenario') return 'scenario';
-        if (parsed.type === 'smart-db') return _phase1SurfaceType('smart-db', 'file');
-        if (parsed.type === 'meldex-timer') return 'timer';
+        if (parsed.type === 'meldex-timer') return 'unsupported';
         if (!parsed.fileType && !parsed.type && Object.prototype.hasOwnProperty.call(parsed, 'title')) return 'scenario';
       }
       return 'unknown';
@@ -8410,19 +8510,24 @@
 
   function _workspaceRole(role, fallback) {
     const value = String(role || '').trim().toLowerCase();
-    return ['owner', 'admin', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
+    return ['owner', 'admin', 'schedule_manager', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
   }
 
   function _workspaceMember(member, fallbackName) {
+    const userType = String(member?.userType || member?.user_type || 'account').trim();
+    if (userType === 'virtual') return null;
     const name = String(member?.name || fallbackName || '').trim();
     if (!name) return null;
     const accountId = String(member?.accountId || member?.account_id || '').trim();
     const row = {
       name,
+      userType: 'account',
       role: _workspaceRole(member?.role, 'member'),
       avatar: String(member?.avatar || ''),
       updatedAt: String(member?.updatedAt || member?.updated_at || _nowIso()),
     };
+    const userId = String(member?.userId || member?.user_id || member?.id || member?.member_id || accountId || '').trim();
+    if (userId) row.userId = userId;
     if (accountId) row.accountId = accountId;
     return row;
   }
@@ -8596,6 +8701,29 @@
   }
 
   async function _cloudUpsertWorkspaceMember(id, name, body) {
+    if (String(body?.user_type || body?.userType || 'account').trim() === 'virtual') {
+      throw _httpError(400, '仮ユーザーはログイン権限を持たないため、ワークスペースのアクセスユーザーには追加できません');
+    }
+    const identities = new Set([
+      String(name || '').trim(),
+      String(body?.user_id || body?.userId || '').trim(),
+    ].filter(Boolean));
+    const listRegistryUsers = globalThis.MeldexUserRegistry?.listStaff;
+    if (typeof listRegistryUsers === 'function') {
+      let registryUsers;
+      try {
+        registryUsers = await listRegistryUsers.call(globalThis.MeldexUserRegistry, { force: true });
+      } catch {
+        throw _httpError(503, 'ユーザー管理シートを確認できないため、アクセスユーザーを追加できません');
+      }
+      const matchedVirtualUser = (Array.isArray(registryUsers) ? registryUsers : []).some(user => {
+        if (user?.user_type !== 'virtual') return false;
+        return [user.user_id, user.user, user.display].some(value => identities.has(String(value || '').trim()));
+      });
+      if (matchedVirtualUser) {
+        throw _httpError(400, '仮ユーザーはログイン権限を持たないため、ワークスペースのアクセスユーザーには追加できません');
+      }
+    }
     let workspace = null;
     await _updateCloudWorkspaceStore(store => {
       const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
@@ -8610,6 +8738,7 @@
         role: body?.role || existing?.role || 'member',
         avatar: Object.prototype.hasOwnProperty.call(body || {}, 'avatar') ? body.avatar : (existing?.avatar || ''),
         accountId,
+        userId: body?.user_id || body?.userId || existing?.userId || '',
         updatedAt: _nowIso(),
       }, targetName);
       if (!member) throw _httpError(400, 'メンバー名を指定してください');
@@ -8659,7 +8788,8 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy']);
+  const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
     const contract = window.MeldexSystemStorage;
@@ -8715,6 +8845,77 @@
     }
     const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
     return { available: true, ok: true, revision: record?.revision || null };
+  }
+
+  function _assertWorkspacePreferenceName(name) {
+    const doc = String(name || '').trim();
+    if (!WORKSPACE_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知のワークスペース設定です: ${name}`);
+    return doc;
+  }
+
+  function _workspacePreferenceRole(workspace) {
+    const user = String(typeof getUsername === 'function' ? getUsername() : '').trim().toLowerCase();
+    const member = (Array.isArray(workspace?.members) ? workspace.members : []).find(row =>
+      user && String(row?.name || '').trim().toLowerCase() === user);
+    return String(member?.role || '').trim().toLowerCase();
+  }
+
+  async function _workspacePreferenceContext(workspaceId, mode) {
+    const store = await _readCloudWorkspaceStore();
+    const workspace = store.workspaces.find(item => item?.id === String(workspaceId || '') && item.deleted !== true);
+    if (!workspace) throw _httpError(404, 'ワークスペースが見つかりません');
+    const role = _workspacePreferenceRole(workspace);
+    if (!role) throw _httpError(403, 'このワークスペース設定を表示できません');
+    if (mode === 'write' && !['owner', 'admin'].includes(role)) {
+      throw _httpError(403, '復元ポイント方針を変更できるのは所有者または管理者だけです');
+    }
+    const provider = await _requirePwaProvider(mode === 'write' ? 'readwrite' : 'read');
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const registry = window.MeldexSourceFolderRegistry;
+    if (!resolver?.resolveSharedWorkspaceTypedAdapter || !registry?.resolveDropboxPath) {
+      return { available: false, workspace, role, adapter: null };
+    }
+    let dropboxPath = '';
+    try { dropboxPath = registry.resolveDropboxPath(workspace.folder || ''); } catch {}
+    if (!dropboxPath) return { available: false, workspace, role, adapter: null };
+    try {
+      const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(
+        provider, _personalPreferenceKind(), {
+          workspaceDropboxPath: dropboxPath,
+          workspaceId: workspace.id,
+        },
+      );
+      return { available: true, workspace, role, adapter };
+    } catch {
+      return { available: false, workspace, role, adapter: null };
+    }
+  }
+
+  async function _readWorkspacePreference(workspaceId, name) {
+    const doc = _assertWorkspacePreferenceName(name);
+    const context = await _workspacePreferenceContext(workspaceId, 'read');
+    const base = { available: context.available, scope: 'workspace', workspaceId,
+      role: context.role, readOnly: !['owner', 'admin'].includes(context.role) };
+    if (!context.adapter) return { ...base, exists: false, payload: null, revision: null };
+    const record = await context.adapter.load(_personalPreferenceKind(), doc);
+    if (!record) return { ...base, exists: false, payload: null, revision: null };
+    return { ...base, exists: true, payload: record.payload, revision: record.revision };
+  }
+
+  async function _writeWorkspacePreference(workspaceId, name, body) {
+    const doc = _assertWorkspacePreferenceName(name);
+    const payload = body?.payload;
+    if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    const context = await _workspacePreferenceContext(workspaceId, 'write');
+    if (!context.adapter) return { available: false, ok: false, revision: null,
+      scope: 'workspace', workspaceId, role: context.role, readOnly: true };
+    const options = {};
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      options.expectedRevision = body.expectedRevision || null;
+    }
+    const record = await context.adapter.save(_personalPreferenceKind(), doc, payload, options);
+    return { available: true, ok: true, revision: record?.revision || null,
+      scope: 'workspace', workspaceId, role: context.role, readOnly: false };
   }
 
   // ---- クラウド直結（端末内保存／Dropboxの両バックエンド）の圧縮・解凍・ZIP閲覧 ----
@@ -9067,8 +9268,58 @@
     if (pathname === '/home-folder' && method === 'GET') return _pwaHomeFolder();
     if (pathname === '/ui-config' && method === 'GET') return _safeReadJson(PWA_UI_CONFIG_KEY, {});
     if (pathname === '/ui-config' && method === 'PUT') {
-      _safeWriteJson(PWA_UI_CONFIG_KEY, body || {});
-      return { ok: true };
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const desired = body && typeof body === 'object' ? body : {};
+      const currentRevision = await _pwaUiConfigRevision(current);
+      const desiredRevision = await _pwaUiConfigRevision(desired);
+      if (currentRevision === desiredRevision) return { ok: true, unchanged: true, revision: currentRevision };
+      const captured = await _pwaCaptureUiConfigVersion(current, '設定変更前');
+      try {
+        _requiredWriteJson(PWA_UI_CONFIG_KEY, desired);
+      } catch (error) {
+        if (captured.changed) _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, captured.previousRows);
+        throw error;
+      }
+      return { ok: true, revision: desiredRevision };
+    }
+    if (pathname === '/ui-config/history' && method === 'GET') {
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+      return {
+        currentRevision: await _pwaUiConfigRevision(current),
+        versions: (Array.isArray(history) ? history : []).map(({ snapshot, ...version }) => version),
+      };
+    }
+    const uiConfigHistoryMatch = pathname.match(/^\/ui-config\/history\/([^/]+)(\/restore)?$/);
+    if (uiConfigHistoryMatch && method === (uiConfigHistoryMatch[2] ? 'POST' : 'GET')) {
+      const versionId = decodeURIComponent(uiConfigHistoryMatch[1]);
+      const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+      const saved = (Array.isArray(history) ? history : []).find(row => row?.versionId === versionId);
+      if (!saved || !saved.snapshot || typeof saved.snapshot !== 'object') throw _httpError(404, '指定した設定の版がありません');
+      if (await _pwaUiConfigRevision(saved.snapshot) !== saved.sourceRevision) throw _httpError(409, '保存版の設定の整合性を確認できません');
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const currentRevision = await _pwaUiConfigRevision(current);
+      if (!uiConfigHistoryMatch[2]) {
+        const keys = [...new Set([...Object.keys(saved.snapshot), ...Object.keys(current)])].sort();
+        return {
+          versionId, currentRevision, version: saved.snapshot, current,
+          changes: keys.filter(key => _pwaStableJson(saved.snapshot[key]) !== _pwaStableJson(current[key])).map(key => ({
+            key, versionValue: saved.snapshot[key], currentValue: current[key],
+          })),
+        };
+      }
+      if (String(body?.expectedRevision || '') !== currentRevision) throw _httpError(409, '表示後に設定が変更されたため復元を中止しました');
+      const captured = await _pwaCaptureUiConfigVersion(current, '設定復元前');
+      try {
+        _requiredWriteJson(PWA_UI_CONFIG_KEY, saved.snapshot);
+      } catch (error) {
+        if (captured.changed) _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, captured.previousRows);
+        throw error;
+      }
+      return {
+        ok: true, config: saved.snapshot, revision: saved.sourceRevision,
+        reload: { scope: 'ui-config' },
+      };
     }
     if (pathname === '/beta/consent') {
       const consentKey = 'meldex-beta-consent-v1';
@@ -9165,6 +9416,15 @@
       const name = pathname.slice('/personal-preferences/'.length);
       if (method === 'GET') return _readPersonalPreference(name);
       if (method === 'PUT') return _writePersonalPreference(name, body);
+    }
+    {
+      const workspacePreferenceMatch = pathname.match(/^\/workspace-preferences\/([^/]+)\/([^/]+)$/);
+      if (workspacePreferenceMatch) {
+        const workspaceId = decodeURIComponent(workspacePreferenceMatch[1]);
+        const name = decodeURIComponent(workspacePreferenceMatch[2]);
+        if (method === 'GET') return _readWorkspacePreference(workspaceId, name);
+        if (method === 'PUT') return _writeWorkspacePreference(workspaceId, name, body);
+      }
     }
     if (pathname.startsWith('/archive/')) {
       return _handleArchiveRoute(pathname, method, body, url);
@@ -9309,7 +9569,7 @@
  *
  * ## Phase 1bの範囲(重要)
  *
- * このモジュール(と姉妹モジュール)は「層の新設」のみを行う。既存の注釈・
+ * このモジュール(と姉妹モジュール)は「層の新設」のみを行う。既存のアノテート・
  * タグ・ロック等の呼び出し元をこの層へ載せ替える配線変更は、Phase 3
  * (ローカル/単独アプリ)・Phase 4(Cloud/Dropbox共有)で別途行う。
  * 既存ファイル(gb-active-lock-store.js 等)は変更しない。
@@ -9335,6 +9595,9 @@
   const SystemStorageKind = Object.freeze({
     ANNOTATIONS: 'annotations',
     TAGS: 'tags',
+    // 共有ワークスペースごとの管理者タグ辞書。個人TAGSとは保存境界を分け、
+    // owner/adminだけが書ける（Dropboxアダプターでも強制する）。
+    ADMIN_TAG_DICTIONARY: 'admin-tag-dictionary',
     EDIT_LOCKS: 'edit-locks',
     VIEW_LOCKS: 'view-locks',
     REFERENCE_CONFIRMATIONS: 'reference-confirmations',
@@ -9374,6 +9637,8 @@
     PORTABLE_KNOWLEDGE_ARTIFACTS: 'portable-knowledge-artifacts',
     // devices: 端末ごとの索引台帳(1端末=1文書。CASで安全に上書きする)。
     PORTABLE_KNOWLEDGE_DEVICES: 'portable-knowledge-devices',
+    // Web Clipper owner鍵の一回限り端末登録と、所有者が失効できる端末台帳。
+    WEBCLIP_OWNER_DEVICES: 'webclip-owner-devices',
   });
 
   const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
@@ -9510,10 +9775,11 @@
   const DEFAULT_RETENTION_POLICIES = Object.freeze({
     [SystemStorageKind.ANNOTATIONS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.TAGS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.ADMIN_TAG_DICTIONARY]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.EDIT_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.VIEW_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.REFERENCE_CONFIRMATIONS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
-    [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: 20, retentionDays: null },
+    [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.CONFLICT_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.FOLDER_ASSOCIATIONS]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PROFILES_WORKSPACE]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
@@ -9536,6 +9802,7 @@
     // 大きく見積もる。世代掃除は無し(現状の仕様どおり。将来のGC課題は別途)。
     [SystemStorageKind.PORTABLE_KNOWLEDGE_ARTIFACTS]: { maxDocumentBytes: 8_000_000, maxTotalBytes: 2_000_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PORTABLE_KNOWLEDGE_DEVICES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.WEBCLIP_OWNER_DEVICES]: { maxDocumentBytes: 500_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
   });
 
   function retentionPolicyFor(kind) {
@@ -10245,6 +10512,17 @@
     async _assertCompatibilityWriteAllowed(kind) {
       if (this._environment !== 'dropbox-shared-workspace' || _migrationWriteScopeDepth > 0) return;
       const contract = _contract();
+      if (kind === contract.SystemStorageKind.ADMIN_TAG_DICTIONARY) {
+        const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+        const role = String(state.access?.role || state.role || state.access || '').trim().toLowerCase();
+        if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+          const denied = new contract.SystemStorageWriteError('管理者タグ辞書を変更できるのはowner／adminだけです');
+          denied.status = 403;
+          denied.code = 'admin_tag_dictionary_forbidden';
+          denied.meldexCode = 'admin_tag_dictionary_forbidden';
+          throw denied;
+        }
+      }
       if (kind === contract.SystemStorageKind.MIGRATION_LEDGER) return;
       const migration = window.MeldexSidecarMigration;
       const provider = this._compatibilityLockProvider || window.MeldexStorageAdapter?.getProvider?.();
@@ -10836,7 +11114,7 @@
 
   // --- 管理スコープ解決(対象パス→保存先 + 正準パス変換) ------------------------
   //
-  // 編集ロック・注釈のように「entryが対象文書パスを持ち、共有ワークスペースの
+  // 編集ロック・アノテートのように「entryが対象文書パスを持ち、共有ワークスペースの
   // メンバー間で同じentryを見えるようにしたい」管理データは、保存先アダプター
   // だけでなく「entryへ書くパスの形」も管理ルートごとに揃える必要がある。
   // PC本体(meldex_active_locks.py の _convert_management_entry_path /
@@ -12430,6 +12708,24 @@
   const WRAP_KEY_SECRET = 'meldex-owner-key-wrap-v2';
   let _dbPromise = null;
 
+  function _workspaceScope() {
+    let workspace = null;
+    try { workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
+    let activeId = '';
+    try { activeId = _safeText(window.MeldexWorkspaces?.getActiveId?.() || ''); } catch {}
+    if (!workspace && !activeId) return { id: 'local-device', allowLegacyClaim: true };
+    const id = _safeText(
+      workspace.workspaceId || workspace.workspace_id || workspace.stableId
+      || activeId || ''
+    );
+    if (!id) throw new Error('安定したワークスペースIDを取得できません');
+    return { id, allowLegacyClaim: workspace?.ownerKeyLegacyClaim === true };
+  }
+
+  function _rowId() {
+    return `${KEY_ID}:${_workspaceScope().id}`;
+  }
+
   function _bytesToBase64(bytes) {
     let text = '';
     new Uint8Array(bytes || []).forEach(byte => { text += String.fromCharCode(byte); });
@@ -12466,22 +12762,7 @@
   }
 
   function _workspaceSaltText() {
-    let workspace = null;
-    try { workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
-    let globalState = null;
-    try { globalState = typeof state !== 'undefined' ? state : null; } catch {}
-    const path = _safeText(
-      workspace?.path
-      || workspace?.vaultPath
-      || workspace?.sourceFolder
-      || globalState?.vaultPath
-      || window.MeldexDropboxAuth?.getVaultPath?.()
-      || ''
-    );
-    const account = _safeText(workspace?.accountId || workspace?.ownerId || workspace?.accountName || '');
-    const origin = _safeText(window.location?.origin || 'local-device');
-    const parts = [account, path].filter(Boolean);
-    return `${KDF_SALT}:${parts.join('|') || origin || 'local-device'}`;
+    return `${KDF_SALT}:${_workspaceScope().id}`;
   }
 
   async function _saltBytesFromText(saltText) {
@@ -12533,9 +12814,9 @@
     return _dbPromise;
   }
 
-  async function _readRow(db) {
+  async function _readRow(db, id = _rowId()) {
     return new Promise((resolve, reject) => {
-      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(KEY_ID);
+      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
     });
@@ -12569,7 +12850,8 @@
       new TextEncoder().encode(JSON.stringify(payload))
     );
     return {
-      id: KEY_ID,
+      id: _rowId(),
+      workspaceId: _workspaceScope().id,
       schema: ENVELOPE_SCHEMA,
       encrypted: true,
       kdf: {
@@ -12626,7 +12908,21 @@
         return raw;
       }
     }
-    if (fallbackValue) {
+    const scope = _workspaceScope();
+    if (!row && scope.allowLegacyClaim) {
+      const legacyRow = await _readRow(db, KEY_ID);
+      if (legacyRow) {
+        const raw = await _decryptStoredKey(legacyRow);
+        await _writeStoredKey(raw);
+        await new Promise((resolve, reject) => {
+          const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(KEY_ID);
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error || new Error('IndexedDB legacy delete failed'));
+        });
+        return raw;
+      }
+    }
+    if (fallbackValue && scope.allowLegacyClaim) {
       const raw = _normalizeRawKey(fallbackValue);
       await _writeStoredKey(raw);
       return raw;
@@ -12695,7 +12991,7 @@
     try {
       const db = await _openDb();
       await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(KEY_ID);
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(_rowId());
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
@@ -12717,6 +13013,7 @@
     KDF_ITERATIONS,
     KDF_SALT,
     LEGACY_KDF_SALT,
+    workspaceScope: _workspaceScope,
   };
 })();
 
@@ -14872,7 +15169,7 @@
       payload('path');
     } else if (pathname.startsWith('/calendar-db/events') || pathname.startsWith('/calendar-db/sync') || pathname.startsWith('/calendar-db/ical') || pathname.startsWith('/calendar-db/caldav')) {
       both('db_path');
-    } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder') {
+    } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder' || pathname === '/version/delete-db') {
       payload('path');
     }
     return _uniqueCandidates(candidates);
@@ -15561,6 +15858,9 @@
       if (!path) return;
       try { _syncBadge(titleEl, path); } catch (_) {}
     });
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('meldex:file-locks-updated'));
+    }
   }
 
   window.MeldexFileLockBadge = { apply, refreshAll };
@@ -17802,6 +18102,11 @@
       : window.confirm('管理者鍵をローテーションします。既存の署名対象を新しい鍵で再署名しますか？');
     if (!ok) return;
     try {
+      const registration = window.MeldexWebClipOwnerDeviceRegistration;
+      if (typeof registration?.revokeActiveDevicesBeforeOwnerKeyRotation !== 'function') {
+        throw new Error('Web Clipper登録端末の失効機能を確認できないため鍵ローテーションを中止しました');
+      }
+      await registration.revokeActiveDevicesBeforeOwnerKeyRotation();
       await window.MeldexOwnerKeyStore?.createRandomKey?.();
       await _resign(root);
       _status(root, '管理者鍵をローテーションしました');
@@ -19119,6 +19424,146 @@
       + '_' + _randomHex(6);
   }
 
+  function _canonicalSigningValue(value) {
+    if (Array.isArray(value)) return value.map(_canonicalSigningValue);
+    if (!value || typeof value !== 'object') return value;
+    return Object.keys(value).sort().reduce((result, key) => {
+      result[key] = _canonicalSigningValue(value[key]);
+      return result;
+    }, {});
+  }
+
+  function _base64Url(bytes) {
+    let binary = '';
+    new Uint8Array(bytes).forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function _base64UrlBytes(value) {
+    const raw = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4));
+    return Uint8Array.from(binary, char => char.charCodeAt(0));
+  }
+
+  function _unsignedSigningPayload(payload) {
+    const copy = { ...(payload || {}) };
+    delete copy.signature;
+    delete copy.signature_scheme;
+    return copy;
+  }
+
+  async function _sha256KeyId(publicBytes) {
+    const digest = await crypto.subtle.digest('SHA-256', publicBytes);
+    return 'ed25519:' + Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _generateSigningKey() {
+    const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+    const publicBytes = await crypto.subtle.exportKey('raw', pair.publicKey);
+    return { privateKey: pair.privateKey, publicKey: pair.publicKey, public_key: _base64Url(publicBytes), key_id: await _sha256KeyId(publicBytes) };
+  }
+
+  async function _signV2Payload(payload, privateKey, expectedKeyId) {
+    if (!payload || payload.type !== 'workspace-cli-request' || payload.version !== 2) {
+      throw new Error('旧形式または不正なrequestは署名できません');
+    }
+    if (!privateKey || privateKey.type !== 'private' || privateKey.extractable) {
+      throw new Error('端末ローカルの非export鍵が必要です');
+    }
+    const unsigned = { ..._unsignedSigningPayload(payload), key_id: String(expectedKeyId || '') };
+    if (!/^ed25519:[a-f0-9]{64}$/.test(unsigned.key_id)) throw new Error('端末公開鍵IDが不正です');
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(unsigned)));
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, bytes);
+    return { ...unsigned, signature_scheme: 'ed25519-v1', signature: _base64Url(signature) };
+  }
+
+  async function _signEnrollmentPayload(payload, keyPair) {
+    if (!payload || payload.type !== 'workspace-cli-enrollment-request' || payload.version !== 1) {
+      throw new Error('端末登録申請の形式が不正です');
+    }
+    if (!keyPair?.privateKey || keyPair.privateKey.extractable || keyPair.key_id !== payload.key_id
+      || keyPair.public_key !== payload.public_key) {
+      throw new Error('端末登録申請と端末ローカル鍵が一致しません');
+    }
+    const unsigned = _unsignedSigningPayload(payload);
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(unsigned)));
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, keyPair.privateKey, bytes);
+    return { ...unsigned, signature_scheme: 'ed25519-v1', signature: _base64Url(signature) };
+  }
+
+  async function _verifyOwnerPin(pin, expectedWorkspaceId, pinnedKeyId) {
+    if (!pin || pin.type !== 'workspace-cli-owner-pin' || pin.version !== 1
+      || pin.workspace_id !== expectedWorkspaceId || pin.signature_scheme !== 'ed25519-v1') return false;
+    const publicBytes = _base64UrlBytes(pin.public_key);
+    const keyId = await _sha256KeyId(publicBytes);
+    if (keyId !== pin.key_id || (pinnedKeyId && keyId !== pinnedKeyId)) return false;
+    const publicKey = await crypto.subtle.importKey('raw', publicBytes, { name: 'Ed25519' }, false, ['verify']);
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(_unsignedSigningPayload(pin))));
+    return crypto.subtle.verify({ name: 'Ed25519' }, publicKey, _base64UrlBytes(pin.signature), bytes);
+  }
+
+  async function _verifySignedValue(value, publicKeyValue) {
+    if (!value || value.signature_scheme !== 'ed25519-v1') return false;
+    const publicKey = await crypto.subtle.importKey(
+      'raw', _base64UrlBytes(publicKeyValue), { name: 'Ed25519' }, false, ['verify'],
+    );
+    const bytes = new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(_unsignedSigningPayload(value))));
+    return crypto.subtle.verify({ name: 'Ed25519' }, publicKey, _base64UrlBytes(value.signature), bytes);
+  }
+
+  async function _sha256Hex(value) {
+    const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _validateSignedRequestV2(request, ledger, ownerPin, expectedWorkspaceId, pinnedOwnerKeyId) {
+    if (!await _verifyOwnerPin(ownerPin, expectedWorkspaceId, pinnedOwnerKeyId)) throw new Error('所有者公開鍵pinが一致しません');
+    if (!ledger || ledger.type !== 'workspace-cli-key-ledger' || ledger.version !== 1
+      || ledger.workspace_id !== expectedWorkspaceId || ledger.owner_key_id !== ownerPin.key_id
+      || !await _verifySignedValue(ledger, ownerPin.public_key)) throw new Error('所有者署名済み端末台帳が不正です');
+    if (!request || request.type !== 'workspace-cli-request' || request.version !== 2
+      || request.workspace_id !== expectedWorkspaceId || request.responder_policy_version !== 'answer-only-v2'
+      || request.read_only !== true || String(request.source_folder || '') !== '') {
+      throw new Error('旧形式・ローカルpath付き・answer-onlyでない依頼は利用できません');
+    }
+    if (['path', 'relative_path', 'attachment_path'].some(key => Object.prototype.hasOwnProperty.call(request, key))) {
+      throw new Error('添付pathの直接指定は利用できません');
+    }
+    const entries = Array.isArray(ledger.keys) ? ledger.keys : [];
+    const device = entries.find(item => item?.key_id === request.key_id && item?.kind === 'device' && !item?.revoked_at);
+    if (!device || device.user_id !== request.user_id || device.device_id !== request.device_id
+      || !await _verifySignedValue(request, device.public_key)) throw new Error('未登録・失効・改ざんされた端末依頼です');
+    const node = entries.find(item => item?.kind === 'node' && item?.node_id === request.target_node_id && !item?.revoked_at);
+    if (!node) throw new Error('未登録または失効済みの管理者PCです');
+    const issued = Date.parse(request.issued_at || '');
+    const expires = Date.parse(request.expires_at || '');
+    const now = Date.now();
+    if (!Number.isFinite(issued) || !Number.isFinite(expires) || issued > now + 60000 || expires <= now
+      || expires <= issued || expires - issued > 30 * 60 * 1000) throw new Error('依頼の時刻または期限が不正です');
+    if (!request.text || await _sha256Hex(request.text) !== request.text_sha256) throw new Error('依頼本文が改ざんされています');
+    if (!Array.isArray(request.attachments_manifest)
+      || await _sha256Hex(new TextEncoder().encode(JSON.stringify(_canonicalSigningValue(request.attachments_manifest)))) !== request.attachments_manifest_sha256
+      || request.attachments_manifest.some(item => !item || 'relative_path' in item || 'path' in item)) {
+      throw new Error('添付manifestが改ざんされています');
+    }
+    if (!request.context_snapshot || request.context_snapshot.sha256 !== request.context_snapshot_sha256) {
+      throw new Error('回答用文脈snapshotが不正です');
+    }
+    return true;
+  }
+
+  // Phase 4A protocol adapter only. UIや自動enrollmentはPhase 4Bまで追加しない。
+  // privateKeyは非export CryptoKeyのまま端末ローカルで扱い、共有フォルダへは公開鍵だけを出す。
+  window.__MeldexWorkspaceCliSigningProtocol = Object.freeze({
+    canonicalize: value => JSON.stringify(_canonicalSigningValue(value)),
+    generateSigningKey: _generateSigningKey,
+    signEnrollmentRequest: _signEnrollmentPayload,
+    signRequestV2: _signV2Payload,
+    verifyOwnerPin: _verifyOwnerPin,
+    validateSignedRequestV2: _validateSignedRequestV2,
+  });
+
   async function _writeChatMessage(provider, sourceFolder, roomPath, from, text, now) {
     const roomDir = _roomDir(roomPath, sourceFolder);
     await _directoryHandle(provider, roomDir, true);
@@ -19143,42 +19588,16 @@
     return ageMs <= thresholdMs;
   }
 
-  // Phase 2: Cloud/スマホ(ブラウザ直結・バックエンド無し)でも、管理者PCが共有フォルダへ書いた
-  // 在席ファイルを直接読んで同じ稼働判定を行う。設定の読み書きはこのブリッジでは扱わない。
+  // Phase 2: Cloud直結ではowner鍵pin/端末承認UIがまだ無いため、共有presenceを信用しない。
+  // 署名らしいフィールドの存在確認だけでは偽装を防げないので、Phase 4の明示登録まで常に停止中を返す。
   async function _dropboxWorkspaceCliPresence(url) {
-    const provider = await _requirePwaProvider('read');
-    const sourceFolder = _requestSourceFolder(url, {});
-    const presenceDirPath = _joinPath(sourceFolder, PRESENCE_DIR);
-    let entries = [];
-    try {
-      entries = await _listDirectoryEntries(provider, presenceDirPath);
-    } catch {
-      entries = [];
-    }
-    const nowMs = Date.now();
-    const nodes = [];
-    for (const entry of entries) {
-      if (!/\.json$/i.test(entry?.name || '')) continue;
-      const data = await _readJsonSafe(provider, _joinPath(presenceDirPath, entry.name), null);
-      if (!data || data.type !== 'workspace-cli-presence') continue;
-      nodes.push({
-        node_id: String(data.node_id || entry.name.replace(/\.json$/i, '')),
-        node_name: String(data.node_name || '管理者PC'),
-        updated_at: String(data.updated_at || ''),
-        heartbeat_interval_seconds: _presenceHeartbeatInterval(data),
-        assistant_label: String(data.assistant_label || ''),
-        online: _presenceIsOnline(data, nowMs),
-      });
-    }
-    nodes.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-    const onlineNodes = nodes.filter(node => node.online);
-    const newest = onlineNodes[0] || nodes[0] || null;
     return {
-      online: onlineNodes.length > 0,
-      node_name: newest ? newest.node_name : '',
-      updated_at: newest ? newest.updated_at : '',
-      stale_after_seconds: (newest ? _presenceHeartbeatInterval(newest) : PRESENCE_DEFAULT_INTERVAL_SECONDS) * 3 + PRESENCE_STALE_GRACE_SECONDS,
-      nodes,
+      online: false,
+      node_name: '',
+      updated_at: '',
+      stale_after_seconds: PRESENCE_DEFAULT_INTERVAL_SECONDS * 3 + PRESENCE_STALE_GRACE_SECONDS,
+      nodes: [],
+      unavailable_reason: 'device-signing-not-enrolled',
     };
   }
 
@@ -19187,52 +19606,36 @@
     if (pathname === '/workspace-cli/presence' && method === 'GET') {
       return _dropboxWorkspaceCliPresence(url);
     }
-    if (pathname !== '/workspace-cli/request' || method !== 'POST') {
+    if (pathname === '/workspace-cli/request' && method === 'POST') {
+      throw new Error('旧外部中継入口は廃止されました。端末署名済みv2入口を使用してください');
+    }
+    if (pathname !== '/workspace-cli/request-v2/accept' || method !== 'POST') {
       throw new Error('クラウドモードでは管理者PCの中継設定は変更できません');
     }
+    const request = body?.signed_request;
+    if (!request) throw new Error('この端末は管理者AIへの依頼用にまだ登録されていません');
     const provider = await _requirePwaProvider('readwrite');
-    const user = _currentUser(url, body || {});
-    const sourceFolder = _requestSourceFolder(url, body || {});
-    const roomPath = await _assertRoomAccess(provider, body?.room || 'general', user, sourceFolder);
-    const text = String(body?.text || '').trim();
-    if (!text) throw new Error('依頼内容を入力してください');
-    const providerKey = String(body?.provider || 'codex').trim();
-    if (!PROVIDER_LABELS[providerKey]) throw new Error('未対応のCLIです');
-    const requesterRole = _currentWorkspaceCliRole(sourceFolder);
-    const readOnly = !_isAdminRole(requesterRole);
-    if (readOnly && providerKey !== 'codex') {
-      throw new Error('管理者以外は読み取り専用で実行できるCodex CLIだけ利用できます');
-    }
-    const now = new Date();
-    const requestId = _requestId(now);
-    const requestPath = _joinPath(sourceFolder, REQUEST_DIR, requestId + '.json');
+    const sourceFolder = _requestSourceFolder(url, request);
+    const workspaceId = String(request.workspace_id || '').trim();
+    if (!workspaceId) throw new Error('署名依頼のworkspace IDがありません');
+    const pinPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/owner-pin.json');
+    const ledgerPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/key-ledger.json');
+    const ownerPin = await _readJsonSafe(provider, pinPath, null);
+    const ledger = await _readJsonSafe(provider, ledgerPath, null);
+    const storageKey = 'meldex-workspace-cli-owner-pin:' + workspaceId;
+    const pinnedOwnerKeyId = String(localStorage.getItem(storageKey) || '');
+    if (!pinnedOwnerKeyId) throw new Error('このワークスペースの所有者公開鍵を確認していません');
+    await _validateSignedRequestV2(request, ledger, ownerPin, workspaceId, pinnedOwnerKeyId);
+    const user = _currentUser(url, {});
+    if (user !== request.user_id) throw new Error('ログイン利用者と署名端末の利用者が一致しません');
+    const roomPath = await _assertRoomAccess(provider, request.room, user, sourceFolder);
+    if (roomPath !== request.room) throw new Error('署名依頼のルームが一致しません');
+    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(request.id)) throw new Error('署名依頼IDが不正です');
+    const requestPath = _joinPath(sourceFolder, REQUEST_DIR, request.id + '.json');
+    if (await _readJsonSafe(provider, requestPath, null)) throw new Error('同じ署名依頼は既に存在します');
     await _directoryHandle(provider, _joinPath(sourceFolder, REQUEST_DIR), true);
-    const payload = {
-      type: 'workspace-cli-request',
-      version: 1,
-      id: requestId,
-      status: 'pending',
-      requested_at: now.toISOString(),
-      workspace_id: String(body?.workspace_id || body?.workspaceId || ''),
-      source_folder: sourceFolder,
-      room: roomPath,
-      provider: providerKey,
-      provider_label: PROVIDER_LABELS[providerKey],
-      from: user,
-      requester_role: requesterRole || 'member',
-      read_only: readOnly,
-      text,
-    };
-    await provider.writeText(requestPath, JSON.stringify(payload, null, 2));
-    await _writeChatMessage(
-      provider,
-      sourceFolder,
-      roomPath,
-      user,
-      `CLIへ依頼しました（${PROVIDER_LABELS[providerKey]}）。\n管理者PCが起動中で、中継設定が有効な場合、このルームに返答されます。${readOnly ? '\n管理者以外の依頼は読み取り専用で処理されます。' : ''}\n\n${text}`,
-      now,
-    );
-    return { ok: true, request_id: requestId, status: 'pending', room: roomPath };
+    await provider.writeText(requestPath, JSON.stringify(request, null, 2));
+    return { ok: true, request_id: request.id, attempt_id: request.attempt_id, status: 'queued', room: roomPath };
   });
 })();
 
@@ -19245,8 +19648,15 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
-  function _teamInputPayload() {
-    const input = document.getElementById('team-input');
+  function _workspaceCliChatElement(event, id) {
+    const actionTarget = event?.currentTarget instanceof Element
+      ? event.currentTarget
+      : (event?.target instanceof Element ? event.target.closest('[data-action]') : null);
+    const chatRoot = actionTarget?.closest?.('[id="rp-chat"]');
+    return chatRoot?.querySelector?.(`[id="${id}"]`) || document.getElementById(id);
+  }
+
+  function _teamInputPayload(input = document.getElementById('team-input')) {
     const text = String(input?.value || '').trim();
     const atts = Array.isArray(window._teamPendingAttachments) ? window._teamPendingAttachments : (typeof _teamPendingAttachments !== 'undefined' ? _teamPendingAttachments : []);
     if (!text && atts.length === 0) return { text: '', originalText: text, attachments: [] };
@@ -19263,15 +19673,15 @@
     return { text: finalText, originalText: text, attachments: atts.slice() };
   }
 
-  function _button() {
-    return document.getElementById('team-workspace-cli-btn')
+  function _button(event) {
+    return _workspaceCliChatElement(event, 'team-workspace-cli-btn')
       || document.querySelector('[data-action="sendWorkspaceCliRelayRequestClick(event)"]');
   }
 
   // Phase 4: 提供元選択メニューを廃止し、押すとそのまま依頼が飛ぶ。どのCLI/モデルを使うかは
   // 管理者が設定→AI→CLIチャット節の中継設定で選ぶ(既定 Codex CLI)。ここではproviderを
   // 送らず、サーバー側(非管理者は常にCodex CLI読み取り専用、管理者は中継設定の選択)に委ねる。
-  async function _sendWorkspaceCliRelayRequest() {
+  async function _sendWorkspaceCliRelayRequest(event) {
     if (typeof _chatRequireSourceFolder === 'function' && !_chatRequireSourceFolder()) return false;
     if (!window._teamCurrentRoom && typeof _teamCurrentRoom === 'undefined') {
       if (typeof showStatus === 'function') showStatus('ルームを選択してください', true);
@@ -19282,13 +19692,13 @@
       if (typeof showStatus === 'function') showStatus('ルームを選択してください', true);
       return false;
     }
-    const input = document.getElementById('team-input');
-    const payload = _teamInputPayload();
+    const input = _workspaceCliChatElement(event, 'team-input');
+    const payload = _teamInputPayload(input);
     if (!payload.text) {
       if (typeof showStatus === 'function') showStatus('依頼内容を入力してください', true);
       return false;
     }
-    const sendBtn = _button();
+    const sendBtn = _button(event);
     const inputWasDisabled = !!input?.disabled;
     const sendWasDisabled = !!sendBtn?.disabled;
     if (input) input.disabled = true;
@@ -19348,7 +19758,7 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     _workspaceCliPresenceOfflineNotice();
-    return _sendWorkspaceCliRelayRequest();
+    return _sendWorkspaceCliRelayRequest(event);
   }
 
   function _workspaceRows(config) {
@@ -19849,6 +20259,465 @@
 
 ;
 
+/* === gb-chat-external-responder-ui.js === */
+;
+/* 外部ワークスペース返答AI Phase 4B UI。署名検証済みread-model以外をready表示へ使わない。 */
+(function () {
+  'use strict';
+
+  const POLICY = 'answer-only-v2';
+  const ACTIVE = new Set(['queued', 'assigned', 'validating', 'running', 'posting', 'cancel_pending']);
+  const RETRYABLE = new Set(['failed', 'cancelled', 'expired', 'rejected']);
+  const STATUS_LABELS = {
+    queued: '待機中', assigned: '担当PCを割り当て済み', validating: '安全確認中',
+    running: '返答を作成中', posting: '返答を投稿中', done: '完了', failed: '失敗',
+    cancelled: '取り消し済み', expired: '期限切れ', rejected: '拒否',
+    cancel_pending: '取消を受け付けました',
+  };
+  const STORAGE_KEY = 'meldex-external-responder-attempts-v2';
+  const DEVICE_ID_KEY = 'meldex-external-responder-device-id-v1';
+  const OS_NOTICE_KEY = 'meldex-external-responder-os-notices-v1';
+  const DB_NAME = 'meldex-external-responder-keys-v1';
+  let readiness = null;
+  let pollTimer = null;
+  let settingsTimer = null;
+
+  const text = (value) => String(value == null ? '' : value);
+  const currentWorkspaceId = () => {
+    try { return text(typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '').trim(); } catch { return ''; }
+  };
+  const currentRoom = () => {
+    try { return text(typeof _teamCurrentRoom !== 'undefined' ? _teamCurrentRoom : window._teamCurrentRoom).trim(); } catch { return ''; }
+  };
+  const currentUser = () => {
+    try { return text(typeof getUsername === 'function' ? getUsername() : '').trim(); } catch { return ''; }
+  };
+  const visibleAiPanels = () => [...document.querySelectorAll('[id="chat-llm-panel"]')]
+    .filter(panel => !panel.closest('[data-gb-snapshot="true"]'));
+
+  function element(tag, className, value) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+
+  function deviceId() {
+    try {
+      let value = localStorage.getItem(DEVICE_ID_KEY);
+      if (!value) {
+        value = 'web-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36));
+        localStorage.setItem(DEVICE_ID_KEY, value);
+      }
+      return value;
+    } catch { return 'web-session-device'; }
+  }
+
+  function loadAttempts() {
+    try {
+      const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      return Array.isArray(value) ? value.filter(item => item && item.request_id && item.attempt_id).slice(-50) : [];
+    } catch { return []; }
+  }
+
+  function saveAttempts(items) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(-50))); } catch {}
+  }
+
+  function upsertAttempt(next) {
+    const items = loadAttempts();
+    const index = items.findIndex(item => item.request_id === next.request_id && item.attempt_id === next.attempt_id);
+    if (index >= 0) items[index] = { ...items[index], ...next };
+    else items.push(next);
+    saveAttempts(items);
+    renderRequestCards();
+  }
+
+  function query(workspaceId, extra) {
+    const params = new URLSearchParams({ workspace_id: workspaceId, ...(extra || {}) });
+    return '?' + params.toString();
+  }
+
+  function verifiedReadyNode(snapshot) {
+    if (!snapshot || snapshot.signature_verified !== true || !/^ed25519:[a-f0-9]{64}$/.test(text(snapshot.owner_key_id))) return null;
+    return (Array.isArray(snapshot.nodes) ? snapshot.nodes : []).find(node => (
+      node?.signature_verified === true && node?.online === true && node?.accepting === true
+      && node?.responder_policy_version === POLICY && node?.capability_status === 'ready'
+      && node?.provider_capability_status === 'ready'
+    )) || null;
+  }
+
+  function readinessView(snapshot, error) {
+    if (!currentWorkspaceId()) return { state: 'setup_required', label: '対象ワークスペースを選択', action: '選択後に再確認できます' };
+    if (error) return { state: 'error', label: '返答用AIでエラー', action: text(error.message || error) };
+    const node = verifiedReadyNode(snapshot);
+    if (node) {
+      const queue = Math.max(0, Number(node.queue_count || 0));
+      return { state: queue ? 'busy' : 'ready', label: queue ? `返答を作成中・${queue}件待ち` : `準備完了・${node.assistant_label || 'CLI'}`, action: '', node };
+    }
+    if (snapshot?.signature_verified !== true) return { state: 'unsafe', label: '安全設定を確認できません', action: '署名済み状態を確認できないため依頼を開始しません' };
+    const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+    if (nodes.some(node => node?.provider_capability_status === 'auth_required')) return { state: 'auth_required', label: 'CLIのログインが必要', action: '管理者PCでCLIへログインしてください' };
+    if (nodes.some(node => node?.provider_capability_status === 'unsupported')) return { state: 'unsupported', label: 'このCLIは外部返答に未対応', action: '対応providerを管理者PCで選択してください' };
+    if (nodes.some(node => node?.capability_status && node.capability_status !== 'ready')) return { state: 'unsafe', label: '安全設定を確認できません', action: '外部依頼の安全ゲートは停止中です' };
+    return { state: 'offline', label: '管理者PCは停止中', action: '管理者PCの起動後に処理されます' };
+  }
+
+  function currentReadinessView() {
+    const workspaceId = currentWorkspaceId();
+    if (!workspaceId || readiness?.workspaceId !== workspaceId) return readinessView(null, null);
+    return readinessView(readiness.snapshot, readiness.error);
+  }
+
+  function ensureStatusUi(panel) {
+    let root = panel.querySelector(':scope > .external-responder-status');
+    if (root) return root;
+    root = element('section', 'external-responder-status');
+    root.dataset.e2eId = 'external-responder-status';
+    root.setAttribute('role', 'status');
+    root.setAttribute('aria-live', 'polite');
+    const chip = element('button', 'external-responder-status-chip');
+    chip.type = 'button';
+    chip.dataset.e2eId = 'external-responder-status-details';
+    chip.dataset.externalResponderDetails = '1';
+    chip.setAttribute('aria-haspopup', 'dialog');
+    chip.setAttribute('aria-label', '返答用AIの詳細を開く');
+    chip.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault(); openDetails();
+    });
+    chip.addEventListener('pointerup', event => {
+      if (event.pointerType !== 'touch') return;
+      event.preventDefault(); openDetails();
+    });
+    chip.append(element('span', 'external-responder-status-title', '返答用AI'));
+    chip.append(element('span', 'external-responder-status-value', '確認中'));
+    root.append(chip);
+    const firstRow = panel.firstElementChild;
+    if (firstRow?.nextSibling) panel.insertBefore(root, firstRow.nextSibling);
+    else panel.append(root);
+    return root;
+  }
+
+  function renderReadiness() {
+    const view = currentReadinessView();
+    visibleAiPanels().forEach(panel => {
+      const root = ensureStatusUi(panel);
+      root.dataset.state = view.state;
+      root.querySelector('.external-responder-status-value').textContent = view.label;
+      root.querySelector('.external-responder-status-chip').title = view.action || 'ワークスペースチャットへ返答する管理者PCのAI';
+    });
+  }
+
+  async function refreshReadiness() {
+    const workspaceId = currentWorkspaceId();
+    if (!workspaceId) { readiness = { workspaceId: '', snapshot: null, error: null }; renderReadiness(); return readiness; }
+    try {
+      const snapshot = await apiFetch('/workspace-cli/phase4a/presence' + query(workspaceId), { silentError: true });
+      readiness = { workspaceId, snapshot, error: null };
+    } catch (error) { readiness = { workspaceId, snapshot: null, error }; }
+    renderReadiness();
+    return readiness;
+  }
+
+  function openDetails() {
+    document.querySelector('[data-external-responder-dialog]')?.remove();
+    const overlay = element('div', 'external-responder-dialog-overlay');
+    overlay.dataset.externalResponderDialog = '1';
+    const dialog = element('section', 'external-responder-dialog');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'external-responder-dialog-title');
+    const title = element('h2', '', '返答用AIの詳細'); title.id = 'external-responder-dialog-title';
+    const view = currentReadinessView();
+    const status = element('p', 'external-responder-detail-status', view.label);
+    const explain = element('p', 'external-responder-detail-copy', view.action || 'ワークスペースチャットへ返答する管理者PCのAIです。');
+    const nodes = element('div', 'external-responder-node-list');
+    (readiness?.snapshot?.nodes || []).forEach(item => {
+      const row = element('div', 'external-responder-node-row');
+      row.append(element('strong', '', item.node_name || item.node_id || '管理者PC'));
+      row.append(element('span', '', `${item.assistant_label || 'CLI'} / policy ${item.responder_policy_version || '未確認'} / 最終確認 ${item.updated_at || '不明'} / ${Math.max(0, Number(item.queue_count || 0))}件待ち`));
+      nodes.append(row);
+    });
+    if (!nodes.childElementCount) nodes.append(element('p', 'external-responder-detail-copy', '登録済み管理者PCの署名済み状態はありません。'));
+    const actions = element('div', 'external-responder-dialog-actions');
+    const recheck = element('button', 'gb-btn', '再確認'); recheck.type = 'button'; recheck.dataset.externalResponderRecheck = '1';
+    const close = element('button', 'gb-btn', '閉じる'); close.type = 'button'; close.dataset.externalResponderClose = '1';
+    actions.append(recheck, close); dialog.append(title, status, explain, nodes, actions); overlay.append(dialog); document.body.append(overlay);
+    close.addEventListener('click', () => { overlay.remove(); document.querySelector('[data-external-responder-details]')?.focus(); });
+    recheck.addEventListener('click', async () => { await refreshReadiness(); overlay.remove(); openDetails(); });
+    overlay.addEventListener('click', event => { if (event.target === overlay) close.click(); });
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') close.click(); });
+    close.focus();
+  }
+
+  function requestCardsHost() {
+    const panel = [...document.querySelectorAll('[id="chat-team-panel"]')].find(item => !item.closest('[data-gb-snapshot="true"]'));
+    if (!panel) return null;
+    let host = panel.querySelector('.external-responder-request-cards');
+    if (!host) {
+      host = element('section', 'external-responder-request-cards');
+      host.dataset.e2eId = 'external-responder-request-cards';
+      host.setAttribute('aria-label', '自分の管理者AI依頼');
+      let composer = panel.querySelector('#team-composer') || panel.lastElementChild;
+      while (composer?.parentElement && composer.parentElement !== panel) composer = composer.parentElement;
+      panel.insertBefore(host, composer || null);
+    }
+    return host;
+  }
+
+  function statusErrorCopy(item) {
+    const code = text(item.rejection_code).toLowerCase();
+    if (code.includes('auth')) return '認証: 管理者PCでCLIへログインしてください';
+    if (code.includes('quota') || code.includes('limit')) return '利用上限: 時間をおいて再試行してください';
+    if (code.includes('attachment')) return '添付: 対応形式とサイズを確認してください';
+    if (code.includes('expired')) return '期限切れ: 必要なら新しいattemptで再試行してください';
+    if (code.includes('unsafe') || code.includes('policy')) return '安全設定: 管理者へ設定確認を依頼してください';
+    return item.status === 'failed' ? '接続: 管理者PCの状態を確認して再試行してください' : '';
+  }
+
+  function renderRequestCards() {
+    const host = requestCardsHost();
+    if (!host) return;
+    host.replaceChildren();
+    const workspaceId = currentWorkspaceId();
+    const room = currentRoom();
+    loadAttempts().filter(item => item.workspace_id === workspaceId && (!room || item.room === room)).slice(-5).reverse().forEach(item => {
+      const card = element('article', 'external-responder-request-card');
+      card.dataset.state = item.status || 'queued';
+      card.dataset.requestId = item.request_id;
+      const heading = element('div', 'external-responder-request-heading');
+      heading.append(element('strong', '', '管理者AIへの依頼'));
+      heading.append(element('span', 'external-responder-request-state', STATUS_LABELS[item.status] || item.status || '待機中'));
+      card.append(heading);
+      const error = statusErrorCopy(item); if (error) card.append(element('p', 'external-responder-request-error', error));
+      const actions = element('div', 'external-responder-request-actions');
+      if (ACTIVE.has(item.status) && item.status !== 'cancel_pending') {
+        const cancel = element('button', 'gb-btn gb-btn-sm', '取り消す'); cancel.type = 'button'; cancel.dataset.requestCancel = '1'; actions.append(cancel);
+      } else if (RETRYABLE.has(item.status)) {
+        const retry = element('button', 'gb-btn gb-btn-sm', '再試行'); retry.type = 'button'; retry.dataset.requestRetry = '1'; actions.append(retry);
+      }
+      card.append(actions); host.append(card);
+    });
+    host.hidden = !host.childElementCount;
+  }
+
+  function notifyCompleted(item) {
+    const tab = document.getElementById('chat-tab-llm');
+    if (tab && !tab.querySelector('.external-responder-unread')) {
+      const badge = element('span', 'external-responder-unread', '1'); badge.setAttribute('aria-label', '返答用AIの未読通知1件'); tab.append(badge);
+    }
+    if (typeof showStatus === 'function') showStatus(item.status === 'done' ? '管理者AIの返答が完了しました' : `管理者AIの依頼は${STATUS_LABELS[item.status] || item.status}です`, item.status !== 'done');
+    try {
+      if (localStorage.getItem(OS_NOTICE_KEY) === '1' && Notification.permission === 'granted') new Notification('Meldex', { body: '管理者AIの依頼状態が更新されました' });
+    } catch {}
+  }
+
+  async function pollAttempts() {
+    const items = loadAttempts();
+    let changed = false;
+    for (const item of items.filter(value => ACTIVE.has(value.status))) {
+      try {
+        const state = await apiFetch('/workspace-cli/phase4a/request-state' + query(item.workspace_id, { request_id: item.request_id, attempt_id: item.attempt_id }), { silentError: true });
+        if (state?.signature_verified !== true || state.owner_key_id !== item.owner_key_id) continue;
+        if (state.status !== item.status) {
+          const wasActive = ACTIVE.has(item.status); item.status = state.status; item.rejection_code = state.rejection_code || ''; changed = true;
+          if (wasActive && !ACTIVE.has(item.status)) notifyCompleted(item);
+        }
+      } catch {}
+    }
+    if (changed) saveAttempts(items);
+    renderRequestCards();
+  }
+
+  function openKeyDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('keys');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function keyRecord(workspaceId) {
+    const db = await openKeyDb();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction('keys').objectStore('keys').get(workspaceId);
+      request.onsuccess = () => resolve(request.result || null); request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function saveKeyRecord(workspaceId, record) {
+    const db = await openKeyDb();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction('keys', 'readwrite').objectStore('keys').put(record, workspaceId);
+      request.onsuccess = () => resolve(record); request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function enrollThisDevice() {
+    const workspaceId = currentWorkspaceId();
+    if (!workspaceId) throw new Error('対象ワークスペースを選択してください');
+    const protocol = window.__MeldexWorkspaceCliSigningProtocol;
+    if (!protocol) throw new Error('端末署名機能を利用できません');
+    let record = await keyRecord(workspaceId);
+    if (!record) {
+      const pair = await protocol.generateSigningKey();
+      record = { ...pair, device_id: deviceId() };
+      await saveKeyRecord(workspaceId, record);
+    }
+    const now = new Date();
+    const payload = {
+      type: 'workspace-cli-enrollment-request', version: 1, workspace_id: workspaceId, kind: 'device',
+      user_id: currentUser(), device_id: record.device_id, node_id: '', public_key: record.public_key,
+      key_id: record.key_id, nonce: crypto.randomUUID(), issued_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+    };
+    const signed = await protocol.signEnrollmentRequest(payload, record);
+    return apiPost('/workspace-cli/phase4a/enrollments', signed);
+  }
+
+  async function sendSignedRequest() {
+    const view = currentReadinessView();
+    if (!view.node) { if (typeof showStatus === 'function') showStatus(`${view.label}: ${view.action}`, true); return false; }
+    const workspaceId = currentWorkspaceId(); const room = currentRoom();
+    const input = document.getElementById('team-input'); const requestText = text(input?.value).trim();
+    if (!room || !requestText) { if (typeof showStatus === 'function') showStatus('ルームと依頼内容を入力してください', true); return false; }
+    const record = await keyRecord(workspaceId);
+    if (!record) { if (typeof showStatus === 'function') showStatus('この端末は未登録です。設定から登録してください', true); return false; }
+    const prepared = await apiPost('/workspace-cli/phase4a/request-v2/prepare', {
+      workspace_id: workspaceId, room, text: requestText, device_id: record.device_id,
+      target_node_id: view.node.node_id, context_items: [], attachments: [],
+    });
+    const signed = await window.__MeldexWorkspaceCliSigningProtocol.signRequestV2(prepared.unsigned_request, record.privateKey, record.key_id);
+    const accepted = await apiPost('/workspace-cli/phase4a/request-v2/accept', { signed_request: signed });
+    upsertAttempt({ ...accepted, workspace_id: workspaceId, room, status: 'queued', target_node_id: view.node.node_id, device_id: record.device_id, owner_key_id: readiness.snapshot.owner_key_id, created_at: new Date().toISOString() });
+    if (input) input.value = '';
+    return true;
+  }
+
+  async function requestOwnerAction(action, targetId, endpoint, body) {
+    const workspaceId = currentWorkspaceId();
+    const confirmation = await apiPost('/workspace-cli/phase4a/owner-confirmations', { workspace_id: workspaceId, action, target_id: targetId });
+    return apiPost(endpoint, { workspace_id: workspaceId, ...body, confirmation_token: confirmation.confirmation_token });
+  }
+
+  function base64Url(bytes) {
+    let binary = ''; new Uint8Array(bytes).forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function signControlPayload(payload, record) {
+    if (!record?.privateKey || record.privateKey.extractable) throw new Error('端末ローカルの非export鍵が必要です');
+    const unsigned = { ...(payload || {}), key_id: record.key_id };
+    delete unsigned.signature; delete unsigned.signature_scheme;
+    const canonical = window.__MeldexWorkspaceCliSigningProtocol?.canonicalize;
+    if (typeof canonical !== 'function') throw new Error('端末署名機能を利用できません');
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, record.privateKey, new TextEncoder().encode(canonical(unsigned)));
+    return { ...unsigned, signature_scheme: 'ed25519-v1', signature: base64Url(signature) };
+  }
+
+  async function sendSignedControl(item, action) {
+    const record = await keyRecord(item.workspace_id);
+    if (!record || record.device_id !== item.device_id) throw new Error('この依頼を送った登録端末鍵がありません');
+    const prepared = await apiPost('/workspace-cli/phase4a/control-v2/prepare', {
+      workspace_id: item.workspace_id, request_id: item.request_id, attempt_id: item.attempt_id,
+      action, device_id: record.device_id,
+    });
+    const signedControl = await signControlPayload(prepared.unsigned_control, record);
+    const signedRetry = prepared.unsigned_retry_request
+      ? await window.__MeldexWorkspaceCliSigningProtocol.signRequestV2(prepared.unsigned_retry_request, record.privateKey, record.key_id)
+      : null;
+    return apiPost('/workspace-cli/phase4a/control-v2/accept', {
+      signed_control: signedControl, ...(signedRetry ? { signed_retry_request: signedRetry } : {}),
+    });
+  }
+
+  async function renderSecuritySettings(container) {
+    if (!container || container.querySelector('[data-external-responder-security]')) return;
+    const section = element('section', 'external-responder-security-settings'); section.dataset.externalResponderSecurity = '1';
+    section.append(element('h4', '', '返答用AIの安全設定'));
+    const workspaceId = currentWorkspaceId();
+    if (!workspaceId) { section.append(element('p', 'gb-section-desc', 'ワークスペースを選択すると端末と管理者PCの許可状態を確認できます。')); container.append(section); return; }
+    let model;
+    try { model = await apiFetch('/workspace-cli/phase4a/security-settings' + query(workspaceId), { silentError: true }); }
+    catch (error) { section.append(element('p', 'gb-section-desc', '所有者だけが安全設定を確認できます: ' + text(error.message || error))); container.append(section); return; }
+    if (model?.signature_verified !== true) { section.append(element('p', 'gb-section-desc', '署名済み端末台帳を確認できません。')); container.append(section); return; }
+    section.append(element('p', 'gb-section-desc', `policy ${POLICY} / owner ${model.owner_key_id}`));
+    const enroll = element('button', 'gb-btn gb-btn-sm', 'この端末を登録申請'); enroll.type = 'button'; enroll.dataset.enrollThisDevice = '1'; section.append(enroll);
+    const notice = element('label', 'external-responder-notice-setting');
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = localStorage.getItem(OS_NOTICE_KEY) === '1';
+    notice.append(checkbox, document.createTextNode(' OS通知を許可する（ブラウザー許可後のみ）')); section.append(notice);
+    checkbox.addEventListener('change', async () => {
+      if (checkbox.checked && typeof Notification !== 'undefined' && Notification.permission !== 'granted') checkbox.checked = (await Notification.requestPermission()) === 'granted';
+      localStorage.setItem(OS_NOTICE_KEY, checkbox.checked ? '1' : '0');
+    });
+    (model.pending_enrollments || []).forEach(item => {
+      const row = element('div', 'external-responder-setting-row');
+      row.append(element('span', '', `承認待ち: ${item.kind} ${item.device_id || item.node_id || item.user_id}`));
+      const replace = (model.keys || []).some(key => !key.revoked_at && key.kind === item.kind && ((item.kind === 'device' && key.device_id === item.device_id) || (item.kind === 'node' && key.node_id === item.node_id)) && key.key_id !== item.key_id);
+      const approve = element('button', 'gb-btn gb-btn-sm', '承認'); approve.type = 'button'; approve.dataset.approveEnrollment = item.enrollment_id; approve.dataset.approvalAction = replace ? 'replace-enrollment' : 'approve-enrollment'; row.append(approve); section.append(row);
+    });
+    (model.keys || []).forEach(item => {
+      const row = element('div', 'external-responder-setting-row');
+      row.append(element('span', '', `${item.kind}: ${item.device_id || item.node_id || item.user_id}${item.revoked_at ? '（失効済み）' : ''}`));
+      if (!item.revoked_at) { const revoke = element('button', 'gb-btn gb-btn-sm', '失効'); revoke.type = 'button'; revoke.dataset.revokeKey = item.key_id; row.append(revoke); }
+      section.append(row);
+    });
+    container.append(section);
+  }
+
+  async function handleClick(event) {
+    const target = event.target?.closest?.('button, [data-external-responder-details]'); if (!target) return;
+    if (target.dataset.externalResponderDetails !== undefined) { event.preventDefault(); openDetails(); return; }
+    if (target.dataset.enrollThisDevice !== undefined) { event.preventDefault(); try { await enrollThisDevice(); showStatus('端末登録を申請しました。所有者の承認後に利用できます'); } catch (error) { showStatus('端末登録に失敗しました: ' + text(error.message || error), true); } return; }
+    if (target.dataset.approveEnrollment) { event.preventDefault(); try { await requestOwnerAction(target.dataset.approvalAction, target.dataset.approveEnrollment, '/workspace-cli/phase4a/enrollments/approve', { enrollment_id: target.dataset.approveEnrollment }); showStatus('端末を承認しました'); target.closest('.external-responder-security-settings')?.remove(); } catch (error) { showStatus('承認に失敗しました: ' + text(error.message || error), true); } return; }
+    if (target.dataset.revokeKey) { event.preventDefault(); try { await requestOwnerAction('revoke-key', target.dataset.revokeKey, '/workspace-cli/phase4a/enrollments/revoke', { key_id: target.dataset.revokeKey }); showStatus('端末の許可を失効しました'); target.closest('.external-responder-security-settings')?.remove(); } catch (error) { showStatus('失効に失敗しました: ' + text(error.message || error), true); } return; }
+    const card = target.closest('.external-responder-request-card'); if (!card) return;
+    const item = loadAttempts().find(value => value.request_id === card.dataset.requestId); if (!item) return;
+    if (target.dataset.requestCancel !== undefined) { event.preventDefault(); try { const result = await sendSignedControl(item, 'cancel'); upsertAttempt({ ...item, status: result.control_status === 'cancel_requested' ? 'cancel_pending' : (result.state || 'queued') }); } catch (error) { showStatus('取消に失敗しました: ' + text(error.message || error), true); } }
+    if (target.dataset.requestRetry !== undefined) { event.preventDefault(); try { const result = await sendSignedControl(item, 'retry'); upsertAttempt({ ...item, ...result, status: result.status || 'queued' }); } catch (error) { showStatus('再試行に失敗しました: ' + text(error.message || error), true); } }
+  }
+
+  function clearUnreadOnAiTab(event) {
+    if (event.target?.closest?.('#chat-tab-llm')) document.querySelectorAll('.external-responder-unread').forEach(node => node.remove());
+  }
+
+  function init() {
+    visibleAiPanels().forEach(ensureStatusUi); renderReadiness(); renderRequestCards();
+    document.querySelectorAll('#settings-workspace-cli-relay-container').forEach(renderSecuritySettings);
+    document.addEventListener('click', handleClick, true); document.addEventListener('click', clearUnreadOnAiTab, true);
+    const observer = new MutationObserver((records) => {
+      const added = records.flatMap(record => [...record.addedNodes]).filter(node => node.nodeType === 1);
+      if (!added.some(node => node.matches?.('#chat-llm-panel,#chat-team-panel,#settings-workspace-cli-relay-container')
+        || node.querySelector?.('#chat-llm-panel,#chat-team-panel,#settings-workspace-cli-relay-container'))) return;
+      visibleAiPanels().forEach(ensureStatusUi); renderReadiness(); renderRequestCards();
+      clearTimeout(settingsTimer); settingsTimer = setTimeout(() => {
+        document.querySelectorAll('#settings-workspace-cli-relay-container').forEach(renderSecuritySettings);
+      }, 80);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    refreshReadiness(); pollAttempts(); pollTimer = setInterval(() => { refreshReadiness(); pollAttempts(); }, 30000);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();
+  async function sendExternalResponderSignedRequest(event) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    try { return await sendSignedRequest(); } catch (error) { if (typeof showStatus === 'function') showStatus('外部返答用AIへの依頼に失敗しました: ' + text(error.message || error), true); return false; }
+  }
+  // 管理者AIの短い依頼ボタンは gb-workspace-cli-relay.js の経路を維持する。
+  // 外部返答用AIは別概念として専用API名からのみ呼び出し、同名グローバルを上書きしない。
+  window.sendExternalResponderSignedRequest = sendExternalResponderSignedRequest;
+  window.MeldexExternalResponderUi = Object.freeze({
+    refresh: refreshReadiness,
+    renderRequestCards,
+    enrollThisDevice,
+    sendSignedRequest: sendExternalResponderSignedRequest,
+  });
+})();
+
+;
+
 /* === gb-cal-oauth-browser.js === */
 ;
 /* ==============================
@@ -20221,6 +21090,33 @@
 
   let _dbPromise = null;
 
+  function _workspaceScope() {
+    let state = null;
+    try { state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
+    let activeId = '';
+    try { activeId = String(window.MeldexWorkspaces?.getActiveId?.() || '').trim(); } catch {}
+    if (!state && !activeId) return { id: 'local-device', allowLegacyClaim: true };
+    const id = String(
+      state.workspaceId || state.workspace_id || state.stableId
+      || activeId || ''
+    ).trim();
+    if (!id) throw new Error('安定したワークスペースIDを取得できません');
+    return { id, allowLegacyClaim: state?.oauthLegacyClaim === true };
+  }
+
+  function _scopedKey(key) {
+    const scope = _workspaceScope();
+    return { key: `${scope.id}:${String(key || '')}`, scope };
+  }
+
+  async function _readValue(db, key) {
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
+      req.onsuccess = () => resolve(req.result?.value || null);
+      req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+    });
+  }
+
   function _openDb() {
     if (_dbPromise) return _dbPromise;
     _dbPromise = new Promise((resolve, reject) => {
@@ -20244,11 +21140,18 @@
     if (!key) return null;
     try {
       const db = await _openDb();
-      return await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
-        req.onsuccess = () => resolve(req.result?.value || null);
-        req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+      const scoped = _scopedKey(key);
+      const value = await _readValue(db, scoped.key);
+      if (value || !scoped.scope.allowLegacyClaim) return value;
+      const legacy = await _readValue(db, key);
+      if (!legacy) return null;
+      await setSecrets(key, legacy);
+      await new Promise((resolve, reject) => {
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error || new Error('IndexedDB legacy delete failed'));
       });
+      return legacy;
     } catch {
       return null;
     }
@@ -20256,10 +21159,11 @@
 
   async function setSecrets(key, value) {
     if (!key) return { ok: false };
+    const scoped = _scopedKey(key);
     const db = await _openDb();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put({ key, value: value && typeof value === 'object' ? value : {}, updatedAt: new Date().toISOString() });
+      tx.objectStore(STORE_NAME).put({ key: scoped.key, workspaceId: scoped.scope.id, value: value && typeof value === 'object' ? value : {}, updatedAt: new Date().toISOString() });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
       tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
@@ -20271,8 +21175,9 @@
     if (!key) return { ok: true };
     try {
       const db = await _openDb();
+      const scoped = _scopedKey(key);
       await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key);
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(scoped.key);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
@@ -20306,6 +21211,7 @@
     extractSecretFields,
     stripSecretFields,
     hasAnySecretValue,
+    workspaceScope: _workspaceScope,
   };
 })();
 
@@ -21974,12 +22880,18 @@
     return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset)).toISOString().slice(0, 10);
   }
 
-  function state(rows, user, timestamp) {
+  function sameScope(row, scope) {
+    return String(row?.workspace_id || '') === String(scope?.workspace_id || '')
+      && String(row?.member_id || '') === String(scope?.member_id || '');
+  }
+
+  function state(rows, user, timestamp, scope = null) {
     const day = String(timestamp || '').slice(0, 10);
     const previous = dayOffset(day, -1);
     const targetEpoch = Date.parse(timestamp);
     const latest = (Array.isArray(rows) ? rows : [])
-      .filter(row => row.user === user && String(row.timestamp || '').slice(0, 10) >= previous
+      .filter(row => row.user === user && (!scope || sameScope(row, scope))
+        && String(row.timestamp || '').slice(0, 10) >= previous
         && String(row.timestamp || '').slice(0, 10) <= day && TIME_ENTRY_TYPES.includes(row.type)
         && !Number.isNaN(Date.parse(row.timestamp)) && Date.parse(row.timestamp) <= targetEpoch)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
@@ -21987,12 +22899,12 @@
     return ({ clock_in: 'working', break_start: 'away', break_end: 'working', clock_out: 'off' })[latest?.type] || 'initial';
   }
 
-  function assertNormalAction(rows, user, type, timestamp, now = Date.now()) {
+  function assertNormalAction(rows, user, type, timestamp, now = Date.now(), scope = null) {
     if (Math.abs(now - Date.parse(timestamp)) > 5 * 60 * 1000) {
       fail('打刻時刻が現在時刻から離れています。時刻設定を確認してください', 400, 'CLOCK_TIMESTAMP_OUT_OF_RANGE');
     }
     const allowed = { initial: ['clock_in'], working: ['clock_out', 'break_start'], away: ['break_end'], off: ['clock_in'] };
-    if (!allowed[state(rows, user, timestamp)].includes(type)) {
+    if (!allowed[state(rows, user, timestamp, scope)].includes(type)) {
       fail('現在の勤務状態ではこの打刻はできません', 409, 'CLOCK_STATE_CONFLICT');
     }
   }
@@ -22001,10 +22913,13 @@
     const targets = new Map();
     entries.filter(Boolean).forEach((entry) => {
       const user = String(entry.user || '');
+      const workspace_id = String(entry.workspace_id || '');
+      const member_id = String(entry.member_id || '');
       const day = String(entry.timestamp || '').slice(0, 10);
       if (!user || !strictDate(day)) return;
       [day, dayOffset(day, -1)].forEach((candidate) => {
-        if (candidate) targets.set(`${user}\u0000${candidate}`, { user, day: candidate });
+        if (candidate) targets.set(`${workspace_id}\u0000${member_id}\u0000${user}\u0000${candidate}`,
+          { user, day: candidate, workspace_id, member_id });
       });
     });
     return [...targets.values()];
@@ -22269,22 +23184,34 @@
 
   function createMutationService(deps) {
     const { readStore, writeStore, deriveEvent, randomId, nowIso } = deps;
+    const scopeForUser = typeof deps.scopeForUser === 'function' ? deps.scopeForUser : (() => ({ workspace_id: '', member_id: '' }));
+    const targetKey = target => [String(target.workspace_id || ''), String(target.member_id || ''), String(target.user || '')].join('\u0000');
+    const eventId = target => {
+      if (!target.workspace_id && !target.member_id) return `attendance:${target.user}:${target.day}`;
+      return `attendance:${encodeURIComponent(target.workspace_id || '')}:${encodeURIComponent(target.member_id || target.user)}:${target.day}`;
+    };
 
     async function ensureCalendars(targets) {
       const calendars = await readStore('calendars');
       let changed = false;
       const byUser = new Map();
-      for (const { user } of targets) {
-        if (byUser.has(user)) continue;
-        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user);
+      for (const target of targets) {
+        const { user } = target;
+        const key = targetKey(target);
+        if (byUser.has(key)) continue;
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user
+          && String(row.workspace_id || '') === String(scope.workspace_id || '')
+          && String(row.member_id || '') === String(scope.member_id || ''));
         if (!calendar) {
           const now = nowIso();
           calendar = { id: randomId('attendance-cal'), name: `実績: ${user}`, color: '#6a9955', user,
-            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin', created: now, modified: now };
+            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin',
+            workspace_id: String(scope.workspace_id || ''), member_id: String(scope.member_id || ''), created: now, modified: now };
           calendars.push(calendar);
           changed = true;
         }
-        byUser.set(user, calendar.id);
+        byUser.set(key, calendar.id);
       }
       if (changed) await writeStore('calendars', calendars);
       return byUser;
@@ -22293,20 +23220,26 @@
     async function sync(timeRows, targets) {
       if (!targets.length) return;
       const events = await readStore('events');
-      for (const { user, day } of targets) {
-        const existing = events.find(row => row.id === `attendance:${user}:${day}`);
+      for (const target of targets) {
+        const existing = events.find(row => row.id === eventId(target));
         if (existing && existing.calendar_source !== 'attendance') {
           fail('勤怠由来予定IDが通常予定と衝突しています', 409, 'ATTENDANCE_EVENT_COLLISION');
         }
       }
       const calendarIds = await ensureCalendars(targets);
-      for (const { user, day } of targets) {
-        const id = `attendance:${user}:${day}`;
+      for (const target of targets) {
+        const { user, day } = target;
+        const id = eventId(target);
         const index = events.findIndex(row => row.id === id);
         const existing = index >= 0 ? events[index] : null;
-        const derived = deriveEvent(timeRows, user, day, existing);
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        const derived = deriveEvent(timeRows, user, day, existing, scope);
         if (derived) {
-          derived.calendar_id = calendarIds.get(user) || existing?.calendar_id || '';
+          derived.id = id;
+          derived.calendar_id = calendarIds.get(targetKey(target)) || existing?.calendar_id || '';
+          derived.color_override = null;
+          derived.workspace_id = String(scope.workspace_id || existing?.workspace_id || '');
+          derived.member_id = String(scope.member_id || existing?.member_id || '');
           if (index >= 0) events[index] = derived;
           else events.push(derived);
         } else if (index >= 0) {
@@ -22378,6 +23311,749 @@
   });
   window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease });
 })();
+/* Shared calendar history engine and browser-local active /cal/* adapter. */
+(function () {
+  'use strict';
+
+  const internals = window.__MeldexPwaDataAccessInternals;
+  const handlers = window.__MeldexPwaDataAccessExtensions;
+  if (!internals || !Array.isArray(handlers)) return;
+
+  const { NOT_HANDLED } = internals;
+  const STORE_KEY = 'meldex-cloud-calendar-store-v1';
+  const LEASE_KEY = 'meldex-cloud-calendar-lease-v1';
+  const LEASE_DURATION_MS = 5000;
+  const LEASE_HEARTBEAT_MS = 1000;
+  const HISTORY_LIMIT = 30;
+  const STORE_NAMES = Object.freeze({ event: 'events', todo: 'tasks', shift: 'shifts' });
+  let localQueue = Promise.resolve();
+
+  function httpError(status, message, code) {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code || `HTTP_${status}`;
+    return error;
+  }
+
+  function stableJson(value) {
+    if (Array.isArray(value)) return '[' + value.map(stableJson).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function revision(value) {
+    const bytes = new TextEncoder().encode(stableJson(value ?? null));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function clone(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  function createHistoryEngine(options) {
+    const names = options.names || STORE_NAMES;
+    const fail = (message, status, code) => { throw options.error(message, status, code); };
+    const context = async (kind, itemId) => {
+      const storeName = names[kind];
+      if (!storeName) fail('履歴対象の種類が不正です', 400, 'CALENDAR_HISTORY_KIND_INVALID');
+      const rows = await options.read(storeName);
+      const current = rows.find(row => String(row?.id) === String(itemId)) || null;
+      const allVersions = await options.read(options.historyStore);
+      const versions = allVersions.filter(row => row?.itemKind === kind && String(row?.itemId) === String(itemId));
+      const authorizationSnapshot = current || versions.find(row => row?.snapshot)?.snapshot || null;
+      if (!authorizationSnapshot) fail('対象が見つかりません', 404, 'CALENDAR_HISTORY_TARGET_NOT_FOUND');
+      if (!(await options.canAccess(kind, authorizationSnapshot))) {
+        fail('この項目の履歴を操作する権限がありません', 403, 'CALENDAR_HISTORY_FORBIDDEN');
+      }
+      return { storeName, rows, current, allVersions, versions };
+    };
+    const verified = async (ctx, versionId) => {
+      const saved = ctx.versions.find(row => String(row?.versionId) === String(versionId));
+      if (!saved) fail('指定した版がありません', 404, 'CALENDAR_HISTORY_VERSION_NOT_FOUND');
+      if (await revision(saved.snapshot ?? null) !== String(saved.sourceRevision || '')) {
+        fail('保存版の整合性を確認できません', 409, 'CALENDAR_HISTORY_TAMPERED');
+      }
+      return saved;
+    };
+    const capture = async (kind, itemId, snapshot, label) => {
+      const all = await options.read(options.historyStore);
+      const sourceRevision = await revision(snapshot);
+      const matching = all.filter(row => row?.itemKind === kind && String(row?.itemId) === String(itemId));
+      if (matching[0]?.sourceRevision === sourceRevision) return matching[0].versionId;
+      const record = {
+        versionId: randomId('calv'), itemKind: kind, itemId: String(itemId), sourceRevision,
+        snapshot: clone(snapshot), label: String(label || '変更前'), actor: options.actor(), createdAt: new Date().toISOString(),
+      };
+      const others = all.filter(row => row?.itemKind !== kind || String(row?.itemId) !== String(itemId));
+      await options.write(options.historyStore, [record, ...matching.slice(0, options.limit - 1), ...others]);
+      return record.versionId;
+    };
+    const compensated = async (storeNames, operation) => {
+      const uniqueNames = [...new Set(storeNames)];
+      const checkpoints = new Map();
+      for (const name of uniqueNames) checkpoints.set(name, await options.read(name));
+      try { return await operation(); }
+      catch (error) {
+        try {
+          for (const name of uniqueNames) await options.write(name, checkpoints.get(name));
+        } catch (rollbackError) {
+          const result = options.error(
+            `カレンダー更新の失敗後に復旧できません。元のエラー: ${error?.message || error}; 復元エラー: ${rollbackError?.message || rollbackError}`,
+            503, 'CALENDAR_COMPENSATION_FAILED',
+          );
+          result.cause = rollbackError;
+          throw result;
+        }
+        throw error;
+      }
+    };
+    return Object.freeze({
+      revision,
+      capture,
+      compensated,
+      async list(kind, itemId) {
+        const ctx = await context(kind, itemId);
+        return {
+          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current),
+          versions: ctx.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
+        };
+      },
+      async compare(kind, itemId, versionId) {
+        const ctx = await context(kind, itemId); const saved = await verified(ctx, versionId);
+        if (saved.snapshot && !(await options.canAccess(kind, saved.snapshot))) {
+          fail('この保存版を表示する権限がありません', 403, 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+        }
+        const keys = [...new Set([...Object.keys(saved.snapshot || {}), ...Object.keys(ctx.current || {})])].sort();
+        return {
+          itemKind: kind, itemId: String(itemId), versionId: saved.versionId,
+          currentRevision: await revision(ctx.current), version: clone(saved.snapshot), current: clone(ctx.current),
+          changes: keys.filter(key => stableJson(saved.snapshot?.[key]) !== stableJson(ctx.current?.[key])).map(field => ({
+            field, versionValue: saved.snapshot?.[field], currentValue: ctx.current?.[field],
+          })),
+        };
+      },
+      async restore(kind, itemId, versionId, expectedRevision, apply) {
+        const ctx = await context(kind, itemId); const saved = await verified(ctx, versionId);
+        if (saved.snapshot && !(await options.canAccess(kind, saved.snapshot))) {
+          fail('この保存版を復元する権限がありません', 403, 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+        }
+        if (await revision(ctx.current) !== String(expectedRevision || '')) {
+          fail('表示後に項目が変更されたため復元を中止しました', 409, 'CALENDAR_HISTORY_REVISION_CONFLICT');
+        }
+        const desired = clone(saved.snapshot);
+        if (desired && String(desired.id || '') !== String(itemId)) {
+          fail('保存版の対象IDが一致しません', 409, 'CALENDAR_HISTORY_ID_MISMATCH');
+        }
+        return compensated(options.compensationStores(kind, ctx.storeName), async () => {
+          await capture(kind, itemId, ctx.current, '復元前');
+          await apply({ ...ctx, desired });
+          return { ok: true, itemKind: kind, itemId: String(itemId), item: desired,
+            revision: await revision(desired), reload: { itemKind: kind, itemId: String(itemId) } };
+        });
+      },
+    });
+  }
+
+  function emptyDocument() {
+    return {
+      schemaVersion: 1,
+      stores: { calendars: [], events: [], tasks: [], time: [], shifts: [], 'schedule-templates': [] },
+      versions: [],
+      calendarVisibility: {},
+    };
+  }
+
+  function readDocument() {
+    let parsed;
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      parsed = raw ? JSON.parse(raw) : emptyDocument();
+    } catch {
+      throw httpError(409, '保存されているカレンダーの整合性を確認できません', 'CALENDAR_STORE_TAMPERED');
+    }
+    if (!parsed || parsed.schemaVersion !== 1 || !parsed.stores || !Array.isArray(parsed.versions)) {
+      throw httpError(409, '保存されているカレンダーの形式が不正です', 'CALENDAR_STORE_INVALID');
+    }
+    for (const name of Object.keys(emptyDocument().stores)) {
+      if (!Array.isArray(parsed.stores[name])) parsed.stores[name] = [];
+    }
+    if (!parsed.calendarVisibility || typeof parsed.calendarVisibility !== 'object' || Array.isArray(parsed.calendarVisibility)) {
+      parsed.calendarVisibility = {};
+    }
+    let colorMigrated = false;
+    parsed.stores.events = parsed.stores.events.map(row => {
+      if (Object.prototype.hasOwnProperty.call(row || {}, 'color_override')) return row;
+      colorMigrated = true;
+      const normalized = normalizedEventColor(parsed, row);
+      delete normalized.uses_calendar_color;
+      return normalized;
+    });
+    if (colorMigrated) writeDocument(parsed);
+    return parsed;
+  }
+
+  function calendarVisibilityKey(calendarId) {
+    return [activeWorkspaceId(), actor(), String(calendarId || '')].map(encodeURIComponent).join('|');
+  }
+
+  function calendarWithVisibility(doc, row) {
+    const result = clone(row);
+    const saved = doc.calendarVisibility?.[calendarVisibilityKey(row?.id)];
+    result.visible = saved == null ? 1 : (saved ? 1 : 0);
+    return result;
+  }
+
+  function setCalendarVisibility(doc, calendarId, visible) {
+    if (!doc.calendarVisibility || typeof doc.calendarVisibility !== 'object') doc.calendarVisibility = {};
+    doc.calendarVisibility[calendarVisibilityKey(calendarId)] = visible ? 1 : 0;
+  }
+
+  function writeDocument(documentValue) {
+    const serialized = JSON.stringify(documentValue);
+    try {
+      localStorage.setItem(STORE_KEY, serialized);
+      if (localStorage.getItem(STORE_KEY) !== serialized) throw new Error('write verification failed');
+    } catch {
+      throw httpError(507, 'カレンダーを端末へ保存できません。空き容量とブラウザの保存許可を確認してください', 'CALENDAR_STORAGE_FAILED');
+    }
+  }
+
+  function actor() {
+    try {
+      if (typeof getUsername === 'function') return String(getUsername() || 'anonymous').trim() || 'anonymous';
+      return String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous').trim() || 'anonymous';
+    } catch {
+      return 'anonymous';
+    }
+  }
+
+  function role() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return { access: String(state.access || state.role || '').toLowerCase(), isOwner: state.isOwner === true };
+  }
+
+  function isAdmin() {
+    const current = role();
+    return current.isOwner || ['admin', 'owner'].includes(current.access);
+  }
+
+  function activeWorkspaceId() {
+    return String(window.MeldexWorkspaces?.getActiveId?.() || 'cloud-local-workspace');
+  }
+
+  function activeMemberId(user, explicit = '') {
+    if (String(explicit || '').trim()) return String(explicit).trim();
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const members = state.members || state.workspace?.members || [];
+    const member = Array.isArray(members)
+      ? members.find(item => String(item?.name || item?.user || '') === String(user || '')) : null;
+    return String(member?.id || member?.member_id || (activeWorkspaceId() && user ? `${activeWorkspaceId()}::${user}` : ''));
+  }
+
+  function rowInActiveWorkspace(row) {
+    const value = String(row?.workspace_id || '');
+    return !value || value === activeWorkspaceId();
+  }
+
+  function assertWritable() {
+    if (role().access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+      throw httpError(403, '閲覧専用モードではカレンダーを変更できません', 'CALENDAR_READ_ONLY');
+    }
+  }
+
+  function randomId(prefix) {
+    if (crypto.randomUUID) return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return `${prefix}_` + [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function canOwn(row, fields) {
+    return isAdmin() || fields.some(field => String(row?.[field] || '') === actor());
+  }
+
+  function eventMembers(row) {
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    return Array.isArray(members) ? members.map(String) : [];
+  }
+
+  function canAccessCalendar(row) {
+    return canOwn(row, ['user']) || eventMembers(row).includes(actor());
+  }
+
+  function canEditEvent(doc, row) {
+    if (canOwn(row, ['user', 'creator']) || eventMembers(row).includes(actor())) return true;
+    const calendar = doc.stores.calendars.find(item => String(item.id) === String(row?.calendar_id || ''));
+    return !!calendar && (canOwn(calendar, ['user']) || (calendar.edit_role === 'editor' && role().access === 'editor'));
+  }
+
+  function calendarForEvent(doc, row) {
+    return doc.stores.calendars.find(item => String(item.id) === String(row?.calendar_id || '')) || null;
+  }
+
+  function isGeneratedEvent(row) {
+    return ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(row?.calendar_source || ''))
+      || String(row?.id || '').startsWith('shift:') || String(row?.id || '').startsWith('att:');
+  }
+
+  function normalizedEventColor(doc, value) {
+    const row = clone(value || {});
+    const calendar = calendarForEvent(doc, row);
+    const legacyColor = String(row.color || '').trim();
+    let override;
+    if (Object.prototype.hasOwnProperty.call(row, 'color_override')) {
+      override = String(row.color_override || '').trim();
+    } else {
+      const generated = ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(row.calendar_source || ''));
+      const calendarColor = String(calendar?.color || '').trim();
+      override = !generated && legacyColor && (!calendarColor || legacyColor !== calendarColor) ? legacyColor : '';
+    }
+    row.color_override = override || null;
+    row.uses_calendar_color = !override;
+    row.color = override || String(calendar?.color || '').trim() || legacyColor || '#569cd6';
+    return row;
+  }
+
+  function normalizeEventColorForWrite(doc, row, previous = null) {
+    const output = row;
+    const hasOverride = Object.prototype.hasOwnProperty.call(output, 'color_override');
+    if (hasOverride) {
+      const override = String(output.color_override || '').trim();
+      output.color_override = override || null;
+      return output;
+    }
+    if (!Object.prototype.hasOwnProperty.call(output, 'color')) {
+      if (previous && Object.prototype.hasOwnProperty.call(previous, 'color_override')) {
+        output.color_override = previous.color_override;
+      } else if (!previous) {
+        output.color_override = null;
+      }
+      return output;
+    }
+    const calendar = calendarForEvent(doc, { ...previous, ...output });
+    const incoming = String(output.color || '').trim();
+    const calendarColor = String(calendar?.color || '').trim();
+    output.color_override = !incoming || (calendarColor && incoming === calendarColor) ? null : incoming;
+    return output;
+  }
+
+  async function matchesExpectedRevision(doc, kind, row, expected) {
+    if (!expected) return true;
+    if (expected === await revision(row)) return true;
+    return kind === 'event' && expected === await revision(normalizedEventColor(doc, row));
+  }
+
+  function canAccess(doc, kind, row) {
+    if (!row) return false;
+    if (!rowInActiveWorkspace(row)) return false;
+    if (kind === 'event') return canEditEvent(doc, row);
+    if (kind === 'todo') return canOwn(row, ['user', 'assignee']);
+    if (kind === 'shift') return canOwn(row, ['user']);
+    return false;
+  }
+
+  function assertOwner(body, fields, message, code) {
+    if (!isAdmin() && fields.some(field => body?.[field] && String(body[field]) !== actor())) {
+      throw httpError(403, message, code);
+    }
+  }
+
+  function assertOwnerUnchanged(previous, body, fields, message, code) {
+    if (!isAdmin() && fields.some(field => Object.prototype.hasOwnProperty.call(body || {}, field)
+      && String(body[field] || '') !== String(previous?.[field] || ''))) {
+      throw httpError(403, message, code);
+    }
+  }
+
+  function historyId() {
+    return randomId('calv');
+  }
+
+  async function captureVersion(doc, kind, itemId, snapshot, label) {
+    const sourceRevision = await revision(snapshot);
+    const matching = doc.versions.filter(row => row.itemKind === kind && String(row.itemId) === String(itemId));
+    if (matching[0]?.sourceRevision === sourceRevision) return matching[0].versionId;
+    const record = {
+      versionId: historyId(), itemKind: kind, itemId: String(itemId), sourceRevision,
+      snapshot: clone(snapshot), label: String(label || '変更前'), actor: actor(), createdAt: new Date().toISOString(),
+    };
+    const retained = matching.slice(0, HISTORY_LIMIT - 1);
+    const others = doc.versions.filter(row => row.itemKind !== kind || String(row.itemId) !== String(itemId));
+    doc.versions = [record, ...retained, ...others];
+    return record.versionId;
+  }
+
+  async function verifiedVersion(doc, kind, itemId, versionId) {
+    const saved = doc.versions.find(row => row.itemKind === kind
+      && String(row.itemId) === String(itemId) && String(row.versionId) === String(versionId));
+    if (!saved) throw httpError(404, '指定した版がありません', 'CALENDAR_HISTORY_VERSION_NOT_FOUND');
+    if (await revision(saved.snapshot ?? null) !== String(saved.sourceRevision || '')) {
+      throw httpError(409, '保存版の整合性を確認できません', 'CALENDAR_HISTORY_TAMPERED');
+    }
+    return saved;
+  }
+
+  function historyContext(doc, kind, itemId) {
+    const storeName = STORE_NAMES[kind];
+    if (!storeName) throw httpError(400, '履歴対象の種類が不正です', 'CALENDAR_HISTORY_KIND_INVALID');
+    const current = doc.stores[storeName].find(row => String(row.id) === String(itemId)) || null;
+    const versions = doc.versions.filter(row => row.itemKind === kind && String(row.itemId) === String(itemId));
+    const authorizationSnapshot = current || versions.find(row => row.snapshot)?.snapshot || null;
+    if (!authorizationSnapshot) throw httpError(404, '対象が見つかりません', 'CALENDAR_HISTORY_TARGET_NOT_FOUND');
+    if (!canAccess(doc, kind, authorizationSnapshot)) {
+      throw httpError(403, 'この項目の履歴を操作する権限がありません', 'CALENDAR_HISTORY_FORBIDDEN');
+    }
+    return { storeName, current, versions };
+  }
+
+  function syncShiftEvent(doc, shift, itemId = '') {
+    const prefix = `shift:${shift?.id || itemId}`;
+    doc.stores.events = doc.stores.events.filter(row => !(String(row.id) === prefix
+      || String(row.id).startsWith(prefix + ':break:')));
+    if (!shift) return;
+    const workspaceId = String(shift.workspace_id || '');
+    const memberId = String(shift.member_id || '');
+    let calendar = doc.stores.calendars.find(row => row.source === 'shift'
+      && String(row.user || '') === String(shift.user || '')
+      && String(row.workspace_id || '') === workspaceId
+      && String(row.member_id || '') === memberId);
+    if (!calendar) {
+      const now = new Date().toISOString();
+      calendar = {
+        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#d19a66',
+        user: shift.user || actor(), source: 'shift', visible: 1, sort_order: 0,
+        folder: workspaceId || 'シフトカレンダー', edit_role: 'admin', workspace_id: workspaceId,
+        member_id: memberId, created: now, modified: now,
+      };
+      doc.stores.calendars.push(calendar);
+    }
+    doc.stores.events.push({
+      id: prefix, title: `勤務 ${shift.user || ''}`.trim(),
+      start: `${shift.date}T${shift.start_time || '00:00'}:00`,
+      end: `${shift.date}T${shift.end_time || shift.start_time || '00:00'}:00`,
+      all_day: false, color: calendar.color, color_override: null, calendar_source: 'shift',
+      user: shift.user || actor(), creator: shift.user || actor(), calendar_id: calendar.id,
+      workspace_id: workspaceId, member_id: memberId, shift_id: shift.id,
+      modified: shift.modified || new Date().toISOString(),
+    });
+  }
+
+  function readStorageLease() {
+    const raw = localStorage.getItem(LEASE_KEY);
+    if (!raw) return null;
+    try {
+      const lease = JSON.parse(raw);
+      if (!lease || typeof lease.token !== 'string' || !Number.isFinite(Number(lease.expiresAt))) {
+        throw new Error('invalid lease');
+      }
+      return lease;
+    } catch {
+      throw httpError(409, 'カレンダー更新ロックの整合性を確認できません', 'CALENDAR_LEASE_TAMPERED');
+    }
+  }
+
+  function verifyStorageLease(token, renew = false) {
+    const now = Date.now();
+    const current = readStorageLease();
+    if (current?.token !== token || Number(current.expiresAt) <= now) {
+      throw httpError(409, '別の画面がカレンダー更新ロックを引き継ぎました', 'CALENDAR_LEASE_LOST');
+    }
+    if (renew) {
+      const renewed = { token, expiresAt: now + LEASE_DURATION_MS };
+      try { localStorage.setItem(LEASE_KEY, JSON.stringify(renewed)); }
+      catch {
+        throw httpError(507, 'カレンダー更新ロックを保存できません', 'CALENDAR_LOCK_STORAGE_FAILED');
+      }
+      const verified = readStorageLease();
+      if (verified?.token !== token || Number(verified.expiresAt) !== renewed.expiresAt) {
+        throw httpError(409, '別の画面がカレンダー更新ロックを引き継ぎました', 'CALENDAR_LEASE_LOST');
+      }
+    }
+  }
+
+  async function withStorageLease(operation) {
+    if (navigator?.locks?.request) {
+      return navigator.locks.request('meldex-browser-calendar-write', { mode: 'exclusive' }, () => operation(null));
+    }
+    const token = randomId('lease');
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const now = Date.now();
+      const current = readStorageLease();
+      if (!current || Number(current.expiresAt || 0) <= now) {
+        // Give other contexts that observed the same expired lease a chance to
+        // publish their claim. Only the final visible claimant may enter.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const latest = readStorageLease();
+        if (latest && Number(latest.expiresAt || 0) > Date.now()) continue;
+        try {
+          localStorage.setItem(LEASE_KEY, JSON.stringify({ token, expiresAt: Date.now() + LEASE_DURATION_MS }));
+        } catch {
+          throw httpError(507, 'カレンダー更新ロックを保存できません', 'CALENDAR_LOCK_STORAGE_FAILED');
+        }
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (readStorageLease()?.token === token) {
+          let heartbeatError = null;
+          const heartbeat = setInterval(() => {
+            try { verifyStorageLease(token, true); }
+            catch (error) { heartbeatError = error; clearInterval(heartbeat); }
+          }, LEASE_HEARTBEAT_MS);
+          const lease = {
+            verify() {
+              if (heartbeatError) throw heartbeatError;
+              verifyStorageLease(token, false);
+            },
+            heartbeat() {
+              if (heartbeatError) throw heartbeatError;
+              verifyStorageLease(token, true);
+            },
+          };
+          try { return await operation(lease); }
+          finally {
+            clearInterval(heartbeat);
+            try {
+              if (readStorageLease()?.token === token) localStorage.removeItem(LEASE_KEY);
+            } catch {}
+          }
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw httpError(409, '別の画面がカレンダーを更新中です', 'CALENDAR_LEASE_CONFLICT');
+  }
+
+  async function mutate(operation) {
+    const execute = async lease => {
+      assertWritable();
+      const doc = readDocument();
+      const result = await operation(doc);
+      // The document was read before asynchronous hashing/history work. A
+      // successor lease must fence this stale snapshot out before full replace.
+      if (lease) lease.heartbeat();
+      writeDocument(doc);
+      if (lease) lease.verify();
+      return result;
+    };
+    const queued = localQueue.then(() => withStorageLease(execute), () => withStorageLease(execute));
+    localQueue = queued.catch(() => undefined);
+    return queued;
+  }
+
+  function filterRows(doc, name, url) {
+    const rows = doc.stores[name];
+    const requestedUser = url.searchParams.get('user') || '';
+    if (!isAdmin() && requestedUser && requestedUser !== actor()) {
+      throw httpError(403, '他のメンバーのカレンダーデータは参照できません', 'CALENDAR_READ_FORBIDDEN');
+    }
+    const start = url.searchParams.get('start') || url.searchParams.get('date_from') || '';
+    const end = url.searchParams.get('end') || url.searchParams.get('date_to') || '';
+    return rows.filter(row => {
+      if (!rowInActiveWorkspace(row)) return false;
+      if (!isAdmin()) {
+        const accessible = name === 'events' ? canEditEvent(doc, row)
+          : (name === 'calendars' ? canAccessCalendar(row) : canOwn(row, ['user', 'assignee']));
+        if (!accessible) return false;
+      } else if (requestedUser && requestedUser !== actor()) {
+        const visible = name === 'events'
+          ? [row.user, row.creator, ...eventMembers(row)].map(String).includes(requestedUser)
+          : [row.user, row.assignee].map(String).includes(requestedUser);
+        if (!visible) return false;
+      }
+      const value = String(row.start || row.date || row.due_date || row.timestamp || '');
+      return (!start || value >= start) && (!end || value <= end);
+    }).map(row => name === 'events' ? normalizedEventColor(doc, row)
+      : (name === 'calendars' ? calendarWithVisibility(doc, row) : clone(row)));
+  }
+
+  async function createItem(doc, kind, body) {
+    const storeName = STORE_NAMES[kind];
+    const now = new Date().toISOString();
+    const id = String(body?.id || randomId(kind));
+    if (doc.stores[storeName].some(row => String(row.id) === id)) {
+      throw httpError(409, '同じIDのデータが既に存在します', 'CALENDAR_ID_CONFLICT');
+    }
+    const row = { id, created: now, modified: now, ...clone(body || {}) };
+    delete row.expectedRevision;
+    if (kind === 'event') {
+      if (isGeneratedEvent(row)) {
+        throw httpError(409, '自動生成されたシフト予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+      }
+      row.title = row.title || '無題'; row.user = row.user || row.creator || actor(); row.creator = row.creator || row.user;
+      const calendar = calendarForEvent(doc, row);
+      row.workspace_id = String(calendar?.workspace_id || row.workspace_id || activeWorkspaceId());
+      row.member_id = String(calendar?.member_id || row.member_id || '');
+      assertOwner(row, ['user', 'creator'], '他のメンバー名義の予定は作成できません', 'EVENT_USER_MISMATCH');
+      normalizeEventColorForWrite(doc, row);
+    } else if (kind === 'todo') {
+      row.title = row.title || '無題'; row.status = row.status || 'todo'; row.priority = row.priority || 'medium'; row.user = row.user || actor();
+      assertOwner(row, ['user'], '他のメンバー名義のToDoは作成できません', 'TASK_USER_MISMATCH');
+    } else {
+      row.user = row.user || actor();
+      row.workspace_id = String(row.workspace_id || activeWorkspaceId());
+      row.member_id = activeMemberId(row.user, row.member_id);
+      assertOwner(row, ['user'], '他のメンバー名義のシフトは作成できません', 'SHIFT_USER_MISMATCH');
+    }
+    await captureVersion(doc, kind, id, null, '作成前');
+    doc.stores[storeName].push(row);
+    if (kind === 'shift') syncShiftEvent(doc, row);
+    return { ok: true, id, revision: await revision(row) };
+  }
+
+  async function updateItem(doc, kind, itemId, body) {
+    const storeName = STORE_NAMES[kind];
+    const index = doc.stores[storeName].findIndex(row => String(row.id) === String(itemId));
+    if (index < 0) throw httpError(404, '対象が見つかりません', 'CALENDAR_ROW_NOT_FOUND');
+    const previous = doc.stores[storeName][index];
+    if (!canAccess(doc, kind, previous)) throw httpError(403, 'この項目を編集する権限がありません', 'CALENDAR_EDIT_FORBIDDEN');
+    const expected = String(body?.expectedRevision || body?._calendar_expected_revision || '');
+    if (!(await matchesExpectedRevision(doc, kind, previous, expected))) {
+      throw httpError(409, '表示後に項目が変更されたため保存を中止しました', 'CALENDAR_REVISION_CONFLICT');
+    }
+    if (kind === 'event' && (isGeneratedEvent(previous) || isGeneratedEvent({ id: itemId, ...(body || {}) }))) {
+      throw httpError(409, '自動生成されたシフト予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+    }
+    const patch = clone(body || {}); delete patch.expectedRevision; delete patch._calendar_expected_revision;
+    if (kind === 'event') {
+      assertOwnerUnchanged(previous, patch, ['user', 'creator'], '予定の所有者は変更できません', 'EVENT_USER_MISMATCH');
+      normalizeEventColorForWrite(doc, patch, previous);
+    }
+    if (kind === 'todo') assertOwnerUnchanged(previous, patch, ['user'], 'ToDoの所有者は変更できません', 'TASK_USER_MISMATCH');
+    if (kind === 'shift') assertOwnerUnchanged(previous, patch, ['user'], 'シフトの担当者は変更できません', 'SHIFT_USER_MISMATCH');
+    await captureVersion(doc, kind, itemId, previous, '更新前');
+    const next = { ...previous, ...patch, id: previous.id, modified: new Date().toISOString() };
+    if (kind === 'event') {
+      const calendar = calendarForEvent(doc, next);
+      next.workspace_id = String(calendar?.workspace_id || next.workspace_id || activeWorkspaceId());
+      next.member_id = String(calendar?.member_id || next.member_id || '');
+    } else if (kind === 'shift') {
+      next.workspace_id = String(next.workspace_id || activeWorkspaceId());
+      next.member_id = activeMemberId(next.user, next.member_id);
+    }
+    doc.stores[storeName][index] = next;
+    if (kind === 'shift') syncShiftEvent(doc, next);
+    return { ok: true, revision: await revision(next) };
+  }
+
+  async function deleteItem(doc, kind, itemId, body) {
+    const storeName = STORE_NAMES[kind];
+    const index = doc.stores[storeName].findIndex(row => String(row.id) === String(itemId));
+    if (index < 0) throw httpError(404, '対象が見つかりません', 'CALENDAR_ROW_NOT_FOUND');
+    const previous = doc.stores[storeName][index];
+    if (!canAccess(doc, kind, previous)) throw httpError(403, 'この項目を削除する権限がありません', 'CALENDAR_DELETE_FORBIDDEN');
+    if (kind === 'event' && isGeneratedEvent(previous)) {
+      throw httpError(409, '自動生成された予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+    }
+    const expected = String(body?.expectedRevision || body?._calendar_expected_revision || '');
+    if (!(await matchesExpectedRevision(doc, kind, previous, expected))) {
+      throw httpError(409, '表示後に項目が変更されたため削除を中止しました', 'CALENDAR_REVISION_CONFLICT');
+    }
+    await captureVersion(doc, kind, itemId, previous, '削除前');
+    doc.stores[storeName].splice(index, 1);
+    if (kind === 'shift') syncShiftEvent(doc, null, itemId);
+    return { ok: true, revision: await revision(null) };
+  }
+
+  async function listHistory(doc, kind, itemId) {
+    const context = historyContext(doc, kind, itemId);
+    return {
+      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current),
+      versions: context.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
+    };
+  }
+
+  async function compareHistory(doc, kind, itemId, versionId) {
+    const context = historyContext(doc, kind, itemId);
+    const saved = await verifiedVersion(doc, kind, itemId, versionId);
+    if (saved.snapshot && !canAccess(doc, kind, saved.snapshot)) {
+      throw httpError(403, 'この保存版を表示する権限がありません', 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+    }
+    const keys = [...new Set([...Object.keys(saved.snapshot || {}), ...Object.keys(context.current || {})])].sort();
+    return {
+      itemKind: kind, itemId: String(itemId), versionId: saved.versionId,
+      currentRevision: await revision(context.current), version: clone(saved.snapshot), current: clone(context.current),
+      changes: keys.filter(key => stableJson(saved.snapshot?.[key]) !== stableJson(context.current?.[key])).map(field => ({
+        field, versionValue: saved.snapshot?.[field], currentValue: context.current?.[field],
+      })),
+    };
+  }
+
+  async function restoreHistory(doc, kind, itemId, versionId, expectedRevision) {
+    const context = historyContext(doc, kind, itemId);
+    const saved = await verifiedVersion(doc, kind, itemId, versionId);
+    if (saved.snapshot && !canAccess(doc, kind, saved.snapshot)) {
+      throw httpError(403, 'この保存版を復元する権限がありません', 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+    }
+    if (await revision(context.current) !== String(expectedRevision || '')) {
+      throw httpError(409, '表示後に項目が変更されたため復元を中止しました', 'CALENDAR_HISTORY_REVISION_CONFLICT');
+    }
+    const desired = clone(saved.snapshot);
+    if (desired && String(desired.id || '') !== String(itemId)) {
+      throw httpError(409, '保存版の対象IDが一致しません', 'CALENDAR_HISTORY_ID_MISMATCH');
+    }
+    await captureVersion(doc, kind, itemId, context.current, '復元前');
+    doc.stores[context.storeName] = doc.stores[context.storeName].filter(row => String(row.id) !== String(itemId));
+    if (desired) {
+      if (kind === 'event') normalizeEventColorForWrite(doc, desired);
+      doc.stores[context.storeName].push(desired);
+    }
+    if (kind === 'shift') syncShiftEvent(doc, desired);
+    return {
+      ok: true, itemKind: kind, itemId: String(itemId), item: desired,
+      revision: await revision(desired), reload: { itemKind: kind, itemId: String(itemId) },
+    };
+  }
+
+  async function handle({ method, body, url, pathname }) {
+    if (!window.MeldexRuntimeAdapter?.isBrowserMode?.()) return NOT_HANDLED;
+    if (pathname === '/cal/sync/status' && method === 'GET') {
+      return { enabled: true, configured: false, ical: false, google: false, microsoft: false, caldav: false };
+    }
+    if (pathname === '/cal/alerts' && method === 'GET') return [];
+    const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
+    if (historyRoute) {
+      const kind = historyRoute[1]; const itemId = decodeURIComponent(historyRoute[2]);
+      const versionId = historyRoute[3] ? decodeURIComponent(historyRoute[3]) : '';
+      if (method === 'GET' && !versionId) return listHistory(readDocument(), kind, itemId);
+      if (method === 'GET' && versionId && !historyRoute[4]) return compareHistory(readDocument(), kind, itemId, versionId);
+      if (method === 'POST' && versionId && historyRoute[4]) {
+        return mutate(doc => restoreHistory(doc, kind, itemId, versionId, String(body?.expectedRevision || '')));
+      }
+      return NOT_HANDLED;
+    }
+    const route = pathname.match(/^\/cal\/(calendars|events|tasks|time|shifts|schedule-templates)(?:\/([^/]+))?$/);
+    if (!route) return NOT_HANDLED;
+    const name = route[1]; const itemId = route[2] ? decodeURIComponent(route[2]) : '';
+    const kind = Object.keys(STORE_NAMES).find(key => STORE_NAMES[key] === name);
+    if (method === 'GET' && !itemId) return filterRows(readDocument(), name, url);
+    if (method === 'GET' && itemId) {
+      const doc = readDocument(); const row = doc.stores[name].find(item => String(item.id) === itemId);
+      if (!row || (kind && !canAccess(doc, kind, row))) throw httpError(row ? 403 : 404, row ? 'この項目を参照する権限がありません' : '対象が見つかりません', row ? 'CALENDAR_READ_FORBIDDEN' : 'CALENDAR_ROW_NOT_FOUND');
+      return name === 'events' ? normalizedEventColor(doc, row)
+        : (name === 'calendars' ? calendarWithVisibility(doc, row) : clone(row));
+    }
+    if (name === 'calendars' && method === 'PUT' && itemId && Object.prototype.hasOwnProperty.call(body || {}, 'visible')) {
+      return mutate(doc => {
+        const row = doc.stores.calendars.find(item => String(item.id) === itemId);
+        if (!row || !canAccessCalendar(row)) throw httpError(row ? 403 : 404, row ? 'このカレンダーを変更する権限がありません' : '対象が見つかりません', row ? 'CALENDAR_EDIT_FORBIDDEN' : 'CALENDAR_ROW_NOT_FOUND');
+        setCalendarVisibility(doc, itemId, Number(body.visible) !== 0);
+        return { ok: true };
+      });
+    }
+    if (!kind) return NOT_HANDLED;
+    if (method === 'POST' && !itemId) return mutate(doc => createItem(doc, kind, body));
+    if (method === 'PUT' && itemId) return mutate(doc => updateItem(doc, kind, itemId, body));
+    if (method === 'DELETE' && itemId) return mutate(doc => deleteItem(doc, kind, itemId, body));
+    return NOT_HANDLED;
+  }
+
+  handle.__meldexBrowserCalendar = true;
+  if (typeof window.MeldexRuntimeAdapter?.isBrowserMode === 'function') handlers.unshift(handle);
+  window.MeldexCloudCalendarDataAccess = Object.freeze({ createHistoryEngine, revision, stableJson });
+  window.MeldexBrowserCalendarStore = Object.freeze({ STORE_KEY, LEASE_KEY, HISTORY_LIMIT, revision });
+})();
 (function () {
   'use strict';
 
@@ -22438,8 +24114,8 @@
   const CALENDAR_STORE_DIR = '_calendar';
   const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
   const CALENDAR_DB_FIELDS = [
-    'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'location', 'url', 'description',
-    'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members',
+    'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'color_override', 'location', 'url', 'description',
+    'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members', 'workspace_id', 'member_id',
     'linkedEntryId', 'linkedEntryPath', 'linkedEntrySourceProperty', 'linkedAutoGenerated',
   ];
   const WORKSPACE_SCAN_EXCLUDES = ['_chat/', '_calendar/', '_meldex/', '_trash/', '_versions/', '_backup/', '_meldex_pwa/', 'node_modules/'];
@@ -24353,30 +26029,7 @@
     return result;
   }
 
-  function _candidateMatches(candidate, field, operator, filterValue) {
-    const target = field === 'status' ? candidate.status : candidate.value;
-    const targetText = String(target == null ? '' : target);
-    const filterText = String(filterValue == null ? '' : filterValue);
-    if (operator === 'equals') return targetText === filterText;
-    if (operator === 'not_equals') return targetText !== filterText;
-    if (operator === 'contains') return targetText.includes(filterText);
-    if (operator === 'not_contains') return !targetText.includes(filterText);
-    if (operator === 'empty') return !targetText.trim();
-    if (operator === 'not_empty') return !!targetText.trim();
-    return false;
-  }
-
-  function _valuesMatch(values, field, operator, filterValue) {
-    const list = Array.isArray(values) ? values : [];
-    if (!list.length) return operator === 'empty' || operator === 'not_contains';
-    if (operator === 'not_equals' || operator === 'not_contains') {
-      return list.every(candidate => _candidateMatches(candidate, field, operator, filterValue));
-    }
-    return list.some(candidate => _candidateMatches(candidate, field, operator, filterValue));
-  }
-
-  async function _smartDb(provider, url) {
-    const filters = JSON.parse(url.searchParams.get('filters') || '[]');
+  async function _sheetSearch(provider, url) {
     const q = String(url.searchParams.get('q') || '').toLowerCase();
     const scope = _normalizeFolderPath(url.searchParams.get('scope') || '');
     const dbs = scope ? [{ path: scope }] : await _findDatabaseFolders(provider, '', 6);
@@ -24394,25 +26047,13 @@
           });
           if (!haystack.some(text => String(text).toLowerCase().includes(q))) return;
         }
-        let ok = true;
-        const matchedProps = {};
-        filters.forEach((flt) => {
-          if (!ok || !flt?.property) return;
-          const values = props[flt.property] || [];
-          if (!_valuesMatch(values, flt.field || 'value', flt.operator || 'contains', flt.value || '')) {
-            ok = false;
-            return;
-          }
-          matchedProps[flt.property] = values;
-        });
-        if (!ok) return;
         matched.push({
           name: entityName,
           path: _joinPath(dbPath, entityName + '.md'),
           db_path: dbPath,
           db_name: _basename(dbPath),
           root_name: 'vault',
-          matched_props: filters.length ? matchedProps : props,
+          matched_props: props,
           created: '',
           modified: props._modified || '',
         });
@@ -24420,7 +26061,7 @@
     }
     return {
       entities: matched,
-      filter_properties: filters.map(f => f.property).filter(Boolean),
+      filter_properties: [],
       total_dbs_scanned: dbs.length,
       total_entities_scanned: totalEntities,
     };
@@ -24466,6 +26107,71 @@
   async function _writeStore(provider, name, rows) {
     await _directoryHandle(provider, CALENDAR_STORE_DIR, true);
     await provider.writeJson(_calendarStorePath(name), Array.isArray(rows) ? rows : []);
+  }
+
+  async function _calendarCompensated(provider, storeNames, operation) {
+    return _calendarHistoryEngine(provider).compensated(storeNames, operation);
+  }
+
+  const CLOUD_CALENDAR_HISTORY_STORE = 'item-versions';
+  const CLOUD_CALENDAR_HISTORY_LIMIT = 30;
+  const CLOUD_CALENDAR_HISTORY_NAMES = Object.freeze({ event: 'events', todo: 'tasks', shift: 'shifts' });
+
+  function _calendarHistoryEngine(provider) {
+    const shared = window.MeldexCloudCalendarDataAccess;
+    if (!shared?.createHistoryEngine) {
+      throw _calendarError('カレンダー履歴エンジンが読み込まれていません', 503, 'CALENDAR_HISTORY_ENGINE_UNAVAILABLE');
+    }
+    return shared.createHistoryEngine({
+      names: CLOUD_CALENDAR_HISTORY_NAMES,
+      historyStore: CLOUD_CALENDAR_HISTORY_STORE,
+      limit: CLOUD_CALENDAR_HISTORY_LIMIT,
+      actor: _calendarActor,
+      error: (message, status, code) => _calendarError(message, status, code),
+      read: name => _readStore(provider, name),
+      write: (name, rows) => _writeStore(provider, name, rows),
+      canAccess: (kind, snapshot) => _calendarCanAccessHistorySnapshot(provider, kind, snapshot),
+      compensationStores: (kind, storeName) => kind === 'shift'
+        ? [CLOUD_CALENDAR_HISTORY_STORE, storeName, 'events']
+        : [CLOUD_CALENDAR_HISTORY_STORE, storeName],
+    });
+  }
+
+  function _calendarItemRevision(value) {
+    return window.MeldexCloudCalendarDataAccess.revision(value);
+  }
+
+  function _calendarCaptureVersion(provider, kind, itemId, snapshot, label) {
+    return _calendarHistoryEngine(provider).capture(kind, itemId, snapshot, label);
+  }
+
+  async function _calendarCanAccessHistorySnapshot(provider, kind, snapshot) {
+    if (!snapshot) return true;
+    if (kind === 'event') return _calendarCanEditEvent(provider, snapshot);
+    if (kind === 'todo') return _calendarCanOwnRecord(snapshot, ['user', 'assignee']);
+    if (kind === 'shift') return _calendarRoleIsAdmin() || String(snapshot.user || '') === _calendarActor();
+    return false;
+  }
+
+  async function _calendarHistoryList(provider, kind, itemId) {
+    return _calendarHistoryEngine(provider).list(kind, itemId);
+  }
+
+  async function _calendarHistoryCompare(provider, kind, itemId, versionId) {
+    return _calendarHistoryEngine(provider).compare(kind, itemId, versionId);
+  }
+
+  async function _calendarHistoryRestore(provider, kind, itemId, versionId, expectedRevision) {
+    _assertCalendarWritable();
+    return _calendarHistoryEngine(provider).restore(kind, itemId, versionId, expectedRevision, async context => {
+      const nextRows = context.rows.filter(row => String(row?.id) !== String(itemId));
+      if (context.desired) nextRows.push(context.desired);
+      await _writeStore(provider, context.storeName, nextRows);
+      if (kind === 'shift') {
+        if (context.desired) await window.MeldexCloudShiftSync?.sync?.(provider, context.desired);
+        else await window.MeldexCloudShiftSync?.remove?.(provider, itemId);
+      }
+    });
   }
 
   function _sharedEditHistory() {
@@ -24604,11 +26310,13 @@
       content: CLOUD_ATTENDANCE.buildCsv(entries, shifts, startDay, endDay, format) };
   }
 
-  function _deriveCloudAttendanceEvent(rows, user, day, existing) {
+  function _deriveCloudAttendanceEvent(rows, user, day, existing, scope = {}) {
     const parts = String(day || '').split('-').map(Number);
     const next = parts.length === 3 ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1)) : new Date(NaN);
     const nextDay = Number.isNaN(next.getTime()) ? day : next.toISOString().slice(0, 10);
     const records = (Array.isArray(rows) ? rows : []).filter(row => row.user === user
+      && String(row.workspace_id || '') === String(scope.workspace_id || '')
+      && String(row.member_id || '') === String(scope.member_id || '')
       && String(row.timestamp || '') >= day && String(row.timestamp || '') <= `${nextDay}T23:59:59`)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
         || String(a.id || '').localeCompare(String(b.id || '')));
@@ -24630,7 +26338,7 @@
     const lastOut = [...scoped].reverse().find(row => row.type === 'clock_out');
     const labels = { clock_in: '出勤', clock_out: '退勤', break_start: '離席', break_end: '復帰' };
     return {
-      ...(existing || {}), id: `attendance:${user}:${day}`, title: `実績 ${user}`,
+      ...(existing || {}), title: `実績 ${user}`,
       start: first.timestamp, end: lastOut?.timestamp || scoped.at(-1)?.timestamp || first.timestamp,
       all_day: 0, color: '#6a9955',
       description: scoped.filter(row => row.timestamp).map(row => `${String(row.timestamp).slice(11, 16)} ${labels[row.type] || row.type || ''}`).join('\n'),
@@ -24647,6 +26355,10 @@
       deriveEvent: _deriveCloudAttendanceEvent,
       randomId: _randomId,
       nowIso: _nowIso,
+      scopeForUser: user => {
+        const workspace_id = _calendarWorkspaceId();
+        return { workspace_id, member_id: _calendarMemberId(user) };
+      },
     });
   }
 
@@ -24675,27 +26387,151 @@
     return true;
   }
 
+  function _calendarCanViewCalendar(row) {
+    if (_calendarRoleIsAdmin() || String(row?.user || '') === _calendarActor()) return true;
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    return Array.isArray(members) && members.map(String).includes(_calendarActor());
+  }
+
+  function _calendarWorkspaceId() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return String(window.MeldexWorkspaces?.getActiveId?.() || state.workspaceId || state.workspace_id || '');
+  }
+
+  function _calendarMemberId(user, explicit = '') {
+    if (String(explicit || '').trim()) return String(explicit).trim();
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const members = state.members || state.workspace?.members || [];
+    const member = Array.isArray(members)
+      ? members.find(item => String(item?.name || item?.user || '') === String(user || '')) : null;
+    const stable = String(member?.id || member?.member_id || '').trim();
+    const workspace = _calendarWorkspaceId();
+    return stable || (workspace && user ? `${workspace}::${user}` : '');
+  }
+
+  function _calendarRowInWorkspace(row) {
+    const rowWorkspace = String(row?.workspace_id || '');
+    const active = _calendarWorkspaceId();
+    return !rowWorkspace || !active || rowWorkspace === active;
+  }
+
+  function _effectiveDropboxEventColor(row, calendars) {
+    const result = { ...(row || {}) };
+    const calendar = (calendars || []).find(item => String(item.id) === String(result.calendar_id || ''));
+    const legacy = String(result.color || '').trim();
+    let override = Object.prototype.hasOwnProperty.call(result, 'color_override')
+      ? String(result.color_override || '').trim() : '';
+    if (!Object.prototype.hasOwnProperty.call(result, 'color_override')) {
+      const generated = ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(result.calendar_source || ''));
+      const calendarColor = String(calendar?.color || '').trim();
+      override = !generated && legacy && (!calendarColor || legacy !== calendarColor) ? legacy : '';
+    }
+    result.color_override = override || null;
+    result.uses_calendar_color = !override;
+    result.color = override || String(calendar?.color || '').trim() || legacy || '#569cd6';
+    result.workspace_id = String(calendar?.workspace_id || result.workspace_id || '');
+    result.member_id = String(calendar?.member_id || result.member_id || '');
+    return result;
+  }
+
+  async function _normalizeDropboxEventForWrite(provider, row, previous = null) {
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(row?.calendar_id ?? previous?.calendar_id ?? ''));
+    const result = row;
+    result.workspace_id = String(calendar?.workspace_id || result.workspace_id || previous?.workspace_id || _calendarWorkspaceId());
+    result.member_id = String(calendar?.member_id || result.member_id || previous?.member_id || '');
+    if (Object.prototype.hasOwnProperty.call(result, 'color_override')) {
+      result.color_override = String(result.color_override || '').trim() || null;
+    } else if (Object.prototype.hasOwnProperty.call(result, 'color')) {
+      const incoming = String(result.color || '').trim();
+      const calendarColor = String(calendar?.color || '').trim();
+      result.color_override = !incoming || (calendarColor && incoming === calendarColor) ? null : incoming;
+    } else if (previous && Object.prototype.hasOwnProperty.call(previous, 'color_override')) {
+      result.color_override = previous.color_override;
+    } else if (!previous) {
+      result.color_override = null;
+    }
+    return result;
+  }
+
+  async function _readMigratedDropboxEvents(provider) {
+    const operation = async guardedProvider => {
+      const current = await _readStore(guardedProvider, 'events');
+      if (!current.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) {
+        return current;
+      }
+      const calendars = await _readStore(guardedProvider, 'calendars');
+      const migrated = current.map(row => {
+        const normalized = _effectiveDropboxEventColor(row, calendars);
+        delete normalized.uses_calendar_color;
+        return normalized;
+      });
+      await _writeStore(guardedProvider, 'events', migrated);
+      return migrated;
+    };
+    const lease = window.MeldexCloudCalendarLease;
+    if (!lease?.withLease) return operation(provider);
+    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+  }
+
+  async function _calendarVisibilityRows(provider) {
+    return _readStore(provider, 'calendar-visibility');
+  }
+
+  function _calendarVisibilityKey(row) {
+    return String(row?.workspace_id || '') === _calendarWorkspaceId()
+      && String(row?.user || '') === _calendarActor();
+  }
+
+  async function _calendarRowsWithVisibility(provider, rows) {
+    const preferences = await _calendarVisibilityRows(provider);
+    return rows.map(row => {
+      const saved = preferences.find(item => _calendarVisibilityKey(item)
+        && String(item.calendar_id || '') === String(row.id || ''));
+      return { ...row, visible: saved == null ? 1 : (Number(saved.visible) ? 1 : 0) };
+    });
+  }
+
+  async function _setDropboxCalendarVisibility(provider, calendarId, visible) {
+    const rows = await _calendarVisibilityRows(provider);
+    const index = rows.findIndex(item => _calendarVisibilityKey(item)
+      && String(item.calendar_id || '') === String(calendarId || ''));
+    const preference = {
+      id: `${_calendarWorkspaceId()}::${_calendarActor()}::${calendarId}`,
+      workspace_id: _calendarWorkspaceId(), user: _calendarActor(),
+      calendar_id: String(calendarId || ''), visible: visible ? 1 : 0, modified: _nowIso(),
+    };
+    if (index >= 0) rows[index] = { ...rows[index], ...preference };
+    else rows.push(preference);
+    await _writeStore(provider, 'calendar-visibility', rows);
+  }
+
   async function _calendarList(provider, name, url) {
-    const rows = await _readStore(provider, name);
+    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider) : await _readStore(provider, name);
     const requestedUser = url.searchParams.get('user') || '';
     if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
       throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');
     }
     if (name === 'events') {
+      const calendars = await _readStore(provider, 'calendars');
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
       if (_calendarRoleIsAdmin()) {
-        return rows.filter(row => (!user || row.user === user || row.creator === user)
-          && _dateInRange(row.start || row.due_date, start, end));
+        const filterUser = user && user !== _calendarActor() ? user : '';
+        return rows.filter(row => _calendarRowInWorkspace(row)
+          && (!filterUser || row.user === filterUser || row.creator === filterUser)
+          && _dateInRange(row.start || row.due_date, start, end))
+          .map(row => _effectiveDropboxEventColor(row, calendars));
       }
       const actor = _calendarActor();
       return rows.filter(row => {
         let members = row?.members;
         try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
         const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
-        return visible && _dateInRange(row.start || row.due_date, start, end);
-      });
+        return _calendarRowInWorkspace(row) && visible && _dateInRange(row.start || row.due_date, start, end);
+      }).map(row => _effectiveDropboxEventColor(row, calendars));
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
@@ -24708,18 +26544,28 @@
       const from = url.searchParams.get('date_from') || '';
       const to = url.searchParams.get('date_to') || '';
       const taskId = url.searchParams.get('task_id') || '';
-      return rows.filter(row => (!user || row.user === user) && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
+      return rows.filter(row => _calendarRowInWorkspace(row) && (!user || row.user === user)
+        && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
     }
     if (name === 'shifts') {
-      if (_calendarRoleIsAdmin()) return _filterRows(rows, url, ['user', 'month']);
+      if (_calendarRoleIsAdmin()) {
+        const filterUrl = new URL(url.toString());
+        if (filterUrl.searchParams.get('user') === _calendarActor()) filterUrl.searchParams.delete('user');
+        return _filterRows(rows, filterUrl, ['user', 'month']).filter(_calendarRowInWorkspace);
+      }
       const actor = _calendarActor();
       const month = url.searchParams.get('month') || '';
-      return rows.filter(row => row.user === actor && (!month || String(row.date || '').startsWith(month)));
+      return rows.filter(row => _calendarRowInWorkspace(row) && row.user === actor && (!month || String(row.date || '').startsWith(month)));
     }
     const filtered = _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
-    if (_calendarRoleIsAdmin()) return filtered;
+    if (name === 'calendars') {
+      const accessible = _calendarRoleIsAdmin()
+        ? filtered.filter(_calendarRowInWorkspace)
+        : filtered.filter(row => _calendarRowInWorkspace(row) && _calendarCanViewCalendar(row));
+      return _calendarRowsWithVisibility(provider, accessible);
+    }
+    if (_calendarRoleIsAdmin()) return filtered.filter(_calendarRowInWorkspace);
     const actor = _calendarActor();
-    if (name === 'calendars') return filtered.filter(row => row.user === actor);
     if (name === 'tasks') return filtered.filter(row => row.user === actor);
     if (name === 'schedule-templates') return filtered.filter(row => row.user === actor);
     return filtered.filter(row => !row.user || row.user === actor);
@@ -24764,8 +26610,10 @@
         const operationNow = new Date(Number.isFinite(latestCurrent) && latestCurrent >= wallClock ? latestCurrent + 1 : wallClock).toISOString();
         const timestamp = CLOUD_ATTENDANCE.validTimestamp(correction ? (body?.timestamp || operationNow) : operationNow);
         if (!timestamp) throw _calendarError('打刻日時が不正です', 400, 'INVALID_CLOCK_TIMESTAMP');
+        const workspace_id = String(body?.workspace_id || _calendarWorkspaceId());
+        const member_id = _calendarMemberId(user, body?.member_id);
         const entry = { id, type, user, timestamp, note: String(body?.note || ''), task_id: String(body?.task_id || ''),
-          operation_id: operationId, created: operationNow, modified: operationNow };
+          workspace_id, member_id, operation_id: operationId, created: operationNow, modified: operationNow };
         if (operationId) {
           const replay = snapshot.time.find(row => String(row.operation_id || '') === operationId);
           if (replay) {
@@ -24780,7 +26628,7 @@
           throw _calendarError('同じIDの打刻が既に存在します', 409, 'CLOCK_ID_CONFLICT');
         }
         if (!correction) {
-          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp);
+          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp, Date.now(), entry);
         }
         const nextRows = snapshot.time.concat(entry);
         await mutations.sync(nextRows, CLOUD_ATTENDANCE.affectedTargets(entry));
@@ -24798,25 +26646,28 @@
       const actor = _calendarActor();
       const shift = { id, created: now, modified: now, ...(body || {}) };
       shift.user = shift.user || actor;
+      shift.workspace_id = String(shift.workspace_id || _calendarWorkspaceId());
+      shift.member_id = _calendarMemberId(shift.user, shift.member_id);
       shift.type = shift.type || 'work';
       shift.date = shift.date || '';
       if (!_calendarRoleIsAdmin() && shift.user !== actor) {
         throw _calendarError('他のメンバーのシフトは作成できません', 403, 'SHIFT_USER_MISMATCH');
       }
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
         const existingIdx = snapshot.shifts.findIndex(item => String(item.id) === String(id));
         if (existingIdx >= 0 && !_calendarRoleIsAdmin() && snapshot.shifts[existingIdx].user !== actor) {
           throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
         }
+        await _calendarCaptureVersion(provider, 'shift', id, existingIdx >= 0 ? snapshot.shifts[existingIdx] : null, existingIdx >= 0 ? '更新前' : '作成前');
         if (existingIdx >= 0) snapshot.shifts[existingIdx] = { ...snapshot.shifts[existingIdx], ...shift,
           id: snapshot.shifts[existingIdx].id, modified: now };
         else snapshot.shifts.push(shift);
         await _writeStore(provider, name, snapshot.shifts);
         await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? snapshot.shifts[existingIdx] : shift);
         return { ok: true, id };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const row = { id, created: now, modified: now, ...(body || {}) };
@@ -24830,7 +26681,9 @@
       row.name = row.name || 'マイカレンダー';
       row.color = row.color || '#569cd6';
       row.user = row.user || _calendarActor();
-      row.visible = row.visible == null ? 1 : row.visible;
+      row.workspace_id = String(row.workspace_id || _calendarWorkspaceId());
+      row.member_id = _calendarMemberId(row.user, row.member_id);
+      delete row.visible;
       _assertRequestedOwner(row, ['user'], '他のメンバー名義のカレンダーは作成できません', 'CALENDAR_USER_MISMATCH');
     }
     if (name === 'events') {
@@ -24841,6 +26694,7 @@
       if (!(await _calendarCanUseCalendar(provider, row.calendar_id))) {
         throw _calendarError('指定されたカレンダーへ予定を作成する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
       }
+      await _normalizeDropboxEventForWrite(provider, row);
     }
     if (name === 'tasks') {
       row.title = row.title || '無題';
@@ -24852,6 +26706,15 @@
     if (name === 'schedule-templates') {
       row.user = row.user || _calendarActor();
       _assertRequestedOwner(row, ['user'], '他のメンバー名義の勤務テンプレートは作成できません', 'TEMPLATE_USER_MISMATCH');
+    }
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, null, '作成前');
+        rows.push(row);
+        await _writeStore(provider, name, rows);
+        return { ok: true, id };
+      });
     }
     rows.push(row);
     await _writeStore(provider, name, rows);
@@ -24894,7 +26757,7 @@
     if (name === 'shifts') {
       const actor = _calendarActor();
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         const shiftIdx = snapshot.shifts.findIndex(row => String(row.id) === String(id));
         if (shiftIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
         const previous = snapshot.shifts[shiftIdx];
@@ -24906,11 +26769,16 @@
           throw _calendarError('シフトの担当者を他のメンバーへ変更できません', 403, 'SHIFT_USER_MISMATCH');
         }
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        await _calendarCaptureVersion(provider, 'shift', id, previous, '更新前');
         snapshot.shifts[shiftIdx] = { ...previous, ...(body || {}), id: previous.id, modified: _nowIso() };
+        snapshot.shifts[shiftIdx].workspace_id = String(snapshot.shifts[shiftIdx].workspace_id || _calendarWorkspaceId());
+        snapshot.shifts[shiftIdx].member_id = _calendarMemberId(
+          snapshot.shifts[shiftIdx].user, snapshot.shifts[shiftIdx].member_id,
+        );
         await _writeStore(provider, name, snapshot.shifts);
         await window.MeldexCloudShiftSync?.sync?.(provider, snapshot.shifts[shiftIdx]);
         return { ok: true };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const idx = rows.findIndex(row => String(row.id) === String(id));
@@ -24920,6 +26788,13 @@
       throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
     }
     if (name === 'calendars') {
+      const visibilityRequested = Object.prototype.hasOwnProperty.call(body || {}, 'visible');
+      const sharedKeys = Object.keys(body || {}).filter(key => !['visible', 'expectedRevision', '_calendar_expected_revision'].includes(key));
+      if (visibilityRequested && sharedKeys.length === 0) {
+        if (!_calendarCanViewCalendar(previous)) throw _calendarError('このカレンダーを表示する権限がありません', 403, 'CALENDAR_READ_FORBIDDEN');
+        await _setDropboxCalendarVisibility(provider, id, Number(body.visible) !== 0);
+        return { ok: true };
+      }
       if (!_calendarCanUpdateCalendar(previous)) throw _calendarError('このカレンダーを編集する権限がありません', 403, 'CALENDAR_EDIT_FORBIDDEN');
       if (!_calendarRoleIsAdmin() && Object.prototype.hasOwnProperty.call(body || {}, 'edit_role')) {
         throw _calendarError('カレンダー編集権限は管理者のみ変更できます', 403, 'CALENDAR_ROLE_ADMIN_REQUIRED');
@@ -24933,6 +26808,7 @@
       if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
         throw _calendarError('指定されたカレンダーへ予定を移動する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
       }
+      await _normalizeDropboxEventForWrite(provider, body, previous);
     }
     if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
       throw _calendarError('このToDoを編集する権限がありません', 403, 'TASK_EDIT_FORBIDDEN');
@@ -24944,8 +26820,22 @@
     if (name === 'schedule-templates') {
       _assertOwnerFieldsUnchanged(previous, body, ['user'], '勤務テンプレートの所有者は変更できません', 'TEMPLATE_USER_MISMATCH');
     }
-    rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, previous, '更新前');
+        rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
+        await _writeStore(provider, name, rows);
+        return { ok: true };
+      });
+    }
+    const patch = { ...(body || {}) };
+    if (name === 'calendars') delete patch.visible;
+    rows[idx] = { ...rows[idx], ...patch, id: rows[idx].id, modified: _nowIso() };
     await _writeStore(provider, name, rows);
+    if (name === 'calendars' && Object.prototype.hasOwnProperty.call(body || {}, 'visible')) {
+      await _setDropboxCalendarVisibility(provider, id, Number(body.visible) !== 0);
+    }
     return { ok: true };
   }
 
@@ -24973,18 +26863,19 @@
     }
     if (name === 'shifts') {
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         const previous = snapshot.shifts.find(row => String(row.id) === String(id));
         if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
         if (!_calendarRoleIsAdmin() && previous.user !== _calendarActor()) {
           throw _calendarError('他のメンバーのシフトは削除できません', 403, 'SHIFT_OWNER_REQUIRED');
         }
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        await _calendarCaptureVersion(provider, 'shift', id, previous, '削除前');
         const nextRows = snapshot.shifts.filter(row => String(row.id) !== String(id));
         await _writeStore(provider, name, nextRows);
         await window.MeldexCloudShiftSync?.remove?.(provider, id);
         return { ok: true };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const previous = rows.find(row => String(row.id) === String(id));
@@ -25003,6 +26894,15 @@
     }
     if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
       throw _calendarError('この勤務テンプレートを削除する権限がありません', 403, 'TEMPLATE_DELETE_FORBIDDEN');
+    }
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, previous, '削除前');
+        const compensatedRows = rows.filter(row => String(row.id) !== String(id));
+        await _writeStore(provider, name, compensatedRows);
+        return { ok: true };
+      });
     }
     const nextRows = rows.filter(row => String(row.id) !== String(id));
     await _writeStore(provider, name, nextRows);
@@ -26146,7 +28046,7 @@
     return alerts;
   }
 
-  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
+  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
 
   function _relocateText(text, oldPath, newPath) {
     const oldNorm = _normalizeFolderPath(oldPath);
@@ -26182,7 +28082,59 @@
     return { rewritten_count: rewritten.length, failed_count: failed, rewritten_paths: rewritten.slice(0, 100), truncated: rewritten.length > 100 };
   }
 
-  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.txt', '.csv']);
+  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-scenario', '.scriptnote.json', '.board.md', '.txt', '.csv']);
+
+  function _searchReplaceByteFormat(bytes, path) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    const startsWith = signature => signature.every((value, index) => view[index] === value);
+    if (startsWith([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00])) return 'sqlite';
+    if (startsWith([0x50, 0x4b, 0x03, 0x04]) || startsWith([0x50, 0x4b, 0x05, 0x06]) || startsWith([0x50, 0x4b, 0x07, 0x08])) return 'portable-zip';
+    const lower = String(path || '').toLowerCase();
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
+    return 'text';
+  }
+
+  async function _readVerifiedSearchReplaceText(provider, path) {
+    let bytes;
+    let revision = '';
+    if (typeof provider?.readBytesFresh === 'function') {
+      const read = await provider.readBytesFresh(path);
+      bytes = read?.bytes;
+      revision = String(read?.revision || read?.rev || '').trim();
+    } else if (typeof provider?.downloadAsFile === 'function') {
+      bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
+    } else {
+      throw new Error('安全な形式判定に必要なbyte読込へ対応していません');
+    }
+    const format = _searchReplaceByteFormat(bytes, path);
+    if (format !== 'text') throw new Error(`${format}形式は通常の検索置換に対応していません`);
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    }
+    if (text.includes('\u0000')) throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    const originalBytes = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes || []);
+    return { text: text.replace(/^\uFEFF/, ''), revision, bytes: originalBytes };
+  }
+
+  function _scenarioSearchReplaceDocument(text, path) {
+    let document;
+    try { document = JSON.parse(String(text || '')); } catch { throw new Error(`不正なシナリオ形式です: ${_basename(path)}`); }
+    if (!document || typeof document !== 'object' || Array.isArray(document) || !Array.isArray(document.rows)
+      || document.rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) || typeof (row.text ?? '') !== 'string')) {
+      throw new Error(`不正なシナリオ形式です: ${_basename(path)}`);
+    }
+    return document;
+  }
+
+  function _scenarioDisplayFields(document) {
+    const fields = [];
+    if (typeof document?.title === 'string') fields.push({ owner: document, key: 'title', field: 'title' });
+    (document?.rows || []).forEach((row, index) => fields.push({ owner: row, key: 'text', field: `row:${index}` }));
+    return fields;
+  }
 
   function _searchPattern(q, caseSensitive, useRegex) {
     if (!q) return null;
@@ -26284,11 +28236,17 @@
         }
       }
       try {
-        const content = await provider.readText(normalized);
-        const matches = _collectTextMatches(content, pattern, '');
+        const { text: content, revision } = await _readVerifiedSearchReplaceText(provider, normalized);
+        let matches;
+        if (lower.endsWith('.mel-scenario')) {
+          const document = _scenarioSearchReplaceDocument(content, normalized);
+          matches = _scenarioDisplayFields(document).flatMap(({ owner, key, field }) => _collectTextMatches(owner[key], pattern, field));
+        } else {
+          matches = _collectTextMatches(content, pattern, '');
+        }
         if (matches.length) {
           const type = await _classifyFileType(provider, normalized, { allFiles: true }).catch(() => 'page');
-          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches });
+          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches, etag: revision });
         }
       } catch {}
     }, root);
@@ -26481,35 +28439,38 @@
     return text.replace(once, replacement);
   }
 
-  function _replaceNestedText(value, pattern, replacement, state) {
+  function _replaceSheetPropertyDisplayValues(value, pattern, replacement, state) {
     if (typeof value === 'string') return _replaceStringValue(value, pattern, replacement, state);
-    if (Array.isArray(value)) return value.map(item => _replaceNestedText(item, pattern, replacement, state));
-    if (value && typeof value === 'object') {
-      const out = {};
-      Object.entries(value).forEach(([key, item]) => { out[key] = _replaceNestedText(item, pattern, replacement, state); });
-      return out;
+    if (Array.isArray(value)) return value.map(item => _replaceSheetPropertyDisplayValues(item, pattern, replacement, state));
+    if (!value || typeof value !== 'object') return value;
+    const out = { ...value };
+    ['value', 'note', 'rich_html'].forEach((key) => {
+      if (typeof out[key] === 'string') out[key] = _replaceStringValue(out[key], pattern, replacement, state);
+    });
+    return out;
+  }
+
+  function _replaceSheetDisplayFrontmatter(frontmatter, pattern, replacement, state) {
+    const next = { ...(frontmatter || {}) };
+    ['title', 'name', 'display_name'].forEach((key) => {
+      if (typeof next[key] === 'string') next[key] = _replaceStringValue(next[key], pattern, replacement, state);
+    });
+    if (next.properties && typeof next.properties === 'object' && !Array.isArray(next.properties)) {
+      next.properties = Object.fromEntries(Object.entries(next.properties).map(([name, value]) => [
+        name,
+        _replaceSheetPropertyDisplayValues(value, pattern, replacement, state),
+      ]));
     }
-    return value;
+    return next;
   }
 
   async function _replaceInSheetStoreEntry(provider, path, body, pattern) {
     const stored = await _readSheetStoreEntry(provider, path);
     if (!stored) return null;
-    const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const replacement = String(body?.replace ?? '');
-    const nextFrontmatter = _replaceNestedText(stored.frontmatter, pattern, replacement, state);
-    const nextBody = _replaceStringValue(stored.body || '', pattern, replacement, state);
-    _rejectProductionReservedLegacyPropertyObject(stored.dbPath, nextFrontmatter?.properties);
-    if (state.count > 0) {
-      await _requireUnlocked(provider, stored.dbPath, { action: 'replace-sheet-store' });
-      const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
-      if (physical?.kind === 'file') await _writeEntity(provider, stored.path, nextFrontmatter, nextBody);
-      else await _writeSheetStoreEntryOnly(provider, stored.path, nextFrontmatter, nextBody);
-    }
-    return { ok: true, count: state.count };
+    throw new Error('シート構造ストアは通常の検索置換に対応していません');
   }
 
-  async function _cloudReplace(provider, body) {
+  async function _cloudReplace(provider, body, options = {}) {
     const path = _normalizeFolderPath(body?.path || '');
     const q = String(body?.search || '');
     if (!path || !q) throw new Error('path, search は必須です');
@@ -26523,16 +28484,115 @@
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
     const lower = path.toLowerCase();
-    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return { ok: true, count: 0 };
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
+      await _readVerifiedSearchReplaceText(provider, path);
+    }
+    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) throw new Error('この形式は通常の検索置換に対応していません');
     await _requireUnlocked(provider, path, { action: 'replace' });
-    const content = await provider.readText(path);
+    const { text: content, revision, bytes: originalBytes } = await _readVerifiedSearchReplaceText(provider, path);
+    if (!revision || typeof provider?.uploadBytesConditional !== 'function') {
+      const error = new Error('厳密な競合検出に対応していないため検索置換を中止しました');
+      error.status = 503;
+      error.code = 'strict_cas_unavailable';
+      throw error;
+    }
+    const expectedRevision = String(body?.etag || '').trim();
+    if (expectedRevision && revision !== expectedRevision) {
+      const error = new Error('確認後に置換対象が更新されたため、一括置換を中止しました');
+      error.status = 409;
+      error.code = 'replace_target_changed';
+      error.path = path;
+      throw error;
+    }
     const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    let next;
+    if (lower.endsWith('.mel-scenario')) {
+      const document = _scenarioSearchReplaceDocument(content, path);
+      const replacement = String(body?.replace ?? '');
+      _scenarioDisplayFields(document).some(({ owner, key }) => {
+        owner[key] = _replaceStringValue(owner[key], pattern, replacement, state);
+        return state.remaining === 0;
+      });
+      next = JSON.stringify(document, null, 2);
+    } else {
+      next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    }
+    const nextBytes = new TextEncoder().encode(next);
     if (state.count > 0) {
       _rejectProductionReservedLegacyPropertyObject(_dirname(path), _parseFrontmatter(next).frontmatter?.properties);
-      await provider.writeText(path, next);
+    }
+    if (options.prepareOnly) {
+      return { path, count: state.count, revision, originalBytes, nextBytes };
+    }
+    if (state.count > 0) {
+      await provider.uploadBytesConditional(path, nextBytes, revision);
     }
     return { ok: true, count: state.count };
+  }
+
+  async function _cloudReplaceBatch(provider, body) {
+    const targets = body?.targets;
+    if (!Array.isArray(targets) || !targets.length) throw Object.assign(new Error('targets は1件以上必要です'), { status: 400 });
+    if (targets.length > 500) throw Object.assign(new Error('一度に置換できるファイルは500件までです'), { status: 413 });
+    const search = String(body?.search || '');
+    if (!search) throw Object.assign(new Error('search は必須です'), { status: 400 });
+
+    const common = {
+      search,
+      replace: String(body?.replace ?? ''),
+      case: _truthy(body?.case),
+      regex: _truthy(body?.regex),
+      all: _truthy(body?.all),
+    };
+    const plans = [];
+    const seen = new Set();
+    for (const item of targets) {
+      const path = _normalizeFolderPath(item?.path || '');
+      const etag = String(item?.etag || '').trim();
+      const key = path.toLowerCase();
+      if (!path || !etag) throw Object.assign(new Error('各置換対象には検索時のetagが必要です'), { status: 428 });
+      if (seen.has(key)) throw Object.assign(new Error(`置換対象が重複しています: ${path}`), { status: 400 });
+      seen.add(key);
+      plans.push(await _cloudReplace(provider, { ...common, path, etag }, { prepareOnly: true }));
+    }
+
+    const changed = plans.filter(plan => plan.count > 0);
+    if (!changed.length) return { ok: true, count: 0, file_count: 0, reverted: false };
+    const committed = [];
+    try {
+      for (const plan of changed) {
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const committedRevision = String(saved?.revision || saved?.rev || '').trim();
+        if (!committedRevision) throw Object.assign(new Error('置換後の世代を確認できません'), { status: 503, code: 'strict_cas_unavailable' });
+        committed.push({ plan, committedRevision });
+      }
+    } catch (error) {
+      const compensationFailures = [];
+      for (const entry of [...committed].reverse()) {
+        try {
+          await provider.uploadBytesConditional(entry.plan.path, entry.plan.originalBytes, entry.committedRevision);
+        } catch (rollbackError) {
+          compensationFailures.push({ path: entry.plan.path, error: String(rollbackError?.message || rollbackError) });
+        }
+      }
+      if (compensationFailures.length) {
+        const failed = new Error('一括置換の補償復旧に失敗しました。対象ファイルを再読込してください');
+        failed.status = 500;
+        failed.code = 'replace_batch_compensation_failed';
+        failed.failures = compensationFailures;
+        throw failed;
+      }
+      const reverted = new Error('一括置換は完了できなかったため、変更済みファイルを元に戻しました');
+      reverted.status = Number(error?.status || 500);
+      reverted.code = 'replace_batch_reverted';
+      throw reverted;
+    }
+    return {
+      ok: true,
+      count: changed.reduce((sum, plan) => sum + plan.count, 0),
+      file_count: changed.length,
+      reverted: false,
+    };
   }
 
   async function _cloudLinkDictFuriganaKeys(provider, dbPath) {
@@ -26667,6 +28727,21 @@
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
+    const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
+    if (historyRoute) {
+      const kind = historyRoute[1];
+      const itemId = decodeURIComponent(historyRoute[2]);
+      const versionId = historyRoute[3] ? decodeURIComponent(historyRoute[3]) : '';
+      if (method === 'GET' && !versionId) return _calendarHistoryList(provider, kind, itemId);
+      if (method === 'GET' && versionId && !historyRoute[4]) return _calendarHistoryCompare(provider, kind, itemId, versionId);
+      if (method === 'POST' && versionId && historyRoute[4]) {
+        const leaseToken = String(body?._calendar_lease_token || '').trim();
+        return _withCloudCalendarLease(provider, leasedProvider => _calendarHistoryRestore(
+          leasedProvider, kind, itemId, versionId, String(body?.expectedRevision || ''),
+        ), leaseToken);
+      }
+      return NOT_HANDLED;
+    }
     if (pathname === '/cal/sync/status' && method === 'GET') {
       return { enabled: true, configured: false, ical: true, google: false, microsoft: false, caldav: false };
     }
@@ -26691,6 +28766,12 @@
     const routeBody = { ...(body || {}) };
     delete routeBody._calendar_lease_token;
     if (method === 'GET' && !id) return _calendarList(provider, name, url);
+    if (method === 'GET' && id && ['events', 'tasks', 'shifts'].includes(name)) {
+      const visibleRows = await _calendarList(provider, name, url);
+      const row = visibleRows.find(item => String(item?.id) === String(id));
+      if (!row) throw _calendarError('対象が見つからないか、参照権限がありません', 404, 'CALENDAR_ROW_NOT_FOUND');
+      return row;
+    }
     if (method === 'POST' && !id) return _withCloudCalendarLease(provider, leasedProvider => _calendarCreate(leasedProvider, name, routeBody), leaseToken);
     if (method === 'PUT' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarUpdate(leasedProvider, name, id, routeBody), leaseToken);
     if (method === 'DELETE' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarDelete(leasedProvider, name, id), leaseToken);
@@ -26792,7 +28873,7 @@
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
-    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar', 'smart-db'].includes(String(body?.type || ''))) {
+    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
       const label = _validateItemName(body?.label || '無題', 'label');
@@ -26812,20 +28893,7 @@
         await _ensureFolderNote(provider, path, 'calendar-db');
         return { ok: true, node: { type: 'calendar', label: name, path } };
       }
-      const name = await _uniqueName(provider, parent, label, '.smart-db.json');
-      const path = _joinPath(parent, name + '.smart-db.json');
-      await _requireUnlocked(provider, path, { action: 'outliner-add-smart-db' });
-      await provider.writeJson(path, {
-        type: 'smart-db',
-        id: 'file:' + path,
-        name,
-        sourceType: 'db-entities',
-        filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-        views: { table: {}, dashboard: { widgets: [] } },
-        activeView: 'table',
-        created: _nowIso(),
-      });
-      return { ok: true, node: { type: 'smart-db', label: name, path } };
+      throw new Error(`不正なタイプ: ${type}`);
     }
 
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
@@ -26861,11 +28929,12 @@
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
+    if (pathname === '/sheet-search' && method === 'GET') return _sheetSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
     if (pathname === '/search-unified' && method === 'GET') return _cloudUnifiedSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/replace-batch' && method === 'PUT') return _cloudReplaceBatch(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
     // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
@@ -27336,7 +29405,7 @@
  * 決定」に基づき、`gb-data-access-dropbox-fileops.part01.part01.js`(1074行、
  * 1000行超過)を責務別へ分割した際の①パス変更フック・trash・CSVサイドカー
  * クラスタ。分割後もこのファイル単体では完結しない(このファイルは
- * `(function(){...` を開くだけで閉じない。閲覧ロック・注釈・版・競合バックアップの
+ * `(function(){...` を開くだけで閉じない。閲覧ロック・アノテート・版・競合バックアップの
  * 各兄弟ファイル(gb-data-access-dropbox-fileops-annotations.js 等)と
  * gb-data-access-dropbox-fileops.part01.part02.js / .part02.js が同じ関数
  * スコープの続きとして連結され、最後に part02.js が `})();` で閉じる。
@@ -27976,7 +30045,7 @@
   //
   // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
   // 参加中の共有ワークスペースかを判定する共通モジュール)へ委譲する。
-  // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
+  // fileops関連モジュール(アノテート・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
   // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
   // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。
 
@@ -28701,8 +30770,15 @@ function _bytesToManagedBase64(bytes) {
   return btoa(binary);
 }
 
-async function _conflictObject(provider, sourcePath) {
+async function _conflictObject(provider, sourcePath, snapshot = null) {
   const normalized = _normalizeFolderPath(sourcePath);
+  if (snapshot && _normalizeFolderPath(snapshot.path) === normalized) {
+    return {
+      type: 'file',
+      name: _basename(normalized),
+      bytes_base64: _bytesToManagedBase64(snapshot.bytes),
+    };
+  }
   const entry = await _resolveEntryHandle(provider, normalized);
   if (!entry) return null;
   if (entry.kind === 'file') {
@@ -28720,7 +30796,7 @@ async function _conflictObject(provider, sourcePath) {
   return { type: 'folder', name: _basename(normalized), children: children.filter(Boolean) };
 }
 
-async function _backupConflictSide(provider, kind, sourcePath, stamp) {
+async function _backupConflictSide(provider, kind, sourcePath, stamp, snapshot = null) {
   const normalized = _normalizeFolderPath(sourcePath);
   if (!normalized || !await _pathExists(provider, normalized)) return '';
   const adapter = await _managementAdapterForProvider(
@@ -28733,9 +30809,107 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
     kind,
     original_relative_path: normalized,
     created_at: stamp || _conflictBackupStamp(),
-    object: await _conflictObject(provider, normalized),
+    object: await _conflictObject(provider, normalized, snapshot),
   });
   return `${window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS}/${documentId}`;
+}
+
+async function _conflictSnapshotSha256(bytes) {
+  if (!globalThis.crypto?.subtle?.digest) {
+    const error = new Error('競合世代の安全なhash確認に対応していません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', view));
+  return Array.from(digest, value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function _readConflictSnapshot(provider, path) {
+  if (typeof provider?.readBytesFresh !== 'function' || typeof provider?.uploadBytesConditional !== 'function') {
+    const error = new Error('競合世代を固定する条件付き保存に対応していません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  const read = await provider.readBytesFresh(path);
+  const bytes = read?.bytes instanceof Uint8Array ? read.bytes.slice() : new Uint8Array(read?.bytes || []);
+  const revision = String(read?.revision || read?.rev || '').trim();
+  if (!revision) {
+    const error = new Error('競合ファイルの現在世代を確認できません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  return { path, bytes, revision, sha256: await _conflictSnapshotSha256(bytes) };
+}
+
+function _resolvedConflictTombstone(bytes) {
+  try {
+    const payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    return payload?.meldex_resolved_conflict === 1 ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function _conflictSnapshotPreview(snapshot, maxChars) {
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(snapshot?.bytes || new Uint8Array()); }
+  catch { return { content: '', truncated: false, length: 0 }; }
+  const limit = Number(maxChars || 200000);
+  return {
+    content: text.length <= limit ? text : text.slice(0, limit),
+    truncated: text.length > limit,
+    length: text.length,
+  };
+}
+
+async function _retireResolvedConflict(provider, snapshot, action, backupPath) {
+  const markerBytes = new TextEncoder().encode(JSON.stringify({
+    meldex_resolved_conflict: 1,
+    resolved_at: new Date().toISOString(),
+    action: String(action || ''),
+    source_revision: snapshot.revision,
+    source_sha256: snapshot.sha256,
+    backup_path: String(backupPath || ''),
+  }));
+  const markerSha256 = await _conflictSnapshotSha256(markerBytes);
+  const marked = await provider.uploadBytesConditional(snapshot.path, markerBytes, snapshot.revision);
+  const markerRevision = String(marked?.revision || marked?.rev || '').trim();
+  if (!markerRevision) {
+    const error = new Error('競合コピー退役後の世代を確認できません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+
+  const hiddenName = `.${_safeNamePart(_basename(snapshot.path), 'conflict')}.meldex-resolved-${_randomId('r').replace(/[^a-z0-9]/gi, '')}.json`;
+  const hiddenPath = _joinPath(_dirname(snapshot.path), hiddenName);
+  try {
+    await provider.movePath(snapshot.path, hiddenPath);
+    const moved = await _readConflictSnapshot(provider, hiddenPath);
+    if (moved.sha256 !== markerSha256) {
+      let recoveryPath = hiddenPath;
+      try {
+        await provider.movePath(hiddenPath, snapshot.path);
+        recoveryPath = snapshot.path;
+      } catch {}
+      const error = new Error('競合コピーが解消処理中に更新されました。新しい世代は上書きしていません');
+      error.status = 409;
+      error.code = 'conflict_generation_changed';
+      error.recoveryPath = recoveryPath;
+      throw error;
+    }
+    await provider.deletePath(hiddenPath);
+    return { removed_path: snapshot.path, cleanup_pending: false };
+  } catch (error) {
+    if (error?.code === 'conflict_generation_changed') throw error;
+    // CAS済みmarkerは元内容を管理backupへ移したことを示す。cleanupに失敗しても
+    // markerを競合として再提示せず、利用者データを無条件deleteしない。
+    return { removed_path: snapshot.path, cleanup_pending: true };
+  }
 }
 /* gb-data-access-dropbox-fileops-annotations.js
  *
@@ -28743,13 +30917,13 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
  * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
  *
  * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
- * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * 決定」の③アノテートクラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
  * (gb-system-storage.js、種別 annotations)へ載せ替える。
  *
  * ## 保存先の変更
  *
  * 旧: `_events/annotations/<id>.json` への直接読み書き。
- * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ * 新: 共通ストレージ層(document_id = アノテートid)。個人領域は `/MeldexSettings/system/v1`、
  *     参加中の共有ワークスペースに接続している場合は `<ワークスペース>/MeldexShare/system/v1`
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
@@ -28780,7 +30954,7 @@ function _annotationTargetResolver() {
 async function _migrateAnnotationStoredRecord(provider, adapter, docId) {
   const contract = window.MeldexSystemStorage;
   const boundary = adapter?.describe?.().boundary;
-  if (!boundary) throw new Error('注釈のDropbox adapter boundaryを確認できません');
+  if (!boundary) throw new Error('アノテートのDropbox adapter boundaryを確認できません');
   return _annotationTargetResolver().migrateRecord({
     provider, adapter, boundary, kind: contract.SystemStorageKind.ANNOTATIONS,
     documentId: docId, operationId: `annotation-lazy-migrate:${docId}`,
@@ -28872,8 +31046,8 @@ function _mergeAnnotationRecord(existing, body, options) {
 // 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
 // できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
 // ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
-// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
-// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へアノテートを
+// 付けた場合、共有管理領域に保存されたそのアノテートを同じセッションで読めること)。
 
 async function _annotationScopes(provider) {
   const resolver = window.MeldexDropboxManagementRootResolver;
@@ -28885,7 +31059,7 @@ async function _annotationScopes(provider) {
 
 function _annotationUnavailable(error, operation) {
   if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
-  const wrapped = new Error(`注釈SystemStorageの${operation}に失敗しました`);
+  const wrapped = new Error(`アノテートSystemStorageの${operation}に失敗しました`);
   wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
   return wrapped;
 }
@@ -28906,7 +31080,7 @@ async function _findAnnotationRecordsById(provider, docId) {
     if (stored) matches.push({ scope, stored });
   }
   if (matches.length > 1) {
-    const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+    const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
     error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
   }
   return matches;
@@ -28952,7 +31126,7 @@ async function _writeAnnotationRecord(provider, record) {
 }
 
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
-// identity claimと同じ保留/復帰の対象へ注釈書込みを含められるようにする登録。
+// identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
 // 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
 // (aftercare側は実行時にこのレジストリを参照するため、このファイルが
 // aftercare側より先に読み込まれても後に読み込まれても問題ない)。
@@ -29025,7 +31199,7 @@ async function _listAnnotationRecords(provider, query) {
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
         const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
         if (!coverage.complete) {
-          const error = new Error('注釈metadata indexを構築中です。再試行してください');
+          const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
         }
         const ids = await _annotationTargetResolver().indexedIds(scope.adapter, kind, query);
@@ -29056,7 +31230,7 @@ async function _listAnnotationRecords(provider, query) {
       owners.add(String(scope.scopeKey || scope.adapter?.describe?.().boundary || 'unknown'));
       scopeOwnersById.set(key, owners);
       if (owners.size > 1) {
-        const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+        const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
         error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
       }
       seenIds.add(key);
@@ -29071,7 +31245,7 @@ async function _listAnnotationRecords(provider, query) {
       if (payload && typeof payload === 'object' && payload.id) {
         const id = String(payload.id);
         if (records.some(existing => String(existing.id) === id)) {
-          const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+          const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
           error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
         }
         records.push(payload); seenIds.add(id);
@@ -29260,7 +31434,7 @@ async function _prepareAnnotationsForPathMutation(provider, event) {
     let stored = await scope.adapter.load(kind, String(record.id));
     if (!stored) {
       if (!newPath || !new Set(['rename', 'move', 'delete']).has(action)) {
-        throw Object.assign(new Error('legacy注釈を安全に移行できません'), { status: 409 });
+        throw Object.assign(new Error('legacyアノテートを安全に移行できません'), { status: 409 });
       }
       const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
       stored = await _annotationTargetResolver().prepareLegacyRecordForMove({
@@ -29332,7 +31506,8 @@ function _actorMetadata(actor, prefix) {
 
 function _snapshotActorMetadata(previous, creator, reason, eventId, nextEditor, sourceRevision) {
   return {
-    metadata_schema_version: 1,
+    metadata_schema_version: 2,
+    restore_point_kind: _restorePointKind(reason, true),
     snapshot_reason: String(reason || ''),
     source_revision: String(sourceRevision || ''),
     event_id: String(eventId || ''),
@@ -29340,6 +31515,50 @@ function _snapshotActorMetadata(previous, creator, reason, eventId, nextEditor, 
     ..._actorMetadata(creator, 'snapshot_created_by'),
     ...(nextEditor ? _actorMetadata(nextEditor, 'next_editor') : {}),
   };
+}
+
+function _restorePointKind(labelOrReason, auto, metadata) {
+  const explicit = String(metadata?.restore_point_kind || '');
+  const allowed = new Set([
+    'manual', 'periodic', 'before_restore', 'before_llm', 'before_editor_transition',
+    'before_migration', 'before_bulk_operation', 'before_external_sync',
+    'before_permanent_delete', 'before_conflict_resolution', 'disaster_recovery', 'legacy',
+  ]);
+  if (allowed.has(explicit)) return explicit;
+  const text = `${labelOrReason || ''} ${metadata?.snapshot_reason || ''}`.toLowerCase();
+  const rules = [
+    ['before_editor_transition', ['before_editor_transition', '編集者交代']],
+    ['before_restore', ['before_restore', 'pre_restore', '復元前', '復元直前']],
+    ['before_llm', ['before_llm', 'llm', 'ai編集']],
+    ['before_migration', ['before_migration', '移行前', '変換前', '取り込み前']],
+    ['before_bulk_operation', ['before_bulk', '一括', 'bulk', 'replace']],
+    ['before_external_sync', ['before_external_sync', '同期前', '取得前']],
+    ['before_permanent_delete', ['before_permanent_delete', '完全削除前', '空にする前']],
+    ['before_conflict_resolution', ['before_conflict', '競合解決前']],
+    ['disaster_recovery', ['disaster_recovery', '災害復旧', '安全網']],
+    ['periodic', ['periodic', '周期復元', '定期復元']],
+  ];
+  for (const [kind, tokens] of rules) {
+    if (tokens.some(token => text.includes(token))) return kind;
+  }
+  return auto ? 'legacy' : 'manual';
+}
+
+function _restorePointMetadata(label, auto, metadata) {
+  return {
+    ...(metadata || {}),
+    metadata_schema_version: Math.max(2, Number(metadata?.metadata_schema_version || 0)),
+    restore_point_kind: _restorePointKind(label, auto, metadata),
+  };
+}
+
+function _shouldCreateRestorePoint(label, auto, metadata) {
+  if (!auto) return true;
+  if (_restorePointKind(label, auto, metadata) !== 'legacy') return true;
+  const text = String(label || '').toLowerCase();
+  if (!text) return true;
+  return text !== 'file write before' && text !== 'file write create before'
+    && !text.endsWith('更新前') && !text.endsWith('作成前') && !text.endsWith('通常保存前');
 }
 
 function _stableHistoryContent(content) {
@@ -29366,12 +31585,10 @@ function _historyFileKind(path, content) {
   const text = String(content || '').slice(0, 4000).toLowerCase();
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
-  if (name.endsWith('.mel-sheet') || name.endsWith('.smart.json')) return 'smartsheet';
-  if (name.endsWith('.dashboard.json')) return 'dashboard';
+  if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
     if (text.includes('type: calendar-event')) return 'calendar-event';
-    if (text.includes('type: smart-db')) return 'smartsheet';
     if (text.includes('type: board')) return 'board';
     return 'note';
   }
@@ -29566,9 +31783,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
       if (transition) await _saveFolderVersion(provider, snapshotPath, {
         auto: true, label: '編集者交代前', metadata,
       });
-    } else if (exists) {
+    } else if (exists && transition) {
       await _saveFileVersion(provider, snapshotPath, {
-        auto: true, label: transition ? '編集者交代前' : 'file write before', max_auto: 30,
+        auto: true, label: '編集者交代前', max_auto: 30,
         expectedRevision: sourceRevision, metadata,
       });
     }
@@ -29669,11 +31886,11 @@ function _folderVersionDir(path) {
 
 async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
-  const metaToken = meta.rev || meta.content_hash || meta.etag || '';
+  const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
-  const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
+  const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
   if (statToken) return String(statToken);
   const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
   const stats = handle ? await _fileStats(handle).catch(() => null) : null;
@@ -29768,12 +31985,15 @@ async function _listEntriesSafe(provider, dir) {
 
 async function _saveFileVersion(provider, path, options) {
   const normalized = _normalizeFolderPath(path);
+  const pointMetadata = _restorePointMetadata(options?.label || '', !!options?.auto, options?.metadata);
+  if (!_shouldCreateRestorePoint(options?.label || '', !!options?.auto, options?.metadata)) {
+    return { ok: true, skipped: true, reason: 'ordinary_write' };
+  }
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
   const versionName = _fileVersionName(normalized, options || {});
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
   const expectedRevision = String(options?.expectedRevision || '');
   const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
   const before = expectedRevision ? await provider.getMetadata(normalized) : null;
@@ -29782,7 +32002,7 @@ async function _saveFileVersion(provider, path, options) {
   if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
     throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
   }
-  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
+  const payload = {
     object_type: 'text-file',
     original_relative_path: normalized,
     version_name: versionName,
@@ -29792,18 +32012,33 @@ async function _saveFileVersion(provider, path, options) {
     file_kind: _historyFileKind(normalized, content),
     created_at: _nowIso(),
     deleted_at: '',
-    ...(options?.metadata || {}),
-  }, { expectedRevision: null });
-
-  const maxAuto = Number(options?.max_auto || 0);
-  if (options?.auto && maxAuto > 0) {
+    ...pointMetadata,
+  };
+  let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  if (pointMetadata.restore_point_kind === 'periodic') {
+    payload.content_hash = payload.content_hash || _contentHistoryHash(content);
     const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-    const autoFiles = rows.filter(row => row.payload?.original_relative_path === normalized && row.payload?.auto)
-      .sort((a, b) => String(a.payload?.created_at || '').localeCompare(String(b.payload?.created_at || '')));
-    while (autoFiles.length > maxAuto) {
-      const old = autoFiles.shift();
-      await adapter.delete(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, old.documentId).catch(() => {});
+    const existing = rows.find(row => {
+      const value = row.payload || {};
+      if (value.object_type !== 'text-file' || value.original_relative_path !== normalized || value.deleted_at) return false;
+      const sameBucket = value.schedule_id === payload.schedule_id
+        && value.schedule_bucket_id === payload.schedule_bucket_id;
+      return sameBucket || value.content_hash === payload.content_hash;
+    });
+    if (existing) {
+      return { ok: true, skipped: true, reason: 'unchanged_or_duplicate', version: existing.payload?.version_name || '' };
     }
+    if (payload.schedule_id && payload.schedule_bucket_id) {
+      documentId = `file-${_fnvFileId(normalized)}-periodic-${_fnvFileId(`${payload.schedule_id}:${payload.schedule_bucket_id}`)}`;
+    }
+  }
+  try {
+    await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, payload, { expectedRevision: null });
+  } catch (error) {
+    if (pointMetadata.restore_point_kind === 'periodic' && (error?.status === 409 || error?.code === 'revision_conflict')) {
+      return { ok: true, skipped: true, reason: 'duplicate_schedule_bucket' };
+    }
+    throw error;
   }
   return { ok: true, version: versionName };
 }
@@ -29829,7 +32064,10 @@ async function _listFileVersions(provider, path) {
       size: new TextEncoder().encode(payload.content || '').length,
       _modifiedMs: Date.parse(payload.created_at || '') || 0,
       ...Object.fromEntries(Object.entries(payload).filter(([key]) =>
-        key === 'event_id' || key === 'snapshot_reason' || key.startsWith('content_last_editor_')
+        key === 'event_id' || key === 'snapshot_reason' || key === 'restore_point_kind'
+        || key === 'content_hash' || key === 'stable_document_id' || key === 'schedule_id'
+        || key === 'schedule_bucket_id' || key === 'transaction_id' || key === 'created_by'
+        || key.startsWith('content_last_editor_')
         || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
     });
   }
@@ -30093,6 +32331,10 @@ window.MeldexFileVersionProviderOps = Object.freeze({
 
   async function _saveFolderVersion(provider, folderPath, options) {
     const normalized = _normalizeFolderPath(folderPath);
+    const pointMetadata = _restorePointMetadata(options?.label || '', !!options?.auto, options?.metadata);
+    if (!_shouldCreateRestorePoint(options?.label || '', !!options?.auto, options?.metadata)) {
+      return { ok: true, skipped: true, reason: 'ordinary_write' };
+    }
     const folder = await _resolveEntryHandle(provider, normalized);
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
@@ -30114,7 +32356,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
-      ...(options?.metadata || {}),
+      ...pointMetadata,
     }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
@@ -30342,6 +32584,10 @@ window.MeldexFileVersionProviderOps = Object.freeze({
           return;
         }
         if (!_isDropboxConflictName(entry.name)) continue;
+        try {
+          const snapshot = await _readConflictSnapshot(provider, nextPath);
+          if (_resolvedConflictTombstone(snapshot.bytes)) continue;
+        } catch {}
         total += 1;
         if (items.length >= maxItems) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
@@ -30390,6 +32636,9 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
+      const conflictSnapshot = await _readConflictSnapshot(provider, conflictPath);
+      if (_resolvedConflictTombstone(conflictSnapshot.bytes)) throw new Error('この競合コピーは解消済みです');
+      const originalSnapshot = originalEntry?.kind === 'file' ? await _readConflictSnapshot(provider, originalPath) : null;
       const conflictStats = await _fileStats(conflictEntry.handle).catch(() => ({ size: 0, modified: '' }));
       const originalStats = originalEntry?.kind === 'file'
         ? await _fileStats(originalEntry.handle).catch(() => ({ size: 0, modified: '' }))
@@ -30407,6 +32656,8 @@ window.MeldexFileVersionProviderOps = Object.freeze({
           content: '',
           truncated: false,
           length: 0,
+          revision: originalSnapshot?.revision || '',
+          sha256: originalSnapshot?.sha256 || '',
         },
         conflict: {
           path: conflictPath,
@@ -30417,15 +32668,17 @@ window.MeldexFileVersionProviderOps = Object.freeze({
           content: '',
           truncated: false,
           length: 0,
+          revision: conflictSnapshot.revision,
+          sha256: conflictSnapshot.sha256,
         },
       };
       if (textLike) {
-        const conflictPreview = await _textPreview(provider, conflictPath, 200000);
+        const conflictPreview = _conflictSnapshotPreview(conflictSnapshot, 200000);
         payload.conflict.content = conflictPreview.content;
         payload.conflict.truncated = conflictPreview.truncated;
         payload.conflict.length = conflictPreview.length;
         if (originalEntry?.kind === 'file') {
-          const originalPreview = await _textPreview(provider, originalPath, 200000);
+          const originalPreview = _conflictSnapshotPreview(originalSnapshot, 200000);
           payload.original.content = originalPreview.content;
           payload.original.truncated = originalPreview.truncated;
           payload.original.length = originalPreview.length;
@@ -30451,27 +32704,86 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
+      const expectedConflictRevision = String(body?.conflict_revision || '').trim();
+      const expectedConflictSha256 = String(body?.conflict_sha256 || '').trim();
+      const expectedOriginalRevision = String(body?.original_revision || '').trim();
+      const expectedOriginalSha256 = String(body?.original_sha256 || '').trim();
+      if (!expectedConflictRevision || !expectedConflictSha256) {
+        const error = new Error('競合詳細を再読込してから解消してください');
+        error.status = 428;
+        error.code = 'precondition_required';
+        throw error;
+      }
+      const conflictSnapshot = await _readConflictSnapshot(provider, conflictPath);
+      const originalSnapshot = originalEntry?.kind === 'file' ? await _readConflictSnapshot(provider, originalPath) : null;
+      if (conflictSnapshot.revision !== expectedConflictRevision || conflictSnapshot.sha256 !== expectedConflictSha256
+        || String(originalSnapshot?.revision || '') !== expectedOriginalRevision
+        || String(originalSnapshot?.sha256 || '') !== expectedOriginalSha256) {
+        const error = new Error('比較後に原本または競合コピーが更新されました。詳細を再確認してください');
+        error.status = 409;
+        error.code = 'conflict_generation_changed';
+        throw error;
+      }
       const backups = {};
       const backupStamp = _conflictBackupStamp();
 
       if (action === 'keep_original') {
         if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
-        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
-        await provider.deletePath(conflictPath);
-        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+        backups.conflict = await _backupConflictSide(
+          provider,
+          'discarded-conflict',
+          conflictPath,
+          backupStamp,
+          conflictSnapshot,
+        );
+        const retired = await _retireResolvedConflict(provider, conflictSnapshot, action, backups.conflict);
+        return { ok: true, action, original_path: originalPath, backups, ...retired };
       }
 
-      backups.conflict = await _backupConflictSide(provider, 'applied-conflict', conflictPath, backupStamp);
-      if (originalEntry?.kind === 'file') {
-        backups.original = await _backupConflictSide(provider, 'replaced-original', originalPath, backupStamp);
-        const conflictFile = await provider.downloadAsFile(conflictPath);
-        await provider.downloadAsFile(originalPath).catch(() => null);
-        await provider.overwriteBytes(originalPath, new Uint8Array(await conflictFile.arrayBuffer()));
-        await provider.deletePath(conflictPath);
-      } else {
-        await provider.movePath(conflictPath, originalPath);
+      if (originalEntry?.kind !== 'file') {
+        const error = new Error('元ファイルがない競合コピーの安全な適用はデスクトップ版で行ってください');
+        error.status = 409;
+        error.code = 'missing_original_requires_desktop';
+        throw error;
       }
-      return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+      backups.conflict = await _backupConflictSide(
+        provider,
+        'applied-conflict',
+        conflictPath,
+        backupStamp,
+        conflictSnapshot,
+      );
+      backups.original = await _backupConflictSide(
+        provider,
+        'replaced-original',
+        originalPath,
+        backupStamp,
+        originalSnapshot,
+      );
+      const applied = await provider.uploadBytesConditional(originalPath, conflictSnapshot.bytes, originalSnapshot.revision);
+      const appliedRevision = String(applied?.revision || applied?.rev || '').trim();
+      if (!appliedRevision) {
+        const error = new Error('競合コピー適用後の原本世代を確認できません');
+        error.status = 503;
+        error.code = 'strict_cas_unavailable';
+        throw error;
+      }
+      let retired;
+      try {
+        retired = await _retireResolvedConflict(provider, conflictSnapshot, action, backups.conflict);
+      } catch (error) {
+        try {
+          await provider.uploadBytesConditional(originalPath, originalSnapshot.bytes, appliedRevision);
+        } catch (rollbackError) {
+          const failed = new Error('競合解消の補償復旧に失敗しました。両世代のbackupを保持しています');
+          failed.status = 500;
+          failed.code = 'conflict_resolution_compensation_failed';
+          failed.backups = backups;
+          throw failed;
+        }
+        throw error;
+      }
+      return { ok: true, action, original_path: originalPath, backups, ...retired };
     }
 
     if (pathname === '/home-folder' && method === 'PUT') {
@@ -30867,17 +33179,31 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
-      if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
+      if ((createOnly && entry) || (expectedEtag && !entry)) {
         _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
       }
       if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
         _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
-      if (expectedEtag && entry && !forceOverwrite) {
+      if (expectedEtag && entry) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
         if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
-      if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
+      let commitEtag = expectedEtag;
+      if (forceOverwrite && entry && !commitEtag) {
+        if (typeof provider.refreshMetadata !== 'function') {
+          const error = new Error('厳密な競合検出に必要な最新revisionを取得できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        const freshMeta = await provider.refreshMetadata(filePath);
+        commitEtag = await _fileEtag(provider, filePath, entry, freshMeta);
+        if (!commitEtag) {
+          const error = new Error('厳密な競合検出に必要な最新revisionを確認できません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+      }
       const currentContent = entry ? await provider.readText(filePath) : '';
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
@@ -30901,11 +33227,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
       }
       const history = await _prepareCloudFileEdit(
-        provider, filePath, currentContent, content, _versionActor(url, body), expectedEtag, !!entry,
+        provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
       );
       let writeMeta;
       try {
-        writeMeta = await provider.writeText(filePath, content);
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          const error = new Error('この保存先は厳密なrevision条件付き保存に対応していません');
+          error.status = 503; error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable';
+          throw error;
+        }
+        writeMeta = await provider.uploadBytesConditional(
+          filePath,
+          new TextEncoder().encode(content),
+          entry ? commitEtag : null,
+        );
       } catch (error) {
         await _abortCloudFileEdit(history);
         throw error;
@@ -31170,9 +33505,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const screenshotBytes = _decodeUploadData(dataUrl);
       const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
       const annotationTarget = sourceTarget || targetPath;
-      // 注釈recordはbytes publish前に確定させ、identity claimと同じ
+      // アノテートrecordはbytes publish前に確定させ、identity claimと同じ
       // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
-      // 管理データ一元化計画 §10.1)。これにより注釈書込みの失敗も
+      // 管理データ一元化計画 §10.1)。これによりアノテート書込みの失敗も
       // aftercare_pending化され、identity claimと同じdrain/復帰対象になる。
       const annRecord = _mergeAnnotationRecord(null, {
         type: 'screenshot',
@@ -31211,7 +33546,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
       const existing = await _readAnnotationRecord(provider, id);
-      if (!existing) throw new Error('注釈が見つかりません');
+      if (!existing) throw new Error('アノテートが見つかりません');
       const updateBody = {};
       ANNOTATION_UPDATE_KEYS.forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(body || {}, key)) updateBody[key] = body[key];
@@ -31344,7 +33679,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
-        'smart-db': ['スマートシート', 'Phase 4'],
       }[type];
       if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
       if (type === 'folder') {
@@ -31399,19 +33733,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
-      }
-      if (type === 'smart-db') {
-        const labelName = await _uniqueName(provider, parent, label, '.json');
-        const targetPath = _joinPath(parent, labelName + '.json');
-        await provider.writeJson(targetPath, {
-          type: 'smart-db',
-          name: labelName,
-          filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-          views: { table: {} },
-          activeView: 'table',
-          created: new Date().toISOString(),
-        });
-        return { ok: true, node: { type: _phase1SurfaceType('smart-db', 'file'), label: labelName, path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -34027,6 +36348,56 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
       }
+      if (method === 'PATCH') {
+        requireCatalogMutable(catalog);
+        const path = safeTargetPath(body?.path || '');
+        const resolved = await assetIdentity.resolveAsset(
+          provider,
+          await readAssignments(provider),
+          path,
+          { create: true },
+        );
+        const ensured = await ensureTargetTags(
+          provider,
+          catalog,
+          Array.isArray(body?.add) ? body.add : [],
+        );
+        const removeIds = [...new Set((Array.isArray(body?.remove) ? body.remove : [])
+          .map(value => tagForValue(ensured.catalog, value)?.id)
+          .filter(Boolean))];
+        try {
+          const store = await writeAssignments(provider, current => {
+            let updated = current;
+            removeIds.forEach(tagId => {
+              updated = tagSafety.removeTargetTag(updated, path, tagId);
+            });
+            ensured.tags.forEach(tag => {
+              updated = tagSafety.promoteManualTag(updated, path, tag.id);
+            });
+            return assetIdentity.projectAssignment(
+              updated,
+              path,
+              resolved.asset,
+              updated.assignments[path] || [],
+              updated.auto_assignments[path] || [],
+            );
+          });
+          const manualIds = store.assignments[path] || [];
+          const autoIds = store.auto_assignments[path] || [];
+          const visibleIds = [...new Set([...manualIds, ...autoIds])];
+          return {
+            ok: true,
+            path,
+            asset_id: resolved.asset.asset_id,
+            source_folder: '',
+            tags: visibleIds.map(id => ensured.catalog.tags.find(tag => tag.id === id)).filter(Boolean),
+            auto_tag_ids: autoIds,
+          };
+        } catch (error) {
+          await compensateTargetTagCreation(provider, ensured, error);
+          throw error;
+        }
+      }
       if (method === 'DELETE') {
         requireCatalogMutable(catalog);
         const path = safeTargetPath(query.get('path') || '');
@@ -35399,12 +37770,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
  *   `migrateLegacyStore` に委譲し、本ファイルは検出→バックアップ→削除→清掃の
  *   オーケストレーションだけを行う。
  * - 系統D(Cloud静的版・Dropbox個人/共有、gb-data-access-dropbox-fileops-*.js):
- *   - 注釈: `_events/annotations/<id>.json` → 共通ストレージ層(ANNOTATIONS種別)
+ *   - アノテート: `_events/annotations/<id>.json` → 共通ストレージ層(ANNOTATIONS種別)
  *   - 閲覧ロック: `_meldex/view-locks/<hash>.json` → 共通ストレージ層(VIEW_LOCKS種別)
  *   - 編集ロック(Cloud専用): `_meldex/file_locks.json` → 共通ストレージ層(EDIT_LOCKS種別)
  *
  * 他の旧付随物は各機能が型付き管理領域を正本とし、旧パスを読取専用
- * フォールバックとして扱う。本モジュールは注釈・閲覧ロック・編集ロックの
+ * フォールバックとして扱う。本モジュールはアノテート・閲覧ロック・編集ロックの
  * 検証済み移行と、旧クライアント再生成時の互換性ロックだけを担当する。
  *
  * ## 冪等性・中断安全性
@@ -35627,7 +37998,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   // で判明: 従来はadapter.save()の成功(例外なし)だけを根拠に即verified扱い
   // していたため、書込が実際に反映されたかを一切確認していなかった)。
   //
-  // Cloud側の1ドキュメントは(board注釈のようなtarget_path単位の行配列では
+  // Cloud側の1ドキュメントは(boardアノテートのようなtarget_path単位の行配列では
   // なく)旧ファイル1つ=新領域1ドキュメントの対応なので、「件数」ではなく
   // 「新領域から再読込した内容が、書き込もうとした内容と一致するか」を
   // 照合の基準にする(単一ドキュメントに対しては件数一致より厳密な検査)。
@@ -36637,8 +39008,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   // 「名前.種別.拡張子」の複合拡張子。`.board.md` のように末尾が .md でも
   // エントリではないものがあるため、単純な拡張子判定より先に見る。
   const COMPOUND_SUFFIXES = [
-    '.scriptnote.json', '.scenario.json', '.smart-db.json',
-    '.dashboard.json', '.timer.json', '.calendar.json', '.board.md',
+    '.scriptnote.json', '.scenario.json',
+    '.timer.json', '.calendar.json', '.board.md',
   ];
   // シートの中へ置いてよい項目か。シートの実体はフォルダなので、
   // ボード・シナリオ・画像などを入れると「シートの中にボードがある」状態になる。
@@ -36711,7 +39082,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const ext = (name || '').split('.').pop()?.toLowerCase();
     if (kind === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
     if (kind === 'pdf' || ext === 'pdf') return 'fileText';
-    if (kind === 'board' || ext === 'mel-board') return 'layout';
+    if (kind === 'board' || ext === 'mel-board') return 'kanban';
     if (kind === 'scenario' || ext === 'mel-scenario') return 'bookOpen';
     if (kind === 'sheet' || ['mel-sheet', 'csv', 'tsv'].includes(ext)) return 'table';
     if (kind === 'video' || ['mp4', 'webm', 'mov'].includes(ext)) return 'film';
@@ -36735,6 +39106,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if ((ext === 'mel-sheet' || ext === 'csv') && typeof selectDatabase === 'function') {
       selectDatabase(path);
+      return;
+    }
+    if (ext === 'md' && /(?:^|\/)\_chat\/llm\//.test(_normalizePath(path))) {
+      if (typeof window.openSavedChat === 'function') window.openSavedChat(path);
+      else if (typeof window.openChatHistoryItem === 'function') window.openChatHistoryItem(path);
+      else if (typeof window.openEntityChatForPath === 'function') window.openEntityChatForPath(path);
+      else if (typeof showStatus === 'function') showStatus('保存済みチャットを開けません', true);
       return;
     }
     if (ext === 'md' && typeof openPage === 'function') {
@@ -36976,7 +39354,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     const title = document.createElement('div');
     title.className = 'meldex-entity-attachments-title';
-    title.innerHTML = `${_icon('paperclip', 14)} <span>添付ファイル</span>`;
+    title.innerHTML = `${_icon('link2', 14)} <span>リンクファイル</span>`;
 
     header.appendChild(title);
 
@@ -36991,8 +39369,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       addBtn.type = 'button';
       addBtn.className = 'entity-create-action-btn meldex-entity-attachment-add-btn';
       addBtn.dataset.e2eId = 'entity-attachment-add-btn';
-      addBtn.title = 'ファイルを添付または新規作成';
-      addBtn.innerHTML = `${_icon('plus', 12)} <span>添付を追加</span>`;
+      addBtn.title = '既存ファイルをリンクまたは新規作成';
+      addBtn.ariaLabel = 'リンクを追加';
+      addBtn.innerHTML = `${_icon('plus', 12)} <span>リンクを追加</span>`;
 
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
@@ -37010,10 +39389,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             formData.append('mode', 'move');
             await apiPostForm('/sheet-entry/upload-intake', formData);
           } catch (err) {
-            if (typeof showStatus === 'function') showStatus('添付の追加に失敗しました: ' + (err.message || err), true);
+            if (typeof showStatus === 'function') showStatus('リンクの追加に失敗しました: ' + (err.message || err), true);
           }
         }
-        if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルを添付しました`);
+        if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
         if (typeof options.onReload === 'function') options.onReload();
       });
 
@@ -37028,7 +39407,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             expected_revision: data?.revision != null ? data.revision : undefined,
           });
           if (res?.ok) {
-            if (typeof showStatus === 'function') showStatus(`「${label}」を作成して添付しました`);
+            if (typeof showStatus === 'function') showStatus(`「${label}」を作成してリンクしました`);
             if (typeof options.onReload === 'function') options.onReload();
           }
         } catch (err) {
@@ -37058,13 +39437,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         menu.style.minWidth = '180px';
 
         const menuItems = [
-          { icon: 'paperclip', label: 'ファイルを選択...', action: () => fileInput.click() },
+          { id: 'link-existing', icon: 'link2', label: '既存ファイルをリンク...', action: () => fileInput.click() },
           { divider: true },
-          { icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
-          { icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
-          { icon: 'layout', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
-          { icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
-          { icon: 'table', label: '新規スマートシート', action: () => handleCreateNew('smart-db', 'スマートシート') },
+          { id: 'create-note', icon: 'fileText', label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
+          { id: 'create-chat', icon: 'messageSquare', label: '新規チャット', action: () => handleCreateNew('chat', 'チャット') },
+          { id: 'create-database', icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
+          { id: 'create-scriptnote', icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
+          { id: 'create-board', icon: 'kanban', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
+          { id: 'create-folder', icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
         ];
 
         menuItems.forEach((item) => {
@@ -37079,6 +39459,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           const row = document.createElement('button');
           row.type = 'button';
           row.className = 'ab-dropdown-item';
+          if (item.id) row.dataset.e2eId = `entity-attachment-${item.id}`;
           row.style.display = 'flex';
           row.style.alignItems = 'center';
           row.style.gap = '8px';
@@ -37123,7 +39504,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (attachments.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'meldex-entity-attachments-empty';
-      empty.textContent = '添付ファイルはありません（ファイルをドロップして添付）';
+      empty.textContent = 'リンクファイルはありません（ファイルをドロップしてリンク）';
       list.appendChild(empty);
     } else {
       attachments.forEach((item) => {
@@ -37156,11 +39537,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'meldex-entity-attachment-del-btn';
-          delBtn.title = '添付を解除';
+          const deletesLinkedFile = item.mode !== 'link';
+          delBtn.title = deletesLinkedFile ? 'リンク先ファイルを削除' : 'リンクを外す';
+          delBtn.ariaLabel = delBtn.title;
           delBtn.innerHTML = _icon('trash2', 12);
           delBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            if (!confirm(`添付「${item.name || item.path}」を解除しますか？`)) return;
+            const targetName = item.name || item.path;
+            const question = deletesLinkedFile
+              ? `リンク先ファイル「${targetName}」を削除し、リンク一覧から外しますか？`
+              : `リンク「${targetName}」を外しますか？（リンク先ファイルは削除されません）`;
+            if (!confirm(question)) return;
             try {
               const res = await apiPost('/sheet-entry/detach', {
                 entry_path: entryPath,
@@ -37172,16 +39559,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
                 if (res.delete_warning) {
                   const warnDetail = typeof res.delete_warning === 'string' ? res.delete_warning : JSON.stringify(res.delete_warning);
                   const msg = warnDetail.includes('一時退避ファイルの確定削除に失敗しました')
-                    ? `添付情報は解除されましたが、${warnDetail}`
-                    : `添付情報は解除されましたが、一時退避ファイルの確定削除に失敗しました: ${warnDetail}`;
+                    ? `リンクは外れましたが、${warnDetail}`
+                    : `リンクは外れましたが、一時退避ファイルの確定削除に失敗しました: ${warnDetail}`;
                   if (typeof showStatus === 'function') showStatus(msg, true);
                 } else {
-                  if (typeof showStatus === 'function') showStatus('添付を解除しました');
+                  if (typeof showStatus === 'function') {
+                    showStatus(deletesLinkedFile ? 'リンク先ファイルを削除しました' : 'リンクを外しました');
+                  }
                 }
                 if (typeof options.onReload === 'function') options.onReload();
               }
             } catch (err) {
-              if (typeof showStatus === 'function') showStatus('添付の解除に失敗しました: ' + (err.message || err), true);
+              if (typeof showStatus === 'function') showStatus('リンクを外せませんでした: ' + (err.message || err), true);
             }
           });
           row.appendChild(delBtn);
@@ -37215,7 +39604,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             formData.append('mode', e.altKey ? 'link' : 'move');
             await apiPostForm('/sheet-entry/upload-intake', formData);
           }
-          if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルを添付しました`);
+          if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
           if (typeof options.onReload === 'function') options.onReload();
         }
       });
@@ -37413,7 +39802,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const attachments = Array.isArray(frontmatter?.entry_attachments) ? frontmatter.entry_attachments : [];
         const target = attachments.find(a => a.id === attachmentId);
         if (!target) {
-          throw _httpError(404, '指定された添付が見つかりません');
+          throw _httpError(404, '指定されたリンクファイルが見つかりません');
         }
         const remaining = attachments.filter(a => a.id !== attachmentId);
 
@@ -37421,7 +39810,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (deleteFile && target && target.mode !== 'link') {
           const validated = _validateAttachmentPathToDelete(target.path, entryPath, frontmatter);
           if (!validated) {
-            throw _httpError(400, 'トピック専用の添付領域外のファイルは削除できません');
+            throw _httpError(400, 'トピック専用のリンクファイル領域外のファイルは削除できません');
           }
           normTargetToDelete = validated;
         }
@@ -37476,7 +39865,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
                 // 物理削除失敗かつ補償復元も失敗した場合は複合報告
                 const combined = _httpError(
                   500,
-                  `添付ファイル物理削除に失敗し (${delErr.message || delErr})、メタデータ復元にも失敗しました (${compErr.message || compErr})`
+                  `リンク先ファイルの削除に失敗し (${delErr.message || delErr})、リンク情報の復元にも失敗しました (${compErr.message || compErr})`
                 );
                 combined.originalError = delErr;
                 combined.compensationError = compErr;
@@ -37511,8 +39900,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         db: 'database',
         scenario: 'scriptnote',
         script: 'scriptnote',
-        smartsheet: 'smart-db',
-        smart_sheet: 'smart-db',
       };
       itemType = typeAlias[itemType] || itemType;
 
@@ -37538,13 +39925,40 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       }
 
       let createdPath = '';
+      let createdContent = null;
       let kind = 'file';
+      let linkMode = false;
 
       if (itemType === 'folder') {
         const name = await uniqueName(label, '');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'folder';
         await provider.mkdir(createdPath);
+      } else if (itemType === 'note') {
+        const name = await uniqueName(label, '.md');
+        createdPath = `${attachmentDir}/${name}`;
+        kind = 'note';
+        linkMode = true;
+        const documentId = global.crypto?.randomUUID ? global.crypto.randomUUID() : `note-${Date.now()}`;
+        createdContent = `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(documentId)}\n---\n# ${name.replace(/\.md$/, '')}\n\n`;
+        await provider.writeText(createdPath, createdContent);
+      } else if (itemType === 'chat') {
+        const rawUser = String(global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous');
+        const safeUser = rawUser.replace(/[\\/:*?"<>|]/g, '_') || 'anonymous';
+        const safeLabel = label.replace(/[\\/:*?"<>|]/g, '_') || 'チャット';
+        const chatDir = `_chat/llm/${safeUser}`;
+        let chatName = `${safeLabel}.md`;
+        let chatIndex = 1;
+        while (await provider.statPath(`${chatDir}/${chatName}`).catch(() => null)) {
+          chatName = `${safeLabel} (${chatIndex}).md`;
+          chatIndex += 1;
+        }
+        createdPath = `${chatDir}/${chatName}`;
+        kind = 'chat';
+        linkMode = true;
+        const created = new Date().toISOString();
+        createdContent = `---\ntype: chat\nprovider: ''\nmodel: ''\ncreated: ${created}\ntags: []\nuser: ${JSON.stringify(safeUser)}\nowner: ${JSON.stringify(safeUser)}\ntitle: ${JSON.stringify(safeLabel)}\nmessages: []\n---\n\n`;
+        await provider.writeText(createdPath, createdContent);
       } else if (itemType === 'database') {
         const name = await uniqueName(label, '');
         createdPath = `${attachmentDir}/${name}`;
@@ -37573,22 +39987,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         kind = 'board';
         const boardContent = `---\ntype: board\nschema_version: 1\nxmind:\n  n0: {autoStyle: true}\n---\n# ${name.replace(/\.mel-board$/, '')}\n\n`;
         await provider.writeText(createdPath, boardContent);
-      } else if (itemType === 'smart-db') {
-        const name = await uniqueName(label, '.mel-sheet');
-        createdPath = `${attachmentDir}/${name}`;
-        kind = 'smart-sheet';
-        const smartDoc = {
-          type: 'smart-db',
-          schema_version: 1,
-          name: name.replace(/\.mel-sheet$/, ''),
-          sourceType: 'db-entities',
-          sources: [],
-          filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-          views: { table: {} },
-          activeView: 'table',
-          created: new Date().toISOString(),
-        };
-        await provider.writeText(createdPath, JSON.stringify(smartDoc, null, 2));
       } else {
         throw _httpError(400, `未対応のファイルタイプです: ${itemType}`);
       }
@@ -37599,7 +39997,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         path: createdPath,
         name: createdPath.split('/').pop(),
         kind: kind,
-        mode: 'move',
+        mode: linkMode ? 'link' : 'move',
         created_at: new Date().toISOString(),
       };
 
@@ -37613,7 +40011,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       try {
         await provider.writeText(entryPath, frontmatterLite.frontmatterText(updated, textBody));
       } catch (err) {
-        try { await provider.deletePath(createdPath); } catch (_) {}
+        let compensated = false;
+        try {
+          const safeToDelete = createdContent == null || await provider.readText(createdPath) === createdContent;
+          if (safeToDelete) {
+            await provider.deletePath(createdPath);
+            compensated = true;
+          }
+        } catch (_) {}
+        if (!compensated) err.orphanPath = createdPath;
         throw err;
       }
 
@@ -37622,6 +40028,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         entry_path: entryPath,
         attachment: attachmentItem,
         revision: currentRevision + 1,
+        created: linkMode ? { kind, path: createdPath } : undefined,
       };
     }
 
@@ -38773,7 +41180,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
-    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    const requestHeaders = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+    const useNativeE2eHarness = new URLSearchParams(location.search).get('smoke') === '1'
+      && requestHeaders.get('X-Meldex-E2E-Native-Fetch') === 'screenshot';
+    if (!isSameOrigin || !isApiPath || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 
@@ -39358,7 +41768,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function _phase1UnsupportedMessage(type) {
     const label = _phase1FeatureLabel(type);
     const category = _phase1FeaturePhase(type);
-    const supported = (window.MeldexCloudBetaScope?.supported || ['フォルダ', 'ノート', 'シナリオ', 'シート', 'カレンダー', 'スマートシート']).join('、');
+    const supported = (window.MeldexCloudBetaScope?.supported || ['フォルダ', 'ノート', 'シナリオ', 'シート', 'カレンダー']).join('、');
     return `${label}はブラウザ版から直接実行できません（理由: ${category}）。現在この画面で使える機能は ${supported} です。`;
   }
 
@@ -41099,7 +43509,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       ['シナリオ', 'scriptnote', 'bookOpenText'],
       ['シート', 'database', 'table2'],
       ['ボード', 'board', 'presentation'],
-      ['スマートシート', 'smart-db', 'database'],
     ];
     const filtered = window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
     const menu = document.createElement('div');
@@ -41138,6 +43547,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function _ensurePaneTreeBackButtons() {
     if (!document.body) return;
     document.querySelectorAll('.gb-pane-tabs').forEach((tabBar) => {
+      if (tabBar.closest('.settings-theme-preview-shell')) return;
       let button = Array.from(tabBar.children).find(el => el.classList?.contains('cloud-mobile-pane-tree-back'));
       if (!button) {
         button = document.createElement('button');
@@ -41650,6 +44060,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   let _overlay = null;
   let _conflicts = [];
   let _selectedPath = '';
+  let _selectedDetail = null;
   let _detailRequestSeq = 0;
   let _conflictTotal = 0;
   let _conflictTruncated = false;
@@ -42081,6 +44492,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   async function selectConflict(path) {
     _selectedPath = String(path || '');
+    _selectedDetail = null;
     _renderConflictList();
     _setStatus('読み込み中...');
     _setResolveButtonState(null);
@@ -42090,6 +44502,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     try {
       const detail = await _api().requestJson(`/cloud/conflict-detail?path=${encodeURIComponent(_selectedPath)}`);
       if (!_overlay || requestSeq !== _detailRequestSeq) return;
+      _selectedDetail = detail;
       const originalMeta = _overlay.querySelector('[data-conflict-meta="original"]');
       const conflictMeta = _overlay.querySelector('[data-conflict-meta="conflict"]');
       _setMeta(originalMeta, '元ファイル', detail.original);
@@ -42126,8 +44539,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   async function _resolve(action) {
     if (!_selectedPath) return;
     const targetPath = _selectedPath;
+    const reviewedDetail = _selectedDetail;
     const button = _overlay?.querySelector?.(`[data-conflict-action="${action}"]`);
     if (button?.disabled) return;
+    if (!reviewedDetail?.conflict?.revision || !reviewedDetail?.conflict?.sha256) {
+      _setStatus('競合詳細を再読込してから解消してください', true);
+      return;
+    }
     const label = action === 'keep_original' ? '元ファイル' : (action === 'merge_sqlite_sheet' ? 'シートのマージ結果' : '競合コピー');
     const ok = await _confirmResolve(label);
     if (!ok) return;
@@ -42136,7 +44554,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     try {
       await _api().requestJson('/cloud/conflict-resolve', {
         method: 'POST',
-        body: { conflict_path: targetPath, action },
+        body: {
+          conflict_path: targetPath,
+          action,
+          conflict_revision: reviewedDetail.conflict.revision,
+          conflict_sha256: reviewedDetail.conflict.sha256,
+          original_revision: reviewedDetail.original?.revision || '',
+          original_sha256: reviewedDetail.original?.sha256 || '',
+        },
       });
       if (_conflictTotal > 0) _conflictTotal = Math.max(0, _conflictTotal - 1);
       _conflicts = _conflicts.filter((item) => item.path !== targetPath);
@@ -43137,13 +45562,13 @@ function rgbToHex(rgb) {
 // ============================================================
 const FILE_TYPE_LABELS = {
   folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
-  entity: 'ページ', 'smart-db': 'スマートシート', chat: 'チャット',
+  entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
   archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','smart-db','scenario','chat']);
+const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -43181,7 +45606,7 @@ const LUCIDE = {
   mousePointer: '<path d="M12.586 12.586 19 19"/><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/>',
   creditCard: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   spline: '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
-  // 注釈フロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
+  // アノテートフロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
   // spline（曲線）から activity（角のはっきりした折れ線）へ差し替えるために追加。
   // パス値は vendor/lucide-icons.js の LUCIDE_FULL['activity'] と同一。
   activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
@@ -43247,6 +45672,7 @@ const LUCIDE = {
   eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   lasso: '<path d="M7 22a5 5 0 0 1-2-4"/><path d="M7 16.93c.96.43 1.96.74 2.99.91"/><path d="M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-3.34-.46"/>',
   stickyNote: '<path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/>',
+  squarePen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
   clipboardList: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
   crosshair: '<circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/>',
   save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
@@ -43388,14 +45814,16 @@ const UI_TYPE_ICONS = {
   scriptnote: 'bookOpenText',
   board: 'presentation',
   calendar: 'calendar',
-  'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
   subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
+  information: 'info',
+  backlinks: 'fileSymlink',
+  'file-theme': 'palette',
   chat: 'messagesSquare',
   tags: 'tag',
-  annotation: 'stickyNote',
+  annotation: 'squarePen',
   sticky: 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
@@ -43480,6 +45908,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -44024,7 +46453,7 @@ function initIframeMarkup(scrollContainer) {
   }
 
   let _annLastSaveFailureAt = 0;
-  function _reportMarkupSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -44050,7 +46479,7 @@ function initIframeMarkup(scrollContainer) {
     return template.innerHTML;
   }
 
-  function _parseMarkupAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -44072,7 +46501,7 @@ function initIframeMarkup(scrollContainer) {
     if (!boardMode || typeof apiPost !== 'function') return false;
     apiPost('/annotations', payload).then((res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? '注釈: 付箋追加' : '注釈: 描画追加';
+        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
         _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
       }
       onSaved?.(res);
@@ -44091,7 +46520,7 @@ function initIframeMarkup(scrollContainer) {
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
-      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? '注釈: 色変更' : '注釈: 付箋更新';
+      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
       Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
     } else {
       apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
@@ -44106,10 +46535,10 @@ function initIframeMarkup(scrollContainer) {
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
       onDeleted?.();
     })().catch((error) => {
-      _reportMarkupSaveFailure(error, '注釈を削除できませんでした');
+      _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
     });
     return true;
@@ -44528,7 +46957,7 @@ function initIframeMarkup(scrollContainer) {
       const menu = document.createElement('div');
       menu.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-context-menu annotation-note-context-menu';
       menu.setAttribute('role', 'menu');
-      menu.setAttribute('aria-label', '注釈付箋メニュー');
+      menu.setAttribute('aria-label', 'アノテート付箋メニュー');
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
@@ -44762,7 +47191,7 @@ function initIframeMarkup(scrollContainer) {
     moreBtn.className = 'note-more-btn';
     moreBtn.dataset.annMore = '1';
     moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
-    moreBtn.setAttribute('aria-label', '注釈メニュー');
+    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
     moreBtn.title = 'メニュー';
     moreBtn.innerHTML = lucide('moreHorizontal', 16);
     _normalizeEmbeddedNoteIcon(moreBtn, 16);
@@ -45305,7 +47734,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   svg.appendChild(hitRect);
   const layer = document.createElementNS(_svgNS, 'g');
   svg.appendChild(layer);
-  container.style.position = 'relative';
+  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.appendChild(svg);
 
   function _pathD(pts) {
@@ -45326,7 +47755,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   }
 
   let _saLastSaveFailureAt = 0;
-  function _saReportSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _saReportSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _saLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -45411,7 +47840,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     return typeof getTargetPath === 'function' ? String(getTargetPath() || '') : '';
   }
 
-  function _saParseAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _saParseAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -45441,9 +47870,32 @@ function initStandaloneMarkup(container, getTargetPath) {
     return { ...data, text: textarea.value, width, height };
   }
 
+  function _saClampNotePosition(x, y, width, height) {
+    const scrollLeft = container.scrollLeft || 0;
+    const scrollTop = container.scrollTop || 0;
+    const viewportWidth = Math.max(0, container.clientWidth || 0);
+    const viewportHeight = Math.max(0, container.clientHeight || 0);
+    const maxX = scrollLeft + Math.max(0, viewportWidth - Math.max(0, width || 0));
+    const maxY = scrollTop + Math.max(0, viewportHeight - Math.max(0, height || 0));
+    return {
+      x: Math.min(Math.max(Number(x) || 0, scrollLeft), maxX),
+      y: Math.min(Math.max(Number(y) || 0, scrollTop), maxY),
+    };
+  }
+
+  function _saFitNoteData(data) {
+    const viewportWidth = Math.max(120, container.clientWidth || 180);
+    const viewportHeight = Math.max(60, container.clientHeight || 100);
+    data.width = Math.min(viewportWidth, Math.max(120, Number(data.width) || 180));
+    data.height = Math.min(viewportHeight, Math.max(60, Number(data.height) || 100));
+    Object.assign(data, _saClampNotePosition(data.x, data.y, data.width, data.height));
+    return data;
+  }
+
   function _applyStandaloneNoteSize(note, textarea, data) {
-    const width = Math.max(120, Number(data.width) || 180);
-    const height = Math.max(60, Number(data.height) || 100);
+    _saFitNoteData(data);
+    const width = data.width;
+    const height = data.height;
     note.style.width = width + 'px';
     note.style.minHeight = height + 'px';
     textarea.style.height = Math.max(40, height - 16) + 'px';
@@ -45455,10 +47907,10 @@ function initStandaloneMarkup(container, getTargetPath) {
     if (_ann.tool === 'sticky') {
       const targetPath = _saCurrentTargetPath();
       if (!targetPath) {
-        _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+        _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
         return;
       }
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '' };
+      const noteData = _saFitNoteData({ x: pt.x, y: pt.y, width: 180, height: 100, text: '' });
       try {
         const res = await apiPost('/annotations', { target_path: targetPath, type: 'comment', shape: 'sticky', data: noteData, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
         if (_saCurrentTargetPath() !== targetPath) return;
@@ -45475,7 +47927,7 @@ function initStandaloneMarkup(container, getTargetPath) {
             if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
             el.remove();
           } catch (error) {
-            _saReportSaveFailure(error, '注釈を削除できませんでした');
+            _saReportSaveFailure(error, 'アノテートを削除できませんでした');
           }
           break;
         }
@@ -45492,7 +47944,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     }
     const targetPath = _saCurrentTargetPath();
     if (!targetPath) {
-      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+      _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
       return;
     }
     _ann.drawing = true;
@@ -45559,10 +48011,11 @@ function initStandaloneMarkup(container, getTargetPath) {
   function _renderNote(annId, data, color) {
     const note = document.createElement('div');
     note.className = 'sa-note'; note.dataset.annId = annId;
-    note.style.cssText = `position:absolute;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
+    _saFitNoteData(data);
+    note.style.cssText = `position:absolute;box-sizing:border-box;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
     const textarea = document.createElement('textarea');
     textarea.value = data.text || '';
-    textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
+    textarea.style.cssText = 'box-sizing:border-box;width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
     note.style.pointerEvents = _ann.active ? 'auto' : 'none';
     _applyStandaloneNoteSize(note, textarea, data);
     textarea.onblur = async () => {
@@ -45611,8 +48064,9 @@ function initStandaloneMarkup(container, getTargetPath) {
       };
       const onMove = (e2) => {
         const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
-        note.style.left = pt.x + 'px';
-        note.style.top = pt.y + 'px';
+        const fitted = _saClampNotePosition(pt.x, pt.y, note.offsetWidth, note.offsetHeight);
+        note.style.left = fitted.x + 'px';
+        note.style.top = fitted.y + 'px';
       };
       const onUp = async () => {
         document.removeEventListener('pointermove', onMove);
@@ -45662,7 +48116,7 @@ function initStandaloneMarkup(container, getTargetPath) {
       });
       _syncStandaloneNoteInteractivity();
     } catch (error) {
-      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, '注釈を読み込めませんでした');
+      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, 'アノテートを読み込めませんでした');
     }
   }
 
@@ -45830,7 +48284,7 @@ function createMarkupToolbar(markup, parentEl) {
   tb.className = 'sa-toolbar sa-markup-toolbar';
   tb.dataset.markupToolbar = '1';
   tb.setAttribute('role', 'toolbar');
-  tb.setAttribute('aria-label', '注釈ツールバー');
+  tb.setAttribute('aria-label', 'アノテートツールバー');
   let palette = null;
   let closePaletteTimer = null;
   let paletteOutsideHandler = null;
@@ -45865,7 +48319,7 @@ function createMarkupToolbar(markup, parentEl) {
   colorBtn.type = 'button';
   colorBtn.className = 'sa-markup-color-btn';
   colorBtn.title = '色';
-  colorBtn.setAttribute('aria-label', '注釈色');
+  colorBtn.setAttribute('aria-label', 'アノテート色');
   colorBtn.setAttribute('aria-haspopup', 'dialog');
   colorBtn.setAttribute('aria-expanded', 'false');
   const colorSwatch = document.createElement('span');
@@ -45877,13 +48331,13 @@ function createMarkupToolbar(markup, parentEl) {
     palette = document.createElement('div');
     palette.className = 'sa-palette sa-markup-palette';
     palette.setAttribute('role', 'dialog');
-    palette.setAttribute('aria-label', '注釈色');
+    palette.setAttribute('aria-label', 'アノテート色');
     PALETTE_COLORS.forEach(c => {
       const dot = document.createElement('button');
       dot.type = 'button';
       dot.className = 'sa-markup-color-dot';
       dot.title = c;
-      dot.setAttribute('aria-label', `注釈色 ${c}`);
+      dot.setAttribute('aria-label', `アノテート色 ${c}`);
       dot.style.background = c;
       dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
       palette.appendChild(dot);
@@ -46950,6 +49404,20 @@ document.addEventListener('DOMContentLoaded', () => {
     return null;
   }
 
+  function createHost(img, options) {
+    if (!img || String(img.tagName || '').toLowerCase() !== 'img') return null;
+    const existing = _hostFor(img, options);
+    if (existing) return existing;
+    const opts = options || {};
+    const host = document.createElement(opts.tagName || 'span');
+    host.className = ['meldex-content-image-host', String(opts.className || '').trim()].filter(Boolean).join(' ');
+    host.dataset.meldexImageHost = '1';
+    const parent = img.parentNode;
+    if (parent) parent.insertBefore(host, img);
+    host.appendChild(img);
+    return host;
+  }
+
   function track(img, options) {
     if (!img || String(img.tagName || '').toLowerCase() !== 'img') return null;
     const previous = tracked.get(img);
@@ -47141,7 +49609,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function get(img) { return tracked.get(img) || null; }
 
-  window.MeldexImageLoading = { track: track, trackAll: trackAll, get: get };
+  window.MeldexImageLoading = { track: track, trackAll: trackAll, createHost: createHost, get: get };
 })();
 
 ;
@@ -47167,7 +49635,6 @@ document.addEventListener('DOMContentLoaded', () => {
     'scenario',
     'board',
     'sheet',
-    'timer',
     'quick_memo',
     'viewer',
   ]);
@@ -47217,6 +49684,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
   const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
+  const STANDALONE_VERSION_HISTORY_APPS = new Set(['quick_memo', 'viewer']);
   const APP_OUT_OF_SCOPE = Object.freeze({
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
@@ -47231,24 +49699,14 @@ document.addEventListener('DOMContentLoaded', () => {
       save_as: 'シートはフォルダ実体を直接編集し別名ファイル保存を行わない',
       multiple_import: 'シートは一件ずつ取込先を確認し複数ファイル一括取込を扱わない',
     }),
-    timer: Object.freeze({
-      export: 'タイマーは状態をタイマーファイルへ保存し別形式へ書き出さない',
-      publish: 'タイマー記録は公開コンテンツではない',
-      backlinks: 'タイマーファイルは参照索引の表示対象ではない',
-      annotations_comments: 'タイマーに文書注釈やコメントを付けない',
-      internal_link_selection: 'タイマーは内部リンク編集面を持たない',
-      drag_drop: 'タイマーはファイルのD&D取込を扱わない',
-      clipboard: 'タイマーは文書クリップボード操作を扱わない',
-      multiple_import: 'タイマーは複数ファイル一括取込を扱わない',
-    }),
     quick_memo: Object.freeze({
       save_as: 'クイックメモは現在の同期先へ即時保存し別名保存を行わない',
       export: 'クイックメモは即時同期を目的とし独立した書出し機能を持たない',
-      file_info: 'クイックメモは独立ファイル情報パネルを持たない',
+      file_info: 'クイックメモは独立ファイルプロパティパネルを持たない',
       file_style: 'クイックメモは文書スタイルを持たない',
       publish: 'クイックメモは公開コンテンツを生成しない',
       backlinks: 'クイックメモは参照索引の表示対象ではない',
-      annotations_comments: 'クイックメモに別系統の注釈やコメントを重ねない',
+      annotations_comments: 'クイックメモに別系統のアノテートやコメントを重ねない',
       internal_link_selection: 'クイックメモは内部リンク選択UIを持たない',
       drag_drop: 'クイックメモは入力欄へのファイルD&D取込を行わない',
       multiple_import: 'クイックメモは複数ファイル一括取込を扱わない',
@@ -47509,6 +49967,7 @@ document.addEventListener('DOMContentLoaded', () => {
       );
     }
     if (EXCEPTION_CAPABILITIES.has(capability)
+        && !(capability === 'version_history' && STANDALONE_VERSION_HISTORY_APPS.has(app))
         && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
       return _exceptionRecord(environment, capability);
     }
@@ -47532,8 +49991,8 @@ document.addEventListener('DOMContentLoaded', () => {
         STATUS.exception,
         'exception:cloud_browser_local_annotations',
         null,
-        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないため注釈を保存しない',
-        '注釈が必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
+        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないためアノテートを保存しない',
+        'アノテートが必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
       );
     }
     if (app === 'viewer'
@@ -47543,7 +50002,7 @@ document.addEventListener('DOMContentLoaded', () => {
         STATUS.available,
         `implementation:${environment}:annotations_comments`,
         null,
-        'Windows単独ビューワーの注釈画面で利用可能',
+        'Windows単独ビューワーのアノテート画面で利用可能',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {
@@ -47844,7 +50303,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const MELDEX_CURRENT_FILE_SUFFIXES = [
-    '.scriptnote.json', '.smart-db.json', '.timer.json', '.board.md',
+    '.scriptnote.json', '.timer.json', '.board.md',
     '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
   ];
 
@@ -48131,7 +50590,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
-  const NEVER = '__MELDEX_QUICK_MEMO_NEVER__';
   let syncing = false;
 
   function readJson(key, fallback) {
@@ -48288,24 +50746,21 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  function smartDbDefinition(sheetPath = 'クイックメモ') {
-    const name = sheetPath.split('/').filter(Boolean).pop() || 'クイックメモ';
-    return {
-      type: 'smart-db',
-      id: 'file:' + name + '.smart-db.json',
-      name,
-      sourceType: 'db-entities',
-      filters: [
-        { property: '種別', field: 'value', operator: 'equals', value: 'メモ' },
-        { property: 'タグ', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '追加日時', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '更新日時', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '保存先', field: 'value', operator: 'not_contains', value: NEVER },
-      ],
-      views: { table: {}, dashboard: { widgets: [] } },
-      activeView: 'table',
-      created: nowIso(),
-    };
+  function quickMemoViewConfig(current) {
+    const config = current && typeof current === 'object' ? { ...current } : {};
+    const views = Array.isArray(config.savedViews) ? config.savedViews.map(view => ({ ...view })) : [];
+    if (!views.some(view => view.id === 'quick-memo-default')) {
+      views.unshift({
+        id: 'quick-memo-default', name: 'クイックメモ', viewMode: 'pivot',
+        sortConfig: { key: '更新日時', dir: 'desc' },
+        colOrder: ['種別', 'タグ', '追加日時', '更新日時', '保存先', 'メモID', 'URL', '共有タイトル', '共有元'],
+        advancedFilters: [{ property: '種別', field: 'value', operator: 'equals', value: 'メモ' }],
+        systemManaged: true,
+      });
+    }
+    config.savedViews = views;
+    if (!Number.isInteger(config.currentViewIdx)) config.currentViewIdx = 0;
+    return config;
   }
 
   async function ensureMemoWorkspace(item = {}) {
@@ -48321,6 +50776,14 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
       }).catch(() => undefined);
     }
+    const defaults = {
+      種別: { type: 'select', options: ['メモ'] }, タグ: { type: 'multi-select', options: [] },
+      追加日時: { type: 'date', withTime: true }, 更新日時: { type: 'date', withTime: true },
+      保存先: { type: 'text' }, メモID: { type: 'text' }, URL: { type: 'url' },
+      共有タイトル: { type: 'text' }, 共有元: { type: 'text' },
+    };
+    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true }).catch(() => ({}));
+    const existingTypes = existing?.property_types || existing?.propertyTypes || {};
     await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
       method: 'PUT',
       silentError: true,
@@ -48328,29 +50791,10 @@ document.addEventListener('DOMContentLoaded', () => {
         type: 'settings-db',
         storage: 'sqlite',
         cloud_storage: 'sheet-store-v1',
-        property_types: {
-          種別: { type: 'select', options: ['メモ'] },
-          タグ: { type: 'multi-select', options: [] },
-          追加日時: { type: 'date', withTime: true },
-          更新日時: { type: 'date', withTime: true },
-          保存先: { type: 'text' },
-          メモID: { type: 'text' },
-          URL: { type: 'url' },
-          共有タイトル: { type: 'text' },
-          共有元: { type: 'text' },
-        },
+        property_types: { ...defaults, ...existingTypes },
+        view_config: quickMemoViewConfig(existing?.view_config || existing?.viewConfig),
       }),
     });
-    if (sheetPath !== 'クイックメモ') return;
-    try {
-      await apiFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), { silentError: true });
-    } catch {
-      await jsonFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), {
-        method: 'POST',
-        silentError: true,
-        body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(sheetPath), null, 2) }),
-      });
-    }
   }
 
   async function saveViaExistingApis(item) {
@@ -49064,6 +51508,7 @@ const MeldexDnD = (() => {
     node: 'application/x-meldex-node',
     text: 'application/x-meldex-text',
     'board-nodes': 'application/x-meldex-board-nodes',
+    topic: 'application/x-meldex-topic-transfer-id',
   });
   const receivedOffers = new Map();
   const sourceOffers = new Map();
@@ -49101,7 +51546,7 @@ const MeldexDnD = (() => {
       const encoded = JSON.stringify(payload);
       if (!encoded || encoded.length > OFFER_MAX_CHARS) return false;
     } catch { return false; }
-    const arrays = [payload.items, payload.nodes].filter(Array.isArray);
+    const arrays = [payload.items, payload.nodes, payload.sources].filter(Array.isArray);
     if (!arrays.every(rows => rows.length <= OFFER_MAX_ITEMS)) return false;
     if (kind === 'node') {
       const rows = Array.isArray(payload.items) ? payload.items : [payload];
@@ -49113,11 +51558,45 @@ const MeldexDnD = (() => {
       return Array.isArray(payload.nodes) && payload.nodes.length > 0
         && payload.nodes.every(node => node && typeof node === 'object');
     }
+    if (kind === 'topic') {
+      return Array.isArray(payload.sources) && payload.sources.length > 0
+        && payload.sources.every(source => source && typeof source === 'object'
+          && typeof source.topicRef?.sourceId === 'string'
+          && source.topicRef.sourceId.trim().length > 0
+          && typeof source.topicRef?.topicId === 'string'
+          && source.topicRef.topicId.trim().length > 0
+          && typeof source.documentId === 'string'
+          && source.documentId.trim().length > 0
+          && typeof source.placementId === 'string'
+          && source.placementId.trim().length > 0);
+    }
     return true;
   }
 
+  /**
+   * Resolve the product meaning of a drop target before any receiver claims the
+   * transfer.  More specific editing/link targets always win over placement
+   * surfaces; callers may only stop propagation after this returns their route.
+   */
+  function resolveTargetRoute(eventOrElement) {
+    const element = eventOrElement?.target || eventOrElement;
+    if (!element?.closest) return Object.freeze({ kind: 'unsupported', reason: 'target-missing' });
+    const explicit = element.closest('[data-meldex-drop-route]')?.dataset?.meldexDropRoute;
+    if (explicit === 'node-link') return Object.freeze({ kind: 'node-link', reason: 'explicit-link-target' });
+    if (element.closest('[contenteditable="true"],textarea[data-meldex-editable],input[data-meldex-editable]')) {
+      return Object.freeze({ kind: 'node-link', reason: 'editable-content' });
+    }
+    if (element.closest('.gb-tabbar,.gb-tabbar-add,.gb-subpanel-titlebar,.gb-rail,.gb-dockbar')) {
+      return Object.freeze({ kind: 'panel', reason: 'panel-chrome' });
+    }
+    if (element.closest('.tree-node,.gb-pane,.gb-subpanel')) {
+      return Object.freeze({ kind: 'topic-placement', reason: 'placement-surface' });
+    }
+    return Object.freeze({ kind: 'unsupported', reason: 'unsupported-target' });
+  }
+
   function _validOffer(offer, senderWindowId) {
-    return !!offer
+    if (!(!!offer
       && offer.schema === 1
       && _validNonce(offer.nonce)
       && Object.hasOwn(KIND_MIME, offer.kind)
@@ -49127,7 +51606,19 @@ const MeldexDnD = (() => {
       && Number.isFinite(offer.createdAt)
       && _now() - offer.createdAt >= -1000
       && _now() - offer.createdAt <= OFFER_TTL_MS
-      && _validPayload(offer.payload, offer.kind);
+      && _validPayload(offer.payload, offer.kind))) return false;
+    if (offer.payloads == null) return true;
+    if (!offer.payloads || typeof offer.payloads !== 'object' || Array.isArray(offer.payloads)) return false;
+    const entries = Object.entries(offer.payloads);
+    return entries.length > 0 && entries.length <= Object.keys(KIND_MIME).length
+      && entries.every(([kind, payload]) => Object.hasOwn(KIND_MIME, kind)
+        && _validPayload(payload, kind));
+  }
+
+  function _offerPayload(offer, kind) {
+    if (!_validOffer(offer) || !Object.hasOwn(KIND_MIME, kind)) return null;
+    if (offer.payloads && Object.hasOwn(offer.payloads, kind)) return offer.payloads[kind];
+    return offer.kind === kind ? offer.payload : null;
   }
 
   function _receiveOffer(message) {
@@ -49296,19 +51787,41 @@ const MeldexDnD = (() => {
         || !Object.hasOwn(KIND_MIME, kind) || !_validPayload(payload, kind)) return '';
     _purgeExpired();
     const transport = _transport();
-    const nonce = globalThis.crypto?.randomUUID?.()
-      || `${_now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    const offer = {
+    const copiedPayload = typeof structuredClone === 'function'
+      ? structuredClone(payload) : JSON.parse(JSON.stringify(payload));
+    const existingNonce = _nonceFromTransfer(dataTransfer);
+    const existingOffer = sourceOffers.get(existingNonce);
+    const canExtend = _validOffer(existingOffer)
+      && existingOffer.origin === location.origin
+      && existingOffer.sourceWindowId === (transport?.windowId || 'local-window');
+    const nonce = canExtend ? existingNonce : (globalThis.crypto?.randomUUID?.()
+      || `${_now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`);
+    const payloads = canExtend
+      ? { ...(existingOffer.payloads || { [existingOffer.kind]: existingOffer.payload }) }
+      : {};
+    payloads[kind] = copiedPayload;
+    const offer = canExtend ? {
+      ...existingOffer,
+      payload: existingOffer.kind === kind ? copiedPayload : existingOffer.payload,
+      payloads,
+    } : {
       schema: 1,
       nonce,
       kind,
-      payload: typeof structuredClone === 'function' ? structuredClone(payload) : JSON.parse(JSON.stringify(payload)),
+      payload: copiedPayload,
+      payloads,
       origin: location.origin,
       sourceWindowId: transport?.windowId || 'local-window',
       createdAt: _now(),
     };
     sourceOffers.set(nonce, offer);
     _scheduleExpiry(nonce);
+    const mime = KIND_MIME[kind];
+    try {
+      if (!Array.from(dataTransfer.types || []).includes(mime)) {
+        dataTransfer.setData(mime, JSON.stringify(payload));
+      }
+    } catch {}
     _uriWithNonce(dataTransfer, nonce);
     if (transport) (transport.sendDndOffer || ((value) => transport.send('dnd-offer', value)))({ offer });
     return nonce;
@@ -49325,7 +51838,7 @@ const MeldexDnD = (() => {
     if (!nonce || consumedOffers.has(nonce)) return false;
     _purgeExpired();
     const knownOffer = receivedOffers.get(nonce) || sourceOffers.get(nonce);
-    return knownOffer ? _validOffer(knownOffer) && knownOffer.kind === kind : true;
+    return knownOffer ? !!_offerPayload(knownOffer, kind) : true;
   }
 
   function _parsePayload(raw, kind) {
@@ -49395,12 +51908,13 @@ const MeldexDnD = (() => {
       await new Promise(resolve => setTimeout(resolve, 80));
       offer = receivedOffers.get(nonce);
     }
-    if (!_validOffer(offer) || offer.kind !== kind) return null;
+    const bridgedPayload = _offerPayload(offer, kind);
+    if (!bridgedPayload) return null;
     const claim = await _claimOffer(nonce);
     if (!claim) return null;
     receivedOffers.delete(nonce); // replay は同一ウィンドウでも一回だけ
     consumedOffers.set(nonce, _now());
-    return { kind, payload: offer.payload, nonce, source: 'bridge', sourceWindowId: claim.sourceWindowId };
+    return { kind, payload: bridgedPayload, nonce, source: 'bridge', sourceWindowId: claim.sourceWindowId };
   }
 
   function completeDrop(resolved) {
@@ -49555,11 +52069,17 @@ const MeldexDnD = (() => {
     root.addEventListener('drop', async e => {
       const resolved = await resolveDropData(e, 'node');
       const parsed = resolved?.payload || null;
-      if (!parsed?.path) return;
+      if (!parsed) return;
       e.preventDefault();
       e.stopPropagation();
+      const items = Array.isArray(parsed.items) && parsed.items.length ? parsed.items : [parsed];
+      if (items.length !== 1 || !items[0]?.path) {
+        failDrop(resolved);
+        globalThis.showStatus?.('複数選択はこの表示先へ一括反映できないため、全件を変更しませんでした', true);
+        return;
+      }
       try {
-        const outcome = await Promise.resolve(onNodeDrop(parsed, e));
+        const outcome = await Promise.resolve(onNodeDrop(items[0], e));
         if (outcome !== false) completeDrop(resolved);
         else failDrop(resolved);
       } catch (error) {
@@ -49734,6 +52254,7 @@ const MeldexDnD = (() => {
     beginCrossWindowDrag,
     hasDropKind,
     resolveDropData,
+    resolveTargetRoute,
     completeDrop,
     failDrop,
     dataTransferWithResolved,
@@ -50140,8 +52661,8 @@ const MeldexLinkModal = (() => {
   function _inferTypeFromPath(path) {
     const lower = String(path || '').toLowerCase();
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json') || lower.endsWith('.smart.json')) return 'smart-db';
-    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-sheet')) return 'database';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
     if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/.test(lower)) return 'image';
     if (/\.(mp4|webm|mov|mkv)$/.test(lower)) return 'video';
@@ -51451,34 +53972,88 @@ if (typeof window !== 'undefined') {
     let activated = false;
     let api = null;
 
-    function _restoreOpenerFocus() {
-      if (opts.returnFocus === false) return;
+    function _resolveReturnFocusTarget() {
+      if (opts.returnFocus === false) return null;
       let target = opts.returnFocus;
       if (typeof target === 'function') target = target();
       if (!target?.focus) target = opener;
-      if (!target?.isConnected || !target?.focus) return;
+      return target;
+    }
+
+    function _restoreOpenerFocus() {
+      if (opts.returnFocus === false) return true;
+      const target = _resolveReturnFocusTarget();
+      if (!target?.isConnected || !target?.focus) return true;
       const openDialogs = Array.from(document.querySelectorAll(
         '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
-      )).filter(dialog => dialog.isConnected && !dialog.hidden && dialog.getAttribute('aria-hidden') !== 'true');
+      )).filter(dialog => dialog.isConnected && !dialog.hidden && !_isDialogClosingOrHidden(dialog));
       const topDialog = openDialogs[openDialogs.length - 1];
       // モバイルの閉じるアニメーション中に次のダイアログが開いた場合、旧画面の
       // 遅延focus復帰で新しい入力を奪わない。復帰先が残っている親ダイアログ内なら
       // ネストした子を閉じる通常契約なので、そのまま復帰させる。
-      if (topDialog && topDialog !== modal && !topDialog.contains(target)) return;
+      if (topDialog && topDialog !== modal && !topDialog.contains(target)) return true;
       try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      return document.activeElement === target;
     }
 
     function _finishClose(reason) {
       if (closed) return false;
       closed = true;
-      document.removeEventListener('keydown', onEscKey);
+      document.removeEventListener('keydown', onEscKey, true);
       if (overlay.parentNode) overlay.remove();
+      let interactionClaimed = false;
+      let trackingInteraction = false;
+      let focusRestorationFinished = false;
+      const claimInteraction = () => { interactionClaimed = true; };
+      const stopTrackingInteraction = () => {
+        focusRestorationFinished = true;
+        if (!trackingInteraction) return;
+        trackingInteraction = false;
+        document.removeEventListener('pointerdown', claimInteraction, true);
+        document.removeEventListener('keydown', claimInteraction, true);
+      };
+      // 閉じる操作そのものを新操作と数えないよう、次のtaskから利用者入力だけを追跡する。
+      setTimeout(() => {
+        if (focusRestorationFinished || interactionClaimed || trackingInteraction) return;
+        trackingInteraction = true;
+        document.addEventListener('pointerdown', claimInteraction, true);
+        document.addEventListener('keydown', claimInteraction, true);
+      }, 0);
+      let restoreAttempts = 0;
       const restore = () => {
         if (overlay.isConnected) {
           setTimeout(restore, 40);
           return;
         }
+        // レイアウト監視やブラウザ自身による自動focus移動では復帰を打ち切らない。
+        // 閉鎖後に実際のpointer／keyboard入力があった時だけ利用者の選択を優先する。
+        if (interactionClaimed) {
+          stopTrackingInteraction();
+          return;
+        }
+        const activeDialog = document.activeElement?.closest?.(
+          '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+        );
+        if (activeDialog && activeDialog !== modal && !_isDialogClosingOrHidden(activeDialog)) {
+          const restoreTarget = _resolveReturnFocusTarget();
+          // A nested child dialog normally returns focus into its still-open parent.
+          // Only a different dialog that does not own the return target represents a
+          // newly claimed interaction and should cancel the bounded retry.
+          if (!restoreTarget?.isConnected || !activeDialog.contains(restoreTarget)) {
+            stopTrackingInteraction();
+            return;
+          }
+        }
+        // close-button のclick既定処理は、同期的な復帰に成功した直後でも、除去済み
+        // ボタンから別要素へfocusを動かすことがある。短い監視期間中は復帰を再確認し、
+        // 利用者入力または新しいダイアログがfocusを取得した時だけ終了する。
         _restoreOpenerFocus();
+        // Mobile toolbars can keep their opener hidden until the modal-removal observer
+        // refreshes the bar. Retry only while focus is still unclaimed, so a user's next
+        // action or a newly opened dialog is never overridden.
+        restoreAttempts += 1;
+        if (restoreAttempts < 30) setTimeout(restore, 40);
+        else stopTrackingInteraction();
       };
       restore();
       if (typeof opts.onClose === 'function') opts.onClose(reason, api);
@@ -51537,6 +54112,22 @@ if (typeof window !== 'undefined') {
     function onEscKey(ev) {
       if (ev.key !== 'Escape') return;
       if (!_isTopmostModal(modal)) return;
+      // モーダル内で開いたアイコンピッカー等の非modalダイアログは、先に
+      // 自身のEscape契約で閉じる。ここでイベントを奪うと親モーダルだけが
+      // 閉じ、ピッカーが残るため、フォーカスが浮いた状態になる。
+      const activeTransientDialog = document.activeElement?.closest?.('[role="dialog"][aria-modal="false"]');
+      const transientDialog = activeTransientDialog || Array.from(
+        document.querySelectorAll('[role="dialog"][aria-modal="false"]')
+      ).reverse().find(node => {
+        if (!node.isConnected || node.hidden || _isDialogClosingOrHidden(node)) return false;
+        const style = getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      });
+      if (transientDialog) return;
+      // 最前面のモーダルがEscapeを処理した後、同じdocumentに登録された
+      // 背景UIのEscapeハンドラへ流すと、閉鎖後に復帰させたフォーカスを
+      // 別の操作が奪う。最前面ダイアログだけでこのキー入力を消費する。
+      ev.stopImmediatePropagation();
       ev.stopPropagation();
       close('escape');
     }
@@ -51545,7 +54136,9 @@ if (typeof window !== 'undefined') {
       overlay.addEventListener('click', (ev) => { if (ev.target === overlay && _isTopmostModal(modal)) close('overlay'); });
     }
     if (opts.closeOnEsc !== false) {
-      document.addEventListener('keydown', onEscKey);
+      // 背景UIのEscape処理より先に最前面モーダルで消費し、閉鎖後の
+      // フォーカス復帰を遅延したメニュー処理に奪われないようcaptureで受ける。
+      document.addEventListener('keydown', onEscKey, true);
     }
 
     api = { overlay, modal, header, body, footer, open, close, isOpen: () => overlay.isConnected && !closed };
@@ -51701,6 +54294,113 @@ if (typeof window !== 'undefined') {
 
   _installRangeFillSync();
 
+  // 数値入力の横ドラッグ増減。クリック編集を保つため、一定距離を越えた時だけ
+  // scrubへ移行し、動的生成された入力にもイベント委譲で適用する。
+  function _numberDragStep(input, event) {
+    const declared = Number.parseFloat(input?.step || '');
+    const base = Number.isFinite(declared) && declared > 0 ? declared : 1;
+    if (event?.ctrlKey) return base * 10;
+    if (event?.shiftKey) return base / 10;
+    return base;
+  }
+
+  function _numberDragPrecision(...values) {
+    return Math.min(10, Math.max(0, ...values.map(value => {
+      const text = String(value ?? '');
+      if (/e-/i.test(text)) return Number(text.split(/e-/i)[1]) || 0;
+      return (text.split('.')[1] || '').length;
+    })));
+  }
+
+  function _numberDragClamp(input, value) {
+    const min = Number.parseFloat(input?.min || '');
+    const max = Number.parseFloat(input?.max || '');
+    let next = value;
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    return next;
+  }
+
+  function _numberDragValue(input, startValue, deltaX, event) {
+    const step = _numberDragStep(input, event);
+    const units = Math.trunc(deltaX / 4);
+    let next = startValue + units * step;
+    if (event?.ctrlKey) next = Math.round(next / step) * step;
+    next = _numberDragClamp(input, next);
+    const precision = _numberDragPrecision(step, input?.step, input?.min, input?.max);
+    return Number(next.toFixed(precision));
+  }
+
+  function _installNumberInputDrag() {
+    const state = { input: null, pointerId: null, startX: 0, startValue: 0, changed: false, scrubbing: false };
+    const eventFor = type => new Event(type, { bubbles: true });
+    const reset = () => {
+      state.input?.classList?.remove('gb-number-input-scrubbing');
+      document.documentElement.classList.remove('gb-number-scrubbing');
+      state.input = null;
+      state.pointerId = null;
+      state.changed = false;
+      state.scrubbing = false;
+    };
+    document.addEventListener('pointerdown', event => {
+      const input = event.target?.closest?.('input[type="number"]');
+      if (!input || event.button !== 0 || event.pointerType !== 'mouse') return;
+      if (input.disabled || input.readOnly || input.dataset.numberDrag === 'off') return;
+      const value = Number.parseFloat(input.value);
+      if (!Number.isFinite(value)) return;
+      state.input = input;
+      state.pointerId = event.pointerId;
+      state.startX = event.clientX;
+      state.startValue = value;
+      state.changed = false;
+      state.scrubbing = false;
+    }, true);
+    window.addEventListener('pointermove', event => {
+      if (!state.input || event.pointerId !== state.pointerId) return;
+      const deltaX = event.clientX - state.startX;
+      if (!state.scrubbing && Math.abs(deltaX) < 4) return;
+      if (!state.scrubbing) {
+        state.scrubbing = true;
+        state.input.classList.add('gb-number-input-scrubbing');
+        document.documentElement.classList.add('gb-number-scrubbing');
+        try { state.input.setPointerCapture(event.pointerId); } catch {}
+      }
+      event.preventDefault();
+      const next = _numberDragValue(state.input, state.startValue, deltaX, event);
+      if (String(next) === state.input.value) return;
+      state.input.value = String(next);
+      state.changed = true;
+      state.input.dispatchEvent(eventFor('input'));
+    }, true);
+    window.addEventListener('pointerup', event => {
+      if (!state.input || event.pointerId !== state.pointerId) return;
+      const input = state.input;
+      const changed = state.changed;
+      if (state.scrubbing) event.preventDefault();
+      reset();
+      if (changed) input.dispatchEvent(eventFor('change'));
+    }, true);
+    window.addEventListener('pointercancel', reset, true);
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !state.input || !state.scrubbing) return;
+      const input = state.input;
+      const changed = state.changed && Number.parseFloat(input.value) !== state.startValue;
+      input.value = String(state.startValue);
+      event.preventDefault();
+      event.stopPropagation();
+      reset();
+      if (changed) {
+        input.dispatchEvent(eventFor('input'));
+        input.dispatchEvent(eventFor('change'));
+      }
+    }, true);
+    window.addEventListener('blur', () => {
+      if (state.input) reset();
+    });
+  }
+
+  _installNumberInputDrag();
+
   // ============================================================
   // ポップアップ内フォーカス循環（Tab / Shift+Tab）
   // ルビ入力ポップアップ・選択時書式ポップアップなど、開いている間だけ
@@ -51758,7 +54458,11 @@ if (typeof window !== 'undefined') {
     applyVariant,
     refreshRangeFill,
     refreshRangeFills,
-    cyclePopupFocus
+    cyclePopupFocus,
+    numberDrag: {
+      step: _numberDragStep,
+      value: _numberDragValue,
+    }
   };
 })();
 
@@ -52274,7 +54978,7 @@ if (typeof window !== 'undefined') {
       const pc = document.getElementById('page-content');
       if (pc && pc.dataset.path === item.path) pc.dataset.lastSavedEtag = res.etag || pc.dataset.lastSavedEtag || '';
     }
-    if (typeof showStatus === 'function') showStatus('未保存ドラフトを上書き保存しました');
+    if (typeof showStatus === 'function') showStatus('保存されていない編集内容を上書き保存しました');
   }
 
   async function _fileExists(path) {
@@ -52291,7 +54995,7 @@ if (typeof window !== 'undefined') {
   async function _saveDraftAs(item) {
     if (typeof cfPrompt !== 'function' || typeof apiPut !== 'function') return false;
     const fallback = String(item.path || '').replace(/(\.[^/.]+)?$/, '_recovered$1');
-    const nextPath = await cfPrompt('未保存ドラフトを別名で保存', fallback);
+    const nextPath = await cfPrompt('保存されていない編集内容を別名で保存', fallback);
     if (!nextPath) return false;
     const exists = await _fileExists(nextPath);
     if (exists) {
@@ -52307,7 +55011,7 @@ if (typeof window !== 'undefined') {
       ...(exists ? { force_overwrite: true } : { create_only: true }),
     });
     await clearDraft(item.path, item.storageKey);
-    if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
+    if (typeof showStatus === 'function') showStatus('保存されていない編集内容を別名保存しました');
     return true;
   }
 
@@ -52390,13 +55094,13 @@ if (typeof window !== 'undefined') {
         <div class="draft-recovery-actions">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} のドラフトを破棄">破棄</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} の保存されていない変更を破棄">破棄</button>
         </div>
       </div>`).join('');
     const body = document.createElement('div');
     body.className = 'draft-recovery-content';
     body.innerHTML = `
-      <div id="draft-recovery-description" class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
+      <div id="draft-recovery-description" class="gb-section-desc">前回終了時に保存されなかった編集内容があります。</div>
       <div class="draft-recovery-list">${rows}</div>`;
     const discardAllButton = document.createElement('button');
     discardAllButton.type = 'button';
@@ -52416,7 +55120,7 @@ if (typeof window !== 'undefined') {
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: 'draft-recovery',
-      title: '未保存の編集があります',
+      title: '未保存の変更',
       body,
       footer: [discardAllButton, spacer, closeButton],
       variant: 'mobile-sheet',
@@ -52447,13 +55151,13 @@ if (typeof window !== 'undefined') {
       if (!action) return;
       if (action === 'close') { modalApi.close('close-button'); return; }
       if (action === 'discard-all') {
-        if (!await _confirmDiscard('未保存ドラフトをすべて破棄しますか？')) return;
+        if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
         busy = true;
         try {
           await clearAllDrafts();
           busy = false;
           modalApi.close('discard-all');
-          if (typeof showStatus === 'function') showStatus('未保存ドラフトをすべて破棄しました');
+          if (typeof showStatus === 'function') showStatus('保存されていない変更をすべて破棄しました');
         } finally {
           busy = false;
         }
@@ -52474,7 +55178,7 @@ if (typeof window !== 'undefined') {
             modalApi.close('save-as');
           }
         } else if (action === 'discard') {
-          if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
+          if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の保存されていない変更を破棄しますか？この操作は元に戻せません。`)) return;
           await clearDraft(item.path, item.storageKey);
           button.closest('[data-draft-row]')?.remove();
           if (!overlay.querySelector('[data-draft-row]')) {
@@ -53041,7 +55745,7 @@ if (typeof window !== 'undefined') {
     const promise = Promise.resolve().then(() => sendFn(previousResult || null)).then(
       (res) => {
         _finishInFlight(doc, promise);
-        _maybeFlushPending(doc, res);
+        _maybeFlushPending(doc, res, hostRef);
         return Object.assign({}, res, { savedMd: md, savedPath: path, joined: false });
       },
       (err) => {
@@ -53068,12 +55772,18 @@ if (typeof window !== 'undefined') {
   // 保存中に発生した編集を最新1件へcoalesceする（計画書§5工程1-2・工程1-6）。
   // 同時に複数回 requestSave が呼ばれても、進行中の保存が終わった直後に
   // 実行されるのは「最後に上書きされた1件」だけになる。
-  function _maybeFlushPending(doc, previousResult) {
+  function _maybeFlushPending(doc, previousResult, previousHostRef) {
     if (!doc.pendingFollowUp || doc.inFlight) return;
     const pending = doc.pendingFollowUp;
     doc.pendingFollowUp = null;
     doc.followUpPromise = null;
-    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, previousResult);
+    // 直前の成功revisionを連鎖できるのは、同じ編集hostから来た連続編集だけ。
+    // 別ペインは同じdocumentKeyでも独立した読込baselineを持つため、先行hostの
+    // revisionを渡すと古い全文が最新revision付きで保存され、409を迂回してしまう。
+    const chainedResult = previousHostRef && pending.hostRef === previousHostRef
+      ? previousResult
+      : null;
+    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
   }
 
   /**
@@ -53689,7 +56399,7 @@ if (typeof window !== 'undefined') {
   // 異なる）ホストへは触れない（計画書§5工程1-10「片方が未編集なら他方の
   // 保存結果を追従する。双方が異なる未保存内容を持つ場合だけ、ローカル分岐
   // として扱う」）。
-  function _renderSavedMarkdownIntoCleanHost(host, path, md) {
+  function renderSavedMarkdownIntoCleanHost(host, path, md) {
     if (typeof window.mdToHtml !== 'function') return false;
     const raw = String(md || '');
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
@@ -53738,7 +56448,7 @@ if (typeof window !== 'undefined') {
       // baselineだけを新内容へ進めてDOMを古いまま残すと、次のblurで古いDOMが
       // 「新baselineからの編集」と判定され、新etag付きで直前の保存を巻き戻す。
       // 未編集・非フォーカスのホストは表示本文も同じ保存結果へ追従させる。
-      if (!_renderSavedMarkdownIntoCleanHost(host, path, md)) return;
+      if (!renderSavedMarkdownIntoCleanHost(host, path, md)) return;
       host.dataset.lastSavedMd = md;
       host.dataset.lastSavedEtag = etag || '';
       if (coordinator.normalizeTransportRevision) {
@@ -53864,6 +56574,7 @@ if (typeof window !== 'undefined') {
     isUnchanged,
     registerHost,
     performSave,
+    renderSavedMarkdownIntoCleanHost,
     reportSaveFailureConflict,
     isConflictPending,
     getConflictFocusTarget,
@@ -54266,7 +56977,12 @@ if (typeof window !== 'undefined') {
   }
 
   function _createConsentCheckbox(id, text, checked, options = {}) {
-    const input = _el('input', { id, type: 'checkbox', class: 'meldex-beta-consent-checkbox' });
+    const input = _el('input', {
+      id,
+      type: 'checkbox',
+      class: 'meldex-beta-consent-checkbox',
+      dataset: { gbTooltipDisabled: 'true' },
+    });
     input.checked = !!checked;
     const labelContent = [input, _el('span', { text })];
     if (options.required === true) {
@@ -55639,6 +58355,366 @@ ${reason.message}`
 
 ;
 
+/* === debugger-manual-report-client-web.js === */
+;
+(function (root) {
+  'use strict';
+
+  const MAX_QUEUE_ITEMS = 20;
+  const MAX_ATTEMPTS = 10;
+  const QUEUE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const MAX_RETRY_MS = 5 * 60 * 1000;
+  const INSTALLATION_PREFIX = 'debugger.crash-client-web.installation.v1.';
+  const OUTBOX_PREFIX = 'debugger.manual-report-web.outbox.v1.';
+  const PROJECT_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
+  const REPORT_TYPES = new Set(['bug', 'request', 'question']);
+
+  function _uuid() {
+    try {
+      if (root.crypto?.randomUUID) return root.crypto.randomUUID();
+    } catch (_) {}
+    return `meldex-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function _safeJson(value) {
+    try { return JSON.stringify(value); } catch (_) { return '{}'; }
+  }
+
+  function _message(error, fallback) {
+    return String(error?.message || error || fallback || '送信できませんでした').slice(0, 500);
+  }
+
+  function _redactUrl(raw) {
+    try {
+      const parsed = new URL(raw);
+      parsed.username = '';
+      parsed.password = '';
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString();
+    } catch (_) {
+      return '[url]';
+    }
+  }
+
+  function redactReportText(value) {
+    let text = String(value == null ? '' : value);
+    text = text.replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]');
+    text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
+    text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|ya29\.[A-Za-z0-9_-]{10,})\b/gi, '[redacted]');
+    text = text.replace(/file:\/\/\/[^\s<>"']+/gi, 'file:///[local-path]');
+    text = text.replace(/\b[A-Z]:\\Users\\[^\\\s"'<>|]+(?:\\[^\s"'<>|]+)*/gi, 'C:\\Users\\[user]\\[local-path]');
+    text = text.replace(/\b[A-Z]:\\[^\s,;"']+/gi, '[local-path]');
+    text = text.replace(/\/(?:Users|home)\/[^/\s"']+(?:\/[^\s"'<>]*)?/g, '/home/[user]/[local-path]');
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
+    text = text.replace(/https?:\/\/[^\s<>"']+/gi, _redactUrl);
+    return text.slice(0, 10000);
+  }
+
+  class ManualReportClient {
+    constructor(options) {
+      const config = options || {};
+      this.endpoint = String(config.endpoint || '').trim();
+      this.projectSlug = String(config.projectSlug || '').trim();
+      this.version = String(config.version || 'unknown').trim().slice(0, 100) || 'unknown';
+      this.source = String(config.source || 'meldex').trim().slice(0, 30) || 'meldex';
+      this.component = String(config.component || 'meldex').trim().replace(/[^a-z0-9_.-]/gi, '-').slice(0, 80) || 'meldex';
+      this.storage = config.storage === undefined ? root.localStorage : config.storage;
+      this.fetcher = config.fetcher || root.fetch?.bind(root);
+      this.now = typeof config.now === 'function' ? config.now : () => Date.now();
+      this.randomUUID = typeof config.randomUUID === 'function' ? config.randomUUID : _uuid;
+      this.onDelivery = typeof config.onDelivery === 'function' ? config.onDelivery : null;
+      this.browserWindow = config.browserWindow === undefined ? root.window || root : config.browserWindow;
+      this.installationKey = INSTALLATION_PREFIX + this.projectSlug;
+      this.outboxKey = `${OUTBOX_PREFIX}${this.projectSlug}.${this.component}`;
+      this._operationTail = Promise.resolve();
+      this._lastFailed = 0;
+      this._onlineHandler = null;
+      this._retryTimer = null;
+      this._installed = false;
+    }
+
+    configured() {
+      if (!PROJECT_SLUG_RE.test(this.projectSlug)) return false;
+      try {
+        const parsed = new URL(this.endpoint);
+        return parsed.protocol === 'https:'
+          && !parsed.username
+          && !parsed.password
+          && !parsed.search
+          && !parsed.hash
+          && parsed.pathname === '/api/v1/public/reports';
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _runExclusive(work) {
+      const operation = this._operationTail.catch(() => {}).then(work);
+      this._operationTail = operation.catch(() => {});
+      return operation;
+    }
+
+    _read(key) {
+      try { return this.storage?.getItem?.(key) || ''; } catch (_) { return ''; }
+    }
+
+    _write(key, value) {
+      try {
+        if (!this.storage?.setItem) return false;
+        this.storage.setItem(key, value);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _installationId() {
+      const current = this._read(this.installationKey).trim();
+      if (current.length >= 16 && current.length <= 200) return current;
+      const created = String(this.randomUUID() || _uuid()).slice(0, 200);
+      this._write(this.installationKey, created);
+      return created.length >= 16 ? created : `${created}-${_uuid()}`.slice(0, 200);
+    }
+
+    _queue() {
+      try {
+        const parsed = JSON.parse(this._read(this.outboxKey) || '[]');
+        return Array.isArray(parsed) ? parsed.filter(item => item && item.report) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    _saveQueue(queue) {
+      return this._write(this.outboxKey, _safeJson(queue));
+    }
+
+    async _notify(event) {
+      if (!this.onDelivery) return;
+      try { await this.onDelivery(event); } catch (_) {}
+    }
+
+    _report(input) {
+      const reportType = REPORT_TYPES.has(input?.reportType) ? input.reportType : 'bug';
+      return {
+        projectSlug: this.projectSlug,
+        source: this.source === 'web' || this.source === 'other' ? this.source : 'meldex',
+        version: this.version,
+        installationId: this._installationId(),
+        reportType,
+        body: redactReportText(input?.body || ''),
+        consentedLogs: false,
+        artifactIds: [],
+        idempotencyKey: String(this.randomUUID() || _uuid()).slice(0, 200),
+      };
+    }
+
+    _retryDelay(attempts, response) {
+      const retryAfter = Number(response?.headers?.get?.('Retry-After') || 0);
+      if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(MAX_RETRY_MS, retryAfter * 1000);
+      const base = Math.min(MAX_RETRY_MS, 1000 * (2 ** Math.min(8, Math.max(0, attempts - 1))));
+      return Math.max(1000, Math.round(base * (0.8 + Math.random() * 0.4)));
+    }
+
+    async _send(item) {
+      if (typeof this.fetcher !== 'function') return { status: 'pending', lastError: '通信機能を利用できません' };
+      try {
+        const response = await this.fetcher(this.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: _safeJson(item.report),
+          credentials: 'omit',
+          redirect: 'error',
+          referrerPolicy: 'no-referrer',
+          keepalive: true,
+        });
+        let payload = {};
+        try { payload = await response.json(); } catch (_) {}
+        if (response.ok) {
+          return {
+            status: 'sent',
+            issueId: String(payload?.issueId || payload?.reportId || payload?.id || ''),
+            duplicateOf: String(payload?.duplicateOf || ''),
+          };
+        }
+        const lastError = String(payload?.message || payload?.error || `HTTP ${response.status}`).slice(0, 500);
+        if ([408, 425, 429].includes(response.status) || response.status >= 500) {
+          return { status: 'pending', lastError, response };
+        }
+        return { status: 'failed', lastError };
+      } catch (error) {
+        return { status: 'pending', lastError: _message(error, '通信できません') };
+      }
+    }
+
+    submit(input) {
+      return this._runExclusive(() => this._submitNow(input));
+    }
+
+    async _submitNow(input) {
+      if (!this.configured()) {
+        return { ok: false, skipped: true, configured: false, reason: 'debugger-not-configured', delivery: { status: 'failed', lastError: '送信先が設定されていません' } };
+      }
+      const report = this._report(input);
+      if (!report.body.trim()) {
+        return { ok: false, skipped: true, reason: 'empty-report', delivery: { status: 'failed', lastError: '報告内容が空です' } };
+      }
+      const timestamp = this.now();
+      const item = {
+        report,
+        metadata: input?.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+        queuedAt: timestamp,
+        expiresAt: timestamp + QUEUE_TTL_MS,
+        attempts: 0,
+        nextAttemptAt: timestamp,
+        lastError: '',
+      };
+      const queue = this._queue();
+      while (queue.length >= MAX_QUEUE_ITEMS) {
+        const discarded = queue.shift();
+        await this._notify({ status: 'failed', idempotencyKey: discarded?.report?.idempotencyKey || '', metadata: discarded?.metadata || {}, lastError: '端末内の送信待ち上限を超えました' });
+      }
+      queue.push(item);
+      if (!this._saveQueue(queue)) {
+        const delivery = await this._send(item);
+        await this._notify({ ...delivery, idempotencyKey: report.idempotencyKey, metadata: item.metadata });
+        return delivery.status === 'sent'
+          ? { ok: true, queued: false, delivery, flush: { sent: 1, pending: 0, failedNow: 0 } }
+          : { ok: false, queued: false, delivery: { ...delivery, status: 'failed', lastError: `${delivery.lastError}。端末内の送信待ちにも保存できませんでした` } };
+      }
+      await this._notify({ status: 'pending', idempotencyKey: report.idempotencyKey, metadata: item.metadata, lastError: '送信結果を確認しています' });
+      const flush = await this._flushNow();
+      const delivery = flush.deliveries.find(entry => entry.idempotencyKey === report.idempotencyKey)
+        || { status: 'pending', lastError: item.lastError || '端末内の送信待ちに保存しました' };
+      return delivery.status === 'failed'
+        ? { ok: false, queued: false, delivery, flush }
+        : { ok: true, queued: delivery.status !== 'sent', delivery, flush };
+    }
+
+    flush() {
+      return this._runExclusive(() => this._flushNow());
+    }
+
+    _clearRetryTimer() {
+      if (this._retryTimer != null) this.browserWindow?.clearTimeout?.(this._retryTimer);
+      this._retryTimer = null;
+    }
+
+    _scheduleRetry(queue) {
+      this._clearRetryTimer();
+      if (!this._installed || typeof this.browserWindow?.setTimeout !== 'function') return;
+      const nextAttemptAt = queue.reduce((next, item) => {
+        const candidate = Number(item?.nextAttemptAt || 0);
+        return !next || (candidate && candidate < next) ? candidate : next;
+      }, 0);
+      if (!nextAttemptAt) return;
+      const delay = Math.min(MAX_RETRY_MS, Math.max(0, nextAttemptAt - this.now()));
+      this._retryTimer = this.browserWindow.setTimeout(() => {
+        this._retryTimer = null;
+        this.flush().catch(() => {});
+      }, delay);
+    }
+
+    async _flushNow() {
+      if (!this.configured()) {
+        this._clearRetryTimer();
+        return { ok: false, skipped: true, configured: false, reason: 'debugger-not-configured', sent: 0, pending: 0, failedNow: 0, deliveries: [] };
+      }
+      const queue = this._queue();
+      const remaining = [];
+      const deliveries = [];
+      let sent = 0;
+      let failedNow = 0;
+      let rateLimited = false;
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        const now = this.now();
+        const idempotencyKey = String(item?.report?.idempotencyKey || '');
+        const baseEvent = { idempotencyKey, metadata: item?.metadata || {} };
+        if (!idempotencyKey || now >= Number(item.expiresAt || 0) || Number(item.attempts || 0) >= MAX_ATTEMPTS) {
+          const event = { ...baseEvent, status: 'failed', lastError: '再送期限または再送回数の上限に達しました' };
+          deliveries.push(event);
+          failedNow += 1;
+          await this._notify(event);
+          continue;
+        }
+        if (now < Number(item.nextAttemptAt || 0)) {
+          remaining.push(item);
+          continue;
+        }
+        const delivery = await this._send(item);
+        const event = { ...baseEvent, ...delivery };
+        deliveries.push(event);
+        if (delivery.status === 'sent') {
+          sent += 1;
+          await this._notify(event);
+          continue;
+        }
+        if (delivery.status === 'failed') {
+          failedNow += 1;
+          await this._notify(event);
+          continue;
+        }
+        const isRateLimited = delivery.response?.status === 429;
+        if (!isRateLimited) item.attempts = Number(item.attempts || 0) + 1;
+        item.lastError = delivery.lastError;
+        if (isRateLimited) rateLimited = true;
+        item.nextAttemptAt = now + (isRateLimited
+          ? MAX_RETRY_MS
+          : this._retryDelay(item.attempts, delivery.response));
+        delete delivery.response;
+        remaining.push(item, ...queue.slice(index + 1));
+        await this._notify(event);
+        break;
+      }
+      this._lastFailed = failedNow;
+      this._saveQueue(remaining);
+      this._scheduleRetry(remaining);
+      return { ok: failedNow === 0, sent, pending: remaining.length, failedNow, failed: failedNow, rateLimited, deliveries };
+    }
+
+    status() {
+      const queue = this._queue();
+      const nextAttemptAt = queue.reduce((next, item) => {
+        const candidate = Number(item?.nextAttemptAt || 0);
+        return !next || (candidate && candidate < next) ? candidate : next;
+      }, 0);
+      return {
+        ok: this.configured(),
+        configured: this.configured(),
+        pending: queue.length,
+        failed: this._lastFailed,
+        nextAttemptAt: nextAttemptAt ? new Date(nextAttemptAt).toISOString() : null,
+        browserManaged: true,
+      };
+    }
+
+    install(options) {
+      const flushWhenOnline = options?.flushWhenOnline !== false;
+      this._installed = true;
+      this.flush().catch(() => {});
+      if (flushWhenOnline && this.browserWindow?.addEventListener) {
+        if (this._onlineHandler) this.browserWindow.removeEventListener?.('online', this._onlineHandler);
+        this._onlineHandler = () => { this.flush().catch(() => {}); };
+        this.browserWindow.addEventListener('online', this._onlineHandler);
+      }
+      return () => {
+        if (this._onlineHandler) this.browserWindow?.removeEventListener?.('online', this._onlineHandler);
+        this._onlineHandler = null;
+        this._installed = false;
+        this._clearRetryTimer();
+      };
+    }
+  }
+
+  const api = Object.freeze({ ManualReportClient, redactReportText });
+  root.DebuggerManualReportClient = api;
+  if (typeof module === 'object' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-beta-feedback.js === */
 ;
 (function () {
@@ -55648,6 +58724,7 @@ ${reason.message}`
 
   const releaseConfig = window.MeldexReleaseConfig || {};
   const feedbackConfig = releaseConfig.betaFeedback || {};
+  const debuggerConfig = releaseConfig.debuggerReporting || {};
   const CONSENT_KEY = window.MeldexBetaRelease?.CONSENT_KEY || 'meldex-beta-consent-v1';
   const CRASH_CONSENT_KEY = window.MeldexBetaRelease?.CRASH_CONSENT_KEY || 'meldex-crash-report-consent';
   const TELEMETRY_KEY = window.MeldexBetaRelease?.TELEMETRY_KEY || 'meldex-telemetry-enabled';
@@ -55664,8 +58741,10 @@ ${reason.message}`
   const GOOGLE_ADMIN_TOKEN_KEY = 'meldex-beta-feedback-google-admin-token';
   const GOOGLE_IMPORT_DEFAULT_LIMIT = 10;
   const GOOGLE_IMPORT_DEFAULT_MAX_PASSES = 25;
-  const DEBUGGER_CRASH_ENDPOINT = 'https://debugger-api-staging.dlc-cherry.workers.dev/api/v1/public/error-reports';
-  const DEBUGGER_PROJECT_SLUG = 'meldex';
+  const DEBUGGER_BASE_URL = String(debuggerConfig.baseUrl || '').trim().replace(/\/+$/, '');
+  const DEBUGGER_PROJECT_SLUG = String(debuggerConfig.projectSlug || '').trim();
+  const DEBUGGER_CRASH_ENDPOINT = DEBUGGER_BASE_URL ? `${DEBUGGER_BASE_URL}/api/v1/public/error-reports` : '';
+  const DEBUGGER_MANUAL_ENDPOINT = DEBUGGER_BASE_URL ? `${DEBUGGER_BASE_URL}/api/v1/public/reports` : '';
   const CRASH_FIELD_BLOCKLIST = new Set([
     'path', 'filepath', 'filename', 'targetpath',
     'currentpath', 'currentpagepath', 'currentdbpath',
@@ -55678,6 +58757,8 @@ ${reason.message}`
   let _pwaHandlersInstalled = false;
   let _cloudCrashReporter = null;
   let _uninstallCloudCrashReporter = null;
+  let _cloudManualReporter = null;
+  let _uninstallCloudManualReporter = null;
 
   async function _appendCloudDiagnostic(provider, channel, payload) {
     const resolver = window.MeldexDropboxManagementRootResolver;
@@ -56217,7 +59298,7 @@ ${reason.message}`
       submitLabel: 'フィードバックを送信',
       successMessage: 'フィードバックを送信しました。ありがとうございます。',
       headerTitle: 'Meldex フィードバック',
-      headerDescription: 'ベータ版の不具合・要望・気づいたことを送信できます。お名前と連絡先は任意です。',
+      headerDescription: 'ベータ版の不具合・要望・気づいたことを開発者へ送信できます。お名前と連絡先は任意で、入力してもMeldex内だけに保存され、開発者へは送信されません。',
       mode: 'answer',
       entityNameProp: '件名',
       betaFeedbackRelay: true,
@@ -56455,6 +59536,8 @@ ${reason.message}`
     '送信結果・失敗理由', '添付', '端末内受付番号',
   ]);
   const _cloudCrashHistoryWrites = new Map();
+  const _cloudManualHistoryWrites = new Map();
+  const _cloudManualSentKeys = new Set();
 
   function _fieldText(value) {
     if (value == null) return '';
@@ -56489,10 +59572,158 @@ ${reason.message}`
     return sections;
   }
 
-  const DEBUGGER_UNAVAILABLE = { ok: false, skipped: true, configured: false, reason: 'cloud-send-needs-desktop-server' };
+  const DEBUGGER_UNAVAILABLE = { ok: false, skipped: true, configured: false, reason: 'debugger-not-configured' };
 
   function _isCloudDataMode() {
     return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  }
+
+  function _debuggerConfigured() {
+    if (!DEBUGGER_BASE_URL || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(DEBUGGER_PROJECT_SLUG)) return false;
+    try {
+      const parsed = new URL(DEBUGGER_BASE_URL);
+      return parsed.protocol === 'https:'
+        && !parsed.username
+        && !parsed.password
+        && !parsed.search
+        && !parsed.hash
+        && (parsed.pathname === '/' || parsed.pathname === '');
+    } catch (_) { return false; }
+  }
+
+  function _manualReportBody(payload) {
+    const chunks = [];
+    (Array.isArray(payload?.sections) ? payload.sections : []).forEach((section) => {
+      const heading = _fieldText(section?.heading).slice(0, 100);
+      const body = _fieldText(section?.body);
+      if (body) chunks.push(`${heading ? `## ${heading}\n` : ''}${body}`);
+    });
+    if (payload?.details != null) {
+      let details = '';
+      try { details = typeof payload.details === 'string' ? payload.details : JSON.stringify(payload.details, null, 2); }
+      catch (_) { details = String(payload.details); }
+      if (details.trim()) chunks.push(`## 追加情報\n${details}`);
+    }
+    const origin = _fieldText(payload?.origin);
+    if (origin) chunks.push(`## 報告経路\n${origin}`);
+    return chunks.join('\n\n').slice(0, 20000);
+  }
+
+  async function _ensureCloudManualHistoryEntry(payload, body) {
+    const existing = String(payload?.historyEntryPath || '').trim();
+    if (existing || typeof apiPost !== 'function') return existing;
+    try {
+      await ensureFeedbackSheet({ open: false });
+      const now = _nowIso();
+      const reportType = ['bug', 'request', 'question'].includes(payload?.reportType) ? payload.reportType : 'bug';
+      const kind = reportType === 'request' ? '要望' : reportType === 'question' ? '質問' : 'バグ';
+      const subjectSection = (Array.isArray(payload?.sections) ? payload.sections : [])
+        .find(section => _fieldText(section?.heading) === '件名');
+      const origin = _fieldText(payload?.origin);
+      const redact = window.DebuggerManualReportClient?.redactReportText;
+      const outgoingBody = typeof redact === 'function' ? redact(String(body || '')) : String(body || '').slice(0, 10000);
+      const rawSubject = _fieldText(subjectSection?.body)
+        || (origin === 'support-dialog' ? 'Meldex Cloudのサポート報告' : 'Meldex Cloudからの手動報告');
+      const subject = (typeof redact === 'function' ? redact(rawSubject) : rawSubject).slice(0, 160);
+      const fields = {
+        件名: subject,
+        種別: kind,
+        内容: outgoingBody,
+        環境: 'Meldex Cloud',
+        送信元: origin === 'support-dialog' ? 'Meldex Cloudサポート画面' : 'Meldex Cloud手動報告',
+        送信状態: '送信待ち',
+        送信受付日時: now,
+        対象バージョン: String(window.__meldexVersionCache?.version || releaseConfig.fallbackSemver || ''),
+        '送信結果・失敗理由': '開発者への送信結果を確認しています。',
+        送信日: now.slice(0, 10),
+        フィードバック送信日時: now,
+      };
+      const created = await apiPost('/entity/create', {
+        parent_path: FEEDBACK_DB_DIR,
+        name: subject,
+        properties: fields,
+        source: 'manual-report',
+        reviewed: false,
+      });
+      return String(created?.path || '');
+    } catch (_) {
+      // 端末内履歴を作れない場合も、利用者が明示した外部送信は継続する。
+      return '';
+    }
+  }
+
+  async function _updateCloudManualHistory(event) {
+    const entryPath = String(event?.metadata?.historyEntryPath || '').trim();
+    if (!entryPath || typeof apiPut !== 'function') return;
+    const receiptKey = String(event?.idempotencyKey || '');
+    if (event.status === 'sent' && receiptKey) _cloudManualSentKeys.add(receiptKey);
+    if (event.status !== 'sent' && receiptKey && _cloudManualSentKeys.has(receiptKey)) return;
+    const key = entryPath;
+    const previous = _cloudManualHistoryWrites.get(key) || Promise.resolve();
+    const write = previous.catch(() => {}).then(async () => {
+      if (event.status !== 'sent') {
+        try {
+          const provider = window.MeldexStorageAdapter?.getProvider?.();
+          const current = provider?.readText ? await provider.readText(entryPath) : '';
+          if (/送信状態:[\s\S]{0,240}value:\s*(?:"送信済み"|送信済み)/.test(String(current || ''))) return;
+        } catch (_) {}
+      }
+      const status = event.status === 'sent' ? '送信済み' : event.status === 'failed' ? '送信失敗' : '送信待ち';
+      const reason = event.status === 'sent'
+        ? '開発者の受信箱が受け付けました'
+        : event.status === 'failed'
+          ? String(event.lastError || '自動再送を停止しました')
+          : String(event.lastError || 'オンライン復帰後に自動で再送します');
+      const fields = [
+        ['端末内受付番号', event.idempotencyKey || ''],
+        ['開発者への送信日時', event.status === 'sent' ? _nowIso() : ''],
+        ['受付番号', event.issueId || event.duplicateOf || ''],
+        ['送信結果・失敗理由', reason],
+        ['送信状態', status],
+      ];
+      for (const [property, value] of fields) {
+        await apiPut('/value?path=' + encodeURIComponent(entryPath), {
+          property,
+          candidate_index: 0,
+          new_value: String(value || ''),
+          new_status: '採用',
+        });
+      }
+    });
+    _cloudManualHistoryWrites.set(key, write);
+    try { await write; }
+    catch (_) { /* 履歴更新の失敗でDebugger送信を失敗扱いにしない。 */ }
+    finally { if (_cloudManualHistoryWrites.get(key) === write) _cloudManualHistoryWrites.delete(key); }
+  }
+
+  async function _settleCloudManualHistory(event) {
+    await Promise.race([
+      _updateCloudManualHistory(event),
+      new Promise(resolve => setTimeout(resolve, 1500)),
+    ]);
+  }
+
+  function _configureCloudManualReporter() {
+    if (!_isCloudDataMode() || !_debuggerConfigured()) return null;
+    if (_cloudManualReporter) return _cloudManualReporter;
+    const Reporter = window.DebuggerManualReportClient?.ManualReportClient;
+    if (typeof Reporter !== 'function') return null;
+    try {
+      _cloudManualReporter = new Reporter({
+        endpoint: DEBUGGER_MANUAL_ENDPOINT,
+        projectSlug: DEBUGGER_PROJECT_SLUG,
+        version: String(window.__meldexVersionCache?.version || releaseConfig.fallbackSemver || 'unknown').slice(0, 100),
+        source: 'meldex',
+        component: 'meldex-cloud-manual',
+        onDelivery: _settleCloudManualHistory,
+      });
+      _uninstallCloudManualReporter = _cloudManualReporter.install({ flushWhenOnline: true });
+      return _cloudManualReporter;
+    } catch (_) {
+      _cloudManualReporter = null;
+      _uninstallCloudManualReporter = null;
+      return null;
+    }
   }
 
   function _cloudCrashHistoryMarkdown(report, status, result = {}) {
@@ -56591,7 +59822,7 @@ ${reason.message}`
   }
 
   function _configureCloudCrashReporter() {
-    if (!_isCloudDataMode() || !isCrashReportEnabled()) return null;
+    if (!_isCloudDataMode() || !isCrashReportEnabled() || !_debuggerConfigured()) return null;
     if (_cloudCrashReporter) return _cloudCrashReporter;
     const Reporter = window.DebuggerCrashClient?.CrashReporter;
     if (typeof Reporter !== 'function') return null;
@@ -56657,9 +59888,9 @@ ${reason.message}`
   async function getDebuggerSettings() {
     if (_isCloudDataMode()) return {
       ok: true,
-      configured: true,
+      configured: _debuggerConfigured(),
       fixed: true,
-      baseUrl: DEBUGGER_CRASH_ENDPOINT.replace(/\/api\/v1\/public\/error-reports$/, ''),
+      baseUrl: DEBUGGER_BASE_URL,
       projectSlug: DEBUGGER_PROJECT_SLUG,
     };
     return _getJson('/debugger/settings');
@@ -56682,26 +59913,57 @@ ${reason.message}`
 
   async function getDebuggerQueue() {
     if (_isCloudDataMode()) {
-      const reporter = _configureCloudCrashReporter();
-      const status = reporter?.status?.() || { ok: false, pending: 0, nextAttemptAt: null };
-      return { ...status, configured: !!reporter, browserManaged: true };
+      const manual = _configureCloudManualReporter();
+      const crash = _configureCloudCrashReporter();
+      const manualStatus = manual?.status?.() || { pending: 0, failed: 0 };
+      const crashStatus = crash?.status?.() || { pending: 0, failed: 0 };
+      return {
+        ok: !!manual,
+        configured: !!manual,
+        pending: Number(manualStatus.pending || 0) + Number(crashStatus.pending || 0),
+        failed: Number(manualStatus.failed || 0) + Number(crashStatus.failed || 0),
+        browserManaged: true,
+      };
     }
     return _getJson('/debugger/queue');
   }
 
   async function flushDebuggerQueue() {
     if (_isCloudDataMode()) {
-      const reporter = _configureCloudCrashReporter();
-      if (!reporter) return { ...DEBUGGER_UNAVAILABLE, reason: 'crash-report-consent-disabled' };
-      const status = await reporter.flush();
-      return { ...status, browserManaged: true };
+      const manual = _configureCloudManualReporter();
+      if (!manual) return DEBUGGER_UNAVAILABLE;
+      const results = [await manual.flush()];
+      const crash = _configureCloudCrashReporter();
+      if (crash) results.push(await crash.flush());
+      return {
+        ok: results.every(result => result?.ok !== false),
+        sent: results.reduce((sum, result) => sum + Number(result?.sent || 0), 0),
+        pending: results.reduce((sum, result) => sum + Number(result?.pending || 0), 0),
+        failedNow: results.reduce((sum, result) => sum + Number(result?.failedNow || 0), 0),
+        failed: results.reduce((sum, result) => sum + Number(result?.failed || 0), 0),
+        rateLimited: results.some(result => result?.rateLimited),
+        browserManaged: true,
+      };
     }
     return _postJson('/debugger/flush', {}, false);
   }
 
   async function sendDebuggerReport(payload) {
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
-      return { ok: false, skipped: true, reason: 'cloud-send-needs-desktop-server' };
+      const reporter = _configureCloudManualReporter();
+      if (!reporter) return DEBUGGER_UNAVAILABLE;
+      const body = _manualReportBody(payload);
+      const historyEntryPath = await _ensureCloudManualHistoryEntry(payload, body);
+      return reporter.submit({
+        reportType: ['bug', 'request', 'question'].includes(payload?.reportType)
+          ? payload.reportType
+          : _feedbackReportType(payload?.reportType),
+        body,
+        metadata: {
+          historyEntryPath,
+          origin: String(payload?.origin || ''),
+        },
+      });
     }
     return _postJson('/debugger/reports', payload, false);
   }
@@ -56959,7 +60221,7 @@ ${reason.message}`
     title.textContent = '送信設定';
     const desc = document.createElement('div');
     desc.className = 'gb-section-desc';
-    desc.textContent = 'クラッシュレポートと利用統計の送信可否を切り替えます。ノート本文や作品内容は利用統計に含めません。';
+    desc.textContent = '手動で送信した不具合・要望・質問は開発者の受信箱へ送られます。自動クラッシュレポートと利用統計は、それぞれ送信可否を切り替えられます。ノート本文や作品内容は利用統計に含めません。';
     section.appendChild(title);
     section.appendChild(desc);
 
@@ -56986,7 +60248,7 @@ ${reason.message}`
     debuggerUrlLabel.className = 'gb-label';
     debuggerUrlLabel.textContent = '不具合報告の送信先';
     if (typeof fieldHelp === 'function') {
-      debuggerUrlLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('不具合・要望を受け取る管理システムのアドレスです。空にすると外部への送信を行わず、この端末内の記録だけになります', { e2eId: 'settings-debugger-base-url-help' }));
+      debuggerUrlLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('不具合・要望・質問を開発者へ届ける送信先です。Cloud版では配布時に固定されます', { e2eId: 'settings-debugger-base-url-help' }));
     }
     const debuggerUrlInput = document.createElement('input');
     debuggerUrlInput.id = 'settings-debugger-base-url';
@@ -57121,6 +60383,9 @@ ${reason.message}`
         const settings = await getDebuggerSettings();
         debuggerUrlInput.value = settings.baseUrl || '';
         debuggerSlugInput.value = settings.projectSlug || '';
+        debuggerUrlInput.readOnly = settings.fixed === true;
+        debuggerSlugInput.readOnly = settings.fixed === true;
+        saveDebuggerButton.hidden = settings.fixed === true;
         const queue = settings.configured ? await getDebuggerQueue() : { configured: false };
         status.textContent = _describeDebuggerState({ ...settings, ...queue });
       } catch (error) {
@@ -57298,6 +60563,7 @@ ${reason.message}`
   function _boot() {
     _installPwaHandlers();
     _bindSettingsObserver();
+    _configureCloudManualReporter();
     _configureCloudCrashReporter();
     if (isTelemetryEnabled()) startTelemetry();
     // 現在の画面を変えずに利用者向け履歴シートを準備し、前回オフラインや
@@ -57546,7 +60812,7 @@ ${reason.message}`
       const prefix = /^[\s("'`]/.test(match) ? match[0] : '';
       return prefix + '[redacted-path]';
     });
-    text = text.replace(/[^\s"'<>:]+?\.(?:md|json|scriptnote\.json|smart-db\.json|board\.md|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)\b/giu, '[redacted-file]');
+    text = text.replace(/[^\s"'<>:]+?\.(?:md|json|scriptnote\.json|board\.md|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)\b/giu, '[redacted-file]');
     text = text.replace(/\b(?:path|file|filename|folder|title|name|content|body|prompt)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
     return text.slice(0, 1200);
   }
@@ -58424,6 +61690,7 @@ ${reason.message}`
   const ATTR_NATIVE_TITLE = 'data-gb-native-title';
   const TOOLTIP_ID = 'gb-tooltip';
   const MODAL_OVERLAY_SELECTOR = '.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay';
+  const ACTIVE_MODAL_TOOLTIP_PORTAL_SELECTOR = '.gb-fmt-popup, .gb-palette-popup';
   const SHOW_DELAY_MS = 350;
   const FOCUS_DELAY_MS = 120;
   const HIDE_DELAY_MS = 80;
@@ -58563,7 +61830,7 @@ ${reason.message}`
     add: '追加します',
     addcolumn: '列を追加します',
     addtodaytask: '今日のToDoを追加します',
-    annclear: '注釈をすべて削除します',
+    annclear: 'アノテートをすべて削除します',
     applyapplayout: '単一レイアウトを維持します',
     bdopenfindbar: 'ボード内を検索または置換します',
     chatattachments: '添付ファイルを追加します',
@@ -58592,8 +61859,8 @@ ${reason.message}`
     htmlrefresh: '表示中のページを更新します',
     insertcallout: 'コールアウトを挿入します',
     insertnotetable: '表を挿入します',
-    loadrpannotationlist: '注釈一覧を更新します',
-    newrpcomment: '新しい注釈コメントを作成します',
+    loadrpannotationlist: 'アノテート一覧を更新します',
+    newrpcomment: '新しいアノテートコメントを作成します',
     onstampsend: 'スタンプを送信します',
     onvalidateclick: 'シートの整合性を検証します',
     opencurrenttoolbarsearchreplace: 'このビューで検索と置換を開きます',
@@ -58621,12 +61888,12 @@ ${reason.message}`
     teamattachmentpick: 'チームチャットに画像を添付します',
     teamsend: 'チームチャットへ送信します',
     toggleactivitymenu: 'メニューを開閉します',
-    toggleannotationtoolbar: '注釈ツールバーを開閉します',
+    toggleannotationtoolbar: 'アノテートツールバーを開閉します',
     toggledetailpanel: 'オプションパネルを開閉します',
     toggleglobalfilterbar: 'フォルダツリーのフィルタを表示または非表示にします',
     toggleheadingindent: '見出しインデント表示を切り替えます',
     togglenotevertical: 'ノートの縦書きを切り替えます',
-    toggleoverlayvisibility: '注釈オーバーレイを表示または非表示にします',
+    toggleoverlayvisibility: 'アノテートオーバーレイを表示または非表示にします',
     togglerightpaneltab: '右サイドバーのタブを開閉します',
     togglesidebar: 'フォルダツリーを開閉します',
     togglesidebarsection: 'セクションを開閉します',
@@ -58638,8 +61905,8 @@ ${reason.message}`
     showhomeaddmenu: 'ホームフォルダへ追加する項目を選びます'
   });
   const DATA_HINTS = Object.freeze({
-    'bd-action:pick-card-style': 'カードスタイルを選択します',
-    'bd-action:manage-card-styles': 'カードスタイルを管理します',
+    'bd-action:pick-card-style': 'トピックスタイルを選択します',
+    'bd-action:manage-card-styles': 'トピックスタイルを管理します',
     'bd-action:pick-line-style': 'ラインスタイルを選択します',
     'bd-action:manage-line-styles': 'ラインスタイルを管理します',
     'bd-action:filters': 'ボードのフィルタを設定します',
@@ -58654,10 +61921,10 @@ ${reason.message}`
     'bd-action:bg-color': 'ボード背景色を変更します',
     'bd-action:bg-image': '背景画像を設定します',
     'bd-action:bg-clear': '背景をクリアします',
-    'bd-tool:select': 'カードやラインを選択します',
-    'bd-tool:add-card': 'ボードにカードを追加します',
-    'bd-tool:add-line': 'カード間にラインを追加します',
-    'bd-tool:erase': 'カードやラインを消します',
+    'bd-tool:select': 'トピックやラインを選択します',
+    'bd-tool:add-card': 'ボードにトピックを追加します',
+    'bd-tool:add-line': 'トピック間にラインを追加します',
+    'bd-tool:erase': 'トピックやラインを消します',
     'sn-action:saveTemplate': '現在のシナリオ設定をテンプレートとして登録します',
     'sn-action:horizontal': 'シナリオを横書き表示にします',
     'sn-action:vertical': 'シナリオを縦書き表示にします',
@@ -58674,7 +61941,6 @@ ${reason.message}`
     'cal-action:prev': '前の期間へ移動します',
     'cal-action:next': '次の期間へ移動します',
     'cal-action:template': 'カレンダーテンプレートを開きます',
-    'cal-action:timer': 'タイマーを開きます',
     'cal-action:production': '制作管理パネルを開きます',
     'cal-action:sync': '外部カレンダーと同期します',
     'cal-action:sidebarOnly': 'サイドバーのみの表示に切り替えます',
@@ -58683,17 +61949,17 @@ ${reason.message}`
     'cal-action:miniNext': '小型カレンダーを次の月へ移動します',
     'cal-action:addTodayTask': '今日のToDoを追加します',
     'cal-action:createCalendar': '新しいカレンダーを作成します',
-    'tool:pen': 'ペンで注釈を書き込みます',
-    'tool:marker': 'マーカーで注釈を書き込みます',
+    'tool:pen': 'ペンでアノテートを書き込みます',
+    'tool:marker': 'マーカーでアノテートを書き込みます',
     'tool:lasso': '囲んだ範囲を塗ります',
-    'tool:eraser': '注釈を消します',
+    'tool:eraser': 'アノテートを消します',
     'tool:sticky': '付箋を追加します',
     'align:left': '左寄せにします',
     'align:center': '中央に揃えます',
     'align:right': '右寄せにします',
     'rp-tab:calendar': 'カレンダータブを表示します',
     'rp-tab:chat': 'チャットタブを表示します',
-    'rp-tab:annotation': '注釈タブを表示します',
+    'rp-tab:annotation': 'アノテートタブを表示します',
     'rp-tab:history': '履歴タブを表示します'
   });
   const ID_HINTS = Object.freeze({
@@ -58707,8 +61973,8 @@ ${reason.message}`
     'left-chrome-floating-settings': 'Meldexの設定を開きます',
     'left-chrome-user': 'ユーザー設定を開きます',
     'left-chrome-floating-user': 'ユーザー設定を開きます',
-    'ann-color-swatch': '注釈の色を変更します',
-    'ann-opacity': '注釈の不透明度を調整します',
+    'ann-color-swatch': 'アノテートの色を変更します',
+    'ann-opacity': 'アノテートの不透明度を調整します',
     'bd-zoom-slider': 'ボードの表示倍率を調整します',
     'bd-rot-slider': 'ボードの回転角度を調整します',
     'btn-tree-search-clear': 'フォルダツリー検索をクリアします',
@@ -58748,7 +62014,8 @@ ${reason.message}`
     search: '検索します',
     settings2: '設定を開きます',
     slidersHorizontal: 'オプションを開きます',
-    stickyNote: '注釈を開きます',
+    stickyNote: '付箋を開きます',
+    squarePen: 'アノテートを開きます',
     strikethrough: '取り消し線を適用します',
     table: '表を挿入します',
     trash2: '削除します',
@@ -58821,7 +62088,11 @@ ${reason.message}`
 
   function isBlockedByActiveModal(el) {
     const overlay = activeModalOverlay();
-    return !!overlay && !!el && !overlay.contains(el);
+    if (!overlay || !el || overlay.contains(el)) return false;
+    // 書式・配色ポップアップは、モーダル内のアンカーから開いた場合も位置決めのため
+    // body 直下へマウントされる。見た目と操作上はモーダルの一部なので、ツールチップを許可する。
+    if (el.closest?.(ACTIVE_MODAL_TOOLTIP_PORTAL_SELECTOR)) return false;
+    return true;
   }
 
   function findCellContentNativeTitleTarget(start) {
@@ -59458,8 +62729,8 @@ ${reason.message}`
   regId('left-chrome-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('left-chrome-floating-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('btn-sidebar-toggle',  { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
-  regId('btn-tb-annotation',   { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regId('btn-overlay-toggle',  { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regId('btn-tb-annotation',   { label: 'アノテートツール', desc: '手描きアノテートツールバーを開閉します', shortcutId: 'global.annotation' });
+  regId('btn-overlay-toggle',  { label: 'アノテート表示/非表示', desc: '描き込んだアノテートの表示/非表示を切り替えます' });
   regId('btn-split-toggle',    { label: 'スプリット', desc: '画面を上下または左右に分割して2画面表示にします' });
   regId('btn-toc-toggle',      { label: '目次',       desc: 'ノートの見出しから生成した目次パネルを開閉します' });
   regId('btn-note-vertical',   { label: '縦書き / 横書き', desc: 'ノート本文の組方向を切り替えます' });
@@ -59470,7 +62741,7 @@ ${reason.message}`
   regId('rab-calendar',        { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regId('rab-chat',            { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regId('rab-tags',            { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
-  regId('rab-annotation',      { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regId('rab-annotation',      { label: 'アノテート',       desc: '右サイドバーにアノテート一覧を表示します' });
   regId('rab-history',         { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // 右アクティビティバー: data-rp-tab
@@ -59478,7 +62749,7 @@ ${reason.message}`
   regData('rp-tab', 'calendar',   { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regData('rp-tab', 'tags',       { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
-  regData('rp-tab', 'annotation', { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regData('rp-tab', 'annotation', { label: 'アノテート',       desc: '右サイドバーにアノテート一覧を表示します' });
   regData('rp-tab', 'history',    { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // data-action だけを持つボタンでもヒントを拾えるようにする
@@ -59489,8 +62760,8 @@ ${reason.message}`
   regAction('showusermenu',       { label: 'ユーザー',   desc: 'ユーザー設定を開きます' });
   regAction('showsettingsmodal',  { label: '設定',       desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regAction('togglesidebar',      { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
-  regAction('toggleannotationtoolbar', { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regAction('toggleoverlayvisibility', { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regAction('toggleannotationtoolbar', { label: 'アノテートツール', desc: '手描きアノテートツールバーを開閉します', shortcutId: 'global.annotation' });
+  regAction('toggleoverlayvisibility', { label: 'アノテート表示/非表示', desc: '描き込んだアノテートの表示/非表示を切り替えます' });
   regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
   regAction('togglerightpaneltab',{ label: '右サイドバータブ', desc: '指定した右サイドバーのタブを開閉します' });
 
@@ -59514,7 +62785,7 @@ ${reason.message}`
   regAction('showfolderdisplaysettings', { label: '表示設定', desc: 'フォルダビューの並び順・表示項目を変更します' });
   regAction('showfolderpanelsettings',   { label: 'フォルダオプション', desc: 'フォルダビュー全般のオプションを開きます' });
   regAction('fvbulkslideshow',   { label: 'スライドショー', desc: '選択したファイルをスライドショーで表示します' });
-  regAction('fvbulkboard',       { label: 'ボードへ並べる', desc: '選択したファイルをカードとしてボードに配置します' });
+  regAction('fvbulkboard',       { label: 'ボードへ並べる', desc: '選択したファイルをトピックとしてボードに配置します' });
   regAction('fvbulkdelete',      { label: '一括削除',   desc: '選択したファイルをまとめて削除します' });
   regAction('fvbulkcopypath',    { label: 'パスコピー', desc: '選択したファイルのパスをクリップボードにコピーします' });
   regAction('fvbulkdeselect',    { label: '選択解除',   desc: 'ファイルの選択を解除します' });
@@ -59559,7 +62830,7 @@ ${reason.message}`
   regData('sn-action', 'search',        { label: '検索 / 置換', desc: 'シナリオ本文を検索または置換します', shortcutId: 'scenario.search' });
   regData('sn-action', 'detail',        { label: 'オプション', desc: 'シナリオの表示オプションを開きます' });
 
-  // ====== Registry seed (B5: シート / スマートシート / カレンダー) ======
+  // ====== Registry seed (B5: シート / カレンダー) ======
   regAction('showcolumndisplayordermodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
   regAction('showcolvisibilitymodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
   regAction('showdbsearchmodal',  { label: 'シート横断検索', desc: '複数のシートをまたいで値を検索します' });
@@ -59574,7 +62845,6 @@ ${reason.message}`
   regData('cal-action', 'prev',          { label: '前へ',     desc: '前の期間（日/週/月）に移動します', shortcutId: 'cal.prev' });
   regData('cal-action', 'next',          { label: '次へ',     desc: '次の期間（日/週/月）に移動します', shortcutId: 'cal.next' });
   regData('cal-action', 'template',      { label: 'テンプレート', desc: 'カレンダーテンプレートを開きます' });
-  regData('cal-action', 'timer',         { label: 'タイマー', desc: '作業タイマーを開きます' });
   regData('cal-action', 'production',    { label: '制作管理', desc: '制作管理パネルを開きます' });
   regData('cal-action', 'sync',          { label: '外部同期', desc: 'Googleカレンダー等と同期します' });
   regData('cal-action', 'sidebarOnly',   { label: 'サイドバーのみ', desc: 'メイン領域を隠してサイドバーのみ表示します' });
@@ -59585,41 +62855,41 @@ ${reason.message}`
   regData('cal-action', 'createCalendar',{ label: 'カレンダー作成', desc: '新しいカレンダーを作成します' });
 
   // ====== Registry seed (B6: ボード) ======
-  regData('bd-tool', 'select',     { label: '選択',     desc: 'カードやラインの選択・移動を行います' });
-  regData('bd-tool', 'add-card',   { label: 'カード追加', desc: 'クリック位置に新しいカードを追加します' });
-  regData('bd-tool', 'add-line',   { label: 'ライン追加', desc: 'カードからカードへラインを引きます' });
-  regData('bd-tool', 'erase',      { label: '消しゴム', desc: 'カードやラインをクリックで削除します' });
-  regData('bd-action', 'pick-card-style',     { label: 'カードスタイル', desc: '適用するカードスタイルを選びます' });
-  regData('bd-action', 'manage-card-styles',  { label: 'カードスタイル管理', desc: 'カードスタイルの追加・編集・削除を行います' });
+  regData('bd-tool', 'select',     { label: '選択',     desc: 'トピックやラインの選択・移動を行います' });
+  regData('bd-tool', 'add-card',   { label: 'トピック追加', desc: 'クリック位置に新しいトピックを追加します' });
+  regData('bd-tool', 'add-line',   { label: 'ライン追加', desc: 'トピックからトピックへラインを引きます' });
+  regData('bd-tool', 'erase',      { label: '消しゴム', desc: 'トピックやラインをクリックで削除します' });
+  regData('bd-action', 'pick-card-style',     { label: 'トピックスタイル', desc: '適用するトピックスタイルを選びます' });
+  regData('bd-action', 'manage-card-styles',  { label: 'トピックスタイル管理', desc: 'トピックスタイルの追加・編集・削除を行います' });
   regData('bd-action', 'pick-line-style',     { label: 'ラインスタイル', desc: '適用するラインスタイルを選びます' });
   regData('bd-action', 'manage-line-styles',  { label: 'ラインスタイル管理', desc: 'ラインスタイルの追加・編集・削除を行います' });
-  regData('bd-action', 'filters',             { label: 'フィルタ', desc: 'タグや関連でボードのカードを絞り込みます' });
-  regData('bd-action', 'find-replace',        { label: '検索 / 置換', desc: 'ボード内のカード本文を検索または置換します', shortcutId: 'global.search' });
+  regData('bd-action', 'filters',             { label: 'フィルタ', desc: 'タグや関連でボードのトピックを絞り込みます' });
+  regData('bd-action', 'find-replace',        { label: '検索 / 置換', desc: 'ボード内のトピック本文を検索または置換します', shortcutId: 'global.search' });
   regData('bd-action', 'detail',              { label: 'オプション', desc: 'ボードの表示オプションを開きます' });
   regData('bd-action', 'zoom-select', { label: '表示倍率', desc: '表示倍率を一覧から選びます' });
   regData('bd-action', 'zoom-out',    { label: 'ズームアウト', desc: '表示倍率を下げます', shortcutId: 'board.zoomOut' });
   regData('bd-action', 'zoom-in',     { label: 'ズームイン', desc: '表示倍率を上げます', shortcutId: 'board.zoomIn' });
   regData('bd-action', 'zoom-100',    { label: '100%表示', desc: '表示倍率を100%に戻します', shortcutId: 'board.zoom100' });
-  regData('bd-action', 'fit',         { label: '全体表示', desc: 'すべてのカードが収まる倍率に合わせます', shortcutId: 'board.zoomFit' });
+  regData('bd-action', 'fit',         { label: '全体表示', desc: 'すべてのトピックが収まる倍率に合わせます', shortcutId: 'board.zoomFit' });
   regData('bd-action', 'reset-rotation', { label: '回転リセット', desc: 'ボードの回転を0度に戻します' });
   regData('bd-action', 'bg-color',        { label: '背景色',     desc: 'ボードの背景色を変更します' });
   regData('bd-action', 'set-bg-image',    { label: '背景画像',   desc: 'ボードの背景に画像を設定します' });
   regData('bd-action', 'clear-bg-image',  { label: '背景画像クリア', desc: 'ボードの背景画像を解除します' });
   regId('bd-zoom-slider',  { label: '倍率スライダー', desc: 'ドラッグでボードの表示倍率を調整します' });
   regId('bd-rot-slider',   { label: '回転スライダー', desc: 'ドラッグでボードの回転角度を調整します' });
-  regAction('bdopenfindbar', { label: '検索 / 置換', desc: 'ボード内のカード本文を検索または置換します', shortcutId: 'global.search' });
+  regAction('bdopenfindbar', { label: '検索 / 置換', desc: 'ボード内のトピック本文を検索または置換します', shortcutId: 'global.search' });
 
-  // ====== Registry seed (B7: 注釈・チャット・LLM・チームチャット・DM) ======
-  regData('tool', 'pen',     { label: 'ペン',       desc: 'ペンで自由に注釈を書き込みます' });
-  regData('tool', 'marker',  { label: 'マーカー',   desc: '半透明のマーカーで注釈を書き込みます' });
+  // ====== Registry seed (B7: アノテート・チャット・LLM・チームチャット・DM) ======
+  regData('tool', 'pen',     { label: 'ペン',       desc: 'ペンで自由にアノテートを書き込みます' });
+  regData('tool', 'marker',  { label: 'マーカー',   desc: '半透明のマーカーでアノテートを書き込みます' });
   regData('tool', 'lasso',   { label: '塗りつぶし', desc: '囲んだ範囲を半透明色で塗ります' });
-  regData('tool', 'eraser',  { label: '消しゴム',   desc: '描き込んだ注釈を消します' });
-  regData('tool', 'sticky',  { label: '付箋',       desc: '紙の付箋のような注釈を貼り付けます' });
-  regId('ann-color-swatch',  { label: '注釈色',     desc: '注釈ペン・マーカー・付箋の色を変更します' });
-  regId('ann-opacity',       { label: '不透明度',   desc: '注釈の不透明度を調整します' });
-  regAction('annclear',      { label: '注釈全削除', desc: '現在のページの注釈をすべて削除します' });
-  regAction('newrpcomment',  { label: '注釈コメント追加', desc: '新しい注釈コメントを作成します', shortcutId: 'global.addComment' });
-  regAction('loadrpannotationlist', { label: '注釈一覧更新', desc: '注釈一覧を最新状態に更新します' });
+  regData('tool', 'eraser',  { label: '消しゴム',   desc: '描き込んだアノテートを消します' });
+  regData('tool', 'sticky',  { label: '付箋',       desc: '紙の付箋のようなアノテートを貼り付けます' });
+  regId('ann-color-swatch',  { label: 'アノテート色',     desc: 'アノテートペン・マーカー・付箋の色を変更します' });
+  regId('ann-opacity',       { label: '不透明度',   desc: 'アノテートの不透明度を調整します' });
+  regAction('annclear',      { label: 'アノテート全削除', desc: '現在のページのアノテートをすべて削除します' });
+  regAction('newrpcomment',  { label: 'アノテートコメント追加', desc: '新しいアノテートコメントを作成します', shortcutId: 'global.addComment' });
+  regAction('loadrpannotationlist', { label: 'アノテート一覧更新', desc: 'アノテート一覧を最新状態に更新します' });
   regAction('chatsend',      { label: '送信',       desc: 'チャットメッセージを送信します' });
   regAction('chatclear',     { label: '新しいチャット', desc: '新しいチャットセッションを開始します' });
   regAction('chatsave',      { label: 'チャット保存', desc: '現在のチャットを保存します' });
@@ -59689,19 +62959,19 @@ ${reason.message}`
   regAction('switchdetailtab',       { label: 'タブ切替',     desc: 'オプションパネルの表示タブを切り替えます' });
   regAction('switchsettingstab',     { label: '設定タブ切替', desc: '設定ダイアログの表示タブを切り替えます' });
   regAction('switchsettingsthemestyletab', { label: 'スタイル切替', desc: 'テーマ設定のスタイルタブを切り替えます' });
-  regAction('switchcstab',           { label: 'スタイル切替', desc: 'カードスタイル編集のタブを切り替えます' });
+  regAction('switchcstab',           { label: 'スタイル切替', desc: 'トピックスタイル編集のタブを切り替えます' });
   regAction('switchrighttab',        { label: '右サイドバー切替', desc: '右サイドバーの表示タブを切り替えます' });
 
   // 履歴パネル
   regAction('historypanelclear',     { label: '履歴クリア',   desc: '操作履歴の表示をすべてクリアします' });
   regAction('historypaneljump',      { label: '履歴ジャンプ', desc: 'この操作時点の状態に戻します' });
 
-  // 注釈マネージャ
-  regAction('openannotationmanager', { label: '注釈マネージャ', desc: '注釈の一覧管理画面を開きます' });
-  regAction('loadannotationlist',    { label: '注釈一覧更新', desc: '注釈一覧を最新状態に更新します' });
+  // アノテートマネージャ
+  regAction('openannotationmanager', { label: 'アノテートマネージャ', desc: 'アノテートの一覧管理画面を開きます' });
+  regAction('loadannotationlist',    { label: 'アノテート一覧更新', desc: 'アノテート一覧を最新状態に更新します' });
   regAction('loadrpstickylist',      { label: '付箋一覧更新', desc: '付箋一覧を最新状態に更新します' });
-  regAction('jumptoannotation',      { label: '注釈へ移動',   desc: 'この注釈の位置へジャンプします' });
-  regAction('deleteannotationfrommanager', { label: '注釈削除', desc: 'この注釈を削除します' });
+  regAction('jumptoannotation',      { label: 'アノテートへ移動',   desc: 'このアノテートの位置へジャンプします' });
+  regAction('deleteannotationfrommanager', { label: 'アノテート削除', desc: 'このアノテートを削除します' });
   regAction('deletenote',            { label: 'コメント削除', desc: 'このコメントを削除します' });
 
   // テーマ・配色・スタイル
@@ -59715,7 +62985,7 @@ ${reason.message}`
   regAction('openrtcolorpalette',    { label: '色を選択',     desc: 'テキスト用カラーパレットを開きます' });
   regAction('openstylebgonlypalette',{ label: '背景色を選択', desc: '背景色専用のカラーパレットを開きます' });
   regAction('openstylepreviewpopup', { label: 'プレビュー',   desc: 'スタイルのプレビューを表示します' });
-  regAction('togglecsstyle',         { label: 'スタイル切替', desc: 'カードスタイルの有効/無効を切り替えます' });
+  regAction('togglecsstyle',         { label: 'スタイル切替', desc: 'トピックスタイルの有効/無効を切り替えます' });
   regAction('togglelinevisibility',  { label: 'ライン表示',   desc: 'このライン種類の表示/非表示を切り替えます' });
 
   // ファイル別スタイル / プリセット
@@ -59763,38 +63033,36 @@ ${reason.message}`
   regAction('settingsthemeboardchoosebgimage', { label: '背景画像を選択', desc: 'ボードの既定背景画像を選択します' });
   regAction('settingsthemeboardclearbgimage',  { label: '背景画像クリア', desc: 'ボードの既定背景画像を解除します' });
 
-  // スマートシート
-  regAction('setsmartdbactiveview',  { label: 'ビュー切替',   desc: 'スマートシートの表示ビューを切り替えます' });
 
   // ====== Registry seed (B11: ボード詳細・カレンダー詳細・バージョンアクション) ======
   // ボード スタイル/状態 操作
-  regData('bd-action', 'manage-statuses',     { label: 'ステータス管理', desc: 'カードのステータス候補を追加・編集・削除します' });
+  regData('bd-action', 'manage-statuses',     { label: 'ステータス管理', desc: 'トピックのステータス候補を追加・編集・削除します' });
   regData('bd-action', 'manage-depth-styles', { label: '階層スタイル管理', desc: '階層ごとの既定スタイルを管理します' });
   regData('bd-action', 'save-depth-styles',   { label: '階層スタイル保存', desc: '現在の階層別スタイルを保存します' });
   regData('bd-action', 'reset-depth-styles',  { label: '階層スタイルリセット', desc: '階層別スタイルを初期状態に戻します' });
-  regData('bd-action', 'save-card-style',         { label: 'カードスタイル保存', desc: '現在のカードスタイルを上書き保存します' });
-  regData('bd-action', 'save-card-style-as-new',  { label: '別名保存',     desc: '現在のカードスタイルを別名で新規保存します' });
-  regData('bd-action', 'save-node-card-style',        { label: 'カード固有スタイル保存', desc: 'このカード固有のスタイルを保存します' });
-  regData('bd-action', 'save-node-card-style-as-new', { label: '別名保存',           desc: 'このカード固有のスタイルを別名で保存します' });
+  regData('bd-action', 'save-card-style',         { label: 'トピックスタイル保存', desc: '現在のトピックスタイルを上書き保存します' });
+  regData('bd-action', 'save-card-style-as-new',  { label: '別名保存',     desc: '現在のトピックスタイルを別名で新規保存します' });
+  regData('bd-action', 'save-node-card-style',        { label: 'トピック固有スタイル保存', desc: 'このトピック固有のスタイルを保存します' });
+  regData('bd-action', 'save-node-card-style-as-new', { label: '別名保存',           desc: 'このトピック固有のスタイルを別名で保存します' });
   regData('bd-action', 'save-line-style',         { label: 'ラインスタイル保存', desc: '現在のラインスタイルを上書き保存します' });
   regData('bd-action', 'save-line-style-as-new',  { label: '別名保存',     desc: '現在のラインスタイルを別名で新規保存します' });
   regData('bd-action', 'save-conn-line-style',        { label: 'ライン固有スタイル保存', desc: 'このライン固有のスタイルを保存します' });
   regData('bd-action', 'save-conn-line-style-as-new', { label: '別名保存',         desc: 'このライン固有のスタイルを別名で保存します' });
-  regData('bd-action', 'reset-card-style',         { label: 'カードスタイルリセット', desc: 'カードスタイルを既定値に戻します' });
-  regData('bd-action', 'reset-node-card-style',    { label: 'カード固有解除', desc: 'このカードの固有スタイルを解除して既定に戻します' });
+  regData('bd-action', 'reset-card-style',         { label: 'トピックスタイルリセット', desc: 'トピックスタイルを既定値に戻します' });
+  regData('bd-action', 'reset-node-card-style',    { label: 'トピック固有解除', desc: 'このトピックの固有スタイルを解除して既定に戻します' });
   regData('bd-action', 'reset-line-style',         { label: 'ラインスタイルリセット', desc: 'ラインスタイルを既定値に戻します' });
   regData('bd-action', 'reset-conn-style',         { label: 'ライン固有解除', desc: 'このラインの固有スタイルを解除して既定に戻します' });
   regData('bd-action', 'reset-conn-line-style',    { label: 'ラインスタイル解除', desc: 'ラインのスタイル設定を解除します' });
   regData('bd-action', 'reset-conn-bends',         { label: 'ライン形状リセット', desc: 'ラインの曲げ・分岐形状を初期化します' });
   regData('bd-action', 'reset-style',              { label: 'スタイル全リセット', desc: '選択中のスタイル設定をすべて既定に戻します' });
-  regData('bd-action', 'open-link',                { label: 'リンクを開く', desc: 'カードに設定されたリンク先を開きます' });
+  regData('bd-action', 'open-link',                { label: 'リンクを開く', desc: 'トピックに設定されたリンク先を開きます' });
 
   // カレンダー追加操作（B5未網羅分）
   regData('cal-action', 'addEvent',  { label: 'イベント追加', desc: 'この日付にイベントを追加します' });
   regData('cal-action', 'addTask',   { label: 'ToDo追加',   desc: 'この日付にToDoを追加します' });
 
   // ====== Registry seed (B12: 主要 input / slider / select) ======
-  // 注釈ツール幅・不透明度
+  // アノテートツール幅・不透明度
   regId('ann-width-pen',     { label: 'ペンの太さ',     desc: 'ペンで描く線の太さを調整します' });
   regId('ann-width-marker',  { label: 'マーカーの太さ', desc: 'マーカーで描く線の太さを調整します' });
   regId('ann-width-eraser',  { label: '消しゴムサイズ', desc: '消しゴムで消す範囲の大きさを調整します' });
@@ -59802,17 +63070,12 @@ ${reason.message}`
   regId('chat-input',           { label: 'メッセージ', desc: 'チャットに送るメッセージを入力します。Enter または送信ボタンで確定' });
   regId('chat-search-input',    { label: 'チャット検索', desc: 'このチャット内のメッセージをキーワードで検索します' });
   regId('chat-attachment-file', { label: '添付ファイル', desc: 'チャットに添付するファイルを選択します' });
-  // 注釈・コメント検索
-  regId('rp-ann-search',  { label: '注釈検索', desc: '注釈一覧を本文で検索します' });
+  // アノテート・コメント検索
+  regId('rp-ann-search',  { label: 'アノテート検索', desc: 'アノテート一覧を本文で検索します' });
   // フォルダフィルタ
   regId('gf-search-entities', { label: 'フィルタ検索', desc: 'フィルタ対象の項目をキーワードで絞り込みます' });
   // HTMLビューア
   regId('html-url-bar', { label: 'URL', desc: '表示するURLを入力します。Enterで移動' });
-  // タイマー
-  regId('inp-h',       { label: '時',   desc: 'タイマーの時間（時）を設定します' });
-  regId('inp-m',       { label: '分',   desc: 'タイマーの時間（分）を設定します' });
-  regId('inp-s',       { label: '秒',   desc: 'タイマーの時間（秒）を設定します' });
-  regId('inp-countup', { label: 'カウントアップ', desc: 'チェックすると経過時間を計測するモードになります' });
   regId('seek-bar',    { label: '再生位置', desc: 'ドラッグして再生位置を移動します' });
   regId('fade',        { label: 'フェード時間', desc: '画像切替時のフェード時間（秒）を設定します' });
   // ノート余白
@@ -59822,7 +63085,7 @@ ${reason.message}`
   // タイトル変更
   regId('title-input', { label: 'タイトル', desc: 'ファイルのタイトルを入力します' });
   // ファイル選択（XLSX取込・画像添付）
-  regId('xlsx-import-input', { label: 'Excel取込', desc: 'シートに取り込むXLSXファイルを選択します' });
+  regId('xlsx-import-input', { label: 'Excelからシナリオを作成', desc: '新しいシナリオを作成するXLSXファイルを選択します' });
   regId('gb-img-file-input', { label: '画像選択',  desc: '挿入する画像ファイルを選択します' });
   regId('avatar-upload-input', { label: 'アイコン画像', desc: 'プロフィール用の画像ファイルを選択します' });
   // 一括列幅
@@ -59835,7 +63098,7 @@ ${reason.message}`
 
   // ====== Registry seed (B13: 画像ビューワー・スライドショー・CSP連携・ボード検索) ======
   // ボード検索バー
-  regId('bd-find-q',           { label: '検索ワード',     desc: 'ボード内のカード本文から検索するキーワードを入力します' });
+  regId('bd-find-q',           { label: '検索ワード',     desc: 'ボード内のトピック本文から検索するキーワードを入力します' });
   regId('bd-find-r',           { label: '置換ワード',     desc: '見つかった文字列を置き換える文字列を入力します' });
   regId('bd-find-prev',        { label: '前の一致',       desc: '前の検索一致箇所へジャンプします' });
   regId('bd-find-next',        { label: '次の一致',       desc: '次の検索一致箇所へジャンプします' });
@@ -59895,7 +63158,6 @@ ${reason.message}`
   regId('cal-today',      { label: '今日',         desc: '表示位置を今日に戻します', shortcutId: 'cal.today' });
   regId('cal-mode',       { label: '表示モード',   desc: '日 / 週 / 月などの表示モードを切り替えます' });
   regId('cal-start-day',  { label: '週の開始曜日', desc: 'カレンダーの週の開始曜日を選びます' });
-  regId('cal-timer',      { label: 'タイマー',     desc: '作業タイマーを開きます' });
   regId('cal-sync',       { label: '外部同期',     desc: '外部カレンダーと同期します' });
   regId('cal-title',      { label: '期間表示',     desc: '現在表示している期間を示します' });
   // カレンダーイベント詳細
@@ -59927,7 +63189,7 @@ ${reason.message}`
   regId('sn-save-ok',               { label: '保存',           desc: 'プリセットを保存します' });
   regId('sn-save-cancel',           { label: 'キャンセル',     desc: '保存をキャンセルします' });
 
-  // ====== Registry seed (B14: 検索/置換UI、CSV、チャット選択、注釈フィルタ) ======
+  // ====== Registry seed (B14: 検索/置換UI、CSV、チャット選択、アノテートフィルタ) ======
   // ソースフォルダ全文検索パネル
   regId('sp-query',         { label: '検索ワード',     desc: 'ソースフォルダ全体から検索するキーワードを入力します' });
   regId('sp-replace',       { label: '置換ワード',     desc: '見つかった文字列を置き換える文字列を入力します' });
@@ -59956,13 +63218,13 @@ ${reason.message}`
   regId('team-attachment-file', { label: '添付ファイル', desc: 'チームチャットに添付するファイルを選択します' });
   regId('team-send-btn',        { label: '送信', desc: 'チームチャットへメッセージを送信します' });
 
-  // 注釈パネルのフィルタ
-  regId('rp-ann-view',    { label: '表示形式',   desc: '注釈一覧の表示形式（リスト/カード等）を切り替えます' });
-  regId('rp-ann-sort',    { label: '並び順',     desc: '注釈一覧の並び順を切り替えます' });
-  regId('rp-ann-type',    { label: '種類フィルタ', desc: '表示する注釈の種類で絞り込みます' });
-  regId('rp-ann-scope',   { label: '範囲フィルタ', desc: '表示する注釈の対象範囲で絞り込みます' });
-  regId('rp-ann-status',  { label: 'ステータス', desc: '表示する注釈のステータスで絞り込みます（解決/未解決等）' });
-  regId('rp-ann-user',    { label: 'ユーザー',   desc: '注釈を作成したユーザーで絞り込みます' });
+  // アノテートパネルのフィルタ
+  regId('rp-ann-view',    { label: '表示形式',   desc: 'アノテート一覧の表示形式（リスト/カード等）を切り替えます' });
+  regId('rp-ann-sort',    { label: '並び順',     desc: 'アノテート一覧の並び順を切り替えます' });
+  regId('rp-ann-type',    { label: '種類フィルタ', desc: '表示するアノテートの種類で絞り込みます' });
+  regId('rp-ann-scope',   { label: '範囲フィルタ', desc: '表示するアノテートの対象範囲で絞り込みます' });
+  regId('rp-ann-status',  { label: 'ステータス', desc: '表示するアノテートのステータスで絞り込みます（解決/未解決等）' });
+  regId('rp-ann-user',    { label: 'ユーザー',   desc: 'アノテートを作成したユーザーで絞り込みます' });
 
   // バージョンアクション（data-version-action）
   regData('version-action', 'save',            { label: '手動保存',     desc: '現在のファイル状態をバージョンとして保存します' });
@@ -60060,7 +63322,11 @@ ${reason.message}`
   }
 
   function _cssEscape(value) {
-    return MeldexEscape.cssIdent(value);
+    const text = String(value ?? '');
+    if (!window.MeldexEscape?.cssIdent) {
+      throw new Error('MeldexEscape.cssIdent is required before accessibility initialization');
+    }
+    return window.MeldexEscape.cssIdent(text);
   }
 
   function _labelFromElement(el) {
@@ -62111,10 +65377,10 @@ ${reason.message}`
 // ============================================================
 const GB_CUSTOM_COLORS_KEY = 'meldex-custom-colors';
 const GB_STANDARD_PALETTE_ADJUST_KEY = 'meldex-standard-palette-adjust';
-const GB_STANDARD_PALETTE_HUE_MIN = -360;
+const GB_STANDARD_PALETTE_HUE_MIN = 0;
 const GB_STANDARD_PALETTE_HUE_MAX = 360;
 const GB_STANDARD_PALETTE_GRAY_PCTS = Object.freeze([0, 17, 33, 50, 67, 83, 100]);
-const GB_STANDARD_PALETTE_DEFAULT_ADJUST = Object.freeze({ hueStart: 0, hueEnd: 320, saturation: 50, brightness: 0, contrast: 50 });
+const GB_STANDARD_PALETTE_DEFAULT_ADJUST = Object.freeze({ hueStart: 0, hueEnd: 320, hueWrap: false, saturation: 50, brightness: 0, contrast: 50 });
 const GB_OS_ACCENT_TONES = Object.freeze([
   { tone: 'dark', label: 'OSアクセント（暗）' },
   { tone: 'base', label: 'OSアクセント' },
@@ -62206,6 +65472,13 @@ function _clampPaletteAdjustValue(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.round(num)));
 }
 
+function _normalizePaletteHueEndpoint(value, fallback) {
+  const num = Number(value);
+  const source = Number.isFinite(num) ? Math.round(num) : Math.round(Number(fallback) || 0);
+  if (source === GB_STANDARD_PALETTE_HUE_MAX) return GB_STANDARD_PALETTE_HUE_MAX;
+  return ((source % GB_STANDARD_PALETTE_HUE_MAX) + GB_STANDARD_PALETTE_HUE_MAX) % GB_STANDARD_PALETTE_HUE_MAX;
+}
+
 function normalizeStandardPaletteAdjust(adjust) {
   const src = adjust && typeof adjust === 'object' ? adjust : {};
   const hasOwn = key => Object.prototype.hasOwnProperty.call(src, key);
@@ -62214,11 +65487,16 @@ function normalizeStandardPaletteAdjust(adjust) {
   const legacyHue = _clampPaletteAdjustValue(src.hue, -180, 180, 0);
   const hueStartFallback = GB_STANDARD_PALETTE_DEFAULT_ADJUST.hueStart + (isLegacy ? legacyHue : 0);
   const hueEndFallback = GB_STANDARD_PALETTE_DEFAULT_ADJUST.hueEnd + (isLegacy ? legacyHue : 0);
+  const hueStart = _normalizePaletteHueEndpoint(src.hueStart, hueStartFallback);
+  const hueEnd = _normalizePaletteHueEndpoint(src.hueEnd, hueEndFallback);
+  const fullHueRange = Math.abs(hueEnd - hueStart) === GB_STANDARD_PALETTE_HUE_MAX;
+  const inferredHueWrap = !fullHueRange && hueStart > hueEnd;
   const rawSaturation = isLegacy ? GB_STANDARD_PALETTE_DEFAULT_ADJUST.saturation + (Number(src.saturation) || 0) : src.saturation;
   const rawContrast = isLegacy ? 50 + ((Number(src.contrast) || 0) / 2) : src.contrast;
   return {
-    hueStart: _clampPaletteAdjustValue(src.hueStart, GB_STANDARD_PALETTE_HUE_MIN, GB_STANDARD_PALETTE_HUE_MAX, hueStartFallback),
-    hueEnd: _clampPaletteAdjustValue(src.hueEnd, GB_STANDARD_PALETTE_HUE_MIN, GB_STANDARD_PALETTE_HUE_MAX, hueEndFallback),
+    hueStart,
+    hueEnd,
+    hueWrap: hasOwn('hueWrap') ? src.hueWrap === true : inferredHueWrap,
     saturation: _clampPaletteAdjustValue(rawSaturation, 0, 100, GB_STANDARD_PALETTE_DEFAULT_ADJUST.saturation),
     brightness: _clampPaletteAdjustValue(src.brightness, -100, 100, 0),
     contrast: _clampPaletteAdjustValue(rawContrast, 0, 100, GB_STANDARD_PALETTE_DEFAULT_ADJUST.contrast),
@@ -62413,10 +65691,6 @@ function _clampPalettePct(value) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function _paletteLerp(a, b, t) {
-  return a + ((b - a) * t);
-}
-
 function _grayFromBlackPct(pct) {
   const v = Math.max(0, Math.min(255, Math.round(255 * (1 - (pct / 100)))));
   const hex = v.toString(16).padStart(2, '0');
@@ -62434,7 +65708,18 @@ function _adjustBlackPctForContrast(pct, contrast) {
 
 function _standardPaletteHueAt(adjust, index) {
   const t = index / 7;
-  return _wrapHue(_paletteLerp(adjust.hueStart, adjust.hueEnd, t));
+  const rawSpan = Number(adjust.hueEnd) - Number(adjust.hueStart);
+  const distance = Math.min(GB_STANDARD_PALETTE_HUE_MAX, Math.abs(rawSpan));
+  const fullHueRange = distance === GB_STANDARD_PALETTE_HUE_MAX;
+  const wrapsHueRange = !fullHueRange && adjust.hueWrap === true;
+  const spanMagnitude = fullHueRange
+    ? GB_STANDARD_PALETTE_HUE_MAX
+    : (wrapsHueRange ? GB_STANDARD_PALETTE_HUE_MAX - distance : distance);
+  const direction = fullHueRange
+    ? (rawSpan < 0 ? -1 : 1)
+    : (wrapsHueRange ? (rawSpan < 0 ? 1 : -1) : (rawSpan < 0 ? -1 : 1));
+  const span = spanMagnitude * direction;
+  return _wrapHue(Number(adjust.hueStart) + (span * t));
 }
 
 function _standardPaletteBaseBrightness(adjust) {
@@ -62672,8 +65957,11 @@ function openColorPalette(anchorEl, currentColor, onSelect) {
     const initial = palette.querySelector('.gb-swatch.active, button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
     initial?.focus?.({ preventScroll: true });
   });
-  setTimeout(() => document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true), 0);
-  setTimeout(() => document.addEventListener('keydown', _gbPaletteKeyHandler, true), 0);
+  // パレットはclickハンドラから開くため、開いた時点で起点のpointerdownは既に
+  // 完了している。次のmacrotaskまで登録を遅らせると、高速なタッチ操作や
+  // 再描画直後の外側クリックを取りこぼすため、ここで直ちに監視を開始する。
+  document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true);
+  document.addEventListener('keydown', _gbPaletteKeyHandler, true);
 }
 
 // ============================================================
@@ -64069,13 +67357,81 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const THEME_UI_STATE_NORMAL = 'normal';
   const THEME_UI_STATE_HOVER = 'hover';
   const THEME_UI_STATE_SELECTED = 'selected';
-  const BUTTON_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG]);
+  const BUTTON_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const BUTTON_UI_STATES = Object.freeze([THEME_UI_STATE_NORMAL, THEME_UI_STATE_HOVER, THEME_UI_STATE_SELECTED]);
   const TAB_UI_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const SIMPLE_UI_STATES = Object.freeze([THEME_UI_STATE_NORMAL, THEME_UI_STATE_HOVER]);
   const STYLE_TARGET_PROPS = Object.freeze([THEME_UI_PROP_FG, THEME_UI_PROP_BG, THEME_UI_PROP_ACCENT]);
   const STYLE_TARGET_STATES = BUTTON_UI_STATES;
   const STYLE_TARGET_PROP_LABELS = Object.freeze({ fg: '文字', bg: '背景色', underline: '線/アクセント色' });
+  const BUTTON_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-button-fg', bg: '--ui-button-bg', border: '--ui-button-border', borderWidth: '--ui-button-border-width',
+      leftAccent: '--ui-button-left-accent', underline: '--ui-button-underline', accent: '--ui-button-accent-color',
+      bold: '--ui-button-font-weight', italic: '--ui-button-font-style', font: '--ui-button-font', fontSize: '--ui-button-font-size', lineHeight: '--ui-button-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border', borderWidth: '--ui-button-hover-border-width',
+      leftAccent: '--ui-button-hover-left-accent', underline: '--ui-button-hover-underline', accent: '--ui-button-hover-accent-color',
+      bold: '--ui-button-hover-font-weight', italic: '--ui-button-hover-font-style', font: '--ui-button-hover-font', fontSize: '--ui-button-hover-font-size', lineHeight: '--ui-button-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', border: '--ui-button-active-border', borderWidth: '--ui-button-active-border-width',
+      leftAccent: '--ui-button-active-left-accent', underline: '--ui-button-active-underline', accent: '--ui-button-active-accent-color',
+      bold: '--ui-button-active-font-weight', italic: '--ui-button-active-font-style', font: '--ui-button-active-font', fontSize: '--ui-button-active-font-size', lineHeight: '--ui-button-active-line-height',
+    }),
+  });
+  const DOCK_BUTTON_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-dock-button-fg', bg: '--ui-dock-button-bg', border: '--ui-dock-button-border', borderWidth: '--ui-dock-button-border-width',
+      leftAccent: '--ui-dock-button-left-accent', underline: '--ui-dock-button-underline', accent: '--ui-dock-button-accent-color',
+      bold: '--ui-dock-button-font-weight', italic: '--ui-dock-button-font-style', font: '--ui-dock-button-font', fontSize: '--ui-dock-button-font-size', lineHeight: '--ui-dock-button-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border', borderWidth: '--ui-dock-button-hover-border-width',
+      leftAccent: '--ui-dock-button-hover-left-accent', underline: '--ui-dock-button-hover-underline', accent: '--ui-dock-button-hover-accent-color',
+      bold: '--ui-dock-button-hover-font-weight', italic: '--ui-dock-button-hover-font-style', font: '--ui-dock-button-hover-font', fontSize: '--ui-dock-button-hover-font-size', lineHeight: '--ui-dock-button-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', border: '--ui-dock-button-active-border', borderWidth: '--ui-dock-button-active-border-width',
+      leftAccent: '--ui-dock-button-active-left-accent', underline: '--ui-dock-button-active-underline', accent: '--ui-dock-button-active-accent-color',
+      bold: '--ui-dock-button-active-font-weight', italic: '--ui-dock-button-active-font-style', font: '--ui-dock-button-active-font', fontSize: '--ui-dock-button-active-font-size', lineHeight: '--ui-dock-button-active-line-height',
+    }),
+  });
+  const PANEL_TAB_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-pane-tab-fg', bg: '--ui-pane-tab-bg', border: '--ui-pane-tab-border', borderWidth: '--ui-pane-tab-border-width',
+      leftAccent: '--ui-pane-tab-left-accent', underline: '--ui-pane-tab-underline', accent: '--ui-pane-tab-accent-color',
+      bold: '--ui-pane-tab-font-weight', italic: '--ui-pane-tab-font-style', font: '--ui-pane-tab-font', fontSize: '--ui-pane-tab-font-size', lineHeight: '--ui-pane-tab-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border', borderWidth: '--ui-pane-tab-hover-border-width',
+      leftAccent: '--ui-pane-tab-hover-left-accent', underline: '--ui-pane-tab-hover-underline', accent: '--ui-pane-tab-hover-accent-color',
+      bold: '--ui-pane-tab-hover-font-weight', italic: '--ui-pane-tab-hover-font-style', font: '--ui-pane-tab-hover-font', fontSize: '--ui-pane-tab-hover-font-size', lineHeight: '--ui-pane-tab-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', border: '--ui-pane-tab-active-border', borderWidth: '--ui-pane-tab-active-border-width',
+      leftAccent: '--ui-pane-tab-active-left-accent', underline: '--ui-pane-tab-active-underline-width', accent: '--ui-pane-tab-active-underline',
+      bold: '--ui-pane-tab-active-font-weight', italic: '--ui-pane-tab-active-font-style', font: '--ui-pane-tab-active-font', fontSize: '--ui-pane-tab-active-font-size', lineHeight: '--ui-pane-tab-active-line-height',
+    }),
+  });
+  const INNER_TAB_FORMAT_VARS = Object.freeze({
+    normal: Object.freeze({
+      fg: '--ui-inner-tab-fg', bg: '--ui-inner-tab-bg', border: '--ui-inner-tab-border', borderWidth: '--ui-inner-tab-border-width',
+      leftAccent: '--ui-inner-tab-left-accent', underline: '--ui-inner-tab-underline', accent: '--ui-inner-tab-accent-color',
+      bold: '--ui-inner-tab-font-weight', italic: '--ui-inner-tab-font-style', font: '--ui-inner-tab-font', fontSize: '--ui-inner-tab-font-size', lineHeight: '--ui-inner-tab-line-height',
+    }),
+    hover: Object.freeze({
+      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border', borderWidth: '--ui-inner-tab-hover-border-width',
+      leftAccent: '--ui-inner-tab-hover-left-accent', underline: '--ui-inner-tab-hover-underline', accent: '--ui-inner-tab-hover-accent-color',
+      bold: '--ui-inner-tab-hover-font-weight', italic: '--ui-inner-tab-hover-font-style', font: '--ui-inner-tab-hover-font', fontSize: '--ui-inner-tab-hover-font-size', lineHeight: '--ui-inner-tab-hover-line-height',
+    }),
+    selected: Object.freeze({
+      fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', border: '--ui-inner-tab-active-border', borderWidth: '--ui-inner-tab-active-border-width',
+      leftAccent: '--ui-inner-tab-active-left-accent', underline: '--ui-inner-tab-active-underline-width', accent: '--ui-inner-tab-active-underline',
+      bold: '--ui-inner-tab-active-font-weight', italic: '--ui-inner-tab-active-font-style', font: '--ui-inner-tab-active-font', fontSize: '--ui-inner-tab-active-font-size', lineHeight: '--ui-inner-tab-active-line-height',
+    }),
+  });
   const APP_STYLE_UI_TARGETS = Object.freeze([
     { id: 'style-folder', group: 'style', app: 'フォルダ', label: 'フォルダ', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, vars: {
       normal: { fg: '--fv-item-fg', bg: '--fv-item-bg', underline: '--fv-item-border' },
@@ -64127,17 +67483,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
       hover: { fg: '--chat-muted-fg', bg: '--chat-message-bg' },
       selected: { fg: '--chat-active-fg', bg: '--chat-active-bg', underline: '--chat-accent' },
     } },
-    { id: 'style-timer', group: 'style', app: 'タイマー', label: 'タイマー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'リスト', selected: '実行中/操作' }, vars: {
-      normal: { fg: '--timer-fg', underline: '--timer-border' },
-      hover: { fg: '--timer-muted-fg', bg: '--timer-hover-bg' },
-      selected: { fg: '--timer-active-fg', bg: '--timer-active-bg', underline: '--timer-accent' },
-    } },
     { id: 'style-history', group: 'style', app: 'ヒストリー', label: 'ヒストリー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: '行', selected: '強調' }, vars: {
       normal: { fg: '--history-fg', underline: '--history-border' },
       hover: { bg: '--history-hover-bg' },
       selected: { fg: '--history-active-fg', bg: '--history-active-bg', underline: '--history-accent' },
     } },
-    { id: 'style-annotation', group: 'style', app: '注釈', label: '注釈', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'カード', selected: '付箋/ツール' }, vars: {
+    { id: 'style-annotation', group: 'style', app: 'アノテート', label: 'アノテート', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'カード', selected: '付箋/ツール' }, vars: {
       normal: { fg: '--annotation-fg', underline: '--annotation-border' },
       hover: { bg: '--annotation-hover-bg' },
       selected: { fg: '--annotation-note-fg', bg: '--annotation-note-bg', underline: '--annotation-accent' },
@@ -64164,19 +67515,50 @@ async function _applyImportedCustomColors(rawColors, mode) {
     { id: 'scriptnote-type-summary', group: 'style', app: 'シナリオ', label: 'タイプ管理: プロット', props: STYLE_TARGET_PROPS, states: SIMPLE_UI_STATES, propLabels: STYLE_TARGET_PROP_LABELS, childSelector: '.sn2-detail-cell-input, .sn2-detail-cell-label, .sn2-detail-cell-preview' },
     { id: 'scriptnote-type-break', group: 'style', app: 'シナリオ', label: 'タイプ管理: 区切り', props: STYLE_TARGET_PROPS, states: SIMPLE_UI_STATES, propLabels: STYLE_TARGET_PROP_LABELS, childSelector: '.sn2-detail-cell-input, .sn2-detail-cell-label, .sn2-detail-cell-preview' },
   ]);
+  const PANEL_SURFACE_UI_TARGETS = Object.freeze([
+    { id: 'surface-dock', group: 'ui', label: '左右レールの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-dockbar-bg' } } },
+    { id: 'surface-popup', group: 'ui', label: 'ポップアップの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-popup-bg' } } },
+    { id: 'surface-folder', group: 'style', app: 'フォルダ', label: 'フォルダパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--fv-panel-bg' } } },
+    { id: 'surface-note', group: 'style', app: 'ノート', label: 'ノートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--page-text-bg' } } },
+    { id: 'surface-scriptnote', group: 'style', app: 'シナリオ', label: 'シナリオパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--sn2-page-bg' } } },
+    { id: 'surface-sheet', group: 'style', app: 'シート', label: 'シートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--db-row-bg' } } },
+    { id: 'surface-board', group: 'style', app: 'ボード', label: 'ボードパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--bd-bg' } } },
+    { id: 'surface-calendar', group: 'style', app: 'スケジュール', label: 'スケジュールパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--cal-content-bg' } } },
+    { id: 'surface-outliner', group: 'style', app: 'フォルダツリー', label: 'フォルダツリーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--outliner-bg' } } },
+    { id: 'surface-preview', group: 'style', app: 'ビューワー', label: 'ビューワーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--preview-bg' } } },
+    { id: 'surface-detail', group: 'style', app: 'オプション', label: 'オプションパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--detail-bg' } } },
+    { id: 'surface-chat', group: 'style', app: 'チャット', label: 'チャットパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--chat-bg' } } },
+    { id: 'surface-history', group: 'style', app: 'ヒストリー', label: 'ヒストリーパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--history-bg' } } },
+    { id: 'surface-annotation', group: 'style', app: 'アノテート', label: 'アノテートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--annotation-bg' } } },
+    { id: 'surface-search', group: 'style', app: '検索', label: '検索パネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--search-bg' } } },
+    { id: 'surface-version', group: 'style', app: 'バージョン管理', label: 'バージョン管理パネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--version-bg' } } },
+  ]);
   const THEME_UI_TARGETS = Object.freeze([
     { id: 'left-chrome', group: 'ui', label: '左クロームのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'button', group: 'ui', label: '共通ボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, vars: {
-      normal: { fg: '--ui-fg-default', bg: '--ui-bg-control' },
-      hover: { fg: '--ui-hover-fg', bg: '--ui-bg-control-hover' },
-      selected: { fg: '--ui-accent-fg', bg: ['--ui-accent', '--ui-bg-control-active', '--accent'] },
+    { id: 'button', group: 'ui', label: '共通ボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, formatVars: BUTTON_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-button-fg', bg: '--ui-button-bg', underline: '--ui-button-accent-color' },
+      hover: { fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', underline: '--ui-button-hover-accent-color' },
+      selected: { fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', underline: '--ui-button-active-accent-color' },
     } },
-    { id: 'panel-tab', group: 'ui', label: 'パネルタブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'inner-tab', group: 'ui', label: 'パネル内タブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
-    { id: 'collapse-button', group: 'ui', label: '折りたたみバーのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
+    { id: 'panel-tab', group: 'ui', label: 'パネルタブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES, formatVars: PANEL_TAB_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-pane-tab-fg', bg: '--ui-pane-tab-bg', underline: '--ui-pane-tab-accent-color' },
+      hover: { fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', underline: '--ui-pane-tab-hover-accent-color' },
+      selected: { fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', underline: '--ui-pane-tab-active-underline' },
+    } },
+    { id: 'inner-tab', group: 'ui', label: 'パネル内タブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES, formatVars: INNER_TAB_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-inner-tab-fg', bg: '--ui-inner-tab-bg', underline: '--ui-inner-tab-accent-color' },
+      hover: { fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', underline: '--ui-inner-tab-hover-accent-color' },
+      selected: { fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', underline: '--ui-inner-tab-active-underline' },
+    } },
+    { id: 'collapse-button', group: 'ui', label: 'レールのボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, formatVars: DOCK_BUTTON_FORMAT_VARS, vars: {
+      normal: { fg: '--ui-dock-button-fg', bg: '--ui-dock-button-bg', underline: '--ui-dock-button-accent-color' },
+      hover: { fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', underline: '--ui-dock-button-hover-accent-color' },
+      selected: { fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', underline: '--ui-dock-button-active-accent-color' },
+    } },
     { id: 'folder-section', group: 'ui', label: 'フォルダツリーの見出し', props: BUTTON_UI_PROPS, states: SIMPLE_UI_STATES },
     { id: 'folder', group: 'ui', label: 'フォルダツリー項目', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES },
     { id: 'section-bar', group: 'ui', label: 'パネル内セクション', props: TAB_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { underline: '左アクセント色' } },
+    ...PANEL_SURFACE_UI_TARGETS,
     ...APP_STYLE_UI_TARGETS,
     ...SEQUENTIAL_STYLE_UI_TARGETS,
   ]);
@@ -64192,7 +67574,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   ]);
   const PALETTE_TARGET_SPECS = Object.freeze([
     ['.left-chrome-command-trigger, .left-chrome-user, .left-chrome-help, .left-chrome-trash, .left-chrome-settings, .left-chrome-floating-btn', 'left-chrome'],
-    ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'pane-tab'],
+    ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'panel-tab'],
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
     ['.gb-panelset-tabbar > button, .gb-panelset-tabbar > .gb-panel-tab', 'panelset-tab'],
     ['.gb-split-collapsed-icon, .gb-split-expand-btn, .gb-dock-icon, .gb-pane-collapsed > .gb-pane-tabs .gb-tab, .gb-pane-collapse', 'collapse-button'],
@@ -64226,7 +67608,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const COMMON_INTEGRATED_APP_STYLE_KEYS = Object.freeze([
     '--page-text-bg', '--sn2-page-bg', '--db-row-bg', '--fv-panel-bg',
     '--cal-content-bg', '--preview-bg', '--detail-bg', '--chat-bg',
-    '--timer-bg', '--history-bg', '--annotation-bg', '--search-bg',
+    '--history-bg', '--annotation-bg', '--search-bg',
     '--version-bg',
     '--cal-scroll-thumb', '--cal-scroll-thumb-hover',
     '--fv-item-border', '--fv-item-hover-bg', '--fv-item-selected-fg', '--fv-item-selected-bg',
@@ -64252,7 +67634,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const THEME_OS_ACCENT_TEXT_STYLE_KEYS = Object.freeze([
     '--ui-selection-fg', '--ui-accent-fg',
     '--cal-accent-fg', '--cal-mini-selected-fg',
-    '--chat-active-fg', '--timer-active-fg', '--version-active-fg',
+    '--chat-active-fg', '--version-active-fg',
   ]);
   const THEME_UI_AUTO_TONE_DEFAULT = Object.freeze({ light: 30, dark: 30 });
 
@@ -64270,7 +67652,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#969696', '--ui-header-bg': '#181c22',
     '--ui-toolbar-fg': '#d4d4d4', '--ui-toolbar-bg': '#111419',
     '--ui-hover-fg': '#d4d4d4', '--ui-hover-bg': '#242a32',
-    '--ui-accent': '#569cd6',
+    '--ui-accent': '#569cd6', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#ffffff', '--ui-selection-bg': '#264f78',
     '--ui-range-fill-bg': '#569cd6', '--ui-range-track-bg': '#2a2a2a',
@@ -64278,6 +67660,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
     '--db-th-fg': '#969696', '--db-th-bg': '#181c22', '--db-entity-fg': '#d4d4d4', '--db-entity-bg': '#0b0d10',
     '--db-cell-fg': '#d4d4d4', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#ffffff', '--db-selection-color': '#264f78',
     '--page-title-fg': '#d4d4d4', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #569cd6)', '--page-h2-fg': 'var(--theme-palette-1, #4ec9b0)', '--page-h3-fg': 'var(--theme-palette-2, #dcdcaa)', '--page-h4-fg': 'var(--theme-palette-3, #6a9955)', '--page-h5-fg': 'var(--theme-palette-4, #ce9178)', '--page-h6-fg': 'var(--theme-palette-5, #6fa8dc)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#d4d4d4', '--page-text-bg': '#0f1216', '--page-link-fg': 'var(--link-fg)',
@@ -64297,13 +67680,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#555555', '--ui-header-bg': '#ebebeb',
     '--ui-toolbar-fg': '#1e1e1e', '--ui-toolbar-bg': '#f5f5f5',
     '--ui-hover-fg': '#1e1e1e', '--ui-hover-bg': '#d4d4d4',
-    '--ui-fg-strong': '#ffffff',
+    '--ui-accent-fg': '#ffffff', '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#1e1e1e', '--ui-selection-bg': '#bbdefb',
     '--ui-range-fill-bg': '#0055aa', '--ui-range-track-bg': '#d6d6d6',
     '--editor-caret-color': '#0055aa', '--editor-caret-width': '2px', '--a11y-focus-ring': THEME_OS_ACCENT_CSS,
     '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
     '--db-th-fg': '#555555', '--db-th-bg': '#ebebeb', '--db-entity-fg': '#1e1e1e', '--db-entity-bg': '#ffffff',
     '--db-cell-fg': '#1e1e1e', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#1e1e1e', '--db-selection-color': '#bbdefb',
     '--page-title-fg': '#1e1e1e', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #0055aa)', '--page-h2-fg': 'var(--theme-palette-1, #007050)', '--page-h3-fg': 'var(--theme-palette-2, #b45309)', '--page-h4-fg': 'var(--theme-palette-3, #2e7d32)', '--page-h5-fg': 'var(--theme-palette-4, #1565c0)', '--page-h6-fg': 'var(--theme-palette-5, #7c3aed)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#1e1e1e', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
@@ -64323,12 +67707,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#5b6475', '--ui-header-bg': '#eef1f5',
     '--ui-toolbar-fg': '#2f3440', '--ui-toolbar-bg': '#f6f7f9',
     '--ui-hover-fg': '#2f3440', '--ui-hover-bg': '#eef1f5',
-    '--ui-fg-strong': '#ffffff',
+    '--ui-accent-fg': '#ffffff', '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#2f3440', '--ui-selection-bg': '#eadcff',
     '--ui-range-fill-bg': '#8e44ad', '--ui-range-track-bg': '#e4e8f0',
     '--editor-caret-color': '#8e44ad', '--editor-caret-width': '2px',
     '--db-th-fg': '#5b6475', '--db-th-bg': '#eef1f5', '--db-entity-fg': '#2f3440', '--db-entity-bg': '#ffffff',
     '--db-cell-fg': '#2f3440', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#2f3440', '--db-selection-color': '#eadcff',
     '--page-title-fg': '#2f3440', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #9b59b6)', '--page-h2-fg': 'var(--theme-palette-1, #1abc9c)', '--page-h3-fg': 'var(--theme-palette-2, #f39c12)', '--page-h4-fg': 'var(--theme-palette-3, #e74c3c)', '--page-h5-fg': 'var(--theme-palette-4, #3498db)', '--page-h6-fg': 'var(--theme-palette-5, #7f8c8d)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#2f3440', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
@@ -64348,13 +67733,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#4f7f3b',
+    '--ui-accent': '#4f7f3b', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
     '--editor-caret-color': '#6fa85a', '--editor-caret-width': '2px',
     '--db-th-fg': '#aab3aa', '--db-th-bg': '#242824', '--db-entity-fg': '#d9ddd8', '--db-entity-bg': '#101210',
     '--db-cell-fg': '#d9ddd8', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
+    '--db-selection-fg': '#f2f6f1', '--db-selection-color': '#2d472b',
     '--page-title-fg': '#d9ddd8', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #6fa85a)', '--page-h2-fg': 'var(--theme-palette-1, #8dbf70)', '--page-h3-fg': 'var(--theme-palette-2, #b88a4a)', '--page-h4-fg': 'var(--theme-palette-3, #90b870)', '--page-h5-fg': 'var(--theme-palette-4, #6898b0)', '--page-h6-fg': 'var(--theme-palette-5, #d06050)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
     '--page-text-fg': '#d9ddd8', '--page-text-bg': '#101210', '--page-link-fg': 'var(--link-fg)',
@@ -64580,9 +67966,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const num = Number(value);
       return Number.isFinite(num) ? Math.max(min, Math.min(max, Math.round(num))) : fallback;
     };
+    const hueStart = clamp(src.hueStart, -360, 360, 0);
+    const hueEnd = clamp(src.hueEnd, -360, 360, 320);
+    const fullHueRange = Math.abs(hueEnd - hueStart) === 360;
     return {
-      hueStart: clamp(src.hueStart, -360, 360, 0),
-      hueEnd: clamp(src.hueEnd, -360, 360, 320),
+      hueStart,
+      hueEnd,
+      hueWrap: typeof src.hueWrap === 'boolean' ? src.hueWrap : (!fullHueRange && hueStart > hueEnd),
       saturation: clamp(src.saturation, 0, 100, 50),
       brightness: clamp(src.brightness, -100, 100, 0),
       contrast: clamp(src.contrast, 0, 100, 50),
@@ -64955,8 +68345,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _effectiveThemeColorSet(colors, fallback, themeDef) {
-    const presetAccent = getEffectiveThemeAccent(themeDef);
-    if (presetAccent) return [presetAccent];
+    // OS／既定アクセントはボタンや選択線などのアクセント対象だけへ適用する。
+    // パレット全体を1色へ畳むと、見出し・階層・系列色まで同じアクセント色になる。
     return normalizeThemeColorSet(colors, fallback || RAINBOW_PALETTE);
   }
 
@@ -65626,8 +69016,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function getThemeColorSet(themeDef, options = {}) {
-    const policy = getThemeAccentPolicy(themeDef);
-    if (policy.kind === 'system-or-default') return [getEffectiveThemeAccent(themeDef, options)];
     const activePalette = _activeThemeColorSet;
     const palette = themeDef
       ? resolveThemeColorSet(themeDef)
@@ -65773,6 +69161,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (propId === 'underline') {
       if (targetId === 'section-bar') {
         return `${selector}{border-left-color:${colorCss}!important}`;
+      }
+      if (targetId === 'folder-tree-folder') {
+        return `${selector}{outline-color:${colorCss}!important}`;
       }
       if (targetId === 'note-heading') {
         return _themeUiNoteHeadingAccentRule(selector, colorCss);
@@ -65926,6 +69317,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     fallback('--ui-bg-control', '--bg3', '#2d2d2d');
     fallback('--ui-bg-control-hover', '--bg4', '#3e3e3e');
     if (!next['--ui-bg-control-active']) next['--ui-bg-control-active'] = 'color-mix(in srgb, var(--accent) 18%, var(--bg3))';
+    fallback('--ui-control-active-fg', '--fg', '#ffffff');
     fallback('--ui-popup-bg', '--bg2', '#252525');
     fallback('--ui-accent', '--accent', '#569cd6');
     if (!next['--accent-bg']) next['--accent-bg'] = 'color-mix(in srgb, var(--accent) 12%, transparent)';
@@ -66239,16 +69631,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
     fallback('--chat-active-bg', '--ui-accent', '#2563eb');
     fallback('--chat-active-fg', '--ui-fg-strong', '#ffffff');
     fallback('--chat-accent', '--accent', '#569cd6');
-    fallback('--timer-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-panel-bg', '--bg2', '#252525');
-    fallback('--timer-display-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-fg', '--fg', '#d4d4d4');
-    fallback('--timer-muted-fg', '--fg2', '#969696');
-    fallback('--timer-border', '--border', '#333333');
-    fallback('--timer-hover-bg', '--ui-hover-bg', '#3e3e3e');
-    fallback('--timer-active-bg', '--ui-accent', '#2563eb');
-    fallback('--timer-active-fg', '--ui-fg-strong', '#ffffff');
-    fallback('--timer-accent', '--accent', '#569cd6');
     fallback('--history-bg', '--content-bg', '#1e1e1e');
     fallback('--history-row-bg', '--bg2', '#252525');
     fallback('--history-fg', '--fg', '#d4d4d4');
@@ -67219,6 +70601,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const OVERFLOW_OPTS = [
     { v: '', l: '自動' }, { v: 'wrap', l: '折返' }, { v: 'overflow', l: '溢出' }, { v: 'clip', l: '切詰' },
   ];
+  const BORDER_STYLE_OPTS = [
+    { v: 'none', l: 'なし' }, { v: 'dotted', l: '点線' }, { v: 'dashed', l: '破線' }, { v: 'solid', l: '実線' },
+  ];
 
   const DEFAULT_FIELDS = [
     'textColor', 'fontSize', 'fontFamily',
@@ -67557,14 +70942,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
    * @param {Object} [options.values] 現在値
    *   bgColor, textColor, fontWeight, fontStyle, fontSize, fontFamily,
    *   textStrokeColor, textStrokeWidth, leftAccent, underline, accentColor,
-   *   borderColor, borderWidth, caretColor, caretWidth,
+   *   borderColor, borderWidth, borderStyle, caretColor, caretWidth,
    *   textBefore, textAfter, textAlign, textValign, textOverflow,
    *   underline, strike
    * @param {string[]} [options.fields] 表示するフィールド（省略時は全項目）
    * @param {(prop: string, value: any, popup: HTMLElement) => void} options.onChange
    *   値変更時コールバック。prop: 'bgColor'/'textColor'/'fontWeight'/'fontStyle'/
    *   'fontSize'/'fontFamily'/'textStrokeColor'/'textStrokeWidth'/
-   *   'leftAccent'/'accentColor'/'borderColor'/'borderWidth'/'caretColor'/'caretWidth'/
+   *   'leftAccent'/'accentColor'/'borderColor'/'borderWidth'/'borderStyle'/'caretColor'/'caretWidth'/
    *   'textBefore'/'textAfter'/'textAlign'/'textValign'/'textOverflow'/'underline'/'strike'
    * @param {() => void} [options.onReset] リセット。省略時はリセットボタン非表示
    * @param {Object} [options.bulk] { enabled, label, onToggle(enabled) } 全行適用トグル
@@ -67604,6 +70989,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
     const popup = document.createElement('div');
     popup.className = POPUP_CLASS + (options.className ? ' ' + options.className : '');
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-modal', 'false');
     let outsideCloseHandler = null;
     let escapeCloseHandler = null;
     popup._gbFmtCleanup = () => {
@@ -67669,6 +71056,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (fields.has('borderWidth')) {
       const wInput = _makeNumInput('線の太さ', values.borderWidth, (v) => emit('borderWidth', v), { min: 0, max: 20, width: 54 });
       row1.appendChild(_makeGroup([wInput, _makeLabel('px')]));
+    }
+    if (fields.has('borderStyle')) {
+      const styleSelect = _makeSelect(BORDER_STYLE_OPTS, values.borderStyle || 'none', (v) => emit('borderStyle', v));
+      styleSelect.title = '枠線の表示と線種';
+      row1.appendChild(_makeGroup([_makeLabel('線種'), styleSelect]));
     }
     if (fields.has('caretWidth')) {
       const cInput = _makeNumInput('カーソル太さ', values.caretWidth, (v) => emit('caretWidth', v), { min: 1, max: 20, width: 54 });
@@ -68010,7 +71402,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const _RAW_DATA_ACTION_ALLOWLIST = new Set([
     "document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');",
     "cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})",
-    "cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})",
+    "cfConfirm('表示と操作の設定を初期化しますか？\\n作品、ワークスペース、ソースフォルダ、下書き、共有登録、APIキーは削除しません。\\n成功後にページを再読み込みします。').then(ok=>{if(ok)resetAllSettings();})",
     "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
     "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
     "document.getElementById('settings-transfer-import-input')?.click()",
@@ -68376,6 +71768,276 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
 ;
 
+/* === gb-webclip-owner-device-registration.js === */
+;
+/* Web Clipper owner鍵の端末登録。
+ * 信頼済みowner端末で一回限りQRを発行し、Dropbox個人管理領域の
+ * AES-GCM暗号文を新端末が取得する。QRにowner鍵本文は含めない。 */
+(function attachWebClipOwnerDeviceRegistration(global) {
+  'use strict';
+
+  const SCHEMA = 'meldex.webclip-owner-enrollment.v1';
+  const DEVICE_SCHEMA = 'meldex.webclip-owner-device.v1';
+  // OSへdispatch可能なcustom URIは同一schemeを登録した別アプリに横取りされ得る。
+  // QRはアプリ内scannerだけが解釈する非URI payloadに固定する。
+  const QR_PREFIX = 'MELDEX-WC1:';
+  const TTL_MS = 5 * 60 * 1000;
+  const KIND = 'webclip-owner-devices';
+
+  function bytesToBase64Url(value) {
+    let raw = '';
+    new Uint8Array(value || []).forEach(byte => { raw += String.fromCharCode(byte); });
+    return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function randomToken(size) {
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    return bytes;
+  }
+
+  async function sha256Base64Url(value) {
+    return bytesToBase64Url(await crypto.subtle.digest('SHA-256', value));
+  }
+
+  function ownerAllowed() {
+    const runtime = global.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const role = String(runtime.access?.role || runtime.role || runtime.access || '').toLowerCase();
+    return global.MeldexKnowledgeCloudStore?.role?.() === 'owner'
+      || runtime.isOwner === true || role === 'owner';
+  }
+
+  function workspaceContext() {
+    const runtime = global.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const scope = global.MeldexOwnerKeyStore?.workspaceScope?.() || {};
+    const workspaceId = String(scope.id || runtime.workspaceId || runtime.workspace_id || '').trim();
+    const workspaceRoot = String(
+      runtime.dropboxPath || runtime.dropbox_path || runtime.workspaceDropboxPath
+      || runtime.workspace_root || runtime.rootPath || runtime.path || ''
+    ).trim().replace(/\\/g, '/').replace(/\/+$/g, '');
+    const namespaceKind = String(runtime.namespaceKind || runtime.namespace_kind || 'home') === 'team_root'
+      ? 'team_root' : 'home';
+    if (!workspaceId || workspaceId === 'local-device' || !workspaceRoot) {
+      throw new Error('共有ワークスペースの安定IDとDropboxパスを確認できません');
+    }
+    return { workspaceId, workspaceRoot, namespaceKind };
+  }
+
+  async function personalAdapter() {
+    const provider = global.MeldexStorageAdapter?.getProvider?.();
+    const resolver = global.MeldexDropboxManagementRootResolver;
+    if (!provider || !resolver?.resolveAdapterForProvider) throw new Error('Dropboxへ接続してください');
+    return resolver.resolveAdapterForProvider(provider, { personalOnly: true });
+  }
+
+  async function sharedAdapter() {
+    const provider = global.MeldexStorageAdapter?.getProvider?.();
+    const resolver = global.MeldexDropboxManagementRootResolver;
+    if (!provider || !resolver?.resolveAdapterForProvider) throw new Error('Dropboxへ接続してください');
+    const adapter = await resolver.resolveAdapterForProvider(provider);
+    if (adapter?.environment !== 'dropbox-shared-workspace') {
+      throw new Error('対象の共有ワークスペースを開いてください');
+    }
+    return adapter;
+  }
+
+  async function createEnrollment() {
+    if (!ownerAllowed()) throw new Error('所有者のみ端末登録QRを発行できます');
+    const rawOwnerKey = await global.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!rawOwnerKey) throw new Error('この端末にowner鍵がありません');
+    const workspace = workspaceContext();
+    const account = await global.MeldexDropboxAuth?.getCurrentAccount?.(false);
+    const accountId = String(account?.account_id || '').trim();
+    if (!accountId) throw new Error('Dropbox所有者アカウントを確認できません');
+    const id = bytesToBase64Url(randomToken(18));
+    const secret = randomToken(32);
+    const iv = randomToken(12);
+    const expiresAt = new Date(Date.now() + TTL_MS).toISOString();
+    const aesKey = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['encrypt']);
+    const plaintext = new TextEncoder().encode(JSON.stringify({
+      schema: SCHEMA,
+      workspace_id: workspace.workspaceId,
+      workspace_root: workspace.workspaceRoot,
+      namespace_kind: workspace.namespaceKind,
+      owner_account_id: accountId,
+      owner_key: rawOwnerKey,
+    }));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(id) }, aesKey, plaintext
+    );
+    const payload = {
+      schema: SCHEMA,
+      enrollment_id: id,
+      workspace_id: workspace.workspaceId,
+      state: 'issued',
+      issued_at: new Date().toISOString(),
+      expires_at: expiresAt,
+      token_hash: await sha256Base64Url(secret),
+      cipher: { name: 'AES-GCM', iv: bytesToBase64Url(iv), ciphertext: bytesToBase64Url(ciphertext) },
+    };
+    const adapter = await personalAdapter();
+    await adapter.save(KIND, `enrollment-${id}`, payload, { expectedRevision: null });
+    const qrPayload = `${QR_PREFIX}${id}:${bytesToBase64Url(secret)}`;
+    return Object.freeze({ id, qrPayload, expiresAt, qrSvg: qrSvg(qrPayload) });
+  }
+
+  function deviceSignatureText(device) {
+    return [DEVICE_SCHEMA, device.device_id, device.workspace_id, device.owner_account_id,
+      device.registered_at, device.status, device.revoked_at || ''].map(value => String(value || '')).join('|');
+  }
+
+  async function signDevice(device) {
+    const key = await global.MeldexOwnerKeyStore.importHmacKey({ create: false });
+    if (!key) throw new Error('owner鍵を確認できません');
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(deviceSignatureText(device)));
+    return bytesToBase64Url(signature);
+  }
+
+  async function listDevices() {
+    if (!ownerAllowed()) throw new Error('所有者のみ登録端末を確認できます');
+    const records = await (await sharedAdapter()).listDocuments(KIND);
+    return records.filter(record => record.payload?.schema === DEVICE_SCHEMA)
+      .sort((a, b) => String(b.payload.registered_at || '').localeCompare(String(a.payload.registered_at || '')));
+  }
+
+  async function revokeDevice(deviceId) {
+    if (!ownerAllowed()) throw new Error('所有者のみ端末を失効できます');
+    const id = String(deviceId || '').trim();
+    if (!/^[A-Za-z0-9_-]{12,100}$/.test(id)) throw new Error('端末IDが不正です');
+    const adapter = await sharedAdapter();
+    const documentId = `device-${id}`;
+    const current = await adapter.load(KIND, documentId);
+    if (!current || current.payload?.schema !== DEVICE_SCHEMA) throw new Error('登録端末が見つかりません');
+    if (current.payload.status === 'revoked') return current;
+    const next = { ...current.payload, status: 'revoked', revoked_at: new Date().toISOString() };
+    next.signature = await signDevice(next);
+    return adapter.save(KIND, documentId, next, { expectedRevision: current.revision });
+  }
+
+  async function revokeActiveDevicesBeforeOwnerKeyRotation() {
+    if (!ownerAllowed()) throw new Error('所有者のみ端末を失効できます');
+    let workspace;
+    try {
+      workspace = workspaceContext();
+    } catch (error) {
+      // A local-only owner key has no shared device ledger.  Rotation remains
+      // available there, but a malformed shared context must still fail closed.
+      const scope = global.MeldexOwnerKeyStore?.workspaceScope?.() || {};
+      const scopeId = String(scope.id || '').trim();
+      if (!scopeId || scopeId === 'local-device') {
+        return { revoked: 0, skipped: 'local-device' };
+      }
+      throw error;
+    }
+    // Device records are authenticated with the old owner key.  A rotation
+    // must not strand an active record that can no longer be revoked.
+    const adapter = await sharedAdapter();
+    const records = await adapter.listDocuments(KIND);
+    const active = records.filter(record => record.payload?.schema === DEVICE_SCHEMA
+      && record.payload?.workspace_id === workspace.workspaceId
+      && record.payload?.status === 'active');
+    for (const record of active) {
+      const deviceId = String(record.payload?.device_id || '').trim();
+      if (!deviceId) throw new Error('登録端末の識別子を確認できません');
+      const documentId = `device-${deviceId}`;
+      const next = {
+        ...record.payload,
+        status: 'revoked',
+        revoked_at: new Date().toISOString(),
+        revoke_reason: 'owner-key-rotation',
+      };
+      next.signature = await signDevice(next);
+      await adapter.save(KIND, documentId, next, { expectedRevision: record.revision });
+    }
+    const remaining = (await adapter.listDocuments(KIND)).filter(record => record.payload?.schema === DEVICE_SCHEMA
+      && record.payload?.workspace_id === workspace.workspaceId
+      && record.payload?.status === 'active');
+    if (remaining.length) throw new Error('登録端末をすべて失効できないため鍵ローテーションを中止しました');
+    return { revoked: active.length };
+  }
+
+  // QR Code Model 2 / Version 5-L / byte mode。外部QRサービスへsecretを送信しない。
+  function qrSvg(text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    if (bytes.length > 106) throw new Error('端末登録QRの容量を超えました');
+    const bits = [];
+    const pushBits = (value, length) => { for (let i = length - 1; i >= 0; i -= 1) bits.push((value >>> i) & 1); };
+    pushBits(4, 4); pushBits(bytes.length, 8); bytes.forEach(byte => pushBits(byte, 8));
+    for (let i = 0; i < Math.min(4, 108 * 8 - bits.length); i += 1) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(''), 2));
+    let pad = 0; while (data.length < 108) data.push(pad++ % 2 ? 0x11 : 0xec);
+    const exp = new Array(512); const log = new Array(256); let x = 1;
+    for (let i = 0; i < 255; i += 1) { exp[i] = x; log[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+    for (let i = 255; i < 512; i += 1) exp[i] = exp[i - 255];
+    let generator = [1];
+    for (let degree = 0; degree < 26; degree += 1) {
+      const next = new Array(generator.length + 1).fill(0);
+      generator.forEach((coef, index) => {
+        next[index] ^= coef;
+        next[index + 1] ^= coef ? exp[log[coef] + degree] : 0;
+      });
+      generator = next;
+    }
+    const ecc = new Array(26).fill(0);
+    data.forEach(value => {
+      const factor = value ^ ecc.shift(); ecc.push(0);
+      if (factor) generator.slice(1).forEach((coef, i) => { ecc[i] ^= exp[log[factor] + log[coef]]; });
+    });
+    const streamBits = [];
+    data.concat(ecc).forEach(byte => { for (let i = 7; i >= 0; i -= 1) streamBits.push((byte >>> i) & 1); });
+    const size = 37; const modules = Array.from({ length: size }, () => new Array(size).fill(null));
+    const finder = (row, col) => {
+      for (let r = -1; r <= 7; r += 1) for (let c = -1; c <= 7; c += 1) {
+        if (row + r < 0 || row + r >= size || col + c < 0 || col + c >= size) continue;
+        modules[row + r][col + c] = r >= 0 && r <= 6 && c >= 0 && c <= 6
+          && (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4));
+      }
+    };
+    finder(0, 0); finder(size - 7, 0); finder(0, size - 7);
+    for (let i = 8; i < size - 8; i += 1) {
+      if (modules[i][6] === null) modules[i][6] = i % 2 === 0;
+      if (modules[6][i] === null) modules[6][i] = i % 2 === 0;
+    }
+    for (let r = -2; r <= 2; r += 1) for (let c = -2; c <= 2; c += 1) {
+      modules[30 + r][30 + c] = Math.max(Math.abs(r), Math.abs(c)) === 2 || (r === 0 && c === 0);
+    }
+    const bch = value => { let d = value << 10; const msb = n => 31 - Math.clz32(n); while (msb(d) >= 10) d ^= 0x537 << (msb(d) - 10); return ((value << 10) | d) ^ 0x5412; };
+    const format = bch(1 << 3); // L(01), mask 0
+    for (let i = 0; i < 15; i += 1) {
+      const bit = ((format >> i) & 1) === 1;
+      if (i < 6) modules[i][8] = bit; else if (i < 8) modules[i + 1][8] = bit; else modules[size - 15 + i][8] = bit;
+      if (i < 8) modules[8][size - i - 1] = bit; else if (i === 8) modules[8][7] = bit; else modules[8][15 - i - 1] = bit;
+    }
+    modules[size - 8][8] = true;
+    let index = 0; let upwards = true;
+    for (let col = size - 1; col > 0; col -= 2) {
+      if (col === 6) col -= 1;
+      for (let offset = 0; offset < size; offset += 1) {
+        const row = upwards ? size - 1 - offset : offset;
+        for (let side = 0; side < 2; side += 1) {
+          const currentCol = col - side;
+          if (modules[row][currentCol] !== null) continue;
+          const value = index < streamBits.length ? streamBits[index++] === 1 : false;
+          modules[row][currentCol] = value !== ((row + currentCol) % 2 === 0);
+        }
+      }
+      upwards = !upwards;
+    }
+    const quiet = 4; const dimension = size + quiet * 2; let path = '';
+    modules.forEach((row, y) => row.forEach((dark, xPos) => { if (dark) path += `M${xPos + quiet} ${y + quiet}h1v1h-1z`; }));
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dimension} ${dimension}" role="img" aria-label="Web Clipper owner端末登録QR" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+  }
+
+  global.MeldexWebClipOwnerDeviceRegistration = Object.freeze({
+    SCHEMA, DEVICE_SCHEMA, QR_PREFIX, createEnrollment, listDevices, revokeDevice,
+    revokeActiveDevicesBeforeOwnerKeyRotation, deviceSignatureText, qrSvg,
+  });
+})(window);
+
+;
+
 /* === gb-reference-impact-live-scan.js === */
 ;
 /* Provider-neutral bounded live scan used by Cloud and File System Access. */
@@ -68387,7 +72049,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function isTextLikePath(path) {
     const lower = String(path || '').toLowerCase();
     return /\.(?:md|json|txt|csv|html?|js|css|mel-board|mel-sheet|mel-scenario|mel-timer)$/.test(lower)
-      || /\.(?:scriptnote|smart-db|timer)\.json$/.test(lower);
+      || /\.(?:scriptnote|timer)\.json$/.test(lower);
   }
 
   function _normalize(items) {
@@ -69135,7 +72797,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!uid) return null;
     const meta = providerIdentity(await freshStat(provider, targetPath));
     if (!meta.id || !meta.rev || (read.revision && text(read.revision) !== meta.rev)) {
-      throw new AnnotationTargetError('注釈対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
+      throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
     }
     return { kind: 'document', uid };
   }
@@ -69147,10 +72809,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!claims?.resolveIdentity) throw new AnnotationTargetError('typed identity claim resolverを利用できません', 503, 'identity_claims_unavailable');
     const resolved = await claims.resolveIdentity(adapter, boundary, targetIdentity.kind, targetIdentity.uid);
     if (resolved.status === 'tombstoned') {
-      throw new AnnotationTargetError('削除済みの注釈対象は復活できません', 410, 'annotation_target_tombstoned');
+      throw new AnnotationTargetError('削除済みのアノテート対象は復活できません', 410, 'annotation_target_tombstoned');
     }
     if (resolved.count > 1 || resolved.status === 'ambiguous') {
-      throw new AnnotationTargetError('注釈対象のtyped identityが複数候補です', 409, 'annotation_target_ambiguous');
+      throw new AnnotationTargetError('アノテート対象のtyped identityが複数候補です', 409, 'annotation_target_ambiguous');
     }
     if (resolved.count !== 1 || !resolved.canonical) {
       return { count: 0, mode: 'legacy', identity: targetIdentity, canonical: null };
@@ -69158,23 +72820,23 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const currentPath = path(record?.target_path || resolved.canonical.source_locator);
     const meta = providerIdentity(await freshStat(provider, currentPath));
     if (!meta.id || meta.id !== text(resolved.canonical.provider_id)) {
-      throw new AnnotationTargetError('注釈対象のDropbox identityがclaimと一致しません', 409, 'annotation_target_provider_mismatch');
+      throw new AnnotationTargetError('アノテート対象のDropbox identityがclaimと一致しません', 409, 'annotation_target_provider_mismatch');
     }
     return { count: 1, mode: 'typed', identity: targetIdentity, canonical: clone(resolved.canonical) };
   }
 
   function validateAliases(record, targetIdentity) {
     const aliases = Array.isArray(record?.legacy_target_aliases) ? record.legacy_target_aliases : [];
-    if (aliases.length > MAX_ALIASES) throw new AnnotationTargetError('注釈対象alias上限を超えました');
+    if (aliases.length > MAX_ALIASES) throw new AnnotationTargetError('アノテート対象alias上限を超えました');
     const seen = new Set();
     for (const item of aliases) {
       const key = `${text(item?.target_id)}\0${path(item?.target_path)}`;
       const destination = identity(item?.target);
-      if (!key.replace('\0', '') || !destination) throw new AnnotationTargetError('注釈対象aliasが欠損しています');
+      if (!key.replace('\0', '') || !destination) throw new AnnotationTargetError('アノテート対象aliasが欠損しています');
       if (!targetIdentity || destination.kind !== targetIdentity.kind || destination.uid !== targetIdentity.uid) {
-        throw new AnnotationTargetError('注釈対象alias hopは許可されません');
+        throw new AnnotationTargetError('アノテート対象alias hopは許可されません');
       }
-      if (seen.has(key)) throw new AnnotationTargetError('注釈対象alias cycle/重複を検出しました');
+      if (seen.has(key)) throw new AnnotationTargetError('アノテート対象alias cycle/重複を検出しました');
       seen.add(key);
     }
     return aliases.map(clone);
@@ -69203,7 +72865,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const saved = await adapter.save(kind, documentId, payload, { expectedRevision });
     const readback = await adapter.load(kind, documentId);
     if (!readback || readback.revision !== saved.revision || !equal(readback.payload, payload)) {
-      throw new AnnotationTargetError('注釈recordのCAS readbackに失敗しました', 409, 'annotation_migration_readback_failed');
+      throw new AnnotationTargetError('アノテートrecordのCAS readbackに失敗しました', 409, 'annotation_migration_readback_failed');
     }
     return readback;
   }
@@ -69278,7 +72940,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       const current = await adapter.load(kind, documentId);
       if (!current?.payload) return { mode: 'missing', record: null };
-      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済み注釈recordは移行できません', 410, 'annotation_record_deleted');
+      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済みアノテートrecordは移行できません', 410, 'annotation_record_deleted');
       const resolved = await resolveTarget({ provider, adapter, boundary, record: current.payload });
       if (resolved.mode === 'legacy') return { mode: 'legacy', record: current };
       if (identity(current.payload.target_identity)) {
@@ -69293,7 +72955,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈recordのCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテートrecordのCAS retry上限に達しました');
   }
 
   function indexRow(record) {
@@ -69322,17 +72984,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈metadata indexのCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテートmetadata indexのCAS retry上限に達しました');
   }
   async function indexUpsert(adapter, kind, record) {
-    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('注釈metadata idが欠損しています');
+    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('アノテートmetadata idが欠損しています');
     return mutateIndex(adapter, kind, entries => { entries[row.id] = row; });
   }
   async function indexDelete(adapter, kind, documentId) {
     return mutateIndex(adapter, kind, entries => { delete entries[text(documentId)]; });
   }
   async function indexTombstone(adapter, kind, record) {
-    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('注釈tombstone idが欠損しています');
+    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('アノテートtombstone idが欠損しています');
     row.tombstone = true;
     return mutateIndex(adapter, kind, entries => { entries[row.id] = row; });
   }
@@ -69400,8 +73062,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   async function rewriteStoredRecordAfterMove({ adapter, kind, documentId, oldPath, newPath, targetId, operationId }) {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       const current = await adapter.load(kind, documentId);
-      if (!current?.payload) throw new AnnotationTargetError('移動対象の注釈recordが見つかりません', 409, 'annotation_record_missing');
-      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済み注釈recordは移動できません', 410, 'annotation_record_deleted');
+      if (!current?.payload) throw new AnnotationTargetError('移動対象のアノテートrecordが見つかりません', 409, 'annotation_record_missing');
+      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済みアノテートrecordは移動できません', 410, 'annotation_record_deleted');
       let next = rewritePath(current.payload, oldPath, newPath, targetId, operationId);
       next = rewriteRefPaths(next, oldPath, newPath);
       next.modified = new Date().toISOString(); next.modified_at = next.modified;
@@ -69414,12 +73076,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈移動のCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテート移動のCAS retry上限に達しました');
   }
 
   async function prepareLegacyRecordForMove({ provider, adapter, boundary, kind, record, oldPath, newPath, operationId }) {
     const documentId = text(record?.id);
-    if (!documentId) throw new AnnotationTargetError('legacy注釈IDが欠損しています');
+    if (!documentId) throw new AnnotationTargetError('legacyアノテートIDが欠損しています');
     let current = await adapter.load(kind, documentId);
     if (!current) {
       const now = new Date().toISOString();
@@ -69438,7 +73100,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const journal = current?.payload?.annotation_move_journal;
     if (!journal || text(journal.operation_id) !== text(operationId)
         || path(journal.old_path) !== path(oldPath) || path(journal.new_path) !== path(newPath)) {
-      throw new AnnotationTargetError('legacy注釈のmove checkpointが競合しています', 409, 'annotation_move_checkpoint_conflict');
+      throw new AnnotationTargetError('legacyアノテートのmove checkpointが競合しています', 409, 'annotation_move_checkpoint_conflict');
     }
     const migrated = await migrateRecord({
       provider, adapter, boundary, kind, documentId,
@@ -69446,7 +73108,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
     const readback = await adapter.load(kind, documentId);
     if (!readback || readback.revision !== migrated.record?.revision) {
-      throw new AnnotationTargetError('legacy注釈move checkpointのreadbackに失敗しました', 409, 'annotation_move_checkpoint_readback_failed');
+      throw new AnnotationTargetError('legacyアノテートmove checkpointのreadbackに失敗しました', 409, 'annotation_move_checkpoint_readback_failed');
     }
     return readback;
   }
@@ -69455,7 +73117,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const current = await adapter.load(kind, documentId);
     if (!current?.payload) return null;
     if (current.revision !== expectedRevision) {
-      throw new AnnotationTargetError('注釈削除対象のrevisionが変更されました', 409, 'annotation_delete_revision_changed');
+      throw new AnnotationTargetError('アノテート削除対象のrevisionが変更されました', 409, 'annotation_delete_revision_changed');
     }
     if (migrationBlocked(current.payload)) return current;
     const now = new Date().toISOString();
@@ -69466,7 +73128,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   async function markStoredRecordOrphan({ adapter, kind, documentId, oldPath }) {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       const current = await adapter.load(kind, documentId);
-      if (!current?.payload) throw new AnnotationTargetError('孤児化対象の注釈recordが見つかりません', 409);
+      if (!current?.payload) throw new AnnotationTargetError('孤児化対象のアノテートrecordが見つかりません', 409);
       if (migrationBlocked(current.payload)) return current;
       const now = new Date().toISOString();
       const next = Object.assign({}, current.payload, {
@@ -69482,7 +73144,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       try { return await saveReadback(adapter, kind, documentId, next, current.revision); }
       catch (error) { if (!conflict(error)) throw error; }
     }
-    throw new AnnotationTargetError('注釈孤児化のCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテート孤児化のCAS retry上限に達しました');
   }
 
   window.MeldexCloudAnnotationTargetResolver = Object.freeze({
@@ -69629,7 +73291,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return value;
   }
 
-  // 呼び出し元(注釈スクリーンショット等)がidentity claimと同じ保留/復帰の対象へ
+  // 呼び出し元(アノテートスクリーンショット等)がidentity claimと同じ保留/復帰の対象へ
   // 連動書込みを含めるためのレジストリ。load順に依存しないよう、window上の
   // 素のオブジェクトへの代入のみで登録できる形にする(このファイルより後に
   // 登録側スクリプトが読み込まれても、実際に参照するのはaftercare実行時なので
@@ -71585,7 +75247,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
     scenario: 'scenario-standalone.html',
     board: 'board-standalone.html',
     sheet: 'sheet-standalone.html',
-    timer: 'timer-standalone.html',
     viewer: 'viewer.html',
   });
   const TYPE_APP = Object.freeze({
@@ -71594,7 +75255,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
     scriptnote: 'scenario',
     scenario: 'scenario',
     board: 'board',
-    timer: 'timer',
     pivot: 'sheet',
     database: 'sheet',
     sheet: 'sheet',
@@ -71611,7 +75271,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     file_info: 'ファイル情報',
     publish: '公開',
     backlinks: 'バックリンク',
-    annotations_comments: '注釈・コメント',
+    annotations_comments: 'アノテート・コメント',
   });
 
   let currentConfig = null;
@@ -72168,8 +75828,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const classification = classify(capability);
     if (feature === 'file_info' && classification.status === 'available'
         && global.MeldexFileInfoPanel?.renderInto) {
-      // タグは本体のフォルダパネル→情報タブと同じく表示する（以前は単独アプリだけ
-      // 抑止していたため、同じ情報タブなのに内容が食い違っていた）。
+      // タグは本体のフォルダパネル→プロパティタブと同じく表示する（以前は単独アプリだけ
+      // 抑止していたため、同じプロパティタブなのに内容が食い違っていた）。
       if (!path) {
         await global.MeldexFileInfoPanel.renderInto(parts.panel, '');
         return;
@@ -72330,7 +75990,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
           tab?.path,
           tab?.state?.pagePath,
           tab?.state?.dbPath,
-          tab?.state?.smartDbPath,
           tab?.state?.boardPath,
           tab?.state?.scenarioPath,
           tab?.state?.scriptnotePath,

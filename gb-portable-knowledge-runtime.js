@@ -169,6 +169,17 @@
     return [...new Set(directories)];
   }
 
+  function _pathForExclusionCheck(path) {
+    const normalized = contract().normalizePath(path);
+    const sourcePrefix = contract().normalizePath(
+      global.MeldexSourceFolderRegistry?.SOURCE_PREFIX || '__dropbox_root__',
+    );
+    if (!sourcePrefix || normalized === sourcePrefix) return normalized === sourcePrefix ? '' : normalized;
+    return normalized.startsWith(`${sourcePrefix}/`)
+      ? normalized.slice(sourcePrefix.length + 1)
+      : normalized;
+  }
+
   async function _listFiles(provider) {
     const files = [];
     const directories = await _scanRootDirectories(provider);
@@ -184,7 +195,7 @@
       }
       for (const entry of entries) {
         const path = contract().normalizePath(entry.path || (directory ? `${directory}/${entry.name}` : entry.name));
-        if (!path || contract().shouldSkipPath(path)) continue;
+        if (!path || contract().shouldSkipPath(_pathForExclusionCheck(path))) continue;
         if (entry.kind === 'directory') directories.push(path);
         else if (contract().isSupported(path)) files.push({ ...entry, path });
         if ((files.length + directories.length) % 40 === 0) await _yield();

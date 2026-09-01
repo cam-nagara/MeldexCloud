@@ -368,17 +368,17 @@
     pane.appendChild(fname);
   }
 
-  // 'chat' はここに含めない。右サイドバーの既定パネルであるチャットに注釈
+  // 'chat' はここに含めない。右サイドバーの既定パネルであるチャットにアノテート
   // フロートボタンが出ていた（ユーザー指摘、2026-08-12）。加えて実際の描画・保存を
   // 担う _ANNOTATION_TARGET_VIEW_TYPES（gb-annotations.js）には元々 'chat' が
   // 含まれておらず、ボタンを押しても機能しない状態だった。両者を合わせて撤去する。
   const _ANNOTATION_HOST_TYPES = new Set([
-    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
     'board', 'scriptnote', 'calendar',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
-    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
   ]);
   let _lastAnnotationPaneId = '';
 
@@ -399,7 +399,7 @@
         : { kind: data.calendar_db ? 'calendar-db' : 'none' };
     } catch {}
     const rawMode = (dbPath && typeof getCurrentViewMode === 'function') ? getCurrentViewMode(dbPath) : '';
-    if (['calendar', 'tasks', 'shifts', 'timeline'].includes(rawMode)) return rawMode;
+    if (['calendar', 'tasks', 'shifts', 'timeline', 'gantt'].includes(rawMode)) return rawMode;
     if (info?.kind === 'calendar-db' || data.calendar_db) return 'calendar';
     return '';
   }
@@ -407,10 +407,9 @@
   function _resolveDbPaneDisplayView(viewName, tab) {
     const normalizedViewName = _normalizeDbPaneView(viewName);
     if (!DB_SUB_VIEWS[normalizedViewName]) return normalizedViewName;
-    if (normalizedViewName === 'smart-db') return 'smart-db';
     const dbPath = tab?.path || tab?.state?.dbPath || state.currentDbPath || '';
     const mode = (dbPath && typeof getCurrentViewMode === 'function') ? getCurrentViewMode(dbPath) : '';
-    let resolvedMode = ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : mode;
+    let resolvedMode = ['calendar', 'tasks', 'shifts', 'gantt'].includes(mode) ? 'timeline' : mode;
     if (resolvedMode === 'pivot' && _resolveCalendarDbDisplayMode(dbPath, tab)) resolvedMode = 'timeline';
     return DB_SUB_VIEWS[resolvedMode] ? resolvedMode : normalizedViewName;
   }
@@ -447,9 +446,6 @@
     if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
-      if (tabType === 'smart-db') {
-        return tabPath('smartDbPath', 'dbPath') || (!tab ? (statePath('currentSmartDb')?._filePath || statePath('currentDbPath')) : '');
-      }
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
     }
     if (tabType === 'folder') {
@@ -481,11 +477,11 @@
 
   function _annotationAvailabilityForPane(info) {
     if (!_isAnnotationHostPaneInfo(info)) {
-      return { enabled: false, target: '', reason: 'この画面では注釈を利用できません' };
+      return { enabled: false, target: '', reason: 'この画面ではアノテートを利用できません' };
     }
     const target = _getAnnotationTargetForTab(info.activeTab);
     if (!target) {
-      return { enabled: false, target: '', reason: '保存すると注釈を利用できます' };
+      return { enabled: false, target: '', reason: '保存するとアノテートを利用できます' };
     }
     const tabState = info.activeTab?.state || {};
     const readOnly = document.body?.dataset?.cloudReadonly === '1'
@@ -495,7 +491,7 @@
       || tabState.writeBlocked === true
       || tabState.access === 'viewer';
     if (readOnly) {
-      return { enabled: false, target, reason: '閲覧専用のため注釈を編集できません' };
+      return { enabled: false, target, reason: '閲覧専用のためアノテートを編集できません' };
     }
     return { enabled: true, target, reason: '' };
   }
@@ -507,8 +503,8 @@
     button.setAttribute('aria-disabled', availability.enabled ? 'false' : 'true');
     button.dataset.annotationTarget = availability.target;
     button.dataset.annotationUnavailableReason = availability.reason;
-    button.title = availability.enabled ? '注釈 (Alt+A)' : availability.reason;
-    button.setAttribute('aria-label', availability.enabled ? '注釈ツール' : `注釈ツール（${availability.reason}）`);
+    button.title = availability.enabled ? 'アノテート (Alt+A)' : availability.reason;
+    button.setAttribute('aria-label', availability.enabled ? 'アノテートツール' : `アノテートツール（${availability.reason}）`);
   }
 
   function _rememberAnnotationPaneInfo(info) {
@@ -566,8 +562,8 @@
         mirror = document.createElement('button');
         mirror.type = 'button';
         mirror.className = 'annotation-fab annotation-fab-mirror';
-        mirror.title = sourceButton?.title || '注釈 (Alt+A)';
-        mirror.setAttribute('aria-label', '注釈ツール');
+        mirror.title = sourceButton?.title || 'アノテート (Alt+A)';
+        mirror.setAttribute('aria-label', 'アノテートツール');
         mirror.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -696,8 +692,11 @@
     for (const [type, subId] of Object.entries(DB_SUB_VIEWS)) {
       const subEl = contentEl.querySelector('#' + subId) || document.getElementById(subId);
       if (!subEl) continue;
-      const show = (type === resolvedViewName);
-      subEl.style.display = show ? (type === 'pivot' || type === 'timeline' || type === 'smart-db' ? '' : 'flex') : 'none';
+      // timeline と gantt は同じ #timeline-view を共有する。論理typeだけで
+      // 判定すると timeline を表示した直後、次の gantt 行で同じDOMを再び
+      // none にしてしまうため、実際のサブビューID単位で可視性を決める。
+      const show = subId === DB_SUB_VIEWS[resolvedViewName];
+      subEl.style.display = show ? (type === 'pivot' ? '' : 'flex') : 'none';
     }
   }
 
@@ -800,7 +799,7 @@
   // ナビゲーション用ペインタイプ（ファイルを開く先にならない）
   // ================================================================
   const NAV_PANE_TYPES = new Set(['outliner']);
-  const PRIMARY_TOOL_PANE_TYPES = new Set(['chat', 'calendar', 'timer', 'history', 'annotation', 'sticky', 'search']);
+  const PRIMARY_TOOL_PANE_TYPES = new Set(['chat', 'calendar', 'history', 'annotation', 'sticky', 'search']);
   const TOOL_HOST_PANE_TYPES = new Set([...PRIMARY_TOOL_PANE_TYPES, 'detail', 'version']);
   const FILE_OPEN_AVOID_PANE_TYPES = new Set([
     ...NAV_PANE_TYPES,
@@ -810,7 +809,7 @@
     'version',
   ]);
   const FILE_SHOW_VIEW_TYPES = new Set(Object.keys(LEGACY_CONTAINERS).filter(type => type !== 'welcome'));
-  const TOOLBAR_DB_VIEW_TYPES = new Set(['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
+  const TOOLBAR_DB_VIEW_TYPES = new Set(['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const TOOLBAR_UTILITY_VIEW_TYPES = new Set([
     ...Object.keys(PANEL_CONTAINERS),
     ...Object.keys(RP_CONTAINERS),
@@ -826,7 +825,6 @@
     'preview',
     'search',
     'version',
-    'timer',
     'tags',
   ]);
 

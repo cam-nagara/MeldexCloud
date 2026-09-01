@@ -36,7 +36,7 @@
     return typeof getTargetPath === 'function' ? String(getTargetPath() || '') : '';
   }
 
-  function _saParseAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _saParseAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -66,9 +66,32 @@
     return { ...data, text: textarea.value, width, height };
   }
 
+  function _saClampNotePosition(x, y, width, height) {
+    const scrollLeft = container.scrollLeft || 0;
+    const scrollTop = container.scrollTop || 0;
+    const viewportWidth = Math.max(0, container.clientWidth || 0);
+    const viewportHeight = Math.max(0, container.clientHeight || 0);
+    const maxX = scrollLeft + Math.max(0, viewportWidth - Math.max(0, width || 0));
+    const maxY = scrollTop + Math.max(0, viewportHeight - Math.max(0, height || 0));
+    return {
+      x: Math.min(Math.max(Number(x) || 0, scrollLeft), maxX),
+      y: Math.min(Math.max(Number(y) || 0, scrollTop), maxY),
+    };
+  }
+
+  function _saFitNoteData(data) {
+    const viewportWidth = Math.max(120, container.clientWidth || 180);
+    const viewportHeight = Math.max(60, container.clientHeight || 100);
+    data.width = Math.min(viewportWidth, Math.max(120, Number(data.width) || 180));
+    data.height = Math.min(viewportHeight, Math.max(60, Number(data.height) || 100));
+    Object.assign(data, _saClampNotePosition(data.x, data.y, data.width, data.height));
+    return data;
+  }
+
   function _applyStandaloneNoteSize(note, textarea, data) {
-    const width = Math.max(120, Number(data.width) || 180);
-    const height = Math.max(60, Number(data.height) || 100);
+    _saFitNoteData(data);
+    const width = data.width;
+    const height = data.height;
     note.style.width = width + 'px';
     note.style.minHeight = height + 'px';
     textarea.style.height = Math.max(40, height - 16) + 'px';
@@ -80,10 +103,10 @@
     if (_ann.tool === 'sticky') {
       const targetPath = _saCurrentTargetPath();
       if (!targetPath) {
-        _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+        _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
         return;
       }
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '' };
+      const noteData = _saFitNoteData({ x: pt.x, y: pt.y, width: 180, height: 100, text: '' });
       try {
         const res = await apiPost('/annotations', { target_path: targetPath, type: 'comment', shape: 'sticky', data: noteData, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
         if (_saCurrentTargetPath() !== targetPath) return;
@@ -100,7 +123,7 @@
             if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
             el.remove();
           } catch (error) {
-            _saReportSaveFailure(error, '注釈を削除できませんでした');
+            _saReportSaveFailure(error, 'アノテートを削除できませんでした');
           }
           break;
         }
@@ -117,7 +140,7 @@
     }
     const targetPath = _saCurrentTargetPath();
     if (!targetPath) {
-      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+      _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
       return;
     }
     _ann.drawing = true;
@@ -184,10 +207,11 @@
   function _renderNote(annId, data, color) {
     const note = document.createElement('div');
     note.className = 'sa-note'; note.dataset.annId = annId;
-    note.style.cssText = `position:absolute;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
+    _saFitNoteData(data);
+    note.style.cssText = `position:absolute;box-sizing:border-box;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
     const textarea = document.createElement('textarea');
     textarea.value = data.text || '';
-    textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
+    textarea.style.cssText = 'box-sizing:border-box;width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
     note.style.pointerEvents = _ann.active ? 'auto' : 'none';
     _applyStandaloneNoteSize(note, textarea, data);
     textarea.onblur = async () => {
@@ -236,8 +260,9 @@
       };
       const onMove = (e2) => {
         const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
-        note.style.left = pt.x + 'px';
-        note.style.top = pt.y + 'px';
+        const fitted = _saClampNotePosition(pt.x, pt.y, note.offsetWidth, note.offsetHeight);
+        note.style.left = fitted.x + 'px';
+        note.style.top = fitted.y + 'px';
       };
       const onUp = async () => {
         document.removeEventListener('pointermove', onMove);
@@ -287,7 +312,7 @@
       });
       _syncStandaloneNoteInteractivity();
     } catch (error) {
-      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, '注釈を読み込めませんでした');
+      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, 'アノテートを読み込めませんでした');
     }
   }
 
@@ -455,7 +480,7 @@ function createMarkupToolbar(markup, parentEl) {
   tb.className = 'sa-toolbar sa-markup-toolbar';
   tb.dataset.markupToolbar = '1';
   tb.setAttribute('role', 'toolbar');
-  tb.setAttribute('aria-label', '注釈ツールバー');
+  tb.setAttribute('aria-label', 'アノテートツールバー');
   let palette = null;
   let closePaletteTimer = null;
   let paletteOutsideHandler = null;
@@ -490,7 +515,7 @@ function createMarkupToolbar(markup, parentEl) {
   colorBtn.type = 'button';
   colorBtn.className = 'sa-markup-color-btn';
   colorBtn.title = '色';
-  colorBtn.setAttribute('aria-label', '注釈色');
+  colorBtn.setAttribute('aria-label', 'アノテート色');
   colorBtn.setAttribute('aria-haspopup', 'dialog');
   colorBtn.setAttribute('aria-expanded', 'false');
   const colorSwatch = document.createElement('span');
@@ -502,13 +527,13 @@ function createMarkupToolbar(markup, parentEl) {
     palette = document.createElement('div');
     palette.className = 'sa-palette sa-markup-palette';
     palette.setAttribute('role', 'dialog');
-    palette.setAttribute('aria-label', '注釈色');
+    palette.setAttribute('aria-label', 'アノテート色');
     PALETTE_COLORS.forEach(c => {
       const dot = document.createElement('button');
       dot.type = 'button';
       dot.className = 'sa-markup-color-dot';
       dot.title = c;
-      dot.setAttribute('aria-label', `注釈色 ${c}`);
+      dot.setAttribute('aria-label', `アノテート色 ${c}`);
       dot.style.background = c;
       dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
       palette.appendChild(dot);

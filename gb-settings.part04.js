@@ -1,9 +1,4 @@
 /* gb-settings.part04.js */
-  if (typeof saveAutoTagSettingsFromSettingsDialog === 'function') {
-    const autoTagSaveOk = await saveAutoTagSettingsFromSettingsDialog(settingsOverlay, { silent: true });
-    if (autoTagSaveOk === false) return;
-  }
-
   // 表示サイズ（zoom）
   try {
     const uiScale = document.getElementById('modal-ui-scale')?.value;
@@ -86,7 +81,17 @@
   // 自動起動設定
   const autostartCb = document.getElementById('modal-autostart');
   const autostartSection = document.getElementById('settings-autostart-section');
-  if (autostartCb && !autostartSection?.hidden) {
+  const autostartSupportedHere = !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  if (autostartCb && !autostartSection?.hidden && autostartSupportedHere
+    && _settingsDomainIsDirty(settingsOverlay, 'modal-autostart')) {
+    const autostartBefore = await apiFetch('/autostart', { silentError: true }).catch(() => null);
+    if (!autostartBefore || typeof autostartBefore.enabled !== 'boolean') {
+      throw _settingsSaveFailure('autostart', '自動起動の現在値を確認できませんでした');
+    }
+    settingsExternalRollbacks.push(async () => {
+      await apiPost('/autostart', { enabled: autostartBefore.enabled }, { silentError: true });
+      autostartCb.checked = autostartBefore.enabled;
+    });
     let autostartResult = null;
     try {
       autostartResult = await apiPost('/autostart', { enabled: autostartCb.checked }, { silentError: true });
@@ -100,7 +105,7 @@
       showStatus('自動起動を設定できませんでした。もう一度お試しください。', true);
       const status = document.getElementById('modal-autostart-status');
       if (status) status.textContent = '設定を保存できませんでした。権限とOSの設定を確認してください。';
-      return;
+      throw _settingsSaveFailure('autostart', '自動起動を設定できませんでした');
     }
     const status = document.getElementById('modal-autostart-status');
     if (status) status.textContent = autostartResult.enabled
@@ -109,26 +114,54 @@
   }
 
   // バージョン管理設定
-  const vInterval = parseInt(document.getElementById('modal-version-interval')?.value || '3600000');
-  const vMax = parseInt(document.getElementById('modal-version-max')?.value || '30');
-  saveVersionConfig({ autoInterval: vInterval, maxAuto: vMax });
-  // タイマーを再設定
-  if (_autoVersionPath) startAutoVersion(_autoVersionPath, _autoVersionType);
+  const previousVersionConfig = getVersionConfig();
+  const nextVersionConfig = typeof collectRestorePointPolicyFromSettings === 'function'
+    ? collectRestorePointPolicyFromSettings()
+    : previousVersionConfig;
+  const restorePointScope = window.MeldexRestorePointPolicySync?.currentScope?.()
+    || { kind: 'personal', readOnly: false };
+  if (!restorePointScope.readOnly) {
+    if (previousVersionConfig?.retention?.mode !== 'days' && nextVersionConfig?.retention?.mode === 'days') {
+      const days = Number(nextVersionConfig.retention.days || 0);
+      const preview = typeof previewRestorePointRetention === 'function'
+        ? await previewRestorePointRetention(nextVersionConfig).catch(() => null)
+        : null;
+      const previewText = preview
+        ? `\n現在開いている対象では ${preview.count}件（約${typeof formatFileSize === 'function' ? formatFileSize(preview.bytes) : preview.bytes + ' bytes'}）が削除予定です。${preview.oldest ? `\n最古: ${new Date(preview.oldest).toLocaleString('ja-JP')}` : ''}`
+        : '';
+      const confirmed = typeof cfConfirm === 'function'
+        ? await cfConfirm(`保持期間を${days}日に変更すると、既存の復元ポイントも期限削除の対象になります。${previewText}\n未表示の文書は次回開いたときに確認して整理します。\n設定を保存しますか？`)
+        : window.confirm(`保持期間を${days}日に変更すると、既存の復元ポイントも期限削除の対象になります。${previewText}\n未表示の文書は次回開いたときに確認して整理します。設定を保存しますか？`);
+      if (!confirmed) throw _settingsSaveFailure('restore-point-retention', '復元ポイントの保持期間変更をキャンセルしました');
+    }
+    saveVersionConfig(nextVersionConfig);
+    // タイマーを再設定
+    if (_autoVersionPath) startAutoVersion(_autoVersionPath, _autoVersionType);
+    if (typeof _runPeriodicRestorePoints === 'function') _runPeriodicRestorePoints(new Date()).catch(() => null);
+  }
 
   // ユーザー名保存 + チームプロフィール同期
   const username = document.getElementById('modal-username')?.value?.trim();
   if (username) {
     const oldUsername = getUsername();
-    localStorage.setItem('meldex-user', JSON.stringify({ name: username }));
-    // チームファイルのメンバー名を更新
-    if (oldUsername && oldUsername !== username) {
-      await _removeOldTeamNameFromAllRoots(oldUsername);
-    }
+    if (oldUsername === username) {
+      // 変更のないプロフィールを外部同期し直さない。
+    } else {
+      localStorage.setItem('meldex-user', JSON.stringify({ name: username }));
     const avatar = localStorage.getItem('meldex-avatar') || '';
+    settingsExternalRollbacks.push(async () => {
+      if (window.MeldexDropboxProfileSync?.afterLocalProfileChanged) {
+        await window.MeldexDropboxProfileSync.afterLocalProfileChanged({ displayName: oldUsername, avatar });
+      } else {
+        await apiPost('/team/sync', { name: oldUsername, avatar });
+      }
+    });
     if (window.MeldexDropboxProfileSync?.afterLocalProfileChanged) {
       await window.MeldexDropboxProfileSync.afterLocalProfileChanged({ displayName: username, avatar });
     } else {
-      await apiPost('/team/sync', { name: username, avatar }).catch(() => {});
+      await apiPost('/team/sync', { name: username, avatar });
+    }
+    pendingOldUsernameCleanup = oldUsername && oldUsername !== username ? oldUsername : '';
     }
   }
 
@@ -141,14 +174,14 @@
   if (ak && !ak.startsWith('●')) chatKeys.ANTHROPIC_API_KEY = ak;
   if (ok && !ok.startsWith('●')) chatKeys.OPENAI_API_KEY = ok;
   if (Object.keys(chatKeys).length > 0) {
-    if (!window.MeldexLlmKeys?.setMany) throw new Error('APIキー保存ストアを初期化できませんでした');
-    await window.MeldexLlmKeys.setMany(chatKeys);
-    if (typeof loadProviderModels === 'function') {
-      ['gemini', 'anthropic', 'openai'].forEach(provider => {
-        loadProviderModels(provider, { force: true }).catch(() => {});
-      });
+    if (!window.MeldexLlmKeys?.setMany || !window.MeldexLlmKeys?.restoreMany) {
+      throw new Error('APIキー保存ストアを初期化できませんでした');
     }
-    if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+    const changedKeyNames = Object.keys(chatKeys);
+    const previousKeys = await window.MeldexLlmKeys.getAll({ strict: true });
+    settingsExternalRollbacks.push(() => window.MeldexLlmKeys.restoreMany(previousKeys, changedKeyNames));
+    await window.MeldexLlmKeys.setMany(chatKeys);
+    llmKeysChanged = true;
   }
 
   const localLlmBaseUrl = document.getElementById('modal-local-llm-base-url')?.value?.trim() || '';
@@ -167,11 +200,6 @@
     loadProviderModels('local_llm', { force: true }).catch(() => {});
   }
   if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-
-  if (typeof saveCliChatSettingsFromSettingsDialog === 'function') {
-    const cliChatSaveOk = await saveCliChatSettingsFromSettingsDialog(settingsOverlay, { silent: true, skipReload: true, backgroundChatRefresh: true });
-    if (cliChatSaveOk === false) return;
-  }
 
   const allowWebSearchCb = document.getElementById('modal-chat-allow-web-search');
   if (allowWebSearchCb) localStorage.setItem('chat-allow-web-search', allowWebSearchCb.checked ? '1' : '0');
@@ -222,11 +250,6 @@
   const histMax = parseInt(document.getElementById('modal-history-max')?.value || '50');
   setHistoryMax(Math.max(1, Math.min(200, histMax)));
 
-  const sourceFoldersDirty = !!window._settingsOutlinerRootsDirty;
-  const sourceFolderHistoryBefore = sourceFoldersDirty && typeof captureOutlinerRootsSettingsSnapshot === 'function'
-    ? await captureOutlinerRootsSettingsSnapshot().catch(() => null)
-    : null;
-
   // フォルダツリールートを保存
   if (sourceFoldersDirty) {
     if (!await saveOutlinerRoots()) {
@@ -238,7 +261,7 @@
     if (sourceFolderHistoryBefore && typeof pushOutlinerRootsSettingsHistory === 'function'
       && typeof captureOutlinerRootsSettingsSnapshot === 'function') {
       const sourceFolderHistoryAfter = await captureOutlinerRootsSettingsSnapshot().catch(() => null);
-      pushOutlinerRootsSettingsHistory('設定: ソースフォルダ保存', sourceFolderHistoryBefore, sourceFolderHistoryAfter);
+      window.__settingsPendingSourceFolderHistory = { before: sourceFolderHistoryBefore, after: sourceFolderHistoryAfter };
     }
     // ソースフォルダの並べ替えを保存した場合、ツリー側に残るルート直下の手動並び順
     // （localStorage['outliner-manual-order']._root）を破棄する。手動並び順はツリー側で
@@ -251,14 +274,49 @@
   }
 
     // UI設定をサーバーにも永続保存
-    if (settingsHistoryBefore && typeof _pushSettingsDialogStorageHistory === 'function') {
-      _pushSettingsDialogStorageHistory('設定: 共通設定保存', settingsHistoryBefore);
+    await _saveUiConfigToServer();
+
+    const pendingSourceHistory = window.__settingsPendingSourceFolderHistory;
+
+    // 外部保存は、失敗し得るローカル・workspace保存と履歴確定が全て終わった後に
+    // 1ドメインだけ実行する。各APIは単一commitであり、
+    // ここから先の処理は保存結果を失敗へ戻さない。
+    if (pendingTransactionalExternalSave) {
+      const externalSaveOk = await pendingTransactionalExternalSave.save();
+      if (externalSaveOk === false) throw _settingsSaveFailure(pendingTransactionalExternalSave.domain);
     }
-    _saveUiConfigToServer();
+
+    // 履歴は全domainのcommit成功後だけ追加する。履歴UIの失敗は確定済み設定を
+    // 失敗扱いへ戻さず、保存本体とは分離して次回の履歴記録へ委ねる。
+    try {
+      if (settingsHistoryBefore && typeof _pushSettingsDialogStorageHistory === 'function') {
+        _pushSettingsDialogStorageHistory('設定: 共通設定保存', settingsHistoryBefore);
+      }
+      if (pendingSourceHistory && typeof pushOutlinerRootsSettingsHistory === 'function') {
+        pushOutlinerRootsSettingsHistory('設定: ソースフォルダ保存', pendingSourceHistory.before, pendingSourceHistory.after);
+      }
+    } catch (historyError) {
+      console.warn('設定履歴の記録に失敗:', historyError);
+    }
+    delete window.__settingsPendingSourceFolderHistory;
+
+    // 以後は失敗を保存失敗へ戻さない後処理だけにする。旧プロフィール名の掃除は
+    // 新プロフィール・秘密値・OS設定を含む全保存が確定してから行う。
+    if (pendingOldUsernameCleanup) {
+      try { await _removeOldTeamNameFromAllRoots(pendingOldUsernameCleanup); }
+      catch (cleanupError) { console.warn('旧プロフィール名の後処理に失敗:', cleanupError); }
+    }
+    if (llmKeysChanged && typeof loadProviderModels === 'function') {
+      ['gemini', 'anthropic', 'openai'].forEach(provider => {
+        loadProviderModels(provider, { force: true }).catch(() => {});
+      });
+    }
+    if (llmKeysChanged && typeof _chatRefreshApiKeyState === 'function') {
+      _chatRefreshApiKeyState().catch(() => {});
+    }
 
     // ダイアログを閉じて、保存完了を先にユーザーへ返す。
     // フォルダツリー再読込などの重い後処理は閉じる動作をブロックしない。
-    if (typeof closeSettingsModalWithReason === 'function') closeSettingsModalWithReason('complete', settingsOverlay);
     showStatus('設定を保存しました', false, { showSaveDialog: true });
     // ユーザー表示を更新（ユーザー名変更 / アバター設定を反映）
     try { if (typeof updateUserIcon === 'function') updateUserIcon(); } catch {}
@@ -268,9 +326,45 @@
       const outlinerReload = typeof loadOutliner === 'function' ? loadOutliner() : null;
       outlinerReload?.catch?.(() => {});
     } catch {}
+    return { ok: true, changedDomains: sourceFoldersDirty ? ['settings', 'source-folders'] : ['settings'] };
   } catch (err) {
     console.error('設定保存エラー:', err);
-    showStatus('設定の保存に失敗: ' + (err?.message || err), true);
+    delete window.__settingsPendingSourceFolderHistory;
+    const rollbackFailures = err?.settingsRollbackFailed
+      ? [err?.message || '外部設定の補償に失敗しました']
+      : [];
+    for (const rollback of settingsExternalRollbacks.reverse()) {
+      try { await rollback(); } catch (rollbackError) {
+        rollbackFailures.push(rollbackError?.message || String(rollbackError));
+        console.error('外部設定のロールバック失敗:', rollbackError);
+      }
+    }
+    if (settingsHistoryBefore) {
+      if (typeof restoreLocalStorageSettings !== 'function') {
+        rollbackFailures.push('ローカル設定の復元機能を利用できません');
+      } else try { restoreLocalStorageSettings(settingsHistoryBefore, () => {}); } catch (rollbackError) {
+        rollbackFailures.push(rollbackError?.message || String(rollbackError));
+        console.error('設定のロールバック失敗:', rollbackError);
+      }
+    }
+    if (sourceFolderHistoryBefore) {
+      if (typeof _restoreOutlinerRootsSettingsSnapshot !== 'function') {
+        rollbackFailures.push('ソースフォルダ設定の復元機能を利用できません');
+      } else try { await _restoreOutlinerRootsSettingsSnapshot(sourceFolderHistoryBefore); } catch (rollbackError) {
+        rollbackFailures.push(rollbackError?.message || String(rollbackError));
+        console.error('ソースフォルダのロールバック失敗:', rollbackError);
+      }
+    }
+    const rollbackWarning = rollbackFailures.length
+      ? ' 一部の設定を自動復元できませんでした。設定画面を再読込して状態を確認してください。'
+      : '';
+    showStatus('設定の保存に失敗: ' + (err?.message || err) + rollbackWarning, true);
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      failedDomain: err?.settingsDomain || 'unknown',
+      rollbackFailed: rollbackFailures.length > 0,
+    };
   } finally {
     hideLoading();
   }
@@ -741,7 +835,7 @@ async function runExportToDb() {
     // サマリー表示
     const lines = [];
     if (r.chat) lines.push('チャット ' + r.chat.count + '件');
-    if (r.annotations) lines.push('注釈 ' + r.annotations.count + '件');
+    if (r.annotations) lines.push('アノテート ' + r.annotations.count + '件');
     if (r.cal_events) lines.push('イベント ' + r.cal_events.count + '件');
     if (r.tasks) lines.push('タスク ' + r.tasks.count + '件');
     const summary = lines.join('、');
@@ -825,7 +919,7 @@ const _UI_STRUCTURED_KEYS = [
   'outliner-locked-items', 'outliner-node-colors', 'outliner-work-folder', 'outliner-work-folder-id',
   'global-filter', 'gb:outliner-filter-shared-state', 'main-calendar-path', 'main-calendar-id',
   'outliner-expanded', '_file-id-migrated',
-  'smartDbs', 'customDbTemplates',
+  'customDbTemplates',
   'version-config', 'history-max', 'folder-display-config',
 ];
 // dbViewConfig:* 等の動的キーのプレフィックス
@@ -833,6 +927,24 @@ const _UI_DYNAMIC_PREFIXES = [
   'dbViewConfig:', 'validationRules:', 'entityTemplates:', 'chat-model:', 'chat-models:', 'chat-custom-about:', 'chat-custom-instructions:',
 ];
 const _SETTINGS_PROFILE_KEYS = ['meldex-user', 'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg'];
+// 「全設定を初期化」が削除できるのは、表示と操作の設定だけ。
+// profile/source/workspace/draft/session/作品データ/共有登録/秘密値は専用操作のみで変更する。
+const _SETTINGS_RESETTABLE_KEYS = [
+  'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule',
+  'meldex-statusbar-hidden', 'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion',
+  'meldex-a11y-colorblind-safe', 'note-vertical', 'note-heading-indent', 'note-toc-visible',
+  'gb:thumbnail-fit', 'gb:tree-thumbnail-size', 'gb:tree-open-click-mode', 'gb:viewer-wheel-mode',
+  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'meldex-wheel-speed',
+  'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set',
+  'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',
+  'meldex-default-theme-id', 'meldex-custom-themes', 'meldex-theme-color-extra-slot-settings',
+  'meldex-theme-use-os-accent', 'file-theme-presets', 'gb:hidden-shell-verbs',
+  'version-config', 'history-max', 'folder-display-config',
+];
+
+function _settingsResetStorageKeys() {
+  return _SETTINGS_RESETTABLE_KEYS.slice();
+}
 
 function _settingsDialogStorageKeys() {
   const keys = [..._UI_CONFIG_KEYS, ..._UI_STRUCTURED_KEYS];
@@ -885,7 +997,7 @@ function _pushSettingsDialogStorageHistory(label, beforeSnapshot) {
   );
 }
 
-function _saveUiConfigToServer() {
+async function _saveUiConfigToServer() {
   const config = {};
   // 固定キー
   [..._UI_CONFIG_KEYS, ..._UI_STRUCTURED_KEYS].forEach(key => {
@@ -899,7 +1011,7 @@ function _saveUiConfigToServer() {
       config[key] = localStorage.getItem(key);
     }
   }
-  apiPut('/ui-config', config).catch(() => {});
+  return apiPut('/ui-config', config);
 }
 
 // ページ読み込み時にサーバーからUI設定を復元（localStorageが空の場合のみ）

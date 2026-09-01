@@ -37,6 +37,21 @@
   function showMessage(message, isError) {
     if (typeof showStatus === 'function') showStatus(message, !!isError);
   }
+  function setDecoratedText(element, value) {
+    if (!element) return;
+    const displayText = String(value ?? '');
+    element.textContent = displayText;
+    if (typeof MeldexAutoLink === 'undefined' || displayText.length < 2) return;
+    MeldexAutoLink.applyToDom(element, model.path || '');
+  }
+  function handleAutoLinkClick(event) {
+    const link = event?.target?.closest?.('.auto-link[data-path]');
+    if (!link || typeof onAutoLinkClick !== 'function') return false;
+    event.preventDefault();
+    event.stopPropagation();
+    onAutoLinkClick(link, event);
+    return true;
+  }
   function cloneRows(rows) {
     return (rows || []).map(row => Array.isArray(row) ? row.slice() : []);
   }
@@ -329,16 +344,18 @@
     th.dataset.col = String(index);
     th.style.setProperty('--csv-column-width', `${column.width}px`);
     th.dataset.csvWrap = column.wrap ? '1' : '0';
-    th.textContent = column.name;
+    setDecoratedText(th, column.name);
     th.title = `${column.name}（${column.type === 'number' ? '数値' : column.type === 'formula' ? '数式' : 'テキスト'}）`;
     applyFrozenCell(th, index);
     th.addEventListener('mousedown', event => {
+      if (event.target?.closest?.('.auto-link[data-path]')) return;
       if (event.button !== 0) return;
       setSelection(1, index, event.shiftKey);
       model.selection.anchorRow = 1;
       model.selection.focusRow = Math.max(1, data().length - 1);
       paintSelection();
     });
+    th.addEventListener('click', event => { handleAutoLinkClick(event); });
     th.addEventListener('dblclick', () => host()?.startHeaderEdit?.(th, index));
     th.addEventListener('contextmenu', event => {
       event.preventDefault();
@@ -359,14 +376,16 @@
     cell.style.setProperty('--csv-column-width', `${column.width}px`);
     applyFrozenCell(cell, index);
     const value = displayValue(rowIndex, index);
-    cell.textContent = value.text;
+    setDecoratedText(cell, value.text);
     cell.classList.toggle('csv-cell-invalid', !!value.error);
     cell.classList.toggle('csv-formula-result', !!value.formula);
     cell.addEventListener('mousedown', event => {
+      if (event.target?.closest?.('.auto-link[data-path]')) return;
       if (event.button !== 0) return;
       model.dragSelecting = true;
       setSelection(rowIndex, index, event.shiftKey);
     });
+    cell.addEventListener('click', event => { handleAutoLinkClick(event); });
     cell.addEventListener('mouseenter', () => {
       if (model.dragSelecting) setSelection(rowIndex, index, true);
     });

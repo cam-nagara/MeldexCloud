@@ -635,9 +635,9 @@ async function renderChart(ctx) {
   const entities = pivotData.entities || {};
   if (Object.keys(entities).length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(container, 'barChart', 'データがありません', 'トピックを追加するとチャートが表示されます', ctx);
+      _dbRenderEmptyStateWithCreate(container, 'barChart2', 'トピックがありません', 'トピックを追加するとチャートが表示されます', ctx);
     } else {
-      renderEmptyState(container, 'barChart', 'データがありません', 'トピックを追加するとチャートが表示されます');
+      renderEmptyState(container, 'barChart2', 'トピックがありません', 'トピックを追加するとチャートが表示されます');
     }
     return;
   }

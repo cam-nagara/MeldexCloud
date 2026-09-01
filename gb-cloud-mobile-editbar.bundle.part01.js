@@ -54,7 +54,7 @@
     { id: 'preview', label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
     { id: 'options', label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
     { id: 'version', label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
-    { id: 'annotation', label: '注釈', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
+    { id: 'annotation', label: 'アノテート', icon: 'squarePen', action: () => _openToolPanel('annotation') },
     { id: 'history', label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
     { id: 'tags', label: 'タグ', icon: 'tags', action: () => _openToolPanel('tags') },
   ];
@@ -62,7 +62,8 @@
     { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
     { id: 'command-palette', label: 'コマンドパレット', icon: 'command', action: () => _callGlobal('showCommandPalette') },
     { id: 'chat', label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
-    { id: 'annotation-tool', label: '注釈ツール', icon: 'penLine', action: () => _callGlobal('toggleAnnotationToolbar') },
+    { id: 'quick-memo', label: 'クイックメモ', icon: 'notebookPen', action: () => window.GBQuickMemoPanel?.open?.() },
+    { id: 'annotation-tool', label: 'アノテートツール', icon: 'squarePen', action: () => _callGlobal('toggleAnnotationToolbar') },
     { id: 'help', label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
     { id: 'settings', label: '設定', icon: 'settings', action: () => _openSettingsModal() },
   ];
@@ -72,10 +73,9 @@
     { label: 'シナリオ', icon: 'bookPlus', type: 'scriptnote' },
     { label: 'シート', icon: 'tableProperties', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
-    { label: 'スマートシート', icon: 'database', type: 'smart-db' },
     { label: 'カレンダー', icon: 'calendarPlus', type: 'calendar' },
   ];
-  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv', 'smart-db']);
+  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv']);
   const EDITBAR_ITEMS = [
     { id: 'bold', label: '太字', icon: 'bold', action: () => _execTextCommand('bold') },
     { id: 'italic', label: '斜体', icon: 'italic', action: () => _execTextCommand('italic') },
@@ -131,12 +131,12 @@
     { id: 'width-up', label: '太く', icon: 'plus', action: () => _stepAnnotationWidth(1) },
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
     { id: 'visibility', label: '表示', icon: 'eye', action: () => _toggleAnnotationVisibility() },
-    { id: 'list', label: '一覧', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
+    { id: 'list', label: '一覧', icon: 'squarePen', action: () => _openToolPanel('annotation') },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
   // 本体（gb-annotations）の _ANN_TOOL_GROUPS と同じ内容のフォールバック。本体側が
   // 読み込み前で未定義の場合に備える。グループボタンのアイコンを選択中メンバーへ
-  // 追従させるため、本体側と同じアイコン名を持たせる（注釈フロートパレット改修計画
+  // 追従させるため、本体側と同じアイコン名を持たせる（アノテートフロートパレット改修計画
   // 2026-08-13 §1-2）。
   const ANNOTATION_GROUP_FALLBACK = {
     stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }, { tool: 'marker', label: 'マーカー', icon: 'highlighter' }],
@@ -324,7 +324,6 @@
       scriptnote: 'シナリオ',
       calendar: 'スケジュール',
       csv: 'CSV',
-      'smart-db': 'スマートシート',
     })[toolType] || 'メニュー';
   }
 
@@ -437,6 +436,7 @@
         { id: 'display-settings', label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
         { id: 'slideshow', label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
         { id: 'search', label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
+        { id: 'chat', label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
         { id: 'help', label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
         { id: 'settings', label: '設定', icon: 'settings', action: () => _openSettingsModal() },
       ];
@@ -633,6 +633,8 @@
     } catch (_err) {
       // state is defined by the app bundle after this mobile module is loaded.
     }
+    const mixedSheet = document.querySelector('.bd-mixed-sheet-host, .bd-mixed-view-empty-host');
+    if (mixedSheet && _isVisibleElement(mixedSheet)) return true;
     const canvas = document.getElementById('bd-canvas');
     return !!canvas && _isVisibleElement(canvas);
   }
@@ -787,6 +789,10 @@
     }
   }
 
+  function _isAnnotationPhoneViewport() {
+    return Math.max(0, Number(window.innerWidth) || Number(document.documentElement?.clientWidth) || 0) <= 640;
+  }
+
   function _currentAnnotationTool() {
     const active = document.querySelector('#ann-toolbar .ann-tool.active[data-tool]');
     if (active?.dataset?.tool) return active.dataset.tool;
@@ -892,9 +898,3 @@
       if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
     });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
-    _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
-  }
-
-  function _saveSelection() {
-    const sel = window.getSelection?.();
-    if (!sel || !sel.rangeCount) return false;

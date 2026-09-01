@@ -64,7 +64,7 @@
     'viewer.fitNone':      { key: '4',                label: 'フィットしない',     scope: 'viewer' },
   };
   if (annotationsAvailable()) {
-    VIEWER_SHORTCUTS['viewer.annotation'] = { key: 'a', label: '注釈の切替', scope: 'viewer' };
+    VIEWER_SHORTCUTS['viewer.annotation'] = { key: 'a', label: 'アノテートの切替', scope: 'viewer' };
   }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
 

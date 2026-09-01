@@ -737,34 +737,88 @@
     let activated = false;
     let api = null;
 
-    function _restoreOpenerFocus() {
-      if (opts.returnFocus === false) return;
+    function _resolveReturnFocusTarget() {
+      if (opts.returnFocus === false) return null;
       let target = opts.returnFocus;
       if (typeof target === 'function') target = target();
       if (!target?.focus) target = opener;
-      if (!target?.isConnected || !target?.focus) return;
+      return target;
+    }
+
+    function _restoreOpenerFocus() {
+      if (opts.returnFocus === false) return true;
+      const target = _resolveReturnFocusTarget();
+      if (!target?.isConnected || !target?.focus) return true;
       const openDialogs = Array.from(document.querySelectorAll(
         '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
-      )).filter(dialog => dialog.isConnected && !dialog.hidden && dialog.getAttribute('aria-hidden') !== 'true');
+      )).filter(dialog => dialog.isConnected && !dialog.hidden && !_isDialogClosingOrHidden(dialog));
       const topDialog = openDialogs[openDialogs.length - 1];
       // モバイルの閉じるアニメーション中に次のダイアログが開いた場合、旧画面の
       // 遅延focus復帰で新しい入力を奪わない。復帰先が残っている親ダイアログ内なら
       // ネストした子を閉じる通常契約なので、そのまま復帰させる。
-      if (topDialog && topDialog !== modal && !topDialog.contains(target)) return;
+      if (topDialog && topDialog !== modal && !topDialog.contains(target)) return true;
       try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      return document.activeElement === target;
     }
 
     function _finishClose(reason) {
       if (closed) return false;
       closed = true;
-      document.removeEventListener('keydown', onEscKey);
+      document.removeEventListener('keydown', onEscKey, true);
       if (overlay.parentNode) overlay.remove();
+      let interactionClaimed = false;
+      let trackingInteraction = false;
+      let focusRestorationFinished = false;
+      const claimInteraction = () => { interactionClaimed = true; };
+      const stopTrackingInteraction = () => {
+        focusRestorationFinished = true;
+        if (!trackingInteraction) return;
+        trackingInteraction = false;
+        document.removeEventListener('pointerdown', claimInteraction, true);
+        document.removeEventListener('keydown', claimInteraction, true);
+      };
+      // 閉じる操作そのものを新操作と数えないよう、次のtaskから利用者入力だけを追跡する。
+      setTimeout(() => {
+        if (focusRestorationFinished || interactionClaimed || trackingInteraction) return;
+        trackingInteraction = true;
+        document.addEventListener('pointerdown', claimInteraction, true);
+        document.addEventListener('keydown', claimInteraction, true);
+      }, 0);
+      let restoreAttempts = 0;
       const restore = () => {
         if (overlay.isConnected) {
           setTimeout(restore, 40);
           return;
         }
+        // レイアウト監視やブラウザ自身による自動focus移動では復帰を打ち切らない。
+        // 閉鎖後に実際のpointer／keyboard入力があった時だけ利用者の選択を優先する。
+        if (interactionClaimed) {
+          stopTrackingInteraction();
+          return;
+        }
+        const activeDialog = document.activeElement?.closest?.(
+          '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+        );
+        if (activeDialog && activeDialog !== modal && !_isDialogClosingOrHidden(activeDialog)) {
+          const restoreTarget = _resolveReturnFocusTarget();
+          // A nested child dialog normally returns focus into its still-open parent.
+          // Only a different dialog that does not own the return target represents a
+          // newly claimed interaction and should cancel the bounded retry.
+          if (!restoreTarget?.isConnected || !activeDialog.contains(restoreTarget)) {
+            stopTrackingInteraction();
+            return;
+          }
+        }
+        // close-button のclick既定処理は、同期的な復帰に成功した直後でも、除去済み
+        // ボタンから別要素へfocusを動かすことがある。短い監視期間中は復帰を再確認し、
+        // 利用者入力または新しいダイアログがfocusを取得した時だけ終了する。
         _restoreOpenerFocus();
+        // Mobile toolbars can keep their opener hidden until the modal-removal observer
+        // refreshes the bar. Retry only while focus is still unclaimed, so a user's next
+        // action or a newly opened dialog is never overridden.
+        restoreAttempts += 1;
+        if (restoreAttempts < 30) setTimeout(restore, 40);
+        else stopTrackingInteraction();
       };
       restore();
       if (typeof opts.onClose === 'function') opts.onClose(reason, api);
@@ -823,6 +877,22 @@
     function onEscKey(ev) {
       if (ev.key !== 'Escape') return;
       if (!_isTopmostModal(modal)) return;
+      // モーダル内で開いたアイコンピッカー等の非modalダイアログは、先に
+      // 自身のEscape契約で閉じる。ここでイベントを奪うと親モーダルだけが
+      // 閉じ、ピッカーが残るため、フォーカスが浮いた状態になる。
+      const activeTransientDialog = document.activeElement?.closest?.('[role="dialog"][aria-modal="false"]');
+      const transientDialog = activeTransientDialog || Array.from(
+        document.querySelectorAll('[role="dialog"][aria-modal="false"]')
+      ).reverse().find(node => {
+        if (!node.isConnected || node.hidden || _isDialogClosingOrHidden(node)) return false;
+        const style = getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      });
+      if (transientDialog) return;
+      // 最前面のモーダルがEscapeを処理した後、同じdocumentに登録された
+      // 背景UIのEscapeハンドラへ流すと、閉鎖後に復帰させたフォーカスを
+      // 別の操作が奪う。最前面ダイアログだけでこのキー入力を消費する。
+      ev.stopImmediatePropagation();
       ev.stopPropagation();
       close('escape');
     }
@@ -831,7 +901,9 @@
       overlay.addEventListener('click', (ev) => { if (ev.target === overlay && _isTopmostModal(modal)) close('overlay'); });
     }
     if (opts.closeOnEsc !== false) {
-      document.addEventListener('keydown', onEscKey);
+      // 背景UIのEscape処理より先に最前面モーダルで消費し、閉鎖後の
+      // フォーカス復帰を遅延したメニュー処理に奪われないようcaptureで受ける。
+      document.addEventListener('keydown', onEscKey, true);
     }
 
     api = { overlay, modal, header, body, footer, open, close, isOpen: () => overlay.isConnected && !closed };
@@ -987,6 +1059,113 @@
 
   _installRangeFillSync();
 
+  // 数値入力の横ドラッグ増減。クリック編集を保つため、一定距離を越えた時だけ
+  // scrubへ移行し、動的生成された入力にもイベント委譲で適用する。
+  function _numberDragStep(input, event) {
+    const declared = Number.parseFloat(input?.step || '');
+    const base = Number.isFinite(declared) && declared > 0 ? declared : 1;
+    if (event?.ctrlKey) return base * 10;
+    if (event?.shiftKey) return base / 10;
+    return base;
+  }
+
+  function _numberDragPrecision(...values) {
+    return Math.min(10, Math.max(0, ...values.map(value => {
+      const text = String(value ?? '');
+      if (/e-/i.test(text)) return Number(text.split(/e-/i)[1]) || 0;
+      return (text.split('.')[1] || '').length;
+    })));
+  }
+
+  function _numberDragClamp(input, value) {
+    const min = Number.parseFloat(input?.min || '');
+    const max = Number.parseFloat(input?.max || '');
+    let next = value;
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    return next;
+  }
+
+  function _numberDragValue(input, startValue, deltaX, event) {
+    const step = _numberDragStep(input, event);
+    const units = Math.trunc(deltaX / 4);
+    let next = startValue + units * step;
+    if (event?.ctrlKey) next = Math.round(next / step) * step;
+    next = _numberDragClamp(input, next);
+    const precision = _numberDragPrecision(step, input?.step, input?.min, input?.max);
+    return Number(next.toFixed(precision));
+  }
+
+  function _installNumberInputDrag() {
+    const state = { input: null, pointerId: null, startX: 0, startValue: 0, changed: false, scrubbing: false };
+    const eventFor = type => new Event(type, { bubbles: true });
+    const reset = () => {
+      state.input?.classList?.remove('gb-number-input-scrubbing');
+      document.documentElement.classList.remove('gb-number-scrubbing');
+      state.input = null;
+      state.pointerId = null;
+      state.changed = false;
+      state.scrubbing = false;
+    };
+    document.addEventListener('pointerdown', event => {
+      const input = event.target?.closest?.('input[type="number"]');
+      if (!input || event.button !== 0 || event.pointerType !== 'mouse') return;
+      if (input.disabled || input.readOnly || input.dataset.numberDrag === 'off') return;
+      const value = Number.parseFloat(input.value);
+      if (!Number.isFinite(value)) return;
+      state.input = input;
+      state.pointerId = event.pointerId;
+      state.startX = event.clientX;
+      state.startValue = value;
+      state.changed = false;
+      state.scrubbing = false;
+    }, true);
+    window.addEventListener('pointermove', event => {
+      if (!state.input || event.pointerId !== state.pointerId) return;
+      const deltaX = event.clientX - state.startX;
+      if (!state.scrubbing && Math.abs(deltaX) < 4) return;
+      if (!state.scrubbing) {
+        state.scrubbing = true;
+        state.input.classList.add('gb-number-input-scrubbing');
+        document.documentElement.classList.add('gb-number-scrubbing');
+        try { state.input.setPointerCapture(event.pointerId); } catch {}
+      }
+      event.preventDefault();
+      const next = _numberDragValue(state.input, state.startValue, deltaX, event);
+      if (String(next) === state.input.value) return;
+      state.input.value = String(next);
+      state.changed = true;
+      state.input.dispatchEvent(eventFor('input'));
+    }, true);
+    window.addEventListener('pointerup', event => {
+      if (!state.input || event.pointerId !== state.pointerId) return;
+      const input = state.input;
+      const changed = state.changed;
+      if (state.scrubbing) event.preventDefault();
+      reset();
+      if (changed) input.dispatchEvent(eventFor('change'));
+    }, true);
+    window.addEventListener('pointercancel', reset, true);
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !state.input || !state.scrubbing) return;
+      const input = state.input;
+      const changed = state.changed && Number.parseFloat(input.value) !== state.startValue;
+      input.value = String(state.startValue);
+      event.preventDefault();
+      event.stopPropagation();
+      reset();
+      if (changed) {
+        input.dispatchEvent(eventFor('input'));
+        input.dispatchEvent(eventFor('change'));
+      }
+    }, true);
+    window.addEventListener('blur', () => {
+      if (state.input) reset();
+    });
+  }
+
+  _installNumberInputDrag();
+
   // ============================================================
   // ポップアップ内フォーカス循環（Tab / Shift+Tab）
   // ルビ入力ポップアップ・選択時書式ポップアップなど、開いている間だけ
@@ -1044,6 +1223,10 @@
     applyVariant,
     refreshRangeFill,
     refreshRangeFills,
-    cyclePopupFocus
+    cyclePopupFocus,
+    numberDrag: {
+      step: _numberDragStep,
+      value: _numberDragValue,
+    }
   };
 })();

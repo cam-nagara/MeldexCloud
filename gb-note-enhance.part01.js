@@ -21,7 +21,7 @@ const _FILE_STYLE_LOCAL_CUSTOM_THEME_NAME_KEY = '__themeName';
 const _FILE_STYLE_LOCAL_CUSTOM_THEME_SOURCE_KEY = '__themeSourceId';
 const _FOLDER_FILE_STYLE_KEY = 'file-style-folder-overrides';
 const _FILE_STYLE_CONTEXTS = ['folder', 'page', 'db', 'board', 'scriptnote'];
-const _DB_FILE_STYLE_VIEWS = new Set(['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'calendar', 'tasks', 'shifts', 'entity', 'smart-db']);
+const _DB_FILE_STYLE_VIEWS = new Set(['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'calendar', 'tasks', 'shifts', 'entity']);
 const _SCRIPTNOTE_BUILTIN_STYLE_PRESETS = [
   { name: 'デフォルト', style: {}, context: 'scriptnote' },
 ];

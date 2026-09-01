@@ -186,7 +186,7 @@
       const data = await loadConfig();
       const notionConn = data?.connections?.notion || {};
       const evernoteConn = data?.connections?.evernote || {};
-      const notion = notionConn.connected ? `接続済み${notionConn.name ? ': ' + notionConn.name : ''}` : '未接続';
+      const notion = notionConn.connected ? `取り込み接続済み${notionConn.name ? ': ' + notionConn.name : ''}` : '取り込み未接続';
       const evernote = evernoteConn.connected ? `接続済み${evernoteConn.name ? ': ' + evernoteConn.name : ''}` : '未接続';
       document.getElementById('external-import-notion-state').textContent = notion;
       document.getElementById('external-import-evernote-state').textContent = evernote;
@@ -723,7 +723,7 @@
       <div id="external-import-local-providers" class="external-import-provider-list"${cloudSurface ? ' hidden' : ''}>
         <section class="external-import-provider" data-provider="notion">
           <div class="external-import-provider-row">
-            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('notebookText', 16)}</span><div><strong>Notion</strong><span class="external-import-provider-state" id="external-import-notion-state">確認中...</span></div></div>
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('notebookText', 16)}</span><div><strong>NotionからMeldexへ取り込む</strong><span class="external-import-provider-state" id="external-import-notion-state">取り込み接続を確認中...</span></div></div>
             <span class="external-import-provider-last">ノート</span>
             <div class="external-import-provider-actions"><button type="button" id="external-import-notion-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Notionに接続</button><button type="button" id="external-import-notion-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-notion-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>

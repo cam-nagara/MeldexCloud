@@ -64,7 +64,6 @@
     const labels = {
       '.mel-sheet': 'Meldexシート',
       '.mel-scenario': 'Meldexシナリオ',
-      '.mel-timer': 'Meldexタイマー',
       '.mel-board': 'Meldexボード',
       '.csv': 'CSV',
       '.md': 'Markdown',

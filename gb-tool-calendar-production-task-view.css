@@ -2,6 +2,7 @@
 .gb-cal-toolbar-actions {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--ui-space-3);
   margin-left: auto;
@@ -19,10 +20,10 @@
   display: flex;
   align-items: center;
   align-content: center;
-  flex: 1 1 420px;
-  flex-wrap: wrap;
+  flex: 1 0 420px;
+  flex-wrap: nowrap;
   min-width: min(240px, 100%);
-  max-width: none;
+  max-width: 100%;
   gap: 0;
   padding: 0;
   border: 0;
@@ -32,8 +33,35 @@
   overflow: visible;
 }
 
+/* 中央3面と右操作群はそれぞれ分割しない。幅不足時は共通ツールバー自身が
+   グループ境界で折り返し、各グループを次段へ送る。 */
+.gb-toolbar-cal > .gb-cal-surface-switch,
+.gb-toolbar-cal > .gb-cal-toolbar-actions {
+  white-space: nowrap;
+}
+
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-toolbar-cal {
+  flex-wrap: wrap;
+}
+
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"]
+  .gb-cal-root[data-cal-surface="productionTasks"] .gb-toolbar-cal {
+  display: none !important;
+}
+
+.gb-cal-root[data-cal-surface="productionTasks"] [data-cal-action="template"] {
+  display: none !important;
+}
+
 .gb-cal-surface-btn {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: var(--ui-space-2);
+}
+
+.gb-cal-surface-btn .gb-inner-tab-label {
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 /* 制作面ではカレンダー用ナビ（今日/前後/表示切替）が非表示になり、タブ列の右隣が
@@ -303,7 +331,7 @@
 .gb-production-template-button:disabled {
   color: var(--ui-disabled-fg, var(--cal-muted-fg, var(--fg2)));
   background: var(--ui-disabled-bg, var(--cal-control-bg, var(--bg)));
-  border-color: var(--ui-disabled-border, var(--cal-control-border, var(--border)));
+  border-color: transparent;
   opacity: 1;
   cursor: wait;
 }
@@ -478,6 +506,43 @@
   color: var(--cal-fg, var(--fg));
 }
 
+/* 作品ごとのボタンは別シートではなく、同じタスクシートの保存ビューとして表示する。 */
+.gb-production-list-switch.db-view-tabs {
+  padding: 0 8px;
+  gap: 0;
+}
+
+.gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn {
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn.is-active {
+  border-bottom-color: var(--cal-accent, var(--accent));
+  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 10%, transparent);
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-sidebar-entrances {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-sidebar-entrances .gb-production-sidebar-button {
+  min-width: 0;
+  justify-content: center;
+  padding-inline: 6px;
+}
+
 .gb-production-sidebar-tabs {
   flex: 0 0 auto;
   display: grid;
@@ -518,6 +583,124 @@
   padding: 10px;
   box-sizing: border-box;
 }
+
+/* 制作設定: 左はテンプレート階層、右は現役シート埋め込み。 */
+.gb-production-settings-modal {
+  width: min(1120px, calc(100vw - 32px));
+  max-width: min(1120px, calc(100vw - 32px));
+  height: min(820px, calc(100vh - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.gb-production-settings-modal > .gb-modal-body {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.gb-production-settings-dialog {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-settings-state,
+.gb-production-settings-write-state,
+.gb-production-settings-sheet-state {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.gb-production-settings-write-state,
+.gb-production-settings-sheet-state {
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-settings-state.is-error,
+.gb-production-settings-sheet-state.is-error,
+.gb-production-settings-write-state.is-blocked {
+  color: var(--ui-danger, var(--danger, #dc2626));
+}
+
+.gb-production-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.gb-production-settings-nav {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+  border-right: 1px solid var(--cal-grid-line, var(--border));
+  background: var(--cal-panel-bg, var(--bg2));
+}
+
+.gb-production-settings-template-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 4px;
+}
+
+.gb-production-settings-template,
+.gb-production-settings-child {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  gap: 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cal-fg, var(--fg));
+  text-align: left;
+  cursor: pointer;
+}
+
+.gb-production-settings-template {
+  padding: 6px 8px;
+  font-weight: 600;
+}
+
+.gb-production-settings-children {
+  display: flex;
+  flex-direction: column;
+  padding-left: 18px;
+}
+
+.gb-production-settings-child {
+  padding: 5px 8px;
+  color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-settings-template:hover,
+.gb-production-settings-child:hover,
+.gb-production-settings-template.is-active,
+.gb-production-settings-child.is-active {
+  background: var(--cal-cell-hover-bg, var(--ui-hover-bg, var(--bg3)));
+  color: var(--cal-accent, var(--accent));
+}
+
+.gb-production-settings-sheet,
+.gb-production-settings-embed {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.gb-production-settings-sheet { overflow: hidden; }
+.gb-production-settings-embed { flex: 1 1 auto; overflow: hidden; }
+.gb-production-settings-empty { margin: 8px; color: var(--cal-muted-fg, var(--fg2)); font-size: 12px; }
 
 .gb-production-task-list-sidebar-note {
   display: flex;
@@ -936,7 +1119,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-sidebar-button,
   .gb-production-template-button {
     min-width: 44px;
-    min-height: 44px;
+    min-height: 44px !important;
   }
   .gb-production-list-switch-add-form input,
   .gb-production-sidebar-field input,
@@ -953,11 +1136,27 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   }
   .gb-production-quick-advanced summary { min-height: 44px; }
   .gb-production-sidebar-tab { min-height: 44px; }
+  .gb-production-settings-template,
+  .gb-production-settings-child { min-height: 44px; }
   .gb-production-management-actions .gb-cal-production-action { min-height: 44px; }
 }
 
 @media (max-width: 720px) {
   .gb-cal-surface-switch { flex: 1 1 100%; max-width: 100%; }
+  .gb-production-settings-modal {
+    width: 100vw;
+    max-width: 100vw;
+    height: min(92vh, 860px);
+    max-height: 92vh;
+  }
+  .gb-production-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(132px, 34%) minmax(0, 1fr);
+  }
+  .gb-production-settings-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  }
   .gb-production-list-switch { padding: 5px 8px; }
   .gb-production-quick-plan-form { grid-template-columns: minmax(90px, 120px) minmax(180px, 1fr); }
   .gb-production-quick-plan-form > button { grid-column: 1 / -1; justify-self: start; }
@@ -1196,9 +1395,11 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 }
 
 .gb-production-all-flat-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
 
 .gb-production-all-flat-table thead th {
@@ -1217,6 +1418,47 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .gb-production-all-flat-sortable {
   cursor: pointer;
   user-select: none;
+}
+
+.gb-production-task-sheet-header-label {
+  display: block;
+  overflow: hidden;
+  padding-right: 8px;
+  text-overflow: ellipsis;
+}
+
+.gb-production-task-sheet-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.gb-production-task-sheet-resize:hover {
+  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 35%, transparent);
+}
+
+.gb-production-task-sheet-column-settings {
+  display: grid;
+  gap: 4px;
+  min-width: min(520px, 80vw);
+}
+
+.gb-production-task-sheet-column-setting-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.gb-production-task-sheet-column-setting-row label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .gb-production-all-flat-sortable:hover {

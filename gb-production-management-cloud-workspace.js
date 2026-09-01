@@ -16,6 +16,24 @@
     return internals._joinPath(PM_ROOT, 'シート');
   }
 
+  const PM_ADDITIVE_SCHEMA_MISSING = new Set([
+    'シート/作業テンプレート',
+    'シート/作業テンプレート/作業テンプレート.md',
+  ]);
+  const PM_PRODUCTION_SCHEMA_VERSION = 2;
+
+  async function _pmCloudAssertSupportedSchemaVersions(provider, internals) {
+    for (const sheet of PM_SHEETS) {
+      const note = internals._joinPath(_pmCloudRoot(internals), sheet, sheet + '.md');
+      if (!await _pmCloudEntryExists(provider, note, internals)) continue;
+      const parsed = await _pmCloudReadFrontmatter(provider, note);
+      const version = Number(parsed.frontmatter?.schema_version || 1);
+      if (Number.isFinite(version) && version > PM_PRODUCTION_SCHEMA_VERSION) {
+        throw _pmCloudError(409, 'この制作管理シートは新しいバージョンで作成されています。Meldexを更新してください');
+      }
+    }
+  }
+
   // コミット前レビュー指摘 #15: 移行スキップキャッシュ用の安定キー。実際に接続している
   // Dropbox名前空間+絶対ルートパスを合成する（gb-dropbox-management-root-resolver.js。
   // ワークスペース切替を正しく検知できるのはこちらで、`制作管理/シート` のような
@@ -54,11 +72,14 @@
     const requested = String(url?.searchParams?.get('sheet') || 'タスクリスト');
     const sheet = aliases[requested] || requested;
     const q = String(url?.searchParams?.get('q') || '').trim().toLocaleLowerCase('ja');
+    const templateId = String(url?.searchParams?.get('template_id') || '').trim();
     const limit = Math.max(1, Math.min(5000, Number(url?.searchParams?.get('limit') || 100) || 100));
     const entries = sheet === 'タスクリスト'
       ? await _pmCloudListAllTaskEntries(provider, internals)
       : await _pmCloudListEntries(provider, internals, sheet);
     const rows = entries.map(_pmCloudEntryRow).filter(row => {
+      if (templateId && PM_WORK_TEMPLATE_CHILD_SHEETS.includes(sheet)
+          && String(row.properties?.[PM_WORK_TEMPLATE_RELATION] || '') !== templateId) return false;
       if (!q) return true;
       return `${row.name}\n${Object.values(row.properties).join('\n')}`.toLocaleLowerCase('ja').includes(q);
     });
@@ -140,7 +161,7 @@
   }
 
   async function _pmCloudAddStaff(provider, internals, body) {
-    // 「メンバーを追加」は正本『スタッフ管理シート』への upsert へ委譲する
+    // 「ユーザーを追加」は正本のユーザー管理シートへの upsert へ委譲する
     // （アカウント一元管理計画書 Phase 4 §5.9手順4・手順5）。スタッフは制作管理
     // ルートごとではなく全体で1枚の正本を共有するため、制作管理の初期化・
     // 一意チェック・書き込みはもう不要（正本自体の保護は window.MeldexUserRegistry
@@ -151,12 +172,13 @@
     // すり替えず、そのまま呼び出し元（openProductionStaffAdd の catch）へ
     // 伝播させる。
     const name = String(body?.name || body?.user || '').trim();
-    if (!name) throw new Error('メンバー名は必須です');
+    if (!name) throw new Error('ユーザー名は必須です');
     // 「ユーザーを選択（未連携も可）」— user が明示されていない限り name を
     // ユーザーIDへ代用しない（表示名だけの未連携行を許す。
     // meldex_staff_registry_service.upsert_staff の同じ配慮と揃えている）。
     const entry = {
       user: String(body?.user || '').trim(),
+      user_type: String(body?.user || '').trim() ? 'account' : 'virtual',
       display: String(body?.display || '').trim() || name,
       role: String(body?.role_label || body?.role || '').trim(),
       work_hours: String(body?.work_hours || '').trim(),
@@ -205,6 +227,7 @@
   }
 
   async function _pmCloudInit(provider, internals, options = {}) {
+    await _pmCloudAssertSupportedSchemaVersions(provider, internals);
     // コミット前レビュー指摘 #15: 以降のスキップキャッシュ判定はすべてこの1回だけ解決した
     // 管理ルートキーで揃える（provider同一性は使わない。解決できない場合はprovider単位の
     // フォールバックへ倒す。_pmCloudMigrationAlreadyDone参照）。
@@ -247,15 +270,24 @@
     for (const [name, text] of Object.entries(PM_REQUIRED_PAGES)) await _pmCloudEnsurePage(provider, internals, name, text);
     for (const sheet of PM_SHEETS) await _pmCloudEnsureSheet(provider, internals, sheet);
     // 構造が揃っている場合は初期値を再シードしない（編集済みの作業内容・規模リスト等を巻き戻さない）
-    if (missing.length) await _pmCloudSeed(provider, internals);
+    if (missing.some(item => !PM_ADDITIVE_SCHEMA_MISSING.has(item))) await _pmCloudSeed(provider, internals);
+    // スケジュール・制作管理UX統合: 作業テンプレート親を安定IDで用意し、旧独立
+    // リストと作品を既定テンプレートへ非破壊で所属させる。表示名廃止も同じ
+    // byte-for-byte rollback付き移行にまとめ、通常initだけで既存Cloudデータが収斂する。
+    const templateMembershipMigration = await _pmCloudMigrateTemplateMembership(provider, internals);
     const recovered = [...missing];
     const cal = await _pmCloudRecoverFromCalendar(provider, internals, missing);
     if (cal.shifts) recovered.push(`カレンダーからシフトを復旧: ${cal.shifts}件`);
     if (cal.tasks) recovered.push(`カレンダーから作業予定を復旧: ${cal.tasks}件`);
     const migration = options.migrateLegacyWorkspace
-      ? await _pmCloudMigrateLegacyWorkspace(provider, internals)
+      ? await _pmCloudMigrateLegacyWorkspace(
+        provider,
+        internals,
+        templateMembershipMigration.work_entries,
+        templateMembershipMigration.template_id,
+      )
       : { works: 0, copied: 0, removed: 0, conflict_copies_removed: 0 };
-    return {
+    const payload = {
       ok: true,
       root: PM_ROOT,
       sheets: PM_SHEETS,
@@ -267,8 +299,17 @@
       managed_names_migrated: nameMigration.migrated,
       staff_users_added: nameMigration.staff_users_added,
       internal_metadata_migrated: internalMetadataMigration.migrated,
+      template_membership_migrated: templateMembershipMigration.migrated,
+      default_template_id: templateMembershipMigration.template_id,
       ..._pmCloudRecoveryPayload(recovered),
     };
+    // 同じ内部操作チェーンだけで初期化時の一覧を再利用する。列挙可能にすると
+    // /production-management/init の応答へ全作品データが混入するため非列挙にする。
+    Object.defineProperty(payload, '_workEntries', {
+      value: templateMembershipMigration.work_entries,
+      enumerable: false,
+    });
+    return payload;
   }
 
   function _pmCloudManagedNameContext(provider, internals) {
@@ -368,7 +409,12 @@
     await internals._repairProductionSheetStoreIfNeeded?.(provider, dir);
     const note = internals._joinPath(dir, sheet + '.md');
     const parsed = await _pmCloudReadFrontmatter(provider, note);
-    const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db', schema_version: 1 };
+    const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db' };
+    const storedSchemaVersion = Number(frontmatter.schema_version || 1);
+    if (Number.isFinite(storedSchemaVersion) && storedSchemaVersion > PM_PRODUCTION_SCHEMA_VERSION) {
+      throw _pmCloudError(409, 'この制作管理シートは新しいバージョンで作成されています。Meldexを更新してください');
+    }
+    frontmatter.schema_version = PM_PRODUCTION_SCHEMA_VERSION;
     // 防御: 修復関数が未読込でも、汚染由来の保存方式キーをノートへ引き継がない
     ['storage', 'sheet_storage', 'entry_storage', 'storage_backend'].forEach((key) => {
       if (String(frontmatter[key] || '').toLowerCase() === 'sqlite') delete frontmatter[key];

@@ -97,7 +97,7 @@
     if (!uid) return null;
     const meta = providerIdentity(await freshStat(provider, targetPath));
     if (!meta.id || !meta.rev || (read.revision && text(read.revision) !== meta.rev)) {
-      throw new AnnotationTargetError('注釈対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
+      throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
     }
     return { kind: 'document', uid };
   }
@@ -109,10 +109,10 @@
     if (!claims?.resolveIdentity) throw new AnnotationTargetError('typed identity claim resolverを利用できません', 503, 'identity_claims_unavailable');
     const resolved = await claims.resolveIdentity(adapter, boundary, targetIdentity.kind, targetIdentity.uid);
     if (resolved.status === 'tombstoned') {
-      throw new AnnotationTargetError('削除済みの注釈対象は復活できません', 410, 'annotation_target_tombstoned');
+      throw new AnnotationTargetError('削除済みのアノテート対象は復活できません', 410, 'annotation_target_tombstoned');
     }
     if (resolved.count > 1 || resolved.status === 'ambiguous') {
-      throw new AnnotationTargetError('注釈対象のtyped identityが複数候補です', 409, 'annotation_target_ambiguous');
+      throw new AnnotationTargetError('アノテート対象のtyped identityが複数候補です', 409, 'annotation_target_ambiguous');
     }
     if (resolved.count !== 1 || !resolved.canonical) {
       return { count: 0, mode: 'legacy', identity: targetIdentity, canonical: null };
@@ -120,23 +120,23 @@
     const currentPath = path(record?.target_path || resolved.canonical.source_locator);
     const meta = providerIdentity(await freshStat(provider, currentPath));
     if (!meta.id || meta.id !== text(resolved.canonical.provider_id)) {
-      throw new AnnotationTargetError('注釈対象のDropbox identityがclaimと一致しません', 409, 'annotation_target_provider_mismatch');
+      throw new AnnotationTargetError('アノテート対象のDropbox identityがclaimと一致しません', 409, 'annotation_target_provider_mismatch');
     }
     return { count: 1, mode: 'typed', identity: targetIdentity, canonical: clone(resolved.canonical) };
   }
 
   function validateAliases(record, targetIdentity) {
     const aliases = Array.isArray(record?.legacy_target_aliases) ? record.legacy_target_aliases : [];
-    if (aliases.length > MAX_ALIASES) throw new AnnotationTargetError('注釈対象alias上限を超えました');
+    if (aliases.length > MAX_ALIASES) throw new AnnotationTargetError('アノテート対象alias上限を超えました');
     const seen = new Set();
     for (const item of aliases) {
       const key = `${text(item?.target_id)}\0${path(item?.target_path)}`;
       const destination = identity(item?.target);
-      if (!key.replace('\0', '') || !destination) throw new AnnotationTargetError('注釈対象aliasが欠損しています');
+      if (!key.replace('\0', '') || !destination) throw new AnnotationTargetError('アノテート対象aliasが欠損しています');
       if (!targetIdentity || destination.kind !== targetIdentity.kind || destination.uid !== targetIdentity.uid) {
-        throw new AnnotationTargetError('注釈対象alias hopは許可されません');
+        throw new AnnotationTargetError('アノテート対象alias hopは許可されません');
       }
-      if (seen.has(key)) throw new AnnotationTargetError('注釈対象alias cycle/重複を検出しました');
+      if (seen.has(key)) throw new AnnotationTargetError('アノテート対象alias cycle/重複を検出しました');
       seen.add(key);
     }
     return aliases.map(clone);
@@ -165,7 +165,7 @@
     const saved = await adapter.save(kind, documentId, payload, { expectedRevision });
     const readback = await adapter.load(kind, documentId);
     if (!readback || readback.revision !== saved.revision || !equal(readback.payload, payload)) {
-      throw new AnnotationTargetError('注釈recordのCAS readbackに失敗しました', 409, 'annotation_migration_readback_failed');
+      throw new AnnotationTargetError('アノテートrecordのCAS readbackに失敗しました', 409, 'annotation_migration_readback_failed');
     }
     return readback;
   }
@@ -240,7 +240,7 @@
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       const current = await adapter.load(kind, documentId);
       if (!current?.payload) return { mode: 'missing', record: null };
-      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済み注釈recordは移行できません', 410, 'annotation_record_deleted');
+      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済みアノテートrecordは移行できません', 410, 'annotation_record_deleted');
       const resolved = await resolveTarget({ provider, adapter, boundary, record: current.payload });
       if (resolved.mode === 'legacy') return { mode: 'legacy', record: current };
       if (identity(current.payload.target_identity)) {
@@ -255,7 +255,7 @@
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈recordのCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテートrecordのCAS retry上限に達しました');
   }
 
   function indexRow(record) {
@@ -284,17 +284,17 @@
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈metadata indexのCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテートmetadata indexのCAS retry上限に達しました');
   }
   async function indexUpsert(adapter, kind, record) {
-    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('注釈metadata idが欠損しています');
+    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('アノテートmetadata idが欠損しています');
     return mutateIndex(adapter, kind, entries => { entries[row.id] = row; });
   }
   async function indexDelete(adapter, kind, documentId) {
     return mutateIndex(adapter, kind, entries => { delete entries[text(documentId)]; });
   }
   async function indexTombstone(adapter, kind, record) {
-    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('注釈tombstone idが欠損しています');
+    const row = indexRow(record); if (!row.id) throw new AnnotationTargetError('アノテートtombstone idが欠損しています');
     row.tombstone = true;
     return mutateIndex(adapter, kind, entries => { entries[row.id] = row; });
   }
@@ -362,8 +362,8 @@
   async function rewriteStoredRecordAfterMove({ adapter, kind, documentId, oldPath, newPath, targetId, operationId }) {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       const current = await adapter.load(kind, documentId);
-      if (!current?.payload) throw new AnnotationTargetError('移動対象の注釈recordが見つかりません', 409, 'annotation_record_missing');
-      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済み注釈recordは移動できません', 410, 'annotation_record_deleted');
+      if (!current?.payload) throw new AnnotationTargetError('移動対象のアノテートrecordが見つかりません', 409, 'annotation_record_missing');
+      if (migrationBlocked(current.payload)) throw new AnnotationTargetError('削除済みアノテートrecordは移動できません', 410, 'annotation_record_deleted');
       let next = rewritePath(current.payload, oldPath, newPath, targetId, operationId);
       next = rewriteRefPaths(next, oldPath, newPath);
       next.modified = new Date().toISOString(); next.modified_at = next.modified;
@@ -376,12 +376,12 @@
         if (!conflict(error)) throw error;
       }
     }
-    throw new AnnotationTargetError('注釈移動のCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテート移動のCAS retry上限に達しました');
   }
 
   async function prepareLegacyRecordForMove({ provider, adapter, boundary, kind, record, oldPath, newPath, operationId }) {
     const documentId = text(record?.id);
-    if (!documentId) throw new AnnotationTargetError('legacy注釈IDが欠損しています');
+    if (!documentId) throw new AnnotationTargetError('legacyアノテートIDが欠損しています');
     let current = await adapter.load(kind, documentId);
     if (!current) {
       const now = new Date().toISOString();
@@ -400,7 +400,7 @@
     const journal = current?.payload?.annotation_move_journal;
     if (!journal || text(journal.operation_id) !== text(operationId)
         || path(journal.old_path) !== path(oldPath) || path(journal.new_path) !== path(newPath)) {
-      throw new AnnotationTargetError('legacy注釈のmove checkpointが競合しています', 409, 'annotation_move_checkpoint_conflict');
+      throw new AnnotationTargetError('legacyアノテートのmove checkpointが競合しています', 409, 'annotation_move_checkpoint_conflict');
     }
     const migrated = await migrateRecord({
       provider, adapter, boundary, kind, documentId,
@@ -408,7 +408,7 @@
     });
     const readback = await adapter.load(kind, documentId);
     if (!readback || readback.revision !== migrated.record?.revision) {
-      throw new AnnotationTargetError('legacy注釈move checkpointのreadbackに失敗しました', 409, 'annotation_move_checkpoint_readback_failed');
+      throw new AnnotationTargetError('legacyアノテートmove checkpointのreadbackに失敗しました', 409, 'annotation_move_checkpoint_readback_failed');
     }
     return readback;
   }
@@ -417,7 +417,7 @@
     const current = await adapter.load(kind, documentId);
     if (!current?.payload) return null;
     if (current.revision !== expectedRevision) {
-      throw new AnnotationTargetError('注釈削除対象のrevisionが変更されました', 409, 'annotation_delete_revision_changed');
+      throw new AnnotationTargetError('アノテート削除対象のrevisionが変更されました', 409, 'annotation_delete_revision_changed');
     }
     if (migrationBlocked(current.payload)) return current;
     const now = new Date().toISOString();
@@ -428,7 +428,7 @@
   async function markStoredRecordOrphan({ adapter, kind, documentId, oldPath }) {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       const current = await adapter.load(kind, documentId);
-      if (!current?.payload) throw new AnnotationTargetError('孤児化対象の注釈recordが見つかりません', 409);
+      if (!current?.payload) throw new AnnotationTargetError('孤児化対象のアノテートrecordが見つかりません', 409);
       if (migrationBlocked(current.payload)) return current;
       const now = new Date().toISOString();
       const next = Object.assign({}, current.payload, {
@@ -444,7 +444,7 @@
       try { return await saveReadback(adapter, kind, documentId, next, current.revision); }
       catch (error) { if (!conflict(error)) throw error; }
     }
-    throw new AnnotationTargetError('注釈孤児化のCAS retry上限に達しました');
+    throw new AnnotationTargetError('アノテート孤児化のCAS retry上限に達しました');
   }
 
   window.MeldexCloudAnnotationTargetResolver = Object.freeze({

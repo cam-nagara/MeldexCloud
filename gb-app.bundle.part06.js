@@ -1,3 +1,39 @@
+      }
+    }
+  }
+}
+
+function openMedia(label, path, type, opts) {
+  const openOpts = opts || {};
+  // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を
+  // 経由する showView('media') は行わない（openViewer 側の showView('html') に一本化）。
+  // media-view を一瞬マウントすると html-view が退避（DOM移動）され、iframe が強制
+  // 再読み込みされて開き直しの高速パスが成立しなくなる（v0.7.139検証で実測）。
+  const viewerRouted = (type === 'image' || type === 'pdf' || type === 'video');
+  if (!openOpts.skipShowView) { if (!viewerRouted) showView('media'); }
+  else if (!openOpts.skipStateView) state.view = 'media';
+  const mediaTitleEl = document.getElementById('media-title');
+  if (mediaTitleEl) mediaTitleEl.textContent = label;
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+  if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
+  if (!openOpts.skipNavPush) {
+    const _navEntry = {type:'media', label, path, mediaType: type, viewerUrl: openOpts.viewerUrl || ''};
+    navPush(_navEntry);
+  }
+  if (!openOpts.skipRecent) addRecent(label, path, 'media');
+  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+  // 詳細パネルにファイル情報を表示
+  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+  // ビューワーペインを更新
+  state.currentPagePath = path;
+  const container = document.getElementById('media-content');
+  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
+  if (type === 'image') {
+    openViewer(openOpts.viewerUrl || openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
+    return;
+  } else if (type === 'pdf') {
+    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
     return;
   } else if (type === 'video') {
     // 動画も画像・PDFと同じくビューワー（viewer.html／#html-iframe）側へ統一する。
@@ -293,13 +329,12 @@ function showMobileToolMenu(e) {
     { label: 'フォルダ', action: () => openToolTab('folder') },
     { label: 'ノート', action: () => openToolTab('page') },
     { label: 'シート', action: () => openToolTab('database') },
-    { label: 'スマートシート', action: () => openToolTab('smart-db') },
     { label: 'ボード', action: () => openToolTab('board') },
     null,
     { label: 'ビューワー', action: () => toggleRightPanelTab('preview') },
     { label: 'オプション', action: () => toggleOptionPanel() },
     null,
-    { label: '注釈ツール', action: () => toggleAnnotationToolbar() },
+    { label: 'アノテートツール', action: () => toggleAnnotationToolbar() },
     { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
   ];
   const menu = document.createElement('div');

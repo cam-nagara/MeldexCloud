@@ -448,10 +448,10 @@
 
     if (typeof renderFileStyleTab === 'function') {
       const original = renderFileStyleTab;
-      renderFileStyleTab = function(ctx) {
-        original(ctx);
+      renderFileStyleTab = function(ctx, hostEl) {
+        original(ctx, hostEl);
         if (ctx !== CALENDAR_CTX) return;
-        const el = document.getElementById('detail-tab-file-style');
+        const el = hostEl || document.getElementById('detail-tab-file-style');
         el?.setAttribute('data-calendar-style', '1');
         const desc = el?.querySelector?.('.gb-section-desc');
         if (desc) desc.textContent = '対象: スケジュール';

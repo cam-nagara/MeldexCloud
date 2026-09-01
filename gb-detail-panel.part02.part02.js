@@ -99,58 +99,36 @@ async function _syncDetailPanel(label, path, type, opts) {
   }
   if (type !== 'calendar' && typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
-  const noteEditorTypes = new Set(['page']);
-  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   const dbTypes = new Set(['database']);
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
-  if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
-  if (typeof showFileInfoTab === 'function') showFileInfoTab(fileInfoTypes.has(type));
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
-  // ショートカットキータブは常に出し、開いている間は対象アプリに合わせて絞り込みを更新する
-  if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
-  if (_currentDetailTab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
-  // ファイルテーマタブは編集可能な主要タイプで共通表示
-  const styleTypes = new Set(['folder', 'page', 'database', 'board', 'scriptnote']);
-  if (typeof showFileStyleTab === 'function') {
-    const show = styleTypes.has(type);
-    showFileStyleTab(show);
-    if (show) {
-      const ctx = (type === 'page') ? 'page'
-        : (type === 'folder') ? 'folder'
-        : (type === 'board') ? 'board'
-        : (type === 'scriptnote') ? 'scriptnote'
-        : 'db';
-      renderFileStyleTab(ctx);
-    }
-  }
+  if (['note-editor', 'file-style', 'backlinks', 'shortcuts'].includes(_currentDetailTab)) switchDetailTab(null);
   if (type === 'page') {
-    // 詳細パネルにはファイル情報を表示（ノート内容はメインペインで表示済み）
-    if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path, opts?.fileMeta);
-    else openInSplitView(label, path);
+    if (typeof _showFileInfoInDetailPanel === 'function') {
+      _showFileInfoInDetailPanel(path, opts?.fileMeta, { contextOnly: true });
+    } else {
+      window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'page-open');
+    }
   } else if (type === 'folder') {
-    // フォルダはバックリンクの対象から除外する（計画書§2.3「フォルダそのものは
-    // 対象から除外する」）。前の選択対象を残すと、フォルダ表示中にバックリンク
-    // タブを開いた時に無関係な古い対象の結果が出てしまうため明示的に空にする。
-    window.GBOptionTargetContext?.clear('folder-open');
+    // 独立した情報/テーマパネルはフォルダも対象にする。バックリンク側だけが
+    // kind=folder を未対応として扱い、以前のファイルを暗黙に表示しない。
+    window.GBOptionTargetContext?.set({ path, kind: 'folder' }, 'folder-open');
     // フォルダもファイルと同じ情報表示を使い、作成・更新日時を取得する。
     await _showFileInfoInDetailPanel(path, opts?.fileMeta, {
       kind: 'folder',
       type: 'folder',
       updateTargetContext: false,
+      contextOnly: true,
     });
     if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
-    const fileInfoType = opts?.fileInfoType === 'smart-db' ? 'smart-db' : 'database';
-    void renderFileInfoDetailTab(path, opts?.fileMeta, {
-      type: fileInfoType,
-      typeLabel: fileInfoType === 'smart-db' ? 'スマートシート' : 'シート',
-    });
     await _showDatabaseInfoInDetailPanel(label, path);
   } else if (fileInfoTypes.has(type)) {
-    void renderFileInfoDetailTab(path, opts?.fileMeta, { type });
+    window.GBOptionTargetContext?.set({ path, kind: type }, `${type}-open`);
   }
 }
 
@@ -169,7 +147,7 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   // フォルダpathをそのまま渡すのではなく対応するフォルダノートpathへ変換する
   // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
   const dbNotePath = window.GbBacklinks?.dbFolderNotePath?.(path) || path;
-  window.GBOptionTargetContext?.set({ path: dbNotePath, kind: 'database' }, 'database-select');
+  window.GBOptionTargetContext?.set({ path: dbNotePath, contextPath: path, kind: 'database' }, 'database-select');
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'

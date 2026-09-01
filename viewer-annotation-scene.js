@@ -1,9 +1,9 @@
-/* viewer-annotation-scene.js — Meldexビューワー: 注釈の画像固有ピクセル座標シーン。
-   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. 注釈の画像追従」
+/* viewer-annotation-scene.js — Meldexビューワー: アノテートの画像固有ピクセル座標シーン。
+   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. アノテートの画像追従」
    方針:
-     - 表示中の画像・PDFページ1枚ごとに「メディア(img/canvas) + 注釈SVG」を1つの<div>で束ねる
+     - 表示中の画像・PDFページ1枚ごとに「メディア(img/canvas) + アノテートSVG」を1つの<div>で束ねる
        （見開き/マンガでは2シーンが同時に独立して存在する）。
-     - 注釈SVGは viewBox="0 0 mediaWidth mediaHeight" を画像の固有ピクセル座標系として使う。
+     - アノテートSVGは viewBox="0 0 mediaWidth mediaHeight" を画像の固有ピクセル座標系として使う。
        SVGを画像と同じ祖先（#layer→#display）の中に、画像の実描画サイズへ position:relative の
        ラッパーで一致させて置くことで、フィット倍率×ズーム×パン×回転×反転は
        既存のCSS transform連鎖（#displayのscale/rotate、#layerのtranslate、img/canvasの
@@ -11,7 +11,7 @@
      - 画面座標→画像固有座標の逆変換は SVGElement.getScreenCTM().inverse() を使う
        （ブラウザが実際の合成後行列を返すため、回転90/180/270度・反転を含めて正確）。
      - 新規に作成する線・付箋は必ず coordinateSpace: "media-pixel-v1" を付けて保存する。
-       coordinateSpace を持たない既存注釈（旧仕様）は破壊的変換をせず、
+       coordinateSpace を持たない既存アノテート（旧仕様）は破壊的変換をせず、
        viewer-annotation-legacy.js の「表示領域全体基準」オーバーレイでそのまま表示する
        （このファイルの責務外）。
    公開: window.MeldexViewerAnnotationScene */
@@ -132,7 +132,7 @@
 
   // 表示中グループ(1枚 or 見開き2枚)へ、シーンを1件ずつ再構築する。
   // viewer-scene.js の showGroup() → swapLayers() 完了後（画像ロード後・レイヤー入替後）に
-  // window.MeldexViewerAnnotations.onSceneChanged() から呼ばれるほか、注釈モードON時の
+  // window.MeldexViewerAnnotations.onSceneChanged() から呼ばれるほか、アノテートモードON時の
   // 再読み込み（同じimg/canvas要素のまま）でも呼ばれる。後者では既存のwrap/svgを再利用し、
   // 描画内容だけをクリアして再構築する（DOM要素の作り直しによるSVG二重化を避ける）。
   async function rebuild() {
@@ -266,7 +266,7 @@
       el.setAttribute('stroke-linecap', type === 'marker' ? 'butt' : 'round'); el.setAttribute('stroke-linejoin', 'round');
     }
     // pointer-eventsは個別指定しない（setState()が切り替える親svgの値をそのまま継承させる。
-    // 徹底チェック2026-08-02: 個別にautoを指定すると、注釈OFF(svg側none)時でも子要素の
+    // 徹底チェック2026-08-02: 個別にautoを指定すると、アノテートOFF(svg側none)時でも子要素の
     // 明示autoが親のnoneを上書きし、下にあるページ送り領域(#nav-prev-area等)やパン操作の
     // クリックを奪ってしまう。消しゴムのヒット判定は_coreAnnotationElementHitの座標計算
     // ベースでDOMのpointer-eventsに依存しないため、個別autoは不要）。
@@ -371,13 +371,22 @@
       if (scene.isPdf && scene.pageIndex != null) data.pageIndex = scene.pageIndex;
       const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia);
       try {
-        const res = await window.apiPost('/annotations', {
+        const row = {
           target_path: scene.path, type, data, color: _ann.color, opacity: _ann.opacity, user: viewerAnnotationUser(),
-        });
+        };
+        const res = await window.apiPost('/annotations', row);
         // 保存完了までにページ送り等でシーンが差し替わっていても、要素自体への id 付与は無害
         // （表示から外れたSVGは破棄済みで、以後参照されない）。
         if (res?.id) el.dataset.annId = res.id;
-        window.__viewerAnnotationReportSave?.(true, 'create', null, res);
+        const after = {
+          ...row,
+          id: res?.id || '',
+          created: res?.created || '',
+          modified: res?.modified || res?.created || '',
+          data: { ...data },
+        };
+        el._viewerAnnotationHistoryRow = after;
+        window.__viewerAnnotationReportSave?.(true, 'create', null, res, { before: null, after });
       } catch (error) {
         el.remove();
         viewerAnnotationSaveFailed(error);
@@ -393,7 +402,7 @@
     try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; }
   }
   let _lastSaveFailureAt = 0;
-  function viewerAnnotationSaveFailed(error, message = '注釈の保存に失敗しました') {
+  function viewerAnnotationSaveFailed(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof window.showStatus === 'function' && now - _lastSaveFailureAt > 1500) {
       window.showStatus(message, true);
@@ -410,11 +419,12 @@
       if (el.classList.contains('viewer-ann-preview')) continue;
       if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(el, local.x, local.y, tolerance)) {
         try {
+          const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
           const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
           el.remove();
-          window.__viewerAnnotationReportSave?.(true, 'delete', null, result);
+          window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
         } catch (error) {
-          viewerAnnotationSaveFailed(error, '注釈を削除できませんでした');
+          viewerAnnotationSaveFailed(error, 'アノテートを削除できませんでした');
           window.__viewerAnnotationReportSave?.(false, 'delete', error);
         }
         return true;
@@ -484,9 +494,11 @@
         if (item.type === 'comment' || item.shape === 'sticky') {
           window.MeldexViewerAnnotationNotes?.render?.(sceneEntry, item, data);
         } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
-          renderShape(sceneEntry, item.type, data, item.color, item.opacity, item.id, false);
+          const element = renderShape(sceneEntry, item.type, data, item.color, item.opacity, item.id, false);
+          element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         } else if (data.points) {
-          renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width);
+          const element = renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width);
+          element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         }
       });
       window.MeldexViewerAnnotationLegacy?.setItemsForPath?.(sceneEntry.path, legacyItems);
@@ -495,7 +507,7 @@
         sceneEntry._bound = true;
       }
     } catch (error) {
-      if (token === _rebuildToken) viewerAnnotationSaveFailed(error, '注釈を読み込めませんでした');
+      if (token === _rebuildToken) viewerAnnotationSaveFailed(error, 'アノテートを読み込めませんでした');
     }
   }
 

@@ -85,7 +85,7 @@
       const me = String(getUsername() || '').trim();
       if (me && me !== 'anonymous') {
         try {
-          await upsertStaff({ user: me, display: me }, { fillOnly: true });
+          await upsertStaff({ user: me, display: me, user_type: 'account' }, { fillOnly: true });
           await listStaff({ force: true });
         } catch (e) { console.warn('MeldexUserRegistry: self-registration failed', e); }
       }
@@ -132,6 +132,42 @@
     return result?.staff || null;
   }
 
+  async function addVirtualUser(display) {
+    const name = String(display || '').trim();
+    if (!name) throw new Error('仮ユーザーの表示名を入力してください');
+    return upsertStaff({ display: name, user_type: 'virtual' });
+  }
+
+  async function setUserWorkspace(userOrId, workspaceId, included) {
+    const identity = String(userOrId || '').trim();
+    const targetWorkspaceId = String(workspaceId || '').trim();
+    if (!identity || !targetWorkspaceId) throw new Error('ユーザーとワークスペースを指定してください');
+    const users = await listStaff({ force: true });
+    const row = users.find(item => item.user_id === identity || item.user === identity || item.display === identity);
+    if (!row) throw new Error('ユーザーが見つかりません');
+    const workspaceIds = new Set(Array.isArray(row.workspace_ids) ? row.workspace_ids : []);
+    if (included) workspaceIds.add(targetWorkspaceId);
+    else workspaceIds.delete(targetWorkspaceId);
+    return upsertStaff({
+      user: row.user,
+      user_id: row.user_id,
+      user_type: row.user_type || 'account',
+      display: row.display || row.user,
+      role: row.role,
+      work_hours: row.work_hours,
+      break_hours: row.break_hours,
+      hourly_rate: row.hourly_rate,
+      holidays: row.holidays,
+      active_from: row.active_from,
+      active_to: row.active_to,
+      google_url: row.google_url,
+      caldav_url: row.caldav_url,
+      sync_enabled: row.sync_enabled,
+      note: row.note,
+      workspace_ids: [...workspaceIds],
+    });
+  }
+
   function invalidate() {
     _staffCache = null;
   }
@@ -147,7 +183,7 @@
   async function openSheet() {
     const config = await getConfig().catch(() => null);
     if (!config || !config.path) {
-      if (typeof showStatus === 'function') showStatus('スタッフ管理シートの場所が未設定です。設定ダイアログの「スタッフ」を開いて初期化してください', true);
+      if (typeof showStatus === 'function') showStatus('ユーザー管理シートの場所が未設定です。設定の「ユーザー」を開いて初期化してください', true);
       return false;
     }
     if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
@@ -157,7 +193,7 @@
       return true;
     }
     if (typeof openFolder === 'function') {
-      await openFolder(window.MeldexStaffRegistrySchema?.DEFAULT_SHEET_NAME || 'スタッフ管理', config.path, {});
+      await openFolder('ユーザー管理', config.path, {});
       return true;
     }
     return false;
@@ -178,6 +214,8 @@
     findByUser,
     validateUniqueUser,
     upsertStaff,
+    addVirtualUser,
+    setUserWorkspace,
     invalidate,
     relocate,
     openSheet,

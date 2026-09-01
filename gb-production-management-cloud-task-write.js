@@ -15,6 +15,7 @@
       buckets[bucket].push(row);
     });
     let created = 0;
+    const createdEntries = [];
     const errors = [];
     let aborted = false;
     await Promise.all(buckets.map(async bucket => {
@@ -22,7 +23,29 @@
         if (aborted) break;
         const key = String(row['作成キー'] || '');
         try {
-          await _pmCloudUpsertEntry(provider, internals, taskSheet, _pmTaskRowEntryName(row), _pmTaskRowProps(row), '作成キー', key, { skipLookup: true });
+          const path = await _pmCloudUpsertEntry(
+            provider,
+            internals,
+            taskSheet,
+            _pmTaskRowEntryName(row),
+            _pmTaskRowProps(row),
+            '作成キー',
+            key,
+            { skipLookup: true },
+          );
+          const topicId = 'ent_' + _pmHash(path).slice(0, 10);
+          createdEntries.push({
+            path,
+            name: _pmTaskRowEntryName(row),
+            frontmatter: {
+              id: topicId,
+              topicRef: {
+                sourceId: _pmCloudProductionSourceId(provider, internals),
+                topicId,
+              },
+            },
+            body: '',
+          });
           created += 1;
         } catch (error) {
           const isConflict = String(error?.name || '').toLowerCase().includes('conflict')
@@ -50,7 +73,7 @@
       }
     }));
     if (errors.length) throw errors[0];
-    return created;
+    return { created, entries: createdEntries };
   }
 
   async function _pmCloudTaskConflictExists(provider, internals, taskSheet, row, key) {

@@ -36,7 +36,7 @@
       const trimmed = String(name || '').trim();
       if (!trimmed || seen.has(trimmed)) return;
       seen.add(trimmed);
-      result.push(Object.assign({ name: trimmed, role: '', has_avatar: false }, extra || {}));
+      result.push(Object.assign({ name: trimmed, display: trimmed, role: '', has_avatar: false, user_type: 'account' }, extra || {}));
     };
 
     if (typeof getUsername === 'function') {
@@ -49,7 +49,13 @@
         const staff = await window.MeldexUserRegistry.listStaff(options.force ? { force: true } : {});
         staff.forEach((row) => {
           if (_isActiveLeftStaffRow(row)) return; // 離脱者は選択候補から外す（計画書§5.6）
-          add(row.user, { role: row.role || '' });
+          add(row.user || row.display, {
+            id: row.user_id || '',
+            display: row.display || row.user || '',
+            role: row.role || '',
+            user_type: row.user_type || 'account',
+            workspace_ids: Array.isArray(row.workspace_ids) ? row.workspace_ids.slice() : [],
+          });
         });
       }
     } catch (e) { /* 正本シート未設定時は無視して次の候補源へ */ }
@@ -138,9 +144,10 @@
         const isSelected = selected.has(u.name);
         item.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;border-radius:3px;font-size:12px;'
           + (isSelected ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));' : '');
+        const userKind = u.user_type === 'virtual' ? '仮ユーザー' : (u.role || '');
         item.innerHTML = (isMulti ? '<span style="font-size:11px;">' + (isSelected ? '✓' : '　') + '</span> ' : '')
-          + _pickerAvatarHtml(u.name) + ' ' + _pickerEsc(u.name)
-          + '<span style="margin-left:auto;font-size:10px;color:' + (isSelected ? 'color-mix(in srgb, var(--ui-fg-strong) 70%, transparent)' : 'var(--fg2)') + ';">' + _pickerEsc(u.role || '') + '</span>';
+          + _pickerAvatarHtml(u.name) + ' ' + _pickerEsc(u.display || u.name)
+          + '<span style="margin-left:auto;font-size:10px;color:' + (isSelected ? 'color-mix(in srgb, var(--ui-fg-strong) 70%, transparent)' : 'var(--fg2)') + ';">' + _pickerEsc(userKind) + '</span>';
         item.addEventListener('mouseover', () => { if (!isSelected) item.style.background = 'var(--bg3)'; });
         item.addEventListener('mouseout', () => { if (!isSelected) item.style.background = ''; });
         item.addEventListener('click', () => {

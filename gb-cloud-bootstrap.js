@@ -55,7 +55,7 @@
   function _phase1UnsupportedMessage(type) {
     const label = _phase1FeatureLabel(type);
     const category = _phase1FeaturePhase(type);
-    const supported = (window.MeldexCloudBetaScope?.supported || ['フォルダ', 'ノート', 'シナリオ', 'シート', 'カレンダー', 'スマートシート']).join('、');
+    const supported = (window.MeldexCloudBetaScope?.supported || ['フォルダ', 'ノート', 'シナリオ', 'シート', 'カレンダー']).join('、');
     return `${label}はブラウザ版から直接実行できません（理由: ${category}）。現在この画面で使える機能は ${supported} です。`;
   }
 

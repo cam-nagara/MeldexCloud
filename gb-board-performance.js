@@ -87,55 +87,6 @@ function bdMarkFastCardRenderUsed() {
   _bdFastCardRenderUsed = true;
 }
 
-function bdAppendFastNodeAnchors(div, node) {
-  if (!div || !node || !node.id || node.minimized || node.locked) return;
-  ['top', 'bottom', 'left', 'right'].forEach(pos => {
-    const anchor = document.createElement('div');
-    anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
-    if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
-    // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
-    // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
-    anchor.addEventListener('pointerdown', (ev) => {
-      if (typeof bdHandleAnchorPointerDown === 'function') {
-        bdHandleAnchorPointerDown(ev, div, node, pos);
-        return;
-      }
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const startX = ev.clientX;
-      const startY = ev.clientY;
-      let dragged = false;
-      const onMove = (mv) => {
-        if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) >= 4) dragged = true;
-      };
-      const onUp = () => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        document.removeEventListener('pointercancel', onUp);
-        if (dragged) return;
-        const hasConnSel = (typeof bd !== 'undefined' && bd.selectedConnIds instanceof Set && bd.selectedConnIds.size > 0);
-        if (hasConnSel) {
-          bd.connecting = node.id;
-          bd._connLabel = '';
-          bd._connOrigin = 'anchor';
-          bd._connFromAnchor = (typeof _bdHudPosToAnchorName === 'function') ? _bdHudPosToAnchorName(pos) : '';
-          if (typeof window.showStatus === 'function') {
-            window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
-          }
-          return;
-        }
-        if (typeof _bdAnchorAddCard === 'function') _bdAnchorAddCard(node.id, pos);
-      };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
-      document.addEventListener('pointercancel', onUp);
-    });
-    div.appendChild(anchor);
-  });
-}
-
 function bdAppendFastNode(node) {
   if (!node || !node.id || typeof document === 'undefined') return false;
   const container = document.getElementById('bd-nodes');

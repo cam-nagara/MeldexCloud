@@ -1,6 +1,6 @@
     _normalizePaneNode(nextRoot);
     const fixedRoot = _migrateLayoutToFixedRailsIfNeeded(nextRoot);
-    _removeOrphanComponentInstances(_root, fixedRoot);
+    if (!await _removeOrphanComponentInstances(_root, fixedRoot)) return null;
     _root = fixedRoot;
     _savedRootForMaximize = null;
     _maximizedPaneId = null;

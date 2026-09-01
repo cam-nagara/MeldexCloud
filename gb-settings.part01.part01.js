@@ -11,12 +11,26 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
 });
 const MELDEX_WEBCLIP_GUIDE_PATH = '03_設定と連携/Chrome拡張機能の設定.md';
 const MELDEX_DEFAULT_APPS_GUIDE_PATH = '04_サポート/Windows 既定アプリの設定.md';
+const MELDEX_BROWSER_SETTINGS_TRANSFER_BACKUPS_KEY = 'meldex:settings-transfer-browser-backups:v1';
+const MELDEX_BROWSER_SETTINGS_TRANSFER_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 function _settingsStorageLabel() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
   if (mode === 'browser') return 'この端末内に保存';
   if (mode === 'dropbox') return 'Dropboxと接続中';
   return 'このPCに保存';
+}
+
+function _settingsStorageConnectionPath(info, workspaceState = null) {
+  const state = workspaceState || window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+  const rawPath = String(info?.path || info?.homePath || state?.path || '').trim();
+  if (!rawPath) return '';
+  const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
+  const isDropbox = mode === 'dropbox' || info?.kind === 'dropbox' || state?.kind === 'dropbox';
+  if (!isDropbox) return rawPath;
+  const accountName = String(info?.accountName || state?.accountName || '').trim();
+  const pathParts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean);
+  return ['Dropbox', accountName, ...pathParts].filter(Boolean).join(' / ');
 }
 
 let _settingsModalController = null;
@@ -46,6 +60,25 @@ function closeSettingsModalRestoringTheme() {
   if (typeof restoreThemeSnapshot === 'function') restoreThemeSnapshot(window._settingsThemeSnapshot);
   closeSettingsModalWithReason('cancel', overlay);
 }
+
+async function openStorageSettingsFlow() {
+  const bootstrap = window.MeldexCloudBootstrap;
+  if (!bootstrap || typeof bootstrap.openSettingsFlow !== 'function') {
+    if (typeof showStatus === 'function') showStatus('保存先の設定を開けませんでした。Meldexを再起動して、もう一度お試しください', true);
+    return false;
+  }
+  closeSettingsModalRestoringTheme();
+  try {
+    await bootstrap.openSettingsFlow();
+    return true;
+  } catch (error) {
+    const detail = error?.message || String(error || '不明なエラー');
+    if (typeof showStatus === 'function') showStatus('保存先の設定を開けませんでした: ' + detail, true);
+    return false;
+  }
+}
+
+if (typeof window !== 'undefined') window.openStorageSettingsFlow = openStorageSettingsFlow;
 
 function _setSettingsAvatarPreview(el, avatar) {
   if (!el) return;
@@ -93,11 +126,11 @@ function _settingsModalViewportLimit(axis, margin, fallback) {
   return Math.max(fallback, Math.floor((viewport - margin) / zoom));
 }
 
-// 既定の大きさ。画面を占有しすぎない控えめな寸法にしてある（2026-08-07 に
-// 980×720 / 560×600 から縮小）。ユーザーがフチをドラッグして変えた大きさは
-// gb-modal-shell.js が記憶し、次に開いたときはそちらが優先される。
-const SETTINGS_MODAL_BASE_WIDTH = 880;
-const SETTINGS_MODAL_BASE_HEIGHT = 620;
+// デスクトップの既定サイズはテーマプレビューまで見渡せる 1070×920。
+// ユーザーがフチをドラッグして変えた大きさは gb-modal-shell.js が記憶し、
+// 次に開いたときはそちらが優先される。モバイルは従来のコンパクト寸法を維持する。
+const SETTINGS_MODAL_BASE_WIDTH = 1070;
+const SETTINGS_MODAL_BASE_HEIGHT = 920;
 const SETTINGS_MODAL_BASE_WIDTH_MOBILE = 560;
 const SETTINGS_MODAL_BASE_HEIGHT_MOBILE = 560;
 
@@ -151,31 +184,25 @@ async function showSettingsModal(opts) {
     }
   } catch {}
   const _isMobile = _shouldUseSettingsMobileLayout();
-  // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
+  // 「公開」は各アプリ（ノート／シナリオ／シート／ボード）のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
   const settingsNavigationTabs = typeof getSettingsNavigationTabs === 'function'
     ? getSettingsNavigationTabs()
     : [
-      { id: 'ユーザー・共同作業', desc: 'ユーザー名、ワークスペース、メンバー', icon: 'usersRound' },
+      { id: 'ユーザー・共同作業', desc: 'プロフィール、ユーザー、ワークスペースの所属と権限', icon: 'usersRound' },
       { id: '保存先・フォルダ', desc: 'ホームフォルダ、保存先、ソースフォルダ', icon: 'folder' },
       { id: '表示・起動', desc: '表示サイズ、見やすさ、起動時の動作', icon: 'monitorCog' },
       { id: 'テーマ', desc: 'テーマ、テーマカラー、フォント', icon: 'palette' },
       { id: 'ショートカット', desc: 'キーボード操作', icon: 'keyboard' },
-      { id: 'AI・Discord', desc: 'AIキー、AI使用量、Discord連携', icon: 'bot' },
-      { id: 'インポート', desc: '外部取り込み、Notion同期、拡張機能', icon: 'download' },
+      { id: 'AI', desc: 'AIキー、AI使用量', icon: 'bot' },
+      { id: 'インポート', desc: '外部取り込み、Notion同期', icon: 'download' },
+      { id: 'Webクリップ', desc: 'Web Clipper、Xブックマーク、Xアカウント保存', icon: 'blocks' },
+      { id: '拡張機能', desc: '追加機能の導入と状態確認', icon: 'puzzle' },
       { id: '導入・アプリ連携', desc: 'ホーム画面追加、ファイル関連付け', icon: 'download' },
       { id: '履歴・引き継ぎ', desc: 'Undo、バージョン保存、設定移行', icon: 'history' },
       { id: 'ゴミ箱・データ保守', desc: 'ゴミ箱、バックアップ、内部データ', icon: 'database' },
       { id: 'フィードバック', desc: 'フィードバック、利用統計、診断', icon: 'messageSquareText' },
     ];
-  if (_isMobile && !settingsNavigationTabs.some(tab => tab.id === 'Web Clipper')) {
-    const importIndex = settingsNavigationTabs.findIndex(tab => tab.id === 'インポート');
-    settingsNavigationTabs.splice(importIndex < 0 ? settingsNavigationTabs.length : importIndex + 1, 0, {
-      id: 'Web Clipper',
-      desc: 'ブラウザの共有からページを保存',
-      icon: 'blocks',
-    });
-  }
   const settingsTabGroups = [
     { label: '設定', tabs: settingsNavigationTabs.map(tab => tab.id) },
   ];
@@ -198,14 +225,13 @@ async function showSettingsModal(opts) {
   const _currentTheme = detectCurrentTheme();
   const _storageLabel = _settingsStorageLabel();
   const _workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
-  const _storageDetail = _workspaceState?.path
-    ? `${_workspaceState.path}${_workspaceState.access ? ' / ' + _workspaceState.access : ''}`
-    : '未接続';
+  const _storageDetail = _settingsStorageConnectionPath(_workspaceState, _workspaceState) || '未接続';
   // 版履歴の共有移行は「このPCに貯まった版をDropboxの共有保存先へ移す」操作なので、
   // ローカルの版置き場を持たないクラウド版では出さない(押せても何もできないため)。
   const _sharedVersionMigrationAvailable = !(
     window.MeldexRuntimeAdapter?.isBrowserMode?.() || window.MeldexRuntimeAdapter?.isDropboxMode?.()
   );
+  const _historySheetExportAvailable = !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
   const _webClipperDesktopSetupAvailable = isWebClipperDesktopSetupAvailable();
   const _webClipperSetupDisabled = _webClipperDesktopSetupAvailable ? '' : ' disabled aria-disabled="true"';
   const _treeThumbnailsAvailable = window.GBOutlinerThumbnails?.isAvailable?.()
@@ -216,6 +242,15 @@ async function showSettingsModal(opts) {
   const _treeThumbnailSizeMode = typeof resolveThumbnailSizeMode === 'function' ? resolveThumbnailSizeMode() : (['small', 'large'].includes(localStorage.getItem('gb:tree-thumbnail-size')) ? localStorage.getItem('gb:tree-thumbnail-size') : 'medium');
   const _treeOpenClickMode = localStorage.getItem('gb:tree-open-click-mode') === 'double' ? 'double' : 'single';
   const _viewerWheelMode = localStorage.getItem('gb:viewer-wheel-mode') === 'nav' ? 'nav' : 'zoom';
+  const _restorePointConfig = typeof getVersionConfig === 'function'
+    ? getVersionConfig()
+    : window.MeldexRestorePointPolicy?.normalize?.({});
+  const _restorePointCadence = _restorePointConfig?.cadence || {};
+  const _restorePointRetention = _restorePointConfig?.retention || { mode: 'forever', days: null };
+  const _restorePointPolicyScope = window.MeldexRestorePointPolicySync?.currentScope?.()
+    || { kind: 'personal', role: 'owner', readOnly: false };
+  const _restorePointPolicyReadOnly = _restorePointPolicyScope.kind === 'workspace'
+    && _restorePointPolicyScope.readOnly === true;
 
   let o = document.createElement('div');
   o.className = 'settings-build-root';
@@ -244,6 +279,10 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-nav-item{width:100%;display:grid;gap:3px;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
       .settings-modal .settings-nav-item::after{content:attr(data-desc);display:block;color:var(--fg2);font-size:12px;line-height:1.25;}
       .settings-modal .settings-nav-item:hover,.settings-modal .settings-nav-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
+      .settings-modal .settings-mobile-page-list{overflow-y:auto;flex:1;}
+      .settings-modal .settings-mobile-page-list-title{padding:8px 12px;color:var(--fg2);font-size:12px;font-weight:700;}
+      .settings-modal .settings-mobile-page-item{width:100%;min-height:44px;display:flex;align-items:center;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
+      .settings-modal .settings-mobile-page-item:hover,.settings-modal .settings-mobile-page-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
       .settings-modal .settings-subtab-header{display:none!important;}
       .settings-modal .settings-subtab-header[hidden]{display:none!important;}
       .settings-modal .settings-subtab{height:30px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);font:inherit;cursor:pointer;}
@@ -268,6 +307,10 @@ async function showSettingsModal(opts) {
           ${group.tabs.map(t => `<button type="button" class="settings-nav-item" data-target="${t}" data-desc="${esc(settingsTabDescription(t))}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`).join('')}
         </div>`
       ).join('')}
+    </div>
+    <div id="settings-mobile-page-list" class="settings-mobile-page-list" hidden>
+      <div id="settings-mobile-page-list-title" class="settings-mobile-page-list-title"></div>
+      <div id="settings-mobile-page-list-items"></div>
     </div>` : ''}
     ${!_isMobile ? `<div class="settings-desktop-layout" style="display:flex;min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--border);">
       <nav id="settings-tab-header" class="settings-sidebar" aria-label="設定カテゴリ" style="width:196px;flex:0 0 196px;padding:12px 10px 12px 0;margin-right:14px;border-right:1px solid var(--border);overflow-y:auto;">
@@ -320,12 +363,12 @@ async function showSettingsModal(opts) {
       </nav>
       <div class="settings-desktop-panel" style="min-width:0;flex:1;display:flex;flex-direction:column;">` : ''}
     <!-- タブ内容 -->
-    <div style="overflow-y:auto;flex:1;">
+    <div class="settings-panel-scroll" style="min-width:0;overflow-x:hidden;overflow-y:auto;flex:1;">
     <div id="settings-subtab-header" class="settings-subtab-header" hidden></div>
     <!-- 全般 -->
     <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
-        <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ ${fieldHelp('フォルダツリーに表示するフォルダを管理します')}</div>
+        <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ ${fieldHelp('フォルダツリーに表示するフォルダを管理します', { e2eId: 'settings-source-folders-help' })}</div>
         <div id="modal-outliner-roots"><div class="gb-section-desc">読み込み中...</div></div>
         <div>
           <button class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">+ フォルダを追加</button>
@@ -333,7 +376,7 @@ async function showSettingsModal(opts) {
       </section>
       <div id="settings-cloud-link-card" class="settings-section-wide" data-settings-view="storage"></div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
-        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。ソースフォルダが個人用のDropbox等なら、その直下のMeldexHomeへ自動的に揃います')}</div>
+        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。ソースフォルダが個人用のDropbox等なら、その直下のMeldexHomeへ自動的に揃います', { e2eId: 'settings-home-folder-help' })}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
@@ -341,7 +384,7 @@ async function showSettingsModal(opts) {
         <div id="home-folder-sharing-status" class="gb-section-desc" hidden></div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
-        <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
+        <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です', { e2eId: 'settings-screenshot-folder-help' })}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-screenshot-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(localStorage.getItem('meldex-screenshot-folder') || ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット'))}" readonly>
           <button type="button" class="gb-btn gb-btn-sm" data-action="changeScreenshotFolder()">変更</button>
@@ -352,7 +395,7 @@ async function showSettingsModal(opts) {
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
-          <button class="gb-btn gb-btn-sm" data-action="closeSettingsModalRestoringTheme(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
+          <button class="gb-btn gb-btn-sm" data-e2e-id="settings-storage-mode-open" data-action="openStorageSettingsFlow()">保存先を設定...</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="setup">
@@ -373,10 +416,10 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
-        <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません')}</div>
+        <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません', { e2eId: 'settings-transfer-help' })}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()">${lucide('folderOpen',14)} 設定保存先を開く</button>
+          <button id="settings-transfer-open-location" type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()">${lucide('folderOpen',14)} 設定保存先を開く</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="exportSettingsTransferBundle()">${uiTransferIcon('export',14) || lucide('upload',14)} 設定をエクスポート</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="document.getElementById('settings-transfer-import-input')?.click()">${uiTransferIcon('import',14) || lucide('download',14)} 設定をインポート</button>
           <input id="settings-transfer-import-input" type="file" accept=".zip,application/zip" hidden data-onchange="importSettingsTransferBundleFromFile(this)">
@@ -412,17 +455,17 @@ async function showSettingsModal(opts) {
             <input type="checkbox" id="modal-tree-thumbnails-enabled" ${_treeThumbnailsEnabled ? 'checked' : ''}>
             <span>フォルダツリーにサムネイルを表示する</span>
           </label>
-          ${fieldHelp('PNG・JPEG・PSD・動画など、端末にあるファイルに軽いプレビュー画像を表示します。オンライン上にのみあるファイルは自動取得しません。この端末だけの設定です')}
+          ${fieldHelp('PNG・JPEG・PSD・動画など、端末にあるファイルに軽いプレビュー画像を表示します。オンライン上にのみあるファイルは自動取得しません。この端末だけの設定です', { e2eId: 'settings-thumbnail-preview-help' })}
         </div>` : ''}
         <label class="gb-field-row" style="margin-top:6px;">
-          <span class="gb-label">サムネイルの表示方法 ${fieldHelp('フォルダツリーやシートの画像サムネイルに適用されます')}</span>
+          <span class="gb-label">サムネイルの表示方法 ${fieldHelp('フォルダツリーやシートの画像サムネイルに適用されます', { e2eId: 'settings-thumbnail-mode-help' })}</span>
           <select id="modal-thumbnail-fit" class="gb-select">
             <option value="cover" ${_thumbnailFitMode === 'cover' ? 'selected' : ''}>枠いっぱいに表示（はみ出た部分は切り抜き）</option>
             <option value="contain" ${_thumbnailFitMode === 'contain' ? 'selected' : ''}>全体を枠内に収める</option>
           </select>
         </label>
         <label class="gb-field-row" style="margin-top:6px;">
-          <span class="gb-label">サムネイルのサイズ ${fieldHelp('フォルダツリーの画像サムネイルの大きさです')}</span>
+          <span class="gb-label">サムネイルのサイズ ${fieldHelp('フォルダツリーの画像サムネイルの大きさです', { e2eId: 'settings-thumbnail-size-help' })}</span>
           <select id="modal-tree-thumbnail-size" class="gb-select">
             <option value="small" ${_treeThumbnailSizeMode === 'small' ? 'selected' : ''}>小</option>
             <option value="medium" ${_treeThumbnailSizeMode === 'medium' ? 'selected' : ''}>中</option>
@@ -430,14 +473,14 @@ async function showSettingsModal(opts) {
           </select>
         </label>
         <label class="gb-field-row" style="margin-top:6px;">
-          <span class="gb-label">フォルダツリーの項目を開く操作 ${fieldHelp('クリックで開く場合も、Ctrl/Shiftクリックでの複数選択はそのまま使えます')}</span>
+          <span class="gb-label">フォルダツリーの項目を開く操作 ${fieldHelp('クリックで開く場合も、Ctrl/Shiftクリックでの複数選択はそのまま使えます', { e2eId: 'settings-folder-open-action-help' })}</span>
           <select id="modal-tree-open-click-mode" class="gb-select">
             <option value="double" ${_treeOpenClickMode === 'double' ? 'selected' : ''}>ダブルクリックで開く</option>
             <option value="single" ${_treeOpenClickMode === 'single' ? 'selected' : ''}>クリックで開く</option>
           </select>
         </label>
         <label class="gb-field-row" style="margin-top:6px;">
-          <span class="gb-label">ビューワーのマウスホイール操作 ${fieldHelp('画像・PDFビューワーを開いた時に、マウスホイールで何を操作するかです')}</span>
+          <span class="gb-label">ビューワーのマウスホイール操作 ${fieldHelp('画像・PDFビューワーを開いた時に、マウスホイールで何を操作するかです', { e2eId: 'settings-viewer-wheel-help' })}</span>
           <select id="modal-viewer-wheel-mode" class="gb-select">
             <option value="zoom" ${_viewerWheelMode === 'zoom' ? 'selected' : ''}>拡大・縮小</option>
             <option value="nav" ${_viewerWheelMode === 'nav' ? 'selected' : ''}>前後のファイルへ移動</option>
@@ -445,7 +488,7 @@ async function showSettingsModal(opts) {
         </label>
         <div class="gb-field-row" style="margin-top:6px;justify-content:flex-start;">
           <button type="button" class="gb-btn gb-btn-sm" data-action="showShellVerbSettings()">${lucide('mousePointerClick',14)} OS右クリックメニューを整理</button>
-          ${fieldHelp('検出済みのOSコマンドから、フォルダツリーとフォルダパネルのメニュー上部に表示する項目を選べます')}
+          ${fieldHelp('検出済みのOSコマンドから、フォルダツリーとフォルダパネルのメニュー上部に表示する項目を選べます', { e2eId: 'settings-os-commands-help' })}
         </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="display">
@@ -458,12 +501,18 @@ async function showSettingsModal(opts) {
         </label>
       </section>
       <section class="gb-section gb-section--boxed" id="settings-autostart-section" data-settings-view="display">
-        <div class="gb-section-title">自動起動 ${fieldHelp('OSへのサインイン後、画面を開かず常駐アプリとバックグラウンド機能を開始します。いつでも解除できます。')}</div>
+        <div class="gb-section-title">自動起動 ${fieldHelp('OSへのサインイン後、画面を開かず常駐アプリとバックグラウンド機能を開始します。いつでも解除できます。', { e2eId: 'settings-autostart-help' })}</div>
         <label class="gb-check">
           <input type="checkbox" id="modal-autostart">
           <span>OS起動時にMeldex常駐アプリを開始する</span>
         </label>
         <div id="modal-autostart-status" class="gb-field-help" role="status" aria-live="polite">自動起動の状態を確認しています</div>
+      </section>
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
+        <div class="gb-section-title">設定のバージョン ${fieldHelp('設定を保存する前の状態を自動で残し、変更内容の確認と復元ができます', { e2eId: 'settings-version-history-help' })}</div>
+        <div class="gb-field-row">
+          <button id="btn-open-settings-versions" class="gb-btn gb-btn-sm" data-action="openUiConfigVersionDialog()">設定の版を表示</button>
+        </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）', { e2eId: 'settings-history-undo-help' })}</div>
@@ -472,22 +521,68 @@ async function showSettingsModal(opts) {
           <input id="modal-history-max" type="number" class="gb-input" style="width:80px;" value="${getHistoryMax()}" min="1" max="200">
         </label>
       </section>
-      <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">自動バージョン保存 ${fieldHelp('編集があった場合のみ保存します。古いものから自動削除されます', { e2eId: 'settings-history-auto-version-help' })}</div>
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="history">
+        <div class="gb-section-title">周期復元ポイント ${fieldHelp('通常の自動保存とは別に、設定した周期が到来し、保存済み内容が変わっている場合だけ復元ポイントを作成します', { e2eId: 'settings-history-auto-version-help' })}</div>
+        ${_restorePointPolicyScope.kind === 'workspace'
+          ? `<div class="gb-section-desc" role="status">共有ワークスペースの共通方針です。${_restorePointPolicyReadOnly ? '変更できるのは所有者または管理者です。現在は読み取り専用です。' : '所有者／管理者として変更できます。'}</div>`
+          : '<div class="gb-section-desc">個人のDesktop／Cloudで共通の方針です。</div>'}
+        <fieldset id="restore-point-policy-fields" style="border:0;padding:0;margin:0;min-width:0;" ${_restorePointPolicyReadOnly ? 'disabled aria-disabled="true"' : ''}>
+        <label class="gb-check">
+          <input id="modal-restore-point-enabled" type="checkbox" ${_restorePointConfig?.enabled !== false ? 'checked' : ''} data-onchange="updateRestorePointScheduleSettingsVisibility()">
+          <span>周期復元ポイントを作成する</span>
+        </label>
+        <div id="restore-point-schedule-fields">
+          <label class="gb-field-row">
+            <span class="gb-label">周期</span>
+            <select id="modal-restore-point-cadence" class="gb-select" data-onchange="updateRestorePointScheduleSettingsVisibility()">
+              ${[['hourly','時間単位'],['daily','日単位'],['weekdays','曜日指定'],['weekly','週単位'],['monthly','月単位']].map(([value,label]) => `<option value="${value}" ${_restorePointCadence.kind === value ? 'selected' : ''}>${label}</option>`).join('')}
+            </select>
+          </label>
+          <label id="restore-point-interval-row" class="gb-field-row">
+            <span class="gb-label">間隔</span>
+            <input id="modal-restore-point-interval" type="number" class="gb-input" style="width:80px;" min="1" max="999" value="${Number(_restorePointCadence.interval || 1)}">
+            <span id="restore-point-interval-unit" class="gb-section-desc">時間ごと</span>
+          </label>
+          <label id="restore-point-time-row" class="gb-field-row">
+            <span class="gb-label">実行時刻</span>
+            <input id="modal-restore-point-time" type="time" class="gb-input" value="${esc(_restorePointCadence.at || '00:00')}">
+          </label>
+          <fieldset id="restore-point-weekdays-row" style="border:0;padding:0;margin:8px 0;">
+            <legend class="gb-label">曜日</legend>
+            <div class="gb-field-row" style="flex-wrap:wrap;">
+              ${['日','月','火','水','木','金','土'].map((label,index) => `<label class="gb-check"><input type="checkbox" data-restore-point-weekday="${index}" ${(Array.isArray(_restorePointCadence.weekdays) && _restorePointCadence.weekdays.includes(index)) ? 'checked' : ''}><span>${label}</span></label>`).join('')}
+            </div>
+          </fieldset>
+          <label id="restore-point-month-day-row" class="gb-field-row">
+            <span class="gb-label">実行日</span>
+            <input id="modal-restore-point-month-day" type="number" class="gb-input" style="width:80px;" min="1" max="31" value="${Number(_restorePointCadence.dayOfMonth || 1)}">
+            <span>日</span>
+          </label>
+          <label id="restore-point-last-day-row" class="gb-check">
+            <input id="modal-restore-point-last-day" type="checkbox" ${_restorePointCadence.useLastDayOfMonth ? 'checked' : ''}>
+            <span>月の最終日に実行する</span>
+          </label>
+          <label class="gb-field-row">
+            <span class="gb-label">タイムゾーン</span>
+            <input id="modal-restore-point-timezone" class="gb-input" value="${esc(_restorePointConfig?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')}">
+          </label>
+        </div>
+        <div id="restore-point-next-run" class="gb-section-desc" role="status" aria-live="polite"></div>
+        <div class="gb-section-title" style="margin-top:12px;">保持期間</div>
         <label class="gb-field-row">
-          <span class="gb-label">間隔</span>
-          <select id="modal-version-interval" class="gb-select">
-            <option value="0" ${getAutoInterval()===0?'selected':''}>オフ</option>
-            <option value="600000" ${getAutoInterval()===600000?'selected':''}>10分</option>
-            <option value="1800000" ${getAutoInterval()===1800000?'selected':''}>30分</option>
-            <option value="3600000" ${getAutoInterval()===3600000?'selected':''}>1時間</option>
-            <option value="7200000" ${getAutoInterval()===7200000?'selected':''}>2時間</option>
+          <span class="gb-label">保存する期間</span>
+          <select id="modal-restore-point-retention-mode" class="gb-select" data-onchange="updateRestorePointScheduleSettingsVisibility()">
+            <option value="forever" ${_restorePointRetention.mode !== 'days' ? 'selected' : ''}>無期限（自動削除しない）</option>
+            <option value="days" ${_restorePointRetention.mode === 'days' ? 'selected' : ''}>指定日数</option>
           </select>
         </label>
-        <label class="gb-field-row">
-          <span class="gb-label">自動バージョン最大保持数</span>
-          <input id="modal-version-max" type="number" class="gb-input" style="width:80px;" value="${getMaxAutoVersions()}" min="1" max="200">
+        <label id="restore-point-retention-days-row" class="gb-field-row">
+          <span class="gb-label">保持日数</span>
+          <input id="modal-restore-point-retention-days" type="number" class="gb-input" style="width:100px;" min="1" max="36500" value="${Number(_restorePointRetention.days || 30)}">
+          <span>日</span>
         </label>
+        <div class="gb-section-desc">無期限では、手動・周期・LLM編集直前・復元直前など種類を問わずMeldexが自動削除することはありません。</div>
+        </fieldset>
       </section>
       ${_sharedVersionMigrationAvailable ? `
       <section class="gb-section gb-section--boxed" data-settings-view="history">
@@ -504,15 +599,16 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・注釈・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）', { e2eId: 'settings-history-export-help' })}</div>
+        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・アノテート・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）', { e2eId: 'settings-history-export-help' })}</div>
         <div class="gb-field-row">
-          <button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button>
-          <span id="export-to-db-status" class="gb-section-desc"></span>
+          ${_historySheetExportAvailable
+            ? '<button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button><span id="export-to-db-status" class="gb-section-desc"></span>'
+            : '<span id="export-to-db-status" class="gb-section-desc">Cloud版では履歴のシート書き出しをまだ利用できません。デスクトップ版の設定から実行してください。</span>'}
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
-        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます', { e2eId: 'settings-reset-all-help' })}</div>
-        <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
+        <div class="gb-section-title">表示・操作設定の初期化 ${fieldHelp('表示と操作の設定だけを初期化します。作品、ワークスペース、ソースフォルダ、下書き、共有登録、APIキーは保持します', { e2eId: 'settings-reset-all-help' })}</div>
+        <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('表示と操作の設定を初期化しますか？\\n作品、ワークスペース、ソースフォルダ、下書き、共有登録、APIキーは削除しません。\\n成功後にページを再読み込みします。').then(ok=>{if(ok)resetAllSettings();})">表示・操作設定を初期化</button>
       </section>
     </div>
     <!-- テーマ -->
@@ -614,18 +710,9 @@ async function showSettingsModal(opts) {
         </section>
       </div>
     </div>
-    <!-- Discord Bot -->
-    <div class="settings-panel" data-panel="Discord Bot" hidden>
-      <div id="discord-bot-settings-container">
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${lucide('bot',14)} Discord Bot</div>
-          <div class="gb-section-desc">表示時に読み込みます…</div>
-        </section>
-      </div>
-    </div>
     <!-- ユーザー -->
     <div class="settings-panel" data-panel="ユーザー" hidden>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="profile">
         <div class="gb-section-title">マイプロフィール</div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div id="settings-my-avatar" class="gb-avatar-lg" data-action="chooseAvatarIcon(this)" title="アイコンを変更">
@@ -648,17 +735,25 @@ async function showSettingsModal(opts) {
         </div>
         <div id="settings-account-link-status"></div>
       </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('usersRound',14)} スタッフ</div>
+      <section class="gb-section gb-section--boxed" data-settings-view="users">
+        <div class="gb-section-title">${lucide('usersRound',14)} ユーザー</div>
+        <div class="gb-section-desc">アカウントユーザーと、制作管理だけに使うログイン不可の仮ユーザーを管理します。ワークスペースごとの所属とアクセス権限は「ワークスペース」で設定します。</div>
         <div class="gb-section-desc">保存場所: <span id="settings-staff-location">（読み込み中）</span>
           <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" id="staff-registry-relocate-btn">変更</button>
         </div>
         <div id="settings-staff-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
+        <div class="gb-field-row" style="justify-content:flex-start;align-items:flex-end;margin-top:8px;">
+          <label class="gb-field" style="margin:0;min-width:min(260px,100%);">
+            <span class="gb-label">仮ユーザーの表示名</span>
+            <input type="text" class="gb-input" id="settings-virtual-user-name" data-e2e-id="settings-virtual-user-name" autocomplete="off">
+          </label>
+          <button type="button" class="gb-btn gb-btn-sm" id="settings-virtual-user-add" data-e2e-id="settings-virtual-user-add">${lucide('userPlus',14)} 仮ユーザーを追加</button>
+        </div>
         <div class="gb-field-row" style="justify-content:flex-start;margin-top:8px;">
-          <button type="button" class="gb-btn gb-btn-sm" id="staff-registry-open-btn">${lucide('externalLink',14)} スタッフ管理シートを開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" id="staff-registry-open-btn">${lucide('externalLink',14)} ユーザー管理シートを開く</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="users">
         <div class="gb-section-title">${lucide('lock',14)} 編集ロック中の項目</div>
         <div class="gb-section-desc">管理者はここから編集ロックを解除できます。</div>
         <div id="settings-file-lock-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
@@ -800,6 +895,11 @@ async function showSettingsModal(opts) {
   saveSettingsButton?.removeAttribute('data-action');
   if (cancelSettingsButton) cancelSettingsButton.dataset.e2eId = 'settings-dialog-cancel';
   if (saveSettingsButton) saveSettingsButton.dataset.e2eId = 'settings-dialog-save';
+  [cancelSettingsButton, saveSettingsButton].filter(Boolean).forEach(button => {
+    button.style.minWidth = '72px';
+    button.style.whiteSpace = 'nowrap';
+    button.style.minHeight = '44px';
+  });
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   let settingsSaveBusy = false;
   let suppressSettingsReturnFocus = false;
@@ -835,6 +935,14 @@ async function showSettingsModal(opts) {
   o.classList.add('modal-overlay');
   o.dataset.settingsModal = '1';
   o.dataset.e2eId = 'settings-dialog-overlay';
+  o.__settingsDirtyControlIds = new Set();
+  const markSettingsControlDirty = event => {
+    const id = String(event?.target?.id || '');
+    if (id) o.__settingsDirtyControlIds.add(id);
+    event?.target?.removeAttribute?.('aria-invalid');
+  };
+  o.addEventListener('input', markSettingsControlDirty);
+  o.addEventListener('change', markSettingsControlDirty);
   o.__meldexSettingsModalController = dialog;
   o.__meldexRequestSettingsClose = reason => {
     const closeReason = String(reason || 'settings-transition');
@@ -873,20 +981,14 @@ async function showSettingsModal(opts) {
     saveSettingsButton.disabled = true;
     if (cancelSettingsButton) cancelSettingsButton.disabled = true;
     if (commonClose) commonClose.disabled = true;
-    const originalShowStatus = window.showStatus;
-    let saved = false;
-    window.showStatus = function captureSettingsSaveResult(message, ...args) {
-      if (String(message || '').includes('設定を保存しました')) saved = true;
-      return typeof originalShowStatus === 'function' ? originalShowStatus.call(this, message, ...args) : undefined;
-    };
+    let result = { ok: false };
     try {
-      await submitSettings();
+      result = await submitSettings() || { ok: false };
     } finally {
-      window.showStatus = originalShowStatus;
       settingsSaveBusy = false;
       o.setAttribute('aria-busy', 'false');
     }
-    if (saved) {
+    if (result.ok === true) {
       if (dialog.isOpen()) closeSettingsModalWithReason('complete', o);
       return;
     }
@@ -907,11 +1009,22 @@ async function showSettingsModal(opts) {
     dialog.header.insertBefore(back, titleNode);
   }
   dialog.footer.classList.add('btn-row');
+  dialog.footer.dataset.settingsDialogFooter = '1';
   dialog.footer.style.cssText = legacyActions?.style?.cssText || 'margin-top:12px;flex-shrink:0;';
   dialog.open();
   o.__meldexSettingsRawRemove = o.remove.bind(o);
   replaceIcons(o);
   if (typeof _tagSettingsNavigationSections === 'function') _tagSettingsNavigationSections(o);
+  const settingsStateController = window.MeldexSettingsDialogController?.create?.({
+    modal: dialog.modal,
+    footer: dialog.footer,
+    mobile: _isMobile,
+    resolveTarget: (name, options) => resolveSettingsNavigationTarget(name, options),
+    displayName: target => _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId }),
+    showTarget: target => _showSettingsNavigationTarget(dialog.modal, target),
+    syncOverlay: tabId => _syncSettingsModalOverlayForPanel(dialog.modal, tabId),
+    replaceIcons: root => replaceIcons(root),
+  });
   const settingsCloseBtn = o.querySelector('#settings-modal-close');
   o.querySelector('#settings-back-btn')?.addEventListener('click', () => _backToSettingsList(o));
   o.querySelector('#staff-registry-open-btn')?.addEventListener('click', () => {
@@ -923,7 +1036,7 @@ async function showSettingsModal(opts) {
       const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const description = document.createElement('div');
       description.className = 'gb-section-desc';
-      description.textContent = 'スタッフ管理シートの正本を置くフォルダを指定します。元の場所のデータは自動では移動・削除しません。';
+      description.textContent = 'ユーザー管理シートの正本を置くフォルダを指定します。元の場所のデータは自動では移動・削除しません。';
       const label = document.createElement('label');
       label.htmlFor = 'staff-registry-relocate-input';
       label.textContent = 'フォルダパス';
@@ -970,7 +1083,7 @@ async function showSettingsModal(opts) {
       const dialog = window.GBUI.createModal({
         id: 'staff-registry-relocate-dialog',
         titleId: 'staff-registry-relocate-title',
-        title: 'スタッフ管理シートの保存場所',
+        title: 'ユーザー管理シートの保存場所',
         body: [description, label, row, status],
         footer: [cancel, save],
         variant: 'standard',
@@ -1062,23 +1175,45 @@ async function showSettingsModal(opts) {
     const current = await window.MeldexUserRegistry.getConfig().catch(() => ({ path: '' }));
     await _openStaffRegistryRelocateDialog(current.path || '', async next => {
       await window.MeldexUserRegistry.relocate(next);
-      showStatus('スタッフ管理シートの保存場所を変更しました');
+      showStatus('ユーザー管理シートの保存場所を変更しました');
       if (typeof _renderStaffRegistrySettings === 'function') _renderStaffRegistrySettings();
     });
+  });
+  o.querySelector('#settings-virtual-user-add')?.addEventListener('click', async () => {
+    const input = o.querySelector('#settings-virtual-user-name');
+    const name = String(input?.value || '').trim();
+    if (!name) {
+      input?.setAttribute('aria-invalid', 'true');
+      input?.focus();
+      showStatus('仮ユーザーの表示名を入力してください', true);
+      return;
+    }
+    const button = o.querySelector('#settings-virtual-user-add');
+    if (button) button.disabled = true;
+    try {
+      await window.MeldexUserRegistry?.addVirtualUser?.(name);
+      if (input) input.value = '';
+      await _renderStaffRegistrySettings();
+      showStatus(`仮ユーザー「${name}」を追加しました`);
+    } catch (error) {
+      showStatus(error?.message || '仮ユーザーを追加できませんでした', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
   o.querySelectorAll('.settings-nav-item[data-target]').forEach((item) => {
     item.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      _openSettingsSection(item.dataset.target, o);
+      settingsStateController?.open(item.dataset.target);
     });
   });
   if (typeof bindSettingsThemePanel === 'function') bindSettingsThemePanel(o);
+  window.MeldexMobileWebClipSettings?.bind?.(o);
   // モバイル時: 全パネルを非表示にして、セクションリストのみ表示
   if (_isMobile) {
     o.querySelectorAll('.settings-panel').forEach(p => { p.hidden = true; });
-    const btnRow = o.querySelector('.btn-row');
-    if (btnRow) btnRow.hidden = true;
+    settingsStateController?.showCategories();
   }
   // マイプロフィールのアバターを読み込み（localStorageから即座に表示）
   const _cachedAv = localStorage.getItem('meldex-avatar');
@@ -1121,10 +1256,7 @@ async function showSettingsModal(opts) {
       else if (tab) tab.click();
     }
   } else if (!_isMobile) {
-    const tab = o.querySelector(`.settings-tab[data-tab="${defaultSettingsTab}"]`);
-    if (tab && typeof switchSettingsTab === 'function') switchSettingsTab(tab);
-    else if (tab) tab.click();
-    else if (typeof _openSettingsSection === 'function') _openSettingsSection(defaultSettingsTab, o);
+    _openSettingsSection(defaultSettingsTab, o, { forcePage: true });
   }
   if (typeof _syncSettingsModalOverlayForPanel === 'function') _syncSettingsModalOverlayForPanel(o, requestedPanel || defaultSettingsTab);
 }
@@ -1136,10 +1268,10 @@ async function loadStorageInfoForSettings() {
   const storageLabel = _settingsStorageLabel();
   try {
     const info = await window.MeldexStorageAdapter?.describeWorkspace?.();
-    const displayPath = info?.path || info?.homePath || '';
-    const permission = info?.permission ? ' / ' + info.permission : '';
+    const workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
+    const displayPath = _settingsStorageConnectionPath(info, workspaceState);
     modeEl.textContent = '現在: ' + storageLabel;
-    detailEl.textContent = '接続先: ' + (displayPath ? (displayPath + permission) : '未接続');
+    detailEl.textContent = '接続先: ' + (displayPath || '未接続');
   } catch {
     modeEl.textContent = '現在: ' + storageLabel;
     detailEl.textContent = '接続先: 未接続';
@@ -1167,6 +1299,15 @@ function _settingsTransferSetStatus(message, isError) {
 async function loadSettingsTransferStatusForSettings() {
   const locationEl = document.getElementById('settings-transfer-location');
   if (!locationEl) return;
+  const openButton = document.getElementById('settings-transfer-open-location');
+  if (_settingsTransferIsBrowserDataMode()) {
+    locationEl.textContent = '保存先: このブラウザの端末内ストレージ / ZIPには表示・操作設定だけを含め、APIキーや作品データは含めません';
+    if (openButton) {
+      openButton.innerHTML = `${lucide('info',14)} 保存先について`;
+      openButton.setAttribute('aria-label', 'ブラウザでの設定保存先について表示');
+    }
+    return;
+  }
   try {
     const res = await apiFetch('/settings-transfer/status');
     const items = res.items || {};
@@ -1176,6 +1317,141 @@ async function loadSettingsTransferStatusForSettings() {
   } catch (e) {
     locationEl.textContent = '設定保存先を取得できませんでした';
   }
+}
+
+function collectRestorePointPolicyFromSettings() {
+  const previous = typeof getVersionConfig === 'function' ? getVersionConfig() : {};
+  const cadenceKind = document.getElementById('modal-restore-point-cadence')?.value || 'hourly';
+  const weekdays = [...document.querySelectorAll('[data-restore-point-weekday]:checked')]
+    .map(input => Number(input.dataset.restorePointWeekday)).filter(value => Number.isInteger(value));
+  return window.MeldexRestorePointPolicy?.normalize?.({
+    ...previous,
+    schemaVersion: 2,
+    enabled: document.getElementById('modal-restore-point-enabled')?.checked !== false,
+    cadence: {
+      kind: cadenceKind,
+      interval: Number(document.getElementById('modal-restore-point-interval')?.value || 1),
+      at: document.getElementById('modal-restore-point-time')?.value || '00:00',
+      weekdays,
+      dayOfMonth: Number(document.getElementById('modal-restore-point-month-day')?.value || 1),
+      useLastDayOfMonth: Boolean(document.getElementById('modal-restore-point-last-day')?.checked),
+      anchorDate: previous?.cadence?.anchorDate || new Date().toISOString().slice(0, 10),
+    },
+    timezone: document.getElementById('modal-restore-point-timezone')?.value || previous?.timezone,
+    retention: {
+      schemaVersion: 1,
+      mode: document.getElementById('modal-restore-point-retention-mode')?.value || 'forever',
+      days: Number(document.getElementById('modal-restore-point-retention-days')?.value || 30),
+    },
+  }) || previous;
+}
+
+function updateRestorePointScheduleSettingsVisibility() {
+  const enabled = document.getElementById('modal-restore-point-enabled')?.checked !== false;
+  const kind = document.getElementById('modal-restore-point-cadence')?.value || 'hourly';
+  const fields = document.getElementById('restore-point-schedule-fields');
+  if (fields) fields.hidden = !enabled;
+  const setHidden = (id, hidden) => { const el = document.getElementById(id); if (el) el.hidden = hidden; };
+  setHidden('restore-point-time-row', kind === 'hourly');
+  setHidden('restore-point-weekdays-row', !['weekdays', 'weekly'].includes(kind));
+  setHidden('restore-point-month-day-row', kind !== 'monthly');
+  setHidden('restore-point-last-day-row', kind !== 'monthly');
+  const intervalRow = document.getElementById('restore-point-interval-row');
+  if (intervalRow) intervalRow.hidden = kind === 'weekdays';
+  const unit = document.getElementById('restore-point-interval-unit');
+  if (unit) unit.textContent = ({ hourly: '時間ごと', daily: '日ごと', weekly: '週ごと', monthly: 'か月ごと' })[kind] || '';
+  const retentionMode = document.getElementById('modal-restore-point-retention-mode')?.value || 'forever';
+  setHidden('restore-point-retention-days-row', retentionMode !== 'days');
+  const nextRun = document.getElementById('restore-point-next-run');
+  if (nextRun) {
+    try {
+      const config = collectRestorePointPolicyFromSettings();
+      const next = window.MeldexRestorePointPolicy?.nextOccurrence?.(config, new Date());
+      nextRun.textContent = !enabled ? '周期作成は無効です' : (next ? `次回予定: ${next.toLocaleString()}` : '次回予定を計算できません');
+    } catch (error) {
+      nextRun.textContent = '設定値を確認してください';
+    }
+  }
+}
+
+function _settingsTransferIsBrowserDataMode() {
+  return Boolean(window.MeldexRuntimeAdapter?.isBrowserDataMode?.());
+}
+
+function _settingsTransferTextBytes(value) {
+  return new TextEncoder().encode(String(value || ''));
+}
+
+function _settingsTransferTimestampForFilename() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function _exportBrowserSettingsTransferBundle() {
+  const engine = window.MeldexArchiveZipEngine;
+  const saver = window.MeldexExportSave;
+  if (!engine?.buildZip || !saver?.saveBlob) {
+    throw new Error('設定ZIPの作成機能を読み込めませんでした');
+  }
+  const uiConfig = _collectSettingsTransferUiConfig();
+  const uiBytes = _settingsTransferTextBytes(JSON.stringify(uiConfig, null, 2));
+  const manifest = {
+    type: 'meldex-settings-transfer',
+    format_version: 1,
+    created_at: new Date().toISOString(),
+    source: 'meldex-cloud-browser',
+    excludes: ['LLM API keys', 'service tokens', '作品・ワークスペースデータ'],
+    files: [{ name: 'client-ui-config.json', size: uiBytes.byteLength }],
+  };
+  const zipBytes = await engine.buildZip([
+    { name: 'client-ui-config.json', data: uiBytes },
+    { name: 'manifest.json', data: _settingsTransferTextBytes(JSON.stringify(manifest, null, 2)) },
+  ]);
+  const filename = `meldex-settings-${_settingsTransferTimestampForFilename()}.zip`;
+  const result = await saver.saveBlob(new Blob([zipBytes], { type: 'application/zip' }), { filename });
+  return { cancelled: Boolean(result?.cancelled), path: result?.path || result?.filename || filename };
+}
+
+function _backupBrowserSettingsTransferUiConfig() {
+  const current = _collectSettingsTransferUiConfig();
+  let rows = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MELDEX_BROWSER_SETTINGS_TRANSFER_BACKUPS_KEY) || '[]');
+    if (Array.isArray(parsed)) rows = parsed;
+  } catch {}
+  const createdAt = new Date().toISOString();
+  rows.push({ id: `settings-before-import-${createdAt}`, created_at: createdAt, ui_config: current });
+  localStorage.setItem(MELDEX_BROWSER_SETTINGS_TRANSFER_BACKUPS_KEY, JSON.stringify(rows.slice(-20)));
+  return createdAt;
+}
+
+async function _importBrowserSettingsTransferBundle(file) {
+  if (file.size > MELDEX_BROWSER_SETTINGS_TRANSFER_MAX_FILE_BYTES) {
+    throw new Error('設定ZIPが大きすぎます（64MBまで）');
+  }
+  const engine = window.MeldexArchiveZipEngine;
+  if (!engine?.parseZip || !engine?.extractMember) {
+    throw new Error('設定ZIPの読み込み機能を読み込めませんでした');
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const parsed = await engine.parseZip(bytes);
+  const manifestInfo = parsed.members.get('manifest.json');
+  const uiInfo = parsed.members.get('client-ui-config.json');
+  if (!manifestInfo || manifestInfo.isDir || !uiInfo || uiInfo.isDir) {
+    throw new Error('Meldex設定引き継ぎZIPに必要なファイルがありません');
+  }
+  const manifest = JSON.parse(new TextDecoder().decode(await engine.extractMember(bytes, manifestInfo)));
+  if (manifest?.type !== 'meldex-settings-transfer') {
+    throw new Error('Meldex設定引き継ぎZIPではありません');
+  }
+  const uiConfig = JSON.parse(new TextDecoder().decode(await engine.extractMember(bytes, uiInfo)));
+  if (!uiConfig || typeof uiConfig !== 'object' || Array.isArray(uiConfig)) {
+    throw new Error('表示・操作設定の形式が不正です');
+  }
+  const backupCreatedAt = _backupBrowserSettingsTransferUiConfig();
+  return {
+    ui_config: uiConfig,
+    backup_path: `このブラウザの端末内バックアップ（${new Date(backupCreatedAt).toLocaleString()}）`,
+  };
 }
 
 function _defaultAppAssociationLabel(appId) {
@@ -1262,6 +1538,10 @@ function openDefaultAppsGuide() {
 }
 
 async function openSettingsTransferLocation() {
+  if (_settingsTransferIsBrowserDataMode()) {
+    _settingsTransferSetStatus('Cloud版の設定はこのブラウザの端末内ストレージに保存されます。場所をフォルダとして開くことはできません。', false);
+    return;
+  }
   try {
     const res = await apiPost('/settings-transfer/open-location', {});
     _settingsTransferSetStatus('設定保存先を開きました: ' + (res.path || ''), false);
@@ -1273,9 +1553,9 @@ async function openSettingsTransferLocation() {
 async function exportSettingsTransferBundle() {
   _settingsTransferSetStatus('エクスポート準備中...', false);
   try {
-    const res = await apiPost('/settings-transfer/export', {
-      ui_config: _collectSettingsTransferUiConfig(),
-    });
+    const res = _settingsTransferIsBrowserDataMode()
+      ? await _exportBrowserSettingsTransferBundle()
+      : await apiPost('/settings-transfer/export', { ui_config: _collectSettingsTransferUiConfig() });
     if (res.cancelled) {
       _settingsTransferSetStatus('エクスポートをキャンセルしました', false);
       return;
@@ -1334,11 +1614,12 @@ async function importSettingsTransferBundleFromFile(input) {
       : window.confirm('選択した設定ZIPをこのPCに取り込みますか？');
     if (!ok) return;
     _settingsTransferSetStatus('インポート中...', false);
-    const base64 = _arrayBufferToBase64(await file.arrayBuffer());
-    const res = await apiPost('/settings-transfer/import', {
-      name: file.name,
-      content_base64: base64,
-    });
+    const res = _settingsTransferIsBrowserDataMode()
+      ? await _importBrowserSettingsTransferBundle(file)
+      : await apiPost('/settings-transfer/import', {
+          name: file.name,
+          content_base64: _arrayBufferToBase64(await file.arrayBuffer()),
+        });
     const appliedCount = _applyImportedSettingsTransferUiConfig(res.ui_config);
     await loadSettingsTransferStatusForSettings();
     const backup = res.backup_path ? ` / 取込前バックアップ: ${res.backup_path}` : '';
@@ -1355,6 +1636,12 @@ async function _loadAutostartStateForSettings() {
   const cb = document.getElementById('modal-autostart');
   const section = document.getElementById('settings-autostart-section');
   const status = document.getElementById('modal-autostart-status');
+  // OS自動起動はデスクトップ専用。Cloudで未対応APIを待つと、
+  // 読込失敗時に項目が残り、設定保存全体を中断してしまう。
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    if (section) section.hidden = true;
+    return;
+  }
   try {
     const res = await apiFetch('/autostart');
     if (!res.supported) {

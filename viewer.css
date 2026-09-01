@@ -49,9 +49,14 @@ body[data-viewer-file-drop="ready"]::after {
    行う（下記参照）。 */
 #display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: visible; z-index: 1; touch-action: none; }
 .viewer-loading-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 12; pointer-events: none; color: var(--fg2); font-size: 13px; }
+.viewer-loading-state[data-state="empty"], .viewer-loading-state[data-state="error"] { pointer-events: auto; }
 .viewer-loading-state.hidden { display: none; }
 .viewer-loading-card { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(10,14,20,0.82); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.viewer-loading-state[data-state="error"] .viewer-loading-card { border-color: var(--danger, #d65f5f); }
 .viewer-loading-spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.18); border-top-color: var(--accent); border-radius: 999px; animation: viewer-spin 0.9s linear infinite; }
+.viewer-loading-state:not([data-state="loading"]) .viewer-loading-spinner { display: none; }
+.viewer-retry { min-width: 44px; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--bg3); cursor: pointer; }
+.viewer-retry.hidden { display: none; }
 @keyframes viewer-spin { to { transform: rotate(360deg); } }
 /* justify-content/align-items:center で直接センタリングする（子の margin:auto に頼らない）。
    margin:auto によるセンタリングは、ズームでコンテンツが .layer をはみ出した瞬間に
@@ -87,9 +92,12 @@ body[data-viewer-file-drop="ready"]::after {
    跡地として記録する（2026-08-13 カーソル中心ズーム誤差修正）。 */
 .spread > .viewer-ann-scene-wrap { max-height: 100%; }
 .viewer-ann-scene-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
+.viewer-ann-note[data-save-state="saving"] { outline: 2px solid var(--accent); }
+.viewer-ann-note[data-save-state="unsaved"] { outline: 2px solid var(--danger, #d65f5f); }
+.viewer-ann-save-retry { position: absolute; right: 4px; bottom: 4px; min-width: 44px; min-height: 44px; }
 .viewer-ann-preview { pointer-events: none; }
 .viewer-ann-tail-handle { fill: #fff; stroke: rgba(0,0,0,0.4); stroke-width: 1; cursor: move; }
-.viewer-ann-note { width: 100%; height: 100%; box-sizing: border-box; color: #333; padding: 8px;
+.viewer-ann-note { position: relative; width: 100%; height: 100%; box-sizing: border-box; color: #333; padding: 8px;
   border-radius: 4px; font-size: 12px; border: 1px solid rgba(0,0,0,0.15); overflow: hidden; }
 .viewer-ann-note-textarea { width: 100%; height: 100%; background: transparent; border: none;
   color: #333; font-size: 12px; resize: both; outline: none; font-family: inherit; }

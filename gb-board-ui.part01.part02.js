@@ -15,7 +15,8 @@
     : nextOpts.pathType === 'orthogonal' ? 'orthogonal'
     : nextOpts.pathType === 'straight' ? 'straight' : 'curve';
   else if (nextOpts.straight !== undefined) conn.pathType = nextOpts.straight ? 'straight' : 'curve';
-  if (nextOpts.width !== undefined) conn.width = nextOpts.width;
+  if (nextOpts.width !== undefined) conn.width = typeof _bdNormalizeLineWidth === 'function'
+    ? _bdNormalizeLineWidth(nextOpts.width, 0) : Math.max(0, Math.min(200, +nextOpts.width || 0));
   return conn;
 }
 
@@ -121,7 +122,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   const menu = document.createElement('div');
   menu.className = 'ab-dropdown tool-menu-dropdown bd-style-picker-menu';
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', kind === 'card' ? 'カードスタイル' : 'ラインスタイル');
+  menu.setAttribute('aria-label', kind === 'card' ? 'トピックスタイル' : 'ラインスタイル');
   menu.innerHTML = styles.map(style => `
     <button type="button" class="bd-style-picker-item${style.id === activeId ? ' active' : ''}" role="menuitemradio" aria-checked="${style.id === activeId ? 'true' : 'false'}" aria-label="${_bdEscAttr(style.name)}" data-bd-style-pick="${_bdEscAttr(style.id)}">
       <span class="bd-style-picker-preview">${_bdStylePickerPreview(kind, style)}</span>
@@ -150,7 +151,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
     if (typeof opts.onAfterPick === 'function') opts.onAfterPick(styleId);
     if (typeof bindMeldexDropdownKeySwitch === 'function') bindStyleKeySwitch(getFreshTrigger());
     if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(getFreshTrigger());
-    showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイルを選択: ${styles.find(style => style.id === styleId)?.name || ''}`);
+    showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイルを選択: ${styles.find(style => style.id === styleId)?.name || ''}`);
   };
   const bindStyleKeySwitch = trigger => {
     if (typeof bindMeldexDropdownKeySwitch !== 'function' || !trigger) return;
@@ -214,7 +215,7 @@ function bdRefreshBoardToolbar(root) {
   const cardPreview = _bdToolbarControl(toolbarRoot, 'card-style-preview', 'bd-card-style-preview');
   if (cardPreview) cardPreview.innerHTML = _bdCardStylePreviewHtml(cardStyle);
   const cardStyleBtn = _bdToolbarControl(toolbarRoot, 'card-style-select', 'bd-card-style-select');
-  if (cardStyleBtn) cardStyleBtn.title = `カードスタイル: ${cardStyle?.name || ''}`.trim();
+  if (cardStyleBtn) cardStyleBtn.title = `トピックスタイル: ${cardStyle?.name || ''}`.trim();
   const linePreview = _bdToolbarControl(toolbarRoot, 'line-style-preview', 'bd-line-style-preview');
   if (linePreview) linePreview.innerHTML = _bdLineStylePreviewHtml(lineStyle);
   const lineStyleBtn = _bdToolbarControl(toolbarRoot, 'line-style-select', 'bd-line-style-select');
@@ -648,7 +649,7 @@ function _bdSelectionSummaryHtml() {
       <div class="bd-detail-hint">${hintParts.join(' / ')} が選択されています。</div>
       ${nodeCount ? `<div class="bd-detail-section">
         <div class="bd-detail-section-title">トピック一括変更</div>
-        <label class="bd-detail-field bd-detail-field-wide"><span>カードスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
+        <label class="bd-detail-field bd-detail-field-wide"><span>トピックスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
         <div class="bd-detail-field bd-detail-field-wide"><span>スタイル</span>${_bdStyleSummaryHtml('card', cardStyle)}</div>
       </div>` : ''}
       ${connCount ? `<div class="bd-detail-section">

@@ -681,6 +681,25 @@ input.gb-middle-ellipsis-input-active {
 .pt-small-btn.muted { color: var(--ui-fg-muted); }
 /* ヒント行 */
 .pt-hint { font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-top: 2px; }
+.pt-select-option-list {
+  display: grid;
+  gap: var(--ui-space-2);
+  margin-bottom: var(--ui-space-2);
+}
+.pt-select-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.pt-select-option-input { min-width: 0; width: 100%; }
+.pt-select-option-color,
+.pt-select-option-action {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+.pt-select-option-add { justify-self: start; }
 /* field にマージンを追加 */
 .pt-modal .field + .field { margin-top: var(--ui-space-3); }
 /* チェックボックスラベル */
@@ -861,15 +880,31 @@ input.gb-middle-ellipsis-input-active {
 .tree-node-row {
   --tree-row-height: 22px;
   display: flex; align-items: center; gap: 4px;
-  height: var(--tree-row-height); min-height: var(--tree-row-height); box-sizing: border-box;
-  padding: 3px 4px; cursor: pointer; border-radius: 3px; font-size: 14px; line-height: 16px;
+  height: auto; min-height: var(--tree-row-height); box-sizing: border-box;
+  padding: 3px 4px; cursor: pointer; border-radius: 3px; font-size: 14px; line-height: var(--outliner-item-line-height, 115%);
   background: var(--outliner-item-bg); color: var(--outliner-item-fg);
 }
 .tree-node-row.tree-root-row {
   background: var(--root-bg, var(--outliner-section-bg)); color: var(--outliner-section-fg); margin-bottom: 1px;
 }
-.tree-node-row:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
-.tree-node-row.active { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); }
+.tree-node-row:hover {
+  background: var(--outliner-item-hover-bg);
+  color: var(--outliner-item-hover-fg);
+  outline-color: var(--outliner-item-hover-outline-color, var(--outliner-accent));
+  outline-style: var(--outliner-item-hover-outline-style, none);
+  outline-width: var(--outliner-item-hover-outline-width, 1px);
+  outline-offset: -1px;
+  line-height: var(--outliner-item-hover-line-height, var(--outliner-item-line-height, 115%));
+}
+.tree-node-row.active {
+  background: var(--outliner-item-selected-bg);
+  color: var(--outliner-item-selected-fg);
+  outline-color: var(--outliner-item-selected-outline-color, var(--outliner-accent));
+  outline-style: var(--outliner-item-selected-outline-style, none);
+  outline-width: var(--outliner-item-selected-outline-width, 1px);
+  outline-offset: -1px;
+  line-height: var(--outliner-item-selected-line-height, var(--outliner-item-line-height, 115%));
+}
 /* ホバーアクションボタン（Notion風） */
 .tree-hover-btns {
   display: none; margin-left: auto; flex-shrink: 0; gap: 1px; align-items: center;
@@ -897,7 +932,15 @@ input.gb-middle-ellipsis-input-active {
   background: color-mix(in srgb, var(--outliner-item-selected-fg) 18%, var(--outliner-item-selected-bg));
 }
 .tree-hover-btn svg { width: 14px; height: 14px; }
-.tree-node-row.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); }
+.tree-node-row.selected {
+  background: var(--outliner-item-selected-bg);
+  color: var(--outliner-item-selected-fg);
+  outline-color: var(--outliner-item-selected-outline-color, var(--outliner-accent));
+  outline-style: var(--outliner-item-selected-outline-style, none);
+  outline-width: var(--outliner-item-selected-outline-width, 1px);
+  outline-offset: -1px;
+  line-height: var(--outliner-item-selected-line-height, var(--outliner-item-line-height, 115%));
+}
 .tree-node-row.active.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); }
 .tree-node-row.active .tree-toggle,
 .tree-node-row.selected .tree-toggle { color: var(--outliner-item-selected-fg); }
@@ -1000,6 +1043,7 @@ html.thumb-size-large {
    .tree-thumb-shellは既定display:noneのため、失敗時に壊れた画像枠や空行を残さない。 */
 .tree-node-row.thumb-ready {
   --tree-row-height: var(--tree-row-height-thumbnail, 70px);
+  height: var(--tree-row-height);
 }
 .tree-node-row.thumb-ready .tree-icon { display: none; }
 .tree-node-row .tree-thumb-shell {
@@ -1170,14 +1214,15 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .callout-block.callout-warning { background: var(--page-callout-warning-bg, rgba(236,180,56,0.1)); border-color: var(--page-callout-warning-border, rgba(236,180,56,0.3)); }
 .callout-block.callout-danger { background: var(--page-callout-danger-bg, rgba(236,56,56,0.1)); border-color: var(--page-callout-danger-border, rgba(236,56,56,0.3)); }
 .callout-block.callout-success { background: var(--page-callout-success-bg, rgba(56,180,80,0.1)); border-color: var(--page-callout-success-border, rgba(56,180,80,0.3)); }
-#entity-freetext h1, #page-content h1, #dp-editable h1, #board-note-editable h1 { font-size: 24px; margin-block: 16px 6px; color: var(--page-h1-fg); font-weight: var(--page-h1-bold); font-style: var(--page-h1-italic); font-family: var(--page-h1-font, inherit); }
-#entity-freetext h2, #page-content h2, #dp-editable h2, #board-note-editable h2 { font-size: 20px; margin-block: 14px 4px; padding-inline-start: var(--page-h2-indent, 8px); color: var(--page-h2-fg); font-weight: var(--page-h2-bold); font-style: var(--page-h2-italic); font-family: var(--page-h2-font, inherit); }
-#entity-freetext h3, #page-content h3, #dp-editable h3, #board-note-editable h3 { font-size: 16px; margin-block: 12px 4px; padding-inline-start: var(--page-h3-indent, 16px); color: var(--page-h3-fg); font-weight: var(--page-h3-bold); font-style: var(--page-h3-italic); font-family: var(--page-h3-font, inherit); }
-#entity-freetext h4, #page-content h4, #dp-editable h4, #board-note-editable h4 { font-size: 16px; margin-block: 10px 3px; padding-inline-start: var(--page-h4-indent, 24px); color: var(--page-h4-fg); font-weight: var(--page-h4-bold); font-style: var(--page-h4-italic); font-family: var(--page-h4-font, inherit); }
-#entity-freetext h5, #page-content h5, #dp-editable h5, #board-note-editable h5 { font-size: 14px; margin-block: 8px 3px; padding-inline-start: var(--page-h5-indent, 32px); color: var(--page-h5-fg); font-weight: var(--page-h5-bold); font-style: var(--page-h5-italic); font-family: var(--page-h5-font, inherit); }
-#entity-freetext h6, #page-content h6, #dp-editable h6, #board-note-editable h6 { font-size: 13px; margin-block: 6px 2px; padding-inline-start: var(--page-h6-indent, 40px); color: var(--page-h6-fg); font-weight: var(--page-h6-bold); font-style: var(--page-h6-italic); font-family: var(--page-h6-font, inherit); }
+#entity-freetext h1, #page-content h1, #dp-editable h1, #board-note-editable h1 { font-size: 24px; line-height: var(--page-h1-line-height, 130%); margin-block: var(--page-h1-space-before, 16px) var(--page-h1-space-after, 6px); color: var(--page-h1-fg); font-weight: var(--page-h1-bold); font-style: var(--page-h1-italic); font-family: var(--page-h1-font, inherit); }
+#entity-freetext h2, #page-content h2, #dp-editable h2, #board-note-editable h2 { font-size: 20px; line-height: var(--page-h2-line-height, 130%); margin-block: var(--page-h2-space-before, 14px) var(--page-h2-space-after, 4px); padding-inline-start: var(--page-h2-indent, 8px); color: var(--page-h2-fg); font-weight: var(--page-h2-bold); font-style: var(--page-h2-italic); font-family: var(--page-h2-font, inherit); }
+#entity-freetext h3, #page-content h3, #dp-editable h3, #board-note-editable h3 { font-size: 16px; line-height: var(--page-h3-line-height, 130%); margin-block: var(--page-h3-space-before, 12px) var(--page-h3-space-after, 4px); padding-inline-start: var(--page-h3-indent, 16px); color: var(--page-h3-fg); font-weight: var(--page-h3-bold); font-style: var(--page-h3-italic); font-family: var(--page-h3-font, inherit); }
+#entity-freetext h4, #page-content h4, #dp-editable h4, #board-note-editable h4 { font-size: 16px; line-height: var(--page-h4-line-height, 130%); margin-block: var(--page-h4-space-before, 10px) var(--page-h4-space-after, 3px); padding-inline-start: var(--page-h4-indent, 24px); color: var(--page-h4-fg); font-weight: var(--page-h4-bold); font-style: var(--page-h4-italic); font-family: var(--page-h4-font, inherit); }
+#entity-freetext h5, #page-content h5, #dp-editable h5, #board-note-editable h5 { font-size: 14px; line-height: var(--page-h5-line-height, 130%); margin-block: var(--page-h5-space-before, 8px) var(--page-h5-space-after, 3px); padding-inline-start: var(--page-h5-indent, 32px); color: var(--page-h5-fg); font-weight: var(--page-h5-bold); font-style: var(--page-h5-italic); font-family: var(--page-h5-font, inherit); }
+#entity-freetext h6, #page-content h6, #dp-editable h6, #board-note-editable h6 { font-size: 13px; line-height: var(--page-h6-line-height, 130%); margin-block: var(--page-h6-space-before, 6px) var(--page-h6-space-after, 2px); padding-inline-start: var(--page-h6-indent, 40px); color: var(--page-h6-fg); font-weight: var(--page-h6-bold); font-style: var(--page-h6-italic); font-family: var(--page-h6-font, inherit); }
 #entity-freetext, #page-content, #dp-editable, #board-note-editable {
   font-size: var(--page-text-font-size, inherit);
+  line-height: var(--page-text-line-height, 160%);
   -webkit-text-stroke-color: var(--page-text-stroke-color, transparent);
   -webkit-text-stroke-width: var(--page-text-stroke-width, 0px);
   paint-order: stroke fill;
@@ -1196,7 +1241,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 #entity-freetext, #page-content, #dp-editable, #board-note-editable { -webkit-touch-callout: none; }
 #entity-freetext hr, #page-content hr, #dp-editable hr, #board-note-editable hr { border: none; border-block-start: 1px solid var(--page-hr-color, var(--border)); margin-block: 8px; }
 #entity-freetext ul, #entity-freetext ol, #page-content ul, #page-content ol, #dp-editable ul, #dp-editable ol, #board-note-editable ul, #board-note-editable ol { padding-inline-start: 24px; margin-block: 4px; }
-#entity-freetext li, #page-content li, #dp-editable li, #board-note-editable li { line-height: 1.4; margin-block: 0.4em; }
+#entity-freetext li, #page-content li, #dp-editable li, #board-note-editable li { line-height: var(--page-text-line-height, 160%); margin-block: 0.4em; }
 /* チェックリスト（gb-note-block-types.js）: 通常の箇条書き記号(disc)と
    チェックボックスが二重表示にならないよう記号を消し、チェックボックスを
    行頭に揃える。 */
@@ -1266,7 +1311,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 #search-panel .sp-results { flex: 1; overflow-y: auto; }
 .sp-file { padding: 4px 8px; font-size: 12px; font-weight: bold; color: var(--search-accent); background: var(--search-panel-bg); cursor: pointer; }
 .sp-file:hover { background: var(--search-hover-bg); color: var(--search-fg); }
-.sp-match { padding: 2px 8px 2px 20px; font-size: 12px; cursor: pointer; color: var(--search-fg); border-bottom: 1px solid color-mix(in srgb, var(--search-border) 45%, transparent); }
+.sp-match { display:block; width:100%; padding:2px 8px 2px 20px; font:inherit; font-size:12px; text-align:left; background:transparent; cursor:pointer; color:var(--search-fg); border:0; border-bottom:1px solid color-mix(in srgb, var(--search-border) 45%, transparent); }
 .sp-match:hover { background: var(--search-hover-bg); color: var(--search-fg); }
 .sp-match .sp-highlight { background: var(--orange); color: #000; border-radius: 1px; }
 .sp-match .sp-line { color: var(--search-muted-fg); margin-right: 6px; font-size: 11px; }

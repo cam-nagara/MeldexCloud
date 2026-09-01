@@ -15,7 +15,7 @@ function _persistAlertedIds(){try{localStorage.setItem(_CAL_ALERTED_KEY,JSON.str
 let _calAlarmInterval = null;
 let _calStartDay = parseInt(localStorage.getItem('gb-cal-start-day') || '0');
 let _calVisibleDbKey = '';
-let _calRenderState = { dbPath: '', ctx: null, allEvents: [], visibleEvents: [], info: { kind: 'none', isMappedDb: false, canEditDates: false, canCreateEvents: false, canDeleteEvents: false, canSyncExternal: false, mapping: null } };
+let _calRenderState = { dbPath: '', ctx: null, pivotData: null, allEvents: [], visibleEvents: [], info: { kind: 'none', isMappedDb: false, canEditDates: false, canCreateEvents: false, canDeleteEvents: false, canSyncExternal: false, mapping: null } };
 
 function _calendarCtxForDb(dbPath) {
   if (_calRenderState?.ctx && (!dbPath || _calRenderState.dbPath === dbPath)) return _calRenderState.ctx;
@@ -307,7 +307,24 @@ function _cloneCalendarSnapshot(pivotData) {
 }
 function _currentCalendarSnapshotSource() {
   const ctx = _calendarCtxForDb(_calRenderState.dbPath) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-  return { ctx, data: ctx?.pivotData || state.pivotData, dbPath: ctx?.dbPath || _calRenderState.dbPath || state.currentDbPath || '' };
+  return {
+    ctx,
+    data: ctx?.pivotData || _calRenderState.pivotData || state.pivotData,
+    dbPath: ctx?.dbPath || _calRenderState.dbPath || state.currentDbPath || '',
+  };
+}
+async function _awaitCalendarSnapshotReady(dbPath) {
+  const candidates = [
+    _calRenderState?.ctx || null,
+    typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+    typeof _currentPaneState === 'function' ? _currentPaneState() : null,
+  ];
+  const pending = new Set();
+  for (const ctx of candidates) {
+    const inFlight = ctx?._selectDatabaseInFlight;
+    if (inFlight?.dbPath === dbPath && inFlight.promise) pending.add(inFlight.promise);
+  }
+  if (pending.size) await Promise.all([...pending]);
 }
 function _calendarSnapshotValue(props, propName, fallback) {
   const values = props?.[propName];
@@ -429,7 +446,7 @@ function _calPushUndo(label) {
   _calUndoStack.push({ label, dbPath, snapshot: _cloneCalendarSnapshot(data) });
   if (_calUndoStack.length > _CAL_UNDO_MAX) _calUndoStack.shift();
   _calRedoStack.length = 0;
-  if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+  if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty(dbPath, 'db');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 
@@ -515,7 +532,6 @@ function renderCalendarSettingsBar(container, dbPath, viewMode, pivotData, ctx) 
     ${info.isMappedDb ? '<span style="font-size:11px;color:var(--fg2);padding:0 8px;">日時のみ編集可</span>' : ''}
     ${info.canCreateEvents ? '<button id="cal-add-ev" type="button" class="tl-nav-btn" title="イベント追加" aria-label="イベント追加">+ イベント</button>' : ''}
     ${info.canCreateEvents && activeViewMode==='tasks'?'<button id="cal-add-task" type="button" class="tl-nav-btn" title="ToDo追加" aria-label="ToDo追加">+ ToDo</button>':''}
-    <button id="cal-timer" type="button" class="tl-nav-btn" title="タイマー" aria-label="タイマー">タイマー</button>
     ${info.canSyncExternal ? '<button id="cal-sync" type="button" class="tl-nav-btn" title="同期" aria-label="同期">同期</button>' : ''}
     <label style="margin-left:auto;font-size:10px;">開始曜日:
       <select id="cal-start-day" class="gb-select gb-select-sm">
@@ -537,10 +553,6 @@ function renderCalendarSettingsBar(container, dbPath, viewMode, pivotData, ctx) 
   bar.querySelector('#cal-add-ev')?.addEventListener('click', () => _quickCreateCalendarEvent(dbPath, _defaultQuickCreateOptions(dbPath, activeViewMode)));
   const addTask = bar.querySelector('#cal-add-task');
   if (addTask) addTask.addEventListener('click', () => _openTaskModal(dbPath, null, 'todo'));
-  bar.querySelector('#cal-timer').addEventListener('click', () => {
-    if (typeof openTimerPanel === 'function') openTimerPanel();
-    else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-  });
   bar.querySelector('#cal-sync')?.addEventListener('click', () => _showSyncModal(dbPath));
   bar.querySelector('#cal-start-day').onchange = function() {
     _calStartDay = parseInt(this.value);
@@ -625,7 +637,7 @@ function renderCalendar(ctx) {
     [..._calKnownIds].forEach(cid => { if (!allCalIds.includes(cid)) _calKnownIds.delete(cid); });
   }
   const events = allEvents.filter(ev => !_calVisibleIds || _calVisibleIds.has(ev.calendarId || 'default'));
-  _calRenderState = { dbPath, ctx, allEvents, visibleEvents: events, info };
+  _calRenderState = { dbPath, ctx, pivotData: data, allEvents, visibleEvents: events, info };
   _refreshCalendarAuxPanels(dbPath, events, activeViewMode);
   if (activeViewMode === 'tasks') _renderTaskBoard(container, dbPath, events);
   else if (activeViewMode === 'shifts') _renderShiftView(container, dbPath, events);

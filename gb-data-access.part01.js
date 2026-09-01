@@ -4,7 +4,48 @@
   const PWA_ROOTS_KEY = 'meldex-cloud-outliner-roots';
   const PWA_HOME_KEY = 'meldex-cloud-home-folder';
   const PWA_UI_CONFIG_KEY = 'meldex-cloud-ui-config';
+  const PWA_UI_CONFIG_HISTORY_KEY = 'meldex-cloud-ui-config-history-v1';
   const PWA_FOLDER_LINKS_KEY = 'meldex-cloud-folder-links';
+
+  function _pwaStableJson(value) {
+    if (Array.isArray(value)) return '[' + value.map(_pwaStableJson).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + _pwaStableJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function _pwaUiConfigRevision(value) {
+    const bytes = new TextEncoder().encode(_pwaStableJson(value && typeof value === 'object' ? value : {}));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function _pwaUiConfigVersionId() {
+    if (typeof crypto?.randomUUID === 'function') {
+      return 'uicv_' + crypto.randomUUID().replace(/-/g, '');
+    }
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return 'uicv_' + [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _pwaCaptureUiConfigVersion(snapshot, label) {
+    const value = snapshot && typeof snapshot === 'object'
+      ? JSON.parse(JSON.stringify(snapshot))
+      : {};
+    const sourceRevision = await _pwaUiConfigRevision(value);
+    const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+    const rows = Array.isArray(history) ? history : [];
+    if (rows[0]?.sourceRevision === sourceRevision) {
+      return { versionId: rows[0].versionId, previousRows: rows, changed: false };
+    }
+    const versionId = _pwaUiConfigVersionId();
+    rows.unshift({ versionId, sourceRevision, label: label || '設定変更前', actor: 'Cloud', createdAt: new Date().toISOString(), snapshot: value });
+    const nextRows = rows.slice(0, 30);
+    _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, nextRows);
+    return { versionId, previousRows: rows.slice(1), changed: true };
+  }
   const PWA_FOLDER_LINKS_FILE = '_meldex/folder-links.json';
   const FOLDER_LINKS_DOCUMENT_ID = 'cloud-folder-links';
   const PWA_TRASH_DIR = '_trash';
@@ -54,6 +95,26 @@
     } catch {}
   }
 
+  function _requiredReadJson(key, fallbackValue) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallbackValue;
+      return JSON.parse(raw);
+    } catch {
+      throw _httpError(409, '保存されている設定履歴の整合性を確認できません');
+    }
+  }
+
+  function _requiredWriteJson(key, value) {
+    const serialized = JSON.stringify(value);
+    try {
+      localStorage.setItem(key, serialized);
+      if (localStorage.getItem(key) !== serialized) throw new Error('write verification failed');
+    } catch {
+      throw _httpError(507, '設定を端末へ保存できません。空き容量とブラウザの保存許可を確認してください');
+    }
+  }
+
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
   }
@@ -91,7 +152,6 @@
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
     if (lower.endsWith('.mel-timer')) return { stem: safeName.slice(0, -10), ext: '.mel-timer' };
     if (lower.endsWith('.scriptnote.json')) return { stem: safeName.slice(0, -16), ext: '.scriptnote.json' };
-    if (lower.endsWith('.smart-db.json')) return { stem: safeName.slice(0, -14), ext: '.smart-db.json' };
     if (lower.endsWith('.timer.json')) return { stem: safeName.slice(0, -11), ext: '.timer.json' };
     const index = safeName.lastIndexOf('.');
     if (index <= 0) return { stem: safeName, ext: '' };
@@ -179,7 +239,7 @@
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
     return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
-      || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.smart-db.json') || path.toLowerCase().endsWith('.timer.json');
+      || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
   function _isExcludedWorkspacePath(path) {
@@ -860,9 +920,9 @@
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
     if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
-    if (ext === '.mel-sheet') return _phase1SurfaceType('smart-db', 'file');
+    if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
-    if (ext === '.mel-timer') return 'timer';
+    if (ext === '.mel-timer') return 'unsupported';
     if (ext === '.md') {
       if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
@@ -870,17 +930,15 @@
       if (frontmatterType === 'chat') return _phase1SurfaceType('chat', 'file');
       return 'page';
     }
-    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.smart-db.json') || lowerName.endsWith('.timer.json')) {
+    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.timer.json')) {
       if (lowerName.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lowerName.endsWith('.scenario.json')) return 'scenario';
-      if (lowerName.endsWith('.smart-db.json')) return _phase1SurfaceType('smart-db', 'file');
-      if (lowerName.endsWith('.timer.json')) return 'timer';
+      if (lowerName.endsWith('.timer.json')) return 'unsupported';
       const parsed = await _readJsonSafe(provider, relativePath, null);
       if (parsed && typeof parsed === 'object') {
         if (parsed.fileType === 'meldex-scriptnote') return 'scriptnote';
         if (parsed.fileType === 'meldex-scenario' || parsed.type === 'scenario') return 'scenario';
-        if (parsed.type === 'smart-db') return _phase1SurfaceType('smart-db', 'file');
-        if (parsed.type === 'meldex-timer') return 'timer';
+        if (parsed.type === 'meldex-timer') return 'unsupported';
         if (!parsed.fileType && !parsed.type && Object.prototype.hasOwnProperty.call(parsed, 'title')) return 'scenario';
       }
       return 'unknown';

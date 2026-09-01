@@ -77,7 +77,7 @@
   top: 0;
   display: grid;
   align-items: center;
-  min-height: 32px;
+  min-height: 28px;
   color: var(--fg2);
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
@@ -247,7 +247,7 @@
 
 .db-tree-row {
   --db-tree-node-color: var(--accent);
-  --db-tree-row-height: 34px;
+  --db-tree-row-height: 28px;
   position: relative;
   display: grid;
   align-items: center;
@@ -302,7 +302,7 @@
   align-items: center;
   min-width: 0;
   min-height: var(--db-tree-row-height);
-  padding: 7px 10px;
+  padding: 4px 10px;
   overflow: hidden;
   border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   color: var(--fg2);
@@ -597,6 +597,10 @@
 }
 
 @media (pointer: coarse) {
+  .db-tree-row {
+    --db-tree-row-height: 44px;
+  }
+
   .db-tree-header {
     min-height: 44px;
   }

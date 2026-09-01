@@ -77,11 +77,12 @@ Object.assign(ScriptNoteEditor.prototype, {
   // （テキスト系）か、タイプメニューを開く（_role）。それ以外は強調表示のみでフォーカスする。
   _setActiveCell(rowId, colId, enterEdit) {
     if (!rowId || !colId) return;
+    if (this._readOnly && enterEdit) return;
     // 既存のアクティブセル強調をすべて解除（テキスト系セルはcontentEditableも復元する）
     this.host?.querySelectorAll('.sn2-cell-active').forEach(el => {
       el.classList.remove('sn2-cell-active');
       if (el.classList.contains('sn2-text') || el.classList.contains('sn2-custom-text')) {
-        el.contentEditable = 'true';
+        el.contentEditable = this._readOnly ? 'false' : 'true';
       }
     });
     // 他の選択系（矩形セル・テキストセル・行・タイプセル選択）とは相互排他
@@ -125,6 +126,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _enterEditMode(cellEl) {
+    if (this._readOnly) return;
     if (!cellEl) cellEl = this._getCellElement(this._activeCellRowId, this._activeCellColId);
     if (!cellEl) return;
     this._cellEditMode = true;
@@ -183,7 +185,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       el.classList.remove('sn2-cell-active');
       // 非アクティブに戻すテキスト系セルは、直接クリックでの即編集に戻す
       if (el.classList.contains('sn2-text') || el.classList.contains('sn2-custom-text')) {
-        el.contentEditable = 'true';
+        el.contentEditable = this._readOnly ? 'false' : 'true';
       }
     });
     this._activeCellRowId = null;

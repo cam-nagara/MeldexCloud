@@ -40,9 +40,9 @@
     root.dataset.e2eId = 'gb-production-task-workspace';
 
     const listBar = document.createElement('div');
-    listBar.className = 'gb-production-list-switch';
+    listBar.className = 'gb-production-list-switch db-view-tabs';
     listBar.setAttribute('role', 'tablist');
-    listBar.setAttribute('aria-label', '作品別タスクリスト');
+    listBar.setAttribute('aria-label', 'タスクリストのシートビュー');
     listBar.dataset.e2eId = 'gb-production-list-switch';
     listBar.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -152,17 +152,25 @@
     const state = stateFor(this);
     // 管理リスト（作業対象/作業内容/作業規模/スタッフ）を表示中は、選択行が
     // タスクファイルではないため再計算対象として渡さない。
-    // 「すべて」表示中は全ブロックの選択行を集約して渡す。
-    const selectedTaskPaths = state.selection?.kind === 'task'
-      ? (state.embed?.getSelectedEntryPaths?.() || [])
-      : state.selection?.kind === 'all'
-        ? (state.allView?.getSelectedEntryPaths?.() || [])
-        : [];
+    // すべて／作品別は同じ論理シート面なので、同じ選択集合から渡す。
+    const selectedTaskPaths = state.selection?.kind === 'task' || state.selection?.kind === 'all'
+      ? (state.allView?.getSelectedEntryPaths?.() || [])
+      : [];
     window.openProductionRecalculate({ trigger, selectedTaskPaths });
   };
 
   CalendarComponent.prototype._runProductionSheetDisplayAction = function(action, trigger) {
     const state = stateFor(this);
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      if (!state.allView?.isReady?.()) {
+        notify('表示中のシートを読み込んでから操作してください', true);
+        return false;
+      }
+      if (action === 'sheetAutoFit') return state.allView.autoFitColumns();
+      if (action === 'sheetColumnDisplayOrder') return !!state.allView.showColumnDisplayOrder();
+      if (action === 'sheetFilter') return state.allView.focusFilters();
+      if (action === 'sheetSort') return state.allView.focusSort();
+    }
     const ctx = state.embed?.ctx;
     const dbPath = String(state.selection?.path || '');
     if (!productionSheetDisplayReady(state) || !ctx || ctx.dbPath !== dbPath) {
@@ -207,7 +215,7 @@
       state._emptyStateCardEl.remove();
       state._emptyStateCardEl = null;
     }
-    if (state.selection?.kind === 'all' && state.allView?.isMounted?.()) {
+    if ((state.selection?.kind === 'all' || state.selection?.kind === 'task') && state.allView?.isMounted?.()) {
       state.embed?.setVisible(false);
       state.allView.setVisible(true);
     } else {
@@ -253,7 +261,7 @@
     if (!requested) return false;
     if (this._surface !== 'productionTasks') this.setSurface('productionTasks');
     const state = stateFor(this);
-    await loadSheetsAndMeta(this, state, { force: true });
+    await loadSheetsAndMeta(this, state, { force: true, openSelection: false });
     const sheet = state.sheets.find(item => String(item?.work_title || '').trim() === requested);
     if (!sheet) return false;
     return await selectTaskList(this, state, sheet, { refreshCurrent: true });

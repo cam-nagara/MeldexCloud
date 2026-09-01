@@ -4,6 +4,7 @@
     } catch(err){ showStatus('移動に失敗',true); }
     return;
   }
+  await _awaitCalendarSnapshotReady(dbPath);
   _calPushUndo('イベント移動');
   try{
     await apiPut('/calendar-db/events/'+encodeURIComponent(data.name),{
@@ -39,7 +40,7 @@ function _calendarUserFields(prefix, ev) {
   const creator = _calendarEventCreator(ev);
   return `
     <div class="field"><label>作成者</label><select id="${prefix}-creator" class="gb-select"><option value="${esc(creator)}">${esc(creator || 'anonymous')}</option></select></div>
-    <div class="field"><label>メンバー</label><div id="${prefix}-members" class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div></div>`;
+    <div class="field"><label>参加ユーザー</label><div id="${prefix}-members" class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div></div>`;
 }
 async function _populateCalendarEventUserControls(root, prefix, ev) {
   const creatorSelect = root.querySelector('#' + prefix + '-creator');

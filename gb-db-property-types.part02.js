@@ -346,6 +346,17 @@ async function applyPropertyType(propName, root, options = {}) {
       });
       optionMigration = migration;
       config.options = migration.options;
+      const previousColors = { ...(config.optionColors || {}) };
+      const optionColors = {};
+      const renamedFrom = Object.fromEntries(
+        Object.entries(migration.renamed || {}).map(([oldValue, newValue]) => [newValue, oldValue])
+      );
+      config.options.forEach((value) => {
+        const color = previousColors[value] || previousColors[renamedFrom[value]];
+        if (color) optionColors[value] = color;
+      });
+      if (Object.keys(optionColors).length) config.optionColors = optionColors;
+      else delete config.optionColors;
       const previousIds = { ...(prev.option_ids || {}) };
       const optionIds = {};
       Object.entries(migration.renamed || {}).forEach(([oldValue, newValue]) => {
@@ -380,9 +391,10 @@ async function applyPropertyType(propName, root, options = {}) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
-  _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   try {
-    await savePromise;
+    const saved = await savePromise;
+    if (saved === false) throw new Error('保護されている列のため変更できません');
+    _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   } catch (e) {
     try { await optionMigration?.rollback?.(); } catch (rollbackError) {
       console.error('候補値のロールバックに失敗:', rollbackError);

@@ -18,6 +18,11 @@
   const PERMISSION_OPTIONS = ['管理者', 'メンバー', '閲覧'];
   const USER_KEY_PROPERTY = 'スタッフ';
   const DISPLAY_NAME_PROPERTY = '表示名';
+  const USER_META_KEY = 'meldex_user';
+  const USER_META_SCHEMA_VERSION = 1;
+  const USER_TYPE_ACCOUNT = 'account';
+  const USER_TYPE_VIRTUAL = 'virtual';
+  const USER_TYPES = [USER_TYPE_ACCOUNT, USER_TYPE_VIRTUAL];
 
   const date = (withTime = false) => ({ type: 'date', ...(withTime ? { withTime: true } : {}) });
 
@@ -62,6 +67,11 @@
     PERMISSION_OPTIONS,
     USER_KEY_PROPERTY,
     DISPLAY_NAME_PROPERTY,
+    USER_META_KEY,
+    USER_META_SCHEMA_VERSION,
+    USER_TYPE_ACCOUNT,
+    USER_TYPE_VIRTUAL,
+    USER_TYPES,
     REQUIRED_PROPERTY_TYPES,
     REQUIRED_PROPERTY_ORDER,
     isRequiredProperty,

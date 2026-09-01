@@ -811,6 +811,16 @@ function renderDbTreeView(ctx) {
     ...Object.keys(getPropertyTypes(dbPath, ctx) || {}),
   ])).filter(prop => typeof isDbPropertyDeleted !== 'function' || !isDbPropertyDeleted(dbPath, prop));
 
+  if (Object.keys(data.entities).length === 0) {
+    _dbTreeSetOptionTabVisible(true, ctx);
+    if (typeof _dbRenderEmptyStateWithCreate === 'function') {
+      _dbRenderEmptyStateWithCreate(container, 'listTree', 'トピックがありません', 'トピックを追加して開始してください', ctx);
+    } else if (typeof renderEmptyState === 'function') {
+      renderEmptyState(container, 'listTree', 'トピックがありません', 'トピックを追加して開始してください');
+    }
+    return;
+  }
+
   const toolbar = document.createElement('div');
   toolbar.className = 'db-tree-toolbar';
   const search = document.createElement('input');

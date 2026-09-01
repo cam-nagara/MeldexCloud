@@ -166,6 +166,10 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
     && isProductionManagementSheetPath(targetDbPath);
   const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || state.pivotData;
+  const entityData = pivotData?.entities?.[entityName] || null;
+  const topicPlacementSource = window.MeldexTopicPlacementUI?.sheetSource?.(
+    targetDbPath, entityName, entityData
+  ) || null;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   const ep = _entityPath(targetDbPath, entityName, pivotData);
@@ -242,11 +246,13 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       const copyPath = window.GBPathUtils?.resolveForClipboard?.(ep, base) ?? ep;
       navigator.clipboard.writeText(copyPath).then(() => showStatus('パスをコピーしました'));
     }},
+    ...(topicPlacementSource ? [
+      { type: 'sep' },
+      ...window.MeldexTopicPlacementUI.menuItems(topicPlacementSource),
+    ] : []),
     { type: 'sep' },
-    { icon: 'trash2', label: 'トピックを削除', danger: true, action: async () => {
+    { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true, action: async () => {
       const confirmMessage = entityName + ' を削除しますか？';
-      const entityData = ctx?.pivotData?.entities?.[entityName]
-        || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName] : null);
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([

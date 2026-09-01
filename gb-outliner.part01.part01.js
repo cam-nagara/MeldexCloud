@@ -306,7 +306,8 @@ async function loadOutliner(options) {
 
   const loadGeneration = ++_outlinerLoadGeneration;
   const loadPromise = (async () => {
-    showLoading('フォルダを読み込み中...');
+    const useLoadingIndicator = !opts.suppressLoading;
+    if (useLoadingIndicator) showLoading('フォルダを読み込み中...');
     let rendered = false;
     try {
       // フォルダツリー改修Phase4: 再読込前に未開始のサムネイル/形式アイコン取得と
@@ -368,7 +369,7 @@ async function loadOutliner(options) {
       return { rendered };
     } finally {
       if (typeof _logPerfEvent === 'function') _logPerfEvent('outliner.load.total', perfStartedAt);
-      hideLoading();
+      if (useLoadingIndicator) hideLoading();
     }
   })();
   _outlinerLoadInFlight = loadPromise;
@@ -1262,7 +1263,7 @@ async function toggleItemLock(path) {
       await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
     } else {
       // ダイアログ禁止原則: window.prompt は使わない。
-      // 編集ロックの理由は任意であり、後から付箋注釈・履歴ノートで補足できるため、
+      // 編集ロックの理由は任意であり、後から付箋アノテート・履歴ノートで補足できるため、
       // ロック取得時点では空でセットし、必要なら後段で編集する運用にする。
       await _fileLockApi('/file-lock', {
         method: 'PUT',
@@ -1293,7 +1294,7 @@ function _applyOutlinerLockStateToNode(nodeEl) {
   if (!row || !label || !item.path) return;
   row.querySelector('.tree-lock-badge')?.remove();
   const locked = isItemLocked(item.path);
-  row.draggable = !locked && !item._isRoot && item.type !== 'entity';
+  row.draggable = !locked && !item._isRoot;
   label.style.fontStyle = locked ? 'italic' : '';
   _syncOutlinerAddHoverButton(nodeEl, item, locked);
   if (!locked) {
@@ -1477,6 +1478,26 @@ async function refreshOutliner(options) {
   if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree({ reason: opts.reason || 'refresh-outliner' })));
   if (typeof renderWorkspaceSidebar === 'function') refreshJobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
   return Promise.allSettled(refreshJobs);
+}
+
+let _topicRecordsOutlinerRefreshTimer = null;
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('meldex:topic-records-updated', () => {
+    clearTimeout(_topicRecordsOutlinerRefreshTimer);
+    _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
+      const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
+      const failures = settled.filter(result => result.status === 'rejected');
+      if (!failures.length) return;
+      const detail = {
+        failures: failures.map(result => String(result.reason?.message || result.reason || '再読込に失敗しました')),
+        retry: () => refreshOutliner({ force: true, reason: 'topic-records-retry' }),
+      };
+      window.dispatchEvent(new CustomEvent('meldex:topic-outliner-refresh-failed', { detail }));
+      if (typeof showStatus === 'function') {
+        showStatus('保存は完了しましたが、フォルダ／トピック一覧を更新できませんでした。更新ボタンで再試行してください', true);
+      }
+    }, 40);
+  });
 }
 
 async function refreshOutlinerFromButton(event) {

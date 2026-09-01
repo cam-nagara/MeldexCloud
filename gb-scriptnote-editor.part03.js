@@ -72,11 +72,6 @@
       const isVertical = this.doc.editor?.viewMode === 'vertical';
 
       if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey)) {
-        if (this._cellEditMode && typeof this._exitEditMode === 'function') {
-          e.preventDefault();
-          this._exitEditMode();
-          return;
-        }
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.addRow', e)) return;
         e.preventDefault();
         const splitOffset = this._getTextOffset(text);

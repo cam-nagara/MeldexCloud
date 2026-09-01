@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
 
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/g, '');
@@ -22,15 +22,6 @@
     return (typeof state !== 'undefined' && state) ? state[key] || '' : '';
   }
 
-  function _currentSmartDbPath() {
-    try {
-      const current = (typeof state !== 'undefined' && state) ? state.currentSmartDb : null;
-      return current?._filePath || current?.path || current?.id || '';
-    } catch {
-      return '';
-    }
-  }
-
   function _tabPath(tab, ...keys) {
     if (tab?.path) return tab.path;
     const tabState = tab?.state || {};
@@ -47,7 +38,6 @@
     if (type === 'page') return _tabPath(tab, 'pagePath') || _statePath('currentPagePath');
     if (type === 'board') return _tabPath(tab, 'boardPath') || _statePath('currentBoardPath');
     if (type === 'scriptnote') return _tabPath(tab, 'scenarioPath', 'scriptnotePath');
-    if (type === 'smart-db') return _tabPath(tab, 'smartDbPath', 'dbPath') || _currentSmartDbPath() || _statePath('currentDbPath');
     if (DB_VIEW_TYPES.has(type)) return _tabPath(tab, 'dbPath') || _statePath('currentDbPath');
     if (type === 'folder') return _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
     if (type === 'csv') return _tabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');

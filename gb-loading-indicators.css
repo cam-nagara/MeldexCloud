@@ -55,21 +55,13 @@
 }
 
 img.meldex-image-is-loading {
-  --meldex-image-ring-size: clamp(18px, 28%, 34px);
+  /* 可視リングは host の疑似要素だけが描く。img は読込状態と
+     アクセシビリティ状態の保持に限定し、二重描画を防ぐ。 */
   color: transparent;
-  background-image:
-    radial-gradient(circle, var(--bg2, #20242a) 0 42%, transparent 44%),
-    repeating-conic-gradient(from var(--meldex-ring-angle), var(--meldex-progress-accent) 0 18deg, transparent 18deg 32deg);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: var(--meldex-image-ring-size) var(--meldex-image-ring-size);
-  animation: meldex-segmented-ring-rotate .9s linear infinite;
 }
 
 .meldex-image-load-host {
   position: relative;
-  min-inline-size: 32px;
-  min-block-size: 32px;
 }
 
 .meldex-image-load-host.is-loading::before {
@@ -90,8 +82,15 @@ img.meldex-image-is-loading {
 
 .meldex-content-image-host {
   display: inline-block;
+  min-inline-size: 32px;
+  min-block-size: 32px;
   max-inline-size: 100%;
   vertical-align: middle;
+}
+
+.embed-media[data-meldex-image-host] {
+  min-inline-size: 32px;
+  min-block-size: 32px;
 }
 
 .meldex-content-image-host > img { max-inline-size: 100%; }
@@ -126,7 +125,7 @@ img.meldex-image-load-error {
 .meldex-operation-tray {
   position: fixed;
   /* 操作中のメニュー・ダイアログを覆わず、通常のアプリ面より手前に置く。 */
-  z-index: 9000;
+  z-index: calc(var(--ui-z-modal, 300) - 1);
   /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
   right: calc(14px + var(--gb-rail-width, 38px) + 8px);
   bottom: calc(34px + env(safe-area-inset-bottom, 0px));

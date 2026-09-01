@@ -1,6 +1,6 @@
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
       board: 'ボード', calendar: 'スケジュール',
-      'smart-db': 'スマートシート', folder: 'フォルダ',
+      folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
       if (!containerId) return;
@@ -91,7 +91,7 @@
     };
     window.toggleRightPanel = function(source) {
       if (!_guardRightSidebarTool('chat', source)) return;
-      const rightPanelTypes = ['chat', 'calendar', 'timer', 'history', 'annotation', 'preview', 'detail'];
+      const rightPanelTypes = ['chat', 'calendar', 'history', 'annotation', 'preview', 'detail'];
       let closed = 0;
       rightPanelTypes.forEach((type) => {
         for (let guard = 0; guard < 20; guard += 1) {
@@ -160,10 +160,16 @@
       }
       return { sourcePane, splitPane };
     }
-    function _disposePaneTabs(pane) {
-      pane?.tabs?.forEach(t => {
-        if (typeof removeComponentInstance === 'function') removeComponentInstance(t.id);
+    async function _disposePaneTabs(pane) {
+      const ids = (pane?.tabs || []).map(t => t?.id).filter(Boolean);
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(ids)) return false;
+      ids.forEach(id => {
+        if (typeof removeComponentInstance === 'function') {
+          removeComponentInstance(id, { skipFlush: true });
+        }
       });
+      return true;
     }
     function _entryFromSplitArg(splitArg) {
       if (!splitArg) return null;
@@ -178,9 +184,9 @@
       const path = String(splitArg || '');
       return { label: path.split('/').pop() || path || '(無題)', type: 'pivot', path };
     }
-    function _replacePaneWithEntry(pane, entry) {
+    async function _replacePaneWithEntry(pane, entry) {
       if (!pane || pane.type !== 'pane' || !entry) return false;
-      _disposePaneTabs(pane);
+      if (!await _disposePaneTabs(pane)) return false;
       pane.tabs = [GBTabs.createTab(entry.label, entry.type, entry.path)];
       pane.activeTabIndex = 0;
       GBLayout.render();
@@ -188,12 +194,12 @@
       GBLayout.setActivePane(pane.id);
       return true;
     }
-    function _activateLegacySplitView(splitArg) {
+    async function _activateLegacySplitView(splitArg) {
       if (GBLayout.isMaximized()) { GBLayout.restoreMaximizedPane(); return false; }
       const requestedEntry = _entryFromSplitArg(splitArg);
       const existingPair = _getLegacySplitPair();
       if (existingPair) {
-        if (requestedEntry) _replacePaneWithEntry(existingPair.splitPane, requestedEntry);
+        if (requestedEntry && !await _replacePaneWithEntry(existingPair.splitPane, requestedEntry)) return false;
         return true;
       }
       const paneId = GBLayout.activePane;
@@ -212,34 +218,34 @@
       GBLayout.setActivePane(splitPaneId);
       return true;
     }
-    function _deactivateLegacySplitView() {
+    async function _deactivateLegacySplitView() {
       if (GBLayout.isMaximized()) { GBLayout.restoreMaximizedPane(); return false; }
       const pair = _getLegacySplitPair();
       if (!pair) return false;
-      _disposePaneTabs(pair.splitPane);
-      GBLayout.removePane(pair.splitPane.id);
+      if (!await _disposePaneTabs(pair.splitPane)) return false;
+      await GBLayout.removePane(pair.splitPane.id);
       _legacySplitPair = null;
       if (GBLayout.findNode(GBLayout.root, pair.sourcePane.id)?.node) {
         GBLayout.setActivePane(pair.sourcePane.id);
       }
       return true;
     }
-    window.toggleSplitView = function() {
-      if (!_deactivateLegacySplitView()) _activateLegacySplitView();
+    window.toggleSplitView = async function() {
+      if (!await _deactivateLegacySplitView()) await _activateLegacySplitView();
     };
-    window.activateSplitView = function(splitArg) {
-      _activateLegacySplitView(splitArg);
+    window.activateSplitView = async function(splitArg) {
+      return _activateLegacySplitView(splitArg);
     };
-    window.deactivateSplitView = function() {
-      _deactivateLegacySplitView();
+    window.deactivateSplitView = async function() {
+      return _deactivateLegacySplitView();
     };
     window.isSplitActive = function() {
       return !!_getLegacySplitPair();
     };
-    window.openInNewSplit = function(dbPath) {
+    window.openInNewSplit = async function(dbPath) {
       return _activateLegacySplitView(_entryFromSplitArg(dbPath));
     };
-    window.openDbInOtherPane = function(dbPath) {
+    window.openDbInOtherPane = async function(dbPath) {
       const entry = _entryFromSplitArg(dbPath);
       const pair = _getLegacySplitPair();
       if (!pair) return _activateLegacySplitView(entry);
@@ -454,7 +460,6 @@
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
       ['スケジュール', 'calendar', () => openToolTab('calendar')],
-      ['スマートシート', 'databaseSearch', () => openToolTab('smart-db')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],
       ['XLSX取込', (typeof uiTransferIconName === 'function' ? uiTransferIconName('import') : 'download'), () => { if (typeof importXlsxToOutliner === 'function') importXlsxToOutliner(); }],
@@ -584,43 +589,49 @@
     return true;
   }
 
-  function _disposeLayoutTreeComponents(node) {
-    if (!node) return;
-    if (node.type === 'pane') {
-      (node.tabs || []).forEach(tab => {
-        if (typeof removeComponentInstance === 'function') removeComponentInstance(tab.id);
-      });
-      return;
-    }
-    if (node.type === 'split') {
-      (node.children || []).forEach(_disposeLayoutTreeComponents);
-      return;
-    }
-    if (node.type === 'panelset' && Array.isArray(node.groups)) {
-      node.groups.forEach(group => _disposeLayoutTreeComponents(group?.root));
-    }
+  async function _disposeLayoutTreeComponents(node) {
+    const ids = [];
+    (function collect(current) {
+      if (!current) return;
+      if (current.type === 'pane') {
+        (current.tabs || []).forEach(tab => { if (tab?.id) ids.push(tab.id); });
+      } else if (current.type === 'split') {
+        (current.children || []).forEach(collect);
+      } else if (current.type === 'panelset' && Array.isArray(current.groups)) {
+        current.groups.forEach(group => collect(group?.root));
+      }
+    })(node);
+    if (typeof flushComponentInstancesBeforeRemoval === 'function'
+      && !await flushComponentInstancesBeforeRemoval(ids)) return false;
+    ids.forEach(id => {
+      if (typeof removeComponentInstance === 'function') {
+        removeComponentInstance(id, { skipFlush: true });
+      }
+    });
+    return true;
   }
 
-  function _resetDefaultLayout(options) {
+  async function _resetDefaultLayout(options) {
     const before = !options?.skipHistory && typeof GBLayout.captureLayoutSnapshot === 'function'
       ? GBLayout.captureLayoutSnapshot()
       : null;
-    _disposeLayoutTreeComponents(GBLayout.root);
+    if (!await _disposeLayoutTreeComponents(GBLayout.root)) return false;
     _buildDefaultLayout(GBLayout.createPaneNode('pane-main', [], -1));
     if (before && typeof GBLayout.pushLayoutHistory === 'function') {
       GBLayout.pushLayoutHistory('レイアウト: 初期化', before, GBLayout.captureLayoutSnapshot(), '標準レイアウトへ戻す');
     }
+    return true;
   }
 
   // ================================================================
   // 右サイドバー補助操作の制限（サブパネル内）
   //
   // 計画書「右サイドバー操作の制限」節: オプション・ビューワー・バージョン管理・
-  // チャット・タイマー・ヒストリー・注釈・タグ・別サブパネルを開く操作は、
+  // チャット・ヒストリー・アノテート・タグ・別サブパネルを開く操作は、
   // サブパネル内では使用できない。メインパネルからは従来どおり。
   // ================================================================
   const RIGHT_SIDEBAR_RESTRICTED_TOOLS = new Set([
-    'detail', 'preview', 'version', 'chat', 'timer', 'history',
+    'detail', 'preview', 'version', 'chat', 'history',
     'annotation', 'sticky', 'tags', 'subpanel',
   ]);
 
@@ -674,7 +685,7 @@
   }
 
   // 右サイドバー補助操作（オプション/ビューワー/バージョン管理/チャット/タイマー/
-  // ヒストリー/注釈/タグ/サブパネルを開く）の可否を判定する。制限対象で、かつ
+  // ヒストリー/アノテート/タグ/サブパネルを開く）の可否を判定する。制限対象で、かつ
   // サブパネル内からの呼び出しであれば false を返し、短いステータス
   // 通知を出す。呼び出し側はこの戻り値が true の場合のみ処理を継続すること。
   function _guardRightSidebarTool(toolType, source) {

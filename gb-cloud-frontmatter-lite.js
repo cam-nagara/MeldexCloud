@@ -174,8 +174,8 @@
       if (!isNotFoundError(error)) throw error;
     }
     const match = String(text).match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!match) return { frontmatter: {}, body: text };
-    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length) };
+    if (!match) return { frontmatter: {}, body: text, sourceText: text };
+    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length), sourceText: text };
   }
 
   window.MeldexCloudFrontmatterLite = {

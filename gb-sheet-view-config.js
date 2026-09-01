@@ -8,6 +8,13 @@ const _dbViewConfigBackendSavePromises = new Map();
 const _dbViewConfigBackendSavePayloads = new Map();
 let _dbViewConfigBackendSaveRevision = 0;
 
+function _newDbSavedViewId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return 'view_' + crypto.randomUUID().replace(/-/g, '');
+  }
+  return 'view_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+}
+
 function getDbViewConfigStorageKey(dbPath) {
   const fileId = MeldexSheetViewConfigEnvironment.fileId(dbPath);
   return 'dbViewConfig:' + (fileId || dbPath || '');
@@ -39,7 +46,7 @@ function _hasDbViewObjectState(value) {
 }
 function _normalizeDbViewModeValue(mode) {
   const value = String(mode || '').trim();
-  return ['pivot', 'tree', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
+  return ['pivot', 'tree', 'gallery', 'kanban', 'calendar', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(value)
     ? value
     : 'pivot';
 }
@@ -67,11 +74,13 @@ function _normalizeDbTimelineTypeSpecific(timeline) {
   out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
   out.cardImageThumbCount = Math.max(1, Math.min(12, Math.round(Number(out.cardImageThumbCount || 3) || 3)));
   out.cardPropLineCount = Math.max(1, Math.min(20, Math.round(Number(out.cardPropLineCount || 1) || 1)));
+  out.progressProp = String(out.progressProp || '');
   return out;
 }
 function _makeLegacyDbSavedView(cfg) {
   const viewMode = _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot');
   return {
+    id: _newDbSavedViewId(),
     name: typeof _defaultDbSavedViewName === 'function' ? _defaultDbSavedViewName(viewMode, 0) : 'テーブル',
     viewMode,
     hiddenCols: _cloneDbViewArray(cfg.hiddenCols),
@@ -95,6 +104,7 @@ function _makeLegacyDbSavedView(cfg) {
       kanban: { groupBy: cfg.kanbanGroupBy || '_status' },
       calendar: { mapping: _cloneDbViewObject(cfg.calendarMapping) },
       timeline: _normalizeDbTimelineTypeSpecific(cfg.timeline),
+      gantt: _normalizeDbTimelineTypeSpecific({ ...(cfg.gantt || {}), rowProp: '_entity', direction: 'horizontal' }),
       chart: _cloneDbViewObject(cfg.chartConfig),
       graph: _cloneDbViewObject(cfg.graphConfig),
       form: { formConfig: cfg.formConfig == null ? null : _cloneDbViewValue(cfg.formConfig, null) },
@@ -113,6 +123,7 @@ function _ensureDbViewTypeSpecific(view, cfg) {
   if (!_isDbViewPlainObject(current.calendar)) current.calendar = {};
   if (!_isDbViewPlainObject(current.calendar.mapping)) current.calendar.mapping = _cloneDbViewObject(cfg.calendarMapping);
   current.timeline = _normalizeDbTimelineTypeSpecific(current.timeline || cfg.timeline);
+  current.gantt = _normalizeDbTimelineTypeSpecific({ ...(current.gantt || cfg.gantt || {}), rowProp: '_entity', direction: 'horizontal' });
   if (!_isDbViewPlainObject(current.chart)) current.chart = _cloneDbViewObject(cfg.chartConfig);
   if (!_isDbViewPlainObject(current.graph)) current.graph = _cloneDbViewObject(cfg.graphConfig);
   if (!_isDbViewPlainObject(current.form)) current.form = {};
@@ -124,6 +135,7 @@ function _ensureDbViewTypeSpecific(view, cfg) {
 }
 function _normalizeSavedDbViewForV2(view, cfg, index) {
   const v = _isDbViewPlainObject(view) ? view : {};
+  if (!String(v.id || '').trim()) v.id = _newDbSavedViewId();
   v.viewMode = _normalizeDbViewModeValue(v.viewMode || cfg.currentViewMode || 'pivot');
   if (!String(v.name || '').trim()) {
     v.name = typeof _defaultDbSavedViewName === 'function'
@@ -210,7 +222,7 @@ function _hasMeaningfulDbTimelineState(timeline) {
   const defaults = new Set([
     'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
     'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
-    'cardImageThumbCount', 'cardPropLineCount',
+    'cardImageThumbCount', 'cardPropLineCount', 'progressProp',
   ]);
   return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
 }
@@ -256,14 +268,27 @@ function _migrateLegacyViewConfig(dbPath, cfg) {
   if (!dbPath) return { cfg: config, changed: false };
   if (config._viewMigrationV2Done === true) {
     if (!Array.isArray(config.savedViews)) config.savedViews = [];
+    let repaired = false;
+    const usedIds = new Set();
+    config.savedViews = config.savedViews.map((view, index) => {
+      const originalId = String(view?.id || '').trim();
+      const normalized = _normalizeSavedDbViewForV2(view, config, index);
+      if (!originalId || originalId !== normalized.id) repaired = true;
+      if (!normalized.id || usedIds.has(normalized.id)) {
+        normalized.id = _newDbSavedViewId();
+        repaired = true;
+      }
+      usedIds.add(normalized.id);
+      return normalized;
+    });
     if (config.savedViews.length > 0
       && (!Number.isInteger(config.currentViewIdx)
         || config.currentViewIdx < 0
         || config.currentViewIdx >= config.savedViews.length)) {
       config.currentViewIdx = 0;
-      return { cfg: config, changed: true };
+      repaired = true;
     }
-    return { cfg: config, changed: false };
+    return { cfg: config, changed: repaired };
   }
 
   const legacyView = _makeLegacyDbSavedView(config);
@@ -617,9 +642,34 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
     );
   }
 }
+
+async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
+  const key = getDbViewConfigStorageKey(dbPath);
+  const previous = localStorage.getItem(key);
+  const before = options.skipHistory === true ? null : captureDbViewConfigHistory(dbPath);
+  localStorage.setItem(key, JSON.stringify(cfg || {}));
+  const saved = await _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: true, ctx: options.ctx });
+  if (!saved) {
+    if (previous == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, previous);
+    return false;
+  }
+  if (options.historyLabel && options.skipHistory !== true) {
+    pushDbViewConfigHistory(
+      dbPath, options.historyLabel, before, captureDbViewConfigHistory(dbPath),
+      options.historyDetail || '', options.onRestore, options.historyScope
+    );
+  }
+  return true;
+}
 function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {
   const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
   if (views.length === 0) return -1;
+  const ctxId = String(options?.ctx?.currentViewId || options?.currentViewId || '').trim();
+  if (ctxId) {
+    const stableIndex = views.findIndex(view => String(view?.id || '') === ctxId);
+    if (stableIndex >= 0) return stableIndex;
+  }
   const ctxIdx = Number.isInteger(options?.ctx?.currentViewIdx) ? options.ctx.currentViewIdx : null;
   const optIdx = Number.isInteger(options?.currentViewIdx) ? options.currentViewIdx : null;
   const rawIdx = ctxIdx != null ? ctxIdx : (optIdx != null ? optIdx : (Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0));

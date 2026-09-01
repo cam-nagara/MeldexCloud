@@ -23,6 +23,12 @@
     return window.MeldexWorkspaces ? await window.MeldexWorkspaces.load({ force: true }) : [];
   }
 
+  async function _registryUsers() {
+    if (!window.MeldexUserRegistry) return [];
+    try { return await window.MeldexUserRegistry.listStaff({ force: true }); }
+    catch { return []; }
+  }
+
   function _currentWorkspaceUserFields() {
     let user = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
     if (!user) {
@@ -37,29 +43,40 @@
   }
 
   function _renderEmpty(container) {
-    container.innerHTML = `<section class="gb-section gb-section--boxed">
+    container.innerHTML = `<section class="gb-section gb-section--boxed" data-settings-view="workspace">
       <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース</div>
       <div class="gb-section-desc">チャット、シフト、共同作業の対象をソースフォルダとは別に管理します。</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add-empty">${_icon('plus', 14)} ワークスペースを追加</button>
     </section>`;
     container.querySelector('[data-settings-workspace-add]')?.addEventListener('click', addWorkspaceFromSettings);
+    _reapplySettingsView(container);
   }
 
-  function _memberListHtml(workspace) {
+  function _memberListHtml(workspace, users) {
     const members = Array.isArray(workspace?.members) ? workspace.members : [];
-    if (!members.length) return '<div class="gb-section-desc">メンバーはまだ登録されていません。</div>';
-    return members.map(member => `<div class="settings-workspace-member" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 44px;gap:6px;align-items:center;margin:4px 0;">
+    const virtualUsers = (Array.isArray(users) ? users : []).filter(user => user?.user_type === 'virtual' && (user.workspace_ids || []).includes(workspace.id));
+    if (!members.length && !virtualUsers.length) return '<div class="gb-section-desc">このワークスペースのユーザーはまだ登録されていません。</div>';
+    const accountHtml = members.map(member => `<div class="settings-workspace-member" data-workspace-account-user style="display:grid;grid-template-columns:minmax(0,1fr) 140px 44px;gap:6px;align-items:center;margin:4px 0;">
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(member.name || '')}</span>
       <select class="gb-select" data-workspace-member-role="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-role-${_escape(member.name || '')}" aria-label="${_escape(member.name || '')}の権限">
-        ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'メンバー',viewer:'閲覧'}[role]}</option>`).join('')}
+        ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'ユーザー',viewer:'閲覧のみ'}[role]}</option>`).join('')}
       </select>
-      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="メンバーを削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
+      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="アクセスユーザーから削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
     </div>`).join('');
+    const virtualHtml = virtualUsers.map(user => `<div class="settings-workspace-member" data-workspace-virtual-user style="display:grid;grid-template-columns:minmax(0,1fr) 140px 44px;gap:6px;align-items:center;margin:4px 0;">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(user.display || user.user || '')} <small style="color:var(--fg2);">仮ユーザー</small></span>
+      <span class="gb-section-desc" title="共有ファイルへアクセスできません">制作管理のみ・ログイン不可</span>
+      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-virtual-remove="${_escape(user.user_id || user.user || '')}" data-e2e-id="settings-workspace-virtual-remove-${_escape(user.user_id || user.user || '')}" title="このワークスペースから外す" aria-label="${_escape(user.display || user.user || '')}を外す">${_icon('trash2', 14)}</button>
+    </div>`).join('');
+    return accountHtml + virtualHtml;
   }
 
-  function _renderRows(container, rows) {
+  function _renderRows(container, rows, users) {
     const activeId = window.MeldexWorkspaces?.getActiveId?.() || '';
-    const rowHtml = rows.map(workspace => `<section class="gb-section gb-section--boxed settings-workspace-card" data-workspace-id="${_escape(workspace.id)}">
+    const workspaceHtml = rows.map(workspace => {
+      const listId = `workspace-user-options-${String(workspace.id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+      const options = (Array.isArray(users) ? users : []).map(user => `<option value="${_escape(user.display || user.user || '')}">${_escape(user.user_type === 'virtual' ? '仮ユーザー' : 'アカウント')}</option>`).join('');
+      return `<section class="gb-section gb-section--boxed settings-workspace-card" data-settings-view="workspace" data-workspace-id="${_escape(workspace.id)}">
       <div class="settings-workspace-head">
         <div>
           <div class="gb-section-title">${_icon('usersRound', 14)} <span>${_escape(workspace.name || 'ワークスペース')}</span></div>
@@ -76,35 +93,50 @@
         <button type="button" class="gb-btn gb-btn-sm" data-workspace-save data-e2e-id="settings-workspace-save-${_escape(workspace.id)}">${_icon('save', 14)} 保存</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-workspace-delete data-e2e-id="settings-workspace-delete-${_escape(workspace.id)}">${_icon('trash2', 14)} 削除</button>
       </div>
-      <div class="settings-workspace-members">${_memberListHtml(workspace)}</div>
+      <div class="gb-section-title" style="margin-top:12px;">${_icon('usersRound', 14)} ユーザーとアクセス権限</div>
+      <div class="gb-section-desc">アカウントユーザーには共有アクセス権限を、仮ユーザーには制作管理上の所属だけを設定します。</div>
+      <div class="settings-workspace-members">${_memberListHtml(workspace, users)}</div>
       <div class="gb-field-row" style="justify-content:flex-start;">
-        <input class="gb-input" data-workspace-new-member data-e2e-id="settings-workspace-new-member-${_escape(workspace.id)}" placeholder="メンバー名" style="max-width:220px;">
-        <select class="gb-select" data-workspace-new-role data-e2e-id="settings-workspace-new-role-${_escape(workspace.id)}" aria-label="追加するメンバーの権限">
-          <option value="member">メンバー</option>
+        <label class="gb-field" style="margin:0;max-width:240px;"><span class="gb-label">追加するユーザー</span><input class="gb-input" data-workspace-new-user data-workspace-new-member data-e2e-id="settings-workspace-new-user-${_escape(workspace.id)}" list="${_escape(listId)}" autocomplete="off"></label>
+        <datalist id="${_escape(listId)}">${options}</datalist>
+        <select class="gb-select" data-workspace-new-role data-e2e-id="settings-workspace-new-role-${_escape(workspace.id)}" aria-label="追加するアカウントユーザーの権限">
+          <option value="member">ユーザー</option>
           <option value="admin">管理者</option>
-          <option value="viewer">閲覧</option>
+          <option value="viewer">閲覧のみ</option>
         </select>
-        <button type="button" class="gb-btn gb-btn-sm" data-workspace-member-add data-e2e-id="settings-workspace-member-add-${_escape(workspace.id)}">${_icon('userPlus', 14)} 追加</button>
+        <button type="button" class="gb-btn gb-btn-sm" data-workspace-user-add data-workspace-member-add data-e2e-id="settings-workspace-user-add-${_escape(workspace.id)}">${_icon('userPlus', 14)} 追加</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-workspace-profile-sync data-e2e-id="settings-workspace-profile-sync-${_escape(workspace.id)}">${_icon('refreshCw', 14)} 自分を同期</button>
       </div>
-    </section>`).join('');
-    container.innerHTML = `<section class="gb-section gb-section--boxed">
+    </section>`;
+    }).join('');
+    container.innerHTML = `<section class="gb-section gb-section--boxed" data-settings-view="workspace">
       <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース ${fieldHelp('作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。', { e2eId: 'workspace-scope-help' })}</div>
+      <div class="gb-section-desc">ワークスペースごとのユーザー所属と権限を、各ワークスペース内で管理します。</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add">${_icon('plus', 14)} ワークスペースを追加</button>
-    </section>${rowHtml}`;
+    </section>${workspaceHtml}`;
     bindWorkspaceSettings(container);
+    _reapplySettingsView(container);
+  }
+
+  function _reapplySettingsView(container) {
+    const modal = container?.closest?.('.settings-modal');
+    if (!modal || typeof _applySettingsNavigationView !== 'function' || typeof resolveSettingsNavigationTarget !== 'function') return;
+    const target = resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId || 'ユーザー・共同作業', {
+      pageId: modal.dataset.settingsActivePageId || 'workspace',
+    });
+    _applySettingsNavigationView(modal, target);
   }
 
   async function settingsInitWorkspaces(root) {
     const panel = _panel(root);
     if (!panel) return;
-    panel.innerHTML = '<section class="gb-section gb-section--boxed"><div class="gb-section-desc">読み込み中...</div></section>';
+    panel.innerHTML = '<section class="gb-section gb-section--boxed" data-settings-view="workspace"><div class="gb-section-desc">読み込み中...</div></section>';
     try {
-      const rows = await _workspaceRows();
+      const [rows, users] = await Promise.all([_workspaceRows(), _registryUsers()]);
       if (!rows.length) _renderEmpty(panel);
-      else _renderRows(panel, rows);
+      else _renderRows(panel, rows, users);
     } catch {
-      panel.innerHTML = '<section class="gb-section gb-section--boxed"><div class="gb-section-desc">ワークスペースを読み込めませんでした。</div></section>';
+      panel.innerHTML = '<section class="gb-section gb-section--boxed" data-settings-view="workspace"><div class="gb-section-desc">ワークスペースを読み込めませんでした。</div></section>';
     }
   }
 
@@ -178,13 +210,24 @@
         const name = String(card.querySelector('[data-workspace-new-member]')?.value || '').trim();
         const role = String(card.querySelector('[data-workspace-new-role]')?.value || 'member');
         if (!name) return;
-        await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(name), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role }),
-        });
-        await window.MeldexWorkspaces.load({ force: true });
-        await settingsInitWorkspaces(document);
+        try {
+          const users = await _registryUsers();
+          const user = users.find(item => item.display === name || item.user === name);
+          if (user?.user_type === 'virtual') {
+            await window.MeldexUserRegistry.setUserWorkspace(user.user_id || user.user, id, true);
+          } else {
+            await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(user?.user || name), {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ role, user_type: 'account', user_id: user?.user_id || '' }),
+            });
+            await window.MeldexWorkspaces.load({ force: true });
+          }
+          await settingsInitWorkspaces(document);
+          _status(`「${user?.display || name}」をワークスペースへ追加しました`);
+        } catch (error) {
+          _status('ユーザーを追加できませんでした: ' + (error?.message || error), true);
+        }
       });
       card.querySelector('[data-workspace-profile-sync]')?.addEventListener('click', async () => {
         await apiFetch('/workspaces/' + encodeURIComponent(id) + '/sync-profile', {
@@ -212,6 +255,17 @@
           await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(memberName), { method: 'DELETE' });
           await window.MeldexWorkspaces.load({ force: true });
           await settingsInitWorkspaces(document);
+        });
+      });
+      card.querySelectorAll('[data-workspace-virtual-remove]').forEach(button => {
+        button.addEventListener('click', async () => {
+          try {
+            await window.MeldexUserRegistry.setUserWorkspace(button.dataset.workspaceVirtualRemove || '', id, false);
+            await settingsInitWorkspaces(document);
+            _status('仮ユーザーをワークスペースから外しました');
+          } catch (error) {
+            _status('仮ユーザーを外せませんでした: ' + (error?.message || error), true);
+          }
         });
       });
     });

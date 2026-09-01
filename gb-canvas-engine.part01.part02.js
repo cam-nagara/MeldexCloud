@@ -35,7 +35,7 @@
   // Xmindメタ（note, checked, progress, markers, shape, font）
   const cardOverrideMetaKeys = [
     'shape', 'fontSize', 'fontBold', 'fontItalic', 'textColor', 'textStrokeColor',
-    'textStrokeWidth', 'borderColor', 'borderWidth', 'borderRadius', 'cardStyle',
+    'textStrokeWidth', 'bgOpacity', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius', 'cardStyle',
     'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
     'cloudSubBumpRatio', 'cloudSubWidthRatio', 'cloudSubHeightRatio',
   ];
@@ -71,7 +71,9 @@
       if (hasOwn(n, 'textColor')) parts.push('textColor: ' + fmtJsonString(n.textColor));
       if (hasOwn(n, 'textStrokeColor')) parts.push('textStrokeColor: ' + fmtJsonString(n.textStrokeColor));
       if (hasOwn(n, 'textStrokeWidth')) parts.push('textStrokeWidth: ' + (+n.textStrokeWidth || 0));
+      if (hasOwn(n, 'bgOpacity')) parts.push('bgOpacity: ' + _bdNormalizeStyleOpacity(n.bgOpacity, 1));
       if (hasOwn(n, 'borderColor')) parts.push('borderColor: ' + fmtJsonString(n.borderColor));
+      if (hasOwn(n, 'borderOpacity')) parts.push('borderOpacity: ' + _bdNormalizeStyleOpacity(n.borderOpacity, 1));
       if (hasOwn(n, 'borderWidth')) parts.push('borderWidth: ' + (+n.borderWidth || 0));
       if (hasOwn(n, 'borderRadius')) parts.push('borderRadius: ' + (+n.borderRadius || 0));
       if (hasOwn(n, 'cardStyle') && n.cardStyle) parts.push('cardStyle: ' + n.cardStyle);
@@ -201,6 +203,7 @@
       if (c.label) s += `, label: ${fmtJsonString(c.label)}`;
       if (hasOwn(c, 'style')) s += `, style: ${fmtJsonString(c.style)}`;
       if (hasOwn(c, 'color')) s += `, color: ${fmtJsonString(c.color)}`;
+      if (hasOwn(c, 'colorOpacity')) s += `, colorOpacity: ${_bdNormalizeStyleOpacity(c.colorOpacity, 1)}`;
       // v0.5.320: pathType を 3 種 (curve/straight/orthogonal) に統合して書き出す。
       // curve は既定のため省略、straight/orthogonal のみ明示。
       if (hasOwn(c, 'pathType') || hasOwn(c, 'straight')) {
@@ -788,7 +791,7 @@ function _bdApplyTextOutline(txt, width, color, nodeKey) {
 // 雲型の輪郭に沿った「外側の枠線」となる。
 // clip-path はカード div にかけず、SVG の overflow: visible を利用して
 // 外側 stroke がカードの矩形 bbox を超えて描画できるようにする。
-function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
+function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor, borderOpacity = 1, bgOpacity = 1) {
   const svgNS = 'http://www.w3.org/2000/svg';
   let svg = div.querySelector(':scope > svg.bd-cloud-border-svg');
   const bw = Math.max(0, +borderWidth || 0);
@@ -823,6 +826,7 @@ function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
     const d = pathStr.replace(/^path\(['"]?/, '').replace(/['"]?\)$/, '');
     p.setAttribute('d', d);
     p.setAttribute('fill', bg || 'transparent');
+    p.setAttribute('fill-opacity', String(_bdNormalizeStyleOpacity(bgOpacity, 1)));
     // 形状ごとの stroke 接続方式:
     //   - トゲ (直線/曲線): peak を鋭く尖らせたいので miter + 大きな miterlimit
     //     (鋭角で miterlimit を超えて自動 bevel にならないよう miterlimit=40)
@@ -838,10 +842,12 @@ function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
     }
     if (bw > 0 && bc) {
       p.setAttribute('stroke', bc);
+      p.setAttribute('stroke-opacity', String(_bdNormalizeStyleOpacity(borderOpacity, 1)));
       // stroke-width = 2*bw → stroke の外側半分 (= bw px) のみが可視となる
       p.setAttribute('stroke-width', String(bw * 2));
     } else {
       p.setAttribute('stroke', 'none');
+      p.removeAttribute('stroke-opacity');
       p.removeAttribute('stroke-width');
     }
     // v0.5.244 で選択ハイライトを bbox 矩形 (`.bd-selection-rect`) に変更したため、

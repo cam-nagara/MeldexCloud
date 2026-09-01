@@ -55,6 +55,10 @@
 
   async function _saveFolderVersion(provider, folderPath, options) {
     const normalized = _normalizeFolderPath(folderPath);
+    const pointMetadata = _restorePointMetadata(options?.label || '', !!options?.auto, options?.metadata);
+    if (!_shouldCreateRestorePoint(options?.label || '', !!options?.auto, options?.metadata)) {
+      return { ok: true, skipped: true, reason: 'ordinary_write' };
+    }
     const folder = await _resolveEntryHandle(provider, normalized);
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
@@ -76,7 +80,7 @@
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
-      ...(options?.metadata || {}),
+      ...pointMetadata,
     }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }

@@ -1,4 +1,4 @@
-// スタッフ管理シート（正本）のセクション表示。
+// ユーザー管理シート（内部互換名: スタッフ管理）のセクション表示。
 // ユーザーアカウント一元管理 計画書 Phase 1（§5.7）。
 // 一覧はアイコン+表示名+権限バッジのみ（編集UIは置かず正本シートへ誘導する。
 // 「何かを追加する時にダイアログで設定を強要しない」原則により、未設定時も
@@ -32,7 +32,7 @@ async function _renderStaffRegistrySettings() {
     }
     listEl.innerHTML = '';
     if (!staff.length) {
-      listEl.innerHTML = '<div class="gb-section-desc">スタッフがいません</div>';
+      listEl.innerHTML = '<div class="gb-section-desc">ユーザーがいません</div>';
     }
     const myName = typeof getUsername === 'function' ? getUsername() : '';
     const duplicateUsers = new Set((duplicates || []).map(d => d.user));
@@ -49,12 +49,13 @@ async function _renderStaffRegistrySettings() {
       const nameSpan = document.createElement('span');
       nameSpan.style.cssText = 'flex:1 1 0;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
       nameSpan.textContent = (row.display || row.user) + (row.user === myName ? '（自分）' : '') + (duplicateUsers.has(row.user) ? ' ⚠' : '');
-      nameSpan.title = duplicateUsers.has(row.user) ? '同じユーザーが複数のスタッフ行に設定されています' : nameSpan.textContent;
+      nameSpan.title = duplicateUsers.has(row.user) ? '同じユーザーが複数のユーザー行に設定されています' : nameSpan.textContent;
       item.appendChild(nameSpan);
-      const roleBadge = document.createElement('span');
-      roleBadge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg3);color:var(--fg2);flex-shrink:0;';
-      roleBadge.textContent = row.role || '（権限未設定）';
-      item.appendChild(roleBadge);
+      const typeBadge = document.createElement('span');
+      typeBadge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg3);color:var(--fg2);flex-shrink:0;';
+      typeBadge.textContent = row.user_type === 'virtual' ? '仮ユーザー' : 'アカウント';
+      typeBadge.title = row.user_type === 'virtual' ? 'ログイン不可・制作管理専用' : 'ログインとワークスペースアクセスに利用できます';
+      item.appendChild(typeBadge);
       if (isLeft) {
         const leftBadge = document.createElement('span');
         leftBadge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg4);color:var(--fg2);flex-shrink:0;';
@@ -299,11 +300,8 @@ function _syncSettingsModalOverlayForPanel(modalOrOverlay, panelName) {
     ? modalOrOverlay
     : modalOrOverlay?.closest?.('.modal-overlay') || document.querySelector('.modal-overlay[data-settings-modal="1"]');
   if (!overlay) return;
-  const canonical = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName || '') : panelName;
-  const target = typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(panelName || canonical) : null;
-  const isThemePanel = canonical === 'テーマ' || target?.tabId === 'テーマ' || (target?.panels || []).includes('テーマ');
-  overlay.classList.toggle('no-dim', isThemePanel);
-  overlay.dataset.settingsPreviewMode = isThemePanel ? 'theme' : '';
+  overlay.classList.remove('no-dim');
+  delete overlay.dataset.settingsPreviewMode;
 }
 
 function _ensureSettingsThemePanelVisible(panelName, root) {
@@ -320,7 +318,6 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
   'テーマ': 'settingsInitTheme',
   'LLM': 'settingsInitLlm',
   'LLMコスト': 'settingsInitChatCost',
-  'Discord Bot': 'settingsInitDiscordBot',
   'フィードバック': 'settingsInitFeedbackForm',
   'ユーザー': 'settingsInitUsers',
   'ワークスペース': 'settingsInitWorkspaces',
@@ -370,6 +367,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadStorageInfoForSettings === 'function') loadStorageInfoForSettings();
       if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
+      if (typeof updateRestorePointScheduleSettingsVisibility === 'function') updateRestorePointScheduleSettingsVisibility();
       if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
       if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
       window.MeldexSettingsCloudLink?.renderStatusCard?.(modal.querySelector('#settings-cloud-link-card'));
@@ -387,10 +385,6 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     }
     if (canonical === 'LLMコスト') {
       if (typeof renderChatCostSettings === 'function') renderChatCostSettings(modal);
-      return;
-    }
-    if (canonical === 'Discord Bot') {
-      if (typeof renderDiscordBotSettings === 'function') renderDiscordBotSettings(modal);
       return;
     }
     if (canonical === 'フィードバック' && typeof renderMeldexFeedbackPanel === 'function') {
@@ -496,12 +490,15 @@ function _syncSettingsTreeSelection(modal, target) {
 
     // 親は開閉操作、子は現在ページの選択を表す。同時に強調しない。
     parentBtn?.classList.remove('active', 'gb-inner-tab-active');
+    parentBtn?.removeAttribute('aria-current');
 
     // サブページボタンのアクティブ同期
     node.querySelectorAll('.settings-sidebar-subpage').forEach(subpage => {
       const isSubActive = isTargetTab && subpage.dataset.settingsPage === target.pageId;
       subpage.classList.toggle('active', isSubActive);
       subpage.classList.toggle('gb-inner-tab-active', isSubActive);
+      if (isSubActive) subpage.setAttribute('aria-current', 'page');
+      else subpage.removeAttribute('aria-current');
     });
   });
 
@@ -510,6 +507,8 @@ function _syncSettingsTreeSelection(modal, target) {
     const active = t.dataset.tab === target.tabId;
     t.classList.toggle('gb-inner-tab-active', active);
     t.classList.toggle('active', active);
+    if (active) t.setAttribute('aria-current', 'page');
+    else t.removeAttribute('aria-current');
   });
 
   // キーボードイベントの初期化
@@ -603,6 +602,11 @@ function _showSettingsNavigationTarget(modal, target) {
   if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
+  const headerText = modal.querySelector('#settings-header-text');
+  if (headerText) headerText.textContent = typeof _settingsNavigationDisplayName === 'function'
+    ? _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId })
+    : (target.pageLabel || target.tabId);
+  window.MeldexSettingsDialogController?.get?.(modal)?.syncCurrentPage?.(target);
 }
 
 function switchSettingsTab(el) {
@@ -635,6 +639,8 @@ function _settingsModalFromRoot(root) {
 function _openSettingsSection(panelName, root, options = {}) {
   const modal = _settingsModalFromRoot(root);
   if (!modal) return;
+  const controller = window.MeldexSettingsDialogController?.get?.(modal);
+  if (controller && options.fromController !== true) return controller.open(panelName, options);
   const target = typeof resolveSettingsNavigationTarget === 'function'
     ? resolveSettingsNavigationTarget(panelName, options)
     : { tabId: (typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName) : panelName), panels: [panelName] };
@@ -645,7 +651,7 @@ function _openSettingsSection(panelName, root, options = {}) {
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = true;
   _showSettingsNavigationTarget(modal, target);
-  const btnRow = modal.querySelector('.btn-row');
+  const btnRow = modal.querySelector(':scope > .gb-modal-footer[data-settings-dialog-footer="1"], :scope > .gb-modal-shell-footer[data-settings-dialog-footer="1"]');
   if (btnRow) btnRow.hidden = false;
   const backBtn = modal.querySelector('#settings-back-btn');
   if (backBtn) backBtn.hidden = false;
@@ -659,8 +665,10 @@ function _openSettingsSection(panelName, root, options = {}) {
 function _backToSettingsList(root) {
   const modal = _settingsModalFromRoot(root);
   if (!modal) return;
+  const controller = window.MeldexSettingsDialogController?.get?.(modal);
+  if (controller) return controller.back();
   modal.querySelectorAll('.settings-panel').forEach(p => { p.hidden = true; p.style.display = ''; });
-  const btnRow = modal.querySelector('.btn-row');
+  const btnRow = modal.querySelector(':scope > .gb-modal-footer[data-settings-dialog-footer="1"], :scope > .gb-modal-shell-footer[data-settings-dialog-footer="1"]');
   if (btnRow) btnRow.hidden = true;
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = false;
@@ -797,13 +805,8 @@ const SETTINGS_RESET_HISTORY_SESSION_KEY = 'meldex:settings-reset-history';
 
 function _captureAllLocalStorageSettings(extraKeys = []) {
   if (typeof captureLocalStorageSettings !== 'function') return null;
-  const keys = new Set(Array.isArray(extraKeys) ? extraKeys.filter(Boolean) : []);
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key) keys.add(key);
-    }
-  } catch {}
+  const resetKeys = typeof _settingsResetStorageKeys === 'function' ? _settingsResetStorageKeys() : [];
+  const keys = new Set([...resetKeys, ...(Array.isArray(extraKeys) ? extraKeys.filter(Boolean) : [])]);
   return captureLocalStorageSettings([...keys]);
 }
 
@@ -813,7 +816,7 @@ async function _captureSettingsResetSnapshot(extraStorageKeys = []) {
       ? captureOutlinerRootsSettingsSnapshot().catch(() => null)
       : Promise.resolve(null),
     typeof apiFetch === 'function'
-      ? apiFetch('/ui-config').catch(() => ({}))
+      ? apiFetch('/ui-config')
       : Promise.resolve({}),
   ]);
   return {
@@ -825,23 +828,29 @@ async function _captureSettingsResetSnapshot(extraStorageKeys = []) {
 
 async function _restoreSettingsResetSnapshot(snapshot) {
   if (!snapshot) return false;
+  const rollbackStorage = _captureAllLocalStorageSettings(snapshot.storage?.keys || []);
+  let currentUiConfig = null;
+  if (typeof apiFetch === 'function') currentUiConfig = await apiFetch('/ui-config');
   const storageSnapshot = snapshot.storage;
-  if (storageSnapshot && typeof restoreLocalStorageSettings === 'function') {
-    restoreLocalStorageSettings(storageSnapshot, keys => {
-      if (typeof _restoreSettingsDialogStorageAfterHistory === 'function') {
-        _restoreSettingsDialogStorageAfterHistory(keys);
-      }
-    });
+  try {
+    if (storageSnapshot && typeof restoreLocalStorageSettings === 'function') {
+      restoreLocalStorageSettings(storageSnapshot, keys => {
+        if (typeof _restoreSettingsDialogStorageAfterHistory === 'function') {
+          _restoreSettingsDialogStorageAfterHistory(keys);
+        }
+      });
+    }
+    if (typeof apiPut === 'function') await apiPut('/ui-config', snapshot.uiConfig || {});
+    return true;
+  } catch (error) {
+    if (rollbackStorage && typeof restoreLocalStorageSettings === 'function') {
+      restoreLocalStorageSettings(rollbackStorage, () => {});
+    }
+    if (currentUiConfig && typeof apiPut === 'function') {
+      try { await apiPut('/ui-config', currentUiConfig); } catch {}
+    }
+    throw error;
   }
-  if (typeof apiPut === 'function') {
-    try { await apiPut('/ui-config', snapshot.uiConfig || {}); } catch {}
-  }
-  if (snapshot.sourceFolders && typeof _restoreOutlinerRootsSettingsSnapshot === 'function') {
-    await _restoreOutlinerRootsSettingsSnapshot(snapshot.sourceFolders);
-  } else if (typeof loadOutliner === 'function') {
-    try { await loadOutliner(); } catch {}
-  }
-  return true;
 }
 
 async function _registerPendingSettingsResetHistory() {
@@ -913,27 +922,155 @@ async function resetAllSettings() {
   // （共有していない大多数のユーザーには無関係な文言のため、該当時のみ表示）。
   if (await _settingsResetHasSharedSourceFolders() && typeof cfConfirm === 'function') {
     const proceed = await cfConfirm('他の端末と共有しているフォルダの登録には影響しません。このまま初期化を続けますか？');
-    if (!proceed) return;
+    if (!proceed) return { ok: false, cancelled: true };
   }
-  const beforeReset = await _captureSettingsResetSnapshot();
+  let beforeReset = null;
   try {
-    sessionStorage.setItem(SETTINGS_RESET_HISTORY_SESSION_KEY, JSON.stringify({ before: beforeReset, at: Date.now() }));
-  } catch {}
-  localStorage.clear();
-  // サーバー側の設定もクリア。フォルダの登録（共有フォルダの一覧）はここでは初期化しない —
-  // 空リストを送ると他の端末・クラウド版のフォルダ一覧にも削除が伝わってしまうため。
-  try { await apiPut('/ui-config', {}); } catch {}
-  try { await apiPut('/vault', { path: '' }); } catch {}
-  location.reload();
+    beforeReset = await _captureSettingsResetSnapshot();
+    const resetKeys = typeof _settingsResetStorageKeys === 'function' ? _settingsResetStorageKeys() : [];
+    resetKeys.forEach(key => localStorage.removeItem(key));
+    await _saveUiConfigToServer();
+    try {
+      sessionStorage.setItem(SETTINGS_RESET_HISTORY_SESSION_KEY, JSON.stringify({ before: beforeReset, at: Date.now() }));
+    } catch {}
+    location.reload();
+    return { ok: true, changedKeys: resetKeys };
+  } catch (error) {
+    let rollbackFailed = false;
+    if (beforeReset) {
+      try { await _restoreSettingsResetSnapshot(beforeReset); } catch (rollbackError) {
+        rollbackFailed = true;
+        console.error('設定初期化のロールバック失敗:', rollbackError);
+      }
+    }
+    const message = rollbackFailed
+      ? '設定を初期化できず、自動復元にも失敗しました。設定画面を再読込して状態を確認してください。'
+      : '設定を初期化できませんでした。内容は保持されています。';
+    showStatus(message, true);
+    return { ok: false, error: error?.message || String(error), rollbackFailed };
+  }
+}
+
+function _settingsSaveFailure(domain, message) {
+  const error = new Error(message || '設定を保存できませんでした');
+  error.settingsDomain = domain || 'unknown';
+  return error;
+}
+
+function _focusInvalidSettingsInput(input) {
+  if (!input) return;
+  input.setAttribute?.('aria-invalid', 'true');
+  const view = input.closest?.('[data-settings-view]')?.dataset?.settingsView?.split(/\s+/)?.[0] || '';
+  if (view && typeof getSettingsNavigationTabs === 'function') {
+    const tab = getSettingsNavigationTabs().find(item => item.pages?.some(page => page.view === view));
+    const page = tab?.pages?.find(item => item.view === view);
+    if (tab && page) _openSettingsSection(tab.id, input.closest('.settings-modal'), { pageId: page.id, forcePage: true });
+  }
+  input.focus?.();
+}
+
+function _preflightSettingsSave() {
+  const username = document.getElementById('modal-username');
+  if (username && !String(username.value || '').trim()) {
+    _focusInvalidSettingsInput(username);
+    return { ok: false, failedDomain: 'profile', error: 'ユーザー名を入力してください' };
+  }
+  const numericFields = [
+    ['modal-version-max', 1, 200], ['modal-history-max', 1, 200],
+    ['modal-chat-temperature', 0, 2], ['modal-chat-max-tokens', 1, 1000000],
+    ['modal-chat-top-p', 0, 1],
+  ];
+  for (const [id, min, max] of numericFields) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    const raw = String(input.value || '').trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || value < min || value > max || input.checkValidity?.() === false) {
+      _focusInvalidSettingsInput(input);
+      return { ok: false, failedDomain: 'validation', error: `${input.getAttribute('aria-label') || input.name || id}の値が範囲外です` };
+    }
+  }
+  return { ok: true };
+}
+
+function _settingsDomainIsDirty(overlay, prefixes) {
+  const dirty = overlay?.__settingsDirtyControlIds;
+  if (!(dirty instanceof Set)) return true;
+  const list = Array.isArray(prefixes) ? prefixes : [prefixes];
+  return [...dirty].some(id => list.some(prefix => id === prefix || id.startsWith(prefix)));
 }
 
 async function submitSettings() {
+  const preflight = _preflightSettingsSave();
+  if (!preflight.ok) {
+    showStatus(preflight.error, true);
+    return preflight;
+  }
   showLoading('設定を保存中...');
+  let settingsHistoryBefore = null;
+  let sourceFolderHistoryBefore = null;
+  let sourceFoldersDirty = false;
+  const settingsExternalRollbacks = [];
+  let pendingTransactionalExternalSave = null;
+  let pendingOldUsernameCleanup = '';
+  let llmKeysChanged = false;
   try {
   const settingsOverlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
-  const settingsHistoryBefore = typeof _captureSettingsDialogStorageSnapshot === 'function'
+  settingsHistoryBefore = typeof _captureSettingsDialogStorageSnapshot === 'function'
     ? _captureSettingsDialogStorageSnapshot()
     : null;
+  sourceFoldersDirty = !!window._settingsOutlinerRootsDirty;
+  sourceFolderHistoryBefore = sourceFoldersDirty && typeof captureOutlinerRootsSettingsSnapshot === 'function'
+    ? await captureOutlinerRootsSettingsSnapshot()
+    : null;
+  const hasDirtyControls = settingsOverlay?.__settingsDirtyControlIds instanceof Set
+    ? settingsOverlay.__settingsDirtyControlIds.size > 0
+    : true;
+  const themeDirty = typeof _settingsThemeIsDirty === 'function' && _settingsThemeIsDirty();
+  if (!hasDirtyControls && !themeDirty && !sourceFoldersDirty) {
+    showStatus('変更された設定はありません');
+    return { ok: true, changedDomains: [] };
+  }
+  const transactionalExternalSaves = [];
+  if (_settingsDomainIsDirty(settingsOverlay, 'publish-') && typeof savePublishSettingsFromPanel === 'function') {
+    const publishContext = typeof createPublishContextSnapshot === 'function' ? createPublishContextSnapshot() : null;
+    if (!publishContext) throw _settingsSaveFailure('publish', '公開設定の対象を確認できませんでした');
+    transactionalExternalSaves.push({
+      domain: 'publish',
+      save: () => savePublishSettingsFromPanel(settingsOverlay, publishContext),
+    });
+  }
+  if (_settingsDomainIsDirty(settingsOverlay, ['chat-budget-', 'modal-chat-budget-']) && typeof saveChatCostSettingsFromSettingsDialog === 'function') {
+    transactionalExternalSaves.push({
+      domain: 'chat-cost',
+      save: () => saveChatCostSettingsFromSettingsDialog(settingsOverlay, { silent: true }),
+    });
+  }
+  if (_settingsDomainIsDirty(settingsOverlay, ['auto-tag-', 'at-']) && typeof saveAutoTagSettingsFromSettingsDialog === 'function') {
+    transactionalExternalSaves.push({
+      domain: 'auto-tag',
+      save: () => saveAutoTagSettingsFromSettingsDialog(settingsOverlay, { silent: true }),
+    });
+  }
+  if (_settingsDomainIsDirty(settingsOverlay, ['cli-chat-', 'modal-cli-', 'settings-workspace-cli-'])
+    && typeof saveCliChatSettingsFromSettingsDialog === 'function') {
+    transactionalExternalSaves.push({
+      domain: 'cli-chat',
+      save: () => saveCliChatSettingsFromSettingsDialog(settingsOverlay, {
+        silent: true,
+        skipReload: true,
+        backgroundChatRefresh: true,
+        propagateRollbackFailure: true,
+      }),
+    });
+  }
+  if (transactionalExternalSaves.length > 1) {
+    throw _settingsSaveFailure(
+      'external-settings',
+      '外部保存を伴う設定はデータ保護のため1種類ずつ保存してください',
+    );
+  }
+  pendingTransactionalExternalSave = transactionalExternalSaves[0] || null;
   // select の change が未発火でも、保存前に共通フォントをテーマ変数へ確定する。
   const fontFamilyInput = document.getElementById('modal-font-family');
   if (fontFamilyInput && typeof settingsThemeApplyCommonFont === 'function') settingsThemeApplyCommonFont(fontFamilyInput.value || '');
@@ -941,23 +1078,8 @@ async function submitSettings() {
   // テーマ編集があれば、設定ダイアログの保存ボタンでも選択中テーマへ反映する。
   if (typeof settingsThemeSaveFromSettingsDialog === 'function') {
     const themeSaveOk = await settingsThemeSaveFromSettingsDialog({ skipRefresh: true });
-    if (themeSaveOk === false) return;
+    if (themeSaveOk === false) throw _settingsSaveFailure('theme');
   }
 
   // テーマをlocalStorageに保存。失敗時は他の設定を書き込む前に中断する。
-  if (typeof saveColorSettings === 'function' && saveColorSettings() === false) return;
-
-  if (typeof savePublishSettingsFromPanel === 'function') {
-    const publishSaveOk = await savePublishSettingsFromPanel(settingsOverlay);
-    if (publishSaveOk === false) return;
-  }
-
-  if (typeof saveDiscordBotSettingsFromSettingsDialog === 'function') {
-    const discordSaveOk = await saveDiscordBotSettingsFromSettingsDialog({ silent: true, skipRender: true });
-    if (discordSaveOk === false) return;
-  }
-
-  if (typeof saveChatCostSettingsFromSettingsDialog === 'function') {
-    const chatCostSaveOk = await saveChatCostSettingsFromSettingsDialog(settingsOverlay, { silent: true });
-    if (chatCostSaveOk === false) return;
-  }
+  if (typeof saveColorSettings === 'function' && saveColorSettings() === false) throw _settingsSaveFailure('theme');

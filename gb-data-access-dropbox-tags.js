@@ -819,6 +819,56 @@
           throw error;
         }
       }
+      if (method === 'PATCH') {
+        requireCatalogMutable(catalog);
+        const path = safeTargetPath(body?.path || '');
+        const resolved = await assetIdentity.resolveAsset(
+          provider,
+          await readAssignments(provider),
+          path,
+          { create: true },
+        );
+        const ensured = await ensureTargetTags(
+          provider,
+          catalog,
+          Array.isArray(body?.add) ? body.add : [],
+        );
+        const removeIds = [...new Set((Array.isArray(body?.remove) ? body.remove : [])
+          .map(value => tagForValue(ensured.catalog, value)?.id)
+          .filter(Boolean))];
+        try {
+          const store = await writeAssignments(provider, current => {
+            let updated = current;
+            removeIds.forEach(tagId => {
+              updated = tagSafety.removeTargetTag(updated, path, tagId);
+            });
+            ensured.tags.forEach(tag => {
+              updated = tagSafety.promoteManualTag(updated, path, tag.id);
+            });
+            return assetIdentity.projectAssignment(
+              updated,
+              path,
+              resolved.asset,
+              updated.assignments[path] || [],
+              updated.auto_assignments[path] || [],
+            );
+          });
+          const manualIds = store.assignments[path] || [];
+          const autoIds = store.auto_assignments[path] || [];
+          const visibleIds = [...new Set([...manualIds, ...autoIds])];
+          return {
+            ok: true,
+            path,
+            asset_id: resolved.asset.asset_id,
+            source_folder: '',
+            tags: visibleIds.map(id => ensured.catalog.tags.find(tag => tag.id === id)).filter(Boolean),
+            auto_tag_ids: autoIds,
+          };
+        } catch (error) {
+          await compensateTargetTagCreation(provider, ensured, error);
+          throw error;
+        }
+      }
       if (method === 'DELETE') {
         requireCatalogMutable(catalog);
         const path = safeTargetPath(query.get('path') || '');

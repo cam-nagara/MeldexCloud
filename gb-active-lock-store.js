@@ -684,7 +684,7 @@
       payload('path');
     } else if (pathname.startsWith('/calendar-db/events') || pathname.startsWith('/calendar-db/sync') || pathname.startsWith('/calendar-db/ical') || pathname.startsWith('/calendar-db/caldav')) {
       both('db_path');
-    } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder') {
+    } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder' || pathname === '/version/delete-db') {
       payload('path');
     }
     return _uniqueCandidates(candidates);

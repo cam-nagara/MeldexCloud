@@ -59,6 +59,7 @@
 .file-rating button:disabled {
   cursor: default;
   opacity: .58;
+  border-color: transparent;
 }
 
 .file-rating button:focus-visible {

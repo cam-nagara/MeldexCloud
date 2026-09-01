@@ -47,8 +47,8 @@
   }
 
   function _effectiveThemeColorSet(colors, fallback, themeDef) {
-    const presetAccent = getEffectiveThemeAccent(themeDef);
-    if (presetAccent) return [presetAccent];
+    // OS／既定アクセントはボタンや選択線などのアクセント対象だけへ適用する。
+    // パレット全体を1色へ畳むと、見出し・階層・系列色まで同じアクセント色になる。
     return normalizeThemeColorSet(colors, fallback || RAINBOW_PALETTE);
   }
 
@@ -718,8 +718,6 @@
   }
 
   function getThemeColorSet(themeDef, options = {}) {
-    const policy = getThemeAccentPolicy(themeDef);
-    if (policy.kind === 'system-or-default') return [getEffectiveThemeAccent(themeDef, options)];
     const activePalette = _activeThemeColorSet;
     const palette = themeDef
       ? resolveThemeColorSet(themeDef)

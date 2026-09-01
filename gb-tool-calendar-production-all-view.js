@@ -1,6 +1,5 @@
 /* gb-tool-calendar-production-all-view.js
- * スケジュール タスクリスト面の「すべて」タブ用に、全作品のタスクを1枚のフラット表で
- * 横断表示する独立モジュール。
+ * スケジュールの全タスクを一つの論理シートとして表示するモジュール。
  *
  * 実装方式（依頼8での再設計）: 集約用の実シートは存在しない（作品別シートが正）ため、旧版は
  * 「作品ごとの生きたシート表を縦に積む」方式だったが、作品ごとに独立表示が分かれるため
@@ -10,11 +9,10 @@
  * 未使用だったため、それを使って1枚のフラット表（行 = タスク、先頭列 = 作品）へ作り直す。
  * フィルタ・検索・ソート・ページングはすべてサーバー側へ委譲する。
  *
- * 編集は第一段階では行わない（セル直接編集は作品間の名前衝突・単一dbPath前提の汎用機構との
- * 相性が悪いため見送り）。行クリックで既存のタスク詳細サイドバー（MeldexProductionSidebar.
- * openTask、patchEntry経由の管理された書込経路）を開いて編集する。表示設定（フィルタ・
- * ソート）は localStorage にのみ保存し、シートデータ・view configへは一切書き込まない
- * （制作管理シートの暗黙sheet-store化を防止するガードに抵触しないため）。
+ * 「すべて」と各作品は同じ表の保存ビューで、作品ビューは作品フィルターだけを固定する。
+ * 列順・列幅・非表示列・検索以外の絞り込み・並び替えは全ビューで共有し、localStorageへ
+ * 保存する。行編集は既存の管理された詳細サイドバー（patchEntry）を使うため、作品別の
+ * 正本シートを一枚へ物理移行せず、既存データとDropbox同期契約を維持する。
  */
 (function () {
   'use strict';
@@ -25,6 +23,10 @@
   const LEGACY_LEVEL_NAMES = ['単位レベル1', '単位レベル2', '単位レベル3'];
   const LIMIT = 200;
   const SEARCH_DEBOUNCE_MS = 300;
+  const DEFAULT_COLUMN_WIDTHS = Object.freeze({
+    work: 160, name: 220, status: 100, assignee: 120, priority: 90,
+    planned: 180, duration: 130, level1: 120, level2: 120, level3: 120,
+  });
 
   // field はサーバー側 FIELD_ALIASES（Desktop: meldex_production_task_query.py、
   // Cloud: gb-production-management-cloud-task-event-query.js（旧
@@ -58,7 +60,7 @@
     return span;
   }
 
-  /* --- localStorage 表示設定（フィルタ・ソートのみ。シートデータは一切書き込まない） --- */
+  /* --- localStorage 表示設定（シートデータは一切書き込まない） --- */
 
   function _prefsKey(pmRoot) {
     return PREFS_PREFIX + String(pmRoot || '制作管理');
@@ -78,10 +80,40 @@
     try {
       if (typeof localStorage === 'undefined' || !instance._pmRoot) return;
       localStorage.setItem(_prefsKey(instance._pmRoot), JSON.stringify({
-        filters: { work: instance._filters.work, status: instance._filters.status, assignee: instance._filters.assignee },
+        filters: { status: instance._filters.status, assignee: instance._filters.assignee },
         sort: instance._sort,
+        columnOrder: instance._columnOrder,
+        columnWidths: instance._columnWidths,
+        hiddenColumns: instance._hiddenColumns,
       }));
     } catch { /* localStorage 不可時は表示設定の保存だけを諦める（機能自体は動く） */ }
+  }
+
+  function _normalizedColumnOrder(value) {
+    const known = new Set(COLUMN_DEFS.map(column => column.key));
+    const order = Array.isArray(value) ? value.map(String).filter(key => known.has(key)) : [];
+    COLUMN_DEFS.forEach(column => { if (!order.includes(column.key)) order.push(column.key); });
+    return order;
+  }
+
+  function _orderedColumns(instance, includeHidden = false) {
+    const byKey = new Map(COLUMN_DEFS.map(column => [column.key, column]));
+    const hidden = new Set(instance._hiddenColumns || []);
+    const ordered = _normalizedColumnOrder(instance._columnOrder).map(key => byKey.get(key)).filter(Boolean);
+    const visible = includeHidden ? ordered : ordered.filter(column => !hidden.has(column.key));
+    return visible.length ? visible : ordered.slice(0, 1);
+  }
+
+  function _columnWidth(instance, key) {
+    const requested = Number(instance._columnWidths?.[key]);
+    return Number.isFinite(requested) ? Math.max(72, Math.min(640, Math.round(requested))) : DEFAULT_COLUMN_WIDTHS[key] || 120;
+  }
+
+  function _columnLabel(instance, column) {
+    const levelIndex = column.key.startsWith('level') ? Number(column.key.slice(-1)) - 1 : -1;
+    return levelIndex >= 0
+      ? (instance._genericLabels[levelIndex] || DEFAULT_GENERIC_LABELS[levelIndex] || column.label)
+      : column.label;
   }
 
   /* --- 行データの表示用ヘルパー --- */
@@ -203,11 +235,11 @@
     COLUMN_DEFS.forEach((column, index) => {
       const th = instance._headerCells.get(column.key);
       if (!th) return;
-      const levelIndex = column.key.startsWith('level') ? Number(column.key.slice(-1)) - 1 : -1;
-      const label = levelIndex >= 0
-        ? (instance._genericLabels[levelIndex] || DEFAULT_GENERIC_LABELS[levelIndex] || column.label)
-        : column.label;
-      th.textContent = label + _sortIndicator(instance, column.field);
+      const label = _columnLabel(instance, column);
+      const labelEl = th.querySelector?.('.gb-production-task-sheet-header-label');
+      if (labelEl) labelEl.textContent = label + _sortIndicator(instance, column.field);
+      const resizeEl = th.querySelector?.('.gb-production-task-sheet-resize');
+      if (resizeEl) resizeEl.setAttribute('aria-label', `${label}の列幅を変更`);
       if (column.sortable) {
         th.setAttribute('aria-sort', instance._sort.field === column.field
           ? (instance._sort.direction === 'desc' ? 'descending' : 'ascending')
@@ -217,8 +249,108 @@
     });
   }
 
+  function _setColumnWidth(instance, key, width, persist = true) {
+    const next = _columnWidth({ _columnWidths: { [key]: width } }, key);
+    instance._columnWidths[key] = next;
+    instance._containerEl?.querySelectorAll?.('[data-column-key]').forEach(cell => {
+      if (cell.dataset.columnKey !== key) return;
+      cell.style.width = next + 'px';
+      cell.style.minWidth = next + 'px';
+      cell.style.maxWidth = next + 'px';
+    });
+    if (persist) _savePrefs(instance);
+  }
+
+  function _renderColumnLayout(instance) {
+    if (!instance._headRowEl || !instance._selectHeaderEl) return;
+    const headers = _orderedColumns(instance).map(column => instance._headerCells.get(column.key)).filter(Boolean);
+    headers.forEach(th => {
+      const width = _columnWidth(instance, th.dataset.columnKey);
+      th.style.width = width + 'px';
+      th.style.minWidth = width + 'px';
+      th.style.maxWidth = width + 'px';
+    });
+    instance._headRowEl.replaceChildren(instance._selectHeaderEl, ...headers);
+    _renderHeaderLabels(instance);
+    _renderTable(instance);
+  }
+
+  function _moveColumn(instance, fromKey, targetKey, before) {
+    if (!fromKey || !targetKey || fromKey === targetKey) return false;
+    const order = _normalizedColumnOrder(instance._columnOrder);
+    const fromIndex = order.indexOf(fromKey);
+    const targetIndex = order.indexOf(targetKey);
+    if (fromIndex < 0 || targetIndex < 0) return false;
+    order.splice(fromIndex, 1);
+    const nextTarget = order.indexOf(targetKey);
+    order.splice(nextTarget + (before ? 0 : 1), 0, fromKey);
+    instance._columnOrder = order;
+    _savePrefs(instance);
+    _renderColumnLayout(instance);
+    return true;
+  }
+
+  function _autoFitColumns(instance) {
+    _orderedColumns(instance).forEach(column => {
+      const label = _columnLabel(instance, column);
+      let maxChars = String(label || '').length + 3;
+      instance._rows.slice(0, 200).forEach(row => { maxChars = Math.max(maxChars, _cellText(instance, row, column).length); });
+      _setColumnWidth(instance, column.key, Math.max(72, Math.min(360, maxChars * 8 + 24)), false);
+    });
+    _savePrefs(instance);
+  }
+
+  function _showColumnSettings(instance) {
+    if (!window.GBUI?.createModal) {
+      _notify('列見出しをドラッグして並べ替え、右端をドラッグして列幅を変更できます');
+      return null;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'gb-production-task-sheet-column-settings';
+    const render = () => {
+      panel.replaceChildren();
+      _orderedColumns(instance, true).forEach((column, index, columns) => {
+        const row = document.createElement('div');
+        row.className = 'gb-production-task-sheet-column-setting-row';
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !instance._hiddenColumns.includes(column.key);
+        checkbox.disabled = checkbox.checked && instance._hiddenColumns.length >= COLUMN_DEFS.length - 1;
+        checkbox.addEventListener('change', () => {
+          const hidden = new Set(instance._hiddenColumns);
+          if (checkbox.checked) hidden.delete(column.key); else hidden.add(column.key);
+          if (hidden.size >= COLUMN_DEFS.length) return;
+          instance._hiddenColumns = [...hidden];
+          _savePrefs(instance);
+          _renderColumnLayout(instance);
+          render();
+        });
+        label.append(checkbox, document.createTextNode(_columnLabel(instance, column) || column.key));
+        const up = document.createElement('button');
+        up.type = 'button'; up.textContent = '上へ'; up.disabled = index === 0;
+        up.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index - 1]?.key, true); render(); });
+        const down = document.createElement('button');
+        down.type = 'button'; down.textContent = '下へ'; down.disabled = index === columns.length - 1;
+        down.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index + 1]?.key, false); render(); });
+        row.append(label, up, down);
+        panel.appendChild(row);
+      });
+    };
+    render();
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = '閉じる';
+    const autoFit = document.createElement('button'); autoFit.type = 'button'; autoFit.textContent = '列幅を自動調整';
+    const modal = window.GBUI.createModal({ title: '列の表示と順序', body: panel, footer: [autoFit, close], closeLabel: '列設定を閉じる' });
+    close.addEventListener('click', () => modal.close('close'));
+    autoFit.addEventListener('click', () => { _autoFitColumns(instance); render(); });
+    document.body.appendChild(modal.overlay);
+    window.GBModalShell?.enhanceOverlay?.(modal.overlay);
+    return modal;
+  }
+
   function _renderStatus(instance) {
     if (!instance._statusEl) return;
+    instance._statusEl.setAttribute('aria-busy', instance._loading ? 'true' : 'false');
     if (instance._errorText) {
       instance._statusEl.textContent = instance._errorText;
       instance._statusEl.classList.add('is-error');
@@ -256,11 +388,8 @@
     workSelect.className = 'gb-production-all-flat-filter';
     workSelect.dataset.e2eId = 'gb-production-all-flat-filter-work';
     workSelect.setAttribute('aria-label', '作品で絞り込み');
-    workSelect.addEventListener('change', () => {
-      instance._filters.work = workSelect.value;
-      _savePrefs(instance);
-      _fetchRows(instance, { append: false });
-    });
+    workSelect.hidden = true;
+    workSelect.addEventListener('change', () => instance.onSelectView?.(workSelect.value));
     instance._workSelectEl = workSelect;
 
     const statusSelect = document.createElement('select');
@@ -290,6 +419,7 @@
     status.dataset.e2eId = 'gb-production-all-flat-status';
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
+    status.setAttribute('aria-busy', 'true');
     instance._statusEl = status;
 
     toolbar.append(search, workSelect, statusSelect, assigneeSelect, status);
@@ -324,17 +454,25 @@
     });
     selectTh.appendChild(selectAll);
     instance._selectAllEl = selectAll;
+    instance._selectHeaderEl = selectTh;
+    instance._headRowEl = headRow;
     headRow.appendChild(selectTh);
 
     COLUMN_DEFS.forEach(column => {
       const th = document.createElement('th');
       th.dataset.sortField = column.field;
+      th.dataset.columnKey = column.key;
+      const initialWidth = _columnWidth(instance, column.key);
+      th.style.width = initialWidth + 'px';
+      th.style.minWidth = initialWidth + 'px';
+      th.style.maxWidth = initialWidth + 'px';
       th.dataset.e2eId = 'gb-production-all-flat-sort-' + column.key;
       th.setAttribute('role', 'columnheader');
       if (column.sortable) {
         th.className = 'gb-production-all-flat-sortable';
         th.tabIndex = 0;
         const activate = () => {
+          if (instance._suppressSortClick) { instance._suppressSortClick = false; return; }
           if (instance._sort.field === column.field) {
             instance._sort.direction = instance._sort.direction === 'asc' ? 'desc' : 'asc';
           } else {
@@ -348,9 +486,45 @@
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
         });
       }
+      const label = document.createElement('span');
+      label.className = 'gb-production-task-sheet-header-label';
+      th.appendChild(label);
+      th.draggable = true;
+      th.addEventListener('dragstart', event => {
+        if (event.target.closest?.('.gb-production-task-sheet-resize')) { event.preventDefault(); return; }
+        event.dataTransfer?.setData('text/x-production-task-column', column.key);
+      });
+      th.addEventListener('dragover', event => { event.preventDefault(); });
+      th.addEventListener('drop', event => {
+        event.preventDefault();
+        const fromKey = event.dataTransfer?.getData('text/x-production-task-column');
+        const rect = th.getBoundingClientRect();
+        instance._suppressSortClick = true;
+        _moveColumn(instance, fromKey, column.key, event.clientX < rect.left + rect.width / 2);
+      });
+      const resize = document.createElement('span');
+      resize.className = 'gb-production-task-sheet-resize';
+      resize.dataset.e2eId = 'gb-production-task-sheet-resize-' + column.key;
+      resize.setAttribute('role', 'separator');
+      resize.setAttribute('aria-label', `${column.label || column.key}の列幅を変更`);
+      resize.addEventListener('pointerdown', event => {
+        event.preventDefault(); event.stopPropagation();
+        const startX = event.clientX;
+        const startWidth = _columnWidth(instance, column.key);
+        const move = moveEvent => _setColumnWidth(instance, column.key, startWidth + moveEvent.clientX - startX, false);
+        const up = () => {
+          document.removeEventListener('pointermove', move, true);
+          document.removeEventListener('pointerup', up, true);
+          _savePrefs(instance);
+        };
+        document.addEventListener('pointermove', move, true);
+        document.addEventListener('pointerup', up, true);
+      });
+      resize.addEventListener('click', event => event.stopPropagation());
+      th.appendChild(resize);
       instance._headerCells.set(column.key, th);
-      headRow.appendChild(th);
     });
+    _orderedColumns(instance).forEach(column => headRow.appendChild(instance._headerCells.get(column.key)));
     thead.appendChild(headRow);
     table.appendChild(thead);
 
@@ -413,8 +587,13 @@
     selectTd.appendChild(checkbox);
     tr.appendChild(selectTd);
 
-    COLUMN_DEFS.forEach(column => {
+    _orderedColumns(instance).forEach(column => {
       const td = document.createElement('td');
+      td.dataset.columnKey = column.key;
+      const width = _columnWidth(instance, column.key);
+      td.style.width = width + 'px';
+      td.style.minWidth = width + 'px';
+      td.style.maxWidth = width + 'px';
       if (column.key === 'work') {
         const text = document.createElement('span');
         text.className = 'gb-production-all-flat-work-text';
@@ -450,7 +629,7 @@
     if (!instance._rows.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = COLUMN_DEFS.length + 1;
+      td.colSpan = _orderedColumns(instance).length + 1;
       td.className = 'gb-production-all-flat-no-rows';
       td.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
       tr.appendChild(td);
@@ -554,20 +733,27 @@
       if (title) instance._sheetsByWork.set(title, sheet);
     });
     const pmRoot = String(opts?.pmRoot || instance._pmRoot || '');
+    const previousWorkView = instance._filters.work;
     if (pmRoot && pmRoot !== instance._pmRoot) {
       instance._pmRoot = pmRoot;
       const prefs = _loadPrefs(pmRoot);
       if (prefs?.filters) {
-        instance._filters.work = String(prefs.filters.work || '');
         instance._filters.status = String(prefs.filters.status || '');
         instance._filters.assignee = String(prefs.filters.assignee || '');
       }
       if (prefs?.sort?.field) {
         instance._sort = { field: String(prefs.sort.field), direction: prefs.sort.direction === 'desc' ? 'desc' : 'asc' };
       }
+      instance._columnOrder = _normalizedColumnOrder(prefs?.columnOrder);
+      instance._columnWidths = { ...(prefs?.columnWidths || {}) };
+      instance._hiddenColumns = Array.isArray(prefs?.hiddenColumns)
+        ? prefs.hiddenColumns.map(String).filter(key => COLUMN_DEFS.some(column => column.key === key)).slice(0, COLUMN_DEFS.length - 1)
+        : [];
     } else if (pmRoot) {
       instance._pmRoot = pmRoot;
     }
+    instance._filters.work = String(opts?.viewWork || '');
+    _renderColumnLayout(instance);
     instance._emptyEl.hidden = list.length > 0;
     _renderFilterOptions(instance);
     _renderHeaderLabels(instance);
@@ -578,7 +764,7 @@
       _renderStatus(instance);
       return true;
     }
-    if (opts?.refresh === true || !instance._hasLoadedOnce) {
+    if (opts?.refresh === true || !instance._hasLoadedOnce || previousWorkView !== instance._filters.work) {
       return _fetchRows(instance, { append: false });
     }
     return true;
@@ -595,11 +781,14 @@
       idSuffix,
       onOpenWork: typeof options?.onOpenWork === 'function' ? options.onOpenWork : null,
       onOpenTask: typeof options?.onOpenTask === 'function' ? options.onOpenTask : null,
+      onSelectView: typeof options?.onSelectView === 'function' ? options.onSelectView : null,
       _mounted: false,
       _destroyed: false,
       _containerEl: null,
       _emptyEl: null,
       _headerCells: new Map(),
+      _headRowEl: null,
+      _selectHeaderEl: null,
       _tbodyEl: null,
       _selectAllEl: null,
       _searchEl: null,
@@ -619,6 +808,9 @@
       _genericLabels: DEFAULT_GENERIC_LABELS.slice(),
       _filters: { work: '', status: '', assignee: '', q: '' },
       _sort: { field: 'work_title', direction: 'asc' },
+      _columnOrder: _normalizedColumnOrder(),
+      _columnWidths: {},
+      _hiddenColumns: [],
       _pmRoot: '',
       _total: 0,
       _loadSeq: 0,
@@ -664,6 +856,16 @@
 
     instance.open = function (sheets, opts) { return _open(instance, sheets, opts); };
     instance.refresh = function () { return _refresh(instance); };
+    instance.isReady = function () { return instance._mounted && instance._hasLoadedOnce && !instance._loading; };
+    instance.setView = function (workTitle) {
+      instance._filters.work = String(workTitle || '');
+      _renderFilterOptions(instance);
+      return _fetchRows(instance, { append: false });
+    };
+    instance.autoFitColumns = function () { _autoFitColumns(instance); return true; };
+    instance.showColumnDisplayOrder = function () { return _showColumnSettings(instance); };
+    instance.focusFilters = function () { instance._statusSelectEl?.focus(); return true; };
+    instance.focusSort = function () { instance._headerCells.get(_orderedColumns(instance)[0]?.key)?.focus(); return true; };
 
     instance.applySchedulerProposal = function (proposal) {
       const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(instance._baseRows, proposal);

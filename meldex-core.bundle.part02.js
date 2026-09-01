@@ -1,3 +1,4 @@
+  bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
   paperclip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
@@ -132,14 +133,16 @@ const UI_TYPE_ICONS = {
   scriptnote: 'bookOpenText',
   board: 'presentation',
   calendar: 'calendar',
-  'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
   subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
+  information: 'info',
+  backlinks: 'fileSymlink',
+  'file-theme': 'palette',
   chat: 'messagesSquare',
   tags: 'tag',
-  annotation: 'stickyNote',
+  annotation: 'squarePen',
   sticky: 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
@@ -224,6 +227,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -770,7 +774,7 @@ function initIframeMarkup(scrollContainer) {
   }
 
   let _annLastSaveFailureAt = 0;
-  function _reportMarkupSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
       showStatus(message, true);
@@ -796,7 +800,7 @@ function initIframeMarkup(scrollContainer) {
     return template.innerHTML;
   }
 
-  function _parseMarkupAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
     const raw = item?.data;
     if (raw == null || raw === '') return {};
     if (typeof raw !== 'string') return raw || {};
@@ -818,7 +822,7 @@ function initIframeMarkup(scrollContainer) {
     if (!boardMode || typeof apiPost !== 'function') return false;
     apiPost('/annotations', payload).then((res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? '注釈: 付箋追加' : '注釈: 描画追加';
+        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
         _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
       }
       onSaved?.(res);
@@ -837,7 +841,7 @@ function initIframeMarkup(scrollContainer) {
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
-      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? '注釈: 色変更' : '注釈: 付箋更新';
+      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
       Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
     } else {
       apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
@@ -852,10 +856,10 @@ function initIframeMarkup(scrollContainer) {
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
       onDeleted?.();
     })().catch((error) => {
-      _reportMarkupSaveFailure(error, '注釈を削除できませんでした');
+      _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
     });
     return true;
@@ -894,7 +898,3 @@ function initIframeMarkup(scrollContainer) {
       note.style.pointerEvents = _ann.active ? 'auto' : 'none';
     });
   }
-
-  function _confirmEmbeddedNoteDelete(onOk) {
-    const message = 'この付箋を削除しますか？';
-    if (typeof showConfirmDialog === 'function') {

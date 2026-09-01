@@ -413,26 +413,12 @@ connections:
 \`\`\`
 - cards を nodes 配列だけに詰め込まない。positions / ids / sizes と本文の見出しカードを合わせて作る。リンクカードやスタイル情報を追加する場合も、既存ファイルの構造を読んでから壊さず更新する
 
-### 4. スマートシート (.smart-db.json)
-複数シートの横断ビュー・絞り込み・ダッシュボードに使用。実データ本体ではなく、参照元とビュー設定を持つJSON。
-**基本構造**:
-\`\`\`json
-{
-  "type": "smart-db",
-  "title": "スマートシート名",
-  "sources": [{"kind": "sheet", "path": "Characters"}],
-  "views": [],
-  "activeView": "table"
-}
-\`\`\`
-- 通常シートに入れるべきエントリを .smart-db.json に直接書かない。先に create_sheet / create_entity / add_value で元シートを作る
-
-### 5. カレンダーDB
+### 4. カレンダーDB
 イベント・スケジュール・締切管理・学習計画など、**日時情報を伴う管理**に使用。
 read_databaseで取得可能（calendar_db: trueフラグあり）。
 
-### 6. 通常のMarkdownノート (.md)
-上記に当てはまらない自由記述（世界観設定・あらすじ・エッセイ・注釈・ドキュメント等）。
+### 5. 通常のMarkdownノート (.md)
+上記に当てはまらない自由記述（世界観設定・あらすじ・エッセイ・アノテート・ドキュメント等）。
 
 ## ツール（Function Calling）
 
@@ -476,7 +462,7 @@ read_databaseで取得可能（calendar_db: trueフラグあり）。
 
 主なマニュアル:
 - **Meldex マニュアル.md** / **01_はじめに/クイックスタート.md** / **01_はじめに/画面の見方.md** / **01_はじめに/UI用語ガイド.md**
-- **02_ツール別ガイド/フォルダツリー マニュアル.md** / **ノートエディタ マニュアル.md** / **シナリオエディタ マニュアル.md** / **シート マニュアル.md** / **スマートシート マニュアル.md**
+- **02_ツール別ガイド/フォルダツリー マニュアル.md** / **ノートエディタ マニュアル.md** / **シナリオエディタ マニュアル.md** / **シート マニュアル.md**
 - **02_ツール別ガイド/ボード マニュアル.md** / **カレンダー マニュアル.md** / **オプションパネル マニュアル.md** / **パネルレイアウト マニュアル.md** / **バージョン管理 マニュアル.md**
 - **03_設定と連携/LLM設定.md** / **03_設定と連携/チャットLLM ツールガイド.md** / **03_設定と連携/LLMプライバシーガイド.md**
 - **03_設定と連携/Chrome拡張機能の設定.md** / **CalDAVカレンダー同期の設定.md** / **画像ツールの設定.md** / **スマホ・タブレットからの利用.md**
@@ -633,6 +619,7 @@ async function openFileChat(targetPath) {
         if (!restoreStillCurrent()) return false;
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
+        _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
         _setChatSessionTitle(data.frontmatter?.title || item.title || '');
@@ -671,6 +658,7 @@ async function openFileChat(targetPath) {
             // 一致するセッションを復元
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
+            _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
             _setChatSessionTitle(data.frontmatter?.title || '');
@@ -888,8 +876,10 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     // 404フォールバック: 存在しないチャット → 穏やかに通知してリセット
     _chatState.messages = [];
     _chatState.sessionId = '';
+    _chatState.versionTargetPath = '';
     _chatState.targetPath = '';
     _chatState.lastImplicitTargetPath = '';
+    _chatState.versionTargetPath = '';
     window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
@@ -940,6 +930,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   // セッションIDをファイル名から復元
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
+  _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
   if (_chatState.targetPath && typeof _chatSetCurrentTargetPath === 'function') {
@@ -979,8 +970,10 @@ function chatClear() {
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
+  _chatState.versionTargetPath = '';
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
+  _chatState.versionTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -1051,7 +1044,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    await apiPost('/chat/save', _chatPostPayload({
+    const result = await apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -1064,6 +1057,11 @@ async function chatAutoSave(options = {}) {
       user: typeof getUsername === 'function' ? getUsername() : '',
       ...(knowledgeAutomation ? { knowledge_automation: knowledgeAutomation } : {}),
     }));
+    if (savingCurrentSession) {
+      _chatState.versionTargetPath = String(result?.versionTargetPath || _chatState.versionTargetPath || '');
+      _chatState.lastAutoVersionCreated = !!result?.autoVersionCreated;
+      _chatState.lastAutoVersionName = String(result?.autoVersionName || '');
+    }
     return true;
   } catch (e) {
     if (!silent) throw e;
@@ -1083,6 +1081,71 @@ function _chatYamlQuote(value) {
 function _chatHtmlEscape(value) {
   return MeldexEscape.html(value);
 }
+
+async function openCurrentChatVersions() {
+  if (!_chatState.messages.length) {
+    if (typeof showStatus === 'function') showStatus('版を表示するチャットがありません', true);
+    return false;
+  }
+  const saved = await chatAutoSave({ silent: false });
+  const path = String(_chatState.versionTargetPath || '');
+  if (!saved || !path) {
+    if (typeof showStatus === 'function') showStatus('チャットを保存してからバージョン管理を開いてください', true);
+    return false;
+  }
+  if (typeof openVersionTab !== 'function') {
+    if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
+    return false;
+  }
+  openVersionTab(path, 'file');
+  return true;
+}
+
+(function _installChatVersionButton() {
+  const install = () => {
+    if (document.querySelector('[data-chat-version-button]')) return;
+    const title = document.getElementById('chat-title-combo');
+    const header = title?.parentElement;
+    if (!header) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-xs';
+    button.dataset.chatVersionButton = '';
+    button.dataset.e2eId = 'chat-open-version-history';
+    button.title = 'このチャットのバージョン管理';
+    button.setAttribute('aria-label', 'このチャットのバージョン管理');
+    button.innerHTML = typeof lucide === 'function' ? lucide('gitBranch', 12) : '版';
+    button.addEventListener('click', async () => {
+      try {
+        await openCurrentChatVersions();
+      } catch (error) {
+        if (typeof showStatus === 'function') {
+          showStatus('チャットのバージョン管理を開けませんでした: ' + (error?.message || error), true);
+        }
+      }
+    });
+    title.insertAdjacentElement('afterend', button);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
+  else install();
+})();
+
+window.MeldexChatVersionTarget = Object.freeze({
+  async flushVersionTarget(path) {
+    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath)) return false;
+    return !!(await chatAutoSave({ silent: false }));
+  },
+  async reloadVersionTarget(path) {
+    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath) || !_chatState.sessionId) return false;
+    return !!(await openSavedChat(
+      _chatSavedPathForSession(_chatState.sessionId),
+      '',
+      typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : undefined,
+    ));
+  },
+});
 
 function _chatExportRoleLabel(message) {
   const role = String(message?.role || '').toLowerCase();

@@ -26,7 +26,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-var fallbackVersion = 'v0.7.358 BETA';
+var fallbackVersion = 'v0.7.365 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -289,7 +289,7 @@ var fallbackVersion = 'v0.7.358 BETA';
         <div class="grid feature-overview">
           <article class="item">
             <h3>作る</h3>
-            <p>様々な形で、設定資料を作成したり、企画や構成を練ることができます。人物・用語・進行状況などは表で整理でき、アイデアや構成はカードを線でつないだマインドマップやハコ書きとして組み立てられます。</p>
+            <p>様々な形で、設定資料を作成したり、企画や構成を練ることができます。人物・用語・進行状況などは表で整理でき、アイデアや構成はトピックを線でつないだマインドマップやハコ書きとして組み立てられます。</p>
           </article>
           <article class="item">
             <h3>集める</h3>
@@ -352,9 +352,9 @@ var fallbackVersion = 'v0.7.358 BETA';
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>ボード</h3>
             <ul>
-            <li>カードとラインを自由に配置して、関係図・マインドマップ・伏線マップを作れます。</li>
-            <li>ノートやシートへのリンクカードを置けるので、全体の構成を眺めながら、カードの中身をパネルで確認できます。</li>
-            <li>画像は「埋め込み」と「リンク参照」を選べます。シートやスマートシートからカードを一括取込できます。</li>
+            <li>トピックとラインを自由に配置して、関係図・マインドマップ・伏線マップを作れます。</li>
+            <li>ノートやシートへのリンクトピックを置けるので、全体の構成を眺めながら、トピックの中身をパネルで確認できます。</li>
+            <li>画像は「埋め込み」と「リンク参照」を選べます。シートからトピックを一括取込できます。</li>
             </ul>
           </article>
           <article class="item">
@@ -366,11 +366,11 @@ var fallbackVersion = 'v0.7.358 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="9" ry="3.5"/><path d="M3 12a9 3.5 0 0 0 5.16 3.18"/><path d="M3 5.5v13c0 1.93 4.03 3.5 9 3.5"/><path d="M21 5.5v4"/><circle cx="17.5" cy="16.5" r="3.5"/><path d="m21 20-1.5-1.5"/></svg>スマートシート</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="9" ry="3.5"/><path d="M3 12a9 3.5 0 0 0 5.16 3.18"/><path d="M3 5.5v13c0 1.93 4.03 3.5 9 3.5"/><path d="M21 5.5v4"/><circle cx="17.5" cy="16.5" r="3.5"/><path d="m21 20-1.5-1.5"/></svg>トピックのリンク複製</h3>
             <ul>
-            <li>複数のシートやフォルダを横断して、条件に合うエントリだけを自動で集めます。</li>
-            <li>数式・集計に対応し、ダッシュボードビューで一覧化できます。</li>
-            <li>絞り込み条件を保存して、いつでも最新の結果を表示できます。</li>
+            <li>同じトピックを、複数のシートやボードへリンク複製できます。</li>
+            <li>トピックの値は一つの正本を共有し、配置先の同じ列だけへ表示します。</li>
+            <li>トピック詳細から、すべての値と登録先・リンク先を確認して移動できます。</li>
             </ul>
           </article>
         </div>
@@ -388,7 +388,7 @@ var fallbackVersion = 'v0.7.358 BETA';
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="14" x="3" y="3" rx="2"/><path d="M4 21h1"/><path d="M9 21h1"/><path d="M14 21h1"/><path d="M19 21h1"/></svg>ビューワー</h3>
             <ul>
             <li>画像・動画・音声・PDF・HTMLを表示できます。</li>
-            <li>表示中のファイルに注釈を書き込めます。</li>
+            <li>表示中のファイルにアノテートを書き込めます。</li>
             <li>メディア一覧で、フォルダ内の画像・動画を続けて確認できます。</li>
             </ul>
           </article>
@@ -409,14 +409,6 @@ var fallbackVersion = 'v0.7.358 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></svg>タイマー</h3>
-            <ul>
-            <li>ストップウォッチ・カウントダウン・ポモドーロの3モードを備えます。</li>
-            <li>通知と繰り返し設定に対応します。</li>
-            <li>スケジュールと連動でき、独立ウィンドウでも開けます。</li>
-            </ul>
-          </article>
-          <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>操作履歴</h3>
             <ul>
             <li>直近の操作を一覧から取り消し・やり直しできます。</li>
@@ -425,11 +417,11 @@ var fallbackVersion = 'v0.7.358 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/></svg>注釈</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>アノテート</h3>
             <ul>
             <li>どの画面にも手描きの線・マーカー・付箋を重ねられます。</li>
             <li>スタンプ・絵文字や、色・不透明度・線幅の調整に対応します。</li>
-            <li>注釈パネルで、全体の注釈を一覧して移動できます。</li>
+            <li>アノテートパネルで、全体のアノテートを一覧して移動できます。</li>
             </ul>
           </article>
           <article class="item">
@@ -528,11 +520,11 @@ var fallbackVersion = 'v0.7.358 BETA';
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.358 BETA / 最新</option>
+              <option value="0">v0.7.365 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.358 BETA</strong></span>
+              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.365 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -572,9 +564,9 @@ var fallbackVersion = 'v0.7.358 BETA';
     <section class="section" id="standalone-apps">
       <div class="section-inner">
         <h2>必要なツールだけを単独で使う</h2>
-        <p>ビューワー、タイマー、クイックメモは、それぞれ単独でも利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadでは各ツールをホーム画面へ追加できます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p>
+        <p>ビューワーとクイックメモは、それぞれ単独でも利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadでは各ツールをホーム画面へ追加できます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p>
         <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/viewer/">ビューワー</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p></noscript>
+        <noscript><p><a href="apps/viewer/">ビューワー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p></noscript>
         <ul class="notes">
           <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
           <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
@@ -655,8 +647,8 @@ var fallbackVersion = 'v0.7.358 BETA';
             <p>Meldexは個人開発のソフトウェアです。<a href="manual.html">Webマニュアル</a>は、Meldexと別ウィンドウで並べて表示できます。個別の質問対応、導入支援、利用環境ごとの不具合調査などのサポートは提供していません。不具合や要望は送信できますが、返信や対応を保証するものではありません。</p>
           </article>
           <article class="item">
-            <h3>LLMを利用した内容</h3>
-            <p>この配布ページとマニュアルは、LLMを利用して作成・更新しています。開発者がすべてのページと記述を個別に確認できていない場合があります。重要な操作や費用・外部サービス設定は、実際の画面や公式情報と照合してください。</p>
+            <h3>AIを利用した内容</h3>
+            <p>この配布ページとマニュアルは、AIを利用して作成・更新しています。開発者がすべてのページと記述を個別に確認できていない場合があります。そのため、記載内容が実際のMeldexの画面や動作と異なる場合があります。あらかじめご了承ください。重要な操作や費用・外部サービス設定を行う際は、実際の画面に表示される内容を確認してください。</p>
           </article>
           <article class="item">
             <h3>オープンソース化と更新</h3>
@@ -664,9 +656,52 @@ var fallbackVersion = 'v0.7.358 BETA';
           </article>
           <article class="item">
             <h3>意見・不具合を記録・送信</h3>
-            <p>デスクトップ版で送信先が設定済みの場合、Meldex内から報告できます。通信に失敗した報告は端末内の送信待ちに保存され、次回起動時に再送されます。送信先が未設定の場合とクラウド版では、端末内への記録のみです。</p>
+            <p>デスクトップ版とクラウド版のMeldex内から、不具合・要望・質問を開発者へ送信できます。通信に失敗した報告は端末内の送信待ちに保存され、次回起動時またはオンライン復帰後に再送されます。このページ下部のフォームからも送信できます。</p>
           </article>
         </div>
+        <section class="feedback-form-panel" aria-labelledby="public-feedback-title">
+          <div class="feedback-form-intro">
+            <h3 id="public-feedback-title">開発者へメッセージを送る</h3>
+            <p>不具合、改善してほしい点、要望、質問を送信できます。返信や対応を保証するものではありません。</p>
+          </div>
+          <form id="public-feedback-form" class="feedback-form" novalidate>
+            <div class="feedback-form-grid">
+              <label class="feedback-field">
+                <span>種類 <span aria-hidden="true">*</span></span>
+                <select name="reportType" required>
+                  <option value="bug">不具合</option>
+                  <option value="request">要望・改善案</option>
+                  <option value="question">質問・その他</option>
+                </select>
+              </label>
+              <label class="feedback-field">
+                <span>件名 <span aria-hidden="true">*</span></span>
+                <input name="subject" type="text" maxlength="160" autocomplete="off" required placeholder="例: Cloud版でフォーム送信後に画面が戻らない">
+              </label>
+              <label class="feedback-field feedback-field-wide">
+                <span>内容 <span aria-hidden="true">*</span></span>
+                <textarea name="body" rows="7" maxlength="8000" required placeholder="起きたこと、再現手順、本来どう動いてほしいかなど"></textarea>
+              </label>
+              <label class="feedback-field feedback-field-wide">
+                <span>利用環境（任意）</span>
+                <input name="environment" type="text" maxlength="1000" autocomplete="off" placeholder="例: Meldex Cloud / iPad Safari">
+              </label>
+            </div>
+            <label class="feedback-honeypot" aria-hidden="true">
+              <span>ウェブサイト</span>
+              <input name="website" type="text" tabindex="-1" autocomplete="off">
+            </label>
+            <label class="feedback-consent">
+              <input name="consent" type="checkbox" required>
+              <span>入力内容が開発者の受信箱へ送信されることを確認しました。作品本文、パスワード、APIキーなどの秘密情報や個人情報は入力していません。</span>
+            </label>
+            <div class="feedback-actions">
+              <button class="button primary" id="public-feedback-submit" type="submit">開発者へ送信</button>
+              <span id="public-feedback-queue" class="feedback-queue">送信待ちを確認しています…</span>
+            </div>
+            <p id="public-feedback-status" class="feedback-status" role="status" aria-live="polite">必須項目を入力して送信してください。</p>
+          </form>
+        </section>
       </div>
     </section>
     <section class="section" id="changelog">
@@ -794,5 +829,7 @@ var fallbackVersion = 'v0.7.358 BETA';
     <span>Meldex BETA</span>
     <span>Meldex BETA 配布ページ</span>
   </footer>
+  <script src="debugger-manual-report-client-web.js"></script>
+  <script src="public-feedback.js"></script>
 </body>
 </html>

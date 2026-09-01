@@ -339,39 +339,14 @@ function showDbSortMenu(e, ctxOverride, dbPathOverride) {
   }, 0);
 }
 
-// 日時タイプ選択時のサブメニュー項目（通常/作成日時/更新日時）。
-// 「列タイプ選択ポップアップ（＋ボタン）」と「左/右に列を挿入」の date 項目から共有する。
-function _makeDateColumnMenuChildren(refProp, direction, ctxOrDbPath) {
-  const variants = [
-    { label: '日時', initialName: '日時', cfg: { type: 'date' } },
-    { label: '作成日時', initialName: '作成日時', cfg: { type: 'date', source: 'created' } },
-    { label: '更新日時', initialName: '更新日時', cfg: { type: 'date', source: 'modified' } },
-  ];
-  return variants.map(v => ({
-    label: v.label,
-    action: () => {
-      if (typeof insertPropertyInline === 'function') {
-        insertPropertyInline(refProp, direction, ctxOrDbPath, { ...v.cfg, initialName: v.initialName });
-      }
-    },
-  }));
-}
-
 // 「左/右に列を挿入」および「列タイプ選択ポップアップ（＋ボタン）」共通の子項目（列タイプ一覧）。
 // 選んだ列タイプでその側に列を挿入する。relation/rollup/formula 等は空で作られ、
-// 挿入直後のインラインリネーム後に「列タイプの設定...」で詳細設定する（型変更メニューと同じ流儀）。
-// date のみ、通常/作成日時/更新日時を選べるサブメニューを展開する（attachHoverSubmenu、_renderColMenuItems 経由）。
+// 挿入直後のインラインリネーム後にオプションパネルの列設定で詳細設定する。
+// date の source（通常/作成日時/更新日時）は挿入メニューでは選ばず、列設定タブへ一本化する。
 // refProp が現在の列順に存在しない場合（例: null）は末尾に追加される（insertPropertyInline の仕様）。
 function _makeInsertColumnTypeChildren(refProp, direction, ctxOrDbPath) {
   const typeItems = typeof getPropertyTypeMenuItems === 'function' ? getPropertyTypeMenuItems() : [];
   return typeItems.map(ti => {
-    if (ti.type === 'date') {
-      return {
-        type: 'submenu',
-        label: lucide(ti.icon, 14) + ' ' + ti.label,
-        children: _makeDateColumnMenuChildren(refProp, direction, ctxOrDbPath),
-      };
-    }
     const cfg = ti.type === 'image'
       ? { type: 'image', initialName: ti.label, options: { max_count: null, accept: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'], thumbnail_size: 256 } }
       : { type: ti.type, initialName: ti.label };
@@ -415,7 +390,16 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
   if (!productionSchemaLocked) {
     _addMenuRenameInput(menu, propName, async (newName) => {
       if (typeof renameDbProperty === 'function') {
-        await renameDbProperty(dbPath, propName, newName, ctx);
+        if (window.MeldexTopicPlacementUI?.renameColumn) {
+          const renamed = await window.MeldexTopicPlacementUI.renameColumn({
+            dbPath, oldName: propName, newName, ctx, viewId: ctx?.currentViewId,
+            rename: () => renameDbProperty(dbPath, propName, newName, ctx),
+            rollback: () => renameDbProperty(dbPath, newName, propName, ctx),
+          });
+          if (!renamed) return;
+        } else {
+          await renameDbProperty(dbPath, propName, newName, ctx);
+        }
       }
       // 列選択状態の追従（選択列がリネームされた場合）
       if (typeof _getSelectedColumns === 'function' && typeof _setSelectedColumns === 'function') {
@@ -477,8 +461,8 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
         }
       }))
     },
-    // プロパティ型の設定（relation先DB・数式・ボタン等の詳細設定）
-    { label: lucide('settings', 14) + ' 列タイプの設定...', action: () => showPropertyTypeModal(propName, dbPath, ctx) },
+    // 列の詳細設定は右オプションパネルへ一本化する。
+    { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, propName, { switchTab: true }) },
     { type: 'sep' },
     // 左/右に列を挿入（トップレベル。各サブメニューで挿入する列タイプを選ぶ）
     ...(!productionWriteBlocked ? [

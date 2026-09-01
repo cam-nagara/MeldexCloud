@@ -46,6 +46,7 @@
 .db-column-filter-popover button:disabled {
   opacity: 0.45;
   cursor: default;
+  border-color: transparent;
 }
 
 .db-column-filter-popover button.primary {

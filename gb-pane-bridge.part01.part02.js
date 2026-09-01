@@ -34,6 +34,11 @@
     let newView = null;
     const isPaneManagedType = (type) => !!(type && (LEGACY_CONTAINERS[type] || COMPONENT_TYPES.has(type)));
     const isWorkManagedType = (type) => isPaneManagedType(type) && !_isToolbarUtilityView(type);
+    const resolvedTabView = (tab) => {
+      const rawType = tab?.type || '';
+      if (!DB_SUB_VIEWS[rawType] || typeof _resolveDbPaneDisplayView !== 'function') return rawType;
+      return _resolveDbPaneDisplayView(rawType, tab);
+    };
     // まずアクティブペインのタブをチェック
     const paneId = GBLayout.activePane;
     if (paneId) {
@@ -41,7 +46,7 @@
       if (paneInfo) {
         const activeTab = paneInfo.node.tabs?.[paneInfo.node.activeTabIndex];
         if (isWorkManagedType(activeTab?.type)) {
-          newView = activeTab.type;
+          newView = resolvedTabView(activeTab);
         }
       }
     }
@@ -52,7 +57,7 @@
     if (!newView) {
       for (const p of GBLayout.getAllPanes(GBLayout.root)) {
         const tab = p.tabs?.[p.activeTabIndex];
-        if (isWorkManagedType(tab?.type)) { newView = tab.type; break; }
+        if (isWorkManagedType(tab?.type)) { newView = resolvedTabView(tab); break; }
       }
     }
     if (newView) {
@@ -77,8 +82,8 @@
   // アクティブペインに応じて詳細パネル・ビューワーを同期
   // サイドバー・詳細・ビューワー・右パネルツール等のユーティリティペインは同期対象外
   const _DETAIL_SYNC_SKIP_TYPES = new Set(Object.keys(PANEL_CONTAINERS).concat(Object.keys(RP_CONTAINERS)));
-  const _DETAIL_SYNC_SKIP_COMPONENT_TYPES = new Set(['version', 'search', 'timer']);
-  const _DETAIL_DB_VIEW_TYPES = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
+  const _DETAIL_SYNC_SKIP_COMPONENT_TYPES = new Set(['version', 'search']);
+  const _DETAIL_DB_VIEW_TYPES = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const _DETAIL_FILE_INFO_TYPES = new Set(['media', 'html', 'csv']);
   const _DETAIL_GLOBAL_TYPES = new Set(['page', 'entity', 'folder', 'board']);
   let _lastDetailContentPaneId = null;
@@ -117,7 +122,7 @@
       if (type === 'page' && path === st.currentPagePath) return true;
       if (type === 'entity' && path === st.currentEntityPath) return true;
       if (type === 'board' && path === st.currentBoardPath) return true;
-      if (_DETAIL_DB_VIEW_TYPES.has(type) && (path === st.currentDbPath || path === st.currentSmartDb?._filePath)) return true;
+      if (_DETAIL_DB_VIEW_TYPES.has(type) && path === st.currentDbPath) return true;
     }
     return !!view && type === view;
   }
@@ -139,7 +144,7 @@
     const scriptnoteVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-scriptnote');
     const boardVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-board, .detail-tab-board-note, .detail-tab-board-style');
     const publishVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-publish');
-    const publishAllowed = new Set(['page', 'calendar', 'csv', 'smart-db']).has(type) || _DETAIL_DB_VIEW_TYPES.has(type);
+    const publishAllowed = new Set(['page', 'calendar', 'csv']).has(type) || _DETAIL_DB_VIEW_TYPES.has(type);
     if (type !== 'calendar' && calendarVisible) return true;
     if (type !== 'scriptnote' && scriptnoteVisible) return true;
     if (type !== 'board' && boardVisible) return true;

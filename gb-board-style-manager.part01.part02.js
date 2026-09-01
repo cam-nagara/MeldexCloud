@@ -44,7 +44,10 @@
   // --- Row 1: 色 + 太さ + ライン種 + 矢印 ---
   const lrow1 = fmt.makeRow({ wrap: true });
   lrow1.appendChild(tag('color')(fmt.makeSwatchBg({ title: '色', color: style.color || '', onPick: (c) => setField('color', c) })));
-  const lwInp = fmt.makeNumInput({ title: '太さ', value: style.width, min: 0, max: 20, onChange: (v) => setField('width', v == null ? 0 : v) });
+  const colorOpacityInp = fmt.makeNumInput({ title: 'ライン不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.colorOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('colorOpacity', v == null ? 100 : v) });
+  tag('colorOpacity')(colorOpacityInp);
+  lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('不透明度'), colorOpacityInp, fmt.makeLabel('%')]));
+  const lwInp = fmt.makeNumInput({ title: '太さ', value: style.width, min: 0, max: 200, onChange: (v) => setField('width', v == null ? 0 : v) });
   tag('width')(lwInp);
   lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('太さ'), lwInp, fmt.makeLabel('px')]));
   const lstyleSel = fmt.makeSelect({
@@ -238,7 +241,7 @@ function _bdNextStyle(kind, styles) {
     ? bdDefaultLineStylesForBoard(typeof bd !== 'undefined' ? bd : undefined)
     : BD_DEFAULT_LINE_STYLES;
   const seed = kind === 'card' ? _bdClone(cardDefaults[0]) : _bdClone(lineDefaults[0]);
-  const baseName = kind === 'card' ? '新しいカードスタイル' : '新しいラインスタイル';
+  const baseName = kind === 'card' ? '新しいトピックスタイル' : '新しいラインスタイル';
   seed.name = _bdMakeUniqueStyleName(baseName, styles);
   seed.id = _bdNormalizeStyleId(`${kind}-style-${Date.now().toString(36)}`, `${kind}-style`);
   styles.push(seed);

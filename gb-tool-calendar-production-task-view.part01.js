@@ -92,8 +92,10 @@
         selection: null,
         pendingTabKey: '',
         lastTaskSheetName: component.state?.productionTaskLastSheetName || '',
-        // タスクリスト面で最後に見ていたのが「すべて」か作品別か（surfaceタブ往復時の復元用）
+        // タスクリスト面で最後に見ていた保存ビュー（surfaceタブ往復時の復元用）
         lastTasksMode: component.state?.productionTaskSelection?.kind === 'all' ? 'all' : '',
+        // アプリ起動後、最初にタスクリストへ入る時だけ「すべて」を既定にする。
+        initialTaskListPending: true,
         addingList: false,
         // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ判定（undefined=未確認、
         // true=開始済み、false=未セットアップ=空状態カードを表示中）。
@@ -188,6 +190,9 @@
   }
 
   function productionSheetDisplayReady(state) {
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      return !!state.allView?.isReady?.();
+    }
     const path = String(state.selection?.path || '');
     const ctx = state.embed?.ctx;
     return !!path && !state.sheetsLoading && !state.embedLoading
@@ -198,19 +203,9 @@
 
   function syncSheetDisplayToolbar(component, state) {
     const ready = productionSheetDisplayReady(state);
-    const allSelected = state.selection?.kind === 'all';
     ['gb-production-sheet-auto-fit', 'gb-production-sheet-column-display-order', 'gb-production-sheet-filter', 'gb-production-sheet-sort'].forEach(id => {
       const button = component.el?.querySelector?.(`[data-e2e-id="${id}"]`);
       if (!button) return;
-      if (allSelected) {
-        // 「すべて」は全作品を横断するフラット表（単一dbPath前提の汎用シート表示操作とは
-        // 別実装）のため、こちらのツールバーボタンは読み込み待ち(aria-busy)ではなく
-        // 明示的に無効として案内する。絞り込み・並べ替えは表の上のコントロールで行う。
-        button.disabled = true;
-        button.setAttribute('aria-busy', 'false');
-        button.title = 'すべてタブでは表の上の絞り込み・並べ替えを利用してください';
-        return;
-      }
       button.disabled = !ready;
       button.setAttribute('aria-busy', ready ? 'false' : 'true');
       if (!ready) button.title = '表示中のシートを読み込んでから利用できます';
@@ -286,7 +281,7 @@
     syncSheetDisplayToolbar(component, state);
     renderListBar(component, state);
     component._syncSurfaceControls?.();
-    if (state.selection) openSelectionIfNeeded(component, state);
+    if (state.selection && options.openSelection !== false) openSelectionIfNeeded(component, state);
     else state.allView?.setVisible(false);
   }
 
@@ -297,6 +292,12 @@
 
   function ensureSelectionDefault(component, state) {
     const requestedTab = state.pendingTabKey;
+    if (state.initialTaskListPending && (!requestedTab || requestedTab === 'tasks')) {
+      state.initialTaskListPending = false;
+      if (state.sheets.length) selectAllLists(component, state, { persist: true, open: false });
+      else state.selection = null;
+      return;
+    }
     if (requestedTab === 'tasks') {
       if (state.lastTasksMode === 'all' && state.sheets.length) {
         selectAllLists(component, state, { persist: false, open: false });
@@ -364,7 +365,7 @@
     return Promise.resolve(true);
   }
 
-  // 「すべて」: 全作品のタスクリストを縦積みで一括表示する（各ブロックはその場で編集可能）
+  // 「すべて」: 一つの論理シートから作品フィルター無しの保存ビューを選ぶ。
   function selectAllLists(component, state, options = {}) {
     if (!state.sheets.length) return Promise.resolve(false);
     state.addingList = false;
@@ -424,7 +425,7 @@
   async function openSelectionIfNeeded(component, state, options = {}) {
     syncSheetDisplayToolbar(component, state);
     if (!state.selection || !state.embed) return false;
-    if (state.selection.kind === 'all') return openAllView(component, state, options);
+    if (state.selection.kind === 'all' || state.selection.kind === 'task') return openTaskSheetView(component, state, options);
     state.allView?.setVisible(false);
     state.embed.setVisible(true);
     if (!state.selection.path) {
@@ -472,8 +473,8 @@
     return opened;
   }
 
-  // 「すべて」表示用の縦積みビューを開く（インスタンスは初回選択時に生成して使い回す）
-  async function openAllView(component, state, options = {}) {
+  // 「すべて」と各作品は同じ論理シートの保存ビューとして、一つのインスタンスで切り替える。
+  async function openTaskSheetView(component, state, options = {}) {
     if (!window.MeldexProductionAllView) {
       notify('すべて表示を初期化できませんでした', true);
       return false;
@@ -481,8 +482,13 @@
     if (!state.allView) {
       state.allView = window.MeldexProductionAllView.create({
         idSuffix: (component.tabId || component.paneId || 'production') + '-all',
-        // 「作品タブで開く」導線: フラット表の作品セルから作品別タブへジャンプする
+        // 作品セルから対応する保存ビューへ移動する。
         onOpenWork: sheet => selectTaskList(component, state, sheet),
+        onSelectView: workTitle => {
+          if (!workTitle) return selectAllLists(component, state);
+          const sheet = state.sheets.find(item => String(item?.work_title || item?.sheet_name || '') === String(workTitle));
+          return sheet ? selectTaskList(component, state, sheet) : false;
+        },
         // 行クリック: フラット表はセル直接編集を持たないため、既存のタスク詳細サイドバーを
         // 強制的に開く（作品別タブでは埋め込みシート自体が編集場所のため通常は抑止される）
         onOpenTask: row => window.MeldexProductionSidebar?.openTask?.(row, component, { forceDetail: true }),
@@ -499,6 +505,7 @@
     const opened = await state.allView.open(orderedSheets, {
       pmRoot: state.pmRootPath,
       refresh: options.refreshCurrent === true,
+      viewWork: state.selection?.kind === 'task' ? state.selection.workTitle : '',
     });
     syncSheetDisplayToolbar(component, state);
     return opened;
@@ -506,7 +513,7 @@
 
   async function refreshEmbedAfterMutation(component) {
     const state = stateFor(component);
-    if (state.selection?.kind === 'all') {
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
       if (!state.allView?.isMounted?.()) return { ok: true, skipped: true };
       return { ok: !!(await state.allView.refresh()) };
     }

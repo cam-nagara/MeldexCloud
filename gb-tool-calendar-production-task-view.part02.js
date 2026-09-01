@@ -73,11 +73,22 @@
       try {
         const created = await api().createTaskSheet({ work_title: workTitle });
         state.addingList = false;
-        await loadSheetsAndMeta(component, state, { force: true });
-        const sheet = state.sheets.find(item => item.sheet_name === created.sheet_name)
-          || { sheet_name: created.sheet_name, work_title: created.work_title, dir: created.dir };
-        selectTaskList(component, state, sheet);
-        notify(`「${sheet.work_title}」のタスクリストを追加しました`);
+        const createdSheet = {
+          sheet_name: created.sheet_name,
+          work_title: created.work_title,
+          dir: created.dir,
+        };
+        const existingIndex = state.sheets.findIndex(item => item.sheet_name === created.sheet_name);
+        if (existingIndex >= 0) state.sheets.splice(existingIndex, 1, { ...state.sheets[existingIndex], ...createdSheet });
+        else state.sheets.push(createdSheet);
+        // 保存成功後は、全管理リストの再読込を待たず新しいタブを表示する。
+        // 大きい制作管理データでも「確定」を押したままに見えず、再読込失敗時も
+        // 作成済みリストへの入口を失わない。続く強制読込で正規の一覧へ照合する。
+        await selectTaskList(component, state, createdSheet);
+        notify(`「${createdSheet.work_title}」のタスクリストを追加しました`);
+        // createTaskSheetの応答が正規のsheet ID/pathを返すため、ここで全管理リストを
+        // もう一度ロック付きで読み直す必要はない。通常の更新操作・再表示時に照合する。
+        // 直後の別操作を長いcatalog読込で塞がず、利用者のタブ移動も上書きしない。
       } catch (error) {
         notify(error?.message || 'タスクリストを追加できませんでした', true);
         confirmBtn.disabled = false;
@@ -137,8 +148,8 @@
         canSwapRight: index < arranged.visible.length - 1,
         onChanged: () => {
           renderListBar(component, state);
-          // 「すべて」表示中はブロック順もタブ順へ即追従させる
-          if (state.selection?.kind === 'all') openSelectionIfNeeded(component, state);
+          // 同じ論理シートの保存ビュー順へ即追従させる。
+          if (state.selection?.kind === 'all' || state.selection?.kind === 'task') openSelectionIfNeeded(component, state);
         },
         onHide: () => hideListTab(component, state, sheet),
       });

@@ -36,6 +36,18 @@ function _meldexHelpDialogOwner(explicitOwner) {
   return _fallbackMeldexHelpMenuAnchor();
 }
 
+function _meldexHelpDialogFocusResolver(explicitOwner) {
+  const e2eId = explicitOwner?.dataset?.e2eId || '';
+  return () => {
+    if (explicitOwner?.isConnected && explicitOwner?.focus) return explicitOwner;
+    if (e2eId) {
+      const replacement = document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(e2eId)}"]`);
+      if (replacement?.focus) return replacement;
+    }
+    return _meldexHelpDialogOwner(null);
+  };
+}
+
 const MELDEX_PUBLIC_MANUAL_FALLBACK_URL = 'https://cam-nagara.github.io/MeldexCloud/manual.html';
 
 function meldexPublicManualUrl(path = '', section = '') {
@@ -44,7 +56,8 @@ function meldexPublicManualUrl(path = '', section = '') {
     && /(^|\.)cam-nagara\.github\.io$/i.test(window.location?.hostname || '');
   let base = MELDEX_PUBLIC_MANUAL_FALLBACK_URL;
   if (runtimeRoot) {
-    try { base = new URL('manual.html', runtimeRoot).href; } catch {}
+    const runtimeBase = runtimeRoot.endsWith('/') ? runtimeRoot : runtimeRoot + '/';
+    try { base = new URL('manual.html', runtimeBase).href; } catch {}
   } else if (currentIsPublished) {
     try { base = new URL('manual.html', window.location.href).href; } catch {}
   }
@@ -287,8 +300,8 @@ function showMeldexAboutDialog(returnFocus) {
         <dt>ビルド種別</dt><dd><span id="settings-about-variant">読み込み中...</span></dd>
         <dt>同意設定</dt><dd><span id="settings-about-consent-status">確認中...</span></dd>
         <dt>配布者</dt><dd>cam-nagara / Meldex 開発者</dd>
-        <dt>公式URL</dt><dd><a href="https://github.com/cam-nagara/Meldex" target="_blank" rel="noopener" data-e2e-id="settings-about-official-url">https://github.com/cam-nagara/Meldex</a></dd>
-        <dt>問い合わせ</dt><dd>GitHub Issues または Meldex ベータ配布ページに記載された連絡先</dd>
+        <dt>公式URL</dt><dd><a href="https://cam-nagara.github.io/MeldexCloud/" target="_blank" rel="noopener" data-e2e-id="settings-about-official-url">Meldex BETA 配布ページ</a></dd>
+        <dt>問い合わせ</dt><dd>Meldex内のフィードバック、または配布ページの送信フォーム</dd>
       </dl>
       <div class="settings-about-muted" style="margin-top:12px;">
         送信可否は「設定 > フィードバック」で変更できます。
@@ -324,6 +337,7 @@ function showMeldexAboutDialog(returnFocus) {
   closeButton.className = 'gb-btn gb-btn-sm';
   closeButton.dataset.e2eId = 'meldex-about-close';
   closeButton.textContent = '閉じる';
+  const resolveReturnFocus = _meldexHelpDialogFocusResolver(returnFocus);
   const modalApi = window.GBUI.createModal({
     id: 'meldex-help-about',
     title: 'Meldex（メルデックス）について',
@@ -333,7 +347,16 @@ function showMeldexAboutDialog(returnFocus) {
     geometryKey: 'meldex-help-about',
     minWidth: '0',
     initialFocus: closeButton,
-    returnFocus: _meldexHelpDialogOwner(returnFocus),
+    returnFocus: resolveReturnFocus,
+    onClose: () => {
+      // オンボーディング等の親ダイアログは子ダイアログ表示中にも再描画され得る。
+      // 共通モーダルの即時復帰に加え、現役の同一操作へ次フレームで再解決する。
+      requestAnimationFrame(() => {
+        const target = resolveReturnFocus();
+        if (!target?.isConnected || !target.focus) return;
+        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      });
+    },
     closeLabel: 'Meldexについてを閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,

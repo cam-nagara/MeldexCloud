@@ -932,7 +932,7 @@
     if (staffSnapshot.duplicates?.length) {
       const duplicate = staffSnapshot.duplicates[0];
       const entries = (duplicate.entries || []).join('、');
-      const error = new Error(`ユーザー「${duplicate.user}」が複数のスタッフに設定されています: ${entries}`);
+      const error = new Error(`ユーザー「${duplicate.user}」が複数のユーザー行に設定されています: ${entries}`);
       error.status = 409;
       throw error;
     }
@@ -1261,7 +1261,7 @@
       throw new Error(`provider固定の制作管理読み込みに未対応の経路です: ${path}`);
     };
     const staffResolver = window.MeldexStaffRegistryCloudTwin?.createBoundStaffResolver?.(provider, requestIdentity);
-    if (!staffResolver) throw new Error('Cloudスタッフの固定読み込み経路を利用できません');
+    if (!staffResolver) throw new Error('Cloudユーザーの固定読み込み経路を利用できません');
     let requestContext = Object.freeze({ ...requestIdentity, provider, productionRequest, staffResolver });
     const adapter = await personalAdapter(provider);
     const blocked = window.MeldexProductionUiAvailability?.current?.().blocked === true;

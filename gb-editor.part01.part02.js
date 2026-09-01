@@ -38,7 +38,7 @@
     const annData = e.dataTransfer.getData('application/x-annotation');
     if (annData) {
       const ann = JSON.parse(annData);
-      const linkText = '[注釈: ' + (ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
+      const linkText = '[アノテート: ' + (ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
       document.execCommand('insertText', false, linkText + ' ');
       return;
     }
@@ -59,7 +59,18 @@
       : e.dataTransfer.getData('application/x-meldex-node');
     if (cfData) {
       try {
-        const { name, path, type } = JSON.parse(cfData);
+        const parsedNode = JSON.parse(cfData);
+        const nodeItems = Array.isArray(parsedNode?.items) && parsedNode.items.length
+          ? parsedNode.items : [parsedNode];
+        if (nodeItems.length !== 1) {
+          if (nodeResolved) MeldexDnD.failDrop(nodeResolved);
+          if (typeof showStatus === 'function') {
+            showStatus('複数選択はノートへ一括挿入できないため、全件を変更しませんでした', true);
+          }
+          draggedNode = null;
+          return;
+        }
+        const { name, path, type } = nodeItems[0];
         if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
             && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
           draggedNode = null;

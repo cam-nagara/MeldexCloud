@@ -1,4 +1,4 @@
-/* gb-file-info-panel.js: フォルダとボードで共有するファイル情報パネル */
+/* gb-file-info-panel.js: フォルダとボードで共有するファイルプロパティパネル */
 (function initMeldexFileInfoPanel(global) {
   'use strict';
 
@@ -16,7 +16,7 @@
   function fileIcon(ext, kind, type) {
     if (kind === 'folder') return 'folder';
     if (type === 'board') return 'layoutDashboard';
-    if (type === 'database' || type === 'smart-db') return 'db';
+    if (type === 'database') return 'db';
     if (type === 'scriptnote') return 'bookOpenText';
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'clapperboard';
@@ -50,11 +50,9 @@
     const lowerName = fileName.toLowerCase();
     const inferredTypeLabel = kind === 'folder'
       ? 'フォルダ'
-      : type === 'database' || /(?:\.sheet|\.database)\.json$/.test(lowerName)
+      : type === 'database' || lowerName.endsWith('.mel-sheet') || /(?:\.sheet|\.database)\.json$/.test(lowerName)
         ? 'シート'
-        : type === 'smart-db' || /(?:\.smart|\.smart-db)\.json$/.test(lowerName)
-          ? 'スマートシート'
-          : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json')
+        : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json')
             ? 'シナリオ'
             : type === 'calendar'
               ? 'カレンダー'

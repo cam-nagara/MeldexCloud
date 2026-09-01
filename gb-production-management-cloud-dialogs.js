@@ -51,7 +51,7 @@
       if (!parsedRows.length) throw new Error('取り込む行がありません');
       const result = await _pmRequest('/production-management/shifts/apply', { method: 'POST', body: { rows: parsedRows, source_file: fileInput.files?.[0]?.name || '' } });
       let _shiftMsg = `シフトを取り込みました: ${result.count || 0}件`;
-      if (result.registry_added) _shiftMsg += `（スタッフ管理シートに${result.registry_added}名を追加）`;
+      if (result.registry_added) _shiftMsg += `（ユーザー管理シートに仮ユーザーを${result.registry_added}名追加）`;
       const _shiftWarns = Array.isArray(result.registry_name_warnings) ? result.registry_name_warnings : [];
       if (_shiftWarns.length) _shiftMsg += ` ⚠ 表記ゆれの可能性: ${_shiftWarns.map(w => `「${w.name}」≈「${w.similar_to}」`).join('、')}`;
       _pmShowStatus(_pmRecoveryText(_shiftMsg, result), _shiftWarns.length > 0);

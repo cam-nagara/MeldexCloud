@@ -461,7 +461,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         closeHandler = null;
       }
       if (escapeHandler) {
-        document.removeEventListener('keydown', escapeHandler, true);
+        window.removeEventListener('keydown', escapeHandler, true);
         escapeHandler = null;
       }
     };
@@ -523,7 +523,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       ev.stopPropagation();
       closePopup();
     };
-    document.addEventListener('keydown', escapeHandler, true);
+    window.addEventListener('keydown', escapeHandler, true);
     setTimeout(() => {
       if (!popup.isConnected) return;
       closeHandler = (ev) => {
@@ -567,19 +567,60 @@ Object.assign(ScriptNoteEditor.prototype, {
     const optionsWrap = body.querySelector('[data-column-options-wrap]');
     const options = body.querySelector('[data-column-options]');
     let busy = false;
-    const returnFocus = () => {
-      if (owner?.isConnected && owner !== document.body) return owner;
+    const parentHeader = () => {
       const columnId = afterColId || '_text';
-      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || this.host;
+      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || null;
     };
-    const restoreParentFocus = reason => {
-      if (reason === 'submitted') return;
+    const returnFocus = () => {
+      return parentHeader() || (owner?.isConnected && owner !== document.body ? owner : this.host);
+    };
+    const restoreParentFocusIfUnclaimed = () => {
+      let interactionClaimed = false;
+      let trackingInteraction = false;
+      let finished = false;
+      let restoreAttempts = 0;
+      const stop = () => {
+        finished = true;
+        if (!trackingInteraction) return;
+        trackingInteraction = false;
+        document.removeEventListener('pointerdown', claimInteraction, true);
+        document.removeEventListener('keydown', claimInteraction, true);
+      };
+      const claimInteraction = () => {
+        interactionClaimed = true;
+        stop();
+      };
+      // 閉じる操作自身は数えず、閉鎖後に利用者が始めた操作だけをfocus復帰の
+      // 打切り条件にする。ブラウザ既定のfocus移動や再描画は利用者操作ではない。
       setTimeout(() => {
-        const target = returnFocus();
-        const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(dialog => dialog.isConnected);
-        const topDialog = dialogs[dialogs.length - 1];
-        if (target?.isConnected && (!topDialog || topDialog.contains(target))) target.focus();
+        if (finished || interactionClaimed || trackingInteraction) return;
+        trackingInteraction = true;
+        document.addEventListener('pointerdown', claimInteraction, true);
+        document.addEventListener('keydown', claimInteraction, true);
       }, 0);
+      const restore = () => {
+        if (interactionClaimed) {
+          stop();
+          return;
+        }
+        const target = parentHeader();
+        if (!target?.isConnected) {
+          stop();
+          return;
+        }
+        const activeDialog = document.activeElement?.closest?.(
+          '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+        );
+        if (activeDialog) {
+          stop();
+          return;
+        }
+        try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+        restoreAttempts += 1;
+        if (restoreAttempts < 100) setTimeout(restore, 50);
+        else stop();
+      };
+      restore();
     };
     const modal = globalThis.GBUI.createModal({
       id: 'scriptnote-add-column', title: '列を追加', body, footer: [cancel, add],
@@ -587,7 +628,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       extraClass: 'sn2-column-modal', initialFocus: name, returnFocus,
       closeLabel: '列の追加を閉じる', closeOnEsc: true, closeOnOverlay: true,
       onBeforeClose: reason => !busy || reason === 'submitted',
-      onClose: restoreParentFocus,
+      // 閉じるボタン自身が除去されるclick経路では、ブラウザ既定のfocus移動や
+      // ヘッダー再描画が同期復帰を上書きすることがあるため、短い監視期間だけ
+      // 親ヘッダーを再確認する。利用者の次操作や別ダイアログは上書きしない。
+      onClose: reason => {
+        if (reason === 'submitted') return;
+        restoreParentFocusIfUnclaimed();
+      },
     });
     modal.overlay.dataset.e2eId = 'scriptnote-add-column-overlay';
     modal.modal.dataset.e2eId = 'scriptnote-add-column-dialog';

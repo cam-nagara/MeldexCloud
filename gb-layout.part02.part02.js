@@ -226,7 +226,6 @@
       '#kanban-view',
       '.kanban-view',
       '.kanban-card',
-      '#smart-db-view',
       '#page-view',
       '#page-content',
       '#entity-view',

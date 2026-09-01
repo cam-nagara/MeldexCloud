@@ -43,13 +43,24 @@
     fm.type = 'settings-entry';
     fm.id = fm.id || 'ent_' + _pmHash(path).slice(0, 10);
     fm.category = sheet;
+    if (['タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト'].includes(sheet)) {
+      fm.production_template_child_name ||= String(name);
+    }
     fm.modified = new Date().toISOString();
     fm.properties = { ...(fm.properties || {}) };
     // タスクリスト（+作品別シート）だけ内部専用列を production_internal へ振り分ける
     // （制作管理UX改善計画 2026-08-04 §5-1）。作品リスト等の同名列（階層ラベル/プリセット
     // 種別/作業作成粒度）は対象外（_pmCloudIsTaskSheetName で先に判定してから適用する）。
     const isTaskSheet = _pmCloudIsTaskSheetName(sheet);
-    if (isTaskSheet) fm.production_internal = { ...(fm.production_internal || {}) };
+    if (isTaskSheet) {
+      fm.production_internal = { ...(fm.production_internal || {}) };
+      if (!fm.topicRef?.sourceId || !fm.topicRef?.topicId) {
+        fm.topicRef = {
+          sourceId: _pmCloudProductionSourceId(provider, internals),
+          topicId: String(fm.id),
+        };
+      }
+    }
     Object.entries(props || {}).forEach(([prop, value]) => {
       if (value == null || value === '') return;
       if (_pmCloudIsInternalMetadataProp(isTaskSheet, prop)) {
@@ -129,6 +140,7 @@
         name: entry.name.replace(/\.md$/i, ''),
         frontmatter: parsed.frontmatter || {},
         body: parsed.body || '',
+        sourceText: parsed.sourceText,
         transportRevision: await _pmCloudEntryTransportRevision(provider, path, parsed),
       };
     });
@@ -156,7 +168,13 @@
         });
       }
     } catch (err) { /* sheet-store未使用（修復済み・正常状態）。物理ファイルの結果のみで進める */ }
-    return rows;
+    const templateChildren = new Set(['タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト']);
+    if (!templateChildren.has(sheet)) return rows;
+    return rows.map(row => ({
+      ...row,
+      physicalName: row.name,
+      name: String(row.frontmatter?.production_template_child_name || row.name),
+    }));
   }
 
   async function _pmCloudFindByName(provider, internals, sheet, name) { return (await _pmCloudListEntries(provider, internals, sheet)).find(entry => entry.name === String(name))?.path || ''; }

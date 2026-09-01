@@ -624,6 +624,14 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   line-height: 1;
   -webkit-appearance: none;
   appearance: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+}
+.ann-note:hover .note-more-btn,
+.ann-note:focus-within .note-more-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 .note-more-btn:hover,
 .note-more-btn:focus {
@@ -656,6 +664,14 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   line-height: 1;
   -webkit-appearance: none;
   appearance: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+}
+.ann-note:hover .ann-note-window-close-btn,
+.ann-note:focus-within .ann-note-window-close-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 .ann-note-window-close-btn:hover,
 .ann-note-window-close-btn:focus-visible {
@@ -676,12 +692,16 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
     min-width: 44px;
     height: 44px;
     min-height: 44px;
+    opacity: 1;
+    pointer-events: auto;
   }
   .ann-note-window-close-btn {
     width: 44px;
     min-width: 44px;
     height: 44px;
     min-height: 44px;
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 

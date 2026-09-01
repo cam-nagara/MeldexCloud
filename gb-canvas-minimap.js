@@ -158,6 +158,41 @@ function _bdDrawMinimapViewport(ctx, canvasEl, scale, ox, oy, accentColor, zoom)
   ctx.stroke();
 }
 
+function _bdBindPreviewMinimapInteraction(canvas) {
+  // ペインのsnapshotはcanvas要素をcloneするがイベントリスナーは複製しない。
+  // DOM属性ではなくexpandoで実要素ごとの接続状態を判定し、clone側にも再接続する。
+  if (!canvas || canvas._bdMinimapInteractionBound) return;
+  canvas._bdMinimapInteractionBound = true;
+  let dragging = false;
+  const panTo = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+    const bounds = _bdMinimapBounds();
+    if (!bounds || bounds.w === 0 || bounds.h === 0) return;
+    const scale = _bdMinimapScale(width, height, bounds);
+    const centerX = bounds.x0 + bounds.w / 2;
+    const centerY = bounds.y0 + bounds.h / 2;
+    const offsetX = width / 2 - centerX * scale;
+    const offsetY = height / 2 - centerY * scale;
+    const worldX = (event.clientX - rect.left - offsetX) / scale;
+    const worldY = (event.clientY - rect.top - offsetY) / scale;
+    const boardCanvas = document.getElementById('bd-canvas');
+    if (!boardCanvas) return;
+    const zoom = _bdSafeMinimapZoom();
+    bd.panX = boardCanvas.clientWidth / 2 - worldX * zoom;
+    bd.panY = boardCanvas.clientHeight / 2 - worldY * zoom;
+    bdTransform();
+  };
+  canvas.addEventListener('pointerdown', event => { dragging = true; panTo(event); });
+  canvas.addEventListener('pointermove', event => { if (dragging) panTo(event); });
+  canvas.addEventListener('pointerup', () => { dragging = false; });
+  canvas.addEventListener('mouseleave', () => { dragging = false; });
+  // legacy snapshotは実ペインへ切り替えた後にclickを再送するため、click単独でも
+  // パンできる契約を持たせる。ライブ面ではpointerdownと同じ地点なので冪等。
+  canvas.addEventListener('click', panTo);
+}
+
 function _bdDrawPreviewMinimap() {
   const pane = document.getElementById('gb-preview-pane');
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
@@ -179,33 +214,8 @@ function _bdDrawPreviewMinimap() {
       });
       pane._bdMinimapRO.observe(pane);
     }
-    // クリック/ドラッグでパン
-    let dragging = false;
-    const panTo = (e) => {
-      const r = canvas.getBoundingClientRect();
-      const W = r.width, H = r.height;
-      const bounds = _bdMinimapBounds();
-      if (!bounds || bounds.w === 0 || bounds.h === 0) return;
-      // 描画時と同じscale/offset（パネルにフィット、中心＝ボード全体の重心）
-      const scale = _bdMinimapScale(W, H, bounds);
-      const centerX = bounds.x0 + bounds.w / 2;
-      const centerY = bounds.y0 + bounds.h / 2;
-      const ox = W / 2 - centerX * scale;
-      const oy = H / 2 - centerY * scale;
-      const worldX = (e.clientX - r.left - ox) / scale;
-      const worldY = (e.clientY - r.top - oy) / scale;
-      const c = document.getElementById('bd-canvas');
-      if (!c) return;
-      const zoom = _bdSafeMinimapZoom();
-      bd.panX = c.clientWidth / 2 - worldX * zoom;
-      bd.panY = c.clientHeight / 2 - worldY * zoom;
-      bdTransform();
-    };
-    canvas.addEventListener('pointerdown', (e) => { dragging = true; panTo(e); });
-    canvas.addEventListener('pointermove', (e) => { if (dragging) panTo(e); });
-    canvas.addEventListener('pointerup', () => { dragging = false; });
-    canvas.addEventListener('mouseleave', () => { dragging = false; });
   }
+  _bdBindPreviewMinimapInteraction(canvas);
   const rect = pane.getBoundingClientRect();
   const pixelW = Math.max(1, Math.round(rect.width * devicePixelRatio));
   const pixelH = Math.max(1, Math.round(rect.height * devicePixelRatio));
@@ -264,8 +274,9 @@ function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentCol
     const x = rect.x * scale + ox;
     const y = rect.y * scale + oy;
     const statusDef = (n.status && typeof bdStatusDef === 'function') ? bdStatusDef(n.status) : null;
+    const nodeStyle = (typeof bdGetNodeStyle === 'function') ? bdGetNodeStyle(n) : null;
     ctx.fillStyle = _bdMinimapNodeFillColor(n, statusDef);
-    ctx.globalAlpha = statusDef ? (statusDef.opacity ?? 1) : 1;
+    ctx.globalAlpha = (statusDef ? (statusDef.opacity ?? 1) : 1) * _bdNormalizeStyleOpacity(nodeStyle?.bgOpacity, 1);
     ctx.fillRect(x, y, rect.w * scale, rect.h * scale);
     ctx.globalAlpha = 1;
   });
@@ -277,7 +288,7 @@ function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentCol
     const style = (typeof bdGetConnectionStyle === 'function') ? bdGetConnectionStyle(c) : null;
     ctx.strokeStyle = c.color || style?.color || accentColor || '#888';
     ctx.lineWidth = Math.max(0.5, Math.min(2, (c.width || style?.width || 1) * 0.35));
-    ctx.globalAlpha = c.hidden ? 0.18 : 1;
+    ctx.globalAlpha = (c.hidden ? 0.18 : 1) * _bdNormalizeStyleOpacity(style?.colorOpacity, 1);
     if (c.hidden) ctx.setLineDash([3, 5]);
     else ctx.setLineDash([]);
     ctx.beginPath();

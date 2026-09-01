@@ -73,6 +73,9 @@
       if (!path) return;
       try { _syncBadge(titleEl, path); } catch (_) {}
     });
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('meldex:file-locks-updated'));
+    }
   }
 
   window.MeldexFileLockBadge = { apply, refreshAll };

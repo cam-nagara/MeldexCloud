@@ -11,14 +11,6 @@
       description: '画像やPDFを選択またはドラッグ＆ドロップして確認できます。',
     }),
     Object.freeze({
-      id: 'timer',
-      name: 'Meldex Timer',
-      icon: 'MeldexTimer_icon_128.png',
-      windowsAsset: 'MeldexTimer.zip',
-      cloudUrl: 'apps/timer/',
-      description: '作業タイマーを単独で開き、執筆時間を管理できます。',
-    }),
-    Object.freeze({
       id: 'quick-memo',
       name: 'Meldex クイックメモ',
       icon: 'MeldexQuickMemo_icon_128.png',

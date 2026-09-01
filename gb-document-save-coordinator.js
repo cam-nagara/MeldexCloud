@@ -525,7 +525,7 @@
     const promise = Promise.resolve().then(() => sendFn(previousResult || null)).then(
       (res) => {
         _finishInFlight(doc, promise);
-        _maybeFlushPending(doc, res);
+        _maybeFlushPending(doc, res, hostRef);
         return Object.assign({}, res, { savedMd: md, savedPath: path, joined: false });
       },
       (err) => {
@@ -552,12 +552,18 @@
   // 保存中に発生した編集を最新1件へcoalesceする（計画書§5工程1-2・工程1-6）。
   // 同時に複数回 requestSave が呼ばれても、進行中の保存が終わった直後に
   // 実行されるのは「最後に上書きされた1件」だけになる。
-  function _maybeFlushPending(doc, previousResult) {
+  function _maybeFlushPending(doc, previousResult, previousHostRef) {
     if (!doc.pendingFollowUp || doc.inFlight) return;
     const pending = doc.pendingFollowUp;
     doc.pendingFollowUp = null;
     doc.followUpPromise = null;
-    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, previousResult);
+    // 直前の成功revisionを連鎖できるのは、同じ編集hostから来た連続編集だけ。
+    // 別ペインは同じdocumentKeyでも独立した読込baselineを持つため、先行hostの
+    // revisionを渡すと古い全文が最新revision付きで保存され、409を迂回してしまう。
+    const chainedResult = previousHostRef && pending.hostRef === previousHostRef
+      ? previousResult
+      : null;
+    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
   }
 
   /**

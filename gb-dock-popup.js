@@ -114,7 +114,7 @@
     if (explicit > 0) return explicit;
     const types = _collectPanelsetTabTypes(panelsetNode);
     if (types.includes('outliner')) return DEFAULT_OUTLINER_W;
-    const rightDockTypes = new Set(['preview', 'timer', 'detail', 'version', 'chat', 'calendar', 'history', 'annotation']);
+    const rightDockTypes = new Set(['preview', 'detail', 'version', 'chat', 'calendar', 'history', 'annotation']);
     if (types.some(type => rightDockTypes.has(type))) return DEFAULT_RIGHT_DOCK_W;
     return 0;
   }

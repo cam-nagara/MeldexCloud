@@ -20,8 +20,9 @@ function _renderPreviewContent(item) {
     const img = document.createElement('img');
     img.className = 'fp-img';
     img.src = _folderItemRawUrl(item);
-    frag.appendChild(img);
-    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます', allowDetached: true });
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'fp-image-host' });
+    frag.appendChild(imageHost || img);
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像を読み込んでいます', allowDetached: true });
   } else if (item.type === 'image' || isPdf) {
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'width:100%;height:100%;min-height:300px;border:none;border-radius:4px;';
@@ -56,8 +57,9 @@ function _renderPreviewContent(item) {
       icon.innerHTML = fileTypeIcon(item.type, 48);
       img.replaceWith(icon);
     };
-    window.MeldexImageLoading?.track?.(img, { label: 'プレビューを読み込んでいます', errorMode: 'silent', allowDetached: true });
-    frag.appendChild(img);
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'fp-image-host' });
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: 'プレビューを読み込んでいます', errorMode: 'silent', allowDetached: true });
+    frag.appendChild(imageHost || img);
   } else {
     const icon = document.createElement('div');
     icon.style.cssText = 'text-align:center;margin:16px 0;color:var(--fg2);';
@@ -976,6 +978,56 @@ function _restoreTreeDisplaySettings() {
   _applyTreeLayoutMode(globalThis.localStorage?.getItem?.('tree-layout') || 'list');
 }
 
+let _treeDisplayRefreshRunning = false;
+let _treeDisplayRefreshPending = false;
+let _treeDisplayRefreshPromise = null;
+
+function _refreshTreeAfterDisplaySettingsChange(reason) {
+  _treeDisplayRefreshPending = true;
+  if (_treeDisplayRefreshRunning) return _treeDisplayRefreshPromise;
+
+  _treeDisplayRefreshRunning = true;
+  const progress = window.MeldexOperationProgress?.begin?.({
+    id: 'folder-tree-display-settings-refresh',
+    kind: 'folder-tree-display-settings',
+    label: 'フォルダツリーの表示設定を反映中…',
+    message: '一覧・サムネイル・サブフォルダの表示を更新しています',
+    mode: 'indeterminate',
+    background: false,
+    delayMs: 300,
+    showInTray: true,
+    priority: 40,
+  }) || null;
+  const fallbackLoading = !progress && typeof showLoading === 'function';
+  if (fallbackLoading) showLoading('フォルダツリーの表示設定を反映中…');
+
+  _treeDisplayRefreshPromise = (async () => {
+    try {
+      do {
+        _treeDisplayRefreshPending = false;
+        if (typeof loadOutliner === 'function') {
+          await loadOutliner({
+            force: true,
+            reason: reason || 'tree-display-settings',
+            suppressLoading: true,
+          });
+        }
+      } while (_treeDisplayRefreshPending);
+      progress?.succeed?.({ dismissMs: 0 });
+      return true;
+    } catch (error) {
+      progress?.fail?.({ error, dismissMs: 0 });
+      throw error;
+    } finally {
+      if (fallbackLoading && typeof hideLoading === 'function') hideLoading();
+      _treeDisplayRefreshRunning = false;
+      _treeDisplayRefreshPending = false;
+      _treeDisplayRefreshPromise = null;
+    }
+  })();
+  return _treeDisplayRefreshPromise;
+}
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', _restoreTreeDisplaySettings, { once: true });
 } else {
@@ -1002,7 +1054,11 @@ function showFolderDisplaySettings(options) {
   menu.style.maxWidth = '360px';
   menu.style.maxHeight = 'min(78vh, 680px)';
   menu.style.overflowY = 'auto';
-  { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 2) + 'px'; }
+  if (!isTreeSurface) {
+    const z = _getZoom();
+    menu.style.left = (rect.left / z) + 'px';
+    menu.style.top = (rect.bottom / z + 2) + 'px';
+  }
 
   if (isTreeSurface) {
     const treeLayout = localStorage.getItem('tree-layout') || 'list';
@@ -1020,7 +1076,7 @@ function showFolderDisplaySettings(options) {
         localStorage.setItem('tree-layout', item.key);
         _applyTreeLayoutMode(item.key);
         menu.remove();
-        if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'tree-layout' });
+        await _refreshTreeAfterDisplaySettingsChange('tree-layout');
       });
       menu.appendChild(row);
     });
@@ -1038,7 +1094,7 @@ function showFolderDisplaySettings(options) {
       row.innerHTML = radioMark(treeThumbSize === it.key) + it.label;
       row.addEventListener('click', () => {
         _setTreeThumbnailDisplaySize(it.key);
-        if (typeof loadOutliner === 'function') loadOutliner({ force: true, reason: 'tree-thumbnail-size' });
+        _refreshTreeAfterDisplaySettingsChange('tree-thumbnail-size').catch(() => {});
         menu.remove();
       });
       menu.appendChild(row);
@@ -1050,11 +1106,19 @@ function showFolderDisplaySettings(options) {
     const subfolderRow = _fdCheckboxRow('サブフォルダの内容を表示', subfolderChecked, async (enabled) => {
       if (typeof setFolderSubfolderContentsEnabled === 'function') setFolderSubfolderContentsEnabled(enabled);
       if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
-      if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'tree-subfolder-toggle' });
+      await _refreshTreeAfterDisplaySettingsChange('tree-subfolder-toggle');
     }, { dataset: { e2eId: 'tree-display-subfolder-contents-toggle' } });
     menu.appendChild(subfolderRow);
 
     document.body.appendChild(menu);
+    if (btn?.getBoundingClientRect && typeof positionPopup === 'function') {
+      positionPopup(menu, btn.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+    } else {
+      const z = _getZoom();
+      menu.style.left = (rect.left / z) + 'px';
+      menu.style.top = (rect.bottom / z + 4) + 'px';
+      if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    }
     setTimeout(() => document.addEventListener('pointerdown', function closer(pointerEvent) {
       if (menu.contains(pointerEvent.target) || btn?.contains(pointerEvent.target)) return;
       document.removeEventListener('pointerdown', closer, true);
@@ -1536,7 +1600,12 @@ function showFolderFilterSettings() {
 }
 
 function showTreeDisplaySettings(event) {
-  return showFolderDisplaySettings({ surface: 'tree', triggerEl: event?.currentTarget || document.getElementById('btn-tree-display') });
+  const eventTarget = event?.target?.closest?.('#btn-tree-display');
+  const currentTarget = event?.currentTarget?.id === 'btn-tree-display' ? event.currentTarget : null;
+  return showFolderDisplaySettings({
+    surface: 'tree',
+    triggerEl: eventTarget || currentTarget || document.getElementById('btn-tree-display'),
+  });
 }
 
 function openFolderSlideshow() {

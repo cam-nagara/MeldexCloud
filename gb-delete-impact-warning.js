@@ -221,12 +221,17 @@
   // ブロックしない（修正3(b)）。
   function confirmationPayload(confirmation) {
     if (!confirmation || typeof confirmation !== 'object') return {};
+    const payload = {};
     if (Array.isArray(confirmation.confirmations) && confirmation.confirmations.length) {
-      return { confirmations: confirmation.confirmations };
+      payload.confirmations = confirmation.confirmations;
     }
     const confirmationToken = String(confirmation.confirmationToken || '');
     const graphRevision = String(confirmation.graphRevision || '');
-    return confirmationToken && graphRevision ? { confirmationToken, graphRevision } : {};
+    if (confirmationToken && graphRevision) {
+      payload.confirmationToken = confirmationToken;
+      payload.graphRevision = graphRevision;
+    }
+    return payload;
   }
 
   async function confirmDeleteWithImpact(targets, message, options) {

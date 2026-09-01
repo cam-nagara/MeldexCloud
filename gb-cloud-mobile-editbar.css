@@ -44,8 +44,7 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .smart-db-toolbar {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar {
     display: none !important;
   }
 
@@ -192,7 +191,7 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-inputbar-row {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
     gap: 4px;
     min-height: 44px;
     padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
@@ -205,7 +204,7 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-chatbar-row {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
     gap: 4px;
     min-height: 44px;
     padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
@@ -213,6 +212,11 @@
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-inputbar-row > :first-child,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-chatbar-row > :first-child {
+    margin-left: auto;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-boardbar-row {
@@ -532,5 +536,18 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-menu-grid {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-annotationbar-open="1"] .cloud-mobile-annotationbar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--bg2, #252525));
   }
 }

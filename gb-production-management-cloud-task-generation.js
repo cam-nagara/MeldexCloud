@@ -191,28 +191,36 @@
     const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
     const workEntry = await _pmCloudFindWork(provider, internals, workTitle);
     const taskBody = window.MeldexProductionPageStructure?.prepare?.(body || {}, workEntry?.frontmatter) || (body || {});
+    const templateId = String(taskBody.template_id || taskBody.templateId
+      || taskBody['使用する作業テンプレート']
+      || _pmCloudPropValue(workEntry?.frontmatter, '使用する作業テンプレート') || '');
     const rows = _pmBuildTaskRows(taskBody);
     _pmCloudValidateTaskRows(rows);
-    await _pmCloudApplyTaskDurations(provider, internals, rows);
+    await _pmCloudApplyTaskDurations(provider, internals, rows, templateId);
     const existingKeys = await _pmCloudExistingTaskKeysForWork(provider, internals, workTitle);
     return { ok: true, rows: rows.map(row => ({ ...row, existing: existingKeys.has(String(row['作成キー'] || '')) })), count: rows.length, page_units: taskBody.pages || [], cloud: true };
   }
 
-  async function _pmCloudEnsureTaskReferences(provider, internals, rows, config) {
+  async function _pmCloudEnsureTaskReferences(provider, internals, rows, config, templateId) {
     const values = (prop) => [...new Set((rows || []).map(row => String(row?.[prop] || '').trim()).filter(Boolean))];
     const standardContents = new Map((PM_SEEDS['作業内容リスト'] || []).map(([name, props]) => [name, props]));
     const specs = [
-      ['作業対象リスト', values('作業対象リスト'), () => ({ '基準作業時間': '1' })],
-      ['作業内容リスト', values('作業内容リスト'), (name, index) => standardContents.get(name) || { '表示名': name, '作業順': String(100 + index * 10), '作業時間倍率': '1' }],
-      ['作業規模リスト', values('作業規模リスト'), () => ({ '作業時間倍率': '1' })],
+      ['作業対象リスト', values('作業対象リスト'), () => ({ '作業テンプレート': templateId, '基準作業時間': '1' })],
+      ['作業内容リスト', values('作業内容リスト'), (name, index) => ({
+        ...(standardContents.get(name) || { '作業順': String(100 + index * 10), '作業時間倍率': '1' }),
+        '作業テンプレート': templateId,
+      })],
+      ['作業規模リスト', values('作業規模リスト'), () => ({ '作業テンプレート': templateId, '作業時間倍率': '1' })],
     ];
     let created = 0;
     for (const [sheet, names, propsFor] of specs) {
-      const known = new Set((await _pmCloudListEntries(provider, internals, sheet)).map(entry => entry.name).filter(Boolean));
+      const known = new Set((await _pmCloudListEntries(provider, internals, sheet))
+        .filter(entry => _pmCloudPropValue(entry.frontmatter, '作業テンプレート') === templateId)
+        .map(entry => entry.name).filter(Boolean));
       for (let index = 0; index < names.length; index += 1) {
         const name = names[index];
         if (known.has(name)) continue;
-        await _pmCloudUpsertEntry(provider, internals, sheet, name, propsFor(name, index), '', '', { reuseName: true });
+        await _pmCloudUpsertEntry(provider, internals, sheet, name, propsFor(name, index), '', '', { reuseName: false, createNew: true });
         known.add(name);
         created += 1;
       }
@@ -237,16 +245,20 @@
   async function _pmCloudCreateTasksUnlocked(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
     const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
-    const workEntries = await _pmCloudListEntries(provider, internals, '作品リスト', { concurrency: 8 });
+    const workEntries = Array.isArray(init._workEntries)
+      ? init._workEntries
+      : await _pmCloudListEntries(provider, internals, '作品リスト', { concurrency: 8 });
     const workEntry = workEntries.find(entry => {
       const title = entry.name || _pmCloudPropValue(entry.frontmatter, '作品タイトル_話数')
         || _pmCloudPropValue(entry.frontmatter, '作品タイトル');
       return title === workTitle;
     });
     const taskBody = window.MeldexProductionPageStructure?.prepare?.(body || {}, workEntry?.frontmatter) || (body || {});
+    const selectedTemplateId = String(taskBody.template_id || taskBody.templateId
+      || taskBody['使用する作業テンプレート'] || init.default_template_id);
     const rows = _pmBuildTaskRows(taskBody);
     _pmCloudValidateTaskRows(rows);
-    await _pmCloudApplyTaskDurations(provider, internals, rows);
+    await _pmCloudApplyTaskDurations(provider, internals, rows, selectedTemplateId);
     const config = _pmHierarchyConfig(taskBody);
     const paths = _pmHierarchyPaths(taskBody, config);
     const firstLevelCount = new Set(paths.map(path => path[0]).filter(Boolean)).size || paths.length || 1;
@@ -265,6 +277,7 @@
       || _pmCloudAllocateTaskSheetName(workTitle, usedSheets);
     await _pmCloudEnsureSheet(provider, internals, taskSheet, 'タスクリスト');
     const workProps = {
+      '使用する作業テンプレート': selectedTemplateId,
       'ページ数': String(physicalPageCount),
       '階層数': String(config.count),
       '階層ラベル': config.labels.join(','),
@@ -287,9 +300,10 @@
       : await _pmCloudUpsertEntry(provider, internals, '作品リスト', workTitle, workProps, '', '', { reuseName: true, createNew: true });
     const migration = await _pmCloudMigrateLegacyTasksForWork(provider, internals, workTitle, taskSheet);
     if (migration.conflicts) throw new Error(`タスクリストに内容を自動統合できない行が${migration.conflicts}件あります。旧タスクリストまたは競合コピーと、作品別タスクリストの同じ作成キーを確認してください`);
-    const referencesCreated = await _pmCloudEnsureTaskReferences(provider, internals, rows, config);
+    const referencesCreated = await _pmCloudEnsureTaskReferences(provider, internals, rows, config, selectedTemplateId);
     await _pmCloudEnsureTaskPagePanelOptions(provider, internals, taskSheet, rows, physicalPageCount);
     const existingKeys = new Set(migration.existing_keys || []);
+    const hadExistingRows = existingKeys.size > 0;
     const missingRows = [];
     for (const row of rows) {
       const key = String(row['作成キー'] || '');
@@ -297,7 +311,16 @@
       existingKeys.add(key);
       missingRows.push(row);
     }
-    const created = await _pmCloudWriteTaskRows(provider, internals, taskSheet, missingRows);
+    const writeResult = await _pmCloudWriteTaskRows(provider, internals, taskSheet, missingRows);
+    const created = writeResult.created;
+    // 新規シートは保存直後の行をそのまま使う。既存行がある場合は、旧版でtopicRefが
+    // 無かった行も収斂させるため全行を列挙する互換経路を維持する。
+    await _pmCloudEnsureTaskTopics(
+      provider,
+      internals,
+      taskSheet,
+      hadExistingRows ? null : writeResult.entries,
+    );
     await _pmCloudUpdateEntryAtPath(provider, workPath, { ...workProps, 'タスク生成': '作成済み' });
     return { ok: true, created, skipped: rows.length - created, count: rows.length, references_created: referencesCreated, migrated: migration.copied, legacy_removed: migration.removed, migration_conflicts: migration.conflicts, task_sheet: taskSheet, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
   }

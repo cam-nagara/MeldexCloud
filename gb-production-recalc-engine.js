@@ -722,7 +722,7 @@
       const durationMs = durationMinutes * 60000;
       const candidates = candidateStaff(task, staffMap, contentCandidates);
       if (!candidates.size) {
-        rows.push(unassignedRow(task, '担当できるスタッフがいません'));
+        rows.push(unassignedRow(task, '担当できるユーザーがいません'));
         warnings.push({ type: 'no_staff', task: task.task_name, content: task.content });
         blockedGroups.add(groupKey);
         blockedTaskIds.add(String(task.id || ''));
@@ -778,7 +778,7 @@
     const result = [];
     if (warnings.some(w => w.type === 'no_staff')) {
       const contents = [...new Set(warnings.filter(w => w.content).map(w => w.content))].sort();
-      contents.forEach(content => result.push(`作業内容『${content}』の担当者候補にスタッフを追加してください`));
+      contents.forEach(content => result.push(`作業内容『${content}』の担当者候補にユーザーを追加してください`));
     }
     if (warnings.some(w => w.type === 'deadline')) {
       const shortage = warnings.filter(w => w.type === 'deadline').reduce((sum, w) => sum + (Number(w.minutes) || 0), 0);

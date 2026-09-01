@@ -4,6 +4,18 @@ function _bdClone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+function _bdNormalizeStyleOpacity(value, fallback = 1) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : fallback;
+}
+
+function _bdColorWithOpacity(color, opacity) {
+  if (!color) return color || '';
+  const normalized = _bdNormalizeStyleOpacity(opacity, 1);
+  if (normalized >= 1) return color;
+  return `color-mix(in srgb, ${color} ${Math.round(normalized * 10000) / 100}%, transparent)`;
+}
+
 function _bdEscAttr(value) {
   return esc(String(value == null ? '' : value)).replace(/"/g, '&quot;');
 }
@@ -380,9 +392,9 @@ function bdApplyStylePresetMigration() {
   // 注意: bdGetNodeStyle/bdGetConnectionStyle は内部で bdEnsureBoardUiState を呼ぶため
   // 再帰呼び出しを起こす。ここでは override + base style を直接合成する。
   if (currentVersion < 6) {
-    const cardOverrideKeys = ['bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+    const cardOverrideKeys = ['bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
       'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape'];
-    const lineOverrideKeys = ['color', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio', 'cornerRadius'];
+    const lineOverrideKeys = ['color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio', 'cornerRadius'];
     if (Array.isArray(bd.nodes)) {
       bd.nodes.forEach(node => {
         if (!node?.id) return;
@@ -396,8 +408,10 @@ function bdApplyStylePresetMigration() {
           id: customId,
           name: 'カスタム',
           bgColor: pick('bgColor', '') || '',
+          bgOpacity: _bdNormalizeStyleOpacity(pick('bgOpacity', 1), 1),
           textColor: pick('textColor', '') || '',
           borderColor: pick('borderColor', '') || '',
+          borderOpacity: _bdNormalizeStyleOpacity(pick('borderOpacity', 1), 1),
           borderWidth: Number.isFinite(+pick('borderWidth', 0)) ? Math.max(0, +pick('borderWidth', 0)) : 0,
           borderRadius: Number.isFinite(+pick('borderRadius', 6)) ? Math.max(0, +pick('borderRadius', 6)) : 6,
           fontSize: Number.isFinite(+pick('fontSize', 13)) ? Math.max(8, +pick('fontSize', 13)) : 13,
@@ -432,6 +446,7 @@ function bdApplyStylePresetMigration() {
           id: customId,
           name: 'カスタム',
           color: pick('color', '') || '',
+          colorOpacity: _bdNormalizeStyleOpacity(pick('colorOpacity', 1), 1),
           width: Number.isFinite(+pick('width', 0)) ? Math.max(0, +pick('width', 0)) : 0,
           style: pick('style', '') === 'dashed' ? 'dashed' : '',
           arrow: ['end', 'start', 'both', ''].includes(rawArrow) ? rawArrow : 'end',
@@ -463,8 +478,10 @@ function bdNormalizeCardStyles(styles) {
           id: style.id || '',
           name: style.name || 'トピック',
           bgColor: style.bgColor || '',
+          bgOpacity: _bdNormalizeStyleOpacity(style.bgOpacity, 1),
           textColor: style.textColor || '',
           borderColor: style.borderColor || '',
+          borderOpacity: _bdNormalizeStyleOpacity(style.borderOpacity, 1),
           borderWidth: Number.isFinite(+style.borderWidth) ? Math.max(0, +style.borderWidth) : 0,
           borderRadius: Number.isFinite(+style.borderRadius) ? Math.max(0, +style.borderRadius) : 6,
           fontSize: Number.isFinite(+style.fontSize) ? Math.max(8, +style.fontSize) : 13,
@@ -513,9 +530,10 @@ function bdNormalizeLineStyles(styles) {
           id: style.id || '',
           name: style.name || def?.name || 'ライン',
           color: style.color || def?.color || '',
-          width: Number.isFinite(+style.width)
-            ? Math.max(0, +style.width)
-            : (Number.isFinite(+def?.width) ? +def.width : 0),
+          colorOpacity: _bdNormalizeStyleOpacity(style.colorOpacity, _bdNormalizeStyleOpacity(def?.colorOpacity, 1)),
+          width: typeof _bdNormalizeLineWidth === 'function'
+            ? _bdNormalizeLineWidth(style.width, Number.isFinite(+def?.width) ? +def.width : 0)
+            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def?.width) ? +def.width : 0)),
           style: style.style === 'dashed'
             ? 'dashed'
             : (style.style === '' ? '' : (def?.style ?? '')),
@@ -603,8 +621,10 @@ function bdGetNodeStyle(node) {
   const nodeCloudSubHeightRatio = node?.cloudSubHeightRatio !== undefined ? node.cloudSubHeightRatio : node?.cloudSubBumpRatio;
   const baseStyle = {
     bgColor: node?.bgColor !== undefined ? node.bgColor : (style?.bgColor || ''),
+    bgOpacity: _bdNormalizeStyleOpacity(node?.bgOpacity !== undefined ? node.bgOpacity : style?.bgOpacity, 1),
     textColor: node?.textColor !== undefined ? node.textColor : (style?.textColor || ''),
     borderColor: node?.borderColor !== undefined ? node.borderColor : (style?.borderColor || ''),
+    borderOpacity: _bdNormalizeStyleOpacity(node?.borderOpacity !== undefined ? node.borderOpacity : style?.borderOpacity, 1),
     borderWidth: node?.borderWidth !== undefined ? node.borderWidth : (style?.borderWidth ?? 0),
     borderRadius: node?.borderRadius !== undefined ? node.borderRadius : (style?.borderRadius ?? 6),
     fontSize: node?.fontSize !== undefined ? node.fontSize : (style?.fontSize ?? 13),
@@ -647,7 +667,10 @@ function bdGetConnectionStyle(conn) {
   const hasLineValue = key => conn && Object.prototype.hasOwnProperty.call(conn, key);
   return {
     color: hasLineValue('color') ? conn.color : (style?.color || themeLineColor || ''),
-    width: hasWidth ? conn.width : (style?.width ?? 0),
+    colorOpacity: _bdNormalizeStyleOpacity(hasLineValue('colorOpacity') ? conn.colorOpacity : style?.colorOpacity, 1),
+    width: typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(hasWidth ? conn.width : (style?.width ?? 0), 0)
+      : Math.max(0, Math.min(200, +(hasWidth ? conn.width : (style?.width ?? 0)) || 0)),
     style: hasLineValue('style') ? (conn.style === 'dashed' ? 'dashed' : '') : (style?.style || ''),
     arrow: hasArrow ? conn.arrow : (style?.arrow ?? 'end'),
     pathType: hasPathType
@@ -691,8 +714,10 @@ function bdGetConnectionStyle(conn) {
 function bdClearCardStyleOverrides(node) {
   [
     'bgColor',
+    'bgOpacity',
     'textColor',
     'borderColor',
+    'borderOpacity',
     'borderWidth',
     'borderRadius',
     'fontSize',
@@ -760,7 +785,7 @@ function bdCreateNodeWithStyle(text, x, y, opts) {
 // 内容系 (text/img/link/linkType) と状態系 (locked/collapsed/minimized/contained/note 等) はコピーしない。
 const _BD_INHERIT_STYLE_KEYS = [
   'cardStyle', '_userCardStyle',
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic',
   'textStrokeColor', 'textStrokeWidth',
   'shape',
@@ -855,6 +880,7 @@ function bdAddChildToSelected() {
       else bdAutoLayout(root.id);
     }
     bdSelect(child.id);
+    if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(child.id, { delayMs: 520 });
     bdDirty();
     return child;
   } finally {
@@ -953,6 +979,11 @@ function bdAddSiblingToSelected() {
       bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling' });
     }
     bdSelect(sib.id);
+    if (typeof bdFollowActiveNode === 'function') {
+      const followDelay = typeof BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS === 'number'
+        ? Math.max(520, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS + 160) : 520;
+      bdFollowActiveNode(sib.id, { delayMs: followDelay });
+    }
     bdDirty();
     return sib;
   } finally {

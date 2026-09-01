@@ -103,82 +103,114 @@ navPush = function(entry, paneId) {
 // 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
 // ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
 function _applyNavEntryToBoundTab(navState, entry) {
-  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return;
-  if (typeof GBLayout === 'undefined') return;
+  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return true;
+  if (typeof GBLayout === 'undefined') return true;
   const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
   const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
-  if (!tab) return;
+  if (!tab) return true;
   const nextType = typeof _normalizeOpenTypeForNav === 'function'
     ? _normalizeOpenTypeForNav(entry.type)
     : entry.type;
   const typeChanged = tab.type !== nextType;
-  if (typeChanged && typeof removeComponentInstance === 'function') {
-    removeComponentInstance(tab.id);
-  }
-  tab.type = nextType;
-  tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
-  tab.path = entry.path || entry.dbPath || '';
-  tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
-    ? GBTabs.tabIcon(nextType)
-    : tab.icon;
-  tab.state = {
-    ...(typeChanged ? {} : (tab.state || {})),
-    ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
-    ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+  const applyEntry = () => {
+    tab.type = nextType;
+    tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
+    tab.path = entry.path || entry.dbPath || '';
+    tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
+      ? GBTabs.tabIcon(nextType)
+      : tab.icon;
+    tab.state = {
+      ...(typeChanged ? {} : (tab.state || {})),
+      ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+      ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+    };
+    if (typeChanged) GBLayout.render();
+    else {
+      const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+      if (labelEl) labelEl.textContent = tab.label;
+    }
+    return true;
   };
-  if (typeChanged) GBLayout.render();
-  else {
-    const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
-    if (labelEl) labelEl.textContent = tab.label;
+  if (typeChanged && typeof removeComponentInstance === 'function') {
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+    if (component && typeof removeComponentInstanceSafely === 'function') {
+      return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);
+    }
+    if (removeComponentInstance(tab.id) === false) return false;
   }
+  return applyEntry();
+}
+
+function _finishPaneHistoryNavigation(navState, nextIndex, entry) {
+  navState.index = nextIndex;
+  navNavigating = true;
+  if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+  _withNavFlag(navOpen(entry));
+  if (navState.kind === 'legacy') {
+    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
+    if (tab) { _activeTabId = tab.id; renderTabs(); }
+  }
+  _refreshPaneNavUi(navState.paneId);
+  _persistPaneNavState(navState);
+  return true;
+}
+
+function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
+  if (!applied || typeof applied.then !== 'function') {
+    return applied === false ? false : _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }
+  navNavigating = true;
+  applied.then((ok) => {
+    if (!ok) {
+      navNavigating = false;
+      return;
+    }
+    _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }).catch((error) => {
+    navNavigating = false;
+    if (typeof showStatus === 'function') showStatus('画面遷移前の保存に失敗しました: ' + (error?.message || error), true);
+  });
+  return true;
 }
 
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
+  if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
   const navState = _getNavState(paneId);
   if (navState.index <= 0) return false;
-  navState.index -= 1;
-  const entry = navState.history[navState.index];
+  const nextIndex = navState.index - 1;
+  const entry = navState.history[nextIndex];
   if (!entry) return false;
-  navNavigating = true;
   try {
-    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-    _applyNavEntryToBoundTab(navState, entry);
-    _withNavFlag(navOpen(entry));
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
   } catch (e) {
     navNavigating = false;
     throw e;
   }
-  if (navState.kind === 'legacy') {
-    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
-    if (tab) { _activeTabId = tab.id; renderTabs(); }
-  }
-  _refreshPaneNavUi(navState.paneId);
-  _persistPaneNavState(navState);
-  return true;
 }
 function navForward(paneId) {
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
+  if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
   const navState = _getNavState(paneId);
   if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
-  navState.index += 1;
-  const entry = navState.history[navState.index];
+  const nextIndex = navState.index + 1;
+  const entry = navState.history[nextIndex];
   if (!entry) return false;
-  navNavigating = true;
   try {
-    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-    _applyNavEntryToBoundTab(navState, entry);
-    _withNavFlag(navOpen(entry));
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
   } catch (e) {
     navNavigating = false;
     throw e;
   }
-  if (navState.kind === 'legacy') {
-    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
-    if (tab) { _activeTabId = tab.id; renderTabs(); }
-  }
-  _refreshPaneNavUi(navState.paneId);
-  _persistPaneNavState(navState);
-  return true;
 }
 
 function showPaneNavHistoryDropdown(e, paneId, direction) {
@@ -206,13 +238,11 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
     item.setAttribute('role', 'menuitem');
     item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
     item.title = entry.path || '';
-    item.addEventListener('click', () => {
-      navState.index = index;
-      navNavigating = true;
+    item.addEventListener('click', async () => {
       try {
-        if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-        _applyNavEntryToBoundTab(navState, entry);
-        _withNavFlag(navOpen(entry));
+        const applied = await _applyNavEntryToBoundTab(navState, entry);
+        if (!applied) return;
+        _finishPaneHistoryNavigation(navState, index, entry);
       } catch (e) {
         navNavigating = false;
         throw e;
@@ -282,14 +312,23 @@ function showNavHistoryDropdown(e, direction) {
 
 function updateNavBreadcrumb() {}
 
-let _pointerNavPaneId = null;
+let _pointerNavTargetId = null;
+
+function _pointerNavigationTargetId(target) {
+  const fixedRightDock = target?.closest?.('.gb-dock-fixed-right[data-panelset-id]');
+  if (fixedRightDock?.dataset?.panelsetId) return fixedRightDock.dataset.panelsetId;
+  return target?.closest?.('.gb-pane')?.dataset?.paneId || null;
+}
 
 function _handlePointerNavigationButtons(e) {
   if (e.button !== 3 && e.button !== 4) return;
-  const ae = document.activeElement;
-  if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
-  const paneId = _pointerNavPaneId || e.target?.closest?.('.gb-pane')?.dataset?.paneId || undefined;
-  _pointerNavPaneId = null;
+  const paneId = _pointerNavTargetId || _pointerNavigationTargetId(e.target) || undefined;
+  _pointerNavTargetId = null;
+  // 以前フォーカスしていた入力欄ではなく、実際にサイドボタンを押した場所で判定する。
+  // 入力後に表や本文へマウスを移しても activeElement は入力欄のまま残るため、旧判定では
+  // 戻る/進むが永続的に無効になっていた。入力要素そのものの上で押した時だけ保護する。
+  const editableTarget = e.target?.closest?.('input, textarea, select, [contenteditable="true"]');
+  if (editableTarget) return;
   if (e.button === 3) {
     if (navBack(paneId)) e.preventDefault();
   } else if (e.button === 4) {
@@ -299,12 +338,12 @@ function _handlePointerNavigationButtons(e) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button === 3 || e.button === 4) {
-    _pointerNavPaneId = e.target?.closest?.('.gb-pane')?.dataset?.paneId || null;
+    _pointerNavTargetId = _pointerNavigationTargetId(e.target);
     e.preventDefault();
   }
 }, true);
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
-window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
+window.addEventListener('pointercancel', () => { _pointerNavTargetId = null; }, true);
 
 // esc() は meldex-core.js で定義済み
 function saveLastView(obj) {
@@ -380,7 +419,6 @@ const STARTUP_LAYOUT_UTILITY_TAB_TYPES = new Set([
   'preview',
   'chat',
   'calendar',
-  'timer',
   'history',
   'annotation',
   'sticky',
@@ -437,7 +475,6 @@ const _apiFetchObservedGetEndpoints = new Set([
   '/check-type',
   '/file',
   '/file-meta',
-  '/smart-db',
   '/global-index',
 ]);
 
@@ -877,6 +914,8 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBoth('path');
     addBody('entry_path');
     addBody('folder_path');
+  } else if (route === '/replace-batch') {
+    (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/upload-file') {
     addBoth('path');
     addBody('dir');
@@ -929,7 +968,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('db_path');
   } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
     addBoth('db_path');
-  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
+  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder' || route === '/version/delete-db') {
     addBody('path');
   }
 
@@ -957,7 +996,7 @@ function _apiUsesTransientActiveLock(path) {
   return new Set([
     '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore',
+    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
   ]).has(route);
 }
 

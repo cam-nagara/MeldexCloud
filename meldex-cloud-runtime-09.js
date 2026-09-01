@@ -383,6 +383,12 @@
     return window.MeldexWorkspaces ? await window.MeldexWorkspaces.load({ force: true }) : [];
   }
 
+  async function _registryUsers() {
+    if (!window.MeldexUserRegistry) return [];
+    try { return await window.MeldexUserRegistry.listStaff({ force: true }); }
+    catch { return []; }
+  }
+
   function _currentWorkspaceUserFields() {
     let user = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
     if (!user) {
@@ -397,29 +403,40 @@
   }
 
   function _renderEmpty(container) {
-    container.innerHTML = `<section class="gb-section gb-section--boxed">
+    container.innerHTML = `<section class="gb-section gb-section--boxed" data-settings-view="workspace">
       <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース</div>
       <div class="gb-section-desc">チャット、シフト、共同作業の対象をソースフォルダとは別に管理します。</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add-empty">${_icon('plus', 14)} ワークスペースを追加</button>
     </section>`;
     container.querySelector('[data-settings-workspace-add]')?.addEventListener('click', addWorkspaceFromSettings);
+    _reapplySettingsView(container);
   }
 
-  function _memberListHtml(workspace) {
+  function _memberListHtml(workspace, users) {
     const members = Array.isArray(workspace?.members) ? workspace.members : [];
-    if (!members.length) return '<div class="gb-section-desc">メンバーはまだ登録されていません。</div>';
-    return members.map(member => `<div class="settings-workspace-member" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 44px;gap:6px;align-items:center;margin:4px 0;">
+    const virtualUsers = (Array.isArray(users) ? users : []).filter(user => user?.user_type === 'virtual' && (user.workspace_ids || []).includes(workspace.id));
+    if (!members.length && !virtualUsers.length) return '<div class="gb-section-desc">このワークスペースのユーザーはまだ登録されていません。</div>';
+    const accountHtml = members.map(member => `<div class="settings-workspace-member" data-workspace-account-user style="display:grid;grid-template-columns:minmax(0,1fr) 140px 44px;gap:6px;align-items:center;margin:4px 0;">
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(member.name || '')}</span>
       <select class="gb-select" data-workspace-member-role="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-role-${_escape(member.name || '')}" aria-label="${_escape(member.name || '')}の権限">
-        ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'メンバー',viewer:'閲覧'}[role]}</option>`).join('')}
+        ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'ユーザー',viewer:'閲覧のみ'}[role]}</option>`).join('')}
       </select>
-      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="メンバーを削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
+      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="アクセスユーザーから削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
     </div>`).join('');
+    const virtualHtml = virtualUsers.map(user => `<div class="settings-workspace-member" data-workspace-virtual-user style="display:grid;grid-template-columns:minmax(0,1fr) 140px 44px;gap:6px;align-items:center;margin:4px 0;">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(user.display || user.user || '')} <small style="color:var(--fg2);">仮ユーザー</small></span>
+      <span class="gb-section-desc" title="共有ファイルへアクセスできません">制作管理のみ・ログイン不可</span>
+      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-virtual-remove="${_escape(user.user_id || user.user || '')}" data-e2e-id="settings-workspace-virtual-remove-${_escape(user.user_id || user.user || '')}" title="このワークスペースから外す" aria-label="${_escape(user.display || user.user || '')}を外す">${_icon('trash2', 14)}</button>
+    </div>`).join('');
+    return accountHtml + virtualHtml;
   }
 
-  function _renderRows(container, rows) {
+  function _renderRows(container, rows, users) {
     const activeId = window.MeldexWorkspaces?.getActiveId?.() || '';
-    const rowHtml = rows.map(workspace => `<section class="gb-section gb-section--boxed settings-workspace-card" data-workspace-id="${_escape(workspace.id)}">
+    const workspaceHtml = rows.map(workspace => {
+      const listId = `workspace-user-options-${String(workspace.id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+      const options = (Array.isArray(users) ? users : []).map(user => `<option value="${_escape(user.display || user.user || '')}">${_escape(user.user_type === 'virtual' ? '仮ユーザー' : 'アカウント')}</option>`).join('');
+      return `<section class="gb-section gb-section--boxed settings-workspace-card" data-settings-view="workspace" data-workspace-id="${_escape(workspace.id)}">
       <div class="settings-workspace-head">
         <div>
           <div class="gb-section-title">${_icon('usersRound', 14)} <span>${_escape(workspace.name || 'ワークスペース')}</span></div>
@@ -436,35 +453,50 @@
         <button type="button" class="gb-btn gb-btn-sm" data-workspace-save data-e2e-id="settings-workspace-save-${_escape(workspace.id)}">${_icon('save', 14)} 保存</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-workspace-delete data-e2e-id="settings-workspace-delete-${_escape(workspace.id)}">${_icon('trash2', 14)} 削除</button>
       </div>
-      <div class="settings-workspace-members">${_memberListHtml(workspace)}</div>
+      <div class="gb-section-title" style="margin-top:12px;">${_icon('usersRound', 14)} ユーザーとアクセス権限</div>
+      <div class="gb-section-desc">アカウントユーザーには共有アクセス権限を、仮ユーザーには制作管理上の所属だけを設定します。</div>
+      <div class="settings-workspace-members">${_memberListHtml(workspace, users)}</div>
       <div class="gb-field-row" style="justify-content:flex-start;">
-        <input class="gb-input" data-workspace-new-member data-e2e-id="settings-workspace-new-member-${_escape(workspace.id)}" placeholder="メンバー名" style="max-width:220px;">
-        <select class="gb-select" data-workspace-new-role data-e2e-id="settings-workspace-new-role-${_escape(workspace.id)}" aria-label="追加するメンバーの権限">
-          <option value="member">メンバー</option>
+        <label class="gb-field" style="margin:0;max-width:240px;"><span class="gb-label">追加するユーザー</span><input class="gb-input" data-workspace-new-user data-workspace-new-member data-e2e-id="settings-workspace-new-user-${_escape(workspace.id)}" list="${_escape(listId)}" autocomplete="off"></label>
+        <datalist id="${_escape(listId)}">${options}</datalist>
+        <select class="gb-select" data-workspace-new-role data-e2e-id="settings-workspace-new-role-${_escape(workspace.id)}" aria-label="追加するアカウントユーザーの権限">
+          <option value="member">ユーザー</option>
           <option value="admin">管理者</option>
-          <option value="viewer">閲覧</option>
+          <option value="viewer">閲覧のみ</option>
         </select>
-        <button type="button" class="gb-btn gb-btn-sm" data-workspace-member-add data-e2e-id="settings-workspace-member-add-${_escape(workspace.id)}">${_icon('userPlus', 14)} 追加</button>
+        <button type="button" class="gb-btn gb-btn-sm" data-workspace-user-add data-workspace-member-add data-e2e-id="settings-workspace-user-add-${_escape(workspace.id)}">${_icon('userPlus', 14)} 追加</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-workspace-profile-sync data-e2e-id="settings-workspace-profile-sync-${_escape(workspace.id)}">${_icon('refreshCw', 14)} 自分を同期</button>
       </div>
-    </section>`).join('');
-    container.innerHTML = `<section class="gb-section gb-section--boxed">
+    </section>`;
+    }).join('');
+    container.innerHTML = `<section class="gb-section gb-section--boxed" data-settings-view="workspace">
       <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース ${fieldHelp('作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。', { e2eId: 'workspace-scope-help' })}</div>
+      <div class="gb-section-desc">ワークスペースごとのユーザー所属と権限を、各ワークスペース内で管理します。</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add">${_icon('plus', 14)} ワークスペースを追加</button>
-    </section>${rowHtml}`;
+    </section>${workspaceHtml}`;
     bindWorkspaceSettings(container);
+    _reapplySettingsView(container);
+  }
+
+  function _reapplySettingsView(container) {
+    const modal = container?.closest?.('.settings-modal');
+    if (!modal || typeof _applySettingsNavigationView !== 'function' || typeof resolveSettingsNavigationTarget !== 'function') return;
+    const target = resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId || 'ユーザー・共同作業', {
+      pageId: modal.dataset.settingsActivePageId || 'workspace',
+    });
+    _applySettingsNavigationView(modal, target);
   }
 
   async function settingsInitWorkspaces(root) {
     const panel = _panel(root);
     if (!panel) return;
-    panel.innerHTML = '<section class="gb-section gb-section--boxed"><div class="gb-section-desc">読み込み中...</div></section>';
+    panel.innerHTML = '<section class="gb-section gb-section--boxed" data-settings-view="workspace"><div class="gb-section-desc">読み込み中...</div></section>';
     try {
-      const rows = await _workspaceRows();
+      const [rows, users] = await Promise.all([_workspaceRows(), _registryUsers()]);
       if (!rows.length) _renderEmpty(panel);
-      else _renderRows(panel, rows);
+      else _renderRows(panel, rows, users);
     } catch {
-      panel.innerHTML = '<section class="gb-section gb-section--boxed"><div class="gb-section-desc">ワークスペースを読み込めませんでした。</div></section>';
+      panel.innerHTML = '<section class="gb-section gb-section--boxed" data-settings-view="workspace"><div class="gb-section-desc">ワークスペースを読み込めませんでした。</div></section>';
     }
   }
 
@@ -538,13 +570,24 @@
         const name = String(card.querySelector('[data-workspace-new-member]')?.value || '').trim();
         const role = String(card.querySelector('[data-workspace-new-role]')?.value || 'member');
         if (!name) return;
-        await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(name), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role }),
-        });
-        await window.MeldexWorkspaces.load({ force: true });
-        await settingsInitWorkspaces(document);
+        try {
+          const users = await _registryUsers();
+          const user = users.find(item => item.display === name || item.user === name);
+          if (user?.user_type === 'virtual') {
+            await window.MeldexUserRegistry.setUserWorkspace(user.user_id || user.user, id, true);
+          } else {
+            await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(user?.user || name), {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ role, user_type: 'account', user_id: user?.user_id || '' }),
+            });
+            await window.MeldexWorkspaces.load({ force: true });
+          }
+          await settingsInitWorkspaces(document);
+          _status(`「${user?.display || name}」をワークスペースへ追加しました`);
+        } catch (error) {
+          _status('ユーザーを追加できませんでした: ' + (error?.message || error), true);
+        }
       });
       card.querySelector('[data-workspace-profile-sync]')?.addEventListener('click', async () => {
         await apiFetch('/workspaces/' + encodeURIComponent(id) + '/sync-profile', {
@@ -572,6 +615,17 @@
           await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(memberName), { method: 'DELETE' });
           await window.MeldexWorkspaces.load({ force: true });
           await settingsInitWorkspaces(document);
+        });
+      });
+      card.querySelectorAll('[data-workspace-virtual-remove]').forEach(button => {
+        button.addEventListener('click', async () => {
+          try {
+            await window.MeldexUserRegistry.setUserWorkspace(button.dataset.workspaceVirtualRemove || '', id, false);
+            await settingsInitWorkspaces(document);
+            _status('仮ユーザーをワークスペースから外しました');
+          } catch (error) {
+            _status('仮ユーザーを外せませんでした: ' + (error?.message || error), true);
+          }
         });
       });
     });
@@ -2540,7 +2594,7 @@
  *
  * 目的:
  *   - ステータス変更と実績区間の自動開始・終了接続（着手中、保留、確認待ち、完了）
- *   - 応援参加（help-join）、担当解除（help-leave）、タスク切替（task-switch）
+ *   - 同じタスクの複数担当者を個別区間で記録し、タスク切替時の二重計上を防止
  *   - 出退勤（勤務区間）・離席区間との半開区間積集合・差集合計算:
  *       Actual(t, u) = (TaskSessions(t, u) ∩ WorkShifts(u)) - BreakIntervals(u)
  *   - 日跨ぎ、重複打刻、不完全打刻（退勤なし/離席復帰なし/セッション継続中）、訂正時再計算
@@ -2562,12 +2616,10 @@
   const QUALITY_UNMEASURED = Store ? Store.QUALITY_UNMEASURED : 'unmeasured';
 
   const START_REASON_STATUS_CHANGE = 'status-change';
-  const START_REASON_HELP_JOIN = 'help-join';
   const START_REASON_TASK_SWITCH = 'task-switch';
   const START_REASON_MANUAL_START = 'manual-start';
 
   const END_REASON_STATUS_CHANGE = 'status-change';
-  const END_REASON_HELP_LEAVE = 'help-leave';
   const END_REASON_TASK_SWITCH = 'task-switch';
   const END_REASON_MANUAL_STOP = 'manual-stop';
 
@@ -2752,13 +2804,10 @@
 
       const targetList = targets.map(u => String(u || '').trim()).filter(Boolean);
 
-      // Close open sessions for assignees no longer in targets (if explicit targetUserIds was provided, keeping helper sessions)
+      // Close open sessions for everyone no longer assigned when targets are explicit.
       if (targetUserIds !== null) {
         for (const sess of [...sessions]) {
           if (!sess.ended_at && !sess.deleted_at) {
-            if (sess.start_reason === START_REASON_HELP_JOIN) {
-              continue;
-            }
             if (!targetList.includes(sess.participant_user_id)) {
               const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
               const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
@@ -2834,12 +2883,9 @@
     const sessions = updated.sessions || [];
     const modified = [];
 
-    // 1. Close open sessions for assignees no longer in targets (keeping helper sessions)
+    // 1. Close open sessions for assignees no longer in targets.
     for (const sess of [...sessions]) {
       if (!sess.ended_at && !sess.deleted_at) {
-        if (sess.start_reason === START_REASON_HELP_JOIN) {
-          continue;
-        }
         if (!targets.includes(sess.participant_user_id)) {
           const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
           const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
@@ -2873,66 +2919,6 @@
     }
 
     return { records: updated, modifiedSessions: modified };
-  }
-
-  function handleParticipantJoin(
-    records,
-    participantUserId,
-    participantDisplayName,
-    actorUserId,
-    joinTimeIso = null,
-    isAdmin = false
-  ) {
-    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
-    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
-    const ts = joinTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
-    const pId = String(participantUserId || '').trim();
-    const sessions = updated.sessions || [];
-
-    const existingOpen = sessions.find(
-      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
-    );
-    if (existingOpen) {
-      return { records: updated, session: existingOpen };
-    }
-
-    const newSess = {
-      session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
-      task_id: updated.task_id || '',
-      participant_user_id: pId,
-      participant_display_name: String(participantDisplayName || pId).trim(),
-      started_at: ts,
-      ended_at: null,
-      start_reason: START_REASON_HELP_JOIN,
-      actor_user_id: actorUserId,
-    };
-    const res = store.appendOrUpdateSession(updated, newSess, actorUserId, isAdmin, null, true);
-    return { records: res.records, session: res.session };
-  }
-
-  function handleParticipantLeave(
-    records,
-    participantUserId,
-    actorUserId,
-    leaveTimeIso = null,
-    isAdmin = false
-  ) {
-    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
-    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
-    const ts = leaveTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
-    const pId = String(participantUserId || '').trim();
-    const sessions = updated.sessions || [];
-
-    const openSess = sessions.find(
-      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
-    );
-    if (!openSess) {
-      return { records: updated, session: null };
-    }
-
-    const updateSess = { ...openSess, ended_at: ts, end_reason: END_REASON_HELP_LEAVE };
-    const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
-    return { records: res.records, session: res.session };
   }
 
   function handleTaskSwitch(
@@ -3187,8 +3173,6 @@
     computeUserTaskActualIntersection,
     handleTaskStatusTransition,
     handleAssigneeChange,
-    handleParticipantJoin,
-    handleParticipantLeave,
     handleTaskSwitch,
     recalculateTaskSummaries,
   });
@@ -4719,7 +4703,6 @@
           total_estimate_seconds: confEst,
           total_actual_seconds: confAct,
           overrun_ratio: Math.round(overrunRatio * 10000) / 10000,
-          help_participated_count: aTasks.filter(t => t.has_help_participant).length,
           overtime_seconds: aTasks.reduce((sum, t) => sum + (parseInt(t.overtime_seconds, 10) || 0), 0),
         };
       }
@@ -5112,10 +5095,6 @@
   let SIDEBAR_ID_SEQ = 0;
   const MODES = [
     ['detail', '詳細', 'fileText'],
-    ['project', 'プロジェクト', 'folderKanban'],
-    ['taskSettings', 'タスク設定', 'listChecks'],
-    ['allocation', '割り当て', 'calendarClock'],
-    ['calendar', 'カレンダー', 'calendarDays'],
   ];
   // production-tasklist-redesign-plan-2026-07-15 3.2章: 大分類=作品そのものになったため、
   // レベル列は新規タスクリストシートの 中分類/小分類/詳細分類（旧: 単位レベル1/2/3）を指す。
@@ -5158,13 +5137,6 @@
 
   function workTitle(row) {
     return prop(row, '作品タイトル') || row?.name || prop(row, '作品タイトル_話数');
-  }
-
-  function collaborationPath(row) {
-    const path = String(row?.path || '').trim();
-    if (!path || /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(path)) return path;
-    const home = String(typeof _homeFolderPath !== 'undefined' ? _homeFolderPath || '' : window._homeFolderPath || '').replace(/[\\/]+$/, '');
-    return home ? `${home}/${path.replace(/^[\\/]+/, '')}` : path;
   }
 
   function componentFor(options = {}) {
@@ -5624,6 +5596,124 @@
     return section;
   }
 
+  function taskTopicResources(row) {
+    const host = document.createElement('section');
+    host.className = 'gb-production-task-topic-resources';
+    host.dataset.e2eId = 'gb-production-task-topic-resources';
+    host.dataset.state = 'loading';
+    host.setAttribute('aria-busy', 'true');
+    host.setAttribute('aria-label', 'タスクのノートとチャット');
+    const state = document.createElement('p');
+    state.className = 'gb-production-sidebar-readonly-value';
+    state.setAttribute('role', 'status');
+    state.textContent = 'リンク済みノートとチャットを読み込み中…';
+    host.appendChild(state);
+    const entryPath = String(row?.path || '').trim();
+    let loadSeq = 0;
+    const pendingCreation = new Map();
+    const render = async () => {
+      const seq = ++loadSeq;
+      host.dataset.state = 'loading';
+      host.setAttribute('aria-busy', 'true');
+      if (!entryPath || typeof apiFetch !== 'function') {
+        host.dataset.state = 'error';
+        host.setAttribute('aria-busy', 'false');
+        state.textContent = 'このタスクの関連リソースを読み込めませんでした';
+        return;
+      }
+      try {
+        const data = await apiFetch('/entity?path=' + encodeURIComponent(entryPath), { silentError: true });
+        if (seq !== loadSeq || !host.isConnected) return;
+        const topicRef = data?.topicRef || data?.frontmatter?.topicRef || row?.topicRef || null;
+        if (!topicRef?.sourceId || !topicRef?.topicId) throw new Error('タスクのTopicRefを確認できませんでした');
+        host.dataset.topicSourceId = String(topicRef.sourceId);
+        host.dataset.topicId = String(topicRef.topicId);
+        const topicPath = '/topic-stores/' + encodeURIComponent(topicRef.sourceId)
+          + '/topics/' + encodeURIComponent(topicRef.topicId);
+        const topicData = await apiFetch(topicPath, { silentError: true });
+        const topic = topicData?.topic || topicData?.record;
+        if (!topic) throw new Error('関連リソースの正本を読み込めませんでした');
+        const availability = window.MeldexProductionUiAvailability?.current?.() || {};
+        const resources = Array.isArray(topic.resources) ? topic.resources : [];
+        host.dataset.state = resources.length ? 'ready' : 'empty';
+        host.setAttribute('aria-busy', 'false');
+        const heading = document.createElement('strong');
+        heading.textContent = '関連ノート・チャット';
+        const list = document.createElement('ul');
+        list.className = 'gb-production-topic-resource-list';
+        if (!resources.length) {
+          const empty = document.createElement('li');
+          empty.className = 'gb-production-topic-resource-empty';
+          empty.textContent = '関連リソースはまだありません';
+          list.appendChild(empty);
+        }
+        resources.forEach((resource, index) => {
+          const item = document.createElement('li');
+          const link = document.createElement('button');
+          link.type = 'button'; link.className = 'gb-production-topic-resource-open';
+          const href = String(resource?.href || resource?.path || resource?.url || '').trim();
+          link.textContent = String(resource?.label || resource?.title || href || '関連リソース');
+          link.dataset.e2eId = 'gb-production-topic-resource-open';
+          link.dataset.resourcePath = href;
+          link.addEventListener('click', () => {
+            window.MeldexSheetEntryAttachments?.openAttachment?.({
+              path: href, name: href.split('/').pop(),
+              kind: String(resource?.resourceType || '').includes('chat') ? 'chat' : 'note',
+            }, entryPath);
+          });
+          const detach = document.createElement('button');
+          detach.type = 'button'; detach.textContent = 'リンク解除'; detach.disabled = !!availability.blocked;
+          detach.dataset.e2eId = 'gb-production-topic-resource-detach';
+          detach.dataset.resourcePath = href;
+          detach.addEventListener('click', async () => {
+            const next = resources.filter((_value, resourceIndex) => resourceIndex !== index);
+            await apiFetch(topicPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true, body: JSON.stringify({
+              mutationId: 'production-resource-detach-' + Date.now() + '-' + index,
+              baseRevision: topic.revision,
+              changes: { resources: next },
+            }) });
+            render();
+          });
+          item.append(link, detach); list.appendChild(item);
+        });
+        const actions = document.createElement('div');
+        actions.className = 'gb-production-topic-resource-actions';
+        const createResource = async (kind, defaultLabel) => {
+          const label = window.prompt?.(`${defaultLabel}の名前を入力してください`, defaultLabel);
+          if (label == null) return;
+          const key = kind + '\0' + String(label);
+          const mutationId = pendingCreation.get(key)
+            || `production-resource-create-${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          pendingCreation.set(key, mutationId);
+          await apiFetch('/production-management/topic-resources/create', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, silentError: true,
+            body: JSON.stringify({ topicRef, type: kind, label: String(label).trim() || defaultLabel, mutation_id: mutationId }),
+          });
+          pendingCreation.delete(key);
+          await render();
+        };
+        [['note', '新規ノート'], ['chat', '新規チャット']].forEach(([kind, label]) => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.textContent = label; button.disabled = !!availability.blocked;
+          button.dataset.e2eId = `gb-production-topic-create-${kind}`;
+          button.addEventListener('click', () => createResource(kind, label).catch(error => {
+            if (typeof showStatus === 'function') showStatus(error?.message || `${label}を作成できませんでした`, true);
+          }));
+          actions.appendChild(button);
+        });
+        host.replaceChildren(heading, list, actions);
+      } catch (error) {
+        if (seq !== loadSeq || !host.isConnected) return;
+        host.dataset.state = 'error';
+        host.setAttribute('aria-busy', 'false');
+        host.replaceChildren(state);
+        state.textContent = error?.message || 'このタスクの関連リソースを読み込めませんでした';
+      }
+    };
+    queueMicrotask(render);
+    return host;
+  }
+
   function taskDetail(content, row, options) {
     content.replaceChildren();
     if (!row) {
@@ -5697,14 +5787,6 @@
       formatScheduleHoursDisplay(prop(row, '作業時間_実績') || prop(row, '実績作業時間')),
       { e2eId: 'gb-production-task-detail-actual-hours' },
     ));
-    buildField(
-      '作業参加者',
-      '応援参加者',
-      'text',
-      null,
-      undefined,
-      '作業中のタスクへ途中参加するメンバーを、カンマ区切りで指定します',
-    );
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
@@ -5763,7 +5845,6 @@
     collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
     collaboration.setAttribute('role', 'group');
     collaboration.setAttribute('aria-label', 'タスクについて相談・確認');
-    const chatPath = collaborationPath(row);
     const runCollaboration = async (control, failureMessage, callback) => {
       if (control.dataset.busy === 'true') return;
       control.dataset.busy = 'true';
@@ -5777,29 +5858,8 @@
         control.setAttribute('aria-busy', 'false');
       }
     };
-    const chat = button('チャット', 'messageSquare', () => runCollaboration(chat, 'このタスクのチャットを開けません', async () => {
-      if (!chatPath || typeof window.openEntityChatForPath !== 'function') throw new Error('このタスクのチャットを開けません');
-      const opened = await window.openEntityChatForPath(chatPath);
-      if (opened === false) throw new Error('このタスクのチャットを開けません');
-      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
-        detail: { kind: 'chat', path: row.path, resolvedPath: chatPath },
-      }));
-      status('このタスクのチャットを開きました');
-    }));
-    chat.dataset.e2eId = 'gb-production-task-collaboration-chat';
-    chat.dataset.gbTooltip = 'このタスクのチャットで相談し、ファイルを共有します';
-    const note = button('ノート', 'fileText', () => runCollaboration(note, 'このタスクのノートを開けません', async () => {
-      if (!row.path || typeof openPage !== 'function') throw new Error('このタスクのノートを開けません');
-      await openPage(row.name || '制作タスク', row.path);
-      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
-        detail: { kind: 'note', path: row.path },
-      }));
-      status('このタスクのノートを開きました');
-    }));
-    note.dataset.e2eId = 'gb-production-task-collaboration-note';
-    note.dataset.gbTooltip = 'このタスクのノートを開きます';
-    const annotation = button('注釈', 'messagesSquare', () => runCollaboration(annotation, 'このタスクの注釈を開けません', async () => {
-      if (!row.path || typeof openPage !== 'function' || typeof openRightPanelTab !== 'function') throw new Error('このタスクの注釈を開けません');
+    const annotation = button('アノテート', 'squarePen', () => runCollaboration(annotation, 'このタスクのアノテートを開けません', async () => {
+      if (!row.path || typeof openPage !== 'function' || typeof openRightPanelTab !== 'function') throw new Error('このタスクのアノテートを開けません');
       await openPage(row.name || '制作タスク', row.path);
       openRightPanelTab('annotation', { surface: 'main' });
       const annotationOpened = document.getElementById('right-panel')?.classList.contains('open')
@@ -5808,11 +5868,11 @@
         document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
           detail: { kind: 'annotation', path: row.path },
         }));
-        status('このタスクの注釈を開きました');
-      } else throw new Error('このタスクの注釈を開けません');
+        status('このタスクのアノテートを開きました');
+      } else throw new Error('このタスクのアノテートを開けません');
     }));
     annotation.dataset.e2eId = 'gb-production-task-collaboration-annotation';
-    annotation.dataset.gbTooltip = 'このタスクの注釈を開きます';
+    annotation.dataset.gbTooltip = 'このタスクのアノテートを開きます';
     const notifications = button('通知', 'bell', () => runCollaboration(notifications, '通知を確認できません', async () => {
       const calendar = componentFor(options);
       if (typeof calendar?._checkAlarms !== 'function') throw new Error('通知を確認できません');
@@ -5821,7 +5881,7 @@
     }));
     notifications.dataset.e2eId = 'gb-production-task-collaboration-notifications';
     notifications.dataset.gbTooltip = '現在の通知を確認します';
-    collaboration.append(chat, note, annotation, notifications);
+    collaboration.append(annotation, notifications);
     form.appendChild(actions);
     form.appendChild(collaboration);
     window.MeldexProductionUiAvailability?.markWriteForm?.(form);
@@ -5881,67 +5941,39 @@
         if (savingState) savingState.saveInFlight = false;
       }
     });
-    content.append(header, form, classificationEditor(row, component, options));
+    content.append(header, form, taskTopicResources(row), classificationEditor(row, component, options));
   }
 
   function buildShell(body, state, options) {
     body.replaceChildren();
     const shell = document.createElement('div');
     shell.className = 'gb-production-sidebar';
-    const tabs = document.createElement('div');
-    tabs.className = 'gb-production-sidebar-tabs';
-    tabs.setAttribute('role', 'tablist');
-    tabs.setAttribute('aria-label', 'スケジュールのオプション');
     state.sidebarDomId = state.sidebarDomId || `gb-production-sidebar-${++SIDEBAR_ID_SEQ}`;
     const panelId = `${state.sidebarDomId}-panel`;
-    const activateMode = (key, focusAfterActivation = false) => {
-      if (state.mode === key) return;
-      runAfterDiscardConfirmation(body, false, () => render(body, {
-        ...options,
-        mode: key,
-        focusSidebarMode: focusAfterActivation ? key : '',
-      }));
-    };
-    MODES.forEach(([key, label, iconName]) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.className = 'gb-production-sidebar-tab' + (state.mode === key ? ' is-active' : '');
-      tab.dataset.productionSidebarMode = key;
-      tab.dataset.e2eId = `gb-production-sidebar-${key}`;
-      tab.id = `${state.sidebarDomId}-tab-${key}`;
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-controls', panelId);
-      tab.setAttribute('aria-selected', state.mode === key ? 'true' : 'false');
-      tab.tabIndex = state.mode === key ? 0 : -1;
-      tab.append(icon(iconName), document.createTextNode(label));
-      tab.addEventListener('click', () => activateMode(key));
-      tabs.appendChild(tab);
+    const entrances = document.createElement('div');
+    entrances.className = 'gb-production-sidebar-entrances';
+    entrances.setAttribute('role', 'group');
+    entrances.setAttribute('aria-label', '制作管理の主要操作');
+    const project = button('プロジェクト', 'folderKanban', () => {
+      runAfterDiscardConfirmation(body, false, () => options.component?._selectProductionTab?.('works'));
     });
-    tabs.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      const tabButtons = [...tabs.querySelectorAll('[role="tab"]')].filter(tab => !tab.disabled);
-      const currentIndex = tabButtons.indexOf(event.target.closest('[role="tab"]'));
-      if (currentIndex < 0 || !tabButtons.length) return;
-      event.preventDefault();
-      const nextIndex = event.key === 'Home' ? 0
-        : event.key === 'End' ? tabButtons.length - 1
-        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabButtons.length) % tabButtons.length;
-      const nextMode = tabButtons[nextIndex].dataset.productionSidebarMode;
-      tabButtons[nextIndex].focus();
-      activateMode(nextMode, true);
+    project.dataset.e2eId = 'gb-production-sidebar-open-projects';
+    const settings = button('制作設定', 'settings2', () => {
+      window.MeldexProductionSettingsDialog?.open?.({ trigger: settings, component: options.component });
     });
+    settings.dataset.e2eId = 'gb-production-sidebar-open-settings';
+    const allocation = button('自動割り当て', 'calculator', () => {
+      const selectedTaskPaths = state.row?.path ? [state.row.path] : [];
+      window.MeldexSchedulerUi?.openAutoAllocation?.({ selectedTaskPaths });
+    });
+    allocation.dataset.e2eId = 'gb-production-sidebar-open-allocation';
+    entrances.append(project, settings, allocation);
     const content = document.createElement('div');
     content.className = 'gb-production-sidebar-content';
     content.id = panelId;
-    content.setAttribute('role', 'tabpanel');
-    content.setAttribute('aria-labelledby', `${state.sidebarDomId}-tab-${state.mode}`);
-    shell.append(tabs, content);
+    content.setAttribute('aria-label', '選択中の制作タスク');
+    shell.append(entrances, content);
     body.appendChild(shell);
-    if (options.focusSidebarMode === state.mode) {
-      queueMicrotask(() => body.querySelector(
-        `[data-production-sidebar-mode="${state.mode}"]`
-      )?.focus?.());
-    }
     return content;
   }
 
@@ -5950,7 +5982,10 @@
     notice.className = 'gb-production-task-list-sidebar-note';
     notice.dataset.e2eId = 'gb-production-task-list-sidebar-note';
     const title = document.createElement('strong');
-    title.innerHTML = 'タスクリストは表で編集します ' + fieldHelp('タスク詳細は、カレンダー上の制作予定を選んだときだけ表示されます。');
+    title.innerHTML = 'タスクリストは表で編集します ' + fieldHelp(
+      'タスク詳細は、カレンダー上の制作予定を選んだときだけ表示されます。',
+      { e2eId: 'gb-production-task-list-sidebar-help' },
+    );
     notice.append(title);
     content.appendChild(notice);
   }
@@ -6050,21 +6085,11 @@
   }
 
   function showTemplates(component) {
-    const body = optionBody(true);
-    if (!body) return;
-    runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'taskSettings', component });
-      openMobileProductionDrawer(body, 'タスク設定');
-    });
+    window.MeldexProductionSettingsDialog?.open?.({ component });
   }
 
   function showActions(component) {
-    const body = optionBody(true);
-    if (!body) return;
-    runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'allocation', component });
-      openMobileProductionDrawer(body, '割り当て');
-    });
+    window.MeldexProductionSettingsDialog?.open?.({ component });
   }
 
   function prepareTaskListSurface(component, onConfirmed) {
@@ -8334,7 +8359,7 @@
     if (staffSnapshot.duplicates?.length) {
       const duplicate = staffSnapshot.duplicates[0];
       const entries = (duplicate.entries || []).join('、');
-      const error = new Error(`ユーザー「${duplicate.user}」が複数のスタッフに設定されています: ${entries}`);
+      const error = new Error(`ユーザー「${duplicate.user}」が複数のユーザー行に設定されています: ${entries}`);
       error.status = 409;
       throw error;
     }
@@ -8663,7 +8688,7 @@
       throw new Error(`provider固定の制作管理読み込みに未対応の経路です: ${path}`);
     };
     const staffResolver = window.MeldexStaffRegistryCloudTwin?.createBoundStaffResolver?.(provider, requestIdentity);
-    if (!staffResolver) throw new Error('Cloudスタッフの固定読み込み経路を利用できません');
+    if (!staffResolver) throw new Error('Cloudユーザーの固定読み込み経路を利用できません');
     let requestContext = Object.freeze({ ...requestIdentity, provider, productionRequest, staffResolver });
     const adapter = await personalAdapter(provider);
     const blocked = window.MeldexProductionUiAvailability?.current?.().blocked === true;
@@ -10173,7 +10198,8 @@
       title: '自動割り当て', body, variant: modalVariant(), extraClass: 'gb-scheduler-modal',
       returnFocus: options.trigger,
     }); modal.modal.dataset.e2eId = 'scheduler-allocation-dialog';
-    const cancel = button('キャンセル', 'x', () => modal.close('cancel'));
+    modal.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'scheduler-allocation-header-close');
+    const cancel = button('キャンセル', 'x', () => modal.close('cancel'), { e2eId: 'scheduler-allocation-footer-cancel' });
     const run = button('案を作成', 'sparkles', async () => {
       const request = allocationRequest(body, selectedPaths);
       if (selectedPaths.length && !request.task_paths.length) {
@@ -10442,7 +10468,7 @@
       };
       const grid = document.createElement('div'); grid.className = 'gb-scheduler-capability-grid';
       const controls = new Map();
-      [['admin', '管理者'], ['schedule_manager', 'スケジュール管理者'], ['member', 'メンバー'], ['viewer', '閲覧']].forEach(([role, label]) => {
+      [['admin', '管理者'], ['schedule_manager', 'スケジュール管理者'], ['member', 'ユーザー'], ['viewer', '閲覧のみ']].forEach(([role, label]) => {
         const row = document.createElement('fieldset'); row.className = 'gb-scheduler-capability-role';
         row.dataset.e2eId = `scheduler-capability-role-${role}`;
         const legend = document.createElement('legend'); legend.textContent = label; row.appendChild(legend);
@@ -10504,6 +10530,12 @@
 
   function injectToolbarSelectors() {
     document.querySelectorAll('.gb-toolbar-cal').forEach(toolbar => {
+      const settingsButton = toolbar.querySelector('[data-cal-action="productionManagement"]');
+      if (settingsButton) {
+        settingsButton.title = '制作設定';
+        settingsButton.setAttribute('aria-label', '制作設定');
+        settingsButton.dataset.gbTooltip = '制作設定';
+      }
       if (toolbar.querySelector('[data-scheduler-toolbar-selector]')) return;
       const selector = createProposalSelector({ toolbar: true, e2eId: 'scheduler-toolbar-proposal-selector' });
       selector.dataset.schedulerToolbarSelector = '1';
@@ -10638,8 +10670,10 @@
         selection: null,
         pendingTabKey: '',
         lastTaskSheetName: component.state?.productionTaskLastSheetName || '',
-        // タスクリスト面で最後に見ていたのが「すべて」か作品別か（surfaceタブ往復時の復元用）
+        // タスクリスト面で最後に見ていた保存ビュー（surfaceタブ往復時の復元用）
         lastTasksMode: component.state?.productionTaskSelection?.kind === 'all' ? 'all' : '',
+        // アプリ起動後、最初にタスクリストへ入る時だけ「すべて」を既定にする。
+        initialTaskListPending: true,
         addingList: false,
         // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ判定（undefined=未確認、
         // true=開始済み、false=未セットアップ=空状態カードを表示中）。
@@ -10734,6 +10768,9 @@
   }
 
   function productionSheetDisplayReady(state) {
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      return !!state.allView?.isReady?.();
+    }
     const path = String(state.selection?.path || '');
     const ctx = state.embed?.ctx;
     return !!path && !state.sheetsLoading && !state.embedLoading
@@ -10744,19 +10781,9 @@
 
   function syncSheetDisplayToolbar(component, state) {
     const ready = productionSheetDisplayReady(state);
-    const allSelected = state.selection?.kind === 'all';
     ['gb-production-sheet-auto-fit', 'gb-production-sheet-column-display-order', 'gb-production-sheet-filter', 'gb-production-sheet-sort'].forEach(id => {
       const button = component.el?.querySelector?.(`[data-e2e-id="${id}"]`);
       if (!button) return;
-      if (allSelected) {
-        // 「すべて」は全作品を横断するフラット表（単一dbPath前提の汎用シート表示操作とは
-        // 別実装）のため、こちらのツールバーボタンは読み込み待ち(aria-busy)ではなく
-        // 明示的に無効として案内する。絞り込み・並べ替えは表の上のコントロールで行う。
-        button.disabled = true;
-        button.setAttribute('aria-busy', 'false');
-        button.title = 'すべてタブでは表の上の絞り込み・並べ替えを利用してください';
-        return;
-      }
       button.disabled = !ready;
       button.setAttribute('aria-busy', ready ? 'false' : 'true');
       if (!ready) button.title = '表示中のシートを読み込んでから利用できます';
@@ -10832,7 +10859,7 @@
     syncSheetDisplayToolbar(component, state);
     renderListBar(component, state);
     component._syncSurfaceControls?.();
-    if (state.selection) openSelectionIfNeeded(component, state);
+    if (state.selection && options.openSelection !== false) openSelectionIfNeeded(component, state);
     else state.allView?.setVisible(false);
   }
 
@@ -10843,6 +10870,12 @@
 
   function ensureSelectionDefault(component, state) {
     const requestedTab = state.pendingTabKey;
+    if (state.initialTaskListPending && (!requestedTab || requestedTab === 'tasks')) {
+      state.initialTaskListPending = false;
+      if (state.sheets.length) selectAllLists(component, state, { persist: true, open: false });
+      else state.selection = null;
+      return;
+    }
     if (requestedTab === 'tasks') {
       if (state.lastTasksMode === 'all' && state.sheets.length) {
         selectAllLists(component, state, { persist: false, open: false });
@@ -10910,7 +10943,7 @@
     return Promise.resolve(true);
   }
 
-  // 「すべて」: 全作品のタスクリストを縦積みで一括表示する（各ブロックはその場で編集可能）
+  // 「すべて」: 一つの論理シートから作品フィルター無しの保存ビューを選ぶ。
   function selectAllLists(component, state, options = {}) {
     if (!state.sheets.length) return Promise.resolve(false);
     state.addingList = false;
@@ -10970,7 +11003,7 @@
   async function openSelectionIfNeeded(component, state, options = {}) {
     syncSheetDisplayToolbar(component, state);
     if (!state.selection || !state.embed) return false;
-    if (state.selection.kind === 'all') return openAllView(component, state, options);
+    if (state.selection.kind === 'all' || state.selection.kind === 'task') return openTaskSheetView(component, state, options);
     state.allView?.setVisible(false);
     state.embed.setVisible(true);
     if (!state.selection.path) {
@@ -11018,8 +11051,8 @@
     return opened;
   }
 
-  // 「すべて」表示用の縦積みビューを開く（インスタンスは初回選択時に生成して使い回す）
-  async function openAllView(component, state, options = {}) {
+  // 「すべて」と各作品は同じ論理シートの保存ビューとして、一つのインスタンスで切り替える。
+  async function openTaskSheetView(component, state, options = {}) {
     if (!window.MeldexProductionAllView) {
       notify('すべて表示を初期化できませんでした', true);
       return false;
@@ -11027,8 +11060,13 @@
     if (!state.allView) {
       state.allView = window.MeldexProductionAllView.create({
         idSuffix: (component.tabId || component.paneId || 'production') + '-all',
-        // 「作品タブで開く」導線: フラット表の作品セルから作品別タブへジャンプする
+        // 作品セルから対応する保存ビューへ移動する。
         onOpenWork: sheet => selectTaskList(component, state, sheet),
+        onSelectView: workTitle => {
+          if (!workTitle) return selectAllLists(component, state);
+          const sheet = state.sheets.find(item => String(item?.work_title || item?.sheet_name || '') === String(workTitle));
+          return sheet ? selectTaskList(component, state, sheet) : false;
+        },
         // 行クリック: フラット表はセル直接編集を持たないため、既存のタスク詳細サイドバーを
         // 強制的に開く（作品別タブでは埋め込みシート自体が編集場所のため通常は抑止される）
         onOpenTask: row => window.MeldexProductionSidebar?.openTask?.(row, component, { forceDetail: true }),
@@ -11045,6 +11083,7 @@
     const opened = await state.allView.open(orderedSheets, {
       pmRoot: state.pmRootPath,
       refresh: options.refreshCurrent === true,
+      viewWork: state.selection?.kind === 'task' ? state.selection.workTitle : '',
     });
     syncSheetDisplayToolbar(component, state);
     return opened;
@@ -11052,7 +11091,7 @@
 
   async function refreshEmbedAfterMutation(component) {
     const state = stateFor(component);
-    if (state.selection?.kind === 'all') {
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
       if (!state.allView?.isMounted?.()) return { ok: true, skipped: true };
       return { ok: !!(await state.allView.refresh()) };
     }
@@ -11136,11 +11175,22 @@
       try {
         const created = await api().createTaskSheet({ work_title: workTitle });
         state.addingList = false;
-        await loadSheetsAndMeta(component, state, { force: true });
-        const sheet = state.sheets.find(item => item.sheet_name === created.sheet_name)
-          || { sheet_name: created.sheet_name, work_title: created.work_title, dir: created.dir };
-        selectTaskList(component, state, sheet);
-        notify(`「${sheet.work_title}」のタスクリストを追加しました`);
+        const createdSheet = {
+          sheet_name: created.sheet_name,
+          work_title: created.work_title,
+          dir: created.dir,
+        };
+        const existingIndex = state.sheets.findIndex(item => item.sheet_name === created.sheet_name);
+        if (existingIndex >= 0) state.sheets.splice(existingIndex, 1, { ...state.sheets[existingIndex], ...createdSheet });
+        else state.sheets.push(createdSheet);
+        // 保存成功後は、全管理リストの再読込を待たず新しいタブを表示する。
+        // 大きい制作管理データでも「確定」を押したままに見えず、再読込失敗時も
+        // 作成済みリストへの入口を失わない。続く強制読込で正規の一覧へ照合する。
+        await selectTaskList(component, state, createdSheet);
+        notify(`「${createdSheet.work_title}」のタスクリストを追加しました`);
+        // createTaskSheetの応答が正規のsheet ID/pathを返すため、ここで全管理リストを
+        // もう一度ロック付きで読み直す必要はない。通常の更新操作・再表示時に照合する。
+        // 直後の別操作を長いcatalog読込で塞がず、利用者のタブ移動も上書きしない。
       } catch (error) {
         notify(error?.message || 'タスクリストを追加できませんでした', true);
         confirmBtn.disabled = false;
@@ -11200,8 +11250,8 @@
         canSwapRight: index < arranged.visible.length - 1,
         onChanged: () => {
           renderListBar(component, state);
-          // 「すべて」表示中はブロック順もタブ順へ即追従させる
-          if (state.selection?.kind === 'all') openSelectionIfNeeded(component, state);
+          // 同じ論理シートの保存ビュー順へ即追従させる。
+          if (state.selection?.kind === 'all' || state.selection?.kind === 'task') openSelectionIfNeeded(component, state);
         },
         onHide: () => hideListTab(component, state, sheet),
       });
@@ -11388,9 +11438,9 @@
     root.dataset.e2eId = 'gb-production-task-workspace';
 
     const listBar = document.createElement('div');
-    listBar.className = 'gb-production-list-switch';
+    listBar.className = 'gb-production-list-switch db-view-tabs';
     listBar.setAttribute('role', 'tablist');
-    listBar.setAttribute('aria-label', '作品別タスクリスト');
+    listBar.setAttribute('aria-label', 'タスクリストのシートビュー');
     listBar.dataset.e2eId = 'gb-production-list-switch';
     listBar.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -11500,17 +11550,25 @@
     const state = stateFor(this);
     // 管理リスト（作業対象/作業内容/作業規模/スタッフ）を表示中は、選択行が
     // タスクファイルではないため再計算対象として渡さない。
-    // 「すべて」表示中は全ブロックの選択行を集約して渡す。
-    const selectedTaskPaths = state.selection?.kind === 'task'
-      ? (state.embed?.getSelectedEntryPaths?.() || [])
-      : state.selection?.kind === 'all'
-        ? (state.allView?.getSelectedEntryPaths?.() || [])
-        : [];
+    // すべて／作品別は同じ論理シート面なので、同じ選択集合から渡す。
+    const selectedTaskPaths = state.selection?.kind === 'task' || state.selection?.kind === 'all'
+      ? (state.allView?.getSelectedEntryPaths?.() || [])
+      : [];
     window.openProductionRecalculate({ trigger, selectedTaskPaths });
   };
 
   CalendarComponent.prototype._runProductionSheetDisplayAction = function(action, trigger) {
     const state = stateFor(this);
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      if (!state.allView?.isReady?.()) {
+        notify('表示中のシートを読み込んでから操作してください', true);
+        return false;
+      }
+      if (action === 'sheetAutoFit') return state.allView.autoFitColumns();
+      if (action === 'sheetColumnDisplayOrder') return !!state.allView.showColumnDisplayOrder();
+      if (action === 'sheetFilter') return state.allView.focusFilters();
+      if (action === 'sheetSort') return state.allView.focusSort();
+    }
     const ctx = state.embed?.ctx;
     const dbPath = String(state.selection?.path || '');
     if (!productionSheetDisplayReady(state) || !ctx || ctx.dbPath !== dbPath) {
@@ -11555,7 +11613,7 @@
       state._emptyStateCardEl.remove();
       state._emptyStateCardEl = null;
     }
-    if (state.selection?.kind === 'all' && state.allView?.isMounted?.()) {
+    if ((state.selection?.kind === 'all' || state.selection?.kind === 'task') && state.allView?.isMounted?.()) {
       state.embed?.setVisible(false);
       state.allView.setVisible(true);
     } else {
@@ -11601,7 +11659,7 @@
     if (!requested) return false;
     if (this._surface !== 'productionTasks') this.setSurface('productionTasks');
     const state = stateFor(this);
-    await loadSheetsAndMeta(this, state, { force: true });
+    await loadSheetsAndMeta(this, state, { force: true, openSelection: false });
     const sheet = state.sheets.find(item => String(item?.work_title || '').trim() === requested);
     if (!sheet) return false;
     return await selectTaskList(this, state, sheet, { refreshCurrent: true });
@@ -11860,8 +11918,6 @@
       pivotData: null,
       filter: 'disabled',
       viewMode: 'welcome',
-      smartDb: null,
-      smartDbData: null,
       containerEl: instance.containerEl,
       tableId: instance.tableId,
       _selectedEntities: new Set(),
@@ -12366,6 +12422,313 @@
 
 ;
 
+/* === gb-production-settings-dialog.js === */
+;
+/* gb-production-settings-dialog.js: work-template hierarchy with live sheet editing. */
+(function () {
+  'use strict';
+
+  const CHILD_SHEETS = Object.freeze([
+    { key: 'processes', label: '工程構成', sheet: 'タスクテンプレート', icon: 'listTree' },
+    { key: 'targets', label: '作業対象', sheet: '作業対象リスト', icon: 'crosshair' },
+    { key: 'contents', label: '作業内容', sheet: '作業内容リスト', icon: 'listChecks' },
+    { key: 'scales', label: '作業規模', sheet: '作業規模リスト', icon: 'ruler' },
+  ]);
+  const SELECTIONS = new Map();
+  let activeDialog = null;
+
+  function status(message, error = false) {
+    if (typeof showStatus === 'function') showStatus(message, error);
+  }
+
+  function icon(name, size = 14) {
+    const span = document.createElement('span');
+    span.className = 'gb-production-settings-icon';
+    if (typeof lucide === 'function') span.innerHTML = lucide(name, size);
+    return span;
+  }
+
+  function rowIdentity(row) {
+    return String(row?.properties?.['テンプレートID'] || row?.id || row?.path || row?.name || '').trim();
+  }
+
+  function rowLabel(row) {
+    return String(row?.name || row?.properties?.['テンプレート名'] || '名称未設定のテンプレート').trim();
+  }
+
+  function pathJoin(root, sheet) {
+    return String(root || '').replace(/[\\/]+$/, '') + '/シート/' + sheet;
+  }
+
+  function writeAvailabilityText() {
+    const availability = window.MeldexProductionUiAvailability?.current?.();
+    if (availability?.blocked) return { message: availability.reason || '閲覧専用です', blocked: true };
+    return { message: '編集できます。変更はシートの保存経路へ反映されます', blocked: false };
+  }
+
+  function relationIds(entity, propName) {
+    const values = Array.isArray(entity?.[propName]) ? entity[propName] : [];
+    return values.map(item => String(item?.id || item?.value || item || '').trim()).filter(Boolean);
+  }
+
+  function applyTemplateFilter(embed, templateId) {
+    const pivotData = embed?.ctx?.pivotData;
+    if (!pivotData?.entities || typeof pivotData.entities !== 'object') return false;
+    const entities = Object.fromEntries(Object.entries(pivotData.entities).filter(([, entity]) => (
+      relationIds(entity, '作業テンプレート').includes(templateId)
+    )));
+    embed.ctx.pivotData = { ...pivotData, entities };
+    embed.ctx._selectedEntities?.clear?.();
+    if (typeof renderPivot === 'function') renderPivot(embed.ctx);
+    return true;
+  }
+
+  function selectionFor(root, templates) {
+    const previous = SELECTIONS.get(root) || {};
+    const template = templates.find(row => rowIdentity(row) === previous.templateId) || templates[0] || null;
+    const child = CHILD_SHEETS.find(item => item.key === previous.childKey) || CHILD_SHEETS[0];
+    return { template, child };
+  }
+
+  function closeExisting() {
+    if (!activeDialog?.modal?.isConnected) return false;
+    activeDialog.modal.querySelector('.gb-modal-close')?.focus?.();
+    return true;
+  }
+
+  async function loadContext() {
+    const api = window.MeldexProductionApi;
+    if (!api?.summary || !api?.list) throw new Error('制作管理APIを初期化できませんでした');
+    const [summary, templateResult] = await Promise.all([
+      api.summary(),
+      api.list('作業テンプレート', { limit: 500 }),
+    ]);
+    const root = String(summary?.root || '').trim();
+    if (!root) throw new Error('制作管理の保存場所を確認できませんでした');
+    return { root, templates: Array.isArray(templateResult?.rows) ? templateResult.rows : [] };
+  }
+
+  async function open(options = {}) {
+    if (closeExisting()) return activeDialog;
+    if (!window.GBUI?.createModal || !window.MeldexProductionSheetEmbed?.create) {
+      status('制作設定を初期化できませんでした', true);
+      return null;
+    }
+
+    const trigger = options.trigger || document.activeElement;
+    const body = document.createElement('div');
+    body.className = 'gb-production-settings-dialog';
+    body.dataset.e2eId = 'production-settings-dialog-body';
+    body.setAttribute('aria-busy', 'true');
+
+    const loading = document.createElement('div');
+    loading.className = 'gb-production-settings-state';
+    loading.dataset.e2eId = 'production-settings-loading';
+    loading.setAttribute('role', 'status');
+    loading.textContent = '制作設定を読み込み中…';
+    body.appendChild(loading);
+
+    let embed = null;
+    let closed = false;
+    const modalApi = window.GBUI.createModal({
+      title: '制作設定',
+      body,
+      variant: window.matchMedia?.('(max-width: 700px)')?.matches ? 'mobile-sheet' : 'standard',
+      extraClass: 'gb-production-settings-modal',
+      returnFocus: trigger,
+      onClose: () => {
+        closed = true;
+        embed?.destroy?.();
+        if (activeDialog === modalApi) activeDialog = null;
+      },
+    });
+    modalApi.modal.dataset.e2eId = 'production-settings-dialog';
+    modalApi.modal.setAttribute('aria-describedby', 'production-settings-write-state');
+    activeDialog = modalApi;
+    modalApi.open();
+
+    try {
+      const { root, templates } = await loadContext();
+      if (closed) return modalApi;
+      const current = selectionFor(root, templates);
+      const layout = document.createElement('div');
+      layout.className = 'gb-production-settings-layout';
+      const nav = document.createElement('nav');
+      nav.className = 'gb-production-settings-nav';
+      nav.setAttribute('aria-label', '作業テンプレートと設定項目');
+      const sheetHost = document.createElement('div');
+      sheetHost.className = 'gb-production-settings-sheet';
+      sheetHost.dataset.e2eId = 'production-settings-sheet';
+      const sheetState = document.createElement('div');
+      sheetState.className = 'gb-production-settings-sheet-state';
+      sheetState.setAttribute('role', 'status');
+      sheetState.setAttribute('aria-live', 'polite');
+      sheetState.dataset.e2eId = 'production-settings-sheet-state';
+      const embedHost = document.createElement('div');
+      embedHost.className = 'gb-production-settings-embed';
+      sheetHost.append(sheetState, embedHost);
+      const writeState = document.createElement('div');
+      writeState.id = 'production-settings-write-state';
+      writeState.className = 'gb-production-settings-write-state';
+      writeState.setAttribute('role', 'status');
+      writeState.dataset.e2eId = 'production-settings-write-state';
+      const availability = writeAvailabilityText();
+      writeState.textContent = availability.message;
+      writeState.classList.toggle('is-blocked', availability.blocked);
+      layout.append(nav, sheetHost);
+      body.replaceChildren(writeState, layout);
+      body.setAttribute('aria-busy', 'false');
+
+      embed = window.MeldexProductionSheetEmbed.create({ idSuffix: `production-settings-${Date.now()}` });
+      embed.mount(embedHost);
+      let selectedTemplate = current.template;
+      let selectedChild = current.child;
+      let openSeq = 0;
+      let addingRow = false;
+
+      embedHost.addEventListener('click', async event => {
+        const addButton = event.target.closest?.('.row-add-btn');
+        if (!addButton || addingRow || !selectedTemplate || !selectedChild) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
+        addingRow = true;
+        body.setAttribute('aria-busy', 'true');
+        sheetState.classList.remove('is-error');
+        sheetState.textContent = `${selectedChild.label}へ行を追加中…`;
+        try {
+          await window.MeldexProductionApi.createEntry({
+            sheet: selectedChild.sheet,
+            name: '無題',
+            properties: { '作業テンプレート': rowIdentity(selectedTemplate) },
+          });
+          await embed.refresh();
+          applyTemplateFilter(embed, rowIdentity(selectedTemplate));
+          sheetState.textContent = `${rowLabel(selectedTemplate)} / ${selectedChild.label} を表示中`;
+        } catch (error) {
+          sheetState.textContent = error?.message || `${selectedChild.label}へ行を追加できませんでした`;
+          sheetState.classList.add('is-error');
+        } finally {
+          addingRow = false;
+          body.setAttribute('aria-busy', 'false');
+        }
+      }, true);
+
+      const openSheet = async () => {
+        if (!selectedTemplate || !selectedChild) return;
+        const seq = ++openSeq;
+        const templateId = rowIdentity(selectedTemplate);
+        SELECTIONS.set(root, { templateId, childKey: selectedChild.key });
+        nav.querySelectorAll('[data-production-settings-template]').forEach(button => {
+          const active = button.dataset.productionSettingsTemplate === templateId;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-expanded', active ? 'true' : 'false');
+        });
+        nav.querySelectorAll('[data-production-settings-child]').forEach(button => {
+          const active = button.dataset.productionSettingsTemplate === templateId
+            && button.dataset.productionSettingsChild === selectedChild.key;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-current', active ? 'page' : 'false');
+        });
+        sheetState.classList.remove('is-error');
+        sheetState.textContent = `${rowLabel(selectedTemplate)} / ${selectedChild.label} を読み込み中…`;
+        body.setAttribute('aria-busy', 'true');
+        if (embed.ctx) {
+          embed.ctx.productionTemplateId = templateId;
+          embed.ctx.productionTemplateName = rowLabel(selectedTemplate);
+          embed.ctx.productionTemplateRelationProp = '作業テンプレート';
+        }
+        try {
+          const opened = await embed.open(pathJoin(root, selectedChild.sheet), {
+            forceReload: true,
+            productionTemplateId: templateId,
+            productionTemplateName: rowLabel(selectedTemplate),
+          });
+          if (closed || seq !== openSeq) return;
+          if (!opened) throw new Error(`${selectedChild.label}を読み込めませんでした`);
+          // 埋め込み側の行追加・relation候補絞り込みが、選択中テンプレートを安定IDで参照する。
+          if (embed.ctx) {
+            embed.ctx.productionTemplateId = templateId;
+            embed.ctx.productionTemplateName = rowLabel(selectedTemplate);
+            embed.ctx.productionTemplateRelationProp = '作業テンプレート';
+          }
+          applyTemplateFilter(embed, templateId);
+          sheetState.textContent = `${rowLabel(selectedTemplate)} / ${selectedChild.label} を表示中`;
+        } catch (error) {
+          if (closed || seq !== openSeq) return;
+          sheetState.textContent = `${error?.message || selectedChild.label + 'を読み込めませんでした'}。権限、ロック、接続を確認して再試行してください`;
+          sheetState.classList.add('is-error');
+        } finally {
+          if (!closed && seq === openSeq) body.setAttribute('aria-busy', 'false');
+        }
+      };
+
+      const renderNav = () => {
+        nav.replaceChildren();
+        if (!templates.length) {
+          const empty = document.createElement('p');
+          empty.className = 'gb-production-settings-empty';
+          empty.textContent = '作業テンプレートがありません。制作管理を再読み込みしてください';
+          nav.appendChild(empty);
+          sheetState.textContent = '表示できる設定がありません';
+          return;
+        }
+        templates.forEach(template => {
+          const templateId = rowIdentity(template);
+          const group = document.createElement('div');
+          group.className = 'gb-production-settings-template-group';
+          const parent = document.createElement('button');
+          parent.type = 'button';
+          parent.className = 'gb-production-settings-template';
+          parent.dataset.productionSettingsTemplate = templateId;
+          parent.dataset.e2eId = 'production-settings-template';
+          parent.append(icon('layoutTemplate'), document.createTextNode(rowLabel(template)));
+          parent.addEventListener('click', () => {
+            selectedTemplate = template;
+            selectedChild = CHILD_SHEETS[0];
+            renderNav();
+            openSheet();
+          });
+          const children = document.createElement('div');
+          children.className = 'gb-production-settings-children';
+          CHILD_SHEETS.forEach(child => {
+            const childButton = document.createElement('button');
+            childButton.type = 'button';
+            childButton.className = 'gb-production-settings-child';
+            childButton.dataset.productionSettingsTemplate = templateId;
+            childButton.dataset.productionSettingsChild = child.key;
+            childButton.dataset.e2eId = `production-settings-child-${child.key}`;
+            childButton.append(icon(child.icon), document.createTextNode(child.label));
+            childButton.addEventListener('click', () => {
+              selectedTemplate = template;
+              selectedChild = child;
+              openSheet();
+            });
+            children.appendChild(childButton);
+          });
+          group.append(parent, children);
+          nav.appendChild(group);
+        });
+      };
+
+      renderNav();
+      await openSheet();
+    } catch (error) {
+      if (!closed) {
+        body.setAttribute('aria-busy', 'false');
+        loading.classList.add('is-error');
+        loading.textContent = error?.message || '制作設定を読み込めませんでした';
+        status(loading.textContent, true);
+      }
+    }
+    return modalApi;
+  }
+
+  window.MeldexProductionSettingsDialog = Object.freeze({ open });
+})();
+
+;
+
 /* === gb-tool-calendar-production-list-tabs.js === */
 ;
 /* gb-tool-calendar-production-list-tabs.js
@@ -12704,8 +13067,7 @@
 /* === gb-tool-calendar-production-all-view.js === */
 ;
 /* gb-tool-calendar-production-all-view.js
- * スケジュール タスクリスト面の「すべて」タブ用に、全作品のタスクを1枚のフラット表で
- * 横断表示する独立モジュール。
+ * スケジュールの全タスクを一つの論理シートとして表示するモジュール。
  *
  * 実装方式（依頼8での再設計）: 集約用の実シートは存在しない（作品別シートが正）ため、旧版は
  * 「作品ごとの生きたシート表を縦に積む」方式だったが、作品ごとに独立表示が分かれるため
@@ -12715,11 +13077,10 @@
  * 未使用だったため、それを使って1枚のフラット表（行 = タスク、先頭列 = 作品）へ作り直す。
  * フィルタ・検索・ソート・ページングはすべてサーバー側へ委譲する。
  *
- * 編集は第一段階では行わない（セル直接編集は作品間の名前衝突・単一dbPath前提の汎用機構との
- * 相性が悪いため見送り）。行クリックで既存のタスク詳細サイドバー（MeldexProductionSidebar.
- * openTask、patchEntry経由の管理された書込経路）を開いて編集する。表示設定（フィルタ・
- * ソート）は localStorage にのみ保存し、シートデータ・view configへは一切書き込まない
- * （制作管理シートの暗黙sheet-store化を防止するガードに抵触しないため）。
+ * 「すべて」と各作品は同じ表の保存ビューで、作品ビューは作品フィルターだけを固定する。
+ * 列順・列幅・非表示列・検索以外の絞り込み・並び替えは全ビューで共有し、localStorageへ
+ * 保存する。行編集は既存の管理された詳細サイドバー（patchEntry）を使うため、作品別の
+ * 正本シートを一枚へ物理移行せず、既存データとDropbox同期契約を維持する。
  */
 (function () {
   'use strict';
@@ -12730,6 +13091,10 @@
   const LEGACY_LEVEL_NAMES = ['単位レベル1', '単位レベル2', '単位レベル3'];
   const LIMIT = 200;
   const SEARCH_DEBOUNCE_MS = 300;
+  const DEFAULT_COLUMN_WIDTHS = Object.freeze({
+    work: 160, name: 220, status: 100, assignee: 120, priority: 90,
+    planned: 180, duration: 130, level1: 120, level2: 120, level3: 120,
+  });
 
   // field はサーバー側 FIELD_ALIASES（Desktop: meldex_production_task_query.py、
   // Cloud: gb-production-management-cloud-task-event-query.js（旧
@@ -12763,7 +13128,7 @@
     return span;
   }
 
-  /* --- localStorage 表示設定（フィルタ・ソートのみ。シートデータは一切書き込まない） --- */
+  /* --- localStorage 表示設定（シートデータは一切書き込まない） --- */
 
   function _prefsKey(pmRoot) {
     return PREFS_PREFIX + String(pmRoot || '制作管理');
@@ -12783,10 +13148,40 @@
     try {
       if (typeof localStorage === 'undefined' || !instance._pmRoot) return;
       localStorage.setItem(_prefsKey(instance._pmRoot), JSON.stringify({
-        filters: { work: instance._filters.work, status: instance._filters.status, assignee: instance._filters.assignee },
+        filters: { status: instance._filters.status, assignee: instance._filters.assignee },
         sort: instance._sort,
+        columnOrder: instance._columnOrder,
+        columnWidths: instance._columnWidths,
+        hiddenColumns: instance._hiddenColumns,
       }));
     } catch { /* localStorage 不可時は表示設定の保存だけを諦める（機能自体は動く） */ }
+  }
+
+  function _normalizedColumnOrder(value) {
+    const known = new Set(COLUMN_DEFS.map(column => column.key));
+    const order = Array.isArray(value) ? value.map(String).filter(key => known.has(key)) : [];
+    COLUMN_DEFS.forEach(column => { if (!order.includes(column.key)) order.push(column.key); });
+    return order;
+  }
+
+  function _orderedColumns(instance, includeHidden = false) {
+    const byKey = new Map(COLUMN_DEFS.map(column => [column.key, column]));
+    const hidden = new Set(instance._hiddenColumns || []);
+    const ordered = _normalizedColumnOrder(instance._columnOrder).map(key => byKey.get(key)).filter(Boolean);
+    const visible = includeHidden ? ordered : ordered.filter(column => !hidden.has(column.key));
+    return visible.length ? visible : ordered.slice(0, 1);
+  }
+
+  function _columnWidth(instance, key) {
+    const requested = Number(instance._columnWidths?.[key]);
+    return Number.isFinite(requested) ? Math.max(72, Math.min(640, Math.round(requested))) : DEFAULT_COLUMN_WIDTHS[key] || 120;
+  }
+
+  function _columnLabel(instance, column) {
+    const levelIndex = column.key.startsWith('level') ? Number(column.key.slice(-1)) - 1 : -1;
+    return levelIndex >= 0
+      ? (instance._genericLabels[levelIndex] || DEFAULT_GENERIC_LABELS[levelIndex] || column.label)
+      : column.label;
   }
 
   /* --- 行データの表示用ヘルパー --- */
@@ -12908,11 +13303,11 @@
     COLUMN_DEFS.forEach((column, index) => {
       const th = instance._headerCells.get(column.key);
       if (!th) return;
-      const levelIndex = column.key.startsWith('level') ? Number(column.key.slice(-1)) - 1 : -1;
-      const label = levelIndex >= 0
-        ? (instance._genericLabels[levelIndex] || DEFAULT_GENERIC_LABELS[levelIndex] || column.label)
-        : column.label;
-      th.textContent = label + _sortIndicator(instance, column.field);
+      const label = _columnLabel(instance, column);
+      const labelEl = th.querySelector?.('.gb-production-task-sheet-header-label');
+      if (labelEl) labelEl.textContent = label + _sortIndicator(instance, column.field);
+      const resizeEl = th.querySelector?.('.gb-production-task-sheet-resize');
+      if (resizeEl) resizeEl.setAttribute('aria-label', `${label}の列幅を変更`);
       if (column.sortable) {
         th.setAttribute('aria-sort', instance._sort.field === column.field
           ? (instance._sort.direction === 'desc' ? 'descending' : 'ascending')
@@ -12922,8 +13317,108 @@
     });
   }
 
+  function _setColumnWidth(instance, key, width, persist = true) {
+    const next = _columnWidth({ _columnWidths: { [key]: width } }, key);
+    instance._columnWidths[key] = next;
+    instance._containerEl?.querySelectorAll?.('[data-column-key]').forEach(cell => {
+      if (cell.dataset.columnKey !== key) return;
+      cell.style.width = next + 'px';
+      cell.style.minWidth = next + 'px';
+      cell.style.maxWidth = next + 'px';
+    });
+    if (persist) _savePrefs(instance);
+  }
+
+  function _renderColumnLayout(instance) {
+    if (!instance._headRowEl || !instance._selectHeaderEl) return;
+    const headers = _orderedColumns(instance).map(column => instance._headerCells.get(column.key)).filter(Boolean);
+    headers.forEach(th => {
+      const width = _columnWidth(instance, th.dataset.columnKey);
+      th.style.width = width + 'px';
+      th.style.minWidth = width + 'px';
+      th.style.maxWidth = width + 'px';
+    });
+    instance._headRowEl.replaceChildren(instance._selectHeaderEl, ...headers);
+    _renderHeaderLabels(instance);
+    _renderTable(instance);
+  }
+
+  function _moveColumn(instance, fromKey, targetKey, before) {
+    if (!fromKey || !targetKey || fromKey === targetKey) return false;
+    const order = _normalizedColumnOrder(instance._columnOrder);
+    const fromIndex = order.indexOf(fromKey);
+    const targetIndex = order.indexOf(targetKey);
+    if (fromIndex < 0 || targetIndex < 0) return false;
+    order.splice(fromIndex, 1);
+    const nextTarget = order.indexOf(targetKey);
+    order.splice(nextTarget + (before ? 0 : 1), 0, fromKey);
+    instance._columnOrder = order;
+    _savePrefs(instance);
+    _renderColumnLayout(instance);
+    return true;
+  }
+
+  function _autoFitColumns(instance) {
+    _orderedColumns(instance).forEach(column => {
+      const label = _columnLabel(instance, column);
+      let maxChars = String(label || '').length + 3;
+      instance._rows.slice(0, 200).forEach(row => { maxChars = Math.max(maxChars, _cellText(instance, row, column).length); });
+      _setColumnWidth(instance, column.key, Math.max(72, Math.min(360, maxChars * 8 + 24)), false);
+    });
+    _savePrefs(instance);
+  }
+
+  function _showColumnSettings(instance) {
+    if (!window.GBUI?.createModal) {
+      _notify('列見出しをドラッグして並べ替え、右端をドラッグして列幅を変更できます');
+      return null;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'gb-production-task-sheet-column-settings';
+    const render = () => {
+      panel.replaceChildren();
+      _orderedColumns(instance, true).forEach((column, index, columns) => {
+        const row = document.createElement('div');
+        row.className = 'gb-production-task-sheet-column-setting-row';
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !instance._hiddenColumns.includes(column.key);
+        checkbox.disabled = checkbox.checked && instance._hiddenColumns.length >= COLUMN_DEFS.length - 1;
+        checkbox.addEventListener('change', () => {
+          const hidden = new Set(instance._hiddenColumns);
+          if (checkbox.checked) hidden.delete(column.key); else hidden.add(column.key);
+          if (hidden.size >= COLUMN_DEFS.length) return;
+          instance._hiddenColumns = [...hidden];
+          _savePrefs(instance);
+          _renderColumnLayout(instance);
+          render();
+        });
+        label.append(checkbox, document.createTextNode(_columnLabel(instance, column) || column.key));
+        const up = document.createElement('button');
+        up.type = 'button'; up.textContent = '上へ'; up.disabled = index === 0;
+        up.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index - 1]?.key, true); render(); });
+        const down = document.createElement('button');
+        down.type = 'button'; down.textContent = '下へ'; down.disabled = index === columns.length - 1;
+        down.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index + 1]?.key, false); render(); });
+        row.append(label, up, down);
+        panel.appendChild(row);
+      });
+    };
+    render();
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = '閉じる';
+    const autoFit = document.createElement('button'); autoFit.type = 'button'; autoFit.textContent = '列幅を自動調整';
+    const modal = window.GBUI.createModal({ title: '列の表示と順序', body: panel, footer: [autoFit, close], closeLabel: '列設定を閉じる' });
+    close.addEventListener('click', () => modal.close('close'));
+    autoFit.addEventListener('click', () => { _autoFitColumns(instance); render(); });
+    document.body.appendChild(modal.overlay);
+    window.GBModalShell?.enhanceOverlay?.(modal.overlay);
+    return modal;
+  }
+
   function _renderStatus(instance) {
     if (!instance._statusEl) return;
+    instance._statusEl.setAttribute('aria-busy', instance._loading ? 'true' : 'false');
     if (instance._errorText) {
       instance._statusEl.textContent = instance._errorText;
       instance._statusEl.classList.add('is-error');
@@ -12961,11 +13456,8 @@
     workSelect.className = 'gb-production-all-flat-filter';
     workSelect.dataset.e2eId = 'gb-production-all-flat-filter-work';
     workSelect.setAttribute('aria-label', '作品で絞り込み');
-    workSelect.addEventListener('change', () => {
-      instance._filters.work = workSelect.value;
-      _savePrefs(instance);
-      _fetchRows(instance, { append: false });
-    });
+    workSelect.hidden = true;
+    workSelect.addEventListener('change', () => instance.onSelectView?.(workSelect.value));
     instance._workSelectEl = workSelect;
 
     const statusSelect = document.createElement('select');
@@ -12995,6 +13487,7 @@
     status.dataset.e2eId = 'gb-production-all-flat-status';
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
+    status.setAttribute('aria-busy', 'true');
     instance._statusEl = status;
 
     toolbar.append(search, workSelect, statusSelect, assigneeSelect, status);
@@ -13029,17 +13522,25 @@
     });
     selectTh.appendChild(selectAll);
     instance._selectAllEl = selectAll;
+    instance._selectHeaderEl = selectTh;
+    instance._headRowEl = headRow;
     headRow.appendChild(selectTh);
 
     COLUMN_DEFS.forEach(column => {
       const th = document.createElement('th');
       th.dataset.sortField = column.field;
+      th.dataset.columnKey = column.key;
+      const initialWidth = _columnWidth(instance, column.key);
+      th.style.width = initialWidth + 'px';
+      th.style.minWidth = initialWidth + 'px';
+      th.style.maxWidth = initialWidth + 'px';
       th.dataset.e2eId = 'gb-production-all-flat-sort-' + column.key;
       th.setAttribute('role', 'columnheader');
       if (column.sortable) {
         th.className = 'gb-production-all-flat-sortable';
         th.tabIndex = 0;
         const activate = () => {
+          if (instance._suppressSortClick) { instance._suppressSortClick = false; return; }
           if (instance._sort.field === column.field) {
             instance._sort.direction = instance._sort.direction === 'asc' ? 'desc' : 'asc';
           } else {
@@ -13053,9 +13554,45 @@
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
         });
       }
+      const label = document.createElement('span');
+      label.className = 'gb-production-task-sheet-header-label';
+      th.appendChild(label);
+      th.draggable = true;
+      th.addEventListener('dragstart', event => {
+        if (event.target.closest?.('.gb-production-task-sheet-resize')) { event.preventDefault(); return; }
+        event.dataTransfer?.setData('text/x-production-task-column', column.key);
+      });
+      th.addEventListener('dragover', event => { event.preventDefault(); });
+      th.addEventListener('drop', event => {
+        event.preventDefault();
+        const fromKey = event.dataTransfer?.getData('text/x-production-task-column');
+        const rect = th.getBoundingClientRect();
+        instance._suppressSortClick = true;
+        _moveColumn(instance, fromKey, column.key, event.clientX < rect.left + rect.width / 2);
+      });
+      const resize = document.createElement('span');
+      resize.className = 'gb-production-task-sheet-resize';
+      resize.dataset.e2eId = 'gb-production-task-sheet-resize-' + column.key;
+      resize.setAttribute('role', 'separator');
+      resize.setAttribute('aria-label', `${column.label || column.key}の列幅を変更`);
+      resize.addEventListener('pointerdown', event => {
+        event.preventDefault(); event.stopPropagation();
+        const startX = event.clientX;
+        const startWidth = _columnWidth(instance, column.key);
+        const move = moveEvent => _setColumnWidth(instance, column.key, startWidth + moveEvent.clientX - startX, false);
+        const up = () => {
+          document.removeEventListener('pointermove', move, true);
+          document.removeEventListener('pointerup', up, true);
+          _savePrefs(instance);
+        };
+        document.addEventListener('pointermove', move, true);
+        document.addEventListener('pointerup', up, true);
+      });
+      resize.addEventListener('click', event => event.stopPropagation());
+      th.appendChild(resize);
       instance._headerCells.set(column.key, th);
-      headRow.appendChild(th);
     });
+    _orderedColumns(instance).forEach(column => headRow.appendChild(instance._headerCells.get(column.key)));
     thead.appendChild(headRow);
     table.appendChild(thead);
 
@@ -13118,8 +13655,13 @@
     selectTd.appendChild(checkbox);
     tr.appendChild(selectTd);
 
-    COLUMN_DEFS.forEach(column => {
+    _orderedColumns(instance).forEach(column => {
       const td = document.createElement('td');
+      td.dataset.columnKey = column.key;
+      const width = _columnWidth(instance, column.key);
+      td.style.width = width + 'px';
+      td.style.minWidth = width + 'px';
+      td.style.maxWidth = width + 'px';
       if (column.key === 'work') {
         const text = document.createElement('span');
         text.className = 'gb-production-all-flat-work-text';
@@ -13155,7 +13697,7 @@
     if (!instance._rows.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = COLUMN_DEFS.length + 1;
+      td.colSpan = _orderedColumns(instance).length + 1;
       td.className = 'gb-production-all-flat-no-rows';
       td.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
       tr.appendChild(td);
@@ -13259,20 +13801,27 @@
       if (title) instance._sheetsByWork.set(title, sheet);
     });
     const pmRoot = String(opts?.pmRoot || instance._pmRoot || '');
+    const previousWorkView = instance._filters.work;
     if (pmRoot && pmRoot !== instance._pmRoot) {
       instance._pmRoot = pmRoot;
       const prefs = _loadPrefs(pmRoot);
       if (prefs?.filters) {
-        instance._filters.work = String(prefs.filters.work || '');
         instance._filters.status = String(prefs.filters.status || '');
         instance._filters.assignee = String(prefs.filters.assignee || '');
       }
       if (prefs?.sort?.field) {
         instance._sort = { field: String(prefs.sort.field), direction: prefs.sort.direction === 'desc' ? 'desc' : 'asc' };
       }
+      instance._columnOrder = _normalizedColumnOrder(prefs?.columnOrder);
+      instance._columnWidths = { ...(prefs?.columnWidths || {}) };
+      instance._hiddenColumns = Array.isArray(prefs?.hiddenColumns)
+        ? prefs.hiddenColumns.map(String).filter(key => COLUMN_DEFS.some(column => column.key === key)).slice(0, COLUMN_DEFS.length - 1)
+        : [];
     } else if (pmRoot) {
       instance._pmRoot = pmRoot;
     }
+    instance._filters.work = String(opts?.viewWork || '');
+    _renderColumnLayout(instance);
     instance._emptyEl.hidden = list.length > 0;
     _renderFilterOptions(instance);
     _renderHeaderLabels(instance);
@@ -13283,7 +13832,7 @@
       _renderStatus(instance);
       return true;
     }
-    if (opts?.refresh === true || !instance._hasLoadedOnce) {
+    if (opts?.refresh === true || !instance._hasLoadedOnce || previousWorkView !== instance._filters.work) {
       return _fetchRows(instance, { append: false });
     }
     return true;
@@ -13300,11 +13849,14 @@
       idSuffix,
       onOpenWork: typeof options?.onOpenWork === 'function' ? options.onOpenWork : null,
       onOpenTask: typeof options?.onOpenTask === 'function' ? options.onOpenTask : null,
+      onSelectView: typeof options?.onSelectView === 'function' ? options.onSelectView : null,
       _mounted: false,
       _destroyed: false,
       _containerEl: null,
       _emptyEl: null,
       _headerCells: new Map(),
+      _headRowEl: null,
+      _selectHeaderEl: null,
       _tbodyEl: null,
       _selectAllEl: null,
       _searchEl: null,
@@ -13324,6 +13876,9 @@
       _genericLabels: DEFAULT_GENERIC_LABELS.slice(),
       _filters: { work: '', status: '', assignee: '', q: '' },
       _sort: { field: 'work_title', direction: 'asc' },
+      _columnOrder: _normalizedColumnOrder(),
+      _columnWidths: {},
+      _hiddenColumns: [],
       _pmRoot: '',
       _total: 0,
       _loadSeq: 0,
@@ -13369,6 +13924,16 @@
 
     instance.open = function (sheets, opts) { return _open(instance, sheets, opts); };
     instance.refresh = function () { return _refresh(instance); };
+    instance.isReady = function () { return instance._mounted && instance._hasLoadedOnce && !instance._loading; };
+    instance.setView = function (workTitle) {
+      instance._filters.work = String(workTitle || '');
+      _renderFilterOptions(instance);
+      return _fetchRows(instance, { append: false });
+    };
+    instance.autoFitColumns = function () { _autoFitColumns(instance); return true; };
+    instance.showColumnDisplayOrder = function () { return _showColumnSettings(instance); };
+    instance.focusFilters = function () { instance._statusSelectEl?.focus(); return true; };
+    instance.focusSort = function () { instance._headerCells.get(_orderedColumns(instance)[0]?.key)?.focus(); return true; };
 
     instance.applySchedulerProposal = function (proposal) {
       const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(instance._baseRows, proposal);
@@ -13408,714 +13973,545 @@
 
 ;
 
-/* === gb-db-smart-chat-history.js === */
+/* === gb-system-sheet-provider.js === */
 ;
-/* 読み取り専用システムスマートシート「チャット履歴」 */
-
 (function () {
   'use strict';
 
-  const COLUMN_META = {
-    title: { label: 'タイトル', operators: ['contains', 'not_contains', 'equals', 'not_equals', 'empty', 'not_empty'] },
-    created: { label: '作成日時', operators: ['after', 'before', 'equals', 'empty', 'not_empty'] },
-    modified: { label: '最終更新日時', operators: ['after', 'before', 'equals', 'empty', 'not_empty'] },
-    targetPath: { label: '対象ファイル', operators: ['contains', 'not_contains', 'equals', 'not_equals', 'empty', 'not_empty'] },
-    provider: { label: 'プロバイダー', operators: ['contains', 'not_contains', 'equals', 'not_equals', 'empty', 'not_empty'] },
-    model: { label: 'モデル', operators: ['contains', 'not_contains', 'equals', 'not_equals', 'empty', 'not_empty'] },
-    messageCount: { label: 'メッセージ数', operators: ['equals', 'greater_than', 'less_than'] },
-    path: { label: '履歴ファイルの保存場所', operators: ['contains', 'not_contains', 'equals', 'not_equals'] },
-  };
-  const DEFAULT_COLUMNS = Object.keys(COLUMN_META);
-  const OPERATOR_LABELS = {
-    contains: '含む',
-    not_contains: '含まない',
-    equals: '等しい',
-    not_equals: '等しくない',
-    empty: '空',
-    not_empty: '空でない',
-    after: 'より後',
-    before: 'より前',
-    greater_than: 'より大きい',
-    less_than: 'より小さい',
-  };
+  const providers = new Map();
+  const viewStateKey = (providerId, scopeId) => `meldex:system-sheet-view:v1:${providerId}:${scopeId}`;
 
-  function _isChatHistoryDef(def) {
-    return def?.sourceType === 'chat-history';
+  function safeViewState(providerId, scopeId) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(viewStateKey(providerId, scopeId)) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 
-  function _scopeValues() {
-    return {
+  function saveViewState(providerId, scopeId, value) {
+    try { localStorage.setItem(viewStateKey(providerId, scopeId), JSON.stringify(value || {})); } catch {}
+  }
+
+  function registerSystemSheetProvider(provider) {
+    const id = String(provider?.providerId || '').trim();
+    if (!id || typeof provider.fetchPage !== 'function' || typeof provider.openRow !== 'function') {
+      throw new TypeError('システムシート供給元の契約が不正です');
+    }
+    const rawFetchPage = provider.fetchPage.bind(provider);
+    const normalized = Object.freeze({
+      ...provider,
+      providerId: id,
+      columns: Object.freeze([...(provider.columns || [])].map(column => Object.freeze({ ...column }))),
+      capabilities: Object.freeze({ readOnly: true, canSaveDocument: false, canMutateRows: false }),
+      async fetchPage(request = {}) {
+        const result = await rawFetchPage(request);
+        const rows = applyLocalQuery(Array.isArray(result?.rows) ? result.rows : [], request, provider.columns || []);
+        const offset = Math.max(0, Number.parseInt(request.cursor || '0', 10) || 0);
+        const limit = Math.max(1, Math.min(Number(request.limit || 100), 500));
+        const page = rows.slice(offset, offset + limit);
+        return {
+          ...result,
+          rows: page,
+          total: rows.length,
+          nextCursor: offset + page.length < rows.length ? String(offset + page.length) : null,
+        };
+      },
+    });
+    providers.set(id, normalized);
+    return normalized;
+  }
+
+  function applyLocalQuery(rows, request, columns) {
+    const allowed = new Set(columns.map(column => String(column?.id || '')));
+    const query = String(request.query || '').trim().toLocaleLowerCase('ja-JP');
+    const filters = Array.isArray(request.localFilter) ? request.localFilter : [];
+    const filtered = rows.filter(row => {
+      if (query && !columns.some(column => String(row?.[column.id] ?? '').toLocaleLowerCase('ja-JP').includes(query))) return false;
+      return filters.every(filter => {
+      const column = String(filter?.column || filter?.property || '');
+      if (!allowed.has(column)) return true;
+      const left = String(row?.[column] ?? '').toLocaleLowerCase('ja-JP');
+      const right = String(filter?.value ?? '').toLocaleLowerCase('ja-JP');
+      const operation = String(filter?.operator || 'contains');
+      if (operation === 'empty' || operation === 'is_null') return !left;
+      if (operation === 'not_empty' || operation === 'not_null') return !!left;
+      if (operation === 'equals') return left === right;
+      if (operation === 'not_equals') return left !== right;
+      if (operation === 'not_contains') return !left.includes(right);
+      if (operation === 'greater_than') return Number(row?.[column]) > Number(filter?.value);
+      if (operation === 'less_than') return Number(row?.[column]) < Number(filter?.value);
+      if (operation === 'after') return left > right;
+      if (operation === 'before') return left < right;
+      return left.includes(right);
+      });
+    });
+    const sort = request.sort || {};
+    const sortColumn = String(sort.column || sort.key || '');
+    if (!allowed.has(sortColumn)) return filtered;
+    const direction = String(sort.direction || sort.dir || 'asc') === 'desc' ? -1 : 1;
+    return filtered.slice().sort((left, right) => String(left?.[sortColumn] ?? '').localeCompare(String(right?.[sortColumn] ?? ''), 'ja', { numeric: true }) * direction);
+  }
+
+  function getSystemSheetProvider(providerId) {
+    return providers.get(String(providerId || '').trim()) || null;
+  }
+
+  function preferredPaneId(options = {}) {
+    if (options.paneId) return String(options.paneId);
+    if (typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function') {
+      const mainPaneId = GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true });
+      if (mainPaneId) return mainPaneId;
+    }
+    if (typeof GBLayout !== 'undefined' && GBLayout.activePane) return GBLayout.activePane;
+    return typeof GBLayout !== 'undefined' ? GBLayout.findFirstPane?.(GBLayout.root)?.id || '' : '';
+  }
+
+  function openSystemSheetTab(detail, options = {}) {
+    if (typeof GBTabs === 'undefined' || typeof GBTabs.addTab !== 'function') return null;
+    const paneId = preferredPaneId(options);
+    if (!paneId) return null;
+    const path = `system-sheet:${detail.providerId}:${detail.scopeId}`;
+    const state = {
+      providerId: detail.providerId,
+      scopeId: detail.scopeId,
+      title: detail.title,
+      scope: detail.scope,
+      viewState: detail.viewState,
+    };
+    const tabId = GBTabs.addTab(paneId, detail.title || 'システムシート', 'system-sheet', path, state, {
+      preferTargetPane: !!options.preferTargetPane,
+      forceNewTab: !!options.forceNewTab,
+    });
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(tabId) : null;
+    if (component && typeof component.restoreState === 'function') {
+      component.restoreState(state);
+      component.activate?.();
+    }
+    return tabId;
+  }
+
+  function openSystemSheet(providerId, scopeId, options = {}) {
+    const provider = getSystemSheetProvider(providerId);
+    if (!provider) throw new Error(`システムシート供給元が見つかりません: ${providerId}`);
+    const detail = {
+      provider,
+      providerId: provider.providerId,
+      scopeId: String(scopeId || ''),
+      title: String(options.title || provider.title || ''),
+      scope: options.scope || {},
+      viewState: safeViewState(provider.providerId, String(scopeId || '')),
+      saveViewState(value) { saveViewState(provider.providerId, String(scopeId || ''), value); },
+    };
+    detail.tabId = openSystemSheetTab(detail, options);
+    window.dispatchEvent(new CustomEvent('meldex:open-system-sheet', { detail }));
+    return detail;
+  }
+
+  function createElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    if (className) element.className = className;
+    if (text != null) element.textContent = String(text);
+    return element;
+  }
+
+  function displayValue(value, column) {
+    if (value == null || value === '') return '';
+    if (column?.type === 'number' && Number.isFinite(Number(value))) return Number(value).toLocaleString('ja-JP');
+    if (Array.isArray(value)) return value.join(', ');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  }
+
+  class SystemSheetComponent extends ToolComponent {
+    constructor(paneId, tabId) {
+      super(paneId, tabId);
+      this._requestSerial = 0;
+      this._rows = [];
+      this._nextCursor = null;
+    }
+
+    create() {
+      this.el = createElement('section', 'gb-system-sheet');
+      this.el.style.cssText = 'display:flex;flex:1;min-width:0;min-height:0;flex-direction:column;background:var(--bg);color:var(--fg);overflow:hidden;';
+      this.el.setAttribute('aria-label', '読み取り専用システムシート');
+      this._toolbar = createElement('div', 'gb-system-sheet-toolbar');
+      this._toolbar.style.cssText = 'display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;';
+      this._title = createElement('strong', 'gb-system-sheet-title');
+      this._title.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      this._readonly = createElement('span', 'gb-system-sheet-readonly', '読み取り専用');
+      this._readonly.style.cssText = 'font-size:11px;color:var(--fg2);white-space:nowrap;';
+      this._search = createElement('input', 'gb-system-sheet-search');
+      this._search.type = 'search';
+      this._search.placeholder = 'このシート内を検索';
+      this._search.setAttribute('aria-label', 'このシート内を検索');
+      this._search.style.cssText = 'margin-left:auto;min-width:120px;max-width:260px;width:34%;height:44px;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg);';
+      this._refresh = createElement('button', 'gb-system-sheet-refresh', '更新');
+      this._refresh.type = 'button';
+      this._refresh.style.cssText = 'min-width:44px;min-height:44px;';
+      this._columnsButton = createElement('button', 'gb-system-sheet-columns', '列');
+      this._columnsButton.type = 'button';
+      this._columnsButton.setAttribute('aria-expanded', 'false');
+      this._columnsButton.style.cssText = 'min-width:44px;min-height:44px;';
+      this._filtersButton = createElement('button', 'gb-system-sheet-filters', '絞込');
+      this._filtersButton.type = 'button';
+      this._filtersButton.setAttribute('aria-expanded', 'false');
+      this._filtersButton.style.cssText = 'min-width:44px;min-height:44px;';
+      this._toolbar.append(this._title, this._readonly, this._search, this._columnsButton, this._filtersButton, this._refresh);
+      this._controls = createElement('div', 'gb-system-sheet-controls');
+      this._controls.hidden = true;
+      this._controls.style.cssText = 'padding:8px 10px;border-bottom:1px solid var(--border);background:var(--bg2);overflow:auto;';
+      this._status = createElement('div', 'gb-system-sheet-status');
+      this._status.style.cssText = 'min-height:28px;padding:5px 10px;color:var(--fg2);font-size:12px;border-bottom:1px solid var(--border);';
+      this._scroll = createElement('div', 'gb-system-sheet-scroll');
+      this._scroll.style.cssText = 'flex:1;min-height:0;overflow:auto;';
+      this._loadMore = createElement('button', 'gb-system-sheet-load-more', 'さらに表示');
+      this._loadMore.type = 'button';
+      this._loadMore.style.cssText = 'display:none;align-self:center;min-height:44px;margin:8px;padding:0 16px;';
+      this.el.append(this._toolbar, this._controls, this._status, this._scroll, this._loadMore);
+      this._search.addEventListener('input', () => this._onSearch());
+      this._refresh.addEventListener('click', () => this._load({ refresh: true }));
+      this._columnsButton.addEventListener('click', () => this._showColumnControls());
+      this._filtersButton.addEventListener('click', () => this._showFilterControls());
+      this._loadMore.addEventListener('click', () => this._load({ append: true, cursor: this._nextCursor }));
+      return this.el;
+    }
+
+    restoreState(savedState) {
+      const previousProvider = this.state?.providerId;
+      const previousScope = this.state?.scopeId;
+      super.restoreState(savedState);
+      const viewState = this.state?.viewState || {};
+      if (this._title) this._title.textContent = this.state?.title || 'システムシート';
+      if (this._search) this._search.value = String(viewState.query || '');
+      if (this._active && (previousProvider !== this.state?.providerId || previousScope !== this.state?.scopeId)) this._load();
+    }
+
+    getState() {
+      return {
+        ...this.state,
+        viewState: { ...(this.state?.viewState || {}), query: String(this._search?.value || '') },
+      };
+    }
+
+    activate() {
+      super.activate();
+      if (!this._loadedKey || this._loadedKey !== this._currentKey()) this._load();
+    }
+
+    _currentKey() {
+      return `${this.state?.providerId || ''}:${this.state?.scopeId || ''}`;
+    }
+
+    _provider() {
+      return getSystemSheetProvider(this.state?.providerId);
+    }
+
+    _saveViewState(patch) {
+      this.state.viewState = { ...(this.state.viewState || {}), ...(patch || {}) };
+      saveViewState(this.state.providerId, this.state.scopeId, this.state.viewState);
+    }
+
+    _visibleColumns(provider) {
+      const hidden = new Set(Array.isArray(this.state.viewState?.hiddenColumns) ? this.state.viewState.hiddenColumns : []);
+      const visible = provider.columns.filter(column => !hidden.has(column.id));
+      return visible.length ? visible : provider.columns.slice(0, 1);
+    }
+
+    _closeControls() {
+      this._controls.hidden = true;
+      this._columnsButton.setAttribute('aria-expanded', 'false');
+      this._filtersButton.setAttribute('aria-expanded', 'false');
+    }
+
+    _openControls(kind, label) {
+      this._controls.replaceChildren();
+      this._controls.hidden = false;
+      this._controls.setAttribute('role', 'group');
+      this._controls.setAttribute('aria-label', label);
+      this._columnsButton.setAttribute('aria-expanded', kind === 'columns' ? 'true' : 'false');
+      this._filtersButton.setAttribute('aria-expanded', kind === 'filters' ? 'true' : 'false');
+      const close = createElement('button', 'gb-system-sheet-controls-close', '閉じる');
+      close.type = 'button';
+      close.style.cssText = 'min-width:44px;min-height:44px;margin-left:auto;';
+      close.addEventListener('click', () => this._closeControls());
+      return close;
+    }
+
+    _showColumnControls() {
+      if (!this._controls.hidden && this._columnsButton.getAttribute('aria-expanded') === 'true') return this._closeControls();
+      const provider = this._provider();
+      if (!provider) return;
+      const close = this._openControls('columns', '表示する列');
+      const row = createElement('div', 'gb-system-sheet-column-options');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+      const hidden = new Set(Array.isArray(this.state.viewState?.hiddenColumns) ? this.state.viewState.hiddenColumns : []);
+      provider.columns.forEach(column => {
+        const label = createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:44px;';
+        const input = createElement('input');
+        input.type = 'checkbox';
+        input.checked = !hidden.has(column.id);
+        input.addEventListener('change', () => {
+          const next = new Set(Array.isArray(this.state.viewState?.hiddenColumns) ? this.state.viewState.hiddenColumns : []);
+          if (input.checked) next.delete(column.id); else next.add(column.id);
+          if (next.size >= provider.columns.length) {
+            input.checked = true;
+            next.delete(column.id);
+          }
+          this._saveViewState({ hiddenColumns: [...next] });
+          this._render(provider, { unreadableCount: 0 });
+        });
+        label.append(input, document.createTextNode(column.label || column.id));
+        row.appendChild(label);
+      });
+      row.appendChild(close);
+      this._controls.appendChild(row);
+    }
+
+    _showFilterControls() {
+      if (!this._controls.hidden && this._filtersButton.getAttribute('aria-expanded') === 'true') return this._closeControls();
+      const provider = this._provider();
+      if (!provider) return;
+      const close = this._openControls('filters', '複合フィルター');
+      const list = createElement('div', 'gb-system-sheet-filter-list');
+      list.style.cssText = 'display:grid;gap:6px;';
+      const filters = (Array.isArray(this.state.viewState?.localFilter) ? this.state.viewState.localFilter : []).map(item => ({ ...item }));
+      const render = () => {
+        list.replaceChildren();
+        filters.forEach((filter, index) => list.appendChild(this._filterRow(provider, filters, filter, index, render)));
+      };
+      render();
+      const actions = createElement('div');
+      actions.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
+      const add = createElement('button', '', '条件を追加');
+      add.type = 'button';
+      add.style.cssText = 'min-height:44px;';
+      add.addEventListener('click', () => { filters.push({ column: provider.columns[0]?.id || '', operator: 'contains', value: '' }); render(); });
+      const apply = createElement('button', '', '適用');
+      apply.type = 'button';
+      apply.style.cssText = 'min-width:52px;min-height:44px;';
+      apply.addEventListener('click', () => {
+        this._saveViewState({ localFilter: filters.filter(item => item.column && (item.value || ['empty', 'not_empty'].includes(item.operator))) });
+        this._closeControls();
+        this._load();
+      });
+      actions.append(add, apply, close);
+      this._controls.append(list, actions);
+    }
+
+    _filterRow(provider, filters, filter, index, render) {
+      const row = createElement('div', 'gb-system-sheet-filter-row');
+      row.style.cssText = 'display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) minmax(120px,2fr) auto;gap:6px;';
+      const column = createElement('select');
+      column.style.minHeight = '44px';
+      column.setAttribute('aria-label', `条件${index + 1}の列`);
+      provider.columns.forEach(item => { const option = createElement('option', '', item.label || item.id); option.value = item.id; column.appendChild(option); });
+      column.value = filter.column || provider.columns[0]?.id || '';
+      column.addEventListener('change', () => { filter.column = column.value; });
+      const operator = createElement('select');
+      operator.style.minHeight = '44px';
+      operator.setAttribute('aria-label', `条件${index + 1}の比較`);
+      [['contains', '含む'], ['not_contains', '含まない'], ['equals', '等しい'], ['not_equals', '等しくない'], ['empty', '空欄'], ['not_empty', '空欄でない'], ['greater_than', 'より大きい'], ['less_than', 'より小さい'], ['after', 'より後'], ['before', 'より前']].forEach(([value, label]) => { const option = createElement('option', '', label); option.value = value; operator.appendChild(option); });
+      operator.value = filter.operator || 'contains';
+      operator.addEventListener('change', () => { filter.operator = operator.value; value.disabled = ['empty', 'not_empty'].includes(operator.value); });
+      const value = createElement('input');
+      value.type = 'text';
+      value.style.minHeight = '44px';
+      value.value = String(filter.value || '');
+      value.setAttribute('aria-label', `条件${index + 1}の値`);
+      value.disabled = ['empty', 'not_empty'].includes(operator.value);
+      value.addEventListener('input', () => { filter.value = value.value; });
+      const remove = createElement('button', '', '削除');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `条件${index + 1}を削除`);
+      remove.style.cssText = 'min-width:44px;min-height:44px;';
+      remove.addEventListener('click', () => { filters.splice(index, 1); render(); });
+      row.append(column, operator, value, remove);
+      return row;
+    }
+
+    _onSearch() {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => {
+        this.state.viewState = { ...(this.state.viewState || {}), query: String(this._search.value || '') };
+        saveViewState(this.state.providerId, this.state.scopeId, this.state.viewState);
+        this._load();
+      }, 180);
+    }
+
+    async _load(options = {}) {
+      const provider = this._provider();
+      if (!provider) return this._showError('システムシートの供給元を読み込めませんでした');
+      const serial = ++this._requestSerial;
+      this._status.textContent = '読み込み中…';
+      this._refresh.disabled = true;
+      try {
+        const result = await provider.fetchPage({
+          scope: this.state.scope || {},
+          cursor: options.cursor || null,
+          limit: 100,
+          query: String(this._search?.value || ''),
+          refresh: !!options.refresh,
+          sort: this.state.viewState?.sort || null,
+          localFilter: this.state.viewState?.localFilter || [],
+        });
+        if (serial !== this._requestSerial) return;
+        this._rows = options.append ? this._rows.concat(result.rows || []) : (result.rows || []);
+        this._nextCursor = result.nextCursor || null;
+        this._loadedKey = this._currentKey();
+        this._render(provider, result);
+      } catch (error) {
+        if (serial === this._requestSerial) this._showError(error?.message || 'システムシートを読み込めませんでした');
+      } finally {
+        if (serial === this._requestSerial) this._refresh.disabled = false;
+      }
+    }
+
+    _render(provider, result) {
+      this._scroll.replaceChildren();
+      this._status.style.color = '';
+      const table = createElement('table', 'gb-system-sheet-table');
+      table.style.cssText = 'width:max-content;min-width:100%;border-collapse:collapse;font-size:13px;';
+      const thead = createElement('thead');
+      const headerRow = createElement('tr');
+      const visibleColumns = this._visibleColumns(provider);
+      const activeSort = this.state.viewState?.sort || {};
+      visibleColumns.forEach(column => {
+        const cell = createElement('th');
+        cell.scope = 'col';
+        cell.style.cssText = 'position:sticky;top:0;z-index:1;padding:8px 10px;text-align:left;white-space:nowrap;background:var(--bg2);border:1px solid var(--border);';
+        const sortButton = createElement('button', '', `${column.label || column.id}${activeSort.column === column.id ? (activeSort.direction === 'desc' ? ' ↓' : ' ↑') : ''}`);
+        sortButton.type = 'button';
+        sortButton.style.cssText = 'min-height:44px;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer;';
+        sortButton.setAttribute('aria-label', `${column.label || column.id}を${activeSort.column === column.id && activeSort.direction === 'asc' ? '降順' : '昇順'}に並べ替え`);
+        sortButton.addEventListener('click', () => {
+          const direction = activeSort.column === column.id && activeSort.direction === 'asc' ? 'desc' : 'asc';
+          this._saveViewState({ sort: { column: column.id, direction } });
+          this._load();
+        });
+        cell.appendChild(sortButton);
+        headerRow.appendChild(cell);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+      const tbody = createElement('tbody');
+      this._rows.forEach(row => tbody.appendChild(this._renderRow(provider, row, visibleColumns)));
+      table.appendChild(tbody);
+      this._scroll.appendChild(table);
+      if (!this._rows.length) this._scroll.appendChild(createElement('p', 'gb-system-sheet-empty', '表示できる項目はありません'));
+      const unreadable = Number(result.unreadableCount || 0);
+      this._status.textContent = `${this._rows.length}件を表示${unreadable ? `（読み込めなかった項目: ${unreadable}件）` : ''}`;
+      this._loadMore.style.display = this._nextCursor ? '' : 'none';
+    }
+
+    _renderRow(provider, row, visibleColumns) {
+      const tr = createElement('tr');
+      tr.tabIndex = 0;
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', () => provider.openRow(row, { scope: this.state.scope || {} }));
+      tr.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        provider.openRow(row, { scope: this.state.scope || {} });
+      });
+      visibleColumns.forEach(column => {
+        const td = createElement('td', '', displayValue(row?.[column.id], column));
+        td.style.cssText = 'max-width:360px;padding:8px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--border);';
+        tr.appendChild(td);
+      });
+      return tr;
+    }
+
+    _showError(message) {
+      this._status.textContent = String(message || '読み込みに失敗しました');
+      this._status.style.color = 'var(--danger, #c33)';
+      this._loadMore.style.display = 'none';
+    }
+
+    destroy() {
+      clearTimeout(this._searchTimer);
+      this._requestSerial += 1;
+      super.destroy();
+    }
+  }
+
+  function queryParams(scope) {
+    const params = new URLSearchParams();
+    if (scope.workspaceId) params.set('workspace_id', scope.workspaceId);
+    else if (scope.sourceFolder) params.set('source_folder', scope.sourceFolder);
+    return params.toString();
+  }
+
+  const chatHistory = registerSystemSheetProvider({
+    providerId: 'chat-history',
+    title: 'チャット履歴',
+    columns: [
+      ['title', 'タイトル', 'text'], ['created', '作成日時', 'date'], ['modified', '最終更新日時', 'date'],
+      ['targetPath', '対象ファイル', 'link'], ['provider', 'プロバイダー', 'text'], ['model', 'モデル', 'text'],
+      ['messageCount', 'メッセージ数', 'number'], ['path', '履歴ファイルの保存場所', 'link'],
+    ].map(([id, label, type]) => ({ id, label, type })),
+    async fetchPage(request = {}) {
+      const query = queryParams(request.scope || {});
+      const data = await apiFetch('/chat/history' + (query ? `?${query}` : ''));
+      return { rows: Array.isArray(data?.items) ? data.items : [], total: Number(data?.total || 0), unreadableCount: Number(data?.unreadableCount || 0) };
+    },
+    openRow(row, request = {}) {
+      if (typeof openSavedChat !== 'function') return false;
+      if (!request.scope?.workspaceId && !request.scope?.sourceFolder) {
+        openSavedChat(String(row?.path || ''));
+        return true;
+      }
+      openSavedChat(row?.path, '', request.scope?.workspaceId ? undefined : request.scope?.sourceFolder);
+      return true;
+    },
+  });
+
+  const allFiles = registerSystemSheetProvider({
+    providerId: 'all-files',
+    title: '全ファイル',
+    columns: [
+      ['name', 'ファイル名', 'text'], ['category', '種別', 'text'], ['root_name', 'ソースフォルダ', 'text'],
+      ['root_type', 'ルート種別', 'text'], ['ext', '拡張子', 'text'], ['path', '実態パス', 'link'],
+      ['size', 'ファイルサイズ', 'number'], ['modified', '更新日時', 'date'],
+      ['backlink_file_count', '被リンク数（ファイル）', 'number'], ['backlink_board_count', '被リンク数（ボード）', 'number'],
+    ].map(([id, label, type]) => ({ id, label, type })),
+    async fetchPage(request = {}) {
+      const data = await apiFetch('/global-index' + (request.refresh ? '?refresh=1' : ''));
+      return { rows: Array.isArray(data?.files) ? data.files : [], total: Number(data?.total || 0), unreadableCount: Number(data?.unreadableCount || 0) };
+    },
+    openRow(row) {
+      const path = row?.abs_path || row?.path;
+      if (!path || typeof openLink !== 'function') return false;
+      openLink(path, row?.name || String(path).split(/[\\/]/).pop());
+      return true;
+    },
+  });
+
+  async function openChatHistorySheet(options = {}) {
+    const scope = {
       sourceFolder: typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '',
       workspaceId: typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '',
     };
-  }
-
-  function _scopeKey(scope) {
-    return scope.workspaceId ? `workspace:${scope.workspaceId}` : `source:${scope.sourceFolder}`;
-  }
-
-  function _scopeId(scope) {
-    const key = _scopeKey(scope);
-    const suffix = typeof _smartDbStableIdPart === 'function'
-      ? _smartDbStableIdPart(key)
-      : encodeURIComponent(key).replace(/%/g, '').slice(0, 64);
-    return `system-chat-history-${suffix}`;
-  }
-
-  function _historyUrl(def) {
-    const params = new URLSearchParams();
-    if (def.workspaceId) params.set('workspace_id', def.workspaceId);
-    else if (def.sourceFolder) params.set('source_folder', def.sourceFolder);
-    const query = params.toString();
-    return '/chat/history' + (query ? `?${query}` : '');
-  }
-
-  function _dateLabel(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return raw;
-    return parsed.toLocaleString('ja-JP', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-  }
-
-  function _calendarDateKey(value) {
-    const raw = String(value || '').trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return raw.slice(0, 10);
-    const pad = number => String(number).padStart(2, '0');
-    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
-  }
-
-  function _titleLabel(item) {
-    const title = String(item?.title || '').trim();
-    if (title) return title;
-    const name = String(item?.path || '').split(/[\\/]/).pop() || '';
-    return name.replace(/\.md$/i, '') || '無題のチャット';
-  }
-
-  function _displayValue(item, column) {
-    if (column === 'title') return _titleLabel(item);
-    if (column === 'created' || column === 'modified') return _dateLabel(item?.[column]);
-    if (column === 'messageCount') return String(Number(item?.messageCount || 0));
-    return String(item?.[column] || '');
-  }
-
-  function _filterMatch(filter, item) {
-    const column = filter?.column;
-    if (!COLUMN_META[column]) return true;
-    const raw = column === 'title' ? _titleLabel(item) : item?.[column];
-    const operation = filter.operator || 'contains';
-    const expected = String(filter.value == null ? '' : filter.value).trim();
-    const text = String(raw == null ? '' : raw);
-    const normalized = text.toLocaleLowerCase('ja-JP');
-    const normalizedExpected = expected.toLocaleLowerCase('ja-JP');
-    if (operation === 'empty') return !text.trim();
-    if (operation === 'not_empty') return !!text.trim();
-    if (operation === 'contains') return normalized.includes(normalizedExpected);
-    if (operation === 'not_contains') return !normalized.includes(normalizedExpected);
-    if (operation === 'equals') {
-      if (column === 'messageCount') return Number(raw || 0) === Number(expected);
-      if ((column === 'created' || column === 'modified') && /^\d{4}-\d{2}-\d{2}$/.test(expected)) {
-        return _calendarDateKey(text) === expected;
-      }
-      return normalized === normalizedExpected;
-    }
-    if (operation === 'not_equals') return normalized !== normalizedExpected;
-    if (operation === 'greater_than') return Number(raw || 0) > Number(expected);
-    if (operation === 'less_than') return Number(raw || 0) < Number(expected);
-    if (operation === 'after' || operation === 'before') {
-      const actualTime = Date.parse(text);
-      const expectedTime = Date.parse(expected);
-      const left = Number.isFinite(actualTime) ? actualTime : text;
-      const right = Number.isFinite(expectedTime) ? expectedTime : expected;
-      return operation === 'after' ? left > right : left < right;
-    }
-    return true;
-  }
-
-  function _filteredRows(items, def) {
-    const filters = Array.isArray(def.filters) ? def.filters : [];
-    return (Array.isArray(items) ? items : []).filter(item => filters.every(filter => _filterMatch(filter, item)));
-  }
-
-  function _sortValue(item, column) {
-    const raw = column === 'title' ? _titleLabel(item) : item?.[column];
-    if (column === 'messageCount') return Number(raw || 0);
-    if (column === 'created' || column === 'modified') {
-      const timestamp = Date.parse(raw);
-      if (Number.isFinite(timestamp)) return timestamp;
-    }
-    return String(raw == null ? '' : raw);
-  }
-
-  function _sortedRows(items, def) {
-    const column = COLUMN_META[def.sortBy] ? def.sortBy : 'modified';
-    const direction = def.sortDir === 'asc' ? 1 : -1;
-    return items.slice().sort((a, b) => {
-      const left = _sortValue(a, column);
-      const right = _sortValue(b, column);
-      const leftEmpty = left === '';
-      const rightEmpty = right === '';
-      if (leftEmpty !== rightEmpty) return leftEmpty ? 1 : -1;
-      if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
-      return String(left).localeCompare(String(right), 'ja', { numeric: true, sensitivity: 'base' }) * direction;
-    });
-  }
-
-  function _visibleColumns(def) {
-    const columns = Array.isArray(def.columns) ? def.columns.filter(column => COLUMN_META[column]) : [];
-    return columns.length ? columns : DEFAULT_COLUMNS.slice();
-  }
-
-  function _bindKeyboardActivate(element, callback) {
-    if (typeof _smartDbBindKeyboardActivate === 'function') {
-      _smartDbBindKeyboardActivate(element, callback);
-      return;
-    }
-    element.addEventListener('keydown', event => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      callback(event);
-    });
-  }
-
-  function _openChat(item, def) {
-    if (typeof openSavedChat !== 'function') return;
-    const source = def.workspaceId ? undefined : def.sourceFolder;
-    openSavedChat(item.path, '', source);
-  }
-
-  function _openTarget(event, item) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!item.targetPath || typeof openLink !== 'function') return;
-    const label = String(item.targetPath).split(/[\\/]/).pop() || item.targetPath;
-    openLink(item.targetPath, label);
-  }
-
-  function _ensureNotice(table) {
-    const area = table?.closest?.('#smart-db-table-area');
-    if (!area) return null;
-    let notice = area.querySelector('#chat-history-sheet-notice');
-    if (!notice) {
-      notice = document.createElement('div');
-      notice.id = 'chat-history-sheet-notice';
-      notice.className = 'chat-history-sheet-notice';
-      notice.dataset.e2eId = 'chat-history-sheet-notice';
-      notice.setAttribute('role', 'status');
-      area.insertBefore(notice, table);
-    }
-    return notice;
-  }
-
-  function _renderNotice(data, visibleCount) {
-    const table = document.getElementById('smart-db-table');
-    const notice = _ensureNotice(table);
-    if (!notice) return;
-    notice.hidden = false;
-    const unreadable = Number(data?.unreadableCount || 0);
-    const loadError = data?.loadError === true;
-    notice.classList.toggle('is-warning', unreadable > 0 || loadError);
-    notice.textContent = loadError
-      ? `${visibleCount} / ${Number(data?.total || 0)}件の前回取得分を表示しています。最新の履歴を読み込めませんでした。ツールバーの「再読み込み」で再試行できます。`
-      : unreadable > 0
-        ? `${visibleCount} / ${Number(data?.total || 0)}件を表示しています。読み込めなかった履歴が${unreadable}件あります。`
-        : `${visibleCount} / ${Number(data?.total || 0)}件を表示しています。履歴ファイルは変更されません。`;
-  }
-
-  function _createHeader(def, columns) {
-    const row = document.createElement('tr');
-    columns.forEach(column => {
-      const meta = COLUMN_META[column];
-      const header = document.createElement('th');
-      header.className = 'chat-history-sheet-header';
-      header.tabIndex = 0;
-      header.dataset.e2eId = `chat-history-sort-${column}`;
-      header.setAttribute('role', 'button');
-      header.setAttribute('aria-label', `${meta.label}で並び替え`);
-      header.setAttribute('aria-sort', def.sortBy === column ? (def.sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
-      header.textContent = meta.label + (def.sortBy === column ? (def.sortDir === 'asc' ? ' ▲' : ' ▼') : '');
-      const sort = async () => {
-        const current = def.sortBy === column;
-        def.sortBy = column;
-        def.sortDir = current ? (def.sortDir === 'asc' ? 'desc' : 'asc') : 'asc';
-        if (typeof saveSmartDbDef === 'function') {
-          await saveSmartDbDef(def, { skipVersionDirty: true });
-          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
-        }
-        renderChatHistorySmartDbTable(def);
-      };
-      header.addEventListener('click', sort);
-      _bindKeyboardActivate(header, sort);
-      row.appendChild(header);
-    });
-    return row;
-  }
-
-  function _createCell(item, column) {
-    const cell = document.createElement('td');
-    cell.className = `chat-history-sheet-cell chat-history-sheet-cell-${column}`;
-    const value = _displayValue(item, column);
-    if (column === 'targetPath' && item.targetPath) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'chat-history-sheet-link';
-      button.dataset.e2eId = `chat-history-target-${typeof _smartDbStableIdPart === 'function' ? _smartDbStableIdPart(item.id) : 'item'}`;
-      button.textContent = value;
-      button.title = value;
-      button.addEventListener('click', event => _openTarget(event, item));
-      cell.appendChild(button);
-    } else {
-      cell.textContent = value || '—';
-      if (column === 'path' || column === 'targetPath') cell.title = value;
-    }
-    return cell;
-  }
-
-  function _createRow(item, index, def, columns) {
-    const row = document.createElement('tr');
-    row.className = 'chat-history-sheet-row';
-    row.tabIndex = 0;
-    row.dataset.e2eId = `chat-history-row-${index}-${typeof _smartDbStableIdPart === 'function' ? _smartDbStableIdPart(item.id) : index}`;
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `チャットを開く: ${_titleLabel(item)}`);
-    row.addEventListener('click', () => _openChat(item, def));
-    _bindKeyboardActivate(row, event => {
-      if (event?.target !== row) return;
-      _openChat(item, def);
-    });
-    columns.forEach(column => row.appendChild(_createCell(item, column)));
-    return row;
-  }
-
-  function renderChatHistorySmartDbTable(def) {
-    const table = document.getElementById('smart-db-table');
-    const head = table?.querySelector('thead');
-    const body = table?.querySelector('tbody');
-    if (!table || !head || !body) return;
-    if (typeof disposeSmartDbVirtualRows === 'function') disposeSmartDbVirtualRows(table);
-    head.replaceChildren();
-    body.replaceChildren();
-
-    const data = state.smartDbData || { items: [], total: 0, unreadableCount: 0 };
-    const columns = _visibleColumns(def);
-    const rows = _sortedRows(_filteredRows(data.items || [], def), def);
-    head.appendChild(_createHeader(def, columns));
-    _renderNotice(data, rows.length);
-
-    if (!rows.length) {
-      const row = document.createElement('tr');
-      const cell = document.createElement('td');
-      cell.className = 'chat-history-sheet-empty';
-      cell.colSpan = columns.length;
-      cell.textContent = data.loadError
-        ? '履歴を読み込めませんでした。ツールバーの「再読み込み」で再試行してください'
-        : Number(data.total || 0)
-          ? '条件に一致する履歴がありません'
-          : '履歴がありません';
-      row.appendChild(cell);
-      body.appendChild(row);
-    } else if (!(typeof renderSmartDbVirtualRows === 'function' && renderSmartDbVirtualRows({
-      table,
-      tbody: body,
-      rows,
-      colSpan: columns.length,
-      rowHeight: 38,
-      renderRow: (item, index) => _createRow(item, index, def, columns),
-    }))) {
-      rows.forEach((item, index) => body.appendChild(_createRow(item, index, def, columns)));
-    }
-    if (typeof showStatus === 'function') {
-      const unreadable = Number(data.unreadableCount || 0);
-      showStatus(`${rows.length} / ${Number(data.total || 0)} 件${unreadable ? `（読み込み失敗 ${unreadable}件）` : ''}`, unreadable > 0);
-    }
-  }
-
-  async function loadChatHistorySmartDbData(def) {
-    const data = await apiFetch(_historyUrl(def));
-    return {
-      items: Array.isArray(data?.items) ? data.items : [],
-      total: Number(data?.total || 0),
-      unreadableCount: Number(data?.unreadableCount || 0),
-      scopeKey: def.scopeKey,
-    };
-  }
-
-  async function openChatHistorySheet(options) {
-    const openOptions = options || {};
-    const scope = _scopeValues();
     if (!scope.sourceFolder && !scope.workspaceId) {
       if (typeof _chatRequireSourceFolder === 'function') _chatRequireSourceFolder();
       return false;
     }
-    const id = _scopeId(scope);
-    const saved = typeof getSavedSmartDbs === 'function'
-      ? getSavedSmartDbs().find(item => item?.id === id)
-      : null;
-    const def = {
-      ...(saved || {}),
-      id,
-      type: 'smart-db',
-      systemView: true,
-      sourceType: 'chat-history',
-      name: 'チャット履歴',
-      scopeKey: _scopeKey(scope),
-      sourceFolder: scope.sourceFolder,
-      workspaceId: scope.workspaceId,
-      filters: Array.isArray(saved?.filters) ? saved.filters : [],
-      columns: Array.isArray(saved?.columns) && saved.columns.length ? saved.columns : DEFAULT_COLUMNS.slice(),
-      sortBy: COLUMN_META[saved?.sortBy] ? saved.sortBy : 'modified',
-      sortDir: saved?.sortDir === 'asc' ? 'asc' : 'desc',
-      activeView: 'table',
-      created: saved?.created || new Date().toISOString(),
-    };
-    if (typeof normalizeSmartDbDefinition === 'function') normalizeSmartDbDefinition(def);
-    if (typeof saveSmartDbDef === 'function') {
-      await saveSmartDbDef(def, { skipVersionDirty: true });
-      _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
-    }
-    if (typeof selectSmartDb === 'function') {
-      const selectOptions = { skipRecent: true };
-      if (openOptions.refreshExistingView) {
-        Object.assign(selectOptions, {
-          silent: true,
-          skipNavPush: true,
-          skipSaveLastView: true,
-          skipAutoVersion: true,
-          skipHistoryScope: true,
-        });
-      }
-      await selectSmartDb(id, def, selectOptions);
-      return true;
-    }
-    return false;
+    const scopeId = scope.workspaceId ? `workspace:${scope.workspaceId}` : `source:${scope.sourceFolder}`;
+    return openSystemSheet(chatHistory.providerId, scopeId, { ...options, title: chatHistory.title, scope });
   }
 
-  function _createFilterRow(filter, index) {
-    const row = document.createElement('div');
-    row.className = 'chat-history-filter-row';
-    row.dataset.e2eId = `chat-history-filter-row-${index}`;
-    row.setAttribute('role', 'group');
-    row.setAttribute('aria-label', `チャット履歴の条件${index + 1}`);
-
-    const column = document.createElement('select');
-    column.className = 'gb-select';
-    column.dataset.field = 'column';
-    column.dataset.e2eId = `chat-history-filter-column-${index}`;
-    Object.entries(COLUMN_META).forEach(([key, meta]) => {
-      const option = document.createElement('option');
-      option.value = key;
-      option.textContent = meta.label;
-      option.selected = key === (filter?.column || 'title');
-      column.appendChild(option);
-    });
-
-    const operator = document.createElement('select');
-    operator.className = 'gb-select';
-    operator.dataset.field = 'operator';
-    operator.dataset.e2eId = `chat-history-filter-operator-${index}`;
-    const fillOperators = () => {
-      const current = operator.value || filter?.operator || '';
-      operator.replaceChildren();
-      const values = COLUMN_META[column.value]?.operators || ['contains'];
-      values.forEach(key => {
-        const option = document.createElement('option');
-        option.value = key;
-        option.textContent = OPERATOR_LABELS[key] || key;
-        option.selected = key === current;
-        operator.appendChild(option);
-      });
-    };
-    fillOperators();
-    column.addEventListener('change', fillOperators);
-
-    const value = document.createElement('input');
-    value.className = 'gb-input';
-    value.dataset.field = 'value';
-    value.dataset.e2eId = `chat-history-filter-value-${index}`;
-    value.value = String(filter?.value == null ? '' : filter.value);
-    value.placeholder = '値';
-    const syncValueType = () => {
-      value.type = column.value === 'messageCount'
-        ? 'number'
-        : (column.value === 'created' || column.value === 'modified')
-          ? 'date'
-          : 'text';
-    };
-    syncValueType();
-    column.addEventListener('change', syncValueType);
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-danger';
-    remove.dataset.e2eId = `chat-history-filter-remove-${index}`;
-    remove.setAttribute('aria-label', `チャット履歴の条件${index + 1}を削除`);
-    remove.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
-    remove.addEventListener('click', () => row.remove());
-    row.append(column, operator, value, remove);
-    return row;
+  function openAllFilesSheet(options = {}) {
+    return openSystemSheet(allFiles.providerId, String(options.scopeId || 'all-roots'), { ...options, title: allFiles.title });
   }
 
-  function showChatHistorySmartDbFilterModal(smartDbId) {
-    const def = typeof _findSmartDbDefinition === 'function' ? _findSmartDbDefinition(smartDbId) : null;
-    if (!_isChatHistoryDef(def)) return;
-    const restoreTarget = typeof _smartDbActiveElement === 'function' ? _smartDbActiveElement() : document.activeElement;
-    const body = document.createElement('div');
-    body.className = 'chat-history-settings-body';
-    const description = document.createElement('p');
-    description.className = 'gb-section-desc';
-    description.textContent = 'すべての条件に一致する履歴を表示します。履歴ファイル自体は変更されません。';
-    const rowsHost = document.createElement('div');
-    rowsHost.className = 'chat-history-filter-list';
-    rowsHost.dataset.e2eId = 'chat-history-filter-list';
-    (def.filters || []).forEach((filter, index) => rowsHost.appendChild(_createFilterRow(filter, index)));
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.className = 'gb-btn gb-btn-sm';
-    add.dataset.e2eId = 'chat-history-filter-add';
-    add.textContent = '＋ 条件を追加';
-    add.addEventListener('click', () => rowsHost.appendChild(_createFilterRow({}, rowsHost.children.length)));
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.dataset.e2eId = 'chat-history-filter-cancel';
-    cancel.textContent = 'キャンセル';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
-    save.dataset.e2eId = 'chat-history-filter-save';
-    save.textContent = '適用';
-    const error = document.createElement('div');
-    error.className = 'gb-inline-error chat-history-settings-error';
-    error.dataset.e2eId = 'chat-history-filter-error';
-    error.setAttribute('role', 'alert');
-    error.hidden = true;
-    body.append(description, rowsHost, add, error);
-    let busy = false;
-    const dialogApi = window.GBUI.createModal({
-      id: 'chat-history-filter',
-      title: 'チャット履歴の絞り込み',
-      body,
-      footer: [cancel, save],
-      variant: 'standard',
-      extraClass: 'chat-history-settings-modal',
-      geometryKey: 'chat-history-filter',
-      initialFocus: '[data-e2e-id="chat-history-filter-add"]',
-      returnFocus: restoreTarget,
-      onBeforeClose: () => !busy,
-    });
-    dialogApi.modal.classList.add('cond-modal');
-    dialogApi.modal.dataset.e2eId = 'chat-history-filter-dialog';
-    dialogApi.overlay.dataset.e2eId = 'chat-history-filter-overlay';
-    const setBusy = value => {
-      busy = !!value;
-      dialogApi.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
-      body.querySelectorAll('input,select,button').forEach(control => { control.disabled = busy; });
-      cancel.disabled = busy;
-      save.disabled = busy;
-    };
-    cancel.addEventListener('click', () => dialogApi.close('cancel'));
-    save.addEventListener('click', async () => {
-      const nextFilters = Array.from(rowsHost.children).map(row => ({
-        column: row.querySelector('[data-field="column"]')?.value || 'title',
-        operator: row.querySelector('[data-field="operator"]')?.value || 'contains',
-        value: row.querySelector('[data-field="value"]')?.value || '',
-      }));
-      const previousFilters = Array.isArray(def.filters) ? def.filters : [];
-      setBusy(true);
-      error.hidden = true;
-      error.textContent = '';
-      try {
-        def.filters = nextFilters;
-        if (typeof saveSmartDbDef === 'function') {
-          await saveSmartDbDef(def, { skipVersionDirty: true });
-          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
-        }
-        renderChatHistorySmartDbTable(def);
-        setBusy(false);
-        dialogApi.close('apply');
-      } catch (err) {
-        def.filters = previousFilters;
-        error.textContent = `絞り込みを保存できませんでした: ${err?.message || String(err)}`;
-        error.hidden = false;
-        setBusy(false);
-      }
-    });
-    dialogApi.open();
-  }
-
-  function showChatHistorySmartDbColumnsModal() {
-    const def = state.currentSmartDb;
-    if (!_isChatHistoryDef(def)) return;
-    const restoreTarget = typeof _smartDbActiveElement === 'function' ? _smartDbActiveElement() : document.activeElement;
-    const body = document.createElement('div');
-    body.className = 'chat-history-settings-body';
-    const list = document.createElement('div');
-    list.className = 'chat-history-column-list';
-    const selected = new Set(_visibleColumns(def));
-    Object.entries(COLUMN_META).forEach(([key, meta]) => {
-      const label = document.createElement('label');
-      label.className = 'chat-history-column-option';
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.value = key;
-      input.checked = selected.has(key);
-      input.dataset.e2eId = `chat-history-column-${key}`;
-      label.append(input, document.createTextNode(meta.label));
-      list.appendChild(label);
-    });
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.dataset.e2eId = 'chat-history-columns-cancel';
-    cancel.textContent = 'キャンセル';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
-    save.dataset.e2eId = 'chat-history-columns-save';
-    save.textContent = '適用';
-    const error = document.createElement('div');
-    error.className = 'gb-inline-error chat-history-settings-error';
-    error.dataset.e2eId = 'chat-history-columns-error';
-    error.setAttribute('role', 'alert');
-    error.hidden = true;
-    body.append(list, error);
-    let busy = false;
-    const dialogApi = window.GBUI.createModal({
-      id: 'chat-history-columns',
-      title: 'チャット履歴の表示項目',
-      body,
-      footer: [cancel, save],
-      variant: 'standard',
-      extraClass: 'chat-history-settings-modal',
-      geometryKey: 'chat-history-columns',
-      initialFocus: '[data-e2e-id="chat-history-column-title"]',
-      returnFocus: restoreTarget,
-      onBeforeClose: () => !busy,
-    });
-    dialogApi.modal.dataset.e2eId = 'chat-history-columns-dialog';
-    dialogApi.overlay.dataset.e2eId = 'chat-history-columns-overlay';
-    const setBusy = value => {
-      busy = !!value;
-      dialogApi.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
-      body.querySelectorAll('input').forEach(control => { control.disabled = busy; });
-      cancel.disabled = busy;
-      save.disabled = busy;
-    };
-    cancel.addEventListener('click', () => dialogApi.close('cancel'));
-    save.addEventListener('click', async () => {
-      const columns = Array.from(list.querySelectorAll('input:checked')).map(input => input.value);
-      if (!columns.length) {
-        error.textContent = '表示する項目を1つ以上選択してください';
-        error.hidden = false;
-        error.scrollIntoView({ block: 'end', inline: 'nearest' });
-        const scrollHost = error.closest('.gb-modal-body');
-        if (scrollHost) scrollHost.scrollTop = scrollHost.scrollHeight;
-        return;
-      }
-      const previousColumns = Array.isArray(def.columns) ? def.columns : [];
-      setBusy(true);
-      error.hidden = true;
-      error.textContent = '';
-      try {
-        def.columns = columns;
-        if (typeof saveSmartDbDef === 'function') {
-          await saveSmartDbDef(def, { skipVersionDirty: true });
-          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
-        }
-        renderChatHistorySmartDbTable(def);
-        setBusy(false);
-        dialogApi.close('apply');
-      } catch (err) {
-        def.columns = previousColumns;
-        error.textContent = `表示項目を保存できませんでした: ${err?.message || String(err)}`;
-        error.hidden = false;
-        setBusy(false);
-        error.scrollIntoView({ block: 'end', inline: 'nearest' });
-        const scrollHost = error.closest('.gb-modal-body');
-        if (scrollHost) scrollHost.scrollTop = scrollHost.scrollHeight;
-      }
-    });
-    dialogApi.open();
-  }
-
-  function configureChatHistorySmartDbToolbar(def) {
-    const toolbar = document.querySelector('#smart-db-view .smart-db-toolbar');
-    if (!toolbar) return;
-    const isChatHistory = _isChatHistoryDef(def);
-    const table = document.getElementById('smart-db-table');
-    if (table) table.setAttribute('aria-label', isChatHistory ? 'チャット履歴' : 'スマートシート');
-    const notice = document.getElementById('chat-history-sheet-notice');
-    if (notice) notice.hidden = !isChatHistory;
-    const menu = toolbar.querySelector('[data-action*="showToolMenu"]');
-    const reveal = toolbar.querySelector('[data-action*="revealCurrentInFolderTree"]');
-    const dashboard = toolbar.querySelector('[data-smart-db-view="dashboard"]');
-    [menu, reveal, dashboard].forEach(control => {
-      if (control) control.hidden = isChatHistory;
-    });
-    const reload = toolbar.querySelector('[data-e2e-id="smart-db-reload-current"]');
-    if (reload) {
-      if (!reload.dataset.chatHistoryOriginalAction) {
-        reload.dataset.chatHistoryOriginalAction = reload.getAttribute('data-action') || '';
-      }
-      reload.setAttribute(
-        'data-action',
-        isChatHistory ? 'refreshOpenChatHistorySheet()' : reload.dataset.chatHistoryOriginalAction,
-      );
-    }
-    let columns = toolbar.querySelector('[data-e2e-id="chat-history-columns"]');
-    if (!columns) {
-      columns = document.createElement('button');
-      columns.type = 'button';
-      columns.className = 'tb-icon-btn';
-      columns.dataset.e2eId = 'chat-history-columns';
-      columns.title = '表示項目';
-      columns.setAttribute('aria-label', 'チャット履歴の表示項目');
-      columns.innerHTML = '<span class="ico ico-columns3"></span>';
-      columns.addEventListener('click', showChatHistorySmartDbColumnsModal);
-      toolbar.insertBefore(columns, reload || null);
-    }
-    columns.hidden = !isChatHistory;
-  }
-
-  async function refreshOpenChatHistorySheet() {
-    const def = state.currentSmartDb;
-    if (!_isChatHistoryDef(def) || typeof selectSmartDb !== 'function') return false;
-    const scope = _scopeValues();
-    if (!scope.sourceFolder && !scope.workspaceId) return false;
-    if (_scopeKey(scope) !== def.scopeKey) {
-      return openChatHistorySheet({ refreshExistingView: true });
-    }
-    await selectSmartDb(def.id, def, {
-      silent: true,
-      forceRefresh: true,
-      skipNavPush: true,
-      skipRecent: true,
-      skipSaveLastView: true,
-      skipAutoVersion: true,
-      skipHistoryScope: true,
-    });
-    return true;
-  }
-
-  window.CHAT_HISTORY_COLUMNS = COLUMN_META;
-  window.configureChatHistorySmartDbToolbar = configureChatHistorySmartDbToolbar;
-  window.loadChatHistorySmartDbData = loadChatHistorySmartDbData;
+  window.MeldexSystemSheets = Object.freeze({ registerSystemSheetProvider, getSystemSheetProvider, openSystemSheet });
   window.openChatHistorySheet = openChatHistorySheet;
-  window.refreshOpenChatHistorySheet = refreshOpenChatHistorySheet;
-  window.renderChatHistorySmartDbTable = renderChatHistorySmartDbTable;
-  window.showChatHistorySmartDbColumnsModal = showChatHistorySmartDbColumnsModal;
-  window.showChatHistorySmartDbFilterModal = showChatHistorySmartDbFilterModal;
+  window.openAllFilesSheet = openAllFilesSheet;
+  if (typeof registerToolComponent === 'function') {
+    registerToolComponent('system-sheet', { cls: SystemSheetComponent, icon: 'db', label: 'システムシート', multi: true });
+  }
 })();
 
 ;
@@ -14156,7 +14552,6 @@
   function extension(path) {
     const name = basename(path).toLowerCase();
     if (name.endsWith('.scriptnote.json')) return '.scriptnote';
-    if (name.endsWith('.smart-db.json')) return '.mel-sheet';
     const index = name.lastIndexOf('.');
     return index >= 0 ? name.slice(index) : '';
   }
@@ -14206,7 +14601,7 @@
     if (ext === '.mel-sheet' || ext === '.csv' || ext === '.tsv') return 'sheet';
     if (ext === '.mel-scenario') return 'scenario';
     if (ext === '.scriptnote') return 'scriptnote';
-    if (ext === '.mel-timer') return 'timer';
+    if (ext === '.mel-timer') return 'unsupported';
     return 'note';
   }
 
@@ -14353,14 +14748,14 @@
 
     const nodes = annId ? [{
       id: annId,
-      label: (bodyText || annType || '注釈').slice(0, 500),
+      label: (bodyText || annType || 'アノテート').slice(0, 500),
       type: 'annotation',
     }] : [];
 
     const edges = (annId && targetPath) ? [{
       from: targetPath,
       to: annId,
-      label: '注釈',
+      label: 'アノテート',
       type: 'annotates',
     }] : [];
 
@@ -14385,7 +14780,7 @@
       source_refs: [{ path: targetPath, kind: 'annotation' }],
       warnings: [],
       metadata: {
-        title: `注釈 (${basename(targetPath) || targetPath})`,
+        title: `アノテート (${basename(targetPath) || targetPath})`,
         target_path: targetPath,
         annotation_id: annId,
         annotation_type: annType,
@@ -14769,6 +15164,17 @@
     return [...new Set(directories)];
   }
 
+  function _pathForExclusionCheck(path) {
+    const normalized = contract().normalizePath(path);
+    const sourcePrefix = contract().normalizePath(
+      global.MeldexSourceFolderRegistry?.SOURCE_PREFIX || '__dropbox_root__',
+    );
+    if (!sourcePrefix || normalized === sourcePrefix) return normalized === sourcePrefix ? '' : normalized;
+    return normalized.startsWith(`${sourcePrefix}/`)
+      ? normalized.slice(sourcePrefix.length + 1)
+      : normalized;
+  }
+
   async function _listFiles(provider) {
     const files = [];
     const directories = await _scanRootDirectories(provider);
@@ -14784,7 +15190,7 @@
       }
       for (const entry of entries) {
         const path = contract().normalizePath(entry.path || (directory ? `${directory}/${entry.name}` : entry.name));
-        if (!path || contract().shouldSkipPath(path)) continue;
+        if (!path || contract().shouldSkipPath(_pathForExclusionCheck(path))) continue;
         if (entry.kind === 'directory') directories.push(path);
         else if (contract().isSupported(path)) files.push({ ...entry, path });
         if ((files.length + directories.length) % 40 === 0) await _yield();
@@ -15444,7 +15850,7 @@
       .uks-unindexed-box{display:grid;gap:6px;padding:10px 12px;border:1px solid var(--border-warning, #d97706);border-radius:10px;background:var(--bg3);font-size:12px;line-height:1.5}
       .uks-unindexed-title{font-weight:600;color:var(--warning, #d97706);display:flex;align-items:center;gap:6px}
       .uks-unindexed-list{display:grid;gap:4px;font-size:11.5px;color:var(--fg2)}
-      .uks-actions .gb-btn{min-height:var(--ui-h-touch,44px)!important;white-space:normal}
+      .uks-actions .gb-btn,.uks-migration-head .gb-btn{min-height:var(--ui-h-touch,44px)!important;white-space:normal}
       @media (max-width:480px){.uks-card{padding:12px}.uks-head{align-items:flex-start}.uks-actions{display:grid;grid-template-columns:1fr;width:100%}.uks-actions .gb-btn{width:100%}.uks-count{flex:1;min-width:0}}
     `;
     document.head.appendChild(style);
@@ -15500,7 +15906,7 @@
     const kinds = coverage?.by_kind || {};
     const imageCount = Number(kinds.image || 0);
     const legacyCount = Number(kinds['legacy-knowledge'] || 0);
-    const structureCount = ['sheet', 'smart-sheet', 'board', 'scenario'].reduce((sum, key) => sum + Number(kinds[key] || 0), 0);
+    const structureCount = ['sheet', 'board', 'scenario'].reduce((sum, key) => sum + Number(kinds[key] || 0), 0);
     const values = [
       [Number(coverage?.total || 0), '参照可能'],
       [structureCount, '構造データ'],

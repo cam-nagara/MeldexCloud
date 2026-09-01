@@ -8,10 +8,10 @@
  */
 
 // リサイズハンドル・カードメニュー・リンクを開くボタンの上では
-// Alt+Shift+ドラッグでのしっぽ作成を始めない（注釈側の既定に、カード固有の要素を足したもの）。
+// Alt+Shift+ドラッグでのしっぽ作成を始めない（アノテート側の既定に、カード固有の要素を足したもの）。
 const BD_CARD_TAIL_DRAG_EXCLUDE_SELECTOR = 'button,.ann-note-resize-handle,.gb-fmt-popup,.bd-card-menu-btn,.bd-link-open-btn,.bd-resize';
 
-// カードのしっぽは注釈ツールバーの概念を持たないため、ハンドルのドラッグ可否は
+// カードのしっぽはアノテートツールバーの概念を持たないため、ハンドルのドラッグ可否は
 // CSS側 (.bd-node:hover / .bd-node.bd-selected のときだけ opacity:1 + pointer-events:auto) が
 // 実質的なゲートになる。JS側は常に許可してよい。
 function _bdCardTailCanDragHandles() {

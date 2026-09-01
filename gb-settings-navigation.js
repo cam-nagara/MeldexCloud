@@ -5,12 +5,12 @@ const MELDEX_SETTINGS_DEFAULT_TAB_ID = 'ユーザー・共同作業';
 const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   {
     id: 'ユーザー・共同作業',
-    desc: 'ユーザー名、アイコン、ワークスペース、メンバー、編集ロック',
+    desc: 'プロフィール、ユーザー、ワークスペースの所属と権限',
     icon: 'usersRound',
     pages: [
-      { id: 'profile', label: 'プロフィール', panels: ['ユーザー'], view: 'profile' },
-      { id: 'workspace', label: 'ワークスペース', panels: ['ワークスペース'], view: 'workspace' },
-      { id: 'members', label: 'メンバー・権限', panels: ['ワークスペース', 'ユーザー'], view: 'members' },
+      { id: 'profile', label: 'プロフィール', panels: ['ユーザー'], view: 'profile', commitMode: 'draft-save' },
+      { id: 'users', label: 'ユーザー', panels: ['ユーザー'], view: 'users', commitMode: 'immediate-safe' },
+      { id: 'workspace', label: 'ワークスペース', panels: ['ワークスペース'], view: 'workspace', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -18,7 +18,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'ホームフォルダ、ソースフォルダ、Dropbox',
     icon: 'folder',
     pages: [
-      { id: 'storage', label: '保存先・フォルダ', panels: ['全般'], view: 'storage' },
+      { id: 'storage', label: '保存先・フォルダ', panels: ['全般'], view: 'storage', commitMode: 'draft-save' },
     ],
   },
   {
@@ -26,7 +26,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: '表示サイズ、見やすさ、起動時の動作',
     icon: 'monitorCog',
     pages: [
-      { id: 'display', label: '表示・起動', panels: ['全般'], view: 'display' },
+      { id: 'display', label: '表示・起動', panels: ['全般'], view: 'display', commitMode: 'draft-save' },
     ],
   },
   {
@@ -34,7 +34,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'テーマカラー、アクセント、詳細設定、プレビュー',
     icon: 'palette',
     pages: [
-      { id: 'theme', label: 'テーマ', panels: ['テーマ'], view: 'theme' },
+      { id: 'theme', label: 'テーマ', panels: ['テーマ'], view: 'theme', commitMode: 'draft-save' },
     ],
   },
   {
@@ -42,34 +42,47 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'キーボード操作、検索、スコープ別のキー設定',
     icon: 'keyboard',
     pages: [
-      { id: 'shortcuts', label: 'ショートカット', panels: ['ショートカット'], view: 'shortcuts' },
+      { id: 'shortcuts', label: 'ショートカット', panels: ['ショートカット'], view: 'shortcuts', commitMode: 'immediate-safe' },
     ],
   },
   {
-    id: 'AI・Discord',
-    desc: '自動タグ付け、AIキー、ローカルLLM、CLI、AI使用量、Discord連携',
+    id: 'AI',
+    desc: '自動タグ付け、AIキー、ローカルLLM、CLI、AI使用量',
     icon: 'bot',
     pages: [
-      { id: 'auto-tag', label: '自動タグ付け', panels: ['LLM'], view: 'auto-tag' },
-      { id: 'ai-keys', label: 'AIキー', panels: ['LLM'], view: 'ai-keys' },
-      { id: 'local-llm', label: 'ローカルLLM', panels: ['LLM'], view: 'local-llm' },
-      { id: 'cli', label: 'CLI', panels: ['LLM'], view: 'cli' },
-      { id: 'memory', label: '記憶・指示', panels: ['LLM'], view: 'memory' },
-      { id: 'ai-usage', label: 'AI使用量', panels: ['LLMコスト'], view: 'ai-usage' },
-      { id: 'discord', label: 'Discord連携', panels: ['Discord Bot'], view: 'discord' },
+      { id: 'auto-tag', label: '自動タグ付け', panels: ['LLM'], view: 'auto-tag', commitMode: 'draft-save' },
+      { id: 'ai-keys', label: 'AIキー', panels: ['LLM'], view: 'ai-keys', commitMode: 'draft-save' },
+      { id: 'local-llm', label: 'ローカルLLM', panels: ['LLM'], view: 'local-llm', commitMode: 'draft-save' },
+      { id: 'cli', label: 'CLI', panels: ['LLM'], view: 'cli', commitMode: 'draft-save' },
+      { id: 'memory', label: '記憶・指示', panels: ['LLM'], view: 'memory', commitMode: 'draft-save' },
+      { id: 'ai-usage', label: 'AI使用量', panels: ['LLMコスト'], view: 'ai-usage', commitMode: 'immediate-safe' },
     ],
   },
   {
     id: 'インポート',
-    desc: '外部ノート、Xブックマーク、Xアカウント、Web Clipper、Notion同期、拡張機能',
+    desc: '外部ノート、Notion同期',
     icon: 'download',
     pages: [
-      { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import' },
-      { id: 'x-bookmarks', label: 'Xブックマーク', panels: ['取り込み'], view: 'x-bookmarks' },
-      { id: 'x-account-posts', label: 'Xアカウント保存', panels: ['取り込み'], view: 'x-account-posts' },
-      { id: 'web-clipper', label: 'Web Clipper', panels: ['拡張機能'], view: 'web-clipper' },
-      { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync' },
-      { id: 'extensions', label: '拡張機能', panels: ['拡張機能'], view: 'extensions' },
+      { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import', commitMode: 'immediate-safe' },
+      { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync', commitMode: 'immediate-safe' },
+    ],
+  },
+  {
+    id: 'Webクリップ',
+    desc: 'Web Clipper、Xブックマーク、Xアカウント保存',
+    icon: 'blocks',
+    pages: [
+      { id: 'web-clipper', label: 'Web Clipper', panels: ['拡張機能'], view: 'web-clipper', commitMode: 'immediate-safe' },
+      { id: 'x-bookmarks', label: 'Xブックマーク', panels: ['取り込み'], view: 'x-bookmarks', commitMode: 'immediate-safe' },
+      { id: 'x-account-posts', label: 'Xアカウント保存', panels: ['取り込み'], view: 'x-account-posts', commitMode: 'immediate-safe' },
+    ],
+  },
+  {
+    id: '拡張機能',
+    desc: '追加機能の導入と状態確認',
+    icon: 'puzzle',
+    pages: [
+      { id: 'extensions', label: '拡張機能', panels: ['拡張機能'], view: 'extensions', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -77,7 +90,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'ホーム画面追加、ファイル関連付け',
     icon: 'download',
     pages: [
-      { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup' },
+      { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -85,8 +98,8 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'Undo、バージョン保存、レイアウト復元、設定移行',
     icon: 'history',
     pages: [
-      { id: 'history', label: '履歴・復元', panels: ['全般'], view: 'history' },
-      { id: 'transfer', label: '引き継ぎ・初期化', panels: ['全般'], view: 'transfer' },
+      { id: 'history', label: '履歴・復元', panels: ['全般'], view: 'history', commitMode: 'draft-save' },
+      { id: 'transfer', label: '引き継ぎ・初期化', panels: ['全般'], view: 'transfer', commitMode: 'immediate-destructive' },
     ],
   },
   {
@@ -94,9 +107,9 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'ゴミ箱、バックアップ、保持期間、内部データ',
     icon: 'database',
     pages: [
-      { id: 'trash', label: 'ゴミ箱', panels: ['ゴミ箱'], view: 'trash' },
-      { id: 'database', label: 'データ保守', panels: ['データベース'], view: 'database' },
-      { id: 'duplicates', label: '重複検出', panels: ['データベース'], view: 'duplicates' },
+      { id: 'trash', label: 'ゴミ箱', panels: ['ゴミ箱'], view: 'trash', commitMode: 'immediate-destructive' },
+      { id: 'database', label: 'データ保守', panels: ['データベース'], view: 'database', commitMode: 'immediate-destructive' },
+      { id: 'duplicates', label: '重複検出', panels: ['データベース'], view: 'duplicates', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -104,7 +117,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     desc: 'フィードバック、利用統計、診断、更新確認',
     icon: 'messageSquareText',
     pages: [
-      { id: 'feedback', label: 'フィードバック', panels: ['フィードバック'], view: 'feedback' },
+      { id: 'feedback', label: 'フィードバック', panels: ['フィードバック'], view: 'feedback', commitMode: 'immediate-safe' },
     ],
   },
 ]);
@@ -112,40 +125,38 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
 const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   '全般': { tabId: '保存先・フォルダ', pageId: 'storage' },
   '詳細': { tabId: '保存先・フォルダ', pageId: 'storage' },
-  'ユーザー': { tabId: 'ユーザー・共同作業', pageId: 'profile' },
+  'ユーザー': { tabId: 'ユーザー・共同作業', pageId: 'users' },
+  'スタッフ': { tabId: 'ユーザー・共同作業', pageId: 'users' },
   'プロフィール': { tabId: 'ユーザー・共同作業', pageId: 'profile' },
   'ワークスペース': { tabId: 'ユーザー・共同作業', pageId: 'workspace' },
-  'メンバー・権限': { tabId: 'ユーザー・共同作業', pageId: 'members' },
+  'メンバー・権限': { tabId: 'ユーザー・共同作業', pageId: 'workspace' },
   '接続・共有サーバー': { tabId: '保存先・フォルダ', pageId: 'storage' },
   '外観': { tabId: 'テーマ', pageId: 'theme' },
   '文字': { tabId: 'テーマ', pageId: 'font' },
   'フォント': { tabId: 'テーマ', pageId: 'font' },
-  'チャットAI': { tabId: 'AI・Discord', pageId: 'ai-keys' },
-  'LLM': { tabId: 'AI・Discord', pageId: 'ai-keys' },
-  '自動タグ付け': { tabId: 'AI・Discord', pageId: 'auto-tag' },
-  '自動タグ辞書': { tabId: 'AI・Discord', pageId: 'auto-tag' },
-  'ナレッジ層': { tabId: 'AI・Discord', pageId: 'memory' },
-  'コスト': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'LLM費用': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'LLMコスト': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'LLMコスト管理': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  '利用料金': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'AI料金': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'AI使用量': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'AI API使用量': { tabId: 'AI・Discord', pageId: 'ai-usage' },
-  'Discord': { tabId: 'AI・Discord', pageId: 'discord' },
-  'Discord Bot': { tabId: 'AI・Discord', pageId: 'discord' },
-  'Discord連携': { tabId: 'AI・Discord', pageId: 'discord' },
-  'Discord Bot連携': { tabId: 'AI・Discord', pageId: 'discord' },
+  'チャットAI': { tabId: 'AI', pageId: 'ai-keys' },
+  'LLM': { tabId: 'AI', pageId: 'ai-keys' },
+  '自動タグ付け': { tabId: 'AI', pageId: 'auto-tag' },
+  '自動タグ辞書': { tabId: 'AI', pageId: 'auto-tag' },
+  'ナレッジ層': { tabId: 'AI', pageId: 'memory' },
+  'コスト': { tabId: 'AI', pageId: 'ai-usage' },
+  'LLM費用': { tabId: 'AI', pageId: 'ai-usage' },
+  'LLMコスト': { tabId: 'AI', pageId: 'ai-usage' },
+  'LLMコスト管理': { tabId: 'AI', pageId: 'ai-usage' },
+  '利用料金': { tabId: 'AI', pageId: 'ai-usage' },
+  'AI料金': { tabId: 'AI', pageId: 'ai-usage' },
+  'AI使用量': { tabId: 'AI', pageId: 'ai-usage' },
+  'AI API使用量': { tabId: 'AI', pageId: 'ai-usage' },
   '取り込み': { tabId: 'インポート', pageId: 'external-import' },
   '外部取り込み': { tabId: 'インポート', pageId: 'external-import' },
-  'Xブックマーク': { tabId: 'インポート', pageId: 'x-bookmarks' },
-  'Xアカウント保存': { tabId: 'インポート', pageId: 'x-account-posts' },
-  'Web Clipper': { tabId: 'インポート', pageId: 'web-clipper' },
-  'ウェブクリップ': { tabId: 'インポート', pageId: 'web-clipper' },
-  'Chrome拡張機能': { tabId: 'インポート', pageId: 'web-clipper' },
-  '連携': { tabId: 'インポート', pageId: 'web-clipper' },
-  '拡張機能': { tabId: 'インポート', pageId: 'extensions' },
+  'Notion同期': { tabId: 'インポート', pageId: 'notion-sync' },
+  'Xブックマーク': { tabId: 'Webクリップ', pageId: 'x-bookmarks' },
+  'Xアカウント保存': { tabId: 'Webクリップ', pageId: 'x-account-posts' },
+  'Web Clipper': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  'ウェブクリップ': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  'Chrome拡張機能': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  '連携': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  '拡張機能': { tabId: '拡張機能', pageId: 'extensions' },
   'ゴミ箱': { tabId: 'ゴミ箱・データ保守', pageId: 'trash' },
   'DB': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
   'データ保守': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
@@ -174,10 +185,10 @@ function _settingsAutoTagPageVisible() {
 function _settingsNavigationRuntimeTabs() {
   const autoTagVisible = _settingsAutoTagPageVisible();
   return MELDEX_SETTINGS_NAVIGATION.map(tab => {
-    if (tab.id !== 'AI・Discord' || autoTagVisible) return tab;
+    if (tab.id !== 'AI' || autoTagVisible) return tab;
     return {
       ...tab,
-      desc: 'AIキー、ローカルLLM、CLI、AI使用量、Discord連携',
+      desc: 'AIキー、ローカルLLM、CLI、AI使用量',
       pages: tab.pages.filter(page => page.id !== 'auto-tag'),
     };
   });
@@ -292,8 +303,8 @@ function _tagSettingsNavigationSections(root = document) {
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="ユーザー"]'), [
     'profile',
-    'members',
-    'members',
+    'users',
+    'users',
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="取り込み"]'), [
     'external-import',

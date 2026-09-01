@@ -545,14 +545,6 @@ function renderPivot(ctx) {
     filterMode,
     applyAdvancedFilters: true,
   });
-  // データを持つビューで保存済み列幅が一つも無ければ、初回描画前に一度だけ自動調整して保存する
-  // （利用者調整済みの列幅がある場合や空のビューでは何もしない。gb-db-table-display.js 参照）。
-  if (typeof _dbMaybeAutoFitColumnsOnce === 'function') {
-    const autoFitWidths = _dbMaybeAutoFitColumnsOnce(dbPath, ctx, {
-      data, propTypes, visibleProps, entityNames, advFilters, savedWidths,
-    });
-    if (autoFitWidths) savedWidths = autoFitWidths;
-  }
   // Step 2: チャンク分割中の D&D で manualOrder 初期化に使う (DOM 未完成時のフォールバック)
   ctx._lastEntityNames = entityNames;
   const renderRowLimit = _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps);

@@ -59,10 +59,7 @@
   function _updateToolbars(viewName) {
     const toolbarContext = _resolveToolbarContext(viewName);
     const toolbarViewName = toolbarContext.viewName;
-    // smart-db は smart-db-view 内に独自ツールバー（メニュー・表/ダッシュボード・再読み込み・フィルタ設定）を
-    // 持っており、通常シート用のアプリツールバー(#tb-db: フィルタ/並べ替え/公開等)は内容が合わないため出さない。
-    const isSmartDbToolbar = toolbarViewName === 'smart-db';
-    const isDbView = TOOLBAR_DB_VIEW_TYPES.has(toolbarViewName) && !isSmartDbToolbar;
+    const isDbView = TOOLBAR_DB_VIEW_TYPES.has(toolbarViewName);
     const shouldUseVisibleDbFallback = !isDbView && (!toolbarViewName || _isToolbarUtilityView(toolbarViewName) || _isToolbarUtilityView(viewName));
     const visibleDbToolbarContext = shouldUseVisibleDbFallback ? _findVisibleDbToolbarContext() : null;
     const effectiveToolbarContext = visibleDbToolbarContext || toolbarContext;
@@ -134,6 +131,9 @@
   // （不具合B関連の取りこぼし。共有コンテナの実内容検証は _gbMediaTabExpectedSignature /
   // _gbVerifyAndFixMediaContainer 参照）。
   function _gbNavPushMediaTabState(entry) {
+    if (entry.type === 'compare') {
+      return { pathA: entry.pathA || '', pathB: entry.pathB || '' };
+    }
     if (!entry.mediaType && !entry.viewerUrl) return {};
     const st = {};
     if (entry.mediaType) st.mediaType = entry.mediaType;
@@ -144,7 +144,7 @@
   function _overrideNavPush() {
     const _prevNavPush = navPush; // gb-app.jsの上書き版
 
-    navPush = function(entry, paneId) {
+    navPush = async function(entry, paneId) {
       const targetPaneId = paneId || _getFileOpenPane(GBLayout.activePane);
       const shouldUpdateTab = !!targetPaneId && !_bridgeUpdating && _initialized
         && !!entry && !!entry.type && entry.type !== 'welcome';
@@ -190,7 +190,12 @@
             GBLayout.saveLayout({ immediate: true });
           } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
             const tab = pane.tabs[pane.activeTabIndex];
-            if (typeof removeComponentInstance === 'function') removeComponentInstance(tab.id);
+            if (typeof removeComponentInstanceSafely === 'function') {
+              if (!await removeComponentInstanceSafely(tab.id)) return false;
+            } else if (typeof removeComponentInstance === 'function'
+              && removeComponentInstance(tab.id) === false) {
+              return false;
+            }
             tab.type = type;
             tab.label = label;
             tab.path = path;
@@ -220,8 +225,11 @@
             GBLayout.saveLayout({ immediate: true });
           } else {
             // 別タイプへのナビゲーション: コンポーネントを破棄して置換、full render
-            if (typeof removeComponentInstance === 'function') {
-              removeComponentInstance(tab.id);
+            if (typeof removeComponentInstanceSafely === 'function') {
+              if (!await removeComponentInstanceSafely(tab.id)) return false;
+            } else if (typeof removeComponentInstance === 'function'
+              && removeComponentInstance(tab.id) === false) {
+              return false;
             }
             tab.state = _gbNavPushMediaTabState(entry);
             tab.type = type;
@@ -251,6 +259,7 @@
         // onActivePaneChange 経由の同期が発火しないため、ここで明示的に同期する。
         // 分岐によらず一度だけ呼べば十分なので、if/else の外・try の末尾に置く。
         if (typeof _syncFollowingVersionTabs === 'function') _syncFollowingVersionTabs();
+        return true;
       } finally {
         _endBridgeUpdate();
       }
@@ -372,8 +381,7 @@
       const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', calendar: 'スケジュール', timer: 'タイマー',
-        'smart-db': 'スマートシート',
+        board: 'ボード', calendar: 'スケジュール',
         folder: 'フォルダ', outliner: 'フォルダツリー',
         search: '検索',
       };
@@ -404,13 +412,12 @@
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジュール', timer: 'タイマー',
-      'smart-db': 'スマートシート',
+      board: 'ボード', calendar: 'スケジュール',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
-      chat: 'チャット', history: 'ヒストリー', annotation: '注釈',
+      chat: 'チャット', history: 'ヒストリー', annotation: 'アノテート',
     };
-    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'smart-db']);
+    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board']);
     // API の type 値 → タブの type 値（同名なら省略）
     // ここに無いタイプは toolType がそのままタブ type になる
     const _PANEL_FILE_OPEN_TYPES = {
@@ -426,7 +433,6 @@
       if (toolType === 'scriptnote') state.scenarioPath = path;
       if (toolType === 'board') state.boardPath = path;
       if (toolType === 'database') state.dbPath = path;
-      if (toolType === 'smart-db') state.smartDbPath = path;
       return state;
     }
     async function _panelHomeFolderPath() {
@@ -511,7 +517,7 @@
         return null;
       }
     }
-    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'calendar', 'smart-db']);
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'calendar']);
     function _isMainPanelPane(paneId) {
       const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));
@@ -713,10 +719,9 @@
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', calendar: 'スケジュール', timer: 'タイマー', preview: 'ビューワー',
-          'smart-db': 'スマートシート',
+          board: 'ボード', calendar: 'スケジュール', preview: 'ビューワー',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
-          annotation: '注釈', detail: 'オプション',
+          annotation: 'アノテート', detail: 'オプション',
         };
 
         if (typeof window.addPanelMenuTool === 'function') {

@@ -139,7 +139,6 @@
           total_estimate_seconds: confEst,
           total_actual_seconds: confAct,
           overrun_ratio: Math.round(overrunRatio * 10000) / 10000,
-          help_participated_count: aTasks.filter(t => t.has_help_participant).length,
           overtime_seconds: aTasks.reduce((sum, t) => sum + (parseInt(t.overtime_seconds, 10) || 0), 0),
         };
       }

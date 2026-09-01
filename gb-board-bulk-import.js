@@ -1,7 +1,7 @@
-/* gb-board-bulk-import.js — シート / スマートシートのエントリを一括でリンクカードとしてボードに読み込む。
+/* gb-board-bulk-import.js — シートのトピックを一括でリンクカードとしてボードに読み込む。
  *
- * ボード左上メニュー「シート/スマートシートから一括読込...」から起動。
- *   Step 1: 対象 (現在 Meldex で開いているシート / スマートシートのタブ) を選ぶ
+ * ボード左上メニュー「シートから一括読込...」から起動。
+ *   Step 1: 対象 (現在 Meldex で開いているシートのタブ) を選ぶ
  *   Step 2: ビューを選ぶ (ビューのフィルタを適用)
  *   Step 3: 該当エントリを取得 → 先頭の画像プロパティを並行フェッチ → グリッド配置で一括作成
  *
@@ -11,9 +11,9 @@
 (function () {
   'use strict';
 
-  // 対象候補として扱うタブ型。ここに含まれる型のタブがあれば「開いているシート/スマートシート」として列挙する。
+  // 対象候補として扱う通常シートのタブ型。
   const SUPPORTED_TAB_TYPES = new Set([
-    'smart-db', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
   ]);
   let _activeBulkImportModal = null;
 
@@ -24,7 +24,7 @@
     }
     const candidates = _collectCandidates();
     if (!candidates.length) {
-      if (typeof showStatus === 'function') showStatus('開いているシート / スマートシートのタブがありません', true);
+      if (typeof showStatus === 'function') showStatus('開いているシートのタブがありません', true);
       return;
     }
     _openWizard(candidates);
@@ -69,7 +69,7 @@
     body.className = 'bd-bulk-import-content';
     body.innerHTML = `
       <label class="bd-bulk-import-field" for="${sourceId}">
-        <span class="bd-bulk-import-label">対象のシート / スマートシート</span>
+        <span class="bd-bulk-import-label">対象のシート</span>
         <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
       </label>
       <label class="bd-bulk-import-field" for="${viewId}">
@@ -90,7 +90,7 @@
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: uid,
-      title: 'シート / スマートシートから一括読込',
+      title: 'シートから一括読込',
       body,
       footer: [cancelBtn, goBtn],
       variant: 'standard',
@@ -227,11 +227,6 @@
 
   async function _getViewsFor(target) {
     if (!target) return [];
-    if (target.type === 'smart-db') {
-      // スマートシートはトップレベルの filters が「全体ビュー」として機能する。
-      // ユーザー定義ビューの概念はスマートシートには現状ない。
-      return [{ label: 'スマートシート全体 (フィルタ適用)', kind: 'smart-all' }];
-    }
     // 通常のシート: 「現在のフィルタ」「保存済みビュー」「すべて」を列挙。
     const views = [];
     if (typeof getCurrentDbViewConfigEntry === 'function') {
@@ -250,93 +245,7 @@
   }
 
   async function _fetchEntries(target, view) {
-    if (target.type === 'smart-db') {
-      return await _fetchSmartDbEntries(target.path);
-    }
     return await _fetchDbEntries(target.path, view);
-  }
-
-  async function _fetchSmartDbEntries(path) {
-    const def = await _loadSmartDbDefinition(path);
-    if (def?.sourceType === 'all-files') {
-      const data = await _fetchSmartDbAllFilesData(path, def);
-      let files = Array.isArray(data?.files) ? data.files.slice() : [];
-      if (typeof applyGlobalIndexFilters === 'function') files = applyGlobalIndexFilters(files, def.filters || []);
-      if (typeof applyGlobalIndexSort === 'function') files = applyGlobalIndexSort(files, def.sortBy || 'modified', def.sortDir || 'desc');
-      return files
-        .filter(file => file && (file.path || file.abs_path))
-        .map(file => ({
-          path: file.abs_path || file.path,
-          name: file.name || String(file.abs_path || file.path || '').split(/[\\/]/).pop() || '',
-          source: 'smart-db',
-        }));
-    }
-    const filters = Array.isArray(def?.filters) ? def.filters : [];
-    const bulkSources = (typeof _smartDbEffectiveSources === 'function')
-      ? _smartDbEffectiveSources(def)
-      : (Array.isArray(def?.sources) ? def.sources.filter(s => s && s.path) : []);
-    let bulkUrl = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters));
-    if (bulkSources.length) bulkUrl += '&sources=' + encodeURIComponent(JSON.stringify(bulkSources));
-    const payload = _currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.entities)
-      ? state.smartDbData
-      : await apiFetch(bulkUrl);
-    const entities = Array.isArray(payload?.entities) ? payload.entities : [];
-    return entities
-      .filter(e => e && e.path)
-      .map(e => ({ path: e.path, name: e.name || '', source: 'smart-db' }));
-  }
-
-  async function _loadSmartDbDefinition(path) {
-    const pathText = String(path || '');
-    if (pathText.startsWith('smart-db:')) {
-      const id = pathText.slice('smart-db:'.length);
-      if (state?.currentSmartDb && (state.currentSmartDb.id === id || state.currentSmartDb._filePath === id)) {
-        return state.currentSmartDb;
-      }
-      let saved = [];
-      try {
-        saved = typeof getSavedSmartDbs === 'function'
-          ? getSavedSmartDbs()
-          : JSON.parse(localStorage.getItem('smartDbs') || '[]');
-      } catch { saved = []; }
-      const found = (saved || []).find(d => d?.id === id || d?._filePath === id) || {};
-      if (!_isRawSmartDbDefinition(found)) throw new Error('スマートシートが見つかりません');
-      return typeof normalizeSmartDbDefinition === 'function' ? normalizeSmartDbDefinition(found) : found;
-    }
-    const fileData = await apiFetch('/file?path=' + encodeURIComponent(pathText));
-    let def = {};
-    try { def = JSON.parse(fileData?.content || '{}') || {}; } catch { throw new Error('スマートシートJSONを読み込めません'); }
-    if (!_isRawSmartDbDefinition(def)) throw new Error('スマートシート定義が空です');
-    if (typeof normalizeSmartDbDefinition === 'function') def = normalizeSmartDbDefinition(def);
-    def._filePath = pathText;
-    return def;
-  }
-
-  function _isRawSmartDbDefinition(def) {
-    if (!def || typeof def !== 'object' || Array.isArray(def)) return false;
-    if (!Object.keys(def).length) return false;
-    return def.type === 'smart-db'
-      || def.sourceType === 'all-files'
-      || def.sourceType === 'db-entities'
-      || Array.isArray(def.filters)
-      || !!def.id
-      || !!def.name;
-  }
-
-  function _currentSmartDbMatches(path, def) {
-    const current = state?.currentSmartDb;
-    if (!current) return false;
-    const pathText = String(path || '');
-    return current === def
-      || current.id === def?.id
-      || (current._filePath && current._filePath === pathText)
-      || pathText === 'smart-db:' + current.id;
-  }
-
-  async function _fetchSmartDbAllFilesData(path, def) {
-    if (_currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.files)) return state.smartDbData;
-    if (typeof loadGlobalIndexData === 'function') return await loadGlobalIndexData(def);
-    return await apiFetch('/global-index');
   }
 
   async function _fetchDbEntries(dbPath, view) {

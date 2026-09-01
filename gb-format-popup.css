@@ -141,7 +141,7 @@
 .gb-fmt-swatch-fg[aria-disabled="true"],
 .gb-fmt-swatch-fg.is-disabled {
   background: var(--ui-disabled-bg, #555) !important;
-  border-color: var(--ui-disabled-border, #666) !important;
+  border-color: transparent !important;
   color: var(--ui-disabled-fg, #888) !important;
   filter: grayscale(1) saturate(0) !important;
   opacity: 1 !important;
@@ -191,7 +191,7 @@
 .gb-fmt-btn[aria-disabled="true"],
 .gb-fmt-btn.is-disabled {
   background: var(--ui-disabled-bg, #555) !important;
-  border-color: var(--ui-disabled-border, #666) !important;
+  border-color: transparent !important;
   color: var(--ui-disabled-fg, #888) !important;
   filter: grayscale(1) saturate(0) !important;
   opacity: 1 !important;

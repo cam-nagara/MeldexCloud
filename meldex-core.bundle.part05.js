@@ -1,3 +1,32 @@
+
+function _popupClampValue(value, min, max) {
+  if (max < min) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function _popupRectsOverlap(a, b, gap = 0) {
+  if (!a || !b) return false;
+  return !(
+    a.right <= b.left - gap
+    || a.left >= b.right + gap
+    || a.bottom <= b.top - gap
+    || a.top >= b.bottom + gap
+  );
+}
+
+function _popupCandidateRect(left, top, width, height) {
+  return { left, top, right: left + width, bottom: top + height };
+}
+
+function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid) {
+  if (!avoid) return { left: baseLeft, top: baseTop };
+  const maxLeft = vw - pw - gap;
+  const maxTop = vh - ph - gap;
+  const xNearAnchor = _popupClampValue(baseLeft, gap, maxLeft);
+  const yNearAnchor = _popupClampValue(baseTop, gap, maxTop);
+  const candidates = [
+    { left: xNearAnchor, top: avoid.bottom + gap, side: 'below', space: vh - avoid.bottom - gap },
+    { left: xNearAnchor, top: avoid.top - ph - gap, side: 'above', space: avoid.top - gap },
     { left: avoid.right + gap, top: yNearAnchor, side: 'right', space: vw - avoid.right - gap },
     { left: avoid.left - pw - gap, top: yNearAnchor, side: 'left', space: avoid.left - gap },
   ];

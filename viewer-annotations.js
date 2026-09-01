@@ -1,21 +1,21 @@
-/* viewer-annotations.js — Meldexビューワー: 注釈（メモ描画）コントローラー（統合層）。
-   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. 注釈の画像追従」
+/* viewer-annotations.js — Meldexビューワー: アノテート（メモ描画）コントローラー（統合層）。
+   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3. アノテートの画像追従」
    実体（画像固有ピクセル座標のシーン管理・描画・付箋・旧座標互換）は以下へ分割済み:
      - viewer-annotation-scene.js  … シーン構築・座標変換・ストローク描画/消しゴム
      - viewer-annotation-notes.js  … 新座標系(media-pixel-v1)の付箋＋しっぽ
-     - viewer-annotation-legacy.js … coordinateSpaceを持たない旧注釈の後方互換表示
+     - viewer-annotation-legacy.js … coordinateSpaceを持たない旧アノテートの後方互換表示
    本ファイルの役割:
      - ツールバー（既存の createMarkupToolbar、meldex-core.js／事前ビルド済みバンドル経由）と
        上記シーンエンジンを繋ぐ薄い統合層。
-     - 単一の公開注釈コントローラー window.MeldexViewerAnnotations を提供する
+     - 単一の公開アノテートコントローラー window.MeldexViewerAnnotations を提供する
        （toggle/setState/load/getSceneState。親画面・単独版・右クリックメニュー・Aキー・
        右サイドバーから共通利用）。
      - Meldex本体の右下フロートボタン（親画面）から、現在表示中のビューワーiframeへ
-       注釈状態を配送するpostMessage経路（新設: viewer-ann-set-state）を受信する。
+       アノテート状態を配送するpostMessage経路（新設: viewer-ann-set-state）を受信する。
        送信元は event.source === window.parent と同一オリジンを検証してから適用する。
        逆方向（iframe→親）には viewer-ann-state-changed / viewer-ann-save-result を送る
        （親側の対応する受信処理は gb-annotations.part01.part01.js 側で追加、報告参照）。
-   注意: 既存注釈（coordinateSpaceを持たない旧座標）は破壊的変換をしない
+   注意: 既存アノテート（coordinateSpaceを持たない旧座標）は破壊的変換をしない
    （viewer-annotation-legacy.js が担当。新規描画・保存時のみ media-pixel-v1 を付与する）。 */
 (function () {
   'use strict';
@@ -29,7 +29,7 @@
     ? { available: !!_startupAvailability.available, reason: String(_startupAvailability.reason || '') }
     : { available: true, reason: '' };
   // 親から最後に受け取った viewer-ann-set-state の完全スナップショット。シーン再構築のたびに
-  // 再適用する（ビューワー残課題修正計画 2026-08-04「3. 注釈座標と親画面連携」）。
+  // 再適用する（ビューワー残課題修正計画 2026-08-04「3. アノテート座標と親画面連携」）。
   let _lastSnapshot = null;
 
   function SceneEngine() { return window.MeldexViewerAnnotationScene; }
@@ -56,9 +56,9 @@
   }
 
   function _unavailableReason() {
-    if (!_availability.available) return _availability.reason || 'このファイルでは注釈を保存できません';
+    if (!_availability.available) return _availability.reason || 'このファイルではアノテートを保存できません';
     return /^blob:/i.test(_currentTargetPath())
-      ? 'ブラウザーで直接開いたファイルの注釈は保存できません。Cloud版本体で開いてください'
+      ? 'ブラウザーで直接開いたファイルのアノテートは保存できません。Cloud版本体で開いてください'
       : '';
   }
 
@@ -82,8 +82,8 @@
   // scene/notes/legacy の各保存経路から呼ばれる共有フック（「読み込み結果、保存結果を配送する」の
   // 保存結果側。読み込み結果は setState(true)/onSceneChanged 完了時の viewer-ann-state-changed で
   // 代替する — シーン再構築のたびに現在の active/drawing 状態を親へ通知することで、親側は
-  // 「今開いている画像の注釈を読み込み終えた」タイミングを間接的に把握できる）。
-  window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result) {
+  // 「今開いている画像のアノテートを読み込み終えた」タイミングを間接的に把握できる）。
+  window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result, history) {
     _postToParent({
       type: 'viewer-ann-save-result',
       ok: !!ok,
@@ -92,6 +92,7 @@
       pageIndex: _currentPageIndex(),
       annotationRevision: ok ? String(result?.annotationRevision || '') : '',
       invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
+      history: ok && history && typeof history === 'object' ? history : null,
       error: error ? String(error?.message || error) : '',
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
@@ -137,6 +138,7 @@
       setOpacity(opacity) { SceneEngine().setOpacity(opacity); },
     };
     _toolbar = createMarkupToolbar(bridge, document.body);
+    _toolbar.style.display = 'none';
     _wireCommonColorPalette(_toolbar, bridge);
   }
 
@@ -151,7 +153,10 @@
       _notifyParentStateChanged();
       return false;
     }
-    if (willActivate === !!SceneEngine().ann().active) return willActivate;
+    if (willActivate === !!SceneEngine().ann().active) {
+      if (_toolbar) _toolbar.style.display = willActivate ? 'flex' : 'none';
+      return willActivate;
+    }
     SceneEngine().setState(willActivate);
     if (_toolbar) _toolbar.style.display = willActivate ? 'flex' : 'none';
     if (willActivate) SceneEngine().rebuild();
@@ -186,9 +191,9 @@
     ensureToolbar();
     if (path) {
       const found = SceneEngine().findSceneByPath(path);
-      if (!found) return;
+      if (!found) return Promise.resolve(false);
     }
-    SceneEngine().rebuild();
+    return SceneEngine().rebuild();
   }
 
   function getSceneState() {
@@ -270,6 +275,30 @@
     _applySnapshot(msg);
   });
 
+  // 常駐アプリの注釈パレットは、同じ撮影操作で開いたスクリーンショットだけを
+  // 操作する。targetPath を照合した同一オリジン BroadcastChannel 以外は受けない。
+  let _trayScreenshotAnnotationChannel = null;
+  const viewerParams = new URLSearchParams(location.search);
+  const trayScreenshotPath = viewerParams.get('tray_screenshot') === '1'
+    ? String(viewerParams.get('file') || '').trim()
+    : '';
+  if (trayScreenshotPath && typeof BroadcastChannel === 'function') {
+    _trayScreenshotAnnotationChannel = new BroadcastChannel('meldex-tray-screenshot-annotation');
+    _trayScreenshotAnnotationChannel.addEventListener('message', event => {
+      const msg = event?.data;
+      if (!msg || msg.type !== 'tray-screenshot-annotation-state') return;
+      if (String(msg.targetPath || '') !== trayScreenshotPath) return;
+      _lastSnapshot = msg;
+      Promise.resolve(Scene()?.ready).then(() => {
+        if (_snapshotMatchesCurrentTarget(msg)) _applySnapshot(msg);
+      });
+    });
+    window.addEventListener('pagehide', () => {
+      try { _trayScreenshotAnnotationChannel?.close(); } catch {}
+      _trayScreenshotAnnotationChannel = null;
+    }, { once: true });
+  }
+
   window.MeldexStandaloneCloseGuard?.register?.({
     appId: 'viewer-metadata',
     getCloseState() {
@@ -284,7 +313,7 @@
         hasSnapshot: !drawing,
         hasFinalDestination: true,
         shouldWarn: drawing,
-        message: drawing ? '描画中の注釈を確定しています' : '',
+        message: drawing ? '描画中のアノテートを確定しています' : '',
       };
     },
     async prepareClose() {
@@ -308,6 +337,7 @@
 
   window.MeldexViewerAnnotations = {
     toggle, setState, load, getSceneState,
+    currentTargetPath: _currentTargetPath,
     setAvailability,
     toggleFromShortcut, isActive, isDrawing,
     resetPointerPath, onSceneChanged,

@@ -73,8 +73,12 @@
     if (typeof showStatus === 'function') showStatus('チャットを開けません', true);
   }
 
-  function stripIds(root) {
+  function stripIds(root, surface) {
     root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
+    // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
+    // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
+    // プロパティ・リンクファイル・作成操作を特定できなくなる。
   }
 
   function applyReadOnly(root, readOnly, reason) {
@@ -183,6 +187,7 @@
       editor: null,
       data: options.data || null,
       staticContent: false,
+      attachmentRefreshSeq: 0,
     };
 
     async function save() {
@@ -223,7 +228,69 @@
       return true;
     }
 
+    async function refreshAttachmentsOnly() {
+      const refreshSeq = ++state.attachmentRefreshSeq;
+      try {
+        const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true });
+        if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
+          return false;
+        }
+        const currentSection = root.querySelector('.meldex-entity-attachments-section');
+        if (!currentSection
+          || typeof MeldexSheetEntryAttachments === 'undefined'
+          || typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection !== 'function') {
+          return false;
+        }
+        const nextSectionData = {
+          ...(state.data || {}),
+          entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
+          revision: refreshed?.revision ?? state.data?.revision,
+        };
+        const staging = document.createElement('div');
+        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
+          readOnly: root.dataset.readOnly === '1',
+          surface: state.surface,
+          onReload: refreshAttachmentsOnly,
+        });
+        if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
+          return false;
+        }
+        const nextSection = staging.firstElementChild;
+        if (!nextSection) return false;
+        currentSection.replaceWith(nextSection);
+        // 添付操作でもエントリrevisionは進む。ただし別端末が本文を更新していた
+        // 場合まで本文側のCAS基準を進めると、その変更を次回保存で上書きできて
+        // しまう。取得本文が現在の保存済みbaselineと一致し、保存処理も進行中で
+        // ない時だけ、添付操作によるrevision更新として追随する。
+        const bodyBaselineUnchanged = !!state.editor
+          && !state.saving
+          && refreshed?.page_content != null
+          && String(refreshed.page_content) === String(state.editor.dataset.lastSavedMd || '');
+        state.data = {
+          ...(state.data || {}),
+          entry_attachments: nextSectionData.entry_attachments,
+          ...(bodyBaselineUnchanged && refreshed?.revision != null ? { revision: refreshed.revision } : {}),
+          ...(bodyBaselineUnchanged && refreshed?.freetext_etag ? { freetext_etag: refreshed.freetext_etag } : {}),
+        };
+        if (bodyBaselineUnchanged && refreshed?.revision != null) {
+          state.editor.dataset.lastSavedRevision = String(refreshed.revision);
+        }
+        if (bodyBaselineUnchanged && refreshed?.freetext_etag) {
+          state.editor.dataset.lastSavedEtag = String(refreshed.freetext_etag);
+        }
+        if (typeof replaceIcons === 'function') replaceIcons();
+        return true;
+      } catch (error) {
+        if (!state.disposed && root.dataset.meldexEntityDetail === id && typeof showStatus === 'function') {
+          showStatus('リンク一覧を再読み込みできませんでした: ' + (error?.userMessage || error?.message || error), true);
+        }
+        return false;
+      }
+    }
+
     async function render() {
+      // 全面再描画を開始した時点で、旧DOM向けの添付一覧応答を無効化する。
+      state.attachmentRefreshSeq += 1;
       root.dataset.meldexEntityDetail = id;
       root.dataset.surface = state.surface;
       root.dataset.path = state.path;
@@ -271,10 +338,10 @@
       const actions = document.createElement('div');
       actions.className = 'meldex-entity-detail-actions';
       if (state.surface === 'main') actions.id = 'entity-create-note-btn';
-      actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
       // 旧・専用コピー用ボタンは廃止した（シート表示・ビュー状態・エントリ操作の改善計画
       // 2026-08-04）。列一覧内の文字選択に応じたコピーポップアップ（gb-entity-props-selection.js）
       // に置き換わったため、専用ボタンは不要になった。
+      actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
       const postId = xPostId(data);
       if (postId && typeof window.reimportXBookmarkPost === 'function') {
         actions.appendChild(button('Xからこのポストを再インポート', 'refreshCw', async () => {
@@ -304,6 +371,7 @@
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
           readOnly: access.readOnly,
+          ctx: options.ctx,
         });
       }
 
@@ -311,7 +379,7 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
-          onReload: () => render(),
+          onReload: refreshAttachmentsOnly,
         });
       }
 
@@ -339,7 +407,7 @@
         preview.append(previewBar, frame);
         root.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
-        if (state.surface !== 'main') stripIds(root);
+        if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
         return true;
       }
@@ -367,25 +435,8 @@
       root.appendChild(toolbar);
       root.appendChild(editor);
 
-      if (!raw.trim() && !access.readOnly) {
-        editor.hidden = true;
-        toolbar.hidden = true;
-        editor.style.display = 'none';
-        toolbar.style.display = 'none';
-        const createNote = button('ノートを作成', 'filePlus', async () => {
-          editor.hidden = false;
-          toolbar.hidden = false;
-          editor.style.display = 'block';
-          toolbar.style.display = '';
-          editor.dataset.entityNoteCreated = '1';
-          editor.innerHTML = '<p><br></p>';
-          state.dirty = true;
-          await flush();
-          editor.focus();
-          createNote.remove();
-        }, 'entity-create-note');
-        actions.insertBefore(createNote, actions.firstChild);
-      }
+      // 空のトピック本文も通常の編集欄として維持する。新規ファイル作成は
+      // 「リンクを追加」メニューへ集約し、上部に別の作成ボタンを増やさない。
 
       editor.addEventListener('click', event => {
         const link = event.target.closest?.('.auto-link');
@@ -411,14 +462,14 @@
         });
       });
 
-      if (state.surface !== 'main') stripIds(root);
+      if (state.surface !== 'main') stripIds(root, state.surface);
       applyReadOnly(root, access.readOnly, access.reason);
       delete root.dataset.loadFailed;
       if (typeof replaceIcons === 'function') replaceIcons();
       return true;
     }
 
-    const controller = { get editor() { return state.editor; }, flush, dispose, ready: null };
+    const controller = { get editor() { return state.editor; }, flush, dispose, rerender: render, ready: null };
     root._meldexEntityDetailController = controller;
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(render).catch(error => {
       if (!state.disposed) {

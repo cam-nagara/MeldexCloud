@@ -102,6 +102,14 @@
     try {
       await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { color: next });
       cal.color = next;
+      // 一覧取得時の有効色はサーバー側で解決されるが、色変更直後は手元の
+      // イベント配列を再描画するため、継承イベントだけを先に同期する。
+      (this._events || []).forEach(event => {
+        if (event?.calendar_id !== cal.id) return;
+        if (event.uses_calendar_color === false || String(event.color_override || '').trim()) return;
+        event.color = next;
+        event.uses_calendar_color = true;
+      });
       this._renderCalendarList();
       this._render();
       this._showStatus('カレンダーの色を更新しました');
@@ -147,12 +155,24 @@
   CalendarComponent.prototype._ensureTeamShiftCalendars = async function() {
     try {
       const groups = await this._loadTeamGroups();
-      const names = new Set();
-      groups.forEach(group => group.members.forEach(member => { if (member.name) names.add(member.name); }));
+      const memberships = new Map();
+      groups.forEach(group => group.members.forEach(member => {
+        if (!member.name) return;
+        const workspaceId = String(group.workspaceId || group.folder || '');
+        const memberId = String(member.memberId || '');
+        const key = `${workspaceId}\u001f${memberId || member.name}`;
+        memberships.set(key, { name: member.name, workspaceId, memberId, folder: String(group.folder || workspaceId) });
+      }));
       let created = 0;
       let paletteIdx = (this._calendars || []).length;
-      for (const name of names) {
-        const exists = (this._calendars || []).some(cal => cal.source === 'shift' && cal.user === name);
+      for (const membership of memberships.values()) {
+        const { name, workspaceId, memberId, folder } = membership;
+        const exists = (this._calendars || []).some(cal => cal.source === 'shift'
+          && ((memberId && String(cal.member_id || '') === memberId)
+            || (!memberId && cal.user === name))
+          && (workspaceId
+            ? String(cal.workspace_id || '') === workspaceId
+            : !String(cal.workspace_id || '')));
         if (exists) continue;
         await apiPost('/cal/calendars', {
           name: `シフト: ${name}`,
@@ -160,7 +180,9 @@
           user: name,
           source: 'shift',
           visible: 1,
-          folder: SHIFT_CALENDAR_FOLDER,
+          folder: folder || SHIFT_CALENDAR_FOLDER,
+          workspace_id: workspaceId,
+          member_id: memberId,
         });
         created++;
       }

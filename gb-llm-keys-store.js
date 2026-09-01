@@ -324,7 +324,7 @@
     }
   }
 
-  async function getAll() {
+  async function getAll(options = {}) {
     try {
       const db = await _openDb();
       await _migrateFallbackToDb(db);
@@ -341,7 +341,8 @@
         };
         req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
       });
-    } catch {
+    } catch (err) {
+      if (options?.strict) throw _storageUnavailableError(err);
       return {};
     }
   }
@@ -370,6 +371,34 @@
     return { ok: true, saved: entries.length };
   }
 
+  async function restoreMany(snapshot, names) {
+    const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    const keyNames = [...new Set((Array.isArray(names) ? names : Object.keys(source))
+      .map(_normalizeKeyName).filter(Boolean))];
+    if (!keyNames.length) return { ok: true, restored: 0 };
+    try {
+      const db = await _openDb();
+      await _migrateFallbackToDb(db);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const updatedAt = new Date().toISOString();
+        keyNames.forEach((name) => {
+          const value = String(source[name] || '').trim();
+          if (value) store.put({ name, value, updatedAt });
+          else store.delete(name);
+        });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB restore failed'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB restore aborted'));
+      });
+    } catch (err) {
+      _removeFallback();
+      throw _storageUnavailableError(err);
+    }
+    return { ok: true, restored: keyNames.length };
+  }
+
   async function deleteKey(name) {
     const keyName = _normalizeKeyName(name);
     if (!keyName) return { ok: true };
@@ -386,6 +415,12 @@
       throw _storageUnavailableError(err);
     }
     return { ok: true };
+  }
+
+  async function deleteProvider(provider) {
+    const keyName = _providerKey(provider);
+    if (!keyName) throw new Error('削除対象のプロバイダーが不明です');
+    return deleteKey(keyName);
   }
 
   async function getForProvider(provider) {
@@ -440,7 +475,9 @@
     providerKey: _providerKey,
     getAll,
     setMany,
+    restoreMany,
     deleteKey,
+    deleteProvider,
     getForProvider,
     hasProvider,
     configuredProviders,

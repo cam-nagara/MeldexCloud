@@ -564,6 +564,10 @@ async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
     showStatus('リンク登録できる項目がありません', true);
     return 0;
   }
+  if (items.length > 1) {
+    showStatus('複数選択のリンク登録は安全な一括保存を利用できないため、全件を変更しませんでした', true);
+    return 0;
+  }
   let result;
   try {
     result = typeof addFolderLinksBatchWithHistory === 'function'
@@ -732,6 +736,10 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   });
   if (!targetPath || items.length === 0) {
     showStatus('移動できる項目がありません', true);
+    return 0;
+  }
+  if (items.length > 1) {
+    showStatus('複数選択の移動は安全な一括保存を利用できないため、全件を変更しませんでした', true);
     return 0;
   }
   // シートへのドロップ: Altキー押下時、またはエントリ以外のファイル/ボード/画像等は

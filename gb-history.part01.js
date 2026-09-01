@@ -56,42 +56,235 @@ function textDiff(oldText, newText) {
 
 // バージョン管理設定
 function getVersionConfig() {
-  try { return JSON.parse(localStorage.getItem('version-config')) || {}; } catch { return {}; }
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem('version-config')) || {}; } catch {}
+  return window.MeldexRestorePointPolicy?.normalize?.(stored) || stored;
 }
-function saveVersionConfig(cfg) { localStorage.setItem('version-config', JSON.stringify(cfg)); }
-function getAutoInterval() { return getVersionConfig().autoInterval ?? 3600000; } // デフォルト1時間
-function getMaxAutoVersions() { return getVersionConfig().maxAuto ?? 30; }
+function saveVersionConfig(cfg) {
+  const normalized = window.MeldexRestorePointPolicy?.normalize?.(cfg) || cfg;
+  localStorage.setItem('version-config', JSON.stringify(normalized));
+  window.dispatchEvent(new CustomEvent('meldex:restore-point-policy-change', { detail: { config: normalized } }));
+}
+function getAutoInterval() {
+  const cfg = getVersionConfig();
+  if (!cfg.enabled) return 0;
+  return cfg.cadence?.kind === 'hourly' ? Number(cfg.cadence.interval || 1) * 3600000 : 60000;
+}
+// 旧UI／呼出元の互換用。件数上限は削除指示に使わない。
+function getMaxAutoVersions() { return 0; }
 
 // 自動バージョン保存タイマー
+// メイン/サブパネルで複数文書を同時編集できるため、dirty状態は文書単位で保持する。
+// _autoVersionPath/_autoVersionType/_autoVersionDirty は既存設定UIとの互換用に
+// 「最後に有効化した文書」を表す。
 let _autoVersionTimer = null;
+let _autoVersionTimerInterval = 0;
 let _autoVersionPath = '';
 let _autoVersionType = ''; // 'file' | 'db'
 let _autoVersionDirty = false;
+const _autoVersionTargets = new Map();
+const AUTO_VERSION_SCHEDULE_STATE_KEY = 'meldex:restore-point-schedule-state:v1';
+let _autoVersionRunPromise = null;
+
+function _autoVersionScheduleState() {
+  try {
+    const value = JSON.parse(localStorage.getItem(AUTO_VERSION_SCHEDULE_STATE_KEY) || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch { return {}; }
+}
+
+function _saveAutoVersionScheduleState(state) {
+  localStorage.setItem(AUTO_VERSION_SCHEDULE_STATE_KEY, JSON.stringify(state || {}));
+}
+
+async function _runPeriodicRestorePoints(nowValue) {
+  if (_autoVersionRunPromise) return _autoVersionRunPromise;
+  _autoVersionRunPromise = (async () => {
+    const policy = window.MeldexRestorePointPolicy;
+    const config = getVersionConfig();
+    if (!policy?.nextOccurrence) return;
+    const now = nowValue instanceof Date ? nowValue : new Date(nowValue || Date.now());
+    const state = _autoVersionScheduleState();
+    const scheduleId = policy.scheduleId(config);
+    for (const [key, target] of _autoVersionTargets.entries()) {
+      let saved = state[key] || {};
+      if (config.retention?.mode === 'days') {
+        const lastRetentionCheck = Date.parse(saved.last_retention_checked_at || '') || 0;
+        if (!lastRetentionCheck || now.getTime() - lastRetentionCheck >= 6 * 60 * 60 * 1000) {
+          const retention = await _applyRestorePointRetentionToTarget(target, config, now);
+          state[key] = {
+            ...saved,
+            last_retention_checked_at: retention.ok ? now.toISOString() : saved.last_retention_checked_at,
+            last_retention_error_at: retention.ok ? '' : now.toISOString(),
+          };
+          saved = state[key];
+        }
+      }
+      if (!config.enabled) continue;
+      const lastChecked = new Date(saved.last_checked_at || target.registeredAt || now.toISOString());
+      const due = policy.nextOccurrence(config, lastChecked);
+      if (!due || due.getTime() > now.getTime()) continue;
+      const bucketId = policy.bucketId(config, due);
+      if (!target.dirty && !saved.changed_after_last_point) {
+        state[key] = { ...saved, last_checked_at: now.toISOString(), last_bucket_id: bucketId };
+        continue;
+      }
+      const endpoint = target.type === 'db' ? '/version/save-db' : '/version/save';
+      const metadata = {
+        metadata_schema_version: 2,
+        restore_point_kind: 'periodic',
+        stable_document_id: `${target.type}:${target.path}`,
+        schedule_id: scheduleId,
+        schedule_bucket_id: bucketId,
+        transaction_id: `periodic:${scheduleId}:${bucketId}:${target.type}:${target.path}`,
+        created_by: { actor_id: 'meldex-periodic-scheduler', actor_kind: 'system' },
+      };
+      try {
+        await apiPost(endpoint, {
+          path: target.path, auto: true, label: '周期復元ポイント', max_auto: 0, metadata,
+        });
+        target.dirty = false;
+        if (target.path === _autoVersionPath && target.type === _autoVersionType) _autoVersionDirty = false;
+        state[key] = {
+          ...saved,
+          last_checked_at: now.toISOString(), last_bucket_id: bucketId,
+          changed_after_last_point: false,
+        };
+      } catch (error) {
+        target.dirty = true;
+        state[key] = { ...saved, changed_after_last_point: true, last_error_at: now.toISOString() };
+        if (target.path === _autoVersionPath && target.type === _autoVersionType) _autoVersionDirty = true;
+      }
+    }
+    _saveAutoVersionScheduleState(state);
+  })().finally(() => { _autoVersionRunPromise = null; });
+  return _autoVersionRunPromise;
+}
+
+function _autoVersionTargetKey(path, type) {
+  return `${type || 'file'}:${String(path || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+}
+
+function _ensureAutoVersionTimer() {
+  const config = getVersionConfig();
+  if (!config.enabled && config.retention?.mode !== 'days') {
+    if (_autoVersionTimer) clearInterval(_autoVersionTimer);
+    _autoVersionTimer = null;
+    _autoVersionTimerInterval = 0;
+    return;
+  }
+  const interval = 60000;
+  if (_autoVersionTimer && _autoVersionTimerInterval === interval) return;
+  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
+  _autoVersionTimerInterval = interval;
+  _autoVersionTimer = setInterval(() => { _runPeriodicRestorePoints(); }, interval);
+  setTimeout(() => { _runPeriodicRestorePoints(); }, 0);
+}
+
+function _restorePointCreatedMs(version) {
+  return Date.parse(version?.created_at || version?.created || version?.modified || '') || 0;
+}
+
+async function _retentionRowsForTarget(target) {
+  const listRoute = target.type === 'db' ? '/version/list-db' : '/version/list';
+  const rows = await apiFetch(listRoute + '?path=' + encodeURIComponent(target.path));
+  return Array.isArray(rows) ? rows : [];
+}
+
+function _expiredRestorePointRows(rows, config, now = new Date()) {
+  if (config?.retention?.mode !== 'days') return [];
+  const days = Number(config.retention.days || 0);
+  if (!Number.isFinite(days) || days < 1) return [];
+  const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
+  return (rows || []).filter(row => {
+    const created = _restorePointCreatedMs(row);
+    return created > 0 && created < cutoff;
+  });
+}
+
+async function previewRestorePointRetention(config) {
+  const now = new Date();
+  const summary = { count: 0, bytes: 0, oldest: '', targets: _autoVersionTargets.size, unavailable: 0 };
+  for (const target of _autoVersionTargets.values()) {
+    try {
+      const rows = _expiredRestorePointRows(await _retentionRowsForTarget(target), config, now);
+      summary.count += rows.length;
+      summary.bytes += rows.reduce((total, row) => total + Math.max(0, Number(row?.size || 0)), 0);
+      rows.forEach(row => {
+        const created = row?.created_at || row?.created || row?.modified || '';
+        if (created && (!summary.oldest || created < summary.oldest)) summary.oldest = created;
+      });
+    } catch { summary.unavailable += 1; }
+  }
+  return summary;
+}
+
+async function _applyRestorePointRetentionToTarget(target, config, now = new Date()) {
+  try {
+    const rows = _expiredRestorePointRows(await _retentionRowsForTarget(target), config, now);
+    const deleteRoute = target.type === 'db' ? '/version/delete-db' : '/version/delete';
+    for (const row of rows) {
+      await apiPost(deleteRoute, {
+        path: target.path,
+        version: row.name,
+        reason: `retention:${Number(config.retention.days)}d`,
+      });
+    }
+    return { ok: true, deleted: rows.length };
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('期限を過ぎた復元ポイントを整理できませんでした。後で再試行します', true);
+    return { ok: false, deleted: 0, error };
+  }
+}
 
 function startAutoVersion(path, type) {
-  stopAutoVersion();
-  _autoVersionPath = path;
-  _autoVersionType = type;
+  const normalizedPath = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalizedPath) return;
+  const normalizedType = type === 'db' ? 'db' : 'file';
+  const key = _autoVersionTargetKey(normalizedPath, normalizedType);
+  if (!_autoVersionTargets.has(key)) {
+    const saved = _autoVersionScheduleState()[key] || {};
+    _autoVersionTargets.set(key, {
+      path: normalizedPath,
+      type: normalizedType,
+      dirty: Boolean(saved.changed_after_last_point),
+      registeredAt: new Date().toISOString(),
+    });
+  }
+  _autoVersionPath = normalizedPath;
+  _autoVersionType = normalizedType;
+  _autoVersionDirty = !!_autoVersionTargets.get(key)?.dirty;
+  _ensureAutoVersionTimer();
+}
+
+function stopAutoVersion(path, type) {
+  if (path) {
+    _autoVersionTargets.delete(_autoVersionTargetKey(path, type));
+  } else {
+    _autoVersionTargets.clear();
+  }
+  if (_autoVersionTargets.size) return;
+  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
+  _autoVersionTimer = null;
+  _autoVersionTimerInterval = 0;
   _autoVersionDirty = false;
-  const interval = getAutoInterval();
-  if (interval <= 0) return;
-  _autoVersionTimer = setInterval(() => {
-    if (!_autoVersionDirty) return; // 更新なしならスキップ
-    _autoVersionDirty = false;
-    const maxAuto = getMaxAutoVersions();
-    if (type === 'db') {
-      apiPost('/version/save-db', { path, auto: true, max_auto: maxAuto }).catch(() => {});
-    } else {
-      apiPost('/version/save', { path, auto: true, max_auto: maxAuto }).catch(() => {});
-    }
-  }, interval);
 }
 
-function stopAutoVersion() {
-  if (_autoVersionTimer) { clearInterval(_autoVersionTimer); _autoVersionTimer = null; }
+function markAutoVersionDirty(path, type) {
+  const targetPath = String(path || _autoVersionPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const targetType = type || _autoVersionType || 'file';
+  if (!targetPath) return;
+  const key = _autoVersionTargetKey(targetPath, targetType);
+  if (!_autoVersionTargets.has(key)) {
+    _autoVersionTargets.set(key, { path: targetPath, type: targetType, dirty: false });
+  }
+  _autoVersionTargets.get(key).dirty = true;
+  const state = _autoVersionScheduleState();
+  state[key] = { ...(state[key] || {}), changed_after_last_point: true };
+  _saveAutoVersionScheduleState(state);
+  if (targetPath === _autoVersionPath && targetType === _autoVersionType) _autoVersionDirty = true;
+  _ensureAutoVersionTimer();
 }
-
-function markAutoVersionDirty() { _autoVersionDirty = true; }
 
 function _historyActionAttrs(action, args = []) {
   return `data-action="${esc(action)}" data-args="${esc(JSON.stringify(args))}"`;
@@ -203,6 +396,9 @@ async function _flushOpenVersionTarget(path, type) {
 
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
+  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+    if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
+  }
   if (_isScriptNoteVersionPath(path)) {
     const refreshed = await _refreshOpenScriptNoteVersionTarget(path);
     if (refreshed) return;
@@ -210,25 +406,6 @@ async function _refreshRestoredVersionTarget(path, type) {
 
   if (targetType === 'db') {
     if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(path));
-    return;
-  }
-
-  if (
-    targetType === 'file'
-    && state.view === 'smart-db'
-    && state.currentSmartDb?._filePath
-    && _sameVersionTargetPath(path, state.currentSmartDb._filePath)
-    && typeof openSmartDbFile === 'function'
-  ) {
-    const label = state.currentSmartDb.name || path.split('/').pop()?.replace(/\.\w+$/, '') || '';
-    await Promise.resolve(openSmartDbFile(label, path, {
-      skipNavPush: true,
-      skipRecent: true,
-      skipAutoVersion: true,
-      skipSaveLastView: true,
-      skipGlobalUi: true,
-      skipHistoryScope: true,
-    }));
     return;
   }
 
@@ -335,19 +512,21 @@ async function deleteVersion(path, versionName, type) {
   let currentName = versionName;
   let deletedToken = '';
   const versionType = type || 'file';
-  const result = await apiPost('/version/delete', { path, version: currentName });
+  const deleteRoute = versionType === 'db' ? '/version/delete-db' : '/version/delete';
+  const undeleteRoute = versionType === 'db' ? '/version/undelete-db' : '/version/undelete';
+  const result = await apiPost(deleteRoute, { path, version: currentName });
   deletedToken = result?.token || '';
   if (deletedToken && typeof historyPush === 'function') {
     historyPush('バージョン削除: ' + versionName,
       async () => {
         if (!deletedToken) return;
-        const restored = await apiPost('/version/undelete', { path, token: deletedToken });
+        const restored = await apiPost(undeleteRoute, { path, token: deletedToken });
         currentName = restored?.version || currentName;
         deletedToken = '';
         _refreshVersionViews(path, versionType);
       },
       async () => {
-        const deleted = await apiPost('/version/delete', { path, version: currentName });
+        const deleted = await apiPost(deleteRoute, { path, version: currentName });
         deletedToken = deleted?.token || '';
         currentName = deleted?.version || currentName;
         _refreshVersionViews(path, versionType);
@@ -498,7 +677,7 @@ function showDbSnapshotPreview(data, title) {
   closeBtn.textContent = '閉じる';
   const modalApi = window.GBUI.createModal({
     id: 'history-db-preview-dialog',
-    title: `DBスナップショット: ${title || ''}`,
+    title: `DB復元ポイント: ${title || ''}`,
     body,
     footer: closeBtn,
     variant: 'standard',
@@ -523,7 +702,9 @@ async function compareVersion(path, versionName, type) {
   if (type === 'db') {
     // DB diff: 現在のpivotデータとスナップショットを比較
     const snapshot = await apiFetch('/version/read-db?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
-    const currentData = await apiFetch('/pivot?path=' + encodeURIComponent(path));
+    const currentData = snapshot?.format === 'new-format-v1'
+      ? await apiFetch('/version/current-db-snapshot?path=' + encodeURIComponent(path))
+      : await apiFetch('/pivot?path=' + encodeURIComponent(path));
     showDbDiff(snapshot, versionName, currentData);
     return;
   }
@@ -735,7 +916,6 @@ function _getCurrentVersionTarget() {
       : null;
     path = comp?.state?.scenarioPath || activeTab?.path || '';
   }
-  else if (state.view === 'smart-db') { path = state.currentSmartDb?._filePath || activeTab?.path || ''; }
   else if (activeTab?.path) {
     path = activeTab.path;
     if (activeTab.type === 'database' || activeTab.type === 'calendar') type = 'db';
@@ -810,26 +990,77 @@ async function _showVersionsInPanel(path, type) {
   panel.innerHTML = _buildVersionsPanelHtml(path, type, versions);
 }
 
+function _dbComparisonEntities(data) {
+  if (!data || typeof data !== 'object') return {};
+  if (data.entities && typeof data.entities === 'object') return data.entities;
+
+  const entities = {};
+  if (Array.isArray(data.sqlite_entities)) {
+    data.sqlite_entities.forEach(entry => {
+      if (!entry || typeof entry !== 'object') return;
+      const fm = entry.frontmatter && typeof entry.frontmatter === 'object' ? entry.frontmatter : {};
+      // 表示名は重複できる。比較の対応付けには保存上の一意名またはIDを使う。
+      const name = String(entry.file_name || entry.id || entry.name || '');
+      if (!name) return;
+      const entity = {};
+      const properties = fm.properties && typeof fm.properties === 'object' ? fm.properties : {};
+      Object.entries(properties).forEach(([prop, values]) => { entity[prop] = values; });
+      Object.entries(fm).forEach(([field, value]) => {
+        if (['properties', 'relations', 'type', 'id', 'created', 'modified', 'meldex_revision'].includes(field)) return;
+        if (value == null || value === '') return;
+        entity[field] = [{ value: typeof value === 'string' ? value : JSON.stringify(value), status: '採用' }];
+      });
+      if (String(entry.body || '')) entity._freetext = String(entry.body || '');
+      entities[name] = entity;
+    });
+    return entities;
+  }
+
+  if (Array.isArray(data.files)) {
+    data.files.forEach(file => {
+      const name = String(file?.path || '');
+      if (name) entities[name] = { _freetext: String(file?.text || '') };
+    });
+  }
+  return entities;
+}
+
+function _dbComparisonValues(entity, prop) {
+  const raw = entity?.[prop];
+  if (prop === '_freetext') return raw == null || raw === '' ? [] : [{ value: String(raw), status: '' }];
+  const values = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : [raw]);
+  return values.map(item => {
+    if (item && typeof item === 'object') {
+      return { value: String(item.value ?? ''), status: String(item.status ?? '') };
+    }
+    return { value: String(item), status: '' };
+  });
+}
+
 function showDbDiff(snapshot, title, currentData = null) {
   // 現在のDBデータとスナップショットを比較
   const data = currentData || state.pivotData;
   if (!data) { showStatus('DBデータがありません', true); return; }
 
+  const snapshotEntities = _dbComparisonEntities(snapshot);
+  const currentEntities = _dbComparisonEntities(data);
+
   let html = '<table class="gb-history-table">';
   html += '<tr><th>エントリ</th><th>列</th><th>旧値</th><th>旧ステータス</th><th>現在値</th><th>現在ステータス</th><th>変更</th></tr>';
 
-  const allEntities = new Set([...Object.keys(snapshot.entities || {}), ...Object.keys(data.entities || {})]);
+  const allEntities = new Set([...Object.keys(snapshotEntities), ...Object.keys(currentEntities)]);
   const allProps = new Set(data.properties || []);
   // スナップショット側のプロパティも収集
-  Object.values(snapshot.entities || {}).forEach(ent => { Object.keys(ent).forEach(p => { if (p !== '_freetext') allProps.add(p); }); });
+  Object.values(snapshotEntities).forEach(ent => { Object.keys(ent || {}).forEach(p => allProps.add(p)); });
+  Object.values(currentEntities).forEach(ent => { Object.keys(ent || {}).forEach(p => allProps.add(p)); });
 
   for (const ent of [...allEntities].sort()) {
-    const snapEnt = snapshot.entities?.[ent] || {};
-    const curEnt = data.entities?.[ent] || {};
+    const snapEnt = snapshotEntities[ent] || {};
+    const curEnt = currentEntities[ent] || {};
     for (const prop of [...allProps].sort()) {
-      if (prop === '_freetext') continue;
-      const snapVals = (snapEnt[prop] || []);
-      const curVals = (curEnt[prop] || []);
+      if (String(prop).startsWith('_') && prop !== '_freetext') continue;
+      const snapVals = _dbComparisonValues(snapEnt, prop);
+      const curVals = _dbComparisonValues(curEnt, prop);
       const snapStr = snapVals.map(v => v.value + '(' + v.status + ')').join(', ');
       const curStr = curVals.map(v => v.value + '(' + v.status + ')').join(', ');
       if (snapStr === curStr) continue; // 変更なしはスキップ
@@ -837,7 +1068,7 @@ function showDbDiff(snapshot, title, currentData = null) {
       const rowCls = changeType === '追加' ? 'gb-diff-row-add' : changeType === '削除' ? 'gb-diff-row-del' : 'gb-diff-row-mod';
       html += `<tr class="${rowCls}">
         <td>${esc(ent)}</td>
-        <td>${esc(prop)}</td>
+        <td>${esc(prop === '_freetext' ? '本文' : prop)}</td>
         <td>${esc(snapVals.map(v=>v.value).join(', '))}</td>
         <td>${esc(snapVals.map(v=>v.status).join(', '))}</td>
         <td>${esc(curVals.map(v=>v.value).join(', '))}</td>

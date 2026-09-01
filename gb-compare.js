@@ -28,7 +28,18 @@ const COMPARE_BINARY_EXTENSIONS = new Set([
  */
 async function openCompareView(pathA, pathB, opts) {
   const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('compare');
+  if (!openOpts.skipShowView) {
+    if (typeof GBPaneBridge !== 'undefined' && GBPaneBridge.initialized && typeof navPush === 'function') {
+      navPush({
+        type: 'compare',
+        label: '比較',
+        path: `compare:${pathA}|${pathB}`,
+        pathA,
+        pathB,
+      });
+    }
+    showView('compare');
+  }
   const container = openOpts.containerEl || document.getElementById('compare-view');
   if (!container) return false;
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">読み込み中...</div>';

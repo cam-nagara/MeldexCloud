@@ -404,6 +404,12 @@ async function _runNoteAutoSave(pc, expectedPath) {
       pc.dataset.lastSavedEtag = (res && res.etag) || '';
     }
     window.MeldexDraftRecovery?.markSynced?.(currentPath);
+    if (!res?.joined) {
+      const detail = typeof summarizeHistoryTextChange === 'function'
+        ? summarizeHistoryTextChange(_prevSavedForDiff, md)
+        : '内容を更新';
+      window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, _prevSavedForDiff, md, detail);
+    }
   } catch (error) {
     if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
       showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
@@ -560,7 +566,7 @@ function _showNoteConflictDialog(path, md, pc) {
   const description = document.createElement('div');
   description.id = 'note-conflict-desc';
   description.className = 'gb-section-desc';
-  description.textContent = '現在の編集は未保存ドラフトとして保持しています。どちらを残すか選んでください。';
+  description.textContent = '現在の編集には保存されていない変更があります。どちらを残すか選んでください。';
   const diffHost = document.createElement('div');
   diffHost.id = 'note-conflict-diff';
   diffHost.dataset.conflictDiff = '1';
@@ -840,10 +846,14 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
   const autoLinksEnabled = !!layers?.isEnabled?.('autoLinks');
   const commentsEnabled = !!layers?.isEnabled?.('comments');
   if (!autoLinksEnabled && !commentsEnabled) return;
-  const initialHtml = pc.innerHTML;
+  const initialEditRevision = pc._noteEditRevision || 0;
   const run = () => {
     if (isStalePageLoad?.()) return;
-    if (document.activeElement === pc) return;
+    if (document.activeElement === pc) {
+      if (typeof layers?.scheduleIdle === 'function') layers.scheduleIdle(run, 900);
+      else setTimeout(run, 900);
+      return;
+    }
     // 書式設定・ルビのポップアップを操作している間は本文を作り直さない。
     // 作り直すと保存しておいた選択範囲が無効になり、ルビの適用が黙って失敗する。
     if (document.querySelector('.gb-text-selection-fmt, .note-ruby-popup')) {
@@ -851,10 +861,15 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
       else setTimeout(run, 900);
       return;
     }
-    if (autoLinksEnabled && pc.innerHTML === initialHtml) {
-      // 本文の総入れ替えでスクロール位置が飛ばないようにする
+    if (autoLinksEnabled && (pc._noteEditRevision || 0) === initialEditRevision) {
+      // 目次・埋め込み等が更新した現在DOMを保持したまま、テキストノードへ
+      // auto-linkだけを適用する。元HTMLへの総入れ替えはhydration済みDOMを失う。
       const scroll = window.MeldexNoteRuby?.captureScroll?.(pc);
-      pc.innerHTML = applyAutoLinks(html, path, { force: true });
+      if (typeof MeldexAutoLink !== 'undefined') {
+        MeldexAutoLink.applyToDom(pc, path, { force: true });
+      } else {
+        pc.innerHTML = applyAutoLinks(html, path, { force: true });
+      }
       window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
     if (commentsEnabled && typeof CommentBadges !== 'undefined') {
@@ -876,9 +891,19 @@ async function openPage(label, path, opts) {
   let loadingShown = false;
   let preloadedFileData = openOpts.prefetchedFileData || null;
   let pageLoadSucceeded = false;
+  const pc = openOpts.containerEl || document.getElementById('page-content');
+  if (!pc) return;
+  // 同じ表示面へ複数の読込が重なった場合、最初の事前判定用fetch中も含めて
+  // 後発呼出しを世代として識別する。従来は本文fetch直前まで世代を進めなかったため、
+  // 先行描画の完了後に後発の古い応答が本文を再置換できた。
+  const pageLoadSeq = (pc._openPageLoadSeq || 0) + 1;
+  pc._openPageLoadSeq = pageLoadSeq;
+  pc.dataset.loadPending = '1';
+  const isStaleInvocation = () => pc._openPageLoadSeq !== pageLoadSeq;
   try {
     if (showOpenLoading) { showLoading('ノートを読み込み中...'); loadingShown = true; }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
+      delete pc.dataset.loadPending;
       if (loadingShown) { hideLoading(); loadingShown = false; }
       await openBoard(label, path, openOpts);
       return;
@@ -886,7 +911,9 @@ async function openPage(label, path, opts) {
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && /\.md$/i.test(String(path || ''))) {
       try {
         preloadedFileData = preloadedFileData || await apiFetch('/file?path=' + encodeURIComponent(path));
+        if (isStaleInvocation()) return false;
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
+          delete pc.dataset.loadPending;
           if (loadingShown) { hideLoading(); loadingShown = false; }
           await openBoard(label, path, openOpts);
           return;
@@ -909,7 +936,10 @@ async function openPage(label, path, opts) {
     // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
     window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
   }
-  if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
+  if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') {
+    const noteScope = window.MeldexNoteHistory?.scope?.(path) || ('page:' + String(path || '').replace(/\\/g, '/'));
+    historySetScope(noteScope);
+  }
   if (!openOpts.skipShowView) showView('page');
   if (!openOpts.skipGlobalUi) {
     const pageTitleEl = document.getElementById('page-title');
@@ -927,8 +957,6 @@ async function openPage(label, path, opts) {
     navPush(_navEntry);
   }
   if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-  const pc = openOpts.containerEl || document.getElementById('page-content');
-  if (!pc) return;
   // 独立した描画先は module 読込時の _wireNoteEditableElement(#page-content) の対象外
   // なので、このpc自身へ同じ配線を行う（IME合成・貼り付け・縦書き等）。
   if (openOpts.containerEl && !pc._noteEditableWired) {
@@ -964,9 +992,7 @@ async function openPage(label, path, opts) {
   // 読込世代はpc要素ごとに持つ（window単位の単一カウンタだと、メインとサブパネルで
   // 別々のノートを同時に開いた際、片方の読込がもう片方のカウンタ更新に巻き込まれて
   // 無関係のはずの読込が「追い越された」と誤判定され中断してしまう）。
-  const pageLoadSeq = (pc._openPageLoadSeq || 0) + 1;
-  pc._openPageLoadSeq = pageLoadSeq;
-  const isStalePageLoad = () => pc._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
+  const isStalePageLoad = () => isStaleInvocation() || pc.dataset.path !== path;
   pc.dataset.path = path;
   // バージョン管理タブの追従同期。_getCurrentVersionTarget() は state.view==='page' の時
   // #page-content の dataset.path を見るため、navPush() 呼び出し時点（この直前）ではまだ
@@ -1024,6 +1050,7 @@ async function openPage(label, path, opts) {
     _loadPageIcon();
     if (!openOpts.skipGlobalUi && typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
+    delete pc.dataset.loadPending;
     pageLoadSucceeded = true;
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
   } catch (e) {
@@ -1031,6 +1058,7 @@ async function openPage(label, path, opts) {
     pc.dataset.frontmatter = '';
     pc.dataset.lastSavedMd = '';
     pc.dataset.loadFailed = '1';
+    delete pc.dataset.loadPending;
     pc.contentEditable = 'false';
     pageLoadSucceeded = false;
   }
@@ -1097,12 +1125,11 @@ async function openPage(label, path, opts) {
       }
       await window.MeldexDraftRecovery?.markSynced?.(currentPath);
       showStatus('ノートを保存しました', false, { passiveSave: true });
-      // 操作履歴に記録（undo/redoはブラウザネイティブに任せる）
-      if (typeof historyPush === 'function') {
+      if (!res?.joined) {
         const detail = typeof summarizeHistoryTextChange === 'function'
           ? summarizeHistoryTextChange(prevMd, md)
           : '内容を更新';
-        historyPush('ページ編集', null, null, 'page:' + currentPath.split('/').pop(), detail);
+        window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, prevMd, md, detail);
       }
       // DOM再構築はしない（ラウンドトリップで改行消失を防止）
     } catch (saveError) {
@@ -1120,7 +1147,7 @@ async function openPage(label, path, opts) {
   // まとめて1回だけ実行する。
   pc.oninput = () => {
     if (pc.dataset.loadFailed === '1') return;
-    markAutoVersionDirty();
+    markAutoVersionDirty(pc.dataset.path, 'file');
     clearTimeout(window._noteAutoSaveTimer);
     _bumpNoteEditorRevision(pc);
     _updateNoteEditorLineHint(pc);
@@ -1171,6 +1198,7 @@ async function openPage(label, path, opts) {
   const _fileMeta = _openPageFileData?.modified ? { created: _openPageFileData.created, modified: _openPageFileData.modified, size: _openPageFileData.size } : undefined;
   if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page', { fileMeta: _fileMeta });
   } finally {
+    if (!isStaleInvocation() && pc.dataset.loadPending === '1') delete pc.dataset.loadPending;
     if (loadingShown) {
       hideLoading();
       if (typeof hideLoadingMessage === 'function') {

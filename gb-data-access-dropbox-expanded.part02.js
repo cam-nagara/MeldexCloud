@@ -836,7 +836,7 @@
     return alerts;
   }
 
-  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
+  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
 
   function _relocateText(text, oldPath, newPath) {
     const oldNorm = _normalizeFolderPath(oldPath);
@@ -872,7 +872,59 @@
     return { rewritten_count: rewritten.length, failed_count: failed, rewritten_paths: rewritten.slice(0, 100), truncated: rewritten.length > 100 };
   }
 
-  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.txt', '.csv']);
+  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-scenario', '.scriptnote.json', '.board.md', '.txt', '.csv']);
+
+  function _searchReplaceByteFormat(bytes, path) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    const startsWith = signature => signature.every((value, index) => view[index] === value);
+    if (startsWith([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00])) return 'sqlite';
+    if (startsWith([0x50, 0x4b, 0x03, 0x04]) || startsWith([0x50, 0x4b, 0x05, 0x06]) || startsWith([0x50, 0x4b, 0x07, 0x08])) return 'portable-zip';
+    const lower = String(path || '').toLowerCase();
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
+    return 'text';
+  }
+
+  async function _readVerifiedSearchReplaceText(provider, path) {
+    let bytes;
+    let revision = '';
+    if (typeof provider?.readBytesFresh === 'function') {
+      const read = await provider.readBytesFresh(path);
+      bytes = read?.bytes;
+      revision = String(read?.revision || read?.rev || '').trim();
+    } else if (typeof provider?.downloadAsFile === 'function') {
+      bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
+    } else {
+      throw new Error('安全な形式判定に必要なbyte読込へ対応していません');
+    }
+    const format = _searchReplaceByteFormat(bytes, path);
+    if (format !== 'text') throw new Error(`${format}形式は通常の検索置換に対応していません`);
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    }
+    if (text.includes('\u0000')) throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    const originalBytes = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes || []);
+    return { text: text.replace(/^\uFEFF/, ''), revision, bytes: originalBytes };
+  }
+
+  function _scenarioSearchReplaceDocument(text, path) {
+    let document;
+    try { document = JSON.parse(String(text || '')); } catch { throw new Error(`不正なシナリオ形式です: ${_basename(path)}`); }
+    if (!document || typeof document !== 'object' || Array.isArray(document) || !Array.isArray(document.rows)
+      || document.rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) || typeof (row.text ?? '') !== 'string')) {
+      throw new Error(`不正なシナリオ形式です: ${_basename(path)}`);
+    }
+    return document;
+  }
+
+  function _scenarioDisplayFields(document) {
+    const fields = [];
+    if (typeof document?.title === 'string') fields.push({ owner: document, key: 'title', field: 'title' });
+    (document?.rows || []).forEach((row, index) => fields.push({ owner: row, key: 'text', field: `row:${index}` }));
+    return fields;
+  }
 
   function _searchPattern(q, caseSensitive, useRegex) {
     if (!q) return null;
@@ -974,11 +1026,17 @@
         }
       }
       try {
-        const content = await provider.readText(normalized);
-        const matches = _collectTextMatches(content, pattern, '');
+        const { text: content, revision } = await _readVerifiedSearchReplaceText(provider, normalized);
+        let matches;
+        if (lower.endsWith('.mel-scenario')) {
+          const document = _scenarioSearchReplaceDocument(content, normalized);
+          matches = _scenarioDisplayFields(document).flatMap(({ owner, key, field }) => _collectTextMatches(owner[key], pattern, field));
+        } else {
+          matches = _collectTextMatches(content, pattern, '');
+        }
         if (matches.length) {
           const type = await _classifyFileType(provider, normalized, { allFiles: true }).catch(() => 'page');
-          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches });
+          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches, etag: revision });
         }
       } catch {}
     }, root);
@@ -1171,35 +1229,38 @@
     return text.replace(once, replacement);
   }
 
-  function _replaceNestedText(value, pattern, replacement, state) {
+  function _replaceSheetPropertyDisplayValues(value, pattern, replacement, state) {
     if (typeof value === 'string') return _replaceStringValue(value, pattern, replacement, state);
-    if (Array.isArray(value)) return value.map(item => _replaceNestedText(item, pattern, replacement, state));
-    if (value && typeof value === 'object') {
-      const out = {};
-      Object.entries(value).forEach(([key, item]) => { out[key] = _replaceNestedText(item, pattern, replacement, state); });
-      return out;
+    if (Array.isArray(value)) return value.map(item => _replaceSheetPropertyDisplayValues(item, pattern, replacement, state));
+    if (!value || typeof value !== 'object') return value;
+    const out = { ...value };
+    ['value', 'note', 'rich_html'].forEach((key) => {
+      if (typeof out[key] === 'string') out[key] = _replaceStringValue(out[key], pattern, replacement, state);
+    });
+    return out;
+  }
+
+  function _replaceSheetDisplayFrontmatter(frontmatter, pattern, replacement, state) {
+    const next = { ...(frontmatter || {}) };
+    ['title', 'name', 'display_name'].forEach((key) => {
+      if (typeof next[key] === 'string') next[key] = _replaceStringValue(next[key], pattern, replacement, state);
+    });
+    if (next.properties && typeof next.properties === 'object' && !Array.isArray(next.properties)) {
+      next.properties = Object.fromEntries(Object.entries(next.properties).map(([name, value]) => [
+        name,
+        _replaceSheetPropertyDisplayValues(value, pattern, replacement, state),
+      ]));
     }
-    return value;
+    return next;
   }
 
   async function _replaceInSheetStoreEntry(provider, path, body, pattern) {
     const stored = await _readSheetStoreEntry(provider, path);
     if (!stored) return null;
-    const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const replacement = String(body?.replace ?? '');
-    const nextFrontmatter = _replaceNestedText(stored.frontmatter, pattern, replacement, state);
-    const nextBody = _replaceStringValue(stored.body || '', pattern, replacement, state);
-    _rejectProductionReservedLegacyPropertyObject(stored.dbPath, nextFrontmatter?.properties);
-    if (state.count > 0) {
-      await _requireUnlocked(provider, stored.dbPath, { action: 'replace-sheet-store' });
-      const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
-      if (physical?.kind === 'file') await _writeEntity(provider, stored.path, nextFrontmatter, nextBody);
-      else await _writeSheetStoreEntryOnly(provider, stored.path, nextFrontmatter, nextBody);
-    }
-    return { ok: true, count: state.count };
+    throw new Error('シート構造ストアは通常の検索置換に対応していません');
   }
 
-  async function _cloudReplace(provider, body) {
+  async function _cloudReplace(provider, body, options = {}) {
     const path = _normalizeFolderPath(body?.path || '');
     const q = String(body?.search || '');
     if (!path || !q) throw new Error('path, search は必須です');
@@ -1213,16 +1274,115 @@
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
     const lower = path.toLowerCase();
-    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return { ok: true, count: 0 };
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
+      await _readVerifiedSearchReplaceText(provider, path);
+    }
+    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) throw new Error('この形式は通常の検索置換に対応していません');
     await _requireUnlocked(provider, path, { action: 'replace' });
-    const content = await provider.readText(path);
+    const { text: content, revision, bytes: originalBytes } = await _readVerifiedSearchReplaceText(provider, path);
+    if (!revision || typeof provider?.uploadBytesConditional !== 'function') {
+      const error = new Error('厳密な競合検出に対応していないため検索置換を中止しました');
+      error.status = 503;
+      error.code = 'strict_cas_unavailable';
+      throw error;
+    }
+    const expectedRevision = String(body?.etag || '').trim();
+    if (expectedRevision && revision !== expectedRevision) {
+      const error = new Error('確認後に置換対象が更新されたため、一括置換を中止しました');
+      error.status = 409;
+      error.code = 'replace_target_changed';
+      error.path = path;
+      throw error;
+    }
     const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    let next;
+    if (lower.endsWith('.mel-scenario')) {
+      const document = _scenarioSearchReplaceDocument(content, path);
+      const replacement = String(body?.replace ?? '');
+      _scenarioDisplayFields(document).some(({ owner, key }) => {
+        owner[key] = _replaceStringValue(owner[key], pattern, replacement, state);
+        return state.remaining === 0;
+      });
+      next = JSON.stringify(document, null, 2);
+    } else {
+      next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    }
+    const nextBytes = new TextEncoder().encode(next);
     if (state.count > 0) {
       _rejectProductionReservedLegacyPropertyObject(_dirname(path), _parseFrontmatter(next).frontmatter?.properties);
-      await provider.writeText(path, next);
+    }
+    if (options.prepareOnly) {
+      return { path, count: state.count, revision, originalBytes, nextBytes };
+    }
+    if (state.count > 0) {
+      await provider.uploadBytesConditional(path, nextBytes, revision);
     }
     return { ok: true, count: state.count };
+  }
+
+  async function _cloudReplaceBatch(provider, body) {
+    const targets = body?.targets;
+    if (!Array.isArray(targets) || !targets.length) throw Object.assign(new Error('targets は1件以上必要です'), { status: 400 });
+    if (targets.length > 500) throw Object.assign(new Error('一度に置換できるファイルは500件までです'), { status: 413 });
+    const search = String(body?.search || '');
+    if (!search) throw Object.assign(new Error('search は必須です'), { status: 400 });
+
+    const common = {
+      search,
+      replace: String(body?.replace ?? ''),
+      case: _truthy(body?.case),
+      regex: _truthy(body?.regex),
+      all: _truthy(body?.all),
+    };
+    const plans = [];
+    const seen = new Set();
+    for (const item of targets) {
+      const path = _normalizeFolderPath(item?.path || '');
+      const etag = String(item?.etag || '').trim();
+      const key = path.toLowerCase();
+      if (!path || !etag) throw Object.assign(new Error('各置換対象には検索時のetagが必要です'), { status: 428 });
+      if (seen.has(key)) throw Object.assign(new Error(`置換対象が重複しています: ${path}`), { status: 400 });
+      seen.add(key);
+      plans.push(await _cloudReplace(provider, { ...common, path, etag }, { prepareOnly: true }));
+    }
+
+    const changed = plans.filter(plan => plan.count > 0);
+    if (!changed.length) return { ok: true, count: 0, file_count: 0, reverted: false };
+    const committed = [];
+    try {
+      for (const plan of changed) {
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const committedRevision = String(saved?.revision || saved?.rev || '').trim();
+        if (!committedRevision) throw Object.assign(new Error('置換後の世代を確認できません'), { status: 503, code: 'strict_cas_unavailable' });
+        committed.push({ plan, committedRevision });
+      }
+    } catch (error) {
+      const compensationFailures = [];
+      for (const entry of [...committed].reverse()) {
+        try {
+          await provider.uploadBytesConditional(entry.plan.path, entry.plan.originalBytes, entry.committedRevision);
+        } catch (rollbackError) {
+          compensationFailures.push({ path: entry.plan.path, error: String(rollbackError?.message || rollbackError) });
+        }
+      }
+      if (compensationFailures.length) {
+        const failed = new Error('一括置換の補償復旧に失敗しました。対象ファイルを再読込してください');
+        failed.status = 500;
+        failed.code = 'replace_batch_compensation_failed';
+        failed.failures = compensationFailures;
+        throw failed;
+      }
+      const reverted = new Error('一括置換は完了できなかったため、変更済みファイルを元に戻しました');
+      reverted.status = Number(error?.status || 500);
+      reverted.code = 'replace_batch_reverted';
+      throw reverted;
+    }
+    return {
+      ok: true,
+      count: changed.reduce((sum, plan) => sum + plan.count, 0),
+      file_count: changed.length,
+      reverted: false,
+    };
   }
 
   async function _cloudLinkDictFuriganaKeys(provider, dbPath) {
@@ -1357,6 +1517,21 @@
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
+    const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
+    if (historyRoute) {
+      const kind = historyRoute[1];
+      const itemId = decodeURIComponent(historyRoute[2]);
+      const versionId = historyRoute[3] ? decodeURIComponent(historyRoute[3]) : '';
+      if (method === 'GET' && !versionId) return _calendarHistoryList(provider, kind, itemId);
+      if (method === 'GET' && versionId && !historyRoute[4]) return _calendarHistoryCompare(provider, kind, itemId, versionId);
+      if (method === 'POST' && versionId && historyRoute[4]) {
+        const leaseToken = String(body?._calendar_lease_token || '').trim();
+        return _withCloudCalendarLease(provider, leasedProvider => _calendarHistoryRestore(
+          leasedProvider, kind, itemId, versionId, String(body?.expectedRevision || ''),
+        ), leaseToken);
+      }
+      return NOT_HANDLED;
+    }
     if (pathname === '/cal/sync/status' && method === 'GET') {
       return { enabled: true, configured: false, ical: true, google: false, microsoft: false, caldav: false };
     }
@@ -1381,6 +1556,12 @@
     const routeBody = { ...(body || {}) };
     delete routeBody._calendar_lease_token;
     if (method === 'GET' && !id) return _calendarList(provider, name, url);
+    if (method === 'GET' && id && ['events', 'tasks', 'shifts'].includes(name)) {
+      const visibleRows = await _calendarList(provider, name, url);
+      const row = visibleRows.find(item => String(item?.id) === String(id));
+      if (!row) throw _calendarError('対象が見つからないか、参照権限がありません', 404, 'CALENDAR_ROW_NOT_FOUND');
+      return row;
+    }
     if (method === 'POST' && !id) return _withCloudCalendarLease(provider, leasedProvider => _calendarCreate(leasedProvider, name, routeBody), leaseToken);
     if (method === 'PUT' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarUpdate(leasedProvider, name, id, routeBody), leaseToken);
     if (method === 'DELETE' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarDelete(leasedProvider, name, id), leaseToken);
@@ -1482,7 +1663,7 @@
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
-    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar', 'smart-db'].includes(String(body?.type || ''))) {
+    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
       const label = _validateItemName(body?.label || '無題', 'label');
@@ -1502,20 +1683,7 @@
         await _ensureFolderNote(provider, path, 'calendar-db');
         return { ok: true, node: { type: 'calendar', label: name, path } };
       }
-      const name = await _uniqueName(provider, parent, label, '.smart-db.json');
-      const path = _joinPath(parent, name + '.smart-db.json');
-      await _requireUnlocked(provider, path, { action: 'outliner-add-smart-db' });
-      await provider.writeJson(path, {
-        type: 'smart-db',
-        id: 'file:' + path,
-        name,
-        sourceType: 'db-entities',
-        filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-        views: { table: {}, dashboard: { widgets: [] } },
-        activeView: 'table',
-        created: _nowIso(),
-      });
-      return { ok: true, node: { type: 'smart-db', label: name, path } };
+      throw new Error(`不正なタイプ: ${type}`);
     }
 
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
@@ -1551,11 +1719,12 @@
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
+    if (pathname === '/sheet-search' && method === 'GET') return _sheetSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
     if (pathname === '/search-unified' && method === 'GET') return _cloudUnifiedSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/replace-batch' && method === 'PUT') return _cloudReplaceBatch(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
     // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。

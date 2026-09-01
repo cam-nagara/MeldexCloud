@@ -63,6 +63,11 @@
       : window.confirm('管理者鍵をローテーションします。既存の署名対象を新しい鍵で再署名しますか？');
     if (!ok) return;
     try {
+      const registration = window.MeldexWebClipOwnerDeviceRegistration;
+      if (typeof registration?.revokeActiveDevicesBeforeOwnerKeyRotation !== 'function') {
+        throw new Error('Web Clipper登録端末の失効機能を確認できないため鍵ローテーションを中止しました');
+      }
+      await registration.revokeActiveDevicesBeforeOwnerKeyRotation();
       await window.MeldexOwnerKeyStore?.createRandomKey?.();
       await _resign(root);
       _status(root, '管理者鍵をローテーションしました');

@@ -105,7 +105,10 @@
 
     return new Promise(resolve => {
       const overlay = node('div', 'modal-overlay');
-      overlay.style.zIndex = '310';
+      // Cloud単独アプリのタグ辞書は自身が高いz-indexのモーダルである。
+      // その中から開く候補ダイアログだけは親より前面へ出し、可視な操作を
+      // 親オーバーレイが遮らないようにする。
+      overlay.style.zIndex = document.querySelector('.sa-tags-overlay') ? '100003' : '310';
       const dialog = node('div', 'gb-confirm tag-catalog-dialog');
       dialog.setAttribute('role', 'dialog');
       dialog.setAttribute('aria-modal', 'true');

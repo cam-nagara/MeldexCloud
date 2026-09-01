@@ -1,5 +1,5 @@
 /* ==============================
-   gb-db-search.js: シート横断構造検索
+   gb-db-search.js: シート横断キーワード検索
    全シートのエントリ名+プロパティ値をフリーワードで横断検索
    ============================== */
 
@@ -7,27 +7,15 @@
  * シート横断検索を実行する
  * @param {string} query - 検索キーワード
  * @param {string} scope - 特定シートパス（空=全シート）
- * @returns {Promise<object>} smart-dbレスポンス
+ * @returns {Promise<object>} シート検索レスポンス
  */
-async function doDbSearch(query, scope, fallbackSheetPaths) {
+async function doDbSearch(query, scope) {
   if (!query) return { entities: [] };
-  const params = new URLSearchParams({ q: query, filters: '[]' });
-  let sources = [];
+  const params = new URLSearchParams({ q: query });
   if (scope) {
-    sources = [{ kind: 'sheet', path: scope }];
     params.set('scope', scope);
-  } else {
-    const roots = await apiFetch('/outliner-roots').catch(() => []);
-    sources = (Array.isArray(roots) ? roots : [])
-      .filter(root => root && root.visible !== false && root.path)
-      .map(root => ({ kind: 'folder', path: root.path }));
-    if (!sources.length) {
-      sources = Array.from(new Set(Array.from(fallbackSheetPaths || []).filter(Boolean)))
-        .map(path => ({ kind: 'sheet', path }));
-    }
   }
-  params.set('sources', JSON.stringify(sources));
-  return await apiFetch('/smart-db?' + params.toString());
+  return await apiFetch('/sheet-search?' + params.toString());
 }
 
 /* --- 現在のシート内検索/置換バー --- */
@@ -615,8 +603,7 @@ function showDbSearchModal(options) {
     statusSpan.textContent = '検索中...';
     resultArea.innerHTML = '';
     try {
-      const knownSheetPaths = Array.from(scopeSelect.options).map(option => option.value).filter(Boolean);
-      const data = await doDbSearch(q, scopeSelect.value, knownSheetPaths);
+      const data = await doDbSearch(q, scopeSelect.value);
       if (seq !== searchSeq) return;
       lastResults = data.entities || [];
       _renderDbSearchResults(resultArea, lastResults, q, entry => {

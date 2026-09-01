@@ -59,7 +59,7 @@
     let rows = [];
     try { rows = await registry.listStaff({ force: true }); } catch { rows = []; }
     return (rows || [])
-      .filter(row => row && row.sync_enabled && String(row.user || '').trim())
+      .filter(row => row && row.user_type !== 'virtual' && row.sync_enabled && String(row.user || '').trim())
       .map(row => ({ name: String(row.user).trim(), google_url: String(row.google_url || '').trim() }));
   }
 

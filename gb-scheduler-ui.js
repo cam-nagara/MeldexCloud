@@ -258,7 +258,8 @@
       title: '自動割り当て', body, variant: modalVariant(), extraClass: 'gb-scheduler-modal',
       returnFocus: options.trigger,
     }); modal.modal.dataset.e2eId = 'scheduler-allocation-dialog';
-    const cancel = button('キャンセル', 'x', () => modal.close('cancel'));
+    modal.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'scheduler-allocation-header-close');
+    const cancel = button('キャンセル', 'x', () => modal.close('cancel'), { e2eId: 'scheduler-allocation-footer-cancel' });
     const run = button('案を作成', 'sparkles', async () => {
       const request = allocationRequest(body, selectedPaths);
       if (selectedPaths.length && !request.task_paths.length) {
@@ -527,7 +528,7 @@
       };
       const grid = document.createElement('div'); grid.className = 'gb-scheduler-capability-grid';
       const controls = new Map();
-      [['admin', '管理者'], ['schedule_manager', 'スケジュール管理者'], ['member', 'メンバー'], ['viewer', '閲覧']].forEach(([role, label]) => {
+      [['admin', '管理者'], ['schedule_manager', 'スケジュール管理者'], ['member', 'ユーザー'], ['viewer', '閲覧のみ']].forEach(([role, label]) => {
         const row = document.createElement('fieldset'); row.className = 'gb-scheduler-capability-role';
         row.dataset.e2eId = `scheduler-capability-role-${role}`;
         const legend = document.createElement('legend'); legend.textContent = label; row.appendChild(legend);
@@ -589,6 +590,12 @@
 
   function injectToolbarSelectors() {
     document.querySelectorAll('.gb-toolbar-cal').forEach(toolbar => {
+      const settingsButton = toolbar.querySelector('[data-cal-action="productionManagement"]');
+      if (settingsButton) {
+        settingsButton.title = '制作設定';
+        settingsButton.setAttribute('aria-label', '制作設定');
+        settingsButton.dataset.gbTooltip = '制作設定';
+      }
       if (toolbar.querySelector('[data-scheduler-toolbar-selector]')) return;
       const selector = createProposalSelector({ toolbar: true, e2eId: 'scheduler-toolbar-proposal-selector' });
       selector.dataset.schedulerToolbarSelector = '1';

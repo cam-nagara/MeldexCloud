@@ -11,7 +11,7 @@
  * 決定」に基づき、`gb-data-access-dropbox-fileops.part01.part01.js`(1074行、
  * 1000行超過)を責務別へ分割した際の①パス変更フック・trash・CSVサイドカー
  * クラスタ。分割後もこのファイル単体では完結しない(このファイルは
- * `(function(){...` を開くだけで閉じない。閲覧ロック・注釈・版・競合バックアップの
+ * `(function(){...` を開くだけで閉じない。閲覧ロック・アノテート・版・競合バックアップの
  * 各兄弟ファイル(gb-data-access-dropbox-fileops-annotations.js 等)と
  * gb-data-access-dropbox-fileops.part01.part02.js / .part02.js が同じ関数
  * スコープの続きとして連結され、最後に part02.js が `})();` で閉じる。
@@ -651,7 +651,7 @@
   //
   // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
   // 参加中の共有ワークスペースかを判定する共通モジュール)へ委譲する。
-  // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
+  // fileops関連モジュール(アノテート・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
   // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
   // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。
 

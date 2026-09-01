@@ -247,6 +247,11 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
     style.fontFamily = _bdNormalizeFontFamily(value);
     return;
   }
+  if (field === 'bgOpacity' || field === 'borderOpacity' || field === 'colorOpacity') {
+    const number = Number(value);
+    style[field] = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) / 100 : 1;
+    return;
+  }
   if (kind === 'card') {
     if (['borderWidth', 'borderRadius', 'fontSize', 'width', 'textStrokeWidth'].includes(field)) {
       const num = parseInt(value, 10) || 0;
@@ -290,7 +295,9 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
     return;
   }
   if (field === 'width') {
-    style.width = Math.max(0, parseInt(value, 10) || 0);
+    style.width = typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(parseInt(value, 10), 0)
+      : Math.max(0, Math.min(200, parseInt(value, 10) || 0));
   } else if (field === 'pathType') {
     // v0.5.320: 3 種に統合。旧 free-bezier → curve、旧 orthogonal-curve → orthogonal。
     if (value === 'free-bezier') style.pathType = 'curve';
@@ -332,9 +339,11 @@ function _bdStyleFieldNeedsFullRebuild(kind, field) {
 // 共通ヘルパー: カードスタイルの色系フィールドをリセット（計画書 §4-2）
 function _bdResetCardColors(style) {
   style.bgColor = '';
+  style.bgOpacity = 1;
   style.textColor = '';
   style.textStrokeColor = '';
   style.borderColor = '';
+  style.borderOpacity = 1;
 }
 
 // スタイルの「ユーザー定義デフォルト」用スナップショットを作る。
@@ -401,6 +410,7 @@ function _bdResetStyleToDefault(kind, style) {
   if (kind === 'card') _bdResetCardColors(style);
   else {
     style.color = '';
+    style.colorOpacity = 1;
     style.labelTextColor = '';
     style.labelBgColor = '';
     style.labelBorderColor = '';
@@ -491,8 +501,8 @@ async function _bdSaveBoardStyleAsNew(kind) {
   if (!source) return null;
   const baseName = source.name && source.name !== 'カスタム'
     ? `${source.name} 2`
-    : (kind === 'card' ? '新しいカードスタイル' : '新しいラインスタイル');
-  const input = await cfPrompt(kind === 'card' ? 'カードスタイル名' : 'ラインスタイル名', baseName);
+    : (kind === 'card' ? '新しいトピックスタイル' : '新しいラインスタイル');
+  const input = await cfPrompt(kind === 'card' ? 'トピックスタイル名' : 'ラインスタイル名', baseName);
   if (input == null) return null;
   const name = String(input).trim();
   if (!name) return null;
@@ -509,7 +519,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
   return next;
 }
 
@@ -524,7 +534,7 @@ function _bdSaveCurrentBoardStyle(kind) {
   // 全ボード共通のグローバルデフォルトにも保存 (他のボードを開いたときも反映される)
   _bdSaveGlobalStyleDefault(kind, style);
   bdDirty();
-  showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
 }
 
 // ノード個別のカードスタイルをカスタム化する。
@@ -657,8 +667,8 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   bdEnsureBoardUiState();
   const base = bdGetCardStyleById(node.cardStyle || bd.activeCardStyle);
   const source = _bdCardStyleSnapshotFromNode(node, base);
-  const baseName = source.name && source.name !== 'カスタム' ? `${source.name} 2` : '新しいカードスタイル';
-  const input = await cfPrompt('カードスタイル名', baseName);
+  const baseName = source.name && source.name !== 'カスタム' ? `${source.name} 2` : '新しいトピックスタイル';
+  const input = await cfPrompt('トピックスタイル名', baseName);
   if (input == null) return null;
   const name = String(input).trim();
   if (!name) return null;
@@ -679,7 +689,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`カードスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`トピックスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
   return next;
 }
 
@@ -715,7 +725,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
 // これで同じスタイルを参照する他のカードにも変更が反映される。
 // `bdClearCardStyleOverrides` のキー一覧と同期すること (width は n.w が別管理なので除外)。
 const _BD_CARD_OVERRIDE_KEYS = [
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth',
   'shape',
   'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
@@ -743,12 +753,12 @@ function _bdSaveCurrentNodeCardStyle(node) {
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
-    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
-    : `カードスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
+    ? `トピックスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
+    : `トピックスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
 }
 
 const _BD_LINE_OVERRIDE_KEYS = [
-  'color', 'width', 'style', 'arrow', 'straight', 'pathType',
+  'color', 'colorOpacity', 'width', 'style', 'arrow', 'straight', 'pathType',
   'branchRatio', 'cornerRadius',
   'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
   'fontBold', 'fontItalic',
@@ -895,11 +905,17 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
 
   if (kind === 'card') {
     // --- Row 1: 色 + 書式 + サイズ ---
-    // 並び順: 背景色 → 枠線色 → 文字色 → 文字フチ色。
+    // 並び順: 背景色 → 背景不透明度 → 枠線色 → 枠線不透明度 → 文字色 → 文字フチ色。
     // 文字色・文字フチ色スウォッチは背景を bgColor に揃え、実際の見え方をプレビュー。
     const row1 = fmt.makeRow({ wrap: true });
     row1.appendChild(tag('bgColor')(fmt.makeSwatchBg({ title: '背景色', color: style.bgColor || '', onPick: (c) => setField('bgColor', c) })));
+    const bgOpacityInp = fmt.makeNumInput({ title: '背景不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.bgOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('bgOpacity', v == null ? 100 : v) });
+    tag('bgOpacity')(bgOpacityInp);
+    row1.appendChild(fmt.makeGroup([fmt.makeLabel('背景'), bgOpacityInp, fmt.makeLabel('%')]));
     row1.appendChild(tag('borderColor')(fmt.makeSwatchBg({ title: '枠線色', color: style.borderColor || '', onPick: (c) => setField('borderColor', c) })));
+    const borderOpacityInp = fmt.makeNumInput({ title: '枠線不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.borderOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('borderOpacity', v == null ? 100 : v) });
+    tag('borderOpacity')(borderOpacityInp);
+    row1.appendChild(fmt.makeGroup([fmt.makeLabel('枠線'), borderOpacityInp, fmt.makeLabel('%')]));
     row1.appendChild(tag('textColor')(fmt.makeSwatchText({ title: '文字色', color: style.textColor || '', iconName: 'type', bgColor: style.bgColor || '', onPick: (c) => setField('textColor', c) })));
     row1.appendChild(tag('textStrokeColor')(fmt.makeSwatchText({ title: '文字フチ色', color: style.textStrokeColor || '', iconName: 'typeOutline', bgColor: style.bgColor || '', onPick: (c) => setField('textStrokeColor', c) })));
     row1.appendChild(tag('fontBold')(fmt.makeToggle({ html: '<b>B</b>', title: '太字', active: !!style.fontBold, onToggle: (on) => setField('fontBold', on) })));

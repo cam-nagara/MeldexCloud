@@ -327,7 +327,8 @@
     img.alt = alt || _linkLabel(normalized);
     img.loading = 'lazy';
     img.src = pathFromRaw ? _fileRawUrl(pathFromRaw) : (_isWebUrl(normalized) ? normalized : _fileRawUrl(normalized));
-    window.MeldexImageLoading?.track?.(img, { label: 'チャットの画像を読み込んでいます', allowDetached: true });
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'chat-md-image-host' });
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: 'チャットの画像を読み込んでいます', allowDetached: true });
     const managedPath = pathFromRaw || (!_isWebUrl(normalized) ? normalized : '');
     if (managedPath && global.MeldexChatViewerAssets?.bind?.(img, null, managedPath)) {
       // The shared bridge opens the stable source path and refreshes only this
@@ -339,7 +340,7 @@
         openChatMarkdownTarget(normalized);
       });
     }
-    return img;
+    return imageHost || img;
   }
 
   function _findClosing(text, start, needle) {

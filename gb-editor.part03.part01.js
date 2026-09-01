@@ -112,7 +112,7 @@
   if (inTable) html += '</table>';
   // センチネルを隠し span に復元
   html = html.replace(/\x02NLID:([A-Za-z0-9_-]+)\x02/g, '<span class="_nl-id" data-line-id="$1" contenteditable="false" style="display:none;"></span>');
-  // 注釈用 line-id span を、その直後のブロック先頭に移送する（<span._nl-id> を内包する空 <div> を潰す）
+  // アノテート用 line-id span を、その直後のブロック先頭に移送する（<span._nl-id> を内包する空 <div> を潰す）
   try {
     const _tmp = document.createElement('div');
     _tmp.innerHTML = html;
@@ -145,7 +145,7 @@ function _extractNoteLineIds(md) {
   return ids;
 }
 
-// 保存前後の MD を比較し、削除された line-id の注釈を孤児化する。
+// 保存前後の MD を比較し、削除された line-id のアノテートを孤児化する。
 async function _orphanRemovedNoteLines(prevMd, currMd, filePath) {
   try {
     const prevIds = _extractNoteLineIds(prevMd);
@@ -652,7 +652,7 @@ function htmlToMd(html) {
         return _nlIdMarker(node) + trimmed + '\n';
       }
       case 'SPAN':
-        // 注釈用 line-id span は MD に直接出力しない（ブロック先頭なら _nlIdMarker 経由で親側から emit される）
+        // アノテート用 line-id span は MD に直接出力しない（ブロック先頭なら _nlIdMarker 経由で親側から emit される）
         if (node.classList?.contains('_nl-id')) return '';
         // コメントバッジ（Phase 2e-ii）は UI 装飾なので保存しない
         if (node.classList?.contains('cmt-badge')) return '';
@@ -1388,6 +1388,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
   } else {
     window.GBOptionTargetContext?.set({ path: normalizedPath, kind: 'file' }, 'file-info-panel');
   }
+  if (options?.contextOnly === true) return Promise.resolve();
   const detailRoot = document.getElementById('rp-detail') || document;
   if (renderKey === _fileInfoCurrentPath) {
     if (_fileInfoCurrentPromise) return _fileInfoCurrentPromise;
@@ -1408,7 +1409,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
       });
   const task = Promise.resolve(renderTask).catch(error => {
     if (revision === _fileInfoRenderRevision) {
-      console.warn('ファイル情報パネルの更新に失敗しました', error);
+      console.warn('ファイルプロパティパネルの更新に失敗しました', error);
     }
   });
   _fileInfoCurrentPromise = task.finally(() => {
@@ -1419,7 +1420,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
 
 /* linked preview helper は gb-editor-preview.js に分離 */
 
-// JSON ファイルの要約生成（シナリオ/キャンバス/スマートDB）
+// JSON ファイルの要約生成（シナリオ等）
 function _summarizeJson(raw) {
   try {
     const obj = JSON.parse(raw);
@@ -1428,6 +1429,4 @@ function _summarizeJson(raw) {
       const chars = (obj.characters || []).map(c => c.name).join(', ');
       return `シナリオ — ${obj.rows.length}行` + (chars ? `\nキャラ: ${chars}` : '') + (obj.title ? `\nタイトル: ${obj.title}` : '');
     }
-    // スマートDB
-    if (obj.type === 'smart-db') {
-      const filters = (obj.filters || []).length;
+    return '';

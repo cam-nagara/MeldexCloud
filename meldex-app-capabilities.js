@@ -17,7 +17,6 @@
     'scenario',
     'board',
     'sheet',
-    'timer',
     'quick_memo',
     'viewer',
   ]);
@@ -67,6 +66,7 @@
 
   const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
   const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
+  const STANDALONE_VERSION_HISTORY_APPS = new Set(['quick_memo', 'viewer']);
   const APP_OUT_OF_SCOPE = Object.freeze({
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
@@ -81,24 +81,14 @@
       save_as: 'シートはフォルダ実体を直接編集し別名ファイル保存を行わない',
       multiple_import: 'シートは一件ずつ取込先を確認し複数ファイル一括取込を扱わない',
     }),
-    timer: Object.freeze({
-      export: 'タイマーは状態をタイマーファイルへ保存し別形式へ書き出さない',
-      publish: 'タイマー記録は公開コンテンツではない',
-      backlinks: 'タイマーファイルは参照索引の表示対象ではない',
-      annotations_comments: 'タイマーに文書注釈やコメントを付けない',
-      internal_link_selection: 'タイマーは内部リンク編集面を持たない',
-      drag_drop: 'タイマーはファイルのD&D取込を扱わない',
-      clipboard: 'タイマーは文書クリップボード操作を扱わない',
-      multiple_import: 'タイマーは複数ファイル一括取込を扱わない',
-    }),
     quick_memo: Object.freeze({
       save_as: 'クイックメモは現在の同期先へ即時保存し別名保存を行わない',
       export: 'クイックメモは即時同期を目的とし独立した書出し機能を持たない',
-      file_info: 'クイックメモは独立ファイル情報パネルを持たない',
+      file_info: 'クイックメモは独立ファイルプロパティパネルを持たない',
       file_style: 'クイックメモは文書スタイルを持たない',
       publish: 'クイックメモは公開コンテンツを生成しない',
       backlinks: 'クイックメモは参照索引の表示対象ではない',
-      annotations_comments: 'クイックメモに別系統の注釈やコメントを重ねない',
+      annotations_comments: 'クイックメモに別系統のアノテートやコメントを重ねない',
       internal_link_selection: 'クイックメモは内部リンク選択UIを持たない',
       drag_drop: 'クイックメモは入力欄へのファイルD&D取込を行わない',
       multiple_import: 'クイックメモは複数ファイル一括取込を扱わない',
@@ -359,6 +349,7 @@
       );
     }
     if (EXCEPTION_CAPABILITIES.has(capability)
+        && !(capability === 'version_history' && STANDALONE_VERSION_HISTORY_APPS.has(app))
         && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
       return _exceptionRecord(environment, capability);
     }
@@ -382,8 +373,8 @@
         STATUS.exception,
         'exception:cloud_browser_local_annotations',
         null,
-        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないため注釈を保存しない',
-        '注釈が必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
+        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないためアノテートを保存しない',
+        'アノテートが必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
       );
     }
     if (app === 'viewer'
@@ -393,7 +384,7 @@
         STATUS.available,
         `implementation:${environment}:annotations_comments`,
         null,
-        'Windows単独ビューワーの注釈画面で利用可能',
+        'Windows単独ビューワーのアノテート画面で利用可能',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {

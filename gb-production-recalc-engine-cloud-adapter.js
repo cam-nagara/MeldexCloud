@@ -142,7 +142,7 @@
     if (duplicates.length) {
       const dup = duplicates[0];
       const entries = (dup.entries || []).join('、');
-      const error = new Error(`ユーザー「${dup.user}」が複数のスタッフに設定されています: ${entries}`);
+      const error = new Error(`ユーザー「${dup.user}」が複数のユーザー行に設定されています: ${entries}`);
       error.status = 409;
       throw error;
     }
@@ -432,7 +432,7 @@
       staff: [solo],
       warning: {
         type: 'fallback_staff',
-        reason: `スタッフが未登録のため、${user}へ仮の勤務時間（平日9:00〜18:00・12:00〜13:00休憩）で割り当てます。スタッフ管理シートで勤務時間を設定すると正確になります`,
+        reason: `ユーザーが未登録のため、${user}へ仮の勤務時間（平日9:00〜18:00・12:00〜13:00休憩）で割り当てます。ユーザー管理シートで勤務時間を設定すると正確になります`,
       },
     };
   }

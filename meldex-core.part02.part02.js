@@ -433,7 +433,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   svg.appendChild(hitRect);
   const layer = document.createElementNS(_svgNS, 'g');
   svg.appendChild(layer);
-  container.style.position = 'relative';
+  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.appendChild(svg);
 
   function _pathD(pts) {
@@ -454,7 +454,7 @@ function initStandaloneMarkup(container, getTargetPath) {
   }
 
   let _saLastSaveFailureAt = 0;
-  function _saReportSaveFailure(error, message = '注釈の保存に失敗しました') {
+  function _saReportSaveFailure(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
     if (typeof showStatus === 'function' && now - _saLastSaveFailureAt > 1500) {
       showStatus(message, true);

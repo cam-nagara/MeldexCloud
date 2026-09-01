@@ -159,7 +159,7 @@
   }
 
   function _srtRequireOwner() {
-    if (_srtRole() !== 'owner') throw new Error('スタッフ管理シートの保存先変更は管理者のみ可能です');
+    if (_srtRole() !== 'owner') throw new Error('ユーザー管理シートの保存先変更は管理者のみ可能です');
   }
 
   // ============================================================
@@ -281,10 +281,20 @@
 
   function _srtRowFromFrontmatter(stem, frontmatter) {
     const schema = _schema();
+    const rawUser = _srtPropValue(frontmatter, schema.USER_KEY_PROPERTY).trim();
+    const display = _srtPropValue(frontmatter, schema.DISPLAY_NAME_PROPERTY).trim() || stem;
+    const meta = frontmatter?.[schema.USER_META_KEY] && typeof frontmatter[schema.USER_META_KEY] === 'object'
+      ? frontmatter[schema.USER_META_KEY] : {};
+    const types = Array.isArray(schema.USER_TYPES) ? schema.USER_TYPES : ['account', 'virtual'];
+    const userType = types.includes(String(meta.type || '')) ? String(meta.type) : (rawUser ? 'account' : 'virtual');
+    const workspaceIds = [...new Set((Array.isArray(meta.workspace_ids) ? meta.workspace_ids : []).map(value => String(value || '').trim()).filter(Boolean))];
     return {
-      user: _srtPropValue(frontmatter, schema.USER_KEY_PROPERTY),
+      user: rawUser || display,
+      user_id: String(meta.id || frontmatter?.id || '').trim(),
+      user_type: userType,
+      workspace_ids: workspaceIds,
       entry_name: stem,
-      display: _srtPropValue(frontmatter, schema.DISPLAY_NAME_PROPERTY) || stem,
+      display,
       role: _srtPropValue(frontmatter, '権限'),
       work_hours: _srtPropValue(frontmatter, '作業可能時間'),
       break_hours: _srtPropValue(frontmatter, '休憩時間'),
@@ -307,11 +317,12 @@
     for (const file of await _srtEntryFiles(provider, root)) {
       let parsed;
       try { parsed = await _srtReadFrontmatter(provider, file.path); } catch { continue; }
-      const user = _srtPropValue(parsed.frontmatter, schema.USER_KEY_PROPERTY).trim();
+      const row = _srtRowFromFrontmatter(file.stem, parsed.frontmatter);
+      const user = String(row.user || '').trim();
       if (!user) continue;
       if (seen.has(user)) duplicates.push({ user, entries: [seen.get(user), file.stem] });
       else seen.set(user, file.stem);
-      rows.push(_srtRowFromFrontmatter(file.stem, parsed.frontmatter));
+      rows.push(row);
     }
     return { staff: rows, duplicates };
   }
@@ -338,7 +349,7 @@
       let parsed;
       try { parsed = await _srtReadFrontmatter(provider, file.path); } catch { continue; }
       if (_srtPropValue(parsed.frontmatter, schema.USER_KEY_PROPERTY) === identity) {
-        const error = new Error(`ユーザー「${identity}」はスタッフ「${file.stem}」に設定済みです`);
+        const error = new Error(`ユーザー「${identity}」は「${file.stem}」に設定済みです`);
         error.status = 409;
         throw error;
       }
@@ -358,6 +369,20 @@
     return null;
   }
 
+  async function _srtFindEntryByUserId(provider, root, userId) {
+    const wanted = String(userId || '').trim();
+    if (!wanted) return null;
+    const schema = _schema();
+    for (const file of await _srtEntryFiles(provider, root)) {
+      let parsed;
+      try { parsed = await _srtReadFrontmatter(provider, file.path); } catch { continue; }
+      const meta = parsed.frontmatter?.[schema.USER_META_KEY];
+      const identity = String((meta && typeof meta === 'object' ? meta.id : '') || parsed.frontmatter?.id || '').trim();
+      if (identity === wanted) return file.path;
+    }
+    return null;
+  }
+
   function _srtCandidate(value) {
     return { value: String(value), status: STAFF_STATUS, note: '', created: _nowIso() };
   }
@@ -367,18 +392,47 @@
     const payload = entry || {};
     const user = String(payload.user || '').trim();
     const rawDisplay = String(payload.display || user).trim();
+    const requestedUserId = String(payload.user_id || '').trim();
+    const requestedUserType = String(payload.user_type || '').trim();
+    const userTypes = Array.isArray(schema.USER_TYPES) ? schema.USER_TYPES : ['account', 'virtual'];
+    if (requestedUserType && !userTypes.includes(requestedUserType)) {
+      const error = new Error('ユーザー種別が不正です');
+      error.status = 400;
+      throw error;
+    }
     if (!user && !rawDisplay) {
-      const error = new Error('スタッフまたは表示名のいずれかは必須です');
+      const error = new Error('ユーザー名または表示名のいずれかは必須です');
       error.status = 400;
       throw error;
     }
     await _srtEnsureRegistrySheet(provider, root);
 
-    let existingPath = null;
-    if (user) {
-      existingPath = await _srtFindStaffPathByUser(provider, root, user);
-      await _srtEnsureUniqueUser(provider, root, user, existingPath);
-    } else {
+    let existingPath = await _srtFindEntryByUserId(provider, root, requestedUserId);
+    const prospectiveType = requestedUserType || (user ? 'account' : 'virtual');
+    if (existingPath && requestedUserType) {
+      const parsed = await _srtReadFrontmatter(provider, existingPath);
+      const existingRow = _srtRowFromFrontmatter(_basename(existingPath).replace(/\.md$/i, ''), parsed.frontmatter);
+      if (existingRow.user_type !== requestedUserType) {
+        const error = new Error('既存ユーザーの種別は変更できません');
+        error.status = 409;
+        throw error;
+      }
+    }
+    const lookupUser = user || (prospectiveType === 'virtual' ? rawDisplay : '');
+    if (!existingPath && lookupUser) {
+      existingPath = await _srtFindStaffPathByUser(provider, root, lookupUser);
+      if (existingPath && requestedUserType) {
+        const parsed = await _srtReadFrontmatter(provider, existingPath);
+        const existingRow = _srtRowFromFrontmatter(_basename(existingPath).replace(/\.md$/i, ''), parsed.frontmatter);
+        if (existingRow.user_type !== requestedUserType) {
+          const error = new Error(`同じ名前の${existingRow.user_type === 'account' ? 'アカウント' : '仮ユーザー'}が既にあります`);
+          error.status = 409;
+          throw error;
+        }
+      }
+      await _srtEnsureUniqueUser(provider, root, lookupUser, existingPath);
+    }
+    if (!existingPath && prospectiveType === 'virtual') {
       existingPath = await _srtFindUnlinkedEntryByDisplay(provider, root, rawDisplay);
     }
 
@@ -405,6 +459,19 @@
     if (!frontmatter.id) frontmatter.id = 'ent_' + _srtRandomHex(10);
     frontmatter.category = _basename(root);
     frontmatter.modified = _nowIso();
+    const currentMeta = frontmatter[schema.USER_META_KEY] && typeof frontmatter[schema.USER_META_KEY] === 'object'
+      ? frontmatter[schema.USER_META_KEY] : {};
+    const currentType = String(currentMeta.type || '');
+    const userType = requestedUserType || (userTypes.includes(currentType) ? currentType : (user ? 'account' : 'virtual'));
+    const workspaceIds = 'workspace_ids' in payload
+      ? [...new Set((Array.isArray(payload.workspace_ids) ? payload.workspace_ids : []).map(value => String(value || '').trim()).filter(Boolean))]
+      : [...new Set((Array.isArray(currentMeta.workspace_ids) ? currentMeta.workspace_ids : []).map(value => String(value || '').trim()).filter(Boolean))];
+    frontmatter[schema.USER_META_KEY] = {
+      schema_version: Number(schema.USER_META_SCHEMA_VERSION || 1),
+      id: requestedUserId || String(currentMeta.id || '').trim() || (existingPath ? String(frontmatter.id || '').trim() : '') || ('usr_' + _srtRandomHex(12)),
+      type: userType,
+      workspace_ids: workspaceIds,
+    };
     const properties = frontmatter.properties && typeof frontmatter.properties === 'object' ? { ...frontmatter.properties } : {};
 
     const setIfAllowed = (propName, value) => {
@@ -412,7 +479,7 @@
       if (fillOnly && _srtPropValue({ properties }, propName)) return;
       properties[propName] = [_srtCandidate(value)];
     };
-    setIfAllowed(schema.USER_KEY_PROPERTY, user);
+    setIfAllowed(schema.USER_KEY_PROPERTY, user || (userType === 'virtual' ? displayName : ''));
     setIfAllowed(schema.DISPLAY_NAME_PROPERTY, payload.display || displayName);
     setIfAllowed('権限', payload.role);
     setIfAllowed('作業可能時間', payload.work_hours);
@@ -452,7 +519,7 @@
       if (await _srtPathExists(provider, note)) {
         const parsed = await _srtReadFrontmatter(provider, note);
         if (parsed.frontmatter?.type && !_schema().isStaffRegistryFrontmatter(parsed.frontmatter)) {
-          const error = new Error('指定先は別の種類のシートです。空の新規フォルダかスタッフ管理シートを指定してください');
+          const error = new Error('指定先は別の種類のシートです。空の新規フォルダかユーザー管理シートを指定してください');
           error.status = 409;
           throw error;
         }
@@ -504,7 +571,7 @@
 
   window.MeldexStaffRegistryCloudTwin = Object.freeze({
     createBoundStaffResolver(provider, requestIdentity) {
-      if (!provider) throw new Error('Cloudスタッフデータを利用できません');
+      if (!provider) throw new Error('Cloudユーザーデータを利用できません');
       const identity = Object.freeze({
         actor: String(requestIdentity?.actor || ''),
         role: String(requestIdentity?.role || ''),

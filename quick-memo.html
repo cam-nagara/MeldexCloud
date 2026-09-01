@@ -22,9 +22,8 @@
   <link rel="stylesheet" href="standalone-tags.css">
   <link rel="stylesheet" href="standalone-profile.css">
   <link rel="stylesheet" href="gb-tooltip.css">
-  <link rel="stylesheet" href="standalone-secondary-panel.css">
 </head>
-<body data-standalone-profile-local="true">
+<body data-standalone-profile-local="true" data-standalone-tags-button="hidden">
   <main class="qm-shell" id="editorView">
     <header class="qm-header sa-toolbar">
       <div class="qm-menu-wrap">
@@ -34,6 +33,7 @@
           <button id="saveBtn" type="button"><span class="ico ico-save"></span>端末へ保存</button>
           <button id="menuListBtn" type="button"><span class="ico ico-history"></span>過去のメモ</button>
           <button id="workspaceBtn" type="button" data-cloud-workspace><span class="ico ico-folderOpen"></span>Meldexファイル</button>
+          <div id="storageLocation" class="qm-storage-location" role="status">保存先: ホームフォルダ / クイックメモ</div>
           <div class="qm-menu-sep"></div>
           <button id="installBtn" type="button"><span class="ico ico-download"></span>ホームに追加</button>
           <div id="cloudConnectBanner" class="qm-cloud-connect" style="display:none;">
@@ -49,11 +49,18 @@
         <img src="MeldexQuickMemo_icon_64.png" alt="" width="24" height="24">
         <div class="qm-title-stack">
           <input id="titleInput" class="qm-title-input" type="text" placeholder="タイトル（空なら本文の一行目）" aria-label="メモのタイトル" spellcheck="false">
-          <span id="syncStatus" role="status" aria-live="polite">端末に保存済み</span>
         </div>
       </div>
+      <div class="qm-header-primary-controls" aria-label="入力方法と履歴">
+        <button id="undoBtn" class="qm-icon qm-lucide-button" type="button" title="元に戻す" aria-label="元に戻す" disabled></button>
+        <button id="redoBtn" class="qm-icon qm-lucide-button" type="button" title="やり直す" aria-label="やり直す" disabled></button>
+        <select id="modeSelect" aria-label="入力方法">
+          <option value="text">テキスト</option>
+          <option value="pen">ペン</option>
+          <option value="voice">ボイス</option>
+        </select>
+      </div>
       <div class="qm-header-actions">
-        <button id="listBtn" class="qm-icon" type="button" title="過去のメモ" aria-label="過去のメモ"><span class="ico ico-history"></span></button>
         <span class="qm-profile-slot" data-sa-profile-slot></span>
       </div>
     </header>
@@ -64,12 +71,7 @@
       <button id="addTagBtn" class="qm-tag-add" type="button" title="タグを追加" aria-label="タグを追加"><span class="ico ico-plus"></span></button>
     </section>
 
-    <nav class="qm-mode-controls" aria-label="入力方法と履歴">
-      <select id="modeSelect" aria-label="入力方法">
-        <option value="text">テキスト</option>
-        <option value="pen">ペン</option>
-        <option value="voice">音声</option>
-      </select>
+    <nav class="qm-mode-controls qm-mode-tools" aria-label="モード固有の操作">
       <div class="qm-toolbar-group" data-for="pen" style="display:none;">
         <button id="colorSwatchBtn" class="qm-color-swatch" type="button" title="色と不透明度" aria-label="色と不透明度"></button>
         <div id="colorPopover" class="qm-color-popover" hidden>
@@ -90,9 +92,6 @@
         <button id="voiceResumeBtn" class="qm-icon qm-lucide-button" type="button" title="録音再開" aria-label="録音再開" style="display:none;"></button>
         <button id="voiceStopBtn" class="qm-icon qm-lucide-button" type="button" title="録音終了" aria-label="録音終了" style="display:none;"></button>
       </div>
-      <span class="qm-mode-spacer"></span>
-      <button id="undoBtn" class="qm-icon qm-lucide-button" type="button" title="元に戻す" aria-label="元に戻す" disabled></button>
-      <button id="redoBtn" class="qm-icon qm-lucide-button" type="button" title="やり直す" aria-label="やり直す" disabled></button>
     </nav>
 
     <section class="qm-surface">
@@ -124,6 +123,7 @@
     <button id="listMoreBtn" class="qm-list-more" type="button" hidden>さらに表示</button>
   </section>
 
+  <span id="syncStatus" class="qm-sr-status" role="status" aria-live="polite">端末に保存済み</span>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
 
   <script src="gb-split-loader.js"></script><script src="gb-escape.js"></script>
@@ -147,7 +147,6 @@
   <script src="gb-tooltip.js"></script>
   <script src="gb-dialog-keyboard.js"></script>
   <script src="gb-shortcut-registry.js"></script>
-  <script src="standalone-secondary-panel.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
   <script src="quick-memo-editor.js"></script>
@@ -177,5 +176,6 @@
   </script>
   <script src="gb-color-palette.js"></script>
   <script src="quick-memo.js"></script>
+  <script src="standalone-version-history.js"></script>
 </body>
 </html>

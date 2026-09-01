@@ -1,3 +1,63 @@
+            filename: ei.filename,
+            extension: ei.extension,
+            dialogTitle: `${ei.label}として保存`,
+            filetypes: ei.filetypes,
+            okMessage: `${ei.label} として保存しました`,
+            errorMessage: `${ei.label} の保存に失敗しました`,
+            path: nodeData.path,
+            title: nodeData.name || '無題',
+          });
+          },
+        });
+      });
+      addSep();
+    }
+  }
+
+  // --- 所属フォルダ（リンク登録） ---
+  if (!isEntity && nodeData.path) {
+    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
+    addMenuItem(linkLabel, () => {
+      closeTreeContextMenu();
+      showAddFolderLinkModal(nodeData.path, null);
+    }, null, 'link2');
+  }
+
+  // --- 色設定 ---
+  addSep();
+  {
+    const currentColor = getNodeColor(nodeData.path);
+    const colorItem = _outlinerAppendMenuItem(menu, {
+      html: '',
+      action: () => {
+        openColorPalette(swatch, currentColor, (c) => {
+          closeTreeContextMenu();
+          applyColorToSelection(c || null);
+        });
+      },
+    });
+    const swatch = document.createElement('span');
+    swatch.className = 'gb-color-swatch gb-color-swatch--inline';
+    swatch.setAttribute('aria-hidden', 'true');
+    setColorSwatchValue(swatch, currentColor || 'var(--fg)');
+    colorItem.appendChild(swatch);
+    const clbl = document.createElement('span');
+    clbl.textContent = isMulti ? `色設定（${selectedCount}件）` : '色設定';
+    colorItem.appendChild(clbl);
+  }
+
+  // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---
+  // （ワークスペースはソースフォルダ設定に保存されないため、出しても無効操作になる）
+  if (nodeData._isRoot && !isMulti && (nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
+    addSep();
+    addMenuItem('ワークスペースの管理...', () => {
+      closeTreeContextMenu();
+      if (typeof openWorkspaceSettings === 'function') openWorkspaceSettings();
+    }, null, 'usersRound');
+  }
+
+  // --- ルートフォルダのパス変更 ---
+  if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
     addSep();
     addMenuItem('パスを変更...', async () => {
       closeTreeContextMenu();
@@ -336,16 +396,25 @@ function _openOutlinerCreatedNode(nd, name) {
   }
   else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
   else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
-  else if (nd.type === 'smart-db') { if (typeof openSmartDbFile === 'function') openSmartDbFile(name, nd.path, _expOpts); }
   else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
 }
 
-// 追加API呼び出し前の既存子ノード名（事後確認での新規判定に使用）
+function _outlinerCreateItemIdentity(type, name) {
+  const normalizedType = String(type || '').trim();
+  const normalizedName = String(name || '').trim();
+  return normalizedType && normalizedName ? `${normalizedType}\n${normalizedName}` : '';
+}
+
+// 追加API呼び出し前の既存子ノード識別子（事後確認での新規判定に使用）。
+// 「無題」のような同名項目は種類をまたいで共存できるため、名前だけでは比較しない。
 function _outlinerSnapshotChildNames(container) {
   const names = new Set();
   container.querySelectorAll(':scope > .tree-node').forEach(node => {
     const d = node._nodeData;
-    if (d && !d._pendingCreate && d.name) names.add(d.name);
+    const identity = d && !d._pendingCreate
+      ? _outlinerCreateItemIdentity(d.type, d.name)
+      : '';
+    if (identity) names.add(identity);
   });
   return names;
 }
@@ -354,7 +423,11 @@ function _outlinerSnapshotChildNames(container) {
 // 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
 function _outlinerFindNewItemInListing(items, type, existingNames) {
   if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
-  return items.find(it => it && it.type === type && it.name && !existingNames.has(it.name)) || null;
+  return items.find(it => {
+    if (!it || it.type !== type || !it.name) return false;
+    const identity = _outlinerCreateItemIdentity(it.type, it.name);
+    return identity && !existingNames.has(identity);
+  }) || null;
 }
 
 // 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
@@ -825,76 +898,3 @@ async function _autoExpandToPath(targetPath, noScroll) {
 document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.preventDefault());
 
 let _outlinerKeyboardFocusSeq = 0;
-
-function _outlinerKeyboardRow(nodeEl) {
-  return nodeEl?.querySelector?.(':scope > .tree-node-row') || null;
-}
-
-function _outlinerKeyboardMarkActive() {
-  window._outlinerKeyboardNavigationActiveUntil = Date.now() + 1500;
-}
-
-function _outlinerKeyboardRestoreFocus(row, focusSeq) {
-  if (focusSeq && focusSeq !== _outlinerKeyboardFocusSeq) return;
-  if (!row?.isConnected) return;
-  const active = document.activeElement;
-  if (active?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  _outlinerKeyboardMarkActive();
-  try { row.focus({ preventScroll: true }); } catch {}
-}
-
-// ↑/↓/Home/Endなどの選択移動専用。開く処理は行わない（§2.4・§5 Phase1）。
-// 実際の選択・フォーカス・オプションパネル対象更新は gb-outliner-activation.js の
-// selectNodeOnly() へ委譲し、マウスクリックと同じ一経路にする。
-function _outlinerKeyboardSelectNode(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  if (!nodeEl || !row) return false;
-  const focusSeq = ++_outlinerKeyboardFocusSeq;
-  window.GBOutlinerActivation?.selectNodeOnly(nodeEl, { focus: false });
-  _outlinerKeyboardRestoreFocus(row, focusSeq);
-  row.scrollIntoView({ block: 'nearest' });
-  return true;
-}
-
-// Enter／メニュー「開く」と同じ共通アクティベーション経路を使う
-function _outlinerKeyboardActivateNode(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  if (!nodeEl || !row) return false;
-  const focusSeq = ++_outlinerKeyboardFocusSeq;
-  try {
-    const opened = window.GBOutlinerActivation?.activateNode(nodeEl);
-    Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
-  } catch (err) {
-    _outlinerKeyboardRestoreFocus(row, focusSeq);
-    throw err;
-  }
-  return true;
-}
-
-// F2: 名前変更開始（ダブルクリックの旧割当はここへ移動済み）
-function _outlinerKeyboardStartRename(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  const label = row?.querySelector(':scope > .tree-label');
-  const item = nodeEl?._nodeData;
-  if (!row || !label || !item) return false;
-  return window.GBOutlinerActivation?.startRenameForNode(nodeEl, label, item) || false;
-}
-
-function _outlinerKeyboardScopeFromTarget(target) {
-  if (target?.closest?.('#body-home')) return '#body-home';
-  if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-  if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-  if (target?.id === 'tree-scroll-container') return '#outliner-tree';
-  return '';
-}
-
-function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
-  const direct = target?.closest?.('.tree-node') || null;
-  if (direct && (!scopeSelector || direct.closest(scopeSelector))) return direct;
-  if (treeSelection.lastClicked && (!scopeSelector || treeSelection.lastClicked.closest(scopeSelector))) return treeSelection.lastClicked;
-  const activeRow = document.querySelector(`${scopeSelector || '#outliner-tree'} .tree-node-row.active`);
-  return activeRow?.closest?.('.tree-node') || null;
-}
-
-function _outlinerKeyboardToggle(nodeEl, expand) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;

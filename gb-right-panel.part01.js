@@ -1,6 +1,6 @@
 /**
  * Meldex Right Panel
- * チャット（LLM/チーム）、注釈、付箋、ヒストリー、カレンダータブ
+ * チャット（LLM/チーム）、アノテート、付箋、ヒストリー、カレンダータブ
  */
 
 /* ==============================
@@ -67,8 +67,31 @@ function _resolveRpAnnotationCurrentTarget() {
   return '';
 }
 
+function _syncLegacyRightPanelTargetHeaders() {
+  const targetContext = window.GBOptionTargetContext?.get?.();
+  window.GBOptionTargetContext?.renderHeader?.(document.getElementById('rp-detail'), targetContext);
+  window.GBOptionTargetContext?.renderHeader?.(document.getElementById('rp-tags'), targetContext);
+  window.GBOptionTargetContext?.renderHeader?.(document.getElementById('rp-history'), targetContext);
+  const annotation = document.getElementById('rp-annotation');
+  const scope = document.getElementById('rp-ann-scope')?.value || 'current';
+  if (scope === 'all') {
+    window.GBOptionTargetContext?.renderHeader?.(annotation, null, { scopeLabel: '全ファイル' });
+    return;
+  }
+  const path = _resolveRpAnnotationCurrentTarget();
+  const context = path ? { targets: [{ path, kind: 'file' }] } : targetContext;
+  window.GBOptionTargetContext?.renderHeader?.(annotation, context);
+}
+
+document.addEventListener('meldex:option-target-changed', _syncLegacyRightPanelTargetHeaders);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _syncLegacyRightPanelTargetHeaders, { once: true });
+} else {
+  _syncLegacyRightPanelTargetHeaders();
+}
+
 // サブパネル内では、右サイドバー補助操作（オプション/ビューワー/
-// バージョン管理/チャット/タイマー/ヒストリー/注釈/タグ/サブパネル）を使用できない。
+// バージョン管理/チャット/タイマー/ヒストリー/アノテート/タグ/サブパネル）を使用できない。
 // source は明示的な呼び出し元（DOM要素／paneId）。省略時はフォーカス位置で判定する。
 function _rightSidebarToolAllowed(tabName, source) {
   if (typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.guardRightSidebarTool !== 'function') return true;
@@ -204,9 +227,10 @@ function switchRightTab(tabName, source) {
     const rpDetail = document.getElementById('rp-detail');
     if (rpDetail && typeof _ensureDetailTabShell === 'function') _ensureDetailTabShell(rpDetail);
   }
+  _syncLegacyRightPanelTargetHeaders();
 }
 
-// 右パネル: 注釈一覧（コメントはスレッド形式、他タイプは従来の簡易リスト）
+// 右パネル: アノテート一覧（コメントはスレッド形式、他タイプは従来の簡易リスト）
 // Phase 2e-i: コメントを target_kind + target_ref でグルーピングし、解決/削除を操作可能に
 async function loadRpAnnotationList() {
   const list = document.getElementById('rp-ann-list');
@@ -216,8 +240,11 @@ async function loadRpAnnotationList() {
   const sortMode = document.getElementById('rp-ann-sort')?.value || localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
   const typeFilter = document.getElementById('rp-ann-type')?.value || '';
   const scopeFilter = document.getElementById('rp-ann-scope')?.value || 'current';
+  _syncLegacyRightPanelTargetHeaders();
   const statusFilter = document.getElementById('rp-ann-status')?.value || 'open';
   const userFilter = document.getElementById('rp-ann-user')?.value || '';
+  const dateFrom = document.getElementById('rp-ann-date-from')?.value || '';
+  const dateTo = document.getElementById('rp-ann-date-to')?.value || '';
   const searchEl = document.getElementById('rp-ann-search');
   const searchQuery = searchEl?.value?.toLowerCase() || '';
   let targetFilter = _readRpAnnotationTargetFilter(searchEl);
@@ -264,6 +291,14 @@ async function loadRpAnnotationList() {
     }
     if (userFilter) {
       filtered = filtered.filter(a => String(a.user || '') === userFilter);
+    }
+    if (dateFrom || dateTo) {
+      const fromMs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
+      const toMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
+      filtered = filtered.filter(a => {
+        const timestamp = new Date(a.modified_at || a.created_at || '').getTime();
+        return Number.isFinite(timestamp) && timestamp >= fromMs && timestamp <= toMs;
+      });
     }
     if (targetFilter) {
       filtered = filtered.filter(a => _rpAnnotationMatchesTargetFilter(a, targetFilter));
@@ -405,7 +440,7 @@ function _renderRpAnnotationEmptyState(list, options = {}) {
   wrap.style.cssText = 'padding:12px;color:var(--fg2);font-size:12px;display:flex;flex-direction:column;gap:8px;line-height:1.6;';
   const title = document.createElement('div');
   title.style.cssText = 'color:var(--fg);font-weight:600;';
-  title.textContent = options.unresolved ? '現在の対象を特定できません' : '該当する注釈がありません';
+  title.textContent = options.unresolved ? '現在の対象を特定できません' : '該当するアノテートがありません';
   wrap.appendChild(title);
 
   const detail = document.createElement('div');
@@ -491,7 +526,7 @@ function _rpAnnotationTypeLabel(kind) {
     comment: 'コメント',
     sticky: '付箋',
     screenshot: 'スクリーンショット',
-  })[kind] || kind || '注釈';
+  })[kind] || kind || 'アノテート';
 }
 
 function _rpAnnotationIcon(kind, size) {
@@ -551,10 +586,10 @@ function _populateRpAnnotationUsers(items, selected) {
   _augmentRpAnnotationUsersWithRoster(selected);
 }
 
-// Phase 6: ユーザー絞り込みを「今読み込めた注釈に登場したユーザー」だけでなく、
-// ワークスペースの参加者名簿(スタッフ管理シート)からも作る。まだ注釈を
+// Phase 6: ユーザー絞り込みを「今読み込めたアノテートに登場したユーザー」だけでなく、
+// ワークスペースの参加者名簿(スタッフ管理シート)からも作る。まだアノテートを
 // 書いていないメンバーも選べるようにする。MeldexUserRegistry が使えない環境
-// (単独ボードアプリ等)では黙って何もしない(既存の注釈由来の一覧のまま)。
+// (単独ボードアプリ等)では黙って何もしない(既存のアノテート由来の一覧のまま)。
 // 非同期のため、直前に呼ばれた要求だけを反映する(連続フィルタ変更での
 // 古い応答による上書きを防ぐ)。
 let _rpAnnotationRosterRequestSeq = 0;
@@ -634,7 +669,7 @@ function _rpAnnotationUserBadge(user) {
   return span;
 }
 
-// Phase 5-a: 注釈カードのドラッグでクリックの誤爆(ジャンプ)を防ぐ。
+// Phase 5-a: アノテートカードのドラッグでクリックの誤爆(ジャンプ)を防ぐ。
 // ネイティブD&Dはドラッグ完了後にclickを発火させないのが通例だが、環境差の
 // 保険として、直前にドラッグしたその要素自身のクリックだけを1回無視する。
 // (グローバルなタイムスタンプにすると、あるカードのドラッグ直後に別の行を
@@ -644,9 +679,9 @@ function _rpAnnotationDragSkipClick(el) {
   return _rpAnnDraggingElements.has(el);
 }
 
-// 注釈の対象ファイル(target_path / target_ref.file)を、Meldex内D&D・OS書き出し・
+// アノテートの対象ファイル(target_path / target_ref.file)を、Meldex内D&D・OS書き出し・
 // 保存ボタンの共通の「ドラッグ対象」として解決する。対象ファイルを持たない
-// 注釈(対象未解決等)は null を返し、呼び出し側はD&D対応をスキップする。
+// アノテート(対象未解決等)は null を返し、呼び出し側はD&D対応をスキップする。
 function _rpAnnotationDragTarget(a) {
   const path = String(a?.target_ref?.file || a?.target_path || '').trim();
   if (!path) return null;
@@ -867,6 +902,110 @@ function _buildRpStrokePreview(a) {
   return wrap;
 }
 
+function _rpCopiedAnnotationRefs(a) {
+  const value = a?.copied_to_refs;
+  if (Array.isArray(value)) return value.filter(item => item && typeof item === 'object');
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : [];
+    } catch (_) {}
+  }
+  return [];
+}
+
+function _rpCurrentTypedAnnotationTarget() {
+  if (typeof CommentBadges === 'undefined' || typeof CommentBadges.detectCommentContext !== 'function') return null;
+  const ctx = CommentBadges.detectCommentContext();
+  if (!ctx?.filePath || !ctx?.targetKind || ctx.targetKind === 'none' || !ctx.targetRef) return null;
+  return ctx;
+}
+
+function _rpAnnotationTargetSummary(kind, ref, path) {
+  const detail = ref?.lineId || ref?.cardId || ref?.eventId || ref?.container?.id
+    || [ref?.entryId, ref?.colId].filter(Boolean).join(' / ');
+  return `${_kindLabel(kind || '対象')} · ${path || ref?.file || '(不明)'}` + (detail ? ` · ${detail}` : '');
+}
+
+async function _reanchorAnnotationFromPanel(a) {
+  const ctx = _rpCurrentTypedAnnotationTarget();
+  if (!ctx) {
+    showStatus('付け直す対象を本文、行、カード、ライン、セル、またはイベントで選択してください', true);
+    return;
+  }
+  const oldSummary = _rpAnnotationTargetSummary(a.target_kind, a.target_ref || {}, a.target_path || '');
+  const newSummary = _rpAnnotationTargetSummary(ctx.targetKind, ctx.targetRef, ctx.filePath);
+  if (typeof cfConfirm === 'function' && !await cfConfirm(`アノテートの対象を付け直します。\n\n変更前: ${oldSummary}\n変更後: ${newSummary}\n\n元の対象は成功するまで保持されます。続行しますか？`)) return;
+  try {
+    const body = {
+      target_path: ctx.filePath,
+      target_kind: ctx.targetKind,
+      target_ref: ctx.targetRef,
+      target_snapshot: ctx.snapshot || '',
+      orphan: 0,
+      orphaned_at: '',
+    };
+    if (a.modified) body.expected_modified = a.modified;
+    await apiPut('/annotations/' + encodeURIComponent(a.id), body);
+    _invalidateCommentBadgesFor(a);
+    _invalidateCommentBadgesFor({ target_path: ctx.filePath, target_ref: ctx.targetRef });
+    loadRpAnnotationList();
+    showStatus('アノテートの対象を付け直しました');
+  } catch (error) {
+    showStatus(Number(error?.status || 0) === 409 ? 'アノテートが更新されたため、付け直しを中止しました' : '対象を付け直せませんでした。元の対象は保持されています', true);
+  }
+}
+
+async function _linkAnnotationToCurrentTarget(a) {
+  const ctx = _rpCurrentTypedAnnotationTarget();
+  if (!ctx) {
+    showStatus('リンク先を本文、行、カード、ライン、セル、またはイベントで選択してください', true);
+    return;
+  }
+  const refs = _rpCopiedAnnotationRefs(a);
+  const candidate = {
+    target_path: ctx.filePath,
+    target_kind: ctx.targetKind,
+    target_ref: ctx.targetRef,
+    target_snapshot: ctx.snapshot || '',
+  };
+  const key = JSON.stringify([candidate.target_path, candidate.target_kind, candidate.target_ref]);
+  if (refs.some(item => JSON.stringify([item.target_path, item.target_kind, item.target_ref]) === key)) {
+    showStatus('この対象はすでにリンクされています');
+    return;
+  }
+  try {
+    const body = { copied_to_refs: [...refs, candidate] };
+    if (a.modified) body.expected_modified = a.modified;
+    await apiPut('/annotations/' + encodeURIComponent(a.id), body);
+    loadRpAnnotationList();
+    showStatus('アノテートのリンク先を追加しました');
+  } catch (error) {
+    showStatus(Number(error?.status || 0) === 409 ? 'アノテートが更新されたため、リンク追加を中止しました' : 'リンク先を追加できませんでした', true);
+  }
+}
+
+async function _unlinkAnnotationTargets(a) {
+  const refs = _rpCopiedAnnotationRefs(a);
+  if (!refs.length) return;
+  if (typeof cfConfirm === 'function' && !await cfConfirm(`${refs.length}件の追加リンクを解除します。元のアノテートと対象は削除されません。続行しますか？`)) return;
+  try {
+    const body = { copied_to_refs: [] };
+    if (a.modified) body.expected_modified = a.modified;
+    await apiPut('/annotations/' + encodeURIComponent(a.id), body);
+    loadRpAnnotationList();
+    showStatus('追加リンクを解除しました');
+  } catch (error) {
+    showStatus(Number(error?.status || 0) === 409 ? 'アノテートが更新されたため、リンク解除を中止しました' : 'リンクを解除できませんでした', true);
+  }
+}
+
+function _jumpToFirstAnnotationLink(a) {
+  const link = _rpCopiedAnnotationRefs(a)[0];
+  if (!link) return;
+  _jumpToCommentTarget({ target_path: link.target_path, target_kind: link.target_kind, target_ref: link.target_ref || {} });
+}
+
 function _appendRpAnnotationActions(container, a) {
   if (!container) return;
   if (a.uiKind === 'comment') {
@@ -883,12 +1022,40 @@ function _appendRpAnnotationActions(container, a) {
     resolveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _toggleResolveComment(a); });
     container.appendChild(resolveBtn);
   }
+  const reanchorBtn = _rpAnnotationActionButton('locateFixed', a.orphan ? '対象を付け直す' : '現在の選択へ対象を付け直す');
+  reanchorBtn.dataset.rpAnnAction = 'reanchor';
+  reanchorBtn.dataset.annId = a.id || '';
+  reanchorBtn.dataset.testid = `rp-ann-reanchor-${a.id || 'unknown'}`;
+  reanchorBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _reanchorAnnotationFromPanel(a); });
+  container.appendChild(reanchorBtn);
+  const linkBtn = _rpAnnotationActionButton('link2', '現在の選択を追加リンク');
+  linkBtn.dataset.rpAnnAction = 'link';
+  linkBtn.dataset.annId = a.id || '';
+  linkBtn.dataset.testid = `rp-ann-link-${a.id || 'unknown'}`;
+  linkBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _linkAnnotationToCurrentTarget(a); });
+  container.appendChild(linkBtn);
+  if (_rpCopiedAnnotationRefs(a).length) {
+    const jumpLinkBtn = _rpAnnotationActionButton('externalLink', '最初の追加リンクへ移動');
+    jumpLinkBtn.dataset.rpAnnAction = 'jump-link';
+    jumpLinkBtn.dataset.annId = a.id || '';
+    jumpLinkBtn.dataset.testid = `rp-ann-jump-link-${a.id || 'unknown'}`;
+    jumpLinkBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _jumpToFirstAnnotationLink(a); });
+    container.appendChild(jumpLinkBtn);
+    const unlinkBtn = _rpAnnotationActionButton('unlink', '追加リンクを解除');
+    unlinkBtn.dataset.rpAnnAction = 'unlink';
+    unlinkBtn.dataset.annId = a.id || '';
+    unlinkBtn.dataset.testid = `rp-ann-unlink-${a.id || 'unknown'}`;
+    unlinkBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _unlinkAnnotationTargets(a); });
+    container.appendChild(unlinkBtn);
+  }
   const dragTarget = _rpAnnotationDragTarget(a);
   if (dragTarget) {
     // Phase 5-a: OSへのドラッグ書き出しはChrome/Edge系のみ有効なため、
     // どのブラウザでも対象ファイルを取り出せる代替導線として必ず併設する。
     const saveBtn = _rpAnnotationActionButton('download', 'ファイルとして保存');
     saveBtn.dataset.rpAnnAction = 'save';
+    saveBtn.dataset.annId = a.id || '';
+    saveBtn.dataset.testid = `rp-ann-save-${a.id || 'unknown'}`;
     saveBtn.dataset.annId = a.id || '';
     saveBtn.dataset.testid = `rp-ann-save-${a.id || 'unknown'}`;
     saveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _saveRpAnnotationTargetFile(dragTarget); });
@@ -991,7 +1158,7 @@ function _jumpFromRpAnnotation(a) {
   }
   const targetPath = a.target_ref?.file || a.target_path || '';
   if (!targetPath) {
-    showStatus('注釈の対象ファイルが見つかりません', true);
+    showStatus('アノテートの対象ファイルが見つかりません', true);
     return;
   }
   if (typeof jumpToAnnotation === 'function') jumpToAnnotation(targetPath);
@@ -1007,7 +1174,7 @@ async function _editCommentFromPanel(c) {
       data: { ...(c.data || {}), type: c.type || c.data?.type || 'comment', text },
     };
     if (typeof _putAnnotationWithHistory === 'function') {
-      await _putAnnotationWithHistory(c.id, body, '注釈: コメント更新', c.id);
+      await _putAnnotationWithHistory(c.id, body, 'アノテート: コメント更新', c.id);
     } else {
       await apiPut('/annotations/' + encodeURIComponent(c.id), body);
     }
@@ -1018,19 +1185,19 @@ async function _editCommentFromPanel(c) {
 
 async function _deleteAnnotationFromPanel(a) {
   if (!_rpCanDeleteAnnotation(a)) {
-    showStatus('注釈の削除はソースフォルダの管理者だけが行えます', true);
+    showStatus('アノテートの削除はソースフォルダの管理者だけが行えます', true);
     return;
   }
   const confirmMsg = a.uiKind === 'screenshot'
-    ? 'このスクリーンショット注釈を削除しますか？\n（注釈レコードのみ削除され、画像ファイルは残ります）'
-    : 'この注釈を削除しますか？';
+    ? 'このスクリーンショットアノテートを削除しますか？\n（アノテートレコードのみ削除され、画像ファイルは残ります）'
+    : 'このアノテートを削除しますか？';
   if (typeof cfConfirm === 'function' && !await cfConfirm(confirmMsg)) return;
   try {
     const before = typeof _fetchAnnotationHistoryRow === 'function'
       ? await _fetchAnnotationHistoryRow(a.id).catch(() => null)
       : null;
     await apiDelete('/annotations/' + encodeURIComponent(a.id));
-    if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, a.id);
+    if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, a.id);
     const safeId = MeldexEscape.cssIdent(a.id);
     document.querySelectorAll(`[data-ann-id="${safeId}"]`).forEach(el => el.remove());
     _invalidateCommentBadgesFor(a);
@@ -1169,7 +1336,7 @@ function _editCommentInline(el, c) {
         data: { ...(c.data || {}), type: c.type || c.data?.type || 'comment', text: ta.value },
       };
       if (typeof _putAnnotationWithHistory === 'function') {
-        await _putAnnotationWithHistory(c.id, body, '注釈: コメント更新', c.id);
+        await _putAnnotationWithHistory(c.id, body, 'アノテート: コメント更新', c.id);
       } else {
         await apiPut('/annotations/' + encodeURIComponent(c.id), body);
       }

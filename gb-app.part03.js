@@ -315,14 +315,14 @@ window.addEventListener('message', (e) => {
       data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
     }).then(res => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
+        _pushAnnotationCreateHistory(res.id, 'アノテート: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
       }
       if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
     }).catch((err) => {
       if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
         _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
       }
-      if (typeof showStatus === 'function') showStatus('注釈の保存に失敗しました: ' + (err?.message || err || ''), true);
+      if (typeof showStatus === 'function') showStatus('アノテートの保存に失敗しました: ' + (err?.message || err || ''), true);
     });
   }
   if (msg.type === 'ann-delete') {
@@ -332,7 +332,7 @@ window.addEventListener('message', (e) => {
           ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
           : null;
         await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
-        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, msg.annId);
+        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, msg.annId);
         reloadEmbeddedAnnotations();
       })().catch(() => {});
     }
@@ -340,7 +340,7 @@ window.addEventListener('message', (e) => {
   if (msg.type === 'ann-delete-note') {
     if (msg.annId && msg.data) {
       if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, { data: msg.data }, '注釈: 削除', msg.annId)
+        _putAnnotationWithHistory(msg.annId, { data: msg.data }, 'アノテート: 削除', msg.annId)
           .then(reloadEmbeddedAnnotations)
           .catch(() => {});
       } else {
@@ -351,7 +351,7 @@ window.addEventListener('message', (e) => {
   if (msg.type === 'ann-update-note') {
     if (msg.annId && (msg.data || msg.color)) {
       const body = msg.color ? { color: msg.color } : { data: msg.data };
-      const label = msg.color ? '注釈: 色変更' : '注釈: 付箋更新';
+      const label = msg.color ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
       if (typeof _putAnnotationWithHistory === 'function') {
         _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
       } else {
@@ -396,7 +396,7 @@ window.addEventListener('message', (e) => {
       data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
     }).then(res => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
+        _pushAnnotationCreateHistory(res.id, 'アノテート: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
       }
       if (embedded) reloadEmbeddedAnnotations();
       else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
@@ -428,6 +428,13 @@ function bdOpenBgPalette(event) {
 
 async function openBoard(label, path, opts) {
   const openOpts = opts || {};
+  let navPushedBeforeLoad = false;
+  let mountedBoardLoad = null;
+  let requestedPane = null;
+  let requestedPaneId = null;
+  let requestedTab = null;
+  let requestedTabIndex = -1;
+  let requestedTabSnapshot = null;
   const showOpenLoading = !openOpts.silent
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
@@ -437,6 +444,14 @@ async function openBoard(label, path, opts) {
   const currentTitleEl = document.getElementById('current-title');
   const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
   const restorePreviousView = () => {
+    if (navPushedBeforeLoad && requestedPane && requestedTab && requestedTabSnapshot) {
+      Object.assign(requestedTab, requestedTabSnapshot.fields);
+      requestedTab.navHistory = requestedTabSnapshot.navHistory;
+      requestedTab.navIndex = requestedTabSnapshot.navIndex;
+      requestedPane.activeTabIndex = requestedTabIndex;
+      if (typeof GBLayout !== 'undefined' && typeof GBLayout.render === 'function') GBLayout.render();
+      if (typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
+    }
     state.currentBoardPath = prevBoardPath || null;
     if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
     if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
@@ -447,15 +462,56 @@ async function openBoard(label, path, opts) {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;
     if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
+    // ペインブリッジでは board はコンポーネント型なので、showView('board') 自体は
+    // DOMをマウントしない。ノート等の別型タブから開く場合は先にnavPushして
+    // CanvasComponentを作り、そのコンポーネントが開始した読込を待つ。
+    const boardCanvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
+    if (!boardCanvas
+      && !openOpts.skipNavPush
+      && typeof navPush === 'function'
+      && typeof GBPaneBridge !== 'undefined'
+      && GBPaneBridge?.initialized) {
+      requestedPaneId = openOpts.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
+      const paneInfo = requestedPaneId
+        && typeof GBLayout !== 'undefined'
+        && typeof GBLayout.findNode === 'function'
+        ? GBLayout.findNode(GBLayout.root, requestedPaneId)
+        : null;
+      requestedPane = paneInfo?.node || null;
+      requestedTabIndex = requestedPane?.activeTabIndex ?? -1;
+      requestedTab = requestedPane?.tabs?.[requestedTabIndex] || null;
+      if (requestedTab) {
+        requestedTabSnapshot = {
+          fields: {
+            type: requestedTab.type,
+            label: requestedTab.label,
+            path: requestedTab.path,
+            state: requestedTab.state,
+            icon: requestedTab.icon,
+          },
+          navHistory: Array.isArray(requestedTab.navHistory) ? [...requestedTab.navHistory] : requestedTab.navHistory,
+          navIndex: requestedTab.navIndex,
+        };
+      }
+      await navPush({ type: 'board', label, path }, requestedPaneId);
+      navPushedBeforeLoad = true;
+      if (requestedPane && typeof getComponentInstance === 'function') {
+        const tab = requestedPane.tabs?.[requestedPane.activeTabIndex] || null;
+        const component = tab ? getComponentInstance(tab.id) : null;
+        mountedBoardLoad = component?._boardLoadPending || null;
+      }
+    }
     if (!openOpts.skipShowView) showView('board');
     if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-    const opened = typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true;
+    const opened = mountedBoardLoad
+      ? await mountedBoardLoad
+      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true);
     if (opened === false) {
       restorePreviousView();
       return false;
     }
     if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
-    if (!openOpts.skipNavPush) {
+    if (!openOpts.skipNavPush && !navPushedBeforeLoad) {
       const _navEntry = {type:'board', label, path};
       navPush(_navEntry);
     }
@@ -803,13 +859,12 @@ function showMobileToolMenu(e) {
     { label: 'フォルダ', action: () => openToolTab('folder') },
     { label: 'ノート', action: () => openToolTab('page') },
     { label: 'シート', action: () => openToolTab('database') },
-    { label: 'スマートシート', action: () => openToolTab('smart-db') },
     { label: 'ボード', action: () => openToolTab('board') },
     null,
     { label: 'ビューワー', action: () => toggleRightPanelTab('preview') },
     { label: 'オプション', action: () => toggleOptionPanel() },
     null,
-    { label: '注釈ツール', action: () => toggleAnnotationToolbar() },
+    { label: 'アノテートツール', action: () => toggleAnnotationToolbar() },
     { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
   ];
   const menu = document.createElement('div');

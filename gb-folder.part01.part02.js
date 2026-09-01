@@ -717,7 +717,7 @@ function _ensureFolderBulkBarChrome(bar) {
   if (window.GBSelectionFloatMenu) {
     const host = window.GBSelectionFloatMenu?.hostFor?.(bar) || document.getElementById('folder-view') || document.body;
     if (!bar.querySelector('.gb-selection-float-drag')) {
-      bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle(), bar.firstChild);
+      bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle('ドラッグで移動', 'selection-float-drag-folder'), bar.firstChild);
     }
     window.GBSelectionFloatMenu.bindDrag(bar, { host });
     bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
@@ -1079,7 +1079,6 @@ async function openFolderItem(item) {
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
   else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null }); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
-  else if (item.type === 'smart-db') { if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts); }
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }
   else if (item.type === 'html') { openHtmlFile(item.name, item.path, _expOpts); }
   else if (item.type === 'csv') { if (typeof openCsvFile === 'function') openCsvFile(item.name, item.path, _expOpts); else openPage(item.name, item.path, _expOpts); }

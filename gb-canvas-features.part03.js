@@ -94,6 +94,62 @@ function _bdPrepareContextMenuSelection(nodeId) {
   if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
 }
 
+function _bdApplyBulkTopicSelection(ids, activeNodeId, reason) {
+  const known = new Set((bd.nodes || []).map(node => node.id));
+  const next = new Set(Array.from(ids || []).filter(id => known.has(id)));
+  if (activeNodeId && known.has(activeNodeId)) next.add(activeNodeId);
+  bd.selected = next;
+  bd._activeNode = activeNodeId && next.has(activeNodeId) ? activeNodeId : (next.values().next().value || null);
+  document.querySelectorAll('.bd-node').forEach(el => {
+    el.classList.toggle('bd-selected', next.has(el.id.replace('bdn-', '')));
+  });
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([...next], reason || 'bulk-select');
+  if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi();
+  return next;
+}
+
+function _bdAncestorTopicIds(nodeId) {
+  const byId = new Map((bd.nodes || []).map(node => [node.id, node]));
+  const result = new Set();
+  let currentId = nodeId;
+  while (currentId && byId.has(currentId) && !result.has(currentId)) {
+    result.add(currentId);
+    currentId = byId.get(currentId)?.parent || '';
+  }
+  return result;
+}
+
+function _bdDescendantTopicIds(nodeId) {
+  const result = new Set();
+  const queue = [nodeId];
+  while (queue.length) {
+    const currentId = queue.shift();
+    if (!currentId || result.has(currentId)) continue;
+    result.add(currentId);
+    (bd.nodes || []).forEach(node => {
+      if (node?.parent === currentId && !result.has(node.id)) queue.push(node.id);
+    });
+  }
+  return result;
+}
+
+function bdGroupSelectedNodes() {
+  const nodeIds = [...(bd.selected || [])].filter(id => bd.nodes.some(node => node.id === id));
+  if (nodeIds.length < 2) return null;
+  bdPushUndo();
+  if (!Array.isArray(bd.groups)) bd.groups = [];
+  const group = { id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds,
+    styleRef: bd.topicViewDocument?.activeGroupStyleId || null, styleOverrides: {} };
+  bd.groups.push(group);
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
+  } else bdRender();
+  bdDirty();
+  if (typeof showStatus === 'function') showStatus(`${nodeIds.length}件のトピックをグループ化しました`);
+  return group;
+}
+
 function bdContextMenu(e, nodeId) {
   _bdCloseAllContextMenus();
   const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'トピックメニュー' : 'ボードメニュー');
@@ -151,6 +207,9 @@ function bdContextMenu(e, nodeId) {
     //     「拡張」サブ / 「サイズ設定」/「表示サイズ」 はすべて廃止または移設。
     //   - 編集 UI はオプションパネルへ一本化、ポップアップは切替と状態トグルに専念する。
     const targetNodeIds = multi ? [...bd.selected] : [nodeId];
+    const topicPlacementSource = !multi
+      ? window.MeldexTopicPlacementUI?.boardSource?.(nd) || null
+      : null;
     const isLinkCard = nd && !!nd.link;
     const isImageCard = nd && !!nd.img;
     const isRootCard = nd && !nd.parent;
@@ -220,7 +279,6 @@ function bdContextMenu(e, nodeId) {
       linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
       linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
       linkifySub.item('ボード', () => bdLinkifyCardAs(nodeId, 'board'));
-      linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
       linkifySub.sep();
       linkifySub.item('既存ファイル...', () => bdLinkifyCardFromExisting(nodeId));
       item('接続トピックを全選択', () => {
@@ -233,13 +291,26 @@ function bdContextMenu(e, nodeId) {
           });
         }
         bdDescendants(nodeId).forEach(id => ids.add(id));
-        bd.selected = ids;
-        document.querySelectorAll('.bd-node').forEach(el => el.classList.toggle('bd-selected', bd.selected.has(el.id.replace('bdn-', ''))));
-        if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-        if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi();
+        _bdApplyBulkTopicSelection(ids, nodeId, 'connected-topic-select');
+      });
+      const appendHierarchySelection = (label, ids, reason, disabledReason) => {
+        if (ids.size <= 1) {
+          const disabled = _bdContextMenuItem(menu, label, null, { disabled: true, html: false });
+          disabled.title = disabledReason;
+          disabled.setAttribute('aria-description', disabledReason);
+          return;
+        }
+        item(label, () => _bdApplyBulkTopicSelection(ids, nodeId, reason));
+      };
+      appendHierarchySelection('親トピックを全選択', _bdAncestorTopicIds(nodeId), 'ancestor-topic-select', '親トピックがありません');
+      appendHierarchySelection('子トピックを全選択', _bdDescendantTopicIds(nodeId), 'descendant-topic-select', '子トピックがありません');
+    }
+    if (topicPlacementSource) {
+      window.MeldexTopicPlacementUI.menuItems(topicPlacementSource).forEach(menuItem => {
+        item(menuItem.label, menuItem.action);
       });
     }
-    item('複製', () => {
+    item(topicPlacementSource ? 'トピックの見た目を複製' : '複製', () => {
       bdPushUndo();
       const ids = multi ? [...bd.selected] : [nodeId];
       const sourceNodes = ids.map(id => bd.nodes.find(v => v.id === id)).filter(Boolean);
@@ -337,7 +408,7 @@ function bdContextMenu(e, nodeId) {
     //   書式編集 (色・フォントサイズ・太字/斜体・形状・角丸・影・雲型等) はオプションパネルに一本化。
     //   ここでは「スタイル選択」「階層別スタイル on/off」「スタイル管理」のみ扱う。
     {
-      const cardStylePanel = _bdCreateContextSubmenu(menu, 'カードスタイル', 160);
+      const cardStylePanel = _bdCreateContextSubmenu(menu, 'トピックスタイル', 160);
       const currentStyleId = nd?.cardStyle || bd.activeCardStyle || '';
       const isHierarchical = !nd?.cardStyle;
       const restoreItem = _bdContextMenuItem(cardStylePanel, radioMark(isHierarchical) + esc('階層別スタイルに戻す'), () => {
@@ -622,7 +693,7 @@ function bdContextMenu(e, nodeId) {
         if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       });
 
-      // フキダシのしっぽ (追加する / 削除する の2択。注釈の付箋メニューと同じ構成に揃える)。
+      // フキダシのしっぽ (追加する / 削除する の2択。アノテートの付箋メニューと同じ構成に揃える)。
       // Alt+Shift+ドラッグを知らなくても到達できる導線。
       const tailSub = sub('フキダシのしっぽ');
       const hasTail = typeof bdCardHasTail === 'function' ? bdCardHasTail(nd) : !!nd.tail;
@@ -656,13 +727,7 @@ function bdContextMenu(e, nodeId) {
       nrmSub.item('高さを揃える', () => bdNormalize('height'));
       nrmSub.item('幅を揃える', () => bdNormalize('width'));
       nrmSub.item('サイズを揃える', () => bdNormalize('size'));
-      item('グループ化', () => {
-        bdPushUndo();
-        bd.groups.push({ id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds: [...bd.selected] });
-        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
-        else bdRender();
-        bdDirty();
-      });
+      item('グループ化', () => bdGroupSelectedNodes());
     }
     // 注: ルート直下の「フォーカス (Space)」および「拡張」サブ全体 (ノート編集/チェックボックス/
     // 進捗/フォント設定/マーカー/ドリルダウン/ステータス) は廃止。
@@ -698,7 +763,6 @@ function bdContextMenu(e, nodeId) {
       ['シート', 'database'],
       ['シナリオ', 'scriptnote'],
       ['ボード', 'board'],
-      ['タイマー', 'timer'],
     ].forEach(([label, type]) => {
       newLinkSub.item(label, () => {
         if (typeof bdCreateLinkedFileCardAt === 'function') bdCreateLinkedFileCardAt(clickWx, clickWy, type);

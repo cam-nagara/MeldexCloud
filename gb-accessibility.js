@@ -65,7 +65,11 @@
   }
 
   function _cssEscape(value) {
-    return MeldexEscape.cssIdent(value);
+    const text = String(value ?? '');
+    if (!window.MeldexEscape?.cssIdent) {
+      throw new Error('MeldexEscape.cssIdent is required before accessibility initialization');
+    }
+    return window.MeldexEscape.cssIdent(text);
   }
 
   function _labelFromElement(el) {

@@ -22,7 +22,6 @@
 
   const PANEL_ID = 'gb-quick-memo-panel';
   const RECT_KEY = 'meldex:quick-memo-panel:rect:v1';
-  const FRAME_URL = 'quick-memo.html?embed=1';
   const MIN_W = 300;
   const MIN_H = 320;
   const DEFAULT_W = 420;
@@ -31,18 +30,63 @@
 
   let _frame = null;
   let _base = null;
+  let _handoffClosing = false;
 
   function _icon(name, size) {
     return (typeof lucide === 'function') ? lucide(name, size || 16) : '';
   }
 
-  function _openStandalone() {
-    const url = 'quick-memo.html';
-    if (typeof _open_app_window_js === 'function') {
-      _open_app_window_js(url);
-      return;
+  function _isCloudHost() {
+    return document.body?.dataset?.cloudMode === 'dropbox'
+      || window.apiFetch?._meldexStandaloneCloudAdapter === true;
+  }
+
+  function _frameUrl() {
+    return _isCloudHost()
+      ? 'apps/quick-memo/index.html?embed=1&host=meldex-cloud'
+      : 'quick-memo.html?embed=1&host=meldex-desktop';
+  }
+
+  function _standaloneWindowRect() {
+    const rect = _base?.getElement?.()?.getBoundingClientRect?.();
+    return {
+      width: Math.max(MIN_W, Math.round(rect?.width || DEFAULT_W)),
+      height: Math.max(MIN_H, Math.round(rect?.height || DEFAULT_H)),
+    };
+  }
+
+  async function _openStandalone() {
+    const api = _frame?.contentWindow?.MeldexQuickMemo;
+    if (!api) throw new Error('クイックメモの準備が完了していません');
+    if (typeof api.flush === 'function' && !(await api.flush())) {
+      throw new Error('クイックメモを保存できなかったため、単独アプリを開きませんでした');
     }
-    window.open(url, '_blank', 'width=480,height=780,menubar=no,toolbar=no,location=no');
+
+    const size = _standaloneWindowRect();
+    const url = new URL(_isCloudHost() ? 'apps/quick-memo/' : 'quick-memo.html', location.href);
+    const path = String(api.currentPath?.() || '').trim();
+    if (path) url.searchParams.set('open', path);
+    url.searchParams.set('window_width', String(size.width));
+    url.searchParams.set('window_height', String(size.height));
+
+    let opened = false;
+    if (typeof _open_app_window_js === 'function') {
+      opened = await _open_app_window_js(url.toString());
+    } else {
+      opened = !!window.open(
+        url.toString(),
+        '_blank',
+        `width=${size.width},height=${size.height},menubar=no,toolbar=no,location=no`,
+      );
+    }
+    if (!opened) throw new Error('単独アプリを開けませんでした');
+    _handoffClosing = true;
+    try {
+      close();
+    } finally {
+      _handoffClosing = false;
+    }
+    return true;
   }
 
   // 書きかけを取りこぼさないよう、閉じる前にクイックメモ側の保存を促す。
@@ -70,10 +114,14 @@
     header.querySelector('.gb-quick-memo-panel-icon').innerHTML = _icon('notebookPen', 16);
     header.querySelector('[data-role="standalone"]').innerHTML = _icon('externalLink', 14);
     header.querySelector('[data-role="close"]').innerHTML = _icon('x', 14);
-    header.querySelector('[data-role="standalone"]').addEventListener('click', (e) => {
+    header.querySelector('[data-role="standalone"]').addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      _openStandalone();
+      try {
+        await _openStandalone();
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '単独アプリを開けませんでした', true);
+      }
     });
     header.querySelector('[data-role="close"]').addEventListener('click', (e) => {
       e.preventDefault();
@@ -87,7 +135,7 @@
     frame.className = 'gb-quick-memo-panel-frame';
     frame.title = 'クイックメモ';
     frame.dataset.e2eId = 'quick-memo-float-panel-frame';
-    frame.src = FRAME_URL;
+    frame.src = _frameUrl();
     body.appendChild(frame);
     _frame = frame;
   }
@@ -108,13 +156,15 @@
       defaultWidth: DEFAULT_W,
       defaultHeight: DEFAULT_H,
       margin: MARGIN,
+      mobileSheet: true,
+      mobileBreakpoint: 1024,
       anchorSelector: '.gb-dock-fixed-right',
       triggerSelectors: '.gb-dock-rail-quick-memo',
       buildHeader: _buildHeader,
       buildBody: _buildBody,
       onDragToggle: (enabled) => { if (_frame) _frame.style.pointerEvents = enabled ? '' : 'none'; },
       onFocus: () => { try { _frame?.contentWindow?.focus?.(); } catch {} },
-      onBeforeClose: () => { _flushFrame(); },
+      onBeforeClose: () => { if (!_handoffClosing) _flushFrame(); },
       onClose: () => { _frame = null; },
     });
     return _base;
@@ -140,6 +190,27 @@
     _base?.focus();
   }
 
+  function _versionApiFor(path) {
+    const api = _frame?.contentWindow?.MeldexQuickMemo;
+    const target = api?.currentVersionTarget?.();
+    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    return api && target?.path && normalize(target.path) === normalize(path) ? api : null;
+  }
+
+  async function flushVersionTarget(path) {
+    const api = _versionApiFor(path);
+    if (!api) return false;
+    if (typeof api.flush === 'function') await api.flush();
+    return true;
+  }
+
+  async function reloadVersionTarget(path) {
+    const api = _versionApiFor(path);
+    if (!api || typeof api.reloadCurrentVersion !== 'function') return false;
+    await api.reloadCurrentVersion();
+    return true;
+  }
+
   // レールは再描画のたびに作り直されるので、描画後に開閉状態を貼り直す。
   function syncRailButton() {
     _base?.syncTriggerButtons();
@@ -152,5 +223,7 @@
     isOpen,
     focus,
     syncRailButton,
+    flushVersionTarget,
+    reloadVersionTarget,
   });
 })();

@@ -426,12 +426,7 @@ function applyDbAutoEntityRenameResponse(res) {
 
 function _markDbAutoVersionDirty(dbPath) {
   if (typeof markAutoVersionDirty !== 'function') return;
-  try {
-    if (typeof _autoVersionType === 'undefined' || typeof _autoVersionPath === 'undefined') return;
-    if (_autoVersionType !== 'db') return;
-    if (dbPath && typeof _sameVersionTargetPath === 'function' && !_sameVersionTargetPath(_autoVersionPath, dbPath)) return;
-    markAutoVersionDirty();
-  } catch {}
+  try { markAutoVersionDirty(dbPath, 'db'); } catch {}
 }
 
 // ツールバー再読み込みがセル保存中に /pivot を読み直すと、保存前の entry_revision が
@@ -543,6 +538,13 @@ function _dbPropagateEntryRevision(entityPath, revision) {
 }
 
 async function _apiPutValue(valObj, updates) {
+  if (valObj?._topicCanonicalOnly && valObj?.topicRef) {
+    const saved = await window.MeldexTopicPlacementUI.updateProjectedValue(valObj, updates);
+    if (updates?._delete) valObj.value = '';
+    else if (updates?.new_value !== undefined) valObj.value = updates.new_value;
+    if (saved?.revision != null) valObj.entry_revision = Number(saved.revision);
+    return saved;
+  }
   const queuedEntityPath = _resolveEntityPathFromValObj(valObj);
   const mutationDbPath = _dbPathFromEntityPath(queuedEntityPath) || state.currentDbPath || '';
   return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async (latestEntityPath) => {
@@ -884,7 +886,7 @@ function _dbFindPaneContextForPath(dbPath) {
 function _dbFindActiveTabPaneForPath(dbPath) {
   const target = _dbNormalizePath(dbPath);
   if (!target || typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
-  const sheetTabTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const sheetTabTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const panes = GBLayout.getAllPanes(GBLayout.root) || [];
   for (const pane of panes) {
     const tab = pane.tabs?.[pane.activeTabIndex];

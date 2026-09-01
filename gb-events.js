@@ -15,7 +15,7 @@
   const _RAW_DATA_ACTION_ALLOWLIST = new Set([
     "document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');",
     "cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})",
-    "cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})",
+    "cfConfirm('表示と操作の設定を初期化しますか？\\n作品、ワークスペース、ソースフォルダ、下書き、共有登録、APIキーは削除しません。\\n成功後にページを再読み込みします。').then(ok=>{if(ok)resetAllSettings();})",
     "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
     "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
     "document.getElementById('settings-transfer-import-input')?.click()",

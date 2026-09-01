@@ -1,0 +1,81 @@
+/* 固定レール共通シェル: 上端固定 / 中央のみスクロール / 下端固定 */
+.gb-dock-bar-fixed {
+  overflow: hidden;
+}
+
+.gb-rail-shell-top,
+.gb-rail-shell-scroll,
+.gb-rail-shell-bottom {
+  display: flex;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 0;
+  align-items: center;
+  flex-direction: column;
+}
+
+.gb-rail-shell-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+
+.gb-rail-shell-scroll::-webkit-scrollbar { display: none; }
+
+.gb-rail-shell-scroll::before,
+.gb-rail-shell-scroll::after {
+  content: '';
+  position: sticky;
+  z-index: 2;
+  display: block;
+  flex: 0 0 10px;
+  width: 100%;
+  height: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.gb-rail-shell-scroll::before {
+  top: 0;
+  margin-bottom: -10px;
+  background: linear-gradient(to bottom, var(--ui-pane-tabbar-bg, var(--bg3)), transparent);
+}
+
+.gb-rail-shell-scroll::after {
+  bottom: 0;
+  margin-top: -10px;
+  background: linear-gradient(to top, var(--ui-pane-tabbar-bg, var(--bg3)), transparent);
+}
+
+.gb-rail-shell-scroll.can-scroll-up::before,
+.gb-rail-shell-scroll.can-scroll-down::after { opacity: 1; }
+
+.gb-rail-separator-after { margin-bottom: 7px; }
+.gb-rail-separator-after::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: -4px;
+  height: 1px;
+  background: var(--ui-border, var(--border));
+  pointer-events: none;
+}
+
+.gb-rail-shell-bottom {
+  padding-top: 5px;
+  border-top: 1px solid var(--ui-border, var(--border));
+}
+
+.gb-rail-shell-bottom:empty { display: none; }
+
+@media (pointer: coarse) {
+  .gb-dock-bar-fixed .gb-dock-icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

@@ -176,9 +176,6 @@ const MeldexExportImage = (() => {
         const c = document.getElementById('csv-table-container');
         return c?.querySelector('table') || null;
       },
-      'smart-db': () => (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard')
-        ? document.getElementById('smart-db-dashboard-area')
-        : document.getElementById('smart-db-table'),
       calendar: () => {
         const iframe = document.querySelector('#calendar-container iframe, iframe[src*="calendar"]');
         return document.querySelector('.gb-cal-root') || iframe?.contentDocument?.body || null;
@@ -206,7 +203,6 @@ const MeldexExportImage = (() => {
       },
       database: () => state?.currentDbPath?.split('/').pop() || 'シート',
       csv: () => (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV',
-      'smart-db': () => (state?.currentSmartDb?.name || 'スマートシート') + (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard' ? ' ダッシュボード' : ''),
       calendar: () => 'カレンダー',
       'entity-layout': () => (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
         ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'エントリレイアウト')
@@ -347,16 +343,6 @@ const MeldexExportImage = (() => {
           `,
           embedImages: false,
           ..._databasePreTransformOptions(),
-        };
-      case 'smart-db':
-        return {
-          cssFiles: ['gb-tools.css', 'gb-ui.css'],
-          extraCss: `
-            table { border-collapse: collapse; table-layout: auto; width: 100%; }
-            th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }
-            body { padding: 16px; }
-          `,
-          embedImages: false,
         };
       case 'csv':
         return {

@@ -274,7 +274,6 @@ function getCurrentFilePath() {
   if (state?.view === 'board') return state.currentBoardPath || null;
   if (state?.view === 'csv') return (typeof _csvPath !== 'undefined') ? _csvPath : null;
   if (state?.view === 'calendar') return state.currentDbPath || null;
-  if (state?.view === 'smart-db') return state.currentSmartDb?._filePath || state.currentDbPath || null;
   if (state?.view === 'folder' && typeof _folderPath !== 'undefined') return _folderPath || null;
   return null;
 }
@@ -417,7 +416,12 @@ function openScenarioInScriptNote(path, label = '', opts) {
           tabId = activeTab.id;
         } else {
           // アクティブタブを置換
-          if (typeof removeComponentInstance === 'function') removeComponentInstance(activeTab.id);
+          if (typeof removeComponentInstanceSafely === 'function') {
+            if (!await removeComponentInstanceSafely(activeTab.id)) return;
+          } else if (typeof removeComponentInstance === 'function'
+            && removeComponentInstance(activeTab.id) === false) {
+            return;
+          }
           activeTab.type = 'scriptnote';
           activeTab.label = tabLabel;
           activeTab.path = target.path;
@@ -857,7 +861,6 @@ function _toolMenuNavType(toolType) {
     board: 'board',
     calendar: 'calendar',
     csv: 'csv',
-    'smart-db': 'smart-db',
     folder: 'folder',
   }[toolType] || 'page';
 }

@@ -252,6 +252,26 @@
     return foldedPath === foldedRoot || foldedPath.startsWith(foldedRoot + '/');
   }
 
+  async function resolveDefaultRootRelativePath(rawPath, roots) {
+    const relativePath = safeRelative(rawPath);
+    if (!relativePath || typeof global.apiFetch !== 'function') return null;
+    let vault;
+    try {
+      vault = await global.apiFetch('/vault', { silentError: true });
+    } catch (_) {
+      // 既定ソースの補完解決だけを諦め、明示的な登録パスの処理は継続させる。
+      return null;
+    }
+    const vaultPath = normalizePath(vault?.path);
+    if (!vaultPath) return null;
+    const matches = roots.map((root) => ({
+      sourceId: sourceIdOf(root), path: rootLocalPath(root),
+    })).filter((entry) => entry.sourceId && entry.path
+      && entry.path.toLocaleLowerCase() === vaultPath.toLocaleLowerCase());
+    if (matches.length !== 1) return null;
+    return { sourceId: matches[0].sourceId, relativePath, dbPath: rawPath };
+  }
+
   async function resolveRegisteredPath(dbPath, options) {
     const rawPath = normalizePath(dbPath);
     if (!rawPath) return null;
@@ -268,6 +288,9 @@
       const registered = roots.some((root) => sourceIdOf(root) === sourceId);
       const relativePath = safeRelative(parsed.relativePath);
       return registered && relativePath ? { sourceId, relativePath, dbPath: rawPath } : null;
+    }
+    if (!/^[a-z]:\//i.test(rawPath) && !rawPath.startsWith('//') && !rawPath.startsWith('/')) {
+      return resolveDefaultRootRelativePath(rawPath, roots);
     }
     const matches = roots.map((root) => ({ root, sourceId: sourceIdOf(root), path: rootLocalPath(root) }))
       .filter((entry) => entry.sourceId && entry.path && isBelow(rawPath, entry.path))
@@ -308,9 +331,24 @@
     const previewOnly = options?.readOnly === true || options?.previewOnly === true;
     try {
       const response = await requestMigration(target, previewOnly);
-      return { ok: true, mode: previewOnly ? 'preview' : 'commit', response, target };
+      let archive = null;
+      const archiveRelativePath = response?.migration?.archiveRelativePath;
+      if (!previewOnly && archiveRelativePath) {
+        archive = await global.apiPost('/topic-views/migration/open', {
+          sourceId: target.sourceId,
+          relativePath: archiveRelativePath,
+          legacyPath: target.relativePath,
+        }, { silentError: true });
+        if (archive?.documentId && typeof global.apiFetch === 'function') {
+          archive = await global.apiFetch(
+            `/topic-views/${encodeURIComponent(archive.documentId)}/snapshot`,
+            { silentError: true },
+          );
+        }
+      }
+      return { ok: true, mode: previewOnly ? 'preview' : 'commit', response, archive, target };
     } catch (error) {
-      if (!previewOnly && statusOf(error) === 403) {
+      if (!previewOnly && [403, 409].includes(statusOf(error))) {
         try {
           const response = await requestMigration(target, true);
           return { ok: true, mode: 'preview', response, target };
@@ -324,6 +362,11 @@
 
   function recordsFrom(result) {
     const response = result?.response || {};
+    if (Array.isArray(result?.archive?.topics)) {
+      return result.archive.topics.map(item => item?.record && ({
+        ...item.record, topicRef: item.topicRef,
+      })).filter(Boolean);
+    }
     if (Array.isArray(response?.preview?.topicRecords)) return response.preview.topicRecords;
     const states = response?.migration?.topicStates;
     return states && typeof states === 'object'
@@ -332,7 +375,8 @@
   }
 
   function viewDocumentFrom(result) {
-    return result?.response?.preview?.viewDocument || result?.response?.migration?.viewDocument || null;
+    return result?.archive?.viewDocument || result?.response?.preview?.viewDocument
+      || result?.response?.migration?.viewDocument || null;
   }
 
   function publish(result, reason) {
@@ -350,6 +394,8 @@
       reason: reason || 'open',
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
+      checkpoint: result?.archive?.checkpoint || null,
+      archiveRelativePath: result?.response?.migration?.archiveRelativePath || '',
       legacyNodeTopicIds,
     };
     if (typeof global.dispatchEvent === 'function') {
@@ -489,12 +535,84 @@
     result.topicId = string(source.topicId, 'TopicRecord.topicId', true);
     result.title = string(source.title, 'TopicRecord.title', false);
     result.properties = clone(object(source.properties === undefined ? {} : source.properties, 'TopicRecord.properties'));
+    const typed = object(source.propertyValuesByFamilyId === undefined ? {}
+      : source.propertyValuesByFamilyId, 'TopicRecord.propertyValuesByFamilyId');
+    result.propertyValuesByFamilyId = {};
+    Object.keys(typed).forEach((familyId) => {
+      result.propertyValuesByFamilyId[familyId] = normalizePropertyValue(typed[familyId], familyId);
+    });
+    const requestedOrder = array(source.propertyValueOrder === undefined ? [] : source.propertyValueOrder,
+      'TopicRecord.propertyValueOrder');
+    result.propertyValueOrder = [...new Set(requestedOrder.map((item) => string(item,
+      'TopicRecord.propertyValueOrder[]', true)).filter((item) => item in result.propertyValuesByFamilyId))];
+    Object.keys(result.propertyValuesByFamilyId).forEach((familyId) => {
+      if (!result.propertyValueOrder.includes(familyId)) result.propertyValueOrder.push(familyId);
+    });
     result.note = clone(source.note);
     result.resources = clone(array(source.resources === undefined ? [] : source.resources, 'TopicRecord.resources'));
     result.revision = revision(source.revision === undefined ? 0 : source.revision, 'TopicRecord.revision', false);
     result.schemaVersion = revision(source.schemaVersion === undefined ? 1 : source.schemaVersion, 'TopicRecord.schemaVersion', false);
     for (const field of ['createdAt', 'updatedAt', 'updatedBy']) result[field] = clone(source[field]);
     return result;
+  }
+
+  function normalizeTopicPlacement(value) {
+    const source = object(value, 'TopicPlacement');
+    const result = clone(source);
+    result.placementId = string(source.placementId, 'TopicPlacement.placementId', true);
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    result.documentId = string(source.documentId, 'TopicPlacement.documentId', true);
+    result.viewId = string(source.viewId, 'TopicPlacement.viewId', true);
+    if (!['sheet', 'board'].includes(source.surface)) {
+      throw new ContractValidationError('TopicPlacement.surface must be sheet or board');
+    }
+    result.surface = source.surface;
+    result.order = clone(source.order);
+    result.position = clone(source.position);
+    result.revision = revision(source.revision === undefined ? 0 : source.revision,
+      'TopicPlacement.revision', false);
+    return result;
+  }
+
+  function normalizeTopicUsage(value) {
+    const source = object(value, 'TopicUsage');
+    const result = clone(source);
+    result.usageId = string(source.usageId, 'TopicUsage.usageId', true);
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    if (!['placement', 'note-link', 'chat-link'].includes(source.kind)) {
+      throw new ContractValidationError('TopicUsage.kind is invalid');
+    }
+    result.kind = source.kind;
+    result.targetId = string(source.targetId, 'TopicUsage.targetId', true);
+    result.label = string(source.label === undefined ? '' : source.label, 'TopicUsage.label', false);
+    result.location = clone(source.location);
+    return result;
+  }
+
+  function normalizePropertyValue(value, familyId) {
+    const source = object(value, 'TopicPropertyValue');
+    const result = clone(source);
+    result.propertyFamilyId = string(familyId || source.propertyFamilyId,
+      'TopicPropertyValue.propertyFamilyId', true);
+    result.displayName = typeof source.displayName === 'string' ? source.displayName : '';
+    result.columnType = canonicalColumnType(source.columnType || source.type || 'unknown');
+    result.typeConfig = clone(object(source.typeConfig === undefined ? {} : source.typeConfig,
+      'TopicPropertyValue.typeConfig'));
+    result.value = clone(source.value);
+    result.origins = clone(array(source.origins === undefined ? [] : source.origins,
+      'TopicPropertyValue.origins'));
+    return result;
+  }
+
+  function canonicalColumnType(value) {
+    const normalized = string(value, 'TopicPropertyValue.columnType', true)
+      .trim().toLowerCase().replaceAll('_', '-');
+    const aliases = {
+      string: 'text', 'long-text': 'text', textarea: 'text', integer: 'number',
+      float: 'number', decimal: 'number', url: 'multi-link', link: 'multi-link',
+      links: 'multi-link', formula: 'calculation', computed: 'calculation',
+    };
+    return aliases[normalized] || normalized;
   }
 
   function normalizeRelationSet(value) {
@@ -546,17 +664,27 @@
   function normalizeMembership(value) {
     const source = object(value, 'TopicViewDocument.membership');
     const result = clone(source);
-    if (!['manual', 'query', 'hybrid'].includes(source.mode)) {
+    if (source.mode !== 'manual') {
       throw new ContractValidationError('TopicViewDocument.membership.mode is invalid');
     }
     result.mode = source.mode;
     result.manualTopicRefs = array(source.manualTopicRefs === undefined ? [] : source.manualTopicRefs,
       'TopicViewDocument.membership.manualTopicRefs').map(normalizeTopicRef);
-    if (['query', 'hybrid'].includes(source.mode)) {
-      result.queryDefinition = clone(object(source.queryDefinition, 'TopicViewDocument.membership.queryDefinition'));
-    } else {
-      result.queryDefinition = clone(source.queryDefinition);
+    delete result.queryDefinition;
+    return result;
+  }
+
+  function normalizeSystemProvider(value) {
+    const source = object(value, 'TopicViewDocument.systemProvider');
+    const result = clone(source);
+    result.providerId = string(source.providerId, 'systemProvider.providerId', true);
+    result.scopeId = string(source.scopeId, 'systemProvider.scopeId', true);
+    const capabilities = array(source.capabilities === undefined ? ['read-only'] : source.capabilities,
+      'systemProvider.capabilities');
+    if (capabilities.length !== 1 || capabilities[0] !== 'read-only') {
+      throw new ContractValidationError('systemProvider capabilities must be read-only');
     }
+    result.capabilities = ['read-only'];
     return result;
   }
 
@@ -570,7 +698,11 @@
       throw new ContractValidationError('TopicViewDocument.defaultSurface must be sheet or board');
     }
     result.defaultSurface = source.defaultSurface;
-    result.membership = normalizeMembership(source.membership);
+    result.membership = normalizeMembership(source.membership || { mode: 'manual', manualTopicRefs: [] });
+    result.systemProvider = source.systemProvider == null ? null : normalizeSystemProvider(source.systemProvider);
+    if (result.systemProvider && result.membership.manualTopicRefs.length) {
+      throw new ContractValidationError('system topic views use their provider, not membership');
+    }
     for (const field of ['sheetViews', 'boardViews', 'topicLayouts']) {
       result[field] = clone(array(source[field] === undefined ? [] : source[field], `TopicViewDocument.${field}`));
     }
@@ -603,15 +735,21 @@
     clone,
     normalizeMutation,
     normalizeRelationSet,
+    normalizePropertyValue,
     normalizeTopicRecord,
+    normalizeTopicPlacement,
     normalizeTopicRef,
+    normalizeTopicUsage,
     normalizeTopicViewDocument,
+    normalizeSystemProvider,
     sourceRecordPath,
     topicRefKey,
     validateMutation: normalizeMutation,
     validateRelationSet: normalizeRelationSet,
     validateTopicRecord: normalizeTopicRecord,
+    validateTopicPlacement: normalizeTopicPlacement,
     validateTopicRef: normalizeTopicRef,
+    validateTopicUsage: normalizeTopicUsage,
     validateTopicViewDocument: normalizeTopicViewDocument,
   });
 });
@@ -1556,7 +1694,7 @@
 (function initMeldexTopicViewDocument(global) {
   'use strict';
 
-  const MEMBERSHIP_MODES = new Set(['manual', 'query', 'hybrid']);
+  const MEMBERSHIP_MODES = new Set(['manual']);
   const SURFACES = new Set(['sheet', 'board']);
 
   function clone(value) {
@@ -1614,11 +1752,20 @@
     const result = clone(source);
     result.mode = source.mode;
     result.manualTopicRefs = uniqueTopicRefs(source.manualTopicRefs);
-    if (source.mode !== 'manual') {
-      result.queryDefinition = clone(object(source.queryDefinition, 'membership.queryDefinition'));
-    } else if (!Object.prototype.hasOwnProperty.call(result, 'queryDefinition')) {
-      result.queryDefinition = null;
+    delete result.queryDefinition;
+    return result;
+  }
+
+  function normalizeSystemProvider(value) {
+    const source = object(value, 'TopicViewDocument.systemProvider');
+    const result = clone(source);
+    result.providerId = requiredString(source.providerId, 'systemProvider.providerId');
+    result.scopeId = requiredString(source.scopeId, 'systemProvider.scopeId');
+    const capabilities = source.capabilities === undefined ? ['read-only'] : source.capabilities;
+    if (!Array.isArray(capabilities) || capabilities.length !== 1 || capabilities[0] !== 'read-only') {
+      throw new TypeError('systemProvider capabilities must be read-only');
     }
+    result.capabilities = ['read-only'];
     return result;
   }
 
@@ -1669,6 +1816,39 @@
     return result;
   }
 
+  function viewId(surface, view, index) {
+    const value = surface === 'board'
+      ? (view?.boardViewId || view?.viewId)
+      : (view?.viewId || view?.sheetViewId || view?.id);
+    return String(value || `${surface}-view-${index + 1}`);
+  }
+
+  function normalizeViewOrder(source, sheetViews, boardViews) {
+    const available = new Map();
+    sheetViews.forEach((view, index) => available.set(`sheet:${viewId('sheet', view, index)}`, { surface: 'sheet', viewId: viewId('sheet', view, index) }));
+    boardViews.forEach((view, index) => available.set(`board:${viewId('board', view, index)}`, { surface: 'board', viewId: viewId('board', view, index) }));
+    const result = [];
+    const seen = new Set();
+    (Array.isArray(source) ? source : []).forEach((ref) => {
+      const surface = ref?.surface;
+      const id = String(ref?.viewId || '');
+      const key = `${surface}:${id}`;
+      if (!seen.has(key) && available.has(key)) { seen.add(key); result.push(clone(available.get(key))); }
+    });
+    available.forEach((ref, key) => { if (!seen.has(key)) result.push(clone(ref)); });
+    return result;
+  }
+
+  function normalizeActiveViewRef(source, result) {
+    const refs = result.viewOrder || [];
+    const requested = source?.activeViewRef;
+    const exact = refs.find(ref => ref.surface === requested?.surface && ref.viewId === String(requested?.viewId || ''));
+    if (exact) return clone(exact);
+    const legacySurface = source.defaultSurface === 'sheet' ? 'sheet' : 'board';
+    const legacyId = legacySurface === 'sheet' ? source.activeSheetViewId : source.activeBoardViewId;
+    return clone(refs.find(ref => ref.surface === legacySurface && (!legacyId || ref.viewId === String(legacyId))) || refs[0] || null);
+  }
+
   function normalizeDocument(value) {
     const source = object(value, 'TopicViewDocument');
     const result = clone(source);
@@ -1676,9 +1856,34 @@
     if (!SURFACES.has(source.defaultSurface)) throw new TypeError('defaultSurface is invalid');
     result.schemaVersion = source.schemaVersion ?? 1;
     result.defaultSurface = source.defaultSurface;
-    result.membership = normalizeMembership(source.membership);
+    result.membership = normalizeMembership(source.membership || { mode: 'manual', manualTopicRefs: [] });
+    result.systemProvider = source.systemProvider == null ? null : normalizeSystemProvider(source.systemProvider);
+    if (result.systemProvider && result.membership.manualTopicRefs.length) {
+      throw new TypeError('system topic views use their provider, not membership');
+    }
     result.sheetViews = clone(Array.isArray(source.sheetViews) ? source.sheetViews : []);
     result.boardViews = clone(Array.isArray(source.boardViews) ? source.boardViews : []);
+    result.sheetViews.forEach((view, index) => { if (!view.viewId) view.viewId = viewId('sheet', view, index); });
+    result.boardViews.forEach((view, index) => { if (!view.boardViewId) view.boardViewId = viewId('board', view, index); });
+    result.viewOrder = normalizeViewOrder(source.viewOrder, result.sheetViews, result.boardViews);
+    result.activeViewRef = normalizeActiveViewRef(source, result);
+    result.activeSheetViewId = result.activeViewRef?.surface === 'sheet'
+      ? result.activeViewRef.viewId : (source.activeSheetViewId || result.sheetViews[0]?.viewId || null);
+    result.activeBoardViewId = result.activeViewRef?.surface === 'board'
+      ? result.activeViewRef.viewId : (source.activeBoardViewId || result.boardViews[0]?.boardViewId || null);
+    result.groupStyles = (Array.isArray(source.groupStyles) ? source.groupStyles : []).map((style, index) => ({
+      ...clone(style || {}),
+      groupStyleId: String(style?.groupStyleId || style?.styleId || `group-style-${index + 1}`),
+      name: String(style?.name || `グループスタイル ${index + 1}`),
+      visualStyle: clone(style?.visualStyle || style?.style || {}),
+    }));
+    const activeGroupStyleId = String(source.activeGroupStyleId || '');
+    result.activeGroupStyleId = result.groupStyles.some(style => style.groupStyleId === activeGroupStyleId)
+      ? activeGroupStyleId : (result.groupStyles[0]?.groupStyleId || null);
+    result.placements = clone(Array.isArray(source.placements) ? source.placements : []);
+    if (global.MeldexTopicContract?.normalizeTopicPlacement) {
+      result.placements = result.placements.map(global.MeldexTopicContract.normalizeTopicPlacement);
+    }
     result.relationSets = (Array.isArray(source.relationSets) ? source.relationSets : [])
       .map(normalizeRelationSet);
     result.topicLayouts = clone(Array.isArray(source.topicLayouts) ? source.topicLayouts : []);
@@ -1688,13 +1893,10 @@
     return result;
   }
 
-  function resolveMembership(document, queryTopicRefs) {
+  function resolveMembership(document, providerTopicRefs) {
     const membership = normalizeDocument(document).membership;
-    const manual = membership.manualTopicRefs;
-    const queried = uniqueTopicRefs(queryTopicRefs);
-    if (membership.mode === 'manual') return manual;
-    if (membership.mode === 'query') return queried;
-    return uniqueTopicRefs([...manual, ...queried]);
+    if (!normalizeDocument(document).systemProvider) return membership.manualTopicRefs;
+    return uniqueTopicRefs(providerTopicRefs);
   }
 
   function relationSetById(document, relationSetId) {
@@ -1743,7 +1945,9 @@
     topicRefKey,
     uniqueTopicRefs,
     normalizeMembership,
+    normalizeSystemProvider,
     normalizeRelationSet,
+    normalizeViewOrder,
     normalizeDocument,
     resolveMembership,
     relationSetById,
@@ -1754,6 +1958,258 @@
 
 ;
 
+/* === gb-topic-property-family.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicPropertyFamily = api;
+}(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const DECISIONS = Object.freeze({
+    COMMONIZE: 'commonize-existing',
+    KEEP_SEPARATE: 'keep-separate',
+    CANCEL: 'cancel',
+  });
+  const TYPE_ALIASES = Object.freeze({
+    string: 'text', textarea: 'text', 'long-text': 'text',
+    integer: 'number', float: 'number', decimal: 'number',
+    select: 'select', 'multi-select': 'multi-select',
+    relation: 'relation', user: 'user', image: 'image',
+    link: 'multi-link', url: 'multi-link', links: 'multi-link', 'multi-link': 'multi-link',
+    formula: 'calculation', computed: 'calculation',
+  });
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function object(value, label) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    return value;
+  }
+
+  function requiredString(value, label) {
+    if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} is required`);
+    return value.trim();
+  }
+
+  function sha256Hex(text) {
+    const bytes = new TextEncoder().encode(text);
+    const length = Math.ceil((bytes.length + 9) / 64) * 64;
+    const padded = new Uint8Array(length);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    const bitLength = bytes.length * 8;
+    view.setUint32(length - 8, Math.floor(bitLength / 0x100000000), false);
+    view.setUint32(length - 4, bitLength >>> 0, false);
+    const constants = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    const hash = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const words = new Uint32Array(64);
+    const rotate = (value, bits) => (value >>> bits) | (value << (32 - bits));
+    for (let offset = 0; offset < length; offset += 64) {
+      for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4, false);
+      for (let index = 16; index < 64; index += 1) {
+        const s0 = rotate(words[index - 15], 7) ^ rotate(words[index - 15], 18) ^ (words[index - 15] >>> 3);
+        const s1 = rotate(words[index - 2], 17) ^ rotate(words[index - 2], 19) ^ (words[index - 2] >>> 10);
+        words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+      }
+      let [a, b, c, d, e, f, g, h] = hash;
+      for (let index = 0; index < 64; index += 1) {
+        const s1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+        const choice = (e & f) ^ (~e & g);
+        const first = (h + s1 + choice + constants[index] + words[index]) >>> 0;
+        const s0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+        const majority = (a & b) ^ (a & c) ^ (b & c);
+        const second = (s0 + majority) >>> 0;
+        [h, g, f, e, d, c, b, a] = [g, f, e, (d + first) >>> 0, c, b, a, (first + second) >>> 0];
+      }
+      [a, b, c, d, e, f, g, h].forEach((value, index) => { hash[index] = (hash[index] + value) >>> 0; });
+    }
+    return hash.map((value) => value.toString(16).padStart(8, '0')).join('');
+  }
+
+  function legacyPropertyFamilyId(documentId, propertyId) {
+    const document = requiredString(documentId, 'documentId');
+    const property = requiredString(propertyId, 'propertyId');
+    return `legacy-${sha256Hex(`${document}\0${property}`).slice(0, 24)}`;
+  }
+
+  function canonicalType(value) {
+    const type = requiredString(value, 'columnType').toLowerCase().replaceAll('_', '-');
+    return TYPE_ALIASES[type] || type;
+  }
+
+  function typeSettings(column) {
+    const source = object(column, 'column');
+    const canonical = canonicalType(source.columnType || source.type);
+    const config = source.typeConfig || source.config || {};
+    if (canonical === 'select' || canonical === 'multi-select') {
+      return { options: clone(config.options === undefined ? null : config.options) };
+    }
+    if (canonical === 'relation') return { relationSetId: config.relationSetId || null,
+      targetKinds: clone(config.targetKinds === undefined ? null : config.targetKinds) };
+    if (canonical === 'user') return { workspaceId: config.workspaceId || null,
+      multiple: config.multiple === undefined ? null : config.multiple };
+    if (canonical === 'image') return { assetScope: config.assetScope || null,
+      multiple: config.multiple === undefined ? null : config.multiple };
+    if (canonical === 'multi-link') return {
+      allowedSchemes: clone(config.allowedSchemes === undefined ? null : config.allowedSchemes),
+      multiple: config.multiple === undefined ? null : config.multiple,
+    };
+    if (canonical === 'calculation') return { expression: config.expression || null,
+      resultType: config.resultType || null };
+    return {};
+  }
+
+  function stableSettings(value) {
+    const keys = Object.keys(value).sort();
+    return JSON.stringify(keys.reduce((result, key) => {
+      result[key] = value[key];
+      return result;
+    }, {}));
+  }
+
+  function normalizeColumn(value) {
+    const source = object(value, 'column');
+    const result = clone(source);
+    result.columnId = requiredString(source.columnId || source.id, 'column.columnId');
+    result.name = requiredString(source.name, 'column.name');
+    result.normalizedName = result.name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    result.columnType = canonicalType(source.columnType || source.type);
+    result.type = result.columnType;
+    result.propertyFamilyId = source.propertyFamilyId == null
+      ? null : requiredString(source.propertyFamilyId, 'column.propertyFamilyId');
+    result.typeSettings = typeSettings(source);
+    const completeConfig = source.typeConfig === undefined ? (source.config || {}) : source.typeConfig;
+    result.typeConfig = clone(object(completeConfig, 'column.typeConfig'));
+    result.readOnly = result.columnType === 'calculation' || source.readOnly === true;
+    return result;
+  }
+
+  function normalizePropertyValue(value) {
+    const source = object(value, 'TopicPropertyValue');
+    const result = clone(source);
+    result.propertyFamilyId = requiredString(source.propertyFamilyId, 'propertyFamilyId');
+    result.columnType = canonicalType(source.columnType || source.type);
+    result.value = clone(source.value);
+    result.displayName = typeof source.displayName === 'string' ? source.displayName : '';
+    result.typeConfig = clone(object(source.typeConfig === undefined ? {} : source.typeConfig,
+      'TopicPropertyValue.typeConfig'));
+    result.origins = clone(Array.isArray(source.origins) ? source.origins : []);
+    return result;
+  }
+
+  function compatibleTypes(left, right) {
+    const first = normalizeColumn(left);
+    const second = normalizeColumn(right);
+    return first.columnType === second.columnType
+      && stableSettings(first.typeSettings) === stableSettings(second.typeSettings);
+  }
+
+  function findCandidates(editedColumn, existingColumns) {
+    const edited = normalizeColumn(editedColumn);
+    return (Array.isArray(existingColumns) ? existingColumns : [])
+      .map(normalizeColumn)
+      .filter((candidate) => candidate.columnId !== edited.columnId
+        && candidate.normalizedName === edited.normalizedName
+        && !(edited.propertyFamilyId && candidate.propertyFamilyId === edited.propertyFamilyId)
+        && compatibleTypes(edited, candidate));
+  }
+
+  function columnDecisionModel(editedColumn, existingColumns, context) {
+    const edited = normalizeColumn(editedColumn);
+    const candidates = findCandidates(edited, existingColumns);
+    return {
+      required: candidates.length > 0,
+      trigger: context?.trigger || 'column-confirm',
+      editedColumn: edited,
+      candidates,
+      choices: candidates.length ? [
+        { id: DECISIONS.COMMONIZE, label: '既存の列と共通化' },
+        { id: DECISIONS.KEEP_SEPARATE, label: '同名の別の列として保持' },
+        { id: DECISIONS.CANCEL, label: 'キャンセル' },
+      ] : [],
+    };
+  }
+
+  function applyColumnDecision(model, decision, candidateId, newFamilyId) {
+    if (!model?.required) return { status: 'unchanged', column: clone(model?.editedColumn) };
+    if (decision === DECISIONS.CANCEL) return { status: 'cancelled', column: clone(model.editedColumn) };
+    if (decision === DECISIONS.KEEP_SEPARATE) {
+      const column = clone(model.editedColumn);
+      column.propertyFamilyId = requiredString(newFamilyId || column.propertyFamilyId,
+        'new propertyFamilyId');
+      return { status: 'kept-separate', column };
+    }
+    if (decision !== DECISIONS.COMMONIZE) throw new TypeError('unknown column decision');
+    const candidate = model.candidates.find((item) => item.columnId === candidateId);
+    if (!candidate) throw new TypeError('selected candidate was not found');
+    const familyId = candidate.propertyFamilyId || requiredString(newFamilyId, 'shared propertyFamilyId');
+    const sourceFamilyId = model.editedColumn.propertyFamilyId;
+    return {
+      status: 'commonized',
+      candidate: { ...clone(candidate), propertyFamilyId: familyId },
+      column: { ...clone(model.editedColumn), propertyFamilyId: familyId },
+      binding: sourceFamilyId ? {
+        sourcePropertyFamilyId: sourceFamilyId,
+        targetPropertyFamilyId: familyId,
+        sourceColumn: clone(model.editedColumn),
+        targetColumn: clone(candidate),
+        confirmed: true,
+      } : null,
+    };
+  }
+
+  function valuesForColumns(propertyValues, columns) {
+    const byFamily = new Map((Array.isArray(propertyValues) ? propertyValues : [])
+      .map(normalizePropertyValue).map((value) => [value.propertyFamilyId, value]));
+    return (Array.isArray(columns) ? columns : []).map(normalizeColumn).map((column) => {
+      const familyId = column.propertyFamilyId && byFamily.has(column.propertyFamilyId)
+        ? column.propertyFamilyId
+        : column.sourcePropertyFamilyId && byFamily.has(column.sourcePropertyFamilyId)
+          ? column.sourcePropertyFamilyId : '';
+      return {
+        column,
+        propertyValue: familyId ? clone(byFamily.get(familyId) || null) : null,
+        value: familyId ? clone(byFamily.get(familyId).value) : null,
+      };
+    });
+  }
+
+  return Object.freeze({
+    DECISIONS,
+    canonicalType,
+    normalizeColumn,
+    normalizePropertyValue,
+    compatibleTypes,
+    findCandidates,
+    columnDecisionModel,
+    applyColumnDecision,
+    valuesForColumns,
+    legacyPropertyFamilyId,
+  });
+}));
+
+;
+
 /* === gb-topic-sheet-board-adapter.js === */
 ;
 /* Pure legacy Sheet/Board adapters for the unified topic data layer. */
@@ -1761,7 +2217,9 @@
   'use strict';
 
   const ViewContract = global.MeldexTopicViewDocument;
+  const PropertyFamily = global.MeldexTopicPropertyFamily;
   if (!ViewContract) throw new Error('MeldexTopicViewDocument must be loaded first');
+  if (!PropertyFamily) throw new Error('MeldexTopicPropertyFamily must be loaded first');
 
   function clone(value) {
     if (Array.isArray(value)) return value.map(clone);
@@ -1809,13 +2267,42 @@
     });
   }
 
-  function legacySheetTopicRecord(row, topicRef) {
+  function familyIdFor(documentId, columnId) {
+    return PropertyFamily.legacyPropertyFamilyId(documentId, columnId);
+  }
+
+  function legacyPropertyValues(properties, sourceId, columns, documentId) {
+    const definitions = Array.isArray(columns) ? columns : [];
+    const values = {};
+    const order = [];
+    Object.keys(properties).forEach((name) => {
+      const column = definitions.find((item) => (item.id || item.columnId || item.name) === name) || {};
+      const columnId = String(column.id || column.columnId || name);
+      const propertyFamilyId = column.propertyFamilyId || familyIdFor(documentId || sourceId, columnId);
+      values[propertyFamilyId] = {
+        propertyFamilyId,
+        displayName: column.name || name,
+        columnType: String(column.columnType || column.type || 'unknown'),
+        typeConfig: clone(column.typeConfig || column.config || {}),
+        value: clone(properties[name]),
+        origins: [{ sourceId, columnId, columnName: column.name || name }],
+        revision: 0,
+      };
+      order.push(propertyFamilyId);
+    });
+    return { values, order };
+  }
+
+  function legacySheetTopicRecord(row, topicRef, columns, documentId) {
     const frontmatter = row.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
     const properties = row.properties ?? row.values ?? frontmatter.properties ?? {};
+    const migrated = legacyPropertyValues(properties, topicRef.sourceId, columns, documentId);
     return {
       topicId: topicRef.topicId,
       title: String(row.title ?? row.name ?? frontmatter.title ?? frontmatter.name ?? ''),
       properties: clone(properties && typeof properties === 'object' ? properties : {}),
+      propertyValuesByFamilyId: clone(row.propertyValuesByFamilyId || migrated.values),
+      propertyValueOrder: clone(row.propertyValueOrder || migrated.order),
       note: clone(row.note ?? row.body ?? null),
       resources: clone(Array.isArray(row.resources) ? row.resources
         : (frontmatter.resources || frontmatter.entry_attachments || [])),
@@ -1834,12 +2321,12 @@
     return state;
   }
 
-  function adaptLegacySheetRowToTopic(row, sourceId) {
+  function adaptLegacySheetRowToTopic(row, sourceId, options) {
     const source = object(row, 'legacy Sheet row');
     const topicRef = topicRefFromLegacySheetRow(source, sourceId);
     return {
       topicRef,
-      topicRecord: legacySheetTopicRecord(source, topicRef),
+      topicRecord: legacySheetTopicRecord(source, topicRef, options?.columns, options?.documentId),
       sheetRowState: legacySheetViewState(source),
       legacySheetRow: clone(source),
     };
@@ -1855,6 +2342,8 @@
       topicId: ref.topicId,
       title: topic.title,
       properties: clone(topic.properties || {}),
+      propertyValuesByFamilyId: clone(topic.propertyValuesByFamilyId || {}),
+      propertyValueOrder: clone(topic.propertyValueOrder || []),
       note: clone(topic.note ?? null),
       resources: clone(topic.resources || []),
       revision: topic.revision ?? 0,
@@ -1894,17 +2383,20 @@
     return resources;
   }
 
-  function legacyBoardTopicRecord(node, topicRef) {
+  function legacyBoardTopicRecord(node, topicRef, columns, documentId) {
     const text = String(node.text || '');
     const separator = text.indexOf('\n');
     const properties = clone(node.properties || {});
     if (Object.prototype.hasOwnProperty.call(node, 'status') && !('status' in properties)) {
       properties.status = clone(node.status);
     }
+    const migrated = legacyPropertyValues(properties, topicRef.sourceId, columns, documentId);
     return {
       topicId: topicRef.topicId,
       title: String(node.title ?? (separator < 0 ? text : text.slice(0, separator))),
       properties,
+      propertyValuesByFamilyId: clone(node.propertyValuesByFamilyId || migrated.values),
+      propertyValueOrder: clone(node.propertyValueOrder || migrated.order),
       note: clone(node.note ?? (separator < 0 ? '' : text.slice(separator + 1))),
       resources: legacyBoardResources(node),
       revision: node.revision ?? 0,
@@ -1916,19 +2408,20 @@
 
   function legacyBoardViewState(node) {
     const state = clone(node);
-    ['topicRef', 'topicId', 'title', 'text', 'properties', 'status', 'note', 'resources', 'revision',
+    ['topicRef', 'topicId', 'title', 'text', 'properties', 'propertyValuesByFamilyId',
+      'propertyValueOrder', 'status', 'note', 'resources', 'revision',
       'createdAt', 'updatedAt', 'updatedBy', 'parent', 'link', 'linkType', 'img']
       .forEach((key) => { delete state[key]; });
     state.legacyNodeId = String(node.id);
     return state;
   }
 
-  function adaptLegacyBoardNodeToTopic(node, sourceId, topicIdByLegacyNodeId) {
+  function adaptLegacyBoardNodeToTopic(node, sourceId, topicIdByLegacyNodeId, options) {
     const source = object(node, 'legacy Board node');
     const topicRef = topicRefFromLegacyBoardNode(source, sourceId, topicIdByLegacyNodeId);
     return {
       topicRef,
-      topicRecord: legacyBoardTopicRecord(source, topicRef),
+      topicRecord: legacyBoardTopicRecord(source, topicRef, options?.columns, options?.documentId),
       boardNodeState: legacyBoardViewState(source),
       parentLegacyNodeId: source.parent ? String(source.parent) : null,
       legacyBoardNode: clone(source),
@@ -1942,48 +2435,6 @@
     output.id = state.legacyNodeId || legacyBoardNode?.id || ref.topicId;
     delete output.legacyNodeId;
     return output;
-  }
-
-  function smartSheetViews(rawViews) {
-    if (Array.isArray(rawViews)) return clone(rawViews);
-    if (!rawViews || typeof rawViews !== 'object') return [];
-    return Object.keys(rawViews).filter((key) => rawViews[key] && typeof rawViews[key] === 'object')
-      .map((key) => ({ viewId: key, type: key, ...clone(rawViews[key]) }));
-  }
-
-  function convertLegacySmartSheetToTopicView(definition, options) {
-    const source = object(definition, 'legacy smart Sheet');
-    const settings = options || {};
-    const manualTopicRefs = ViewContract.uniqueTopicRefs(settings.manualTopicRefs || []);
-    const mode = settings.mode || (manualTopicRefs.length ? 'hybrid' : 'query');
-    const queryDefinition = clone(source.queryDefinition || {});
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sourceType')) {
-      queryDefinition.sourceType = source.sourceType || 'db-entities';
-    }
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sources')) {
-      queryDefinition.sources = clone(Array.isArray(source.sources) ? source.sources : []);
-    }
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'filters')) {
-      queryDefinition.filters = clone(Array.isArray(source.filters) ? source.filters : []);
-    }
-    if (Object.prototype.hasOwnProperty.call(source, 'query')
-        && !Object.prototype.hasOwnProperty.call(queryDefinition, 'query')) {
-      queryDefinition.query = clone(source.query);
-    }
-    const document = {
-      documentId: String(settings.documentId || source.documentId || source.id || ''),
-      schemaVersion: settings.schemaVersion || 1,
-      defaultSurface: 'sheet',
-      membership: { mode, manualTopicRefs, queryDefinition },
-      sheetViews: smartSheetViews(source.views),
-      boardViews: clone(settings.boardViews || []),
-      relationSets: clone(settings.relationSets || []),
-      topicLayouts: clone(source.topicLayouts || []),
-      lastCompleteSnapshot: clone(settings.lastCompleteSnapshot ?? null),
-      activeView: source.activeView || 'table',
-      legacySmartSheet: clone(source),
-    };
-    return ViewContract.normalizeDocument(document);
   }
 
   function normalizeLinkReference(value) {
@@ -2073,7 +2524,6 @@
     topicRefFromLegacyBoardNode,
     adaptLegacyBoardNodeToTopic,
     boardNodeForTopic,
-    convertLegacySmartSheetToTopicView,
     linkReferences,
     addLinkReference,
     reorderLinkReference,
@@ -2081,6 +2531,3446 @@
     resourceDeletionPlan,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-topic-cloud-transaction-gc.js === */
+;
+(function initMeldexTopicCloudTransactionGc(global) {
+  'use strict';
+
+  const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+  const MAX_COMMITTED = 2048;
+
+  function emptyIndex() {
+    return { schemaVersion: 1, entries: {}, updatedAt: null };
+  }
+
+  function create(options) {
+    const indexPath = options.indexPath;
+
+    async function record(storage, token, operationId, status, now) {
+      return options.casJson(storage, indexPath, emptyIndex(), (current) => {
+        const entries = { ...(current.entries || {}) };
+        entries[token] = { ...(entries[token] || {}), token, operationId, status,
+          updatedAt: now, ...(status === 'committed' ? { committedAt: now } : {}) };
+        return { schemaVersion: 1, entries, updatedAt: now };
+      });
+    }
+
+    async function deleteOptional(storage, path) {
+      if (!await storage.statPath(path)) return;
+      await storage.deletePath(path);
+    }
+
+    async function collect(storage, now) {
+      const index = await options.optionalJson(storage, indexPath, emptyIndex());
+      const committed = Object.values(index.entries || {}).filter(item => item?.status === 'committed')
+        .sort((left, right) => Number(right.committedAt || 0) - Number(left.committedAt || 0));
+      const expired = committed.filter((item, position) => position >= MAX_COMMITTED
+        || now - Number(item.committedAt || 0) > RETENTION_MS);
+      const removed = [];
+      for (const item of expired) {
+        try {
+          await deleteOptional(storage, options.preparedPath(item.token));
+          await deleteOptional(storage, options.receiptPath(item.operationId));
+          removed.push(item.token);
+        } catch (reason) {
+          global.console?.warn?.('トピック操作履歴のGCを再試行します', reason);
+        }
+      }
+      if (!removed.length) return { removed: 0, retained: committed.length };
+      await options.casJson(storage, indexPath, emptyIndex(), (current) => {
+        const entries = { ...(current.entries || {}) };
+        removed.forEach((token) => {
+          if (entries[token]?.status === 'committed') delete entries[token];
+        });
+        return { ...current, entries, updatedAt: now };
+      });
+      return { removed: removed.length, retained: committed.length - removed.length };
+    }
+
+    return Object.freeze({ record, collect });
+  }
+
+  global.MeldexTopicCloudTransactionGC = Object.freeze({
+    create, emptyIndex, RETENTION_MS, MAX_COMMITTED,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-cloud-duplicate-trash.js === */
+;
+(function initMeldexTopicCloudDuplicateTrash(global) {
+  'use strict';
+
+  function create(options) {
+    const trashPath = ref => `${options.root}/trash/${options.encode(ref.sourceId)}/${options.encode(ref.topicId)}.json`;
+
+    async function remove(storage, ref, body) {
+      const operationId = String(body?.undoDuplicateOperationId || '');
+      const mutationId = String(body?.mutationId || '');
+      if (!operationId || !mutationId) {
+        throw options.error('複製Undoの操作IDがありません', 400, 'invalid_request');
+      }
+      const path = trashPath(ref);
+      const saved = await options.optionalJson(storage, path, null);
+      let current = await options.optionalJson(storage, options.topicPath(ref), null);
+      if (!current?.record && saved?.record && saved.createdByMutationId === operationId
+          && saved.trashMutationId === mutationId) {
+        return { ok: true, topicRef: ref, deleted: true, idempotent: true };
+      }
+      if (!current?.record || current.createdByMutationId !== operationId) {
+        throw options.error('複製操作の正本を確認できないためUndoできません', 409, 'conflict');
+      }
+      const usages = await options.topicUsages(storage, ref);
+      if (usages.usages.some(item => item.kind === 'placement')) {
+        throw options.error('複製トピックがまだ登録中のためUndoできません', 409, 'conflict');
+      }
+      await options.casJson(storage, path, {}, previous => {
+        if (previous.record) {
+          if (previous.createdByMutationId !== operationId || previous.trashMutationId !== mutationId) {
+            throw options.error('別の削除操作と競合しています', 409, 'conflict');
+          }
+          return previous;
+        }
+        return { ...current, trashMutationId: mutationId };
+      });
+      await storage.deletePath(options.topicPath(ref));
+      return { ok: true, topicRef: ref, deleted: true, idempotent: false };
+    }
+
+    async function restore(storage, ref, body) {
+      const saved = await options.optionalJson(storage, trashPath(ref), null);
+      if (!saved?.record) {
+        const existing = await options.optionalJson(storage, options.topicPath(ref), null);
+        if (existing?.record) return { ok: true, topicRef: ref, record: existing.record, idempotent: true };
+        throw options.error('復元する複製トピックが見つかりません', 404, 'missing');
+      }
+      const mutationId = String(body?.mutationId || '');
+      if (!mutationId) throw options.error('mutationId は必須です', 400, 'invalid_request');
+      await options.casJson(storage, options.topicPath(ref), {}, current => {
+        if (current.record) return current;
+        return { ...saved, lastMutationId: mutationId };
+      });
+      await storage.deletePath(trashPath(ref));
+      return { ok: true, topicRef: ref, record: saved.record };
+    }
+
+    async function discard(storage, ref, operationId) {
+      const current = await options.optionalJson(storage, options.topicPath(ref), null);
+      if (!current?.record) return { ok: true, topicRef: ref, discarded: true, idempotent: true };
+      if (!operationId || current.createdByMutationId !== operationId) {
+        throw options.error('未完了の複製操作を確認できません', 409, 'conflict');
+      }
+      const usages = await options.topicUsages(storage, ref);
+      if (usages.usages.some(item => item.kind === 'placement')) {
+        throw options.error('未完了の複製トピックがまだ登録中です', 409, 'conflict');
+      }
+      await storage.deletePath(options.topicPath(ref));
+      const saved = await options.optionalJson(storage, trashPath(ref), null);
+      if (saved?.createdByMutationId === operationId) await storage.deletePath(trashPath(ref));
+      return { ok: true, topicRef: ref, discarded: true, idempotent: false };
+    }
+
+    return Object.freeze({ remove, restore, discard });
+  }
+
+  global.MeldexTopicCloudDuplicateTrash = Object.freeze({ create });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-cloud-placement-document.js === */
+;
+(function initMeldexTopicCloudPlacementDocument(global) {
+  'use strict';
+
+  function create(options) {
+    const placements = document => Array.isArray(document?.placements) ? document.placements : [];
+    const includesPlacement = (document, placementId) => placements(document)
+      .some(item => String(item.placementId) === String(placementId));
+    const placementFor = (request, ref) => ({
+      placementId: options.stableId('placement', request.operationId, ref.sourceId, ref.topicId,
+        request.target.documentId, request.target.viewId),
+      topicRef: ref, documentId: request.target.documentId, viewId: request.target.viewId,
+      surface: request.target.surface, position: options.clone(request.target.position ?? null),
+      order: options.clone(request.target.order ?? null),
+      columnBindings: options.clone(request.columnBindings || []), revision: 0,
+      mutationId: request.operationId,
+    });
+    const withPlacement = (document, placement) => {
+      const next = options.normalizeDocument(document);
+      if (!includesPlacement(next, placement.placementId)) next.placements = [...placements(next), placement];
+      const refs = [...(next.membership?.manualTopicRefs || [])];
+      if (!refs.some(ref => options.topicKey(ref) === options.topicKey(placement.topicRef))) {
+        refs.push(options.clone(placement.topicRef));
+      }
+      next.membership = { mode: 'manual', manualTopicRefs: refs };
+      return next;
+    };
+    const withoutPlacement = (document, sourcePlacement) => {
+      const next = options.normalizeDocument(document);
+      next.placements = placements(next)
+        .filter(item => String(item.placementId) !== String(sourcePlacement.placementId));
+      const stillPlaced = next.placements.some(item =>
+        options.topicKey(item.topicRef) === options.topicKey(sourcePlacement.topicRef));
+      if (!stillPlaced) next.membership.manualTopicRefs = next.membership.manualTopicRefs
+        .filter(ref => options.topicKey(ref) !== options.topicKey(sourcePlacement.topicRef));
+      return next;
+    };
+    const viewIdOf = view => String(view?.viewId || view?.sheetViewId || view?.boardViewId || '');
+    const columnIdOf = column => String(column?.propertyFamilyId || column?.id || column?.columnId
+      || `${column?.name || ''}\0${column?.columnType || column?.type || ''}`);
+    const reconcileSurfaceViews = (currentViews, legacyViews) => {
+      const output = options.clone(Array.isArray(currentViews) ? currentViews : []);
+      for (const legacyView of (legacyViews || [])) {
+        const index = output.findIndex(view => viewIdOf(view) === viewIdOf(legacyView));
+        if (index < 0) { output.push(options.clone(legacyView)); continue; }
+        const existing = output[index];
+        const columns = options.clone(Array.isArray(existing.columns) ? existing.columns : []);
+        const ids = new Set(columns.map(columnIdOf));
+        for (const column of (legacyView.columns || [])) {
+          if (!ids.has(columnIdOf(column))) {
+            columns.push(options.clone(column));
+            ids.add(columnIdOf(column));
+          }
+        }
+        output[index] = { ...existing, columns };
+      }
+      return output;
+    };
+    const reconcileViewDocument = (current, legacy, newTopicKeys) => {
+      const output = options.normalizeDocument(current);
+      const placementIds = new Set(placements(output).map(item => String(item.placementId)));
+      const additions = placements(legacy).filter(item => newTopicKeys.has(options.topicKey(item.topicRef))
+        && !placementIds.has(String(item.placementId)));
+      output.placements = [...placements(output), ...options.clone(additions)];
+      const memberKeys = new Set(output.membership.manualTopicRefs.map(options.topicKey));
+      for (const placement of additions) {
+        if (!memberKeys.has(options.topicKey(placement.topicRef))) {
+          output.membership.manualTopicRefs.push(options.clone(placement.topicRef));
+          memberKeys.add(options.topicKey(placement.topicRef));
+        }
+      }
+      output.sheetViews = reconcileSurfaceViews(output.sheetViews, legacy.sheetViews);
+      output.boardViews = reconcileSurfaceViews(output.boardViews, legacy.boardViews);
+      return options.normalizeDocument(output);
+    };
+    return Object.freeze({
+      placements, includesPlacement, placementFor, withPlacement, withoutPlacement,
+      reconcileViewDocument,
+    });
+  }
+
+  global.MeldexTopicCloudPlacementDocument = Object.freeze({ create });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-cloud-data-access.js === */
+;
+/* Dropbox-backed Cloud/PWA routes for unified topic records and placements. */
+(function initMeldexTopicCloudDataAccess(global) {
+  'use strict';
+
+  const ROOT = '_meldex/topics/v1';
+  const REGISTRY_PATH = `${ROOT}/registry.json`;
+  const TRANSACTION_INDEX_PATH = `${ROOT}/transaction-index.json`;
+  const PREPARE_TTL_MS = 5 * 60 * 1000;
+  const NOT_HANDLED_FALLBACK = Symbol('topic-cloud-not-handled');
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function encode(value) {
+    return encodeURIComponent(String(value || '').trim());
+  }
+
+  function nowIso(now) {
+    return new Date(now()).toISOString();
+  }
+
+  function error(message, status, code, detail) {
+    const value = new Error(message);
+    value.status = status;
+    value.code = code;
+    value.meldexCode = code;
+    if (detail) value.detail = detail;
+    return value;
+  }
+
+  function required(value, label) {
+    const text = String(value || '').trim();
+    if (!text) throw error(`${label} は必須です`, 400, 'invalid_request');
+    return text;
+  }
+
+  function normalizePath(value) {
+    const parts = String(value || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    if (!parts.length || parts.some(part => part === '.' || part === '..' || part.includes('\0'))) {
+      throw error('安全でないパスです', 400, 'invalid_path');
+    }
+    return parts.join('/');
+  }
+
+  function topicPath(ref) {
+    return `${ROOT}/sources/${encode(ref.sourceId)}/records/${encode(ref.topicId)}.json`;
+  }
+
+  function viewPath(documentId) {
+    return `${ROOT}/views/${encode(documentId)}.json`;
+  }
+
+  function archiveRelativePath(documentId, surface) {
+    return `${ROOT}/views/${encode(documentId)}.${surface === 'board' ? 'mel-board' : 'mel-sheet'}`;
+  }
+
+  function preparedPath(token) {
+    return `${ROOT}/prepared/${encode(token)}.json`;
+  }
+
+  function receiptPath(operationId) {
+    return `${ROOT}/receipts/${encode(operationId)}.json`;
+  }
+
+  function randomToken(randomValues) {
+    const bytes = new Uint8Array(24);
+    randomValues(bytes);
+    return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  function stableId(kind, ...parts) {
+    const family = global.MeldexTopicPropertyFamily;
+    const joined = parts.map(value => String(value || '')).join('\0');
+    if (typeof family?.legacyPropertyFamilyId === 'function') {
+      return `${kind}-${family.legacyPropertyFamilyId(kind, joined).replace(/^legacy-/, '')}`;
+    }
+    let hash = 2166136261;
+    for (let index = 0; index < joined.length; index += 1) {
+      hash ^= joined.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${kind}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+
+  function topicKey(ref) {
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function checkpointValue(value) {
+    return String(value?.checkpointId || value?.id || value?.revision || value || '');
+  }
+
+  function sourceQualifiedPath(sourceId, relativePath) {
+    const relative = String(relativePath || '').replace(/^\/+/, '');
+    return global.MeldexSourceFolderRegistry?.sourcePath?.(sourceId, relative)
+      || `source://${encode(sourceId)}/${relative}`;
+  }
+
+  function isReadOnly() {
+    return global.document?.body?.dataset?.cloudReadonly === '1'
+      || global.MeldexCloudRuntime?.getWorkspaceState?.()?.access === 'viewer';
+  }
+
+  function safeUsageTarget(path, label, linkType) {
+    const href = String(path || '').trim();
+    if (!href || /[\u0000-\u001f\u007f]/.test(href)) return null;
+    const scheme = href.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase() || '';
+    if (scheme && !['http', 'https', 'mailto', 'source'].includes(scheme)) return null;
+    const router = global.GBLinkRouter;
+    if (typeof router?.resolve !== 'function' || typeof global.openLink !== 'function') return null;
+    const resolved = router.resolve(href, { label, linkType });
+    return resolved?.recognized !== false && resolved?.type !== 'unsupported' ? resolved : null;
+  }
+
+  function normalizeRef(value) {
+    return global.MeldexTopicContract?.normalizeTopicRef?.(value) || {
+      sourceId: required(value?.sourceId, 'sourceId'), topicId: required(value?.topicId, 'topicId'),
+    };
+  }
+
+  function normalizeRecord(value) {
+    return global.MeldexTopicContract?.normalizeTopicRecord?.(value) || clone(value);
+  }
+
+  function normalizeDocument(value) {
+    return global.MeldexTopicViewDocument?.normalizeDocument?.(value)
+      || global.MeldexTopicContract?.normalizeTopicViewDocument?.(value) || clone(value);
+  }
+
+  function sameValue(left, right) {
+    if (left === right) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return Array.isArray(left) && Array.isArray(right)
+        && left.length === right.length
+        && left.every((value, index) => sameValue(value, right[index]));
+    }
+    if (plainObject(left) || plainObject(right)) {
+      if (!plainObject(left) || !plainObject(right)) return false;
+      const leftKeys = Object.keys(left).sort();
+      const rightKeys = Object.keys(right).sort();
+      return leftKeys.length === rightKeys.length
+        && leftKeys.every((key, index) => key === rightKeys[index]
+          && sameValue(left[key], right[key]));
+    }
+    return false;
+  }
+
+  function plainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function mergeItemId(path, value) {
+    if (!plainObject(value)) return '';
+    if (value.sourceId && value.topicId) return `topic:${topicKey(value)}`;
+    if (value.placementId) return `placement:${value.placementId}`;
+    if (value.topicRef && path.includes('topicLayouts')) {
+      return `layout:${value.boardViewId || value.viewId || ''}:${topicKey(value.topicRef)}`;
+    }
+    if (value.relationSetId) return `relation:${value.relationSetId}`;
+    if (value.groupId) return `group:${value.groupId}`;
+    if (value.layoutId) return `layout:${value.layoutId}`;
+    if (value.boardViewId || value.sheetViewId || value.viewId) {
+      return `view:${value.boardViewId || value.sheetViewId || value.viewId}`;
+    }
+    if (value.propertyFamilyId || value.columnId || value.id || value.name) {
+      if (path.includes('.columns')) {
+        return `column:${value.propertyFamilyId || value.columnId || value.id || value.name}`;
+      }
+    }
+    if (value.id) return `id:${value.id}`;
+    return '';
+  }
+
+  function mergeStableArray(base, current, incoming, path) {
+    const values = [...base, ...current, ...incoming];
+    const ids = values.map(value => mergeItemId(path, value));
+    if (values.length && ids.some(id => !id)) return null;
+    const maps = [base, current, incoming].map(list => new Map(list.map(item => [mergeItemId(path, item), item])));
+    if (maps.some(map => map.size !== (map === maps[0] ? base.length : map === maps[1] ? current.length : incoming.length))) {
+      return null;
+    }
+    const [baseMap, currentMap, incomingMap] = maps;
+    const allIds = [...new Set([...baseMap.keys(), ...currentMap.keys(), ...incomingMap.keys()])];
+    const merged = new Map();
+    for (const id of allIds) {
+      const hasBase = baseMap.has(id); const hasCurrent = currentMap.has(id); const hasIncoming = incomingMap.has(id);
+      if (!hasBase) {
+        if (hasCurrent && hasIncoming) {
+          merged.set(id, mergeThreeWayValue(undefined, currentMap.get(id), incomingMap.get(id), `${path}.${id}`));
+        } else if (hasCurrent) merged.set(id, clone(currentMap.get(id)));
+        else if (hasIncoming) merged.set(id, clone(incomingMap.get(id)));
+        continue;
+      }
+      if (!hasCurrent && !hasIncoming) continue;
+      if (!hasCurrent) {
+        // 現在側の削除は、旧データ側で並び順などが変わっていても優先する。
+        // 再移行で利用者が外した配置や列を復活させない。
+        continue;
+      }
+      if (!hasIncoming) {
+        if (sameValue(currentMap.get(id), baseMap.get(id))) continue;
+        // 旧データ側で消えた項目を利用者が編集済みなら、現在値を保持する。
+        merged.set(id, clone(currentMap.get(id)));
+        continue;
+      }
+      merged.set(id, mergeThreeWayValue(
+        baseMap.get(id), currentMap.get(id), incomingMap.get(id), `${path}.${id}`,
+      ));
+    }
+    const baseIds = base.map(item => mergeItemId(path, item));
+    const currentBaseOrder = current.map(item => mergeItemId(path, item)).filter(id => baseMap.has(id));
+    const incomingBaseOrder = incoming.map(item => mergeItemId(path, item)).filter(id => baseMap.has(id));
+    const survivingBaseOrder = baseIds.filter(id => merged.has(id));
+    const currentOrder = currentBaseOrder.filter(id => merged.has(id));
+    const incomingOrder = incomingBaseOrder.filter(id => merged.has(id));
+    const currentReordered = !sameValue(currentOrder, survivingBaseOrder);
+    const incomingReordered = !sameValue(incomingOrder, survivingBaseOrder);
+    if (currentReordered && incomingReordered && !sameValue(currentOrder, incomingOrder)) {
+      throw error('旧データと現在の並び順が競合しました', 409, 'conflict', { path: `${path}.$order` });
+    }
+    const preferred = currentReordered ? current : incomingReordered ? incoming : current;
+    const orderedIds = preferred.map(item => mergeItemId(path, item)).filter(id => merged.has(id));
+    for (const list of [current, incoming, base]) {
+      for (const item of list) {
+        const id = mergeItemId(path, item);
+        if (merged.has(id) && !orderedIds.includes(id)) orderedIds.push(id);
+      }
+    }
+    return orderedIds.map(id => clone(merged.get(id)));
+  }
+
+  function mergeThreeWayValue(base, current, incoming, path) {
+    if (sameValue(current, incoming)) return clone(current);
+    if (sameValue(current, base)) return clone(incoming);
+    if (sameValue(incoming, base)) return clone(current);
+    if (Array.isArray(base) && Array.isArray(current) && Array.isArray(incoming)) {
+      const merged = mergeStableArray(base, current, incoming, path);
+      if (merged) return merged;
+    }
+    if (plainObject(base) && plainObject(current) && plainObject(incoming)) {
+      const output = {};
+      const keys = new Set([...Object.keys(base), ...Object.keys(current), ...Object.keys(incoming)]);
+      for (const key of keys) {
+        const hasBase = Object.prototype.hasOwnProperty.call(base, key);
+        const hasCurrent = Object.prototype.hasOwnProperty.call(current, key);
+        const hasIncoming = Object.prototype.hasOwnProperty.call(incoming, key);
+        const merged = mergeThreeWayValue(
+          hasBase ? base[key] : undefined,
+          hasCurrent ? current[key] : undefined,
+          hasIncoming ? incoming[key] : undefined,
+          `${path}.${key}`,
+        );
+        if (merged !== undefined) output[key] = merged;
+      }
+      return output;
+    }
+    throw error('旧データと現在の編集が同じ項目で競合しました', 409, 'conflict', { path });
+  }
+
+  function emptyRegistry() {
+    return { schemaVersion: 1, revision: 0, documents: {}, updatedAt: null };
+  }
+
+  async function optionalJson(provider, path, fallback) {
+    try {
+      const stat = await provider.statPath(path);
+      if (!stat) return clone(fallback);
+      if (stat.kind !== 'file') throw error(`保存データがファイルではありません: ${path}`, 409, 'conflict');
+      const parsed = JSON.parse(await provider.readText(path));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : clone(fallback);
+    } catch (reason) {
+      throw storageError(reason);
+    }
+  }
+
+  function storageError(reason) {
+    if (reason?.status || reason?.code) return reason;
+    if (global.navigator?.onLine === false || reason?.name === 'NetworkError'
+        || /network|fetch|offline|接続/i.test(String(reason?.message || ''))) {
+      reason.code = 'offline'; reason.offline = true; reason.status = 503;
+    }
+    return reason;
+  }
+
+  async function casJson(provider, path, fallback, updater) {
+    if (typeof provider.writeJsonMerged !== 'function') {
+      throw error('Dropboxの競合検出保存を利用できません', 503, 'offline');
+    }
+    try {
+      const checker = global.MeldexFileLockStore?.requireUnlocked;
+      if (typeof checker === 'function') await checker(provider, path, { action: 'topic-write' });
+      let output;
+      await provider.writeJsonMerged(path, async (current, meta) => {
+        const base = current && typeof current === 'object' && !Array.isArray(current) ? current : clone(fallback);
+        output = await updater(clone(base), meta);
+        return clone(output);
+      }, { fallbackValue: clone(fallback), retries: 4 });
+      return clone(output);
+    } catch (reason) {
+      throw storageError(reason);
+    }
+  }
+
+  const transactionGc = global.MeldexTopicCloudTransactionGC?.create?.({
+    indexPath: TRANSACTION_INDEX_PATH, preparedPath, receiptPath, optionalJson, casJson,
+  });
+  const recordTransaction = (...args) => transactionGc?.record(...args);
+  const garbageCollectTransactions = (...args) => transactionGc?.collect(...args);
+
+  function createDependencies(overrides) {
+    const internals = overrides?.internals || global.__MeldexPwaDataAccessInternals || {};
+    return {
+      NOT_HANDLED: internals.NOT_HANDLED || NOT_HANDLED_FALLBACK,
+      requireProvider: overrides?.requireProvider || internals._requirePwaProvider,
+      requestJson: overrides?.requestJson || global.MeldexDataAccess?.requestJson,
+      now: overrides?.now || Date.now,
+      randomValues: overrides?.randomValues || (array => global.crypto.getRandomValues(array)),
+    };
+  }
+
+  function createHandler(overrides) {
+    const deps = createDependencies(overrides);
+
+    async function provider(mode) {
+      if (typeof deps.requireProvider !== 'function') throw error('Dropboxへ接続してください', 503, 'offline');
+      if (global.navigator?.onLine === false) throw error('オフラインです', 503, 'offline');
+      if (mode === 'readwrite' && isReadOnly()) {
+        throw error('このCloudワークスペースは読み取り専用です', 403, 'forbidden');
+      }
+      return deps.requireProvider(mode);
+    }
+
+    async function requireLogicalViewUnlocked(storage, envelope, action) {
+      const checker = global.MeldexFileLockStore?.requireUnlocked;
+      if (typeof checker !== 'function') return;
+      const logicalPath = envelope?.legacyPath || envelope?.relativePath;
+      if (!logicalPath) return;
+      await checker(storage, normalizePath(logicalPath), {
+        action: action || 'topic-placement',
+      });
+    }
+
+    async function readRegistry(storage) {
+      return optionalJson(storage, REGISTRY_PATH, emptyRegistry());
+    }
+
+    async function registerView(storage, envelope) {
+      await casJson(storage, REGISTRY_PATH, emptyRegistry(), (current) => {
+        const documents = { ...(current.documents || {}) };
+        documents[envelope.documentId] = {
+          documentId: envelope.documentId, sourceId: envelope.sourceId,
+          relativePath: envelope.relativePath, surface: envelope.viewDocument.defaultSurface,
+          label: envelope.label || envelope.relativePath, checkpointId: checkpointValue(envelope.checkpoint),
+          archiveRelativePath: envelope.archiveRelativePath
+            || archiveRelativePath(envelope.documentId, envelope.viewDocument.defaultSurface),
+          updatedAt: nowIso(deps.now),
+        };
+        return { ...current, schemaVersion: 1, revision: Number(current.revision || 0) + 1,
+          documents, updatedAt: nowIso(deps.now) };
+      });
+    }
+
+    async function readView(storage, documentId) {
+      const envelope = await optionalJson(storage, viewPath(documentId), null);
+      if (!envelope) throw error('シートまたはボードのトピック表示が見つかりません', 404, 'missing');
+      envelope.viewDocument = normalizeDocument(envelope.viewDocument);
+      return envelope;
+    }
+
+    async function writeView(storage, documentId, expectedCheckpoint, mutationId, mutate) {
+      let result;
+      await casJson(storage, viewPath(documentId), {}, (current) => {
+        if (!current.documentId) throw error('トピック表示が見つかりません', 404, 'missing');
+        if (current.viewDocument?.systemProvider) {
+          throw error('この表示はスケジュール機能が提供する読み取り専用表示です', 403, 'forbidden');
+        }
+        const checkpoint = checkpointValue(current.checkpoint);
+        if (expectedCheckpoint != null && String(expectedCheckpoint) !== checkpoint) {
+          throw error('他の画面で更新されています。再読み込みしてください。', 409, 'conflict', {
+            expectedCheckpoint, actualCheckpoint: checkpoint,
+          });
+        }
+        const viewDocument = normalizeDocument(mutate(normalizeDocument(current.viewDocument), current));
+        const revision = Number(current.checkpoint?.revision || 0) + 1;
+        const nextCheckpointId = `cp-${encode(mutationId)}-${revision}`;
+        result = { ...current, viewDocument, checkpoint: {
+          id: nextCheckpointId, checkpointId: nextCheckpointId, revision, updatedAt: nowIso(deps.now),
+        }, lastMutationId: mutationId, updatedAt: nowIso(deps.now) };
+        return result;
+      });
+      return result;
+    }
+
+    async function readTopic(storage, ref) {
+      const envelope = await optionalJson(storage, topicPath(ref), null);
+      if (!envelope?.record) throw error('トピックが見つかりません', 404, 'missing');
+      return { ...envelope, topicRef: normalizeRef(envelope.topicRef || ref), record: normalizeRecord(envelope.record) };
+    }
+
+    async function putNewTopic(storage, ref, record, mutationId) {
+      return casJson(storage, topicPath(ref), {}, (current) => {
+        if (current.record) {
+          if (current.createdByMutationId === mutationId) return current;
+          throw error('同じIDのトピックが既に存在します', 409, 'conflict');
+        }
+        return { schemaVersion: 1, topicRef: normalizeRef(ref), record: normalizeRecord(record),
+          createdByMutationId: mutationId, updatedAt: nowIso(deps.now) };
+      });
+    }
+
+    async function patchTopic(storage, ref, body) {
+      const mutationId = required(body?.mutationId, 'mutationId');
+      let output;
+      await casJson(storage, topicPath(ref), {}, (current) => {
+        if (!current.record) throw error('トピックが見つかりません', 404, 'missing');
+        if (current.lastMutationId === mutationId) { output = current; return current; }
+        const actual = current.record.revision ?? 0;
+        if (body?.baseRevision != null && String(body.baseRevision) !== String(actual)) {
+          throw error('トピックが他の画面で更新されています', 409, 'conflict');
+        }
+        const changes = body?.changes && typeof body.changes === 'object' ? body.changes : {};
+        const record = normalizeRecord({ ...current.record, ...clone(changes),
+          topicId: ref.topicId, revision: Number(actual || 0) + 1, updatedAt: nowIso(deps.now) });
+        output = { ...current, record, lastMutationId: mutationId, updatedAt: nowIso(deps.now) };
+        return output;
+      });
+      return { ok: true, topicRef: ref, record: output.record, revision: output.record.revision };
+    }
+
+    const duplicateTrash = global.MeldexTopicCloudDuplicateTrash?.create?.({
+      root: ROOT, encode, topicPath, optionalJson, casJson, readTopic,
+      topicUsages: (...args) => topicUsages(...args), error,
+    });
+
+    const placementDocument = global.MeldexTopicCloudPlacementDocument?.create?.({
+      stableId, clone, normalizeDocument, topicKey,
+    });
+    const { placements, includesPlacement, placementFor, withPlacement, withoutPlacement,
+      reconcileViewDocument } = placementDocument;
+
+    async function allViewEnvelopes(storage) {
+      const registry = await readRegistry(storage);
+      const output = [];
+      for (const documentId of Object.keys(registry.documents || {})) {
+        try { output.push(await readView(storage, documentId)); } catch (reason) {
+          if (Number(reason?.status) !== 404) throw reason;
+        }
+      }
+      return output;
+    }
+
+    async function topicUsages(storage, ref) {
+      const usages = [];
+      for (const envelope of await allViewEnvelopes(storage)) {
+        for (const placement of placements(envelope.viewDocument)) {
+          if (topicKey(placement.topicRef) !== topicKey(ref)) continue;
+          const relativePath = envelope.relativePath || envelope.legacyPath || '';
+          const legacyRelativePath = envelope.legacyPath || relativePath;
+          const qualifiedPath = sourceQualifiedPath(envelope.sourceId, legacyRelativePath);
+          usages.push({ usageId: `usage-${placement.placementId}`, topicRef: clone(ref), kind: 'placement',
+            targetId: envelope.documentId, label: envelope.label || envelope.relativePath || envelope.documentId,
+            location: { documentId: envelope.documentId, viewId: placement.viewId,
+              surface: placement.surface, placementId: placement.placementId,
+              sourceId: envelope.sourceId, relativePath, legacyPath: qualifiedPath,
+              sourceQualifiedPath: qualifiedPath },
+            available: !!safeUsageTarget(qualifiedPath,
+              envelope.label || envelope.relativePath, placement.surface) });
+        }
+      }
+      try {
+        const topic = await readTopic(storage, ref);
+        for (const resource of (topic.record.resources || [])) {
+          const resourceType = String(resource?.resourceType || resource?.type || '').toLowerCase();
+          const href = String(resource?.href || resource?.path || resource?.url || '');
+          const kind = ['chat-link', 'chat'].includes(resourceType) ? 'chat-link'
+            : (resourceType === 'note-link' || resourceType === 'file' || /\.md(?:$|[?#])/i.test(href)
+              ? 'note-link' : '');
+          if (!kind || !href) continue;
+          const targetId = String(resource.resourceId || resource.id || href);
+          usages.push({ usageId: stableId('usage', ref.sourceId, ref.topicId, kind, targetId),
+            topicRef: clone(ref), kind, targetId,
+            label: String(resource.label || resource.title || href), location: { href },
+            available: !!safeUsageTarget(href, resource.label || resource.title || href,
+              resource.linkType || (kind === 'chat-link' ? 'page' : '')) });
+        }
+      } catch (reason) {
+        if (Number(reason?.status) !== 404) throw reason;
+      }
+      return { topicRef: ref, revision: 0, partial: true, coverage: 'partial', usages };
+    }
+
+    function expectedCheckpoint(request, documentId) {
+      return request.baseRevisions?.[documentId] ?? request.expectedRevision ?? null;
+    }
+
+    async function validatePrepare(storage, request) {
+      const ref = normalizeRef(request.topicRef);
+      if (request.operation !== 'detach') {
+        required(request.target?.documentId, 'target.documentId');
+        required(request.target?.viewId, 'target.viewId');
+        if (!['sheet', 'board'].includes(request.target?.surface)) {
+          throw error('target.surface が不正です', 400, 'invalid_request');
+        }
+      }
+      if (['move', 'detach'].includes(request.operation)) {
+        required(request.sourcePlacement?.placementId, 'sourcePlacement.placementId');
+        required(request.sourcePlacement?.documentId, 'sourcePlacement.documentId');
+      }
+      const boundSources = new Map();
+      const boundTargets = new Map();
+      for (const binding of (request.columnBindings || [])) {
+        const sourceFamily = required(binding?.sourcePropertyFamilyId, 'sourcePropertyFamilyId');
+        const targetFamily = required(binding?.targetPropertyFamilyId, 'targetPropertyFamilyId');
+        if (binding?.confirmed !== true) throw error('列の共通化には確認が必要です', 400, 'invalid_request');
+        if (boundSources.has(sourceFamily) && boundSources.get(sourceFamily) !== targetFamily) {
+          throw error('同じ値を複数の列へ共通化できません', 400, 'invalid_request');
+        }
+        if (boundTargets.has(targetFamily) && boundTargets.get(targetFamily) !== sourceFamily) {
+          throw error('複数の値を同じ列へ共通化できません', 400, 'invalid_request');
+        }
+        boundSources.set(sourceFamily, targetFamily);
+        boundTargets.set(targetFamily, sourceFamily);
+      }
+      const topic = await readTopic(storage, ref);
+      const documentIds = new Set();
+      if (request.target?.documentId) documentIds.add(request.target.documentId);
+      if (request.sourcePlacement?.documentId) documentIds.add(request.sourcePlacement.documentId);
+      const revisions = {};
+      let targetView = null;
+      for (const documentId of documentIds) {
+        const envelope = await readView(storage, documentId);
+        if (envelope.viewDocument.systemProvider) {
+          throw error('システム提供の表示は変更できません', 403, 'forbidden');
+        }
+        await requireLogicalViewUnlocked(storage, envelope, 'topic-placement-prepare');
+        const checkpoint = checkpointValue(envelope.checkpoint);
+        const expected = expectedCheckpoint(request, documentId);
+        if (expected != null && String(expected) !== String(checkpoint)) {
+          throw error('配置先が他の画面で更新されています', 409, 'conflict');
+        }
+        if (documentId === request.target?.documentId) {
+          const rows = request.target.surface === 'sheet'
+            ? envelope.viewDocument.sheetViews : envelope.viewDocument.boardViews;
+          targetView = (rows || []).find(item => String(
+            item?.viewId || item?.sheetViewId || item?.boardViewId || '',
+          ) === String(request.target.viewId)) || null;
+          if (!targetView) {
+            throw error('移動先のビューまたは表示形式が現在の登録と一致しません', 409, 'conflict');
+          }
+        }
+        revisions[documentId] = checkpoint;
+      }
+      const values = topic.record.propertyValuesByFamilyId || {};
+      const columns = Array.isArray(targetView?.columns) ? targetView.columns : [];
+      for (const [sourceFamily, targetFamily] of boundSources.entries()) {
+        const sourceValue = values[sourceFamily];
+        const targetColumn = columns.find(column => String(column?.propertyFamilyId || '') === targetFamily);
+        if (!sourceValue || !targetColumn) {
+          throw error('共通化する列またはトピック値が現在の保存内容と一致しません', 409, 'conflict');
+        }
+        const compatible = global.MeldexTopicPropertyFamily?.compatibleTypes;
+        let typesMatch = false;
+        try {
+          typesMatch = typeof compatible === 'function' && compatible({
+            columnId: sourceFamily, name: sourceValue.displayName || sourceFamily,
+            columnType: sourceValue.columnType, typeConfig: sourceValue.typeConfig || {},
+          }, targetColumn);
+        } catch (_) {
+          typesMatch = false;
+        }
+        if (!typesMatch) {
+          throw error('型または型設定が異なる列は共通化できません', 409, 'conflict');
+        }
+      }
+      if (['move', 'detach'].includes(request.operation)) {
+        const source = await readView(storage, request.sourcePlacement.documentId);
+        const actual = placements(source.viewDocument).find(item => (
+          String(item.placementId) === String(request.sourcePlacement.placementId)
+        ));
+        if (!actual) {
+          throw error('移動元の登録が見つかりません', 409, 'conflict');
+        }
+        if (topicKey(actual.topicRef) !== topicKey(ref)) {
+          throw error('移動元の登録とトピックが一致しません', 409, 'conflict');
+        }
+        const persistedLocation = [actual.documentId, actual.viewId, actual.surface];
+        const requestedLocation = [request.sourcePlacement.documentId,
+          request.sourcePlacement.viewId, request.sourcePlacement.surface];
+        if (persistedLocation.some((value, index) => String(value) !== String(requestedLocation[index]))) {
+          throw error('移動元の表示位置が現在の登録と一致しません', 409, 'conflict');
+        }
+      }
+      return { ref, revisions, topicRevision: topic.record.revision ?? 0 };
+    }
+
+    async function preparePlacement(storage, request) {
+      const operationId = required(request?.operationId || request?.mutationId, 'operationId');
+      if (!['move', 'link-duplicate', 'duplicate', 'detach'].includes(request?.operation)) {
+        throw error('未対応の配置操作です', 400, 'invalid_request');
+      }
+      const validated = await validatePrepare(storage, request);
+      const token = randomToken(deps.randomValues);
+      const expiresAt = deps.now() + PREPARE_TTL_MS;
+      const duplicateRef = request.operation === 'duplicate' ? {
+        sourceId: validated.ref.sourceId,
+        topicId: stableId('topic', operationId, validated.ref.sourceId, validated.ref.topicId),
+      } : null;
+      await casJson(storage, preparedPath(token), {}, (current) => {
+        if (current.operationId) throw error('準備トークンが競合しました', 409, 'conflict');
+        return { schemaVersion: 1, token, operationId,
+          request: clone(request), revisions: validated.revisions,
+          topicRevision: validated.topicRevision, duplicateRef,
+          phase: 'prepared', createdAt: deps.now(), expiresAt };
+      });
+      await recordTransaction(storage, token, operationId, 'pending', deps.now());
+      return { ok: true, preparedToken: token, prepareToken: token, operationId,
+        expectedRevision: clone(validated.revisions), expiresAt: new Date(expiresAt).toISOString() };
+    }
+
+    async function readPrepared(storage, token, operationId) {
+      const prepared = await optionalJson(storage, preparedPath(token), null);
+      if (!prepared || prepared.operationId !== operationId) throw error('準備済み操作が見つかりません', 404, 'missing');
+      const completed = ['topic-created', 'target-added', 'source-removal-authorized',
+        'operation-complete', 'committed'].includes(prepared.phase);
+      if (!completed && Number(prepared.expiresAt || 0) <= deps.now()) {
+        throw error('操作の有効期限が切れました', 409, 'conflict');
+      }
+      return prepared;
+    }
+
+    async function savePrepared(storage, prepared, phase) {
+      const ranks = { prepared: 0, 'topic-created': 1, 'target-added': 2,
+        'source-removal-authorized': 3, 'operation-complete': 4, committed: 5 };
+      return casJson(storage, preparedPath(prepared.token), {}, (current) => {
+        if (current.operationId !== prepared.operationId) throw error('準備済み操作が変更されました', 409, 'conflict');
+        const nextPhase = (ranks[current.phase] || 0) > (ranks[phase] || 0) ? current.phase : phase;
+        return { ...current, phase: nextPhase, updatedAt: deps.now() };
+      });
+    }
+
+    async function recheckView(storage, prepared, documentId) {
+      const envelope = await readView(storage, documentId);
+      await requireLogicalViewUnlocked(storage, envelope, 'topic-placement-commit');
+      const expected = prepared.revisions?.[documentId];
+      if (checkpointValue(envelope.checkpoint) !== String(expected || '')) {
+        throw error('準備後にシートまたはボードが更新されました', 409, 'conflict');
+      }
+      return envelope;
+    }
+
+    async function addTarget(storage, prepared, ref) {
+      const request = prepared.request;
+      const target = await readView(storage, request.target.documentId);
+      const placement = placementFor(request, ref);
+      const sameView = placements(target.viewDocument).find(item => (
+        topicKey(item.topicRef) === topicKey(ref)
+        && String(item.viewId) === String(request.target.viewId)
+        && String(item.surface) === String(request.target.surface)
+      ));
+      if (sameView) {
+        const replayedAddition = sameView.mutationId === request.operationId;
+        const sourceIsTarget = request.sourcePlacement
+          && request.sourcePlacement.documentId === request.target.documentId
+          && request.sourcePlacement.viewId === request.target.viewId
+          && request.sourcePlacement.surface === request.target.surface;
+        return { envelope: target, placement: sameView,
+          noOp: !replayedAddition && (request.operation === 'link-duplicate' || sourceIsTarget),
+          targetAlreadyPresent: !replayedAddition, addedPlacement: replayedAddition };
+      }
+      if (includesPlacement(target.viewDocument, placement.placementId)) {
+        return { envelope: target, placement, targetAlreadyPresent: true, addedPlacement: false };
+      }
+      await recheckView(storage, prepared, request.target.documentId);
+      const envelope = await writeView(storage, request.target.documentId,
+        prepared.revisions[request.target.documentId], request.operationId,
+        document => withPlacement(document, placement));
+      return { envelope, placement, targetAlreadyPresent: false, addedPlacement: true };
+    }
+
+    async function removeSource(storage, prepared) {
+      const request = prepared.request;
+      const source = await readView(storage, request.sourcePlacement.documentId);
+      if (!includesPlacement(source.viewDocument, request.sourcePlacement.placementId)) {
+        if (source.lastMutationId === request.operationId) return source;
+        throw error('準備後に移動元の登録が変更されました', 409, 'conflict');
+      }
+      await requireLogicalViewUnlocked(storage, source, 'topic-placement-source-removal');
+      const expected = prepared.phase !== 'prepared' && request.sourcePlacement.documentId === request.target?.documentId
+        ? checkpointValue(source.checkpoint) : prepared.revisions[request.sourcePlacement.documentId];
+      return writeView(storage, request.sourcePlacement.documentId, expected, request.operationId,
+        document => withoutPlacement(document, request.sourcePlacement));
+    }
+
+    async function removeAddedTarget(storage, prepared, targetResult) {
+      if (!targetResult?.addedPlacement) return;
+      const request = prepared.request;
+      const current = await readView(storage, request.target.documentId);
+      const placement = placements(current.viewDocument).find(item =>
+        String(item.placementId) === String(targetResult.placement.placementId));
+      if (!placement) return;
+      if (placement.mutationId !== request.operationId) {
+        throw error('追加先が別の操作で変更されたため自動復旧できません', 409,
+          'placement-recovery-required');
+      }
+      await writeView(storage, request.target.documentId, checkpointValue(current.checkpoint),
+        `${request.operationId}:rollback-target`,
+        document => withoutPlacement(document, targetResult.placement));
+    }
+
+    async function executePrepared(storage, prepared) {
+      const request = prepared.request;
+      const sourceRef = normalizeRef(request.topicRef);
+      if (prepared.phase === 'prepared') {
+        const current = await validatePrepare(storage, request);
+        if (String(current.topicRevision) !== String(prepared.topicRevision)) {
+          throw error('準備後にトピックの値または型が更新されました', 409, 'conflict');
+        }
+      }
+      if (request.operation === 'detach') {
+        const source = await readView(storage, request.sourcePlacement.documentId);
+        if (!includesPlacement(source.viewDocument, request.sourcePlacement.placementId)) {
+          return { topicRef: sourceRef, detached: true, _sourceRemovalCommitted: true };
+        }
+        const index = await topicUsages(storage, sourceRef);
+        const placementCount = index.usages.filter(usage => usage.kind === 'placement').length;
+        if (placementCount <= 1 && request.allowOrphan !== true) {
+          throw error('最後の登録先から外すには確認が必要です', 409, 'conflict');
+        }
+        await recheckView(storage, prepared, request.sourcePlacement.documentId);
+        prepared = await savePrepared(storage, prepared, 'source-removal-authorized');
+        await removeSource(storage, prepared);
+        return { topicRef: sourceRef, detached: true, _sourceRemovalCommitted: true };
+      }
+      let ref = sourceRef;
+      let duplicateCreated = false;
+      let targetResult = null;
+      try {
+        if (request.operation === 'duplicate') {
+          ref = normalizeRef(prepared.duplicateRef);
+          const source = await readTopic(storage, sourceRef);
+          await putNewTopic(storage, ref, { ...clone(source.record), topicId: ref.topicId,
+            revision: 0, createdAt: nowIso(deps.now), updatedAt: nowIso(deps.now) }, request.operationId);
+          duplicateCreated = true;
+          prepared = await savePrepared(storage, prepared, 'topic-created');
+        }
+        targetResult = await addTarget(storage, prepared, ref);
+        prepared = await savePrepared(storage, prepared, 'target-added');
+        if (request.operation === 'move' && !targetResult.noOp) {
+          prepared = await savePrepared(storage, prepared, 'source-removal-authorized');
+          await removeSource(storage, prepared);
+        }
+      } catch (reason) {
+        const failures = [];
+        try { await removeAddedTarget(storage, prepared, targetResult); }
+        catch (rollbackError) { failures.push(`target:${rollbackError?.message || rollbackError}`); }
+        if (duplicateCreated) {
+          try {
+            await duplicateTrash.discard(storage, ref, request.operationId);
+          } catch (rollbackError) {
+            failures.push(`topic:${rollbackError?.message || rollbackError}`);
+          }
+        }
+        if (failures.length) {
+          throw error('配置変更の自動復旧結果を確認できません', 409,
+            'placement-recovery-required', { recoveryRequired: true, failures });
+        }
+        reason.sourcePreserved = true;
+        throw reason;
+      }
+      return { topicRef: ref, topicRefs: [ref], placement: targetResult.placement,
+        targetCheckpoint: targetResult.envelope.checkpoint,
+        noOp: targetResult.noOp === true,
+        targetAlreadyPresent: targetResult.targetAlreadyPresent === true,
+        addedPlacement: targetResult.addedPlacement === true,
+        _sourceRemovalCommitted: request.operation === 'move' && !targetResult.noOp };
+    }
+
+    async function commitPlacement(storage, body) {
+      const operationId = required(body?.operationId, 'operationId');
+      const token = required(body?.preparedToken || body?.prepareToken, 'preparedToken');
+      const existing = await optionalJson(storage, receiptPath(operationId), null);
+      if (existing?.result) {
+        try {
+          await recordTransaction(storage, token, operationId, 'committed', deps.now());
+          await garbageCollectTransactions(storage, deps.now());
+        } catch (reason) { global.console?.warn?.('トピック操作履歴の索引を再試行します', reason); }
+        return clone(existing.result);
+      }
+      let prepared = await readPrepared(storage, token, operationId);
+      const execution = await executePrepared(storage, prepared);
+      delete execution._sourceRemovalCommitted;
+      const result = { ok: true, operationId, ...execution };
+      try {
+        prepared = await savePrepared(storage, prepared, 'operation-complete');
+        await casJson(storage, receiptPath(operationId), {}, current => current.result ? current : {
+          schemaVersion: 1, operationId, result, committedAt: nowIso(deps.now),
+        });
+        await savePrepared(storage, prepared, 'committed');
+      } catch (reason) {
+        result.receiptPending = true;
+        try { await recordTransaction(storage, token, operationId, 'recovery-required', deps.now()); }
+        catch (indexReason) { global.console?.warn?.('トピック操作の復旧索引を再試行します', indexReason); }
+        return result;
+      }
+      try {
+        await recordTransaction(storage, token, operationId, 'committed', deps.now());
+        await garbageCollectTransactions(storage, deps.now());
+      } catch (reason) { global.console?.warn?.('トピック操作履歴のGCを再試行します', reason); }
+      return result;
+    }
+
+    function legacyProperty(raw) {
+      if (Array.isArray(raw)) return raw.length === 1 ? raw[0]?.value ?? raw[0] : raw.map(item => item?.value ?? item);
+      return raw?.value ?? raw;
+    }
+
+    function sheetMigration(sourceId, relativePath, pivot, metadata) {
+      const documentId = stableId('view', sourceId, relativePath);
+      const viewId = stableId('sheet', documentId);
+      const properties = Array.isArray(pivot?.properties) ? pivot.properties : [];
+      const propertyTypes = metadata?.property_types || {};
+      const propertyIds = metadata?.property_ids || {};
+      const columns = properties.map((name) => {
+        const spec = propertyTypes[name];
+        const rawType = spec && typeof spec === 'object' ? spec.type : spec;
+        const typeConfig = spec && typeof spec === 'object'
+          ? clone(spec.typeConfig || spec.config || Object.fromEntries(
+            Object.entries(spec).filter(([key]) => key !== 'type'),
+          )) : {};
+        return { id: String(propertyIds[name] || name), name: String(name), typeConfig,
+          columnType: global.MeldexTopicPropertyFamily?.canonicalType?.(rawType || 'unknown') || 'unknown',
+          propertyFamilyId: global.MeldexTopicPropertyFamily?.legacyPropertyFamilyId?.(
+            documentId, String(propertyIds[name] || name),
+          ) || stableId('property', documentId, propertyIds[name] || name) };
+      });
+      const adapterColumns = columns.map(column => ({ ...column, id: column.name, columnId: column.id }));
+      const topicRecords = [];
+      const placementsList = [];
+      Object.entries(pivot?.entities || {}).forEach(([name, entity], index) => {
+        const topicId = stableId('topic', sourceId, relativePath, entity?._id || name);
+        const rowProperties = {};
+        properties.forEach(prop => { if (entity?.[prop] !== undefined) rowProperties[prop] = legacyProperty(entity[prop]); });
+        const row = { id: topicId, name, title: name, properties: rowProperties, revision: 0 };
+        const adapted = global.MeldexTopicSheetBoardAdapter?.adaptLegacySheetRowToTopic?.(
+          row, sourceId, { columns: adapterColumns, documentId },
+        );
+        const ref = adapted?.topicRef || { sourceId, topicId };
+        topicRecords.push({ topicRef: ref, record: adapted?.topicRecord || {
+          topicId, title: name, properties: rowProperties, propertyValuesByFamilyId: {},
+          propertyValueOrder: [], note: null, resources: [], revision: 0,
+        } });
+        placementsList.push({ placementId: stableId('placement', documentId, topicId), topicRef: ref,
+          documentId, viewId, surface: 'sheet', order: index, position: null, revision: 0 });
+      });
+      return migrationResult(sourceId, relativePath, documentId, viewId, 'sheet', columns, topicRecords, placementsList);
+    }
+
+    function boardMigration(sourceId, relativePath, board) {
+      const savedDocument = nestedJsonObject(board?.topicViewDocument);
+      if (savedDocument && savedDocument.defaultSurface !== 'board') {
+        throw error('保存済みの表示データがボードではありません', 409, 'conflict');
+      }
+      const documentId = String(savedDocument?.documentId || stableId('view', sourceId, relativePath));
+      const viewId = String(savedDocument?.activeBoardViewId
+        || savedDocument?.boardViews?.[0]?.boardViewId
+        || savedDocument?.boardViews?.[0]?.viewId
+        || stableId('board', documentId));
+      const nodes = Array.isArray(board?.nodes) ? board.nodes : (Array.isArray(board?.items) ? board.items : []);
+      const idMap = {};
+      nodes.forEach(node => { idMap[node.id] = node.topicId || stableId('topic', sourceId, relativePath, node.id); });
+      const topicRecords = [];
+      const placementsList = [];
+      nodes.forEach((node, index) => {
+        const adapted = global.MeldexTopicSheetBoardAdapter?.adaptLegacyBoardNodeToTopic?.(
+          node, sourceId, idMap, { documentId, columns: board?.columns || [] },
+        );
+        const ref = adapted?.topicRef || { sourceId, topicId: idMap[node.id] };
+        topicRecords.push({ topicRef: ref, record: adapted?.topicRecord || {
+          topicId: ref.topicId, title: String(node.title || node.text || ''), properties: node.properties || {},
+          propertyValuesByFamilyId: {}, propertyValueOrder: [], note: null, resources: [], revision: 0,
+        } });
+        placementsList.push({ placementId: stableId('placement', documentId, ref.topicId), topicRef: ref,
+          documentId, viewId, surface: 'board', order: index,
+          position: { x: Number(node.x || 0), y: Number(node.y || 0) }, revision: 0 });
+      });
+      const migration = migrationResult(
+        sourceId, relativePath, documentId, viewId, 'board', board?.columns || [], topicRecords, placementsList,
+      );
+      if (savedDocument) migration.viewDocument = mergeSavedBoardDocument(savedDocument, migration.viewDocument);
+      return migration;
+    }
+
+    function nestedJsonObject(value) {
+      let current = value;
+      for (let pass = 0; pass < 3; pass += 1) {
+        if (current && typeof current === 'object' && !Array.isArray(current)) return clone(current);
+        if (typeof current !== 'string') return null;
+        try { current = JSON.parse(current); }
+        catch (reason) { throw error('保存済みのボード表示データを読み取れません', 409, 'conflict', {
+          message: String(reason?.message || reason),
+        }); }
+      }
+      return current && typeof current === 'object' && !Array.isArray(current) ? clone(current) : null;
+    }
+
+    function mergeSavedBoardDocument(savedValue, generatedValue) {
+      const saved = normalizeDocument(savedValue);
+      const generated = normalizeDocument(generatedValue);
+      const memberKeys = new Set(saved.membership.manualTopicRefs.map(topicKey));
+      for (const ref of generated.membership.manualTopicRefs) {
+        const key = topicKey(ref);
+        if (!memberKeys.has(key)) {
+          saved.membership.manualTopicRefs.push(clone(ref));
+          memberKeys.add(key);
+        }
+      }
+      const placedKeys = new Set(placements(saved).map(item => topicKey(item.topicRef)));
+      for (const placement of placements(generated)) {
+        const key = topicKey(placement.topicRef);
+        if (!placedKeys.has(key)) {
+          saved.placements.push(clone(placement));
+          placedKeys.add(key);
+        }
+      }
+      return normalizeDocument(saved);
+    }
+
+    function migrationResult(sourceId, relativePath, documentId, viewId, surface, columns, records, placementsList) {
+      const viewDocument = normalizeDocument({ documentId, schemaVersion: 1, defaultSurface: surface,
+        membership: { mode: 'manual', manualTopicRefs: records.map(item => item.topicRef) },
+        systemProvider: null, sheetViews: surface === 'sheet' ? [{ viewId, columns: clone(columns) }] : [],
+        boardViews: surface === 'board' ? [{ viewId, columns: clone(columns) }] : [],
+        placements: placementsList, relationSets: [], topicLayouts: [], lastCompleteSnapshot: null });
+      return { sourceId, relativePath, documentId, viewDocument, topicRecords: records,
+        checkpoint: { id: 'cp-initial-0', checkpointId: 'cp-initial-0', revision: 0 },
+        archiveRelativePath: archiveRelativePath(documentId, surface) };
+    }
+
+    async function loadMigration(sourceId, relativePath) {
+      const virtualPath = global.MeldexSourceFolderRegistry?.sourcePath?.(sourceId, relativePath)
+        || `source://${encode(sourceId)}/${relativePath}`;
+      const lowerPath = relativePath.toLowerCase();
+      const isBoard = lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.json')
+        || lowerPath.endsWith('.canvas.json') || lowerPath.endsWith('.board');
+      if (!isBoard) {
+        if (typeof deps.requestJson !== 'function') throw error('シート読込経路がありません', 503, 'offline');
+        const [pivot, metadata] = await Promise.all([
+          deps.requestJson(`/pivot?path=${encodeURIComponent(virtualPath)}`),
+          deps.requestJson(`/db-metadata?path=${encodeURIComponent(virtualPath)}`),
+        ]);
+        return sheetMigration(sourceId, relativePath, pivot, metadata);
+      }
+      if (typeof deps.requestJson !== 'function') throw error('ボード読込経路がありません', 503, 'offline');
+      const file = await deps.requestJson(`/file?path=${encodeURIComponent(virtualPath)}`);
+      return boardMigration(sourceId, relativePath, JSON.parse(file?.content || '{}'));
+    }
+
+    function comparableTopicRecord(value) {
+      const record = clone(value || {});
+      ['revision', 'createdAt', 'updatedAt', 'updatedBy', '_mutationIds']
+        .forEach(key => { delete record[key]; });
+      return record;
+    }
+
+    function mergeMigratedTopicRecord(baseValue, currentValue, incomingValue, ref) {
+      const current = normalizeRecord(currentValue);
+      const incoming = normalizeRecord(incomingValue);
+      const mergedData = mergeThreeWayValue(
+        comparableTopicRecord(normalizeRecord(baseValue)),
+        comparableTopicRecord(current),
+        comparableTopicRecord(incoming),
+        `topics.${topicKey(ref)}`,
+      );
+      if (sameValue(mergedData, comparableTopicRecord(current))) return current;
+      const next = {};
+      ['createdAt', '_mutationIds'].forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(current, key)) next[key] = clone(current[key]);
+      });
+      Object.assign(next, mergedData, {
+        topicId: ref.topicId,
+        revision: Number(current.revision || 0) + 1,
+        updatedAt: nowIso(deps.now),
+        updatedBy: 'legacy-migration',
+      });
+      return normalizeRecord(next);
+    }
+
+    function mergeMigratedViewDocument(currentValue, incomingValue, baselineValue, newTopicKeys) {
+      const current = normalizeDocument(currentValue);
+      const incoming = normalizeDocument(incomingValue);
+      const baseline = baselineValue ? normalizeDocument(baselineValue) : null;
+      const output = reconcileViewDocument(current, incoming, newTopicKeys);
+      if (!baseline) return output;
+      const excluded = new Set(['documentId', 'schemaVersion', 'defaultSurface']);
+      const keys = new Set([...Object.keys(baseline), ...Object.keys(current), ...Object.keys(incoming)]);
+      for (const key of keys) {
+        if (excluded.has(key)) continue;
+        const merged = mergeThreeWayValue(
+          baseline[key], current[key], incoming[key], `viewDocument.${key}`,
+        );
+        if (merged === undefined) delete output[key];
+        else output[key] = merged;
+      }
+      return normalizeDocument(output);
+    }
+
+    async function planMigratedTopics(storage, envelope, migration) {
+      const baselineRecords = envelope.legacyBaseline?.topicRecords || {};
+      const plans = [];
+      for (const item of migration.topicRecords) {
+        const key = topicKey(item.topicRef);
+        const current = await optionalJson(storage, topicPath(item.topicRef), null);
+        if (!current?.record) {
+          plans.push({ kind: 'create', item, key });
+          continue;
+        }
+        const baselineRecord = baselineRecords[key];
+        if (!baselineRecord) {
+          // Older envelopes did not record a migration baseline.  Preserve the
+          // current canonical topic and establish a baseline on this pass.
+          plans.push({ kind: 'keep', item, key });
+          continue;
+        }
+        const record = mergeMigratedTopicRecord(
+          baselineRecord, current.record, item.record, item.topicRef,
+        );
+        plans.push({ kind: sameValue(record, current.record) ? 'keep' : 'update', item, key, record });
+      }
+      return plans;
+    }
+
+    async function applyMigratedTopicPlans(storage, migration, plans) {
+      for (const plan of plans) {
+        if (plan.kind === 'keep') continue;
+        if (plan.kind === 'create') {
+          await putNewTopic(storage, plan.item.topicRef, plan.item.record, `migration-${migration.documentId}`);
+          continue;
+        }
+        await casJson(storage, topicPath(plan.item.topicRef), {}, (current) => {
+          if (!current.record) throw error('更新対象のトピックが見つかりません', 409, 'conflict');
+          const nextRecord = mergeMigratedTopicRecord(
+            migration._baselineTopicRecords[plan.key], current.record,
+            plan.item.record, plan.item.topicRef,
+          );
+          if (sameValue(nextRecord, current.record)) return current;
+          return { ...current, record: nextRecord,
+            lastMigrationMutationId: `migration-reconcile-${migration.documentId}`,
+            updatedAt: nowIso(deps.now) };
+        });
+      }
+    }
+
+    async function reconcileMigration(storage, envelope, migration) {
+      const established = new Set(Array.isArray(envelope.legacyManagedTopicKeys)
+        ? envelope.legacyManagedTopicKeys : placements(envelope.viewDocument).map(item => topicKey(item.topicRef)));
+      const migrationKeys = migration.topicRecords.map(item => topicKey(item.topicRef));
+      const newTopicKeys = new Set(migrationKeys.filter(key => !established.has(key)));
+      migration._baselineTopicRecords = clone(envelope.legacyBaseline?.topicRecords || {});
+      const topicPlans = await planMigratedTopics(storage, envelope, migration);
+      const baselineView = envelope.legacyBaseline?.viewDocument || null;
+      // Complete all deterministic conflict checks before the first write so
+      // one conflicting topic cannot leave unrelated topics half-updated.
+      mergeMigratedViewDocument(envelope.viewDocument, migration.viewDocument, baselineView, newTopicKeys);
+      await applyMigratedTopicPlans(storage, migration, topicPlans);
+      let reconciled;
+      let changed = false;
+      await casJson(storage, viewPath(envelope.documentId), {}, (current) => {
+        if (current.documentId !== envelope.documentId) throw error('トピック表示のIDが競合しました', 409, 'conflict');
+        const viewDocument = mergeMigratedViewDocument(
+          current.viewDocument, migration.viewDocument, baselineView, newTopicKeys,
+        );
+        const legacyManagedTopicKeys = [...new Set([
+          ...(current.legacyManagedTopicKeys || established), ...migrationKeys,
+        ])];
+        const legacyBaseline = {
+          topicRecords: Object.fromEntries(migration.topicRecords.map(item => [
+            topicKey(item.topicRef), clone(item.record),
+          ])),
+          viewDocument: clone(migration.viewDocument),
+        };
+        if (sameValue(viewDocument, current.viewDocument)
+            && sameValue(legacyManagedTopicKeys, current.legacyManagedTopicKeys || [])
+            && sameValue(legacyBaseline, current.legacyBaseline || {})
+            && !topicPlans.some(plan => plan.kind === 'create' || plan.kind === 'update')) {
+          reconciled = current; return false;
+        }
+        changed = true;
+        const revision = Number(current.checkpoint?.revision || 0) + 1;
+        const checkpointId = `cp-reconcile-${encode(envelope.documentId)}-${revision}`;
+        reconciled = { ...current, viewDocument, legacyManagedTopicKeys, legacyBaseline,
+          checkpoint: { id: checkpointId, checkpointId, revision, updatedAt: nowIso(deps.now) },
+          updatedAt: nowIso(deps.now) };
+        return reconciled;
+      });
+      if (changed) await registerView(storage, reconciled);
+      return readView(storage, envelope.documentId);
+    }
+
+    async function persistMigration(storage, migration) {
+      for (const item of migration.topicRecords) {
+        await putNewTopic(storage, item.topicRef, item.record, `migration-${migration.documentId}`);
+      }
+      const path = viewPath(migration.documentId);
+      await casJson(storage, path, {}, current => {
+        if (current.documentId) return current;
+        return { schemaVersion: 1, documentId: migration.documentId, sourceId: migration.sourceId,
+          relativePath: migration.relativePath, label: migration.relativePath,
+          legacyPath: migration.relativePath, archiveRelativePath: migration.archiveRelativePath,
+          legacyManagedTopicKeys: migration.topicRecords.map(item => topicKey(item.topicRef)),
+          legacyBaseline: {
+            topicRecords: Object.fromEntries(migration.topicRecords.map(item => [
+              topicKey(item.topicRef), clone(item.record),
+            ])),
+            viewDocument: clone(migration.viewDocument),
+          },
+          viewDocument: migration.viewDocument, checkpoint: migration.checkpoint,
+          createdAt: nowIso(deps.now), updatedAt: nowIso(deps.now) };
+      });
+      const envelope = await readView(storage, migration.documentId);
+      await registerView(storage, envelope);
+      return envelope;
+    }
+
+    async function openMigration(storage, body) {
+      const sourceId = required(body?.sourceId, 'sourceId');
+      const relativePath = normalizePath(body?.relativePath);
+      const registry = await readRegistry(storage);
+      const existing = Object.values(registry.documents || {}).find(item => (
+        item.sourceId === sourceId && item.relativePath === relativePath
+      ));
+      const migration = await loadMigration(sourceId, relativePath);
+      if (body?.migrationPreview === true) {
+        return { mode: 'migration-preview', sourceId, preview: migration };
+      }
+      if (existing) {
+        let envelope = await readView(storage, existing.documentId);
+        envelope = await reconcileMigration(storage, envelope, migration);
+        return migrationResponse(envelope, await snapshot(storage, envelope));
+      }
+      const envelope = await persistMigration(storage, migration);
+      return migrationResponse(envelope, migration);
+    }
+
+    function migrationResponse(envelope, preview) {
+      const relative = envelope.archiveRelativePath
+        || archiveRelativePath(envelope.documentId, envelope.viewDocument.defaultSurface);
+      return { mode: 'migration', sourceId: envelope.sourceId, migration: {
+        ok: true, status: 'complete', sourceId: envelope.sourceId,
+        legacyPath: envelope.legacyPath || envelope.relativePath,
+        archiveRelativePath: relative, documentId: envelope.documentId,
+        viewDocument: envelope.viewDocument, checkpoint: envelope.checkpoint,
+        checkpointId: envelope.checkpoint?.checkpointId || envelope.checkpoint?.id,
+        legacyOriginalModified: false,
+      }, preview };
+    }
+
+    async function openRegisteredView(storage, body) {
+      const sourceId = required(body?.sourceId, 'sourceId');
+      const relativePath = normalizePath(body?.relativePath);
+      const registry = await readRegistry(storage);
+      const registered = Object.values(registry.documents || {}).find(item => (
+        item.sourceId === sourceId && (item.archiveRelativePath === relativePath
+          || item.relativePath === relativePath)
+      ));
+      if (!registered) throw error('登録済みのトピック表示が見つかりません', 404, 'missing');
+      const envelope = await readView(storage, registered.documentId);
+      return { mode: 'archive', documentId: envelope.documentId,
+        defaultSurface: envelope.viewDocument.defaultSurface,
+        viewDocument: envelope.viewDocument, checkpoint: envelope.checkpoint,
+        readOnly: isReadOnly(), legacy: false, assets: [] };
+    }
+
+    async function snapshot(storage, envelope) {
+      const refs = envelope.viewDocument.membership?.manualTopicRefs || [];
+      const topics = [];
+      for (const ref of refs) {
+        try {
+          const topic = await readTopic(storage, ref);
+          topics.push({ topicRef: topic.topicRef, record: topic.record });
+        } catch (reason) {
+          if (Number(reason?.status) !== 404) throw reason;
+        }
+      }
+      return { ok: true, documentId: envelope.documentId, viewDocument: envelope.viewDocument,
+        checkpoint: envelope.checkpoint, topics, topicRecords: topics, readOnly: isReadOnly() };
+    }
+
+    async function propertyCandidates(storage, url) {
+      const name = String(url.searchParams.get('name') || '').trim();
+      const type = global.MeldexTopicPropertyFamily?.canonicalType?.(
+        url.searchParams.get('column_type') || 'unknown',
+      ) || String(url.searchParams.get('column_type') || 'unknown');
+      const candidates = [];
+      for (const envelope of await allViewEnvelopes(storage)) {
+        const views = [...(envelope.viewDocument.sheetViews || []), ...(envelope.viewDocument.boardViews || [])];
+        for (const view of views) {
+          for (const column of (view.columns || [])) {
+            const columnName = String(column.name || column.label || column.id || '');
+            const columnType = global.MeldexTopicPropertyFamily?.canonicalType?.(
+              column.columnType || column.type || 'unknown',
+            ) || String(column.columnType || column.type || 'unknown');
+            if (columnName !== name || columnType !== type) continue;
+            const propertyFamilyId = column.propertyFamilyId || stableId('property', envelope.documentId,
+              column.id || column.columnId || columnName);
+            let existingValueCount = 0;
+            for (const ref of (envelope.viewDocument.membership?.manualTopicRefs || [])) {
+              try {
+                const topic = await readTopic(storage, ref);
+                if (Object.prototype.hasOwnProperty.call(topic.record.propertyValuesByFamilyId || {}, propertyFamilyId)) {
+                  existingValueCount += 1;
+                }
+              } catch (reason) {
+                if (Number(reason?.status) !== 404) throw reason;
+              }
+            }
+            candidates.push({ documentId: envelope.documentId, documentLabel: envelope.label || envelope.relativePath,
+              viewId: view.viewId || view.sheetViewId || view.boardViewId,
+              columnId: column.id || column.columnId || columnName, columnName, columnType,
+              propertyFamilyId, existingValueCount });
+          }
+        }
+      }
+      return { ok: true, candidates };
+    }
+
+    async function route({ method, body, url, pathname }) {
+      let match;
+      if (pathname === '/topic-migrations/open' && method === 'POST') {
+        return openMigration(await provider(body?.migrationPreview ? 'read' : 'readwrite'), body || {});
+      }
+      if (pathname === '/topic-views/migration/open' && method === 'POST') {
+        return openRegisteredView(await provider('read'), body || {});
+      }
+      if ((match = pathname.match(/^\/topic-views\/([^/]+)$/)) && method === 'GET') {
+        const envelope = await readView(await provider('read'), decodeURIComponent(match[1]));
+        return { ok: true, viewDocument: envelope.viewDocument, checkpoint: envelope.checkpoint,
+          readOnly: isReadOnly() };
+      }
+      if ((match = pathname.match(/^\/topic-views\/([^/]+)\/snapshot$/)) && method === 'GET') {
+        const storage = await provider('read');
+        return snapshot(storage, await readView(storage, decodeURIComponent(match[1])));
+      }
+      if ((match = pathname.match(/^\/topic-views\/([^/]+)$/)) && method === 'PATCH') {
+        const storage = await provider('readwrite');
+        const documentId = decodeURIComponent(match[1]);
+        const changes = body?.changes && typeof body.changes === 'object' ? body.changes : {};
+        const envelope = await writeView(storage, documentId, body?.baseCheckpointId,
+          required(body?.mutationId, 'mutationId'), document => ({ ...document, ...clone(changes), documentId }));
+        return { ok: true, viewDocument: envelope.viewDocument, checkpoint: envelope.checkpoint };
+      }
+      if ((match = pathname.match(/^\/topic-stores\/([^/]+)\/topics\/([^/]+)$/))) {
+        const ref = normalizeRef({ sourceId: decodeURIComponent(match[1]), topicId: decodeURIComponent(match[2]) });
+        if (method === 'GET') {
+          const topic = await readTopic(await provider('read'), ref);
+          return { ok: true, topicRef: ref, topic: topic.record, record: topic.record };
+        }
+        if (method === 'PATCH') return patchTopic(await provider('readwrite'), ref, body || {});
+        if (method === 'DELETE') return duplicateTrash.remove(await provider('readwrite'), ref, body || {});
+      }
+      if ((match = pathname.match(/^\/topic-stores\/([^/]+)\/trash\/([^/]+)\/restore$/))
+          && method === 'POST') {
+        const ref = normalizeRef({ sourceId: decodeURIComponent(match[1]), topicId: decodeURIComponent(match[2]) });
+        return duplicateTrash.restore(await provider('readwrite'), ref, body || {});
+      }
+      if ((match = pathname.match(/^\/topics\/([^/]+)\/([^/]+)\/usages$/)) && method === 'GET') {
+        return topicUsages(await provider('read'), normalizeRef({
+          sourceId: decodeURIComponent(match[1]), topicId: decodeURIComponent(match[2]),
+        }));
+      }
+      if (pathname === '/topic-property-families/candidates' && method === 'GET') {
+        return propertyCandidates(await provider('read'), url);
+      }
+      if (pathname === '/topic-placements/prepare' && method === 'POST') {
+        return preparePlacement(await provider('readwrite'), body || {});
+      }
+      if (pathname === '/topic-placements/commit' && method === 'POST') {
+        return commitPlacement(await provider('readwrite'), body || {});
+      }
+      return deps.NOT_HANDLED;
+    }
+
+    return route;
+  }
+
+  const api = Object.freeze({ createHandler, garbageCollectTransactions, ROOT, PREPARE_TTL_MS,
+    RECEIPT_RETENTION_MS: global.MeldexTopicCloudTransactionGC?.RETENTION_MS,
+    MAX_COMMITTED_RECEIPTS: global.MeldexTopicCloudTransactionGC?.MAX_COMMITTED,
+    TRANSACTION_INDEX_PATH });
+  global.MeldexTopicCloudDataAccess = api;
+  const handlers = global.__MeldexPwaDataAccessExtensions;
+  if (Array.isArray(handlers) && global.__MeldexPwaDataAccessInternals) handlers.push(createHandler());
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-topic-placement.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const api = factory(root?.MeldexTopicContract);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicPlacement = api;
+}(typeof globalThis !== 'undefined' ? globalThis : this, function (Contract) {
+  'use strict';
+
+  const OPERATIONS = new Set(['move', 'link-duplicate', 'duplicate', 'detach']);
+  const SURFACES = new Set(['sheet', 'board']);
+  const FAILURE_CODES = new Set([
+    'conflict', 'forbidden', 'locked', 'offline', 'capacity', 'missing',
+    'placement-recovery-required', 'result-unknown',
+  ]);
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function object(value, label) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    return value;
+  }
+
+  function requiredString(value, label) {
+    if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} is required`);
+    return value.trim();
+  }
+
+  function normalizeTopicRef(value) {
+    if (Contract?.normalizeTopicRef) return Contract.normalizeTopicRef(value);
+    const source = object(value, 'TopicRef');
+    return { ...clone(source), sourceId: requiredString(source.sourceId, 'sourceId'),
+      topicId: requiredString(source.topicId, 'topicId') };
+  }
+
+  function normalizePlacement(value) {
+    if (Contract?.normalizeTopicPlacement) return Contract.normalizeTopicPlacement(value);
+    const source = object(value, 'TopicPlacement');
+    const result = clone(source);
+    result.placementId = requiredString(source.placementId, 'placementId');
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    result.documentId = requiredString(source.documentId, 'documentId');
+    if (!SURFACES.has(source.surface)) throw new TypeError('surface must be sheet or board');
+    result.surface = source.surface;
+    result.viewId = requiredString(source.viewId, 'viewId');
+    result.revision = source.revision ?? 0;
+    result.order = source.order ?? null;
+    result.position = clone(source.position ?? null);
+    return result;
+  }
+
+  function normalizeUsage(value) {
+    if (Contract?.normalizeTopicUsage) {
+      const source = object(value, 'TopicUsage');
+      const normalizedInput = { ...clone(source),
+        targetId: source.targetId || source.target?.targetId || source.target?.documentId,
+        location: source.location ?? source.target ?? null };
+      const result = Contract.normalizeTopicUsage(normalizedInput);
+      result.available = value.available !== false;
+      result.partial = value.partial === true;
+      return result;
+    }
+    const source = object(value, 'TopicUsage');
+    const kind = requiredString(source.kind, 'usage.kind');
+    if (!['placement', 'note-link', 'chat-link'].includes(kind)) throw new TypeError('usage.kind is invalid');
+    const result = clone(source);
+    result.usageId = requiredString(source.usageId, 'usageId');
+    result.kind = kind;
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    result.label = typeof source.label === 'string' ? source.label : '';
+    result.targetId = requiredString(source.targetId || source.target?.targetId
+      || source.target?.documentId, 'usage.targetId');
+    result.location = clone(source.location ?? source.target ?? null);
+    result.available = source.available !== false;
+    result.partial = source.partial === true;
+    return result;
+  }
+
+  function normalizeUsageIndex(value) {
+    const source = object(value, 'TopicUsageIndex');
+    return {
+      ...clone(source),
+      topicRef: normalizeTopicRef(source.topicRef),
+      revision: source.revision ?? 0,
+      partial: source.partial === true,
+      usages: (Array.isArray(source.usages) ? source.usages : []).map(normalizeUsage),
+    };
+  }
+
+  function normalizeRequest(value) {
+    const source = object(value, 'placement operation');
+    const operation = requiredString(source.operation, 'operation');
+    if (!OPERATIONS.has(operation)) throw new TypeError('operation is invalid');
+    const result = clone(source);
+    result.operationId = requiredString(source.operationId, 'operationId');
+    result.operation = operation;
+    result.topicRef = normalizeTopicRef(source.topicRef);
+    result.sourcePlacement = source.sourcePlacement ? normalizePlacement(source.sourcePlacement) : null;
+    result.target = source.target ? clone(object(source.target, 'target')) : null;
+    result.expectedRevision = source.expectedRevision ?? null;
+    result.allowOrphan = source.allowOrphan === true;
+    result.currentPlacementCount = source.currentPlacementCount ?? null;
+    if (operation !== 'detach' && !result.target) throw new TypeError('target is required');
+    if (operation !== 'detach') {
+      result.target.documentId = requiredString(result.target.documentId, 'target.documentId');
+      result.target.viewId = requiredString(result.target.viewId, 'target.viewId');
+      if (!SURFACES.has(result.target.surface)) throw new TypeError('target.surface is invalid');
+    }
+    if ((operation === 'move' || operation === 'detach') && !result.sourcePlacement) {
+      throw new TypeError('sourcePlacement is required');
+    }
+    if (operation === 'detach' && result.currentPlacementCount === 1 && !result.allowOrphan) {
+      throw new TypeError('最後の登録先から外すには明示的な確認が必要です');
+    }
+    result.action = operation;
+    result.mutationId = result.operationId;
+    result.topicRefs = [clone(result.topicRef)];
+    result.sourcePlacements = result.sourcePlacement ? [clone(result.sourcePlacement)] : [];
+    result.targetDocumentId = result.target?.documentId || null;
+    result.targetViewId = result.target?.viewId || null;
+    result.targetSurface = result.target?.surface || null;
+    result.targetPosition = clone(result.target?.position ?? null);
+    result.columnBindings = normalizeBindings(source.columnBindings || []);
+    result.baseRevisions = clone(object(source.baseRevisions, 'baseRevisions'));
+    const revisionDocuments = new Set();
+    if (result.targetDocumentId) revisionDocuments.add(result.targetDocumentId);
+    if (['move', 'detach'].includes(operation)) revisionDocuments.add(result.sourcePlacement.documentId);
+    revisionDocuments.forEach((documentId) => {
+      if (!Object.prototype.hasOwnProperty.call(result.baseRevisions, documentId)) {
+        throw new TypeError(`baseRevisions.${documentId} is required`);
+      }
+    });
+    return result;
+  }
+
+  function normalizeBindings(value) {
+    if (!Array.isArray(value)) throw new TypeError('columnBindings must be an array');
+    const bySource = new Map();
+    const byTarget = new Map();
+    return value.map((binding) => {
+      const source = object(binding, 'column binding');
+      if (source.confirmed !== true) throw new TypeError('column bindings require explicit confirmation');
+      const sourceId = requiredString(source.sourcePropertyFamilyId, 'sourcePropertyFamilyId');
+      const targetId = requiredString(source.targetPropertyFamilyId, 'targetPropertyFamilyId');
+      if (bySource.has(sourceId) && bySource.get(sourceId) !== targetId) {
+        throw new TypeError('one source property cannot bind to multiple target properties');
+      }
+      if (byTarget.has(targetId) && byTarget.get(targetId) !== sourceId) {
+        throw new TypeError('one target property cannot bind to multiple source properties');
+      }
+      bySource.set(sourceId, targetId);
+      byTarget.set(targetId, sourceId);
+      return { ...clone(source), sourcePropertyFamilyId: sourceId,
+        targetPropertyFamilyId: targetId, confirmed: true };
+    });
+  }
+
+  function failureState(error) {
+    const detail = error?.detail && typeof error.detail === 'object' ? error.detail
+      : error?.data?.detail && typeof error.data.detail === 'object' ? error.data.detail
+        : error?.response?.detail && typeof error.response.detail === 'object'
+          ? error.response.detail : null;
+    const statusCode = Number(error?.status);
+    const mapped = ({ 403: 'forbidden', 404: 'missing', 409: 'conflict', 423: 'locked',
+      507: 'capacity' })[statusCode];
+    const offline = error?.name === 'NetworkError' || error?.offline === true;
+    const candidate = detail?.code || mapped || (offline ? 'offline' : error?.code);
+    const code = FAILURE_CODES.has(candidate) ? candidate : 'failed';
+    const recoveryRequired = code === 'placement-recovery-required'
+      || detail?.recoveryRequired === true;
+    const resultUnknown = code === 'result-unknown' || detail?.resultUnknown === true;
+    return { ok: false, state: code,
+      retryable: !recoveryRequired && !resultUnknown && ['offline', 'conflict', 'locked'].includes(code),
+      sourcePreserved: resultUnknown ? null : (recoveryRequired ? false : detail?.sourcePreserved !== false),
+      recoveryRequired, resultUnknown,
+      affectedDocuments: clone(detail?.affectedDocuments || []),
+      message: detail?.message || error?.message || String(error) };
+  }
+
+  function createClient(transport) {
+    object(transport, 'placement transport');
+    if (typeof transport.prepare !== 'function' || typeof transport.commit !== 'function') {
+      throw new TypeError('placement transport requires prepare and commit');
+    }
+    const completed = new Map();
+    const pending = new Map();
+
+    async function execute(value) {
+      const request = normalizeRequest(value);
+      if (completed.has(request.operationId)) return clone(completed.get(request.operationId));
+      if (pending.has(request.operationId)) return pending.get(request.operationId);
+      if (typeof transport.isOnline === 'function' && !transport.isOnline()) {
+        return failureState({ code: 'offline', message: '現在はオフラインです。再接続後に再試行してください。' });
+      }
+      const promise = run(request).finally(() => pending.delete(request.operationId));
+      pending.set(request.operationId, promise);
+      return promise;
+    }
+
+    async function run(request) {
+      try {
+        const prepared = object(await transport.prepare(clone(request)), 'prepare response');
+        if (prepared.ok === false) return failureState(prepared.error || prepared);
+        const token = requiredString(prepared.preparedToken || prepared.prepareToken, 'preparedToken');
+        const commitRequest = {
+          operationId: request.operationId, preparedToken: token,
+          expectedRevision: prepared.expectedRevision ?? request.expectedRevision,
+          sourcePreservationRequired: request.operation === 'move',
+        };
+        let committedValue;
+        try {
+          committedValue = await transport.commit(clone(commitRequest));
+        } catch (firstError) {
+          const uncertain = firstError?.name === 'NetworkError' || firstError?.offline === true
+            || Number(firstError?.status) === 503;
+          if (!uncertain) throw firstError;
+          try {
+            committedValue = await transport.commit(clone(commitRequest));
+          } catch (secondError) {
+            const stillUncertain = secondError?.name === 'NetworkError'
+              || secondError?.offline === true || Number(secondError?.status) === 503;
+            if (!stillUncertain) throw secondError;
+            throw Object.assign(new Error(
+              '保存結果を確認できません。再操作せず、オンライン復帰後にシートまたはボードを再読込してください。',
+            ), { code: 'result-unknown', detail: { code: 'result-unknown',
+              resultUnknown: true, sourcePreserved: null } });
+          }
+        }
+        const committed = object(committedValue, 'commit response');
+        if (committed.ok === false) return failureState(committed.error || committed);
+        const committedRef = committed.topicRef || committed.placement?.topicRef
+          || committed.topicRefs?.[0] || null;
+        const result = { ...clone(committed), ok: true, state: 'committed',
+          sourcePreserved: ['link-duplicate', 'duplicate'].includes(request.operation) };
+        if (request.operation === 'link-duplicate' && (!committedRef
+            || JSON.stringify(normalizeTopicRef(committedRef)) !== JSON.stringify(request.topicRef))) {
+          throw Object.assign(new Error('リンク複製でトピックIDが変更されました'), { code: 'conflict' });
+        }
+        if (request.operation === 'duplicate' && (!committedRef
+            || normalizeTopicRef(committedRef).topicId === request.topicRef.topicId)) {
+          throw Object.assign(new Error('複製で新しいトピックIDが作成されませんでした'), { code: 'conflict' });
+        }
+        completed.set(request.operationId, result);
+        return clone(result);
+      } catch (error) {
+        return failureState(error);
+      }
+    }
+
+    function operation(name, value) {
+      return execute({ ...clone(value), operation: name });
+    }
+
+    return Object.freeze({
+      execute,
+      move: (value) => operation('move', value),
+      linkDuplicate: (value) => operation('link-duplicate', value),
+      duplicate: (value) => operation('duplicate', value),
+      detach: (value) => operation('detach', value),
+      normalizeRequest,
+    });
+  }
+
+  return Object.freeze({
+    normalizePlacement,
+    normalizeUsage,
+    normalizeUsageIndex,
+    normalizeRequest,
+    createClient,
+  });
+}));
+
+;
+
+/* === gb-topic-detail.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const api = factory(root?.MeldexTopicPropertyFamily, root?.MeldexTopicPlacement);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicDetail = api;
+}(typeof globalThis !== 'undefined' ? globalThis : this, function (PropertyFamily, Placement) {
+  'use strict';
+
+  const TABS = Object.freeze([
+    { id: 'current-values', label: 'この場所の値' },
+    { id: 'all-values', label: 'すべての値' },
+    { id: 'registrations-links', label: '登録先・リンク' },
+  ]);
+  let mountSequence = 0;
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function valueText(value) {
+    if (value == null || value === '') return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) return value.map(valueText).filter(Boolean).join(', ');
+    return JSON.stringify(value);
+  }
+
+  function commonTagIds(value) {
+    const values = Array.isArray(value) ? value : String(value || '').split(',');
+    return [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
+  }
+
+  function normalizePropertyValue(value) {
+    if (PropertyFamily?.normalizePropertyValue) return PropertyFamily.normalizePropertyValue(value);
+    return clone(value);
+  }
+
+  function currentValueRows(propertyValues, columns) {
+    if (PropertyFamily?.valuesForColumns) {
+      return PropertyFamily.valuesForColumns(propertyValues, columns).map((item) => ({
+        id: item.value?.propertyFamilyId || item.column.propertyFamilyId || item.column.columnId,
+        columnId: item.column.columnId,
+        label: item.column.name,
+        type: item.column.columnType,
+        value: clone(item.value),
+        hidden: false,
+      }));
+    }
+    return [];
+  }
+
+  function allValueRows(propertyValues, columns) {
+    const columnByFamily = new Map();
+    (Array.isArray(columns) ? columns : []).forEach((column) => {
+      if (column?.propertyFamilyId) columnByFamily.set(column.propertyFamilyId, column);
+      // 列名編集で既存共有列へ共通化した列は、値の正本を旧familyに保ったまま
+      // sourcePropertyFamilyIdで表示する。全値タブでも同じ対応を使う。
+      if (column?.sourcePropertyFamilyId) columnByFamily.set(column.sourcePropertyFamilyId, column);
+    });
+    return (Array.isArray(propertyValues) ? propertyValues : []).map(normalizePropertyValue).map((item) => {
+      const column = columnByFamily.get(item.propertyFamilyId);
+      return {
+        id: item.propertyFamilyId,
+        label: column?.name || item.displayName || item.propertyFamilyId,
+        type: item.columnType,
+        value: clone(item.value),
+        hidden: !column,
+        origins: clone(item.origins),
+        updatedAt: item.updatedAt,
+        updatedBy: item.updatedBy,
+      };
+    });
+  }
+
+  function usageRows(usageIndex) {
+    if (!usageIndex) return [];
+    const index = Placement?.normalizeUsageIndex ? Placement.normalizeUsageIndex(usageIndex) : usageIndex;
+    return (index.usages || []).map((usage) => ({
+      id: usage.usageId,
+      label: usage.label || usage.location?.title || usage.targetId || usage.kind,
+      kind: usage.kind,
+      target: { targetId: usage.targetId, ...clone(usage.location || {}) },
+      available: usage.available !== false,
+      partial: usage.partial === true,
+    }));
+  }
+
+  function createViewModel(value) {
+    const source = value || {};
+    const valueMap = source.propertyValuesByFamilyId || {};
+    const requestedOrder = Array.isArray(source.propertyValueOrder) ? source.propertyValueOrder : [];
+    const order = [...new Set([...requestedOrder, ...Object.keys(valueMap)])];
+    const propertyValues = order.filter((familyId) => valueMap[familyId])
+      .map((familyId) => valueMap[familyId]);
+    return {
+      topicRef: clone(source.topicRef),
+      title: typeof source.title === 'string' ? source.title : '',
+      partial: source.usageIndex?.partial === true,
+      tabs: {
+        'current-values': currentValueRows(propertyValues, source.currentColumns),
+        'all-values': allValueRows(propertyValues, source.currentColumns),
+        'registrations-links': usageRows(source.usageIndex),
+      },
+    };
+  }
+
+  function element(document, tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function nextTabId(currentId, key) {
+    const current = TABS.findIndex((tab) => tab.id === currentId);
+    if (key === 'Home') return TABS[0].id;
+    if (key === 'End') return TABS[TABS.length - 1].id;
+    if (key === 'ArrowRight') return TABS[(current + 1) % TABS.length].id;
+    if (key === 'ArrowLeft') return TABS[(current - 1 + TABS.length) % TABS.length].id;
+    return null;
+  }
+
+  function renderValueRows(document, rows, settings) {
+    const list = element(document, 'dl', 'topic-detail-values');
+    rows.forEach((row) => {
+      const item = element(document, 'div', 'topic-detail-value');
+      item.dataset.propertyId = row.id;
+      const label = row.hidden ? `${row.label}（現在の場所では非表示）` : row.label;
+      item.append(element(document, 'dt', 'topic-detail-value-label', label));
+      const content = element(document, 'dd', 'topic-detail-value-content');
+      if (row.type === 'common-tags' && typeof globalThis.renderInlineTagEditor === 'function') {
+        globalThis.renderInlineTagEditor(content, {
+          getIds: () => commonTagIds(row.value),
+          async setIds(ids) {
+            if (settings?.readOnly === true) throw new Error('このトピックは読み取り専用です');
+            if (typeof settings?.onUpdateValue !== 'function') {
+              throw new Error('トピックのタグ保存機能を利用できません');
+            }
+            const nextValue = commonTagIds(ids).join(', ');
+            await settings.onUpdateValue(clone(row), nextValue);
+            row.value = nextValue;
+            settings.onValueStored?.(row.id, nextValue);
+          },
+          readOnly: settings?.readOnly === true,
+          sourceFolder: settings?.sourceFolder || '',
+          compact: true,
+          boxed: false,
+        });
+      } else {
+        content.textContent = valueText(row.value);
+      }
+      item.append(content);
+      const firstOrigin = Array.isArray(row.origins) ? row.origins[0] : null;
+      const origin = firstOrigin?.columnName || firstOrigin?.documentName || firstOrigin?.sourceId;
+      const update = [row.updatedAt, row.updatedBy].filter(Boolean).join(' / ');
+      if (origin || update) {
+        item.append(element(document, 'small', 'topic-detail-value-meta',
+          [origin ? `由来: ${origin}` : '', update ? `更新: ${update}` : ''].filter(Boolean).join(' / ')));
+      }
+      list.append(item);
+    });
+    if (!rows.length) list.append(element(document, 'p', 'topic-detail-empty', '値はありません'));
+    return list;
+  }
+
+  function renderUsageRows(document, rows, onOpenUsage) {
+    const list = element(document, 'ul', 'topic-detail-usages');
+    rows.forEach((row) => {
+      const item = element(document, 'li', 'topic-detail-usage');
+      const button = element(document, 'button', 'gb-btn topic-detail-usage-open', row.label);
+      button.type = 'button';
+      button.disabled = !row.available;
+      button.setAttribute('aria-label', `${row.label}を開く`);
+      button.addEventListener('click', () => onOpenUsage?.(clone(row)));
+      item.append(button);
+      if (!row.available) {
+        item.append(element(document, 'span', 'topic-detail-unavailable', '現在は開けません'));
+      }
+      if (row.partial) item.append(element(document, 'span', 'topic-detail-partial', '一部のみ確認済み'));
+      list.append(item);
+    });
+    if (!rows.length) list.append(element(document, 'p', 'topic-detail-empty', '登録先やリンクはありません'));
+    return list;
+  }
+
+  function mount(container, value, options) {
+    if (!container?.ownerDocument) throw new TypeError('container must be a DOM element');
+    const document = container.ownerDocument;
+    const model = createViewModel(value);
+    const settings = options || {};
+    const instanceId = `topic-detail-${++mountSequence}`;
+    let activeTab = TABS.some((tab) => tab.id === settings.activeTab)
+      ? settings.activeTab : TABS[0].id;
+    container.replaceChildren();
+    container.classList.add('topic-detail');
+    const tabs = element(document, 'div', 'gb-tabbar topic-detail-tabs');
+    tabs.setAttribute('role', 'tablist');
+    const panel = element(document, 'section', 'topic-detail-panel');
+    panel.setAttribute('role', 'tabpanel');
+
+    function render() {
+      [...tabs.children].forEach((button) => {
+        const selected = button.dataset.tabId === activeTab;
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        button.classList.toggle('gb-tab-active', selected);
+      });
+      panel.replaceChildren();
+      panel.id = `${instanceId}-panel-${activeTab}`;
+      panel.setAttribute('aria-labelledby', `${instanceId}-tab-${activeTab}`);
+      const rows = model.tabs[activeTab];
+      panel.append(activeTab === 'registrations-links'
+        ? renderUsageRows(document, rows, settings.onOpenUsage)
+        : renderValueRows(document, rows, {
+          ...settings,
+          onValueStored(propertyId, nextValue) {
+            ['current-values', 'all-values'].forEach((tabId) => {
+              model.tabs[tabId].filter(row => row.id === propertyId)
+                .forEach(row => { row.value = clone(nextValue); });
+            });
+          },
+        }));
+      settings.onTabChange?.(activeTab);
+    }
+
+    TABS.forEach((tab) => {
+      const button = element(document, 'button', 'gb-tab topic-detail-tab', tab.label);
+      button.type = 'button';
+      button.id = `${instanceId}-tab-${tab.id}`;
+      button.dataset.tabId = tab.id;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-controls', `${instanceId}-panel-${tab.id}`);
+      button.addEventListener('click', () => { activeTab = tab.id; render(); });
+      button.addEventListener('keydown', (event) => {
+        const next = nextTabId(activeTab, event.key);
+        if (!next) return;
+        event.preventDefault();
+        activeTab = next;
+        render();
+        tabs.children[TABS.findIndex((item) => item.id === next)]?.focus?.();
+      });
+      tabs.append(button);
+    });
+    if (model.partial) {
+      const warning = element(document, 'p', 'topic-detail-index-partial',
+        '登録先とリンクを一部だけ確認できました。再読み込みすると再確認できます。');
+      warning.setAttribute('role', 'status');
+      container.append(warning);
+    }
+    container.append(tabs, panel);
+    render();
+    return Object.freeze({
+      model: clone(model),
+      selectTab(tabId) {
+        if (!TABS.some((tab) => tab.id === tabId)) throw new TypeError('unknown topic detail tab');
+        activeTab = tabId;
+        render();
+      },
+      getActiveTab() { return activeTab; },
+      destroy() { container.replaceChildren(); },
+    });
+  }
+
+  return Object.freeze({ TABS, createViewModel, commonTagIds, mount });
+}));
+
+;
+
+/* === gb-topic-placement-ui.js === */
+;
+(function initMeldexTopicPlacementUi(global) {
+  'use strict';
+
+  const MIME = 'application/x-meldex-topic-transfer-id';
+  const viewsByPath = new Map();
+  const failedRefreshes = new Map();
+  const placementChannel = typeof BroadcastChannel === 'function'
+    ? new BroadcastChannel('meldex-topic-placement-v1') : null;
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizePath(value) {
+    return String(value || '').trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  }
+
+  function topicKey(value) {
+    return JSON.stringify([String(value?.sourceId || ''), String(value?.topicId || '')]);
+  }
+
+  function mutationId(prefix) {
+    return `${prefix || 'topic-placement'}:${global.crypto?.randomUUID?.() || Date.now().toString(36)}`;
+  }
+
+  function checkpointId(value) {
+    return String(value?.checkpointId || value?.revision || value || '');
+  }
+
+  function rememberView(detail) {
+    const path = normalizePath(detail?.dbPath || detail?.legacyPath);
+    if (!path || !detail?.viewDocument) return;
+    const previous = viewsByPath.get(path);
+    const legacyRefsByName = new Map(previous?.legacyRefsByName || []);
+    (detail.topicRecords || []).forEach((record) => {
+      const legacyName = String(record?.legacyPath || '').replace(/\\/g, '/').split('/').pop();
+      const ref = record?.topicRef || (record?.topicId && detail.sourceId
+        ? { sourceId: detail.sourceId, topicId: record.topicId } : null);
+      if (legacyName && ref?.sourceId && ref?.topicId
+        && (!record.originDocumentId || record.originDocumentId === detail.viewDocument.documentId)) {
+        legacyRefsByName.set(legacyName.replace(/\.[^.]+$/, ''), clone(ref));
+      }
+    });
+    viewsByPath.set(path, {
+      sourceId: String(detail.sourceId || ''),
+      path,
+      archiveRelativePath: String(detail.archiveRelativePath || ''),
+      document: clone(detail.viewDocument),
+      checkpoint: clone(detail.checkpoint || {}),
+      records: clone(detail.topicRecords || []),
+      legacyRefsByName,
+      readOnly: detail.readOnly === true,
+      updatedAt: Date.now(),
+    });
+  }
+
+  function recordKey(record, fallbackSourceId) {
+    return topicKey(record?.topicRef || {
+      sourceId: fallbackSourceId, topicId: record?.topicId,
+    });
+  }
+
+  function sheetColumns(document, placements) {
+    const views = Array.isArray(document?.sheetViews) ? document.sheetViews : [];
+    const preferredIds = new Set((placements || []).map(item => String(item.viewId || '')));
+    const view = views.find(item => preferredIds.has(String(item.viewId || item.sheetViewId || '')))
+      || views.find(item => String(item.viewId || item.sheetViewId || '')
+        === String(document?.activeSheetViewId || document?.activeView || ''))
+      || views[0];
+    return Array.isArray(view?.columns) ? view.columns : [];
+  }
+
+  function propertyForColumn(record, placement, column) {
+    const values = record?.propertyValuesByFamilyId || {};
+    const targetFamilyId = String(column?.propertyFamilyId || '');
+    if (targetFamilyId && Object.prototype.hasOwnProperty.call(values, targetFamilyId)) {
+      return values[targetFamilyId]?.value;
+    }
+    const sourceFamilyId = String(column?.sourcePropertyFamilyId || '');
+    if (sourceFamilyId && Object.prototype.hasOwnProperty.call(values, sourceFamilyId)) {
+      return values[sourceFamilyId]?.value;
+    }
+    const binding = (placement?.columnBindings || []).find(item =>
+      String(item?.targetPropertyFamilyId || '') === targetFamilyId);
+    if (binding && Object.prototype.hasOwnProperty.call(values, binding.sourcePropertyFamilyId)) {
+      return values[binding.sourcePropertyFamilyId]?.value;
+    }
+    // propertyValuesByFamilyId が存在するTopicRecordではfamily/bindingだけを正本にする。
+    // 同名列fallbackは旧record（typed map自体が無い）を読む互換経路に限定する。
+    if (record && Object.prototype.hasOwnProperty.call(record, 'propertyValuesByFamilyId')) {
+      return undefined;
+    }
+    const name = String(column?.name || column?.columnId || '');
+    return Object.prototype.hasOwnProperty.call(record?.properties || {}, name)
+      ? record.properties[name] : undefined;
+  }
+
+  function effectivePropertyFamilyId(record, placement, column) {
+    const values = record?.propertyValuesByFamilyId || {};
+    const targetFamilyId = String(column?.propertyFamilyId || '');
+    if (targetFamilyId && Object.prototype.hasOwnProperty.call(values, targetFamilyId)) {
+      return targetFamilyId;
+    }
+    const sourceFamilyId = String(column?.sourcePropertyFamilyId || '');
+    if (sourceFamilyId && Object.prototype.hasOwnProperty.call(values, sourceFamilyId)) {
+      return sourceFamilyId;
+    }
+    const binding = (placement?.columnBindings || []).find(item =>
+      String(item?.targetPropertyFamilyId || '') === targetFamilyId
+      && Object.prototype.hasOwnProperty.call(values, item?.sourcePropertyFamilyId));
+    return String(binding?.sourcePropertyFamilyId || targetFamilyId || '');
+  }
+
+  function uniqueEntityName(base, topicRef, entities) {
+    const title = String(base || '無題').trim() || '無題';
+    if (!Object.prototype.hasOwnProperty.call(entities, title)) return title;
+    if (topicKey(entities[title]?.topicRef) === topicKey(topicRef)) return title;
+    const suffix = String(topicRef?.topicId || '').slice(0, 6) || 'topic';
+    let candidate = `${title} · ${suffix}`;
+    let number = 2;
+    while (Object.prototype.hasOwnProperty.call(entities, candidate)
+      && topicKey(entities[candidate]?.topicRef) !== topicKey(topicRef)) {
+      candidate = `${title} · ${suffix}-${number++}`;
+    }
+    return candidate;
+  }
+
+  function projectSheetPivot(dbPath, pivotData, preferredViewId) {
+    const view = viewsByPath.get(normalizePath(dbPath));
+    if (!view || !pivotData?.entities) return pivotData;
+    const previousProjection = pivotData._topicPlacementProjection || {};
+    const baseProperties = Array.isArray(previousProjection.baseProperties)
+      ? previousProjection.baseProperties
+      : [...(pivotData.properties || [])];
+    Object.keys(pivotData.entities).forEach((name) => {
+      if (pivotData.entities[name]?._topicCanonicalOnly === true) delete pivotData.entities[name];
+    });
+    const requestedViewId = String(preferredViewId || view.document?.activeSheetViewId
+      || view.document?.activeView || '');
+    const placements = (view.document?.placements || []).filter(item => item?.surface === 'sheet'
+      && (!requestedViewId || String(item.viewId || '') === requestedViewId));
+    const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
+    for (const [name, ref] of view.legacyRefsByName || []) {
+      if (!placementKeys.has(topicKey(ref))) delete pivotData.entities[name];
+    }
+    const records = new Map((view.records || []).map(record => [recordKey(record, view.sourceId), record]));
+    const columns = columnsForDocument(view.document, requestedViewId);
+    const propertyNames = columns.map(column => String(column?.name || column?.columnId || '')).filter(Boolean);
+    pivotData.properties = [...new Set([...baseProperties, ...propertyNames])];
+    placements.forEach((placement) => {
+      const ref = placement.topicRef;
+      const record = records.get(topicKey(ref));
+      if (!record) return;
+      const legacyName = [...(view.legacyRefsByName || [])].find(([, knownRef]) =>
+        topicKey(knownRef) === topicKey(ref))?.[0];
+      const name = legacyName || uniqueEntityName(record.title || ref.topicId, ref, pivotData.entities);
+      const entity = { topicRef: clone(ref), _topicPlacementId: placement.placementId,
+        _topicViewId: placement.viewId,
+        _topicCanonicalOnly: !legacyName, _topicDbPath: normalizePath(dbPath),
+        _topicReadOnly: view.readOnly === true };
+      columns.forEach((column) => {
+        const columnName = String(column?.name || column?.columnId || '');
+        const value = propertyForColumn(record, placement, column);
+        if (!columnName) return;
+        entity[columnName] = [{
+          value: value === undefined ? '' : clone(value), status: '採用', note: '',
+          topicRef: clone(ref), _topicCanonicalOnly: !legacyName,
+          _topicDbPath: normalizePath(dbPath),
+          _topicReadOnly: view.readOnly === true,
+          _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
+          _topicColumnId: column.columnId || column.id || columnName,
+          _topicColumnName: columnName,
+          _topicColumnType: column.columnType || column.type || 'text',
+        }];
+      });
+      pivotData.entities[name] = entity;
+    });
+    pivotData._topicPlacementProjection = {
+      documentId: view.document.documentId, viewId: requestedViewId,
+      baseProperties, propertyNames, updatedAt: view.updatedAt,
+    };
+    return pivotData;
+  }
+
+  function rerenderProjectedSheets(path) {
+    const contexts = Object.values(global.getAllPanes?.() || {});
+    const current = global._currentPaneState?.();
+    if (current && !contexts.includes(current)) contexts.push(current);
+    contexts.forEach((ctx) => {
+      if (!ctx?.pivotData || normalizePath(ctx.dbPath) !== normalizePath(path)) return;
+      projectSheetPivot(path, ctx.pivotData, ctx.currentViewId);
+      const mode = ctx.viewMode || 'pivot';
+      if (mode === 'gallery') global.renderGallery?.(ctx);
+      else if (mode === 'kanban') global.renderKanban?.(ctx);
+      else if (mode === 'gantt') global.renderGantt?.(ctx);
+      else if (['timeline', 'calendar', 'tasks', 'shifts'].includes(mode)) global.renderTimeline?.(ctx);
+      else if (mode === 'chart') global.renderChart?.(ctx);
+      else if (mode === 'graph') global.renderGraph?.(ctx);
+      else global.renderPivot?.(ctx);
+    });
+  }
+
+  global.addEventListener?.('meldex:topic-records-updated', (event) => {
+    rememberView(event.detail);
+    rerenderProjectedSheets(event.detail?.dbPath || event.detail?.legacyPath);
+  });
+
+  function recordRef(view, entityName, entityData) {
+    if (entityData?.topicRef?.sourceId && entityData?.topicRef?.topicId) return clone(entityData.topicRef);
+    const name = String(entityName || '');
+    const record = (view?.records || []).find(item => {
+      const legacy = String(item?.legacyPath || '').replace(/\\/g, '/').split('/').pop() || '';
+      const stem = legacy.replace(/\.[^.]+$/, '');
+      return legacy === name || stem === name;
+    });
+    return record?.topicId ? { sourceId: view.sourceId, topicId: String(record.topicId) } : null;
+  }
+
+  function findPlacement(document, topicRef, preferredViewId, preferredPlacementId) {
+    const key = topicKey(topicRef);
+    const placements = Array.isArray(document?.placements) ? document.placements : [];
+    if (preferredPlacementId) {
+      return clone(placements.find(item => String(item?.placementId || '')
+        === String(preferredPlacementId) && topicKey(item?.topicRef) === key) || null);
+    }
+    if (preferredViewId) {
+      return clone(placements.find(item => topicKey(item?.topicRef) === key
+        && String(item.viewId || '') === String(preferredViewId)) || null);
+    }
+    return clone(placements.find(item => topicKey(item?.topicRef) === key) || null);
+  }
+
+  function sheetSource(dbPath, entityName, entityData, preferredViewId) {
+    const view = viewsByPath.get(normalizePath(dbPath));
+    if (!view) return null;
+    const topicRef = recordRef(view, entityName, entityData);
+    if (!topicRef) return null;
+    const placement = findPlacement(
+      view.document, topicRef, entityData?._topicViewId || preferredViewId,
+      entityData?._topicPlacementId,
+    );
+    if (!placement) return null;
+    const record = (view.records || []).find(item => String(item?.topicId || '') === topicRef.topicId) || null;
+    return {
+      topicRef, placement, record: clone(record), path: normalizePath(dbPath),
+      document: clone(view.document), revision: checkpointId(view.checkpoint),
+      label: String(entityName || record?.title || 'トピック'), surface: 'sheet',
+      readOnly: view.readOnly === true,
+    };
+  }
+
+  function treeSource(nodeData) {
+    if (nodeData?.type !== 'entity') return null;
+    const dbPath = normalizePath(nodeData._dbPath
+      || String(nodeData.path || '').replace(/[\\/][^\\/]+$/, ''));
+    return sheetSource(dbPath, nodeData.name, nodeData.entityData);
+  }
+
+  function liveBoardState() {
+    try { return typeof bd !== 'undefined' ? bd : global.bd; } catch (_) { return global.bd; }
+  }
+
+  function boardContextForElement(element) {
+    const pane = element?.closest?.('.gb-pane');
+    const paneId = pane?.dataset?.paneId || '';
+    const tab = paneId ? global.GBTabs?.getActiveTab?.(paneId) : null;
+    const component = tab?.id && typeof global.getComponentInstance === 'function'
+      ? global.getComponentInstance(tab.id) : null;
+    const live = liveBoardState();
+    const tabPath = normalizePath(tab?.state?.boardPath || tab?.path || component?.state?.boardPath);
+    const activeState = component?._active && normalizePath(live?.path || live?.boardPath) === tabPath
+      ? live : null;
+    const boardState = activeState || component?._bdDump?.bd
+      || (normalizePath(live?.path || live?.boardPath) === tabPath ? live : null);
+    const canvas = component?.el?.querySelector?.('[data-bd-role="canvas"]')
+      || pane?.querySelector?.('[data-bd-role="canvas"]') || null;
+    return { pane, paneId, tab, component, boardState, canvas, path: tabPath };
+  }
+
+  function boardSource(node, boardState, boardPath) {
+    const state = boardState || liveBoardState();
+    const path = normalizePath(boardPath || state?.path || state?.boardPath || '');
+    const view = viewsByPath.get(path);
+    const document = view?.document || state?.topicViewDocument;
+    const topicRef = node?.topicRef;
+    if (!document || !topicRef?.sourceId || !topicRef?.topicId) return null;
+    const preferredViewId = state?.activeBoardViewId || document.activeBoardViewId;
+    const placement = findPlacement(document, topicRef, preferredViewId);
+    if (!placement) return null;
+    return {
+      topicRef: clone(topicRef), placement, record: (view?.records || []).find(
+        item => String(item?.topicId || '') === String(topicRef.topicId)
+      ) || null,
+      path, document: clone(document), revision: checkpointId(view?.checkpoint),
+      label: String(node?.text || '').split('\n')[0] || 'トピック', surface: 'board',
+      readOnly: view?.readOnly === true,
+    };
+  }
+
+  async function fetchView(documentId) {
+    if (typeof global.apiFetch !== 'function') throw new Error('トピック配置APIへ接続できません');
+    return global.apiFetch(`/topic-views/${encodeURIComponent(documentId)}`, { silentError: true });
+  }
+
+  async function registeredTarget(selection, preferredViewId) {
+    const resourceType = selection?.type === 'board' ? 'board' : 'sheet';
+    const path = normalizePath(selection?.path || selection?.legacyPath);
+    const cached = viewsByPath.get(path);
+    if (cached?.document && global.MeldexTopicViewPicker?.blockFromDocument) {
+      const snapshot = await fetchView(cached.document.documentId);
+      if (snapshot?.readOnly) throw new Error('選択した移動先は読み取り専用です');
+      const block = await global.MeldexTopicViewPicker.blockFromDocument(
+        snapshot.viewDocument, resourceType,
+        { ...selection, sourceId: cached.sourceId, path },
+        cached.archiveRelativePath, preferredViewId,
+      );
+      return {
+        sourceId: cached.sourceId, documentId: block.documentId, viewId: block.viewId,
+        surface: resourceType, revision: checkpointId(snapshot.checkpoint),
+        document: snapshot.viewDocument, path, label: selection.name || block.fallback?.title || '移動先',
+      };
+    }
+    const block = await global.MeldexTopicViewPicker?.resolveSelection?.(selection, resourceType);
+    if (!block?.documentId || !block?.viewId) throw new Error('移動先のトピックビューを準備できません');
+    const snapshot = await fetchView(block.documentId);
+    if (snapshot?.readOnly) throw new Error('選択した移動先は読み取り専用です');
+    return {
+      sourceId: block.sourceId,
+      documentId: block.documentId,
+      viewId: block.viewId,
+      surface: resourceType,
+      revision: checkpointId(snapshot.checkpoint),
+      document: snapshot.viewDocument,
+      path: block.legacyPath || selection.path || '',
+      label: selection.name || block.fallback?.title || '移動先',
+    };
+  }
+
+  async function pickTarget() {
+    if (!global.GBFolderPicker?.pickFolder) throw new Error('移動先選択を開けません');
+    const selection = await global.GBFolderPicker.pickFolder({
+      title: '移動先のシートまたはボードを選択', selectFiles: true,
+      fileTypes: ['database', 'board'], includeHome: false,
+      includeSources: true, includeWorkspaces: false,
+      emptyText: '移動先にできるシートまたはボードがありません。',
+    });
+    return selection ? registeredTarget(selection) : null;
+  }
+
+  function columnsForDocument(document, viewId) {
+    const views = document?.sheetViews || [];
+    const requested = String(viewId || document?.activeSheetViewId || document?.activeView || '');
+    const view = views.find(item => String(item?.viewId || item?.sheetViewId || '') === requested)
+      || views[0] || {};
+    const types = document?.legacySheet?.propertyTypes || {};
+    return (Array.isArray(view.columns) ? view.columns : []).map((column, index) => {
+      const raw = typeof column === 'string' ? { columnId: column, name: column } : (column || {});
+      const name = String(raw.name || raw.label || raw.columnId || raw.propertyId || `列${index + 1}`);
+      const config = types[name] || {};
+      return global.MeldexTopicPropertyFamily.normalizeColumn({
+        ...clone(config), ...clone(raw), name,
+        columnId: String(raw.columnId || raw.propertyId || name),
+        columnType: raw.columnType || raw.type || config.type || 'text',
+        propertyFamilyId: raw.propertyFamilyId || config.propertyFamilyId
+          || global.MeldexTopicPropertyFamily.legacyPropertyFamilyId(document.documentId, name),
+      });
+    });
+  }
+
+  function bindingDialog(value, candidates) {
+    if (!global.GBUI?.createModal) return Promise.resolve({ decision: 'cancel' });
+    return new Promise(resolve => {
+      const body = document.createElement('div');
+      const message = document.createElement('p');
+      message.textContent = `「${value.displayName}」（${value.columnType}）と同名・同タイプの列があります。`;
+      const select = document.createElement('select');
+      select.className = 'gb-select';
+      select.setAttribute('aria-label', '共通化する既存列');
+      candidates.forEach(candidate => {
+        const option = document.createElement('option');
+        option.value = candidate.propertyFamilyId || candidate.columnId;
+        const origin = candidate.legacyPath || candidate.documentId || candidate.columnId;
+        const count = Number(candidate.existingValueCount || 0);
+        option.textContent = `${candidate.name} / ${candidate.columnType} / ${origin} / 値${count}件`;
+        select.appendChild(option);
+      });
+      const help = document.createElement('p');
+      help.textContent = '共通化すると、この値を選択した移動先の列へ表示します。別の列として保持した場合、値はトピック内に残り、この場所では非表示です。';
+      body.append(message, select, help);
+      const commonize = document.createElement('button');
+      commonize.type = 'button'; commonize.className = 'gb-btn gb-btn-primary';
+      commonize.textContent = '既存の列と共通化';
+      const separate = document.createElement('button');
+      separate.type = 'button'; separate.className = 'gb-btn';
+      separate.textContent = '同名の別の列として保持';
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+      let settled = false;
+      const modal = global.GBUI.createModal({
+        id: 'topic-column-binding-dialog', title: '同名・同タイプの列を確認', body,
+        footer: [cancel, separate, commonize], variant: 'mobile-sheet',
+        onClose: () => { if (!settled) resolve({ decision: 'cancel' }); },
+      });
+      const finish = decision => {
+        settled = true;
+        modal.close('submit');
+        resolve({ decision, candidateId: select.value });
+      };
+      commonize.addEventListener('click', () => finish('commonize'));
+      separate.addEventListener('click', () => finish('keep-separate'));
+      cancel.addEventListener('click', () => finish('cancel'));
+      modal.open();
+    });
+  }
+
+  async function ensureView(dbPath) {
+    const path = normalizePath(dbPath);
+    if (viewsByPath.has(path)) return viewsByPath.get(path);
+    const result = await global.GbTopicLiveBridge?.migrateOpenedSheet?.(dbPath, { reason: 'column-confirm' });
+    if (result?.detail) rememberView(result.detail);
+    return viewsByPath.get(path) || null;
+  }
+
+  function renamedSheetViews(document, oldName, newName, familyId, currentColumn) {
+    const views = clone(document.sheetViews || []);
+    views.forEach(view => {
+      if (!Array.isArray(view.columns)) return;
+      view.columns = view.columns.map(raw => {
+        const column = typeof raw === 'string'
+          ? { ...clone(currentColumn || {}), columnId: raw, name: raw }
+          : clone(raw);
+        const name = String(column.name || column.label || column.columnId || '');
+        if (name !== oldName) return column;
+        column.name = newName;
+        if (column.label === oldName) column.label = newName;
+        if (familyId) {
+          if (familyId !== currentColumn?.propertyFamilyId) {
+            column.sourcePropertyFamilyId = currentColumn?.propertyFamilyId || '';
+          }
+          column.propertyFamilyId = familyId;
+        }
+        return column;
+      });
+    });
+    return views;
+  }
+
+  async function renameColumn(options) {
+    const view = await ensureView(options.dbPath);
+    const baseCheckpointId = checkpointId(view?.checkpoint);
+    if (!view?.document || !baseCheckpointId) {
+      throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
+    }
+    const currentColumns = columnsForDocument(
+      view.document, options.viewId || options.ctx?.currentViewId,
+    );
+    const current = currentColumns.find(column => column.name === options.oldName);
+    if (!current) throw new Error('変更する列の型と安定IDを確認できません');
+    const params = new URLSearchParams({
+      name: options.newName,
+      column_type: current.columnType,
+      document_id: view.document.documentId,
+    });
+    const response = await global.apiFetch(`/topic-property-families/candidates?${params}`, { silentError: true });
+    const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+    let familyId = current.propertyFamilyId;
+    if (candidates.length) {
+      const decision = await bindingDialog({
+        displayName: options.newName, columnType: current.columnType,
+      }, candidates);
+      if (decision.decision === 'cancel') return false;
+      if (decision.decision === 'commonize') {
+        familyId = candidates.find(item => (item.propertyFamilyId || item.columnId) === decision.candidateId)?.propertyFamilyId;
+      }
+    }
+    const expectedSheetViews = renamedSheetViews(
+      view.document, options.oldName, options.newName, familyId, current,
+    );
+    const patchMutationId = mutationId('column-rename');
+    await options.rename();
+    try {
+      const result = await global.apiFetch(`/topic-views/${encodeURIComponent(view.document.documentId)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({
+          baseCheckpointId,
+          mutationId: patchMutationId,
+          changes: { sheetViews: expectedSheetViews },
+        }),
+      });
+      view.document = clone(result.viewDocument);
+      view.checkpoint = clone(result.checkpoint);
+      return true;
+    } catch (error) {
+      // 応答喪失時に無条件でlegacy側を戻すと、保存済みcanonical viewと分裂する。
+      // 現在のcheckpointを読み直し、保存済みか未保存かを確定できた場合だけ続行する。
+      try {
+        const currentSnapshot = await global.apiFetch(
+          `/topic-views/${encodeURIComponent(view.document.documentId)}/snapshot`,
+          { silentError: true },
+        );
+        if (JSON.stringify(currentSnapshot?.viewDocument?.sheetViews || [])
+            === JSON.stringify(expectedSheetViews)) {
+          view.document = clone(currentSnapshot.viewDocument);
+          view.checkpoint = clone(currentSnapshot.checkpoint);
+          return true;
+        }
+        if (checkpointId(currentSnapshot?.checkpoint) !== baseCheckpointId) {
+          const unknown = new Error('列名変更と列定義の保存結果が競合しています');
+          unknown.resultUnknown = true;
+          throw unknown;
+        }
+      } catch (verificationError) {
+        if (verificationError?.resultUnknown) throw verificationError;
+        const unknown = new Error('列定義の保存結果を確認できません');
+        unknown.resultUnknown = true;
+        throw unknown;
+      }
+      try {
+        await options.rollback?.();
+      } catch (rollbackError) {
+        const combined = new Error(
+          `列定義と実シートの復元結果を確認できません: ${rollbackError?.message || rollbackError}`,
+        );
+        combined.resultUnknown = true;
+        throw combined;
+      }
+      throw error;
+    }
+  }
+
+  async function columnBindings(record, targetDocument, targetViewId) {
+    if (!record || targetDocument?.defaultSurface !== 'sheet') return [];
+    const columns = columnsForDocument(targetDocument, targetViewId);
+    const values = Object.values(record.propertyValuesByFamilyId || {});
+    const bindings = [];
+    const boundTargets = new Set();
+    for (const value of values) {
+      if (columns.some(column => column.propertyFamilyId === value.propertyFamilyId)) continue;
+      const sourceColumn = {
+        columnId: value.propertyFamilyId, propertyFamilyId: value.propertyFamilyId,
+        name: value.displayName || value.propertyFamilyId, columnType: value.columnType,
+        typeConfig: value.typeConfig || {},
+      };
+      const candidates = columns.filter(column => !boundTargets.has(column.propertyFamilyId)
+        && column.normalizedName
+        === global.MeldexTopicPropertyFamily.normalizeColumn(sourceColumn).normalizedName
+        && global.MeldexTopicPropertyFamily.compatibleTypes(sourceColumn, column));
+      if (!candidates.length) continue;
+      const choice = await bindingDialog(value, candidates);
+      if (choice.decision === 'cancel') return null;
+      if (choice.decision !== 'commonize') continue;
+      const targetColumn = candidates.find(candidate => (candidate.propertyFamilyId || candidate.columnId) === choice.candidateId);
+      bindings.push({
+        sourcePropertyFamilyId: value.propertyFamilyId,
+        targetPropertyFamilyId: targetColumn.propertyFamilyId,
+        sourceColumn, targetColumn, confirmed: true,
+      });
+      boundTargets.add(targetColumn.propertyFamilyId);
+    }
+    return bindings;
+  }
+
+  const client = global.MeldexTopicPlacement?.createClient?.({
+    isOnline: () => global.navigator?.onLine !== false,
+    prepare: payload => global.apiFetch('/topic-placements/prepare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), silentError: true,
+    }),
+    commit: payload => global.apiFetch('/topic-placements/commit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), silentError: true,
+    }),
+  });
+
+  async function refreshView(documentId, path, sourceId) {
+    if (!documentId || typeof global.apiFetch !== 'function') return null;
+    const snapshot = await global.apiFetch(
+      `/topic-views/${encodeURIComponent(documentId)}/snapshot`, { silentError: true },
+    );
+    const previous = viewsByPath.get(normalizePath(path));
+    const detail = {
+      sourceId: String(sourceId || previous?.sourceId || ''),
+      dbPath: path,
+      legacyPath: path,
+      archiveRelativePath: previous?.archiveRelativePath || '',
+      viewDocument: snapshot.viewDocument,
+      checkpoint: snapshot.checkpoint,
+      topicRecords: (snapshot.topics || []).map(item => item?.record && ({
+        ...item.record, topicRef: item.topicRef,
+      })).filter(Boolean),
+      readOnly: snapshot.readOnly === true,
+    };
+    global.dispatchEvent?.(new CustomEvent('meldex:topic-records-updated', { detail }));
+    return detail;
+  }
+
+  function uniqueRefreshTargets(items) {
+    return (items || []).filter((item, index, rows) => item?.documentId && item?.path
+      && rows.findIndex(other => String(other?.documentId || '') === String(item.documentId)) === index);
+  }
+
+  async function refreshAffectedViews(items, options) {
+    const settings = options || {};
+    const targets = uniqueRefreshTargets(items);
+    const settled = await Promise.allSettled(targets.map(item => refreshView(
+      item.documentId, item.path, item.sourceId,
+    )));
+    const failures = settled.map((result, index) => result.status === 'rejected' && ({
+      target: clone(targets[index]),
+      message: String(result.reason?.message || result.reason || '再読込に失敗しました'),
+    })).filter(Boolean);
+    if (settings.broadcast !== false) {
+      targets.forEach(item => placementChannel?.postMessage({ kind: 'refresh-topic-view', ...item }));
+    }
+    if (!failures.length) return { ok: true, targets: clone(targets), failures: [] };
+    const retryId = mutationId('topic-refresh');
+    failedRefreshes.set(retryId, clone(targets));
+    const detail = {
+      retryId, reason: String(settings.reason || 'topic-refresh'),
+      failures: clone(failures), targets: clone(targets), saved: settings.saved === true,
+    };
+    global.dispatchEvent?.(new CustomEvent('meldex:topic-placement-refresh-failed', { detail }));
+    if (settings.notify !== false) {
+      const prefix = settings.saved === true ? '保存は完了しましたが、' : '';
+      global.showStatus?.(`${prefix}${failures.length}画面を更新できませんでした。更新ボタンまたは再試行で最新状態を取得してください`, true);
+    }
+    return { ok: false, retryId, targets: clone(targets), failures };
+  }
+
+  async function retryRefresh(retryId) {
+    const targets = failedRefreshes.get(String(retryId || ''));
+    if (!targets) return { ok: false, state: 'missing' };
+    const result = await refreshAffectedViews(targets, {
+      reason: 'topic-refresh-retry', saved: true, broadcast: true,
+    });
+    if (result.ok) {
+      failedRefreshes.delete(String(retryId));
+      global.showStatus?.('保存済みのトピック表示を更新しました');
+    }
+    return result;
+  }
+
+  async function updateProjectedValue(valueRef, updates) {
+    const ref = valueRef?.topicRef;
+    const dbPath = normalizePath(valueRef?._topicDbPath);
+    const view = viewsByPath.get(dbPath);
+    if (!ref?.sourceId || !ref?.topicId || !view) {
+      throw new Error('リンク複製したトピックの保存先を確認できません');
+    }
+    if (valueRef?._topicReadOnly === true || view.readOnly === true) {
+      throw new Error('このトピック表示は読み取り専用です');
+    }
+    const loaded = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { silentError: true },
+    );
+    const record = loaded.topic;
+    const familyId = String(valueRef._topicPropertyFamilyId || '');
+    if (!familyId) throw new Error('この列の共有列IDを確認できません');
+    const typed = clone(record.propertyValuesByFamilyId || {});
+    const order = [...(record.propertyValueOrder || [])];
+    const properties = clone(record.properties || {});
+    const columnName = String(valueRef.property || valueRef._topicColumnName || valueRef._topicColumnId || '');
+    if (updates?._delete) {
+      delete typed[familyId];
+      delete properties[columnName];
+      const index = order.indexOf(familyId);
+      if (index >= 0) order.splice(index, 1);
+    } else {
+      const nextValue = updates?.new_value !== undefined ? updates.new_value : valueRef.value;
+      typed[familyId] = {
+        ...(typed[familyId] || {}), propertyFamilyId: familyId,
+        displayName: columnName, columnType: valueRef._topicColumnType || 'text',
+        typeConfig: clone(typed[familyId]?.typeConfig || {}), value: clone(nextValue),
+        origins: clone(typed[familyId]?.origins || [{
+          sourceId: ref.sourceId, documentId: view.document.documentId,
+          columnId: valueRef._topicColumnId || columnName, columnName,
+        }]),
+        revision: Number(typed[familyId]?.revision || 0) + 1,
+      };
+      properties[columnName] = clone(nextValue);
+      if (!order.includes(familyId)) order.push(familyId);
+    }
+    const saved = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({ mutationId: mutationId('topic-value'), baseRevision: record.revision,
+          changes: { propertyValuesByFamilyId: typed, propertyValueOrder: order, properties } }),
+      },
+    );
+    const affected = [];
+    for (const [path, cached] of viewsByPath.entries()) {
+      if (!(cached.document?.placements || []).some(item => topicKey(item.topicRef) === topicKey(ref))) continue;
+      affected.push({ documentId: cached.document.documentId, path, sourceId: cached.sourceId });
+    }
+    const refresh = await refreshAffectedViews(affected, {
+      reason: 'topic-value-updated', saved: true,
+    });
+    return { ...saved, revision: saved?.record?.revision, refresh };
+  }
+
+  async function renameProjectedTopic(entity, title) {
+    const ref = entity?.topicRef;
+    if (!ref?.sourceId || !ref?.topicId) throw new Error('トピックIDを確認できません');
+    const view = viewsByPath.get(normalizePath(entity?._topicDbPath));
+    if (entity?._topicReadOnly === true || view?.readOnly === true) {
+      throw new Error('このトピック表示は読み取り専用です');
+    }
+    const loaded = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { silentError: true },
+    );
+    const saved = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({ mutationId: mutationId('topic-title'),
+          baseRevision: loaded.topic.revision, changes: { title } }) },
+    );
+    const affected = [];
+    for (const [path, cached] of viewsByPath.entries()) {
+      if ((cached.document?.placements || []).some(item => topicKey(item.topicRef) === topicKey(ref))) {
+        affected.push({ documentId: cached.document.documentId, path, sourceId: cached.sourceId });
+      }
+    }
+    const refresh = await refreshAffectedViews(affected, {
+      reason: 'topic-title-updated', saved: true,
+    });
+    return { ...saved, refresh };
+  }
+
+  async function updateProjectedBoardText(node, text) {
+    const ref = node?.topicRef;
+    if (!ref?.sourceId || !ref?.topicId) throw new Error('トピックIDを確認できません');
+    if (node?._topicReadOnly === true) throw new Error('このトピック表示は読み取り専用です');
+    const loaded = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { silentError: true },
+    );
+    const [title, ...noteLines] = String(text || '').split('\n');
+    const saved = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({ mutationId: mutationId('topic-board-text'),
+          baseRevision: loaded.topic.revision, changes: { title: title || '無題', note: noteLines.join('\n') } }) },
+    );
+    const affected = [];
+    for (const [path, cached] of viewsByPath.entries()) {
+      if ((cached.document?.placements || []).some(item => topicKey(item.topicRef) === topicKey(ref))) {
+        affected.push({ documentId: cached.document.documentId, path, sourceId: cached.sourceId });
+      }
+    }
+    const refresh = await refreshAffectedViews(affected, {
+      reason: 'topic-board-text-updated', saved: true,
+    });
+    return { ...saved, refresh };
+  }
+
+  placementChannel && (placementChannel.onmessage = event => {
+    const detail = event?.data;
+    if (detail?.kind === 'refresh-topic-view' && detail.documentId && detail.path) {
+      void refreshAffectedViews([detail], {
+        reason: 'cross-window-topic-refresh', saved: true, broadcast: false,
+      });
+    }
+  });
+
+  async function execute(source, operation, explicitTarget, options) {
+    const executeOptions = options || {};
+    if (!client || !source?.topicRef
+        || (['move', 'detach'].includes(operation) && !source?.placement)) {
+      throw new Error('このトピックの配置情報を確認できません');
+    }
+    if (source.readOnly === true) throw new Error('このトピック表示は読み取り専用です');
+    let target = explicitTarget || null;
+    if (operation === 'duplicate' && !target) {
+      target = {
+        documentId: source.placement.documentId, viewId: source.placement.viewId,
+        surface: source.placement.surface, revision: source.revision, document: source.document,
+        path: source.path, label: source.label,
+      };
+    } else if (!target && operation !== 'detach') {
+      target = await pickTarget();
+      if (!target) return { ok: false, state: 'cancelled' };
+    }
+    const bindings = operation === 'detach' ? []
+      : Array.isArray(executeOptions.columnBindings) ? clone(executeOptions.columnBindings)
+        : await columnBindings(source.record, target.document, target.viewId);
+    if (bindings === null) return { ok: false, state: 'cancelled' };
+    if (target) target.columnBindings = clone(bindings);
+    const baseRevisions = {};
+    if (source.placement?.documentId) baseRevisions[source.placement.documentId] = source.revision;
+    if (target) baseRevisions[target.documentId] = target.revision;
+    const request = {
+      operation, operationId: executeOptions.operationId || mutationId(operation), topicRef: source.topicRef,
+      sourcePlacement: ['move', 'detach'].includes(operation) ? source.placement : null,
+      target: target ? { documentId: target.documentId, viewId: target.viewId,
+        surface: target.surface, position: clone(target.position || null) } : null,
+      columnBindings: bindings, baseRevisions,
+    };
+    if (operation === 'detach') {
+      const usage = await global.apiFetch(`/topics/${encodeURIComponent(source.topicRef.sourceId)}/${encodeURIComponent(source.topicRef.topicId)}/usages`, { silentError: true });
+      const count = (usage?.usages || []).filter(item => item.kind === 'placement').length;
+      request.currentPlacementCount = count;
+      if (count <= 1 && executeOptions.allowOrphan !== true) {
+        const confirmed = await global.cfConfirm?.('最後の登録先から外すと、トピックはどこにも表示されなくなります。続行しますか？');
+        if (!confirmed) return { ok: false, state: 'cancelled' };
+        request.allowOrphan = true;
+      } else if (count <= 1) {
+        request.allowOrphan = true;
+      }
+    }
+    const result = await client.execute(request);
+    if (!result.ok) {
+      global.showStatus?.(result.message || 'トピックの配置を変更できませんでした', true);
+      return result;
+    }
+    if (result.noOp === true) {
+      global.showStatus?.(`${source.label}は既にこの場所へ登録されています`);
+      return result;
+    }
+    const refreshTargets = [
+      ...(source.placement?.documentId ? [{ documentId: source.placement.documentId, path: source.path,
+        sourceId: source.topicRef.sourceId }] : []),
+      ...(target ? [{ documentId: target.documentId, path: target.path,
+        sourceId: target.sourceId || source.topicRef.sourceId }] : []),
+    ].filter((item, index, items) => item.documentId && item.path
+      && items.findIndex(other => other.documentId === item.documentId) === index);
+    const label = ({ move: '移動', 'link-duplicate': 'リンク複製', duplicate: '複製', detach: 'この場所から外す' })[operation];
+    const refresh = await refreshAffectedViews(refreshTargets, {
+      reason: `topic-placement-${operation}`, saved: true,
+    });
+    if (refresh.ok) global.showStatus?.(`${source.label}を${label}しました`);
+    if (!executeOptions.skipHistory) {
+      global.dispatchEvent?.(new CustomEvent('meldex:topic-placement-committed', {
+        detail: { operation, source: clone(source), target: clone(target), result: clone(result) },
+      }));
+    }
+    return { ...result, refresh };
+  }
+
+  function usageTarget(row) {
+    const target = row?.target || row?.location || {};
+    const path = row?.kind === 'placement'
+      ? (target.sourceQualifiedPath || target.legacyPath || target.relativePath || target.path || target.href)
+      : (target.href || target.legacyPath || target.relativePath || target.path);
+    const href = String(path || '').trim();
+    if (!href || /[\u0000-\u001f\u007f]/.test(href)) return null;
+    const scheme = href.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase() || '';
+    if (scheme && !['http', 'https', 'mailto', 'source'].includes(scheme)) return null;
+    const router = global.GBLinkRouter;
+    if (typeof router?.resolve !== 'function') return null;
+    const resolved = router.resolve(href, {
+      label: row?.label, linkType: target.linkType || (row?.kind === 'placement' ? target.surface : ''),
+    });
+    return resolved?.recognized !== false && resolved?.type !== 'unsupported' ? resolved : null;
+  }
+
+  function usageCanOpen(row) {
+    return typeof global.openLink === 'function' && !!usageTarget(row);
+  }
+
+  function openUsage(row) {
+    const resolved = usageTarget(row);
+    if (resolved && typeof global.openLink === 'function') {
+      return global.openLink(resolved.path,
+        row?.label || resolved.label || String(resolved.path).split(/[\\/]/).pop(),
+        { linkType: resolved.type });
+    }
+    global.showStatus?.('登録先のファイルを現在のソースで確認できません', true);
+    return false;
+  }
+
+  async function showDetail(source) {
+    if (!source?.topicRef || !global.MeldexTopicDetail?.mount) throw new Error('トピック詳細を開けません');
+    const ref = source.topicRef;
+    const [topic, usage] = await Promise.all([
+      global.apiFetch(`/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`, { silentError: true }),
+      global.apiFetch(`/topics/${encodeURIComponent(ref.sourceId)}/${encodeURIComponent(ref.topicId)}/usages`, { silentError: true }),
+    ]);
+    const record = topic?.topic || topic?.record || topic;
+    const body = document.createElement('div');
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'gb-btn'; close.textContent = '閉じる';
+    const modal = global.GBUI.createModal({
+      id: 'topic-detail-dialog', title: record?.title || source.label || 'トピック詳細',
+      body, footer: [close], variant: 'mobile-sheet',
+    });
+    close.addEventListener('click', () => modal.close('close'));
+    global.MeldexTopicDetail.mount(body, {
+      topicRef: ref, ...clone(record), currentColumns: columnsForDocument(
+        source.document, source.placement?.viewId,
+      ),
+      usageIndex: { topicRef: ref, revision: 0, partial: usage?.coverage !== 'complete',
+        usages: (usage?.usages || []).map(item => ({ ...item,
+          available: item.available !== false && usageCanOpen(item) })) },
+    }, {
+      onOpenUsage: openUsage,
+      readOnly: source.readOnly === true,
+      sourceFolder: global.MeldexAutoTagSourceFolder?.(source.path) || '',
+      onUpdateValue: async (row, nextValue) => updateProjectedValue({
+        topicRef: ref,
+        _topicDbPath: source.path,
+        _topicPropertyFamilyId: row.id,
+        _topicColumnName: row.label,
+        _topicColumnType: row.type,
+        property: row.label,
+        value: row.value,
+      }, { new_value: nextValue }),
+    });
+    modal.open();
+  }
+
+  function menuItems(source) {
+    if (!source) return [];
+    const invoke = (operation, target) => execute(source, operation, target).catch(error => {
+      global.showStatus?.(String(error?.message || error), true);
+    });
+    return [
+      { icon: 'move', label: '移動...', action: () => invoke('move') },
+      { icon: 'copy', label: 'リンク複製...', action: () => invoke('link-duplicate') },
+      { icon: 'copyPlus', label: '複製', action: () => invoke('duplicate') },
+      { icon: 'unlink', label: 'この場所から外す', action: () => invoke('detach') },
+      { icon: 'list', label: 'トピック詳細', action: () => showDetail(source).catch(error => global.showStatus?.(String(error?.message || error), true)) },
+    ];
+  }
+
+  function transferSource(source) {
+    return {
+      topicRef: clone(source.topicRef),
+      documentId: String(source.placement?.documentId || ''),
+      placementId: String(source.placement?.placementId || ''),
+      viewId: String(source.placement?.viewId || ''),
+      surface: String(source.placement?.surface || source.surface || ''),
+      baseRevision: String(source.revision || ''),
+      path: normalizePath(source.path),
+      label: String(source.label || 'トピック').slice(0, 256),
+    };
+  }
+
+  async function resolveTransferredSource(value) {
+    const ref = value?.topicRef;
+    const documentId = String(value?.documentId || '');
+    if (!ref?.sourceId || !ref?.topicId || !documentId) {
+      throw new Error('ドラッグ元のトピックIDを確認できません');
+    }
+    const snapshot = await global.apiFetch(
+      `/topic-views/${encodeURIComponent(documentId)}/snapshot`, { silentError: true },
+    );
+    const revision = checkpointId(snapshot?.checkpoint);
+    if (String(value.baseRevision || '') !== revision) {
+      const error = new Error('ドラッグ開始後に元のシートまたはボードが更新されました');
+      error.status = 409;
+      throw error;
+    }
+    if (snapshot?.readOnly) throw new Error('ドラッグ元は読み取り専用です');
+    const placement = (snapshot?.viewDocument?.placements || []).find(item => (
+      String(item?.placementId || '') === String(value.placementId || '')
+      && topicKey(item?.topicRef) === topicKey(ref)
+    ));
+    if (!placement) throw new Error('ドラッグ元の登録が現在の保存内容と一致しません');
+    const loaded = await global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { silentError: true },
+    );
+    return {
+      topicRef: clone(ref), placement: clone(placement),
+      record: clone(loaded?.topic || loaded?.record || loaded),
+      path: normalizePath(value.path), document: clone(snapshot.viewDocument), revision,
+      label: String(value.label || loaded?.topic?.title || 'トピック'),
+      surface: String(placement.surface || value.surface || ''), readOnly: false,
+    };
+  }
+
+  function sourceFromElement(element) {
+    const boardCard = element?.closest?.('.bd-node');
+    if (boardCard) {
+      const context = boardContextForElement(boardCard);
+      const node = context.boardState?.nodes?.find(
+        item => String(item.id) === String(boardCard.dataset.cardId),
+      );
+      return node ? boardSource(node, context.boardState, context.path) : null;
+    }
+    const treeNode = element?.closest?.('.tree-node')?._nodeData;
+    if (treeNode?.type === 'entity') return treeSource(treeNode);
+    const row = element?.closest?.('[data-entity-name]');
+    if (row) {
+      const entityName = row.dataset.entityName;
+      const paneState = global._dbPaneContextFromEvent?.(row) || global.state;
+      return sheetSource(
+        paneState?.dbPath || global.state?.currentDbPath, entityName,
+        paneState?.pivotData?.entities?.[entityName], paneState?.currentViewId,
+      );
+    }
+    return null;
+  }
+
+  function sourcesFromElement(element) {
+    const boardCard = element?.closest?.('.bd-node');
+    if (boardCard) {
+      const context = boardContextForElement(boardCard);
+      const node = context.boardState?.nodes?.find(
+        item => String(item.id) === String(boardCard.dataset.cardId),
+      );
+      if (!node) return [];
+      const selected = context.boardState?.selected;
+      const nodes = selected instanceof Set && selected.has(node.id) && selected.size > 1
+        ? (context.boardState.nodes || []).filter(item => selected.has(item.id)) : [node];
+      return nodes.map(item => boardSource(item, context.boardState, context.path)).filter(Boolean);
+    }
+    const row = element?.closest?.('[data-entity-name]');
+    if (row) {
+      const paneState = global._dbPaneContextFromEvent?.(row) || global.state;
+      const entityName = row.dataset.entityName;
+      const selected = paneState?._selectedEntities;
+      const names = selected instanceof Set && selected.has(entityName) && selected.size > 1
+        ? [...selected] : [entityName];
+      return names.map(name => sheetSource(
+        paneState?.dbPath || global.state?.currentDbPath, name,
+        paneState?.pivotData?.entities?.[name], paneState?.currentViewId,
+      )).filter(Boolean);
+    }
+    const source = sourceFromElement(element);
+    return source ? [source] : [];
+  }
+
+  async function targetFromDrop(element) {
+    const treeNode = element?.closest?.('.tree-node')?._nodeData;
+    if (treeNode && ['database', 'board'].includes(treeNode.type)) return registeredTarget(treeNode);
+    const subpanel = element?.closest?.('.gb-subpanel');
+    if (subpanel) {
+      const current = global.GBSubPanel?.getCurrentTarget?.();
+      const sheetTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline',
+        'calendar', 'tasks', 'shifts', 'chart', 'graph']);
+      const type = current?.type === 'board' ? 'board'
+        : (sheetTypes.has(current?.type) ? 'database' : '');
+      if (type && current?.path) {
+        return registeredTarget({ path: current.path, name: current.label, type },
+          current.state?.currentViewId || current.state?.activeBoardViewId || '');
+      }
+    }
+    const pane = element?.closest?.('.gb-pane');
+    const tab = pane?.dataset?.paneId ? global.GBTabs?.getActiveTab?.(pane.dataset.paneId) : null;
+    if (tab && ['database', 'board'].includes(tab.type)) {
+      const paneState = global.getPaneContext?.(pane.dataset.paneId);
+      const boardContext = tab.type === 'board' ? boardContextForElement(element) : null;
+      const preferredViewId = tab.viewId || tab.currentViewId || paneState?.currentViewId
+        || boardContext?.boardState?.activeBoardViewId || '';
+      const result = await registeredTarget(
+        { path: tab.path, name: tab.label, type: tab.type }, preferredViewId,
+      );
+      if (tab.type === 'board') result._dropCanvas = boardContext?.canvas;
+      return result;
+    }
+    return null;
+  }
+
+  function installDragAndDrop() {
+    document.addEventListener('dragstart', event => {
+      const sources = sourcesFromElement(event.target);
+      if (!sources.length || !event.dataTransfer) return;
+      const payload = { sources: sources.map(transferSource) };
+      const nonce = global.MeldexDnD?.beginCrossWindowDrag?.(
+        event.dataTransfer, payload, 'topic',
+      );
+      if (!nonce) return;
+      event.dataTransfer.effectAllowed = 'copyMove';
+    }, true);
+    document.addEventListener('dragover', event => {
+      if (!global.MeldexDnD?.hasDropKind?.(event, 'topic')) return;
+      const route = global.MeldexDnD?.resolveTargetRoute?.(event);
+      if (route?.kind === 'topic-placement') event.preventDefault();
+    }, true);
+    document.addEventListener('drop', async event => {
+      if (!global.MeldexDnD?.hasDropKind?.(event, 'topic')) return;
+      const route = global.MeldexDnD?.resolveTargetRoute?.(event);
+      // note編集領域・linkセル・panel chromeは既存node receiverへ渡す。
+      if (route?.kind !== 'topic-placement') return;
+      const resolved = await global.MeldexDnD.resolveDropData(event, 'topic');
+      if (!resolved) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      try {
+        const offered = Array.isArray(resolved.payload?.sources) ? resolved.payload.sources : [];
+        if (offered.length !== 1) {
+          throw new Error(`複数選択${offered.length}件の配置は安全な一括保存を利用できないため変更しませんでした`);
+        }
+        const source = await resolveTransferredSource(offered[0]);
+        const target = await targetFromDrop(event.target);
+        if (!source || !target) throw new Error('トピックの移動先を確認できません');
+        if (target.surface === 'board' && typeof global.bdClientToCanvasLocal === 'function') {
+          target.position = global.bdClientToCanvasLocal(event.clientX, event.clientY, target._dropCanvas);
+        }
+        delete target._dropCanvas;
+        const operation = event.ctrlKey || event.metaKey ? 'link-duplicate' : 'move';
+        const result = await execute(source, operation, target);
+        if (!result?.ok) throw new Error(result?.message || '配置を保存できませんでした');
+        global.MeldexDnD.completeDrop(resolved);
+      } catch (error) {
+        global.MeldexDnD.failDrop(resolved);
+        global.showStatus?.(`トピックの配置を変更できませんでした: ${error?.message || error}`, true);
+      }
+    }, true);
+  }
+
+  if (typeof document !== 'undefined') installDragAndDrop();
+  global.MeldexTopicPlacementUI = Object.freeze({
+    MIME, rememberView, sheetSource, treeSource, boardSource, menuItems, execute, showDetail, pickTarget,
+    renameColumn, projectSheetPivot, refreshView, updateProjectedValue, renameProjectedTopic,
+    updateProjectedBoardText, usageTarget, usageCanOpen, openUsage, retryRefresh,
+    sourcesFromElement, transferSource, resolveTransferredSource,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-placement-history.js === */
+;
+(function initMeldexTopicPlacementHistory(global) {
+  'use strict';
+
+  if (global.MeldexTopicPlacementHistory) return;
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function checkpointId(value) {
+    return String(value?.checkpointId || value?.revision || value || '');
+  }
+
+  function topicKey(ref) {
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function historyMutationId(prefix, operationId) {
+    const safe = String(operationId || 'placement').replace(/[^A-Za-z0-9._-]+/g, '-');
+    return `${prefix}-${safe}`.slice(0, 255);
+  }
+
+  function locationOf(value) {
+    const placement = value?.placement || value || {};
+    return {
+      sourceId: String(value?.sourceId || value?.topicRef?.sourceId || ''),
+      documentId: String(placement.documentId || value?.documentId || ''),
+      viewId: String(placement.viewId || value?.viewId || ''),
+      surface: placement.surface || value?.surface,
+      position: clone(placement.position ?? value?.position ?? null),
+      columnBindings: clone(placement.columnBindings || value?.columnBindings || []),
+      path: String(value?.path || value?.legacyPath || ''),
+      label: String(value?.label || 'トピック'),
+    };
+  }
+
+  async function snapshot(documentId) {
+    if (!documentId || typeof global.apiFetch !== 'function') {
+      throw new Error('履歴の対象シートまたはボードを確認できません');
+    }
+    return global.apiFetch(`/topic-views/${encodeURIComponent(documentId)}/snapshot`, {
+      silentError: true,
+    });
+  }
+
+  function matchingPlacement(document, ref, location) {
+    const placements = Array.isArray(document?.placements) ? document.placements : [];
+    return placements.find(item => topicKey(item?.topicRef) === topicKey(ref)
+      && String(item?.viewId || '') === String(location?.viewId || '')
+      && item?.surface === location?.surface) || null;
+  }
+
+  function recordFromSnapshot(loaded, ref) {
+    const match = (loaded?.topics || []).find(item => topicKey(item?.topicRef) === topicKey(ref));
+    return clone(match?.record || null);
+  }
+
+  async function sourceAt(ref, location, requirePlacement, allowMissingRecord) {
+    const loaded = await snapshot(location.documentId);
+    const placement = matchingPlacement(loaded.viewDocument, ref, location);
+    if (requirePlacement && !placement) throw new Error('履歴の操作元が変更または削除されています');
+    let record = recordFromSnapshot(loaded, ref);
+    if (!record && typeof global.apiFetch === 'function') {
+      try {
+        const topic = await global.apiFetch(
+          `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+          { silentError: true },
+        );
+        record = clone(topic?.topic || topic?.record || topic);
+      } catch (error) {
+        if (!allowMissingRecord || (Number(error?.status) !== 404 && error?.code !== 'missing')) {
+          throw error;
+        }
+      }
+    }
+    return {
+      topicRef: clone(ref), placement: clone(placement), record,
+      path: location.path, label: location.label, surface: location.surface,
+      document: clone(loaded.viewDocument), revision: checkpointId(loaded.checkpoint),
+    };
+  }
+
+  async function targetAt(location) {
+    const loaded = await snapshot(location.documentId);
+    return {
+      sourceId: location.sourceId,
+      documentId: location.documentId, viewId: location.viewId,
+      surface: location.surface, position: clone(location.position),
+      revision: checkpointId(loaded.checkpoint), document: clone(loaded.viewDocument),
+      path: location.path, label: location.label,
+    };
+  }
+
+  async function runPlacement(operation, ref, sourceLocation, targetLocation, options) {
+    const needsPlacement = ['move', 'detach'].includes(operation);
+    const source = await sourceAt(ref, sourceLocation, false, needsPlacement);
+    const target = targetLocation ? await targetAt(targetLocation) : null;
+    if (needsPlacement && !source.placement) {
+      if (operation === 'detach') {
+        return { ok: true, noOp: true, alreadyApplied: true, topicRef: clone(ref) };
+      }
+      const targetPlacement = matchingPlacement(target?.document, ref, targetLocation);
+      if (targetPlacement) {
+        return { ok: true, noOp: true, alreadyApplied: true, topicRef: clone(ref) };
+      }
+      throw new Error('履歴の操作元が変更または削除されています');
+    }
+    const result = await global.MeldexTopicPlacementUI.execute(source, operation, target, {
+      skipHistory: true,
+      allowOrphan: options?.allowOrphan === true,
+      columnBindings: clone(options?.columnBindings || targetLocation?.columnBindings || []),
+      operationId: options?.operationId,
+    });
+    if (!result?.ok) throw new Error(result?.message || '履歴の配置変更に失敗しました');
+    return result;
+  }
+
+  async function deleteTopic(ref, duplicateOperationId, deleteMutationId) {
+    let record = null;
+    try {
+      const loaded = await global.apiFetch(
+        `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+        { silentError: true },
+      );
+      record = loaded?.topic || loaded?.record || loaded;
+    } catch (error) {
+      if (Number(error?.status) !== 404 && error?.code !== 'missing') throw error;
+    }
+    return global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
+      { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({ mutationId: deleteMutationId,
+          baseRevision: Number(record?.revision || 0),
+          undoDuplicateOperationId: duplicateOperationId }) },
+    );
+  }
+
+  async function restoreTopic(ref, restoreMutationId) {
+    return global.apiFetch(
+      `/topic-stores/${encodeURIComponent(ref.sourceId)}/trash/${encodeURIComponent(ref.topicId)}/restore`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, silentError: true,
+        body: JSON.stringify({ mutationId: restoreMutationId }) },
+    );
+  }
+
+  function historyScope(source) {
+    const path = String(source?.path || source?.placement?.documentId || 'topic');
+    if (source?.surface === 'board') return `board:${path}`;
+    if (typeof global._dbScopeForPath === 'function') return global._dbScopeForPath(path);
+    if (typeof global._dbScope === 'function') return global._dbScope(path);
+    return `db:${path}`;
+  }
+
+  function register(detail) {
+    if (typeof global.historyPush !== 'function' || !detail?.source || !detail?.result) return false;
+    const operation = detail.operation;
+    const originalRef = clone(detail.source.topicRef);
+    const effectiveRef = clone(detail.result.topicRefs?.[0] || detail.result.topicRef || originalRef);
+    const sourceLocation = locationOf(detail.source);
+    const targetLocation = detail.target ? locationOf(detail.target) : null;
+    const originalOperationId = String(detail.result.operationId || detail.result.mutationId || 'placement');
+    const stepId = prefix => historyMutationId(prefix, originalOperationId);
+    const label = ({ move: 'トピック移動', 'link-duplicate': 'トピックのリンク複製',
+      duplicate: 'トピック複製', detach: 'トピックをこの場所から外す' })[operation];
+    if (!label) return false;
+
+    let undo;
+    let redo;
+    if (operation === 'move') {
+      if (detail.result.targetAlreadyPresent === true) {
+        undo = () => runPlacement('link-duplicate', effectiveRef, targetLocation, sourceLocation,
+          { columnBindings: sourceLocation.columnBindings, operationId: stepId('history-move-undo') });
+        redo = () => runPlacement('detach', effectiveRef, sourceLocation, null,
+          { allowOrphan: true, operationId: stepId('history-move-redo') });
+      } else {
+        undo = () => runPlacement('move', effectiveRef, targetLocation, sourceLocation,
+          { columnBindings: sourceLocation.columnBindings, operationId: stepId('history-move-undo') });
+        redo = () => runPlacement('move', effectiveRef, sourceLocation, targetLocation,
+          { columnBindings: targetLocation.columnBindings, operationId: stepId('history-move-redo') });
+      }
+    } else if (operation === 'link-duplicate') {
+      undo = () => runPlacement('detach', effectiveRef, targetLocation, null,
+        { allowOrphan: true, operationId: stepId('history-link-undo') });
+      redo = () => runPlacement('link-duplicate', effectiveRef, sourceLocation, targetLocation,
+        { columnBindings: targetLocation.columnBindings, operationId: stepId('history-link-redo') });
+    } else if (operation === 'detach') {
+      undo = () => runPlacement('link-duplicate', effectiveRef, sourceLocation, sourceLocation,
+        { columnBindings: sourceLocation.columnBindings, operationId: stepId('history-detach-undo') });
+      redo = () => runPlacement('detach', effectiveRef, sourceLocation, null,
+        { allowOrphan: true, operationId: stepId('history-detach-redo') });
+    } else {
+      const duplicateOperationId = String(detail.result.mutationId || detail.result.operationId || '');
+      const deleteMutationId = stepId('history-duplicate-delete');
+      undo = async () => {
+        await runPlacement('detach', effectiveRef, targetLocation, null,
+          { allowOrphan: true, operationId: stepId('history-duplicate-detach') });
+        try {
+          await deleteTopic(effectiveRef, duplicateOperationId, deleteMutationId);
+        } catch (error) {
+          await runPlacement('link-duplicate', effectiveRef, targetLocation, targetLocation,
+            { columnBindings: targetLocation.columnBindings,
+              operationId: stepId('history-duplicate-delete-compensate') });
+          throw error;
+        }
+      };
+      redo = async () => {
+        await restoreTopic(effectiveRef, stepId('history-duplicate-restore'));
+        try {
+          await runPlacement('link-duplicate', effectiveRef, targetLocation, targetLocation,
+            { columnBindings: targetLocation.columnBindings,
+              operationId: stepId('history-duplicate-link') });
+        } catch (error) {
+          await deleteTopic(effectiveRef, duplicateOperationId, deleteMutationId);
+          throw error;
+        }
+      };
+    }
+    global.historyPush(`${label}: ${detail.source.label || 'トピック'}`, undo, redo,
+      historyScope(detail.source));
+    return true;
+  }
+
+  global.addEventListener?.('meldex:topic-placement-committed', event => register(event?.detail));
+  global.MeldexTopicPlacementHistory = Object.freeze({ register, locationOf });
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -2122,14 +6012,22 @@
     };
   }
 
+  function uniqueViewName(document, requested, excludeViewId) {
+    const base = String(requested || 'ボードビュー').trim() || 'ボードビュー';
+    const used = new Set((document.boardViews || [])
+      .filter(view => idOf(view) !== excludeViewId)
+      .map(view => String(view.name || '').trim()));
+    if (!used.has(base)) return base;
+    let index = 2;
+    while (used.has(`${base} ${index}`)) index += 1;
+    return `${base} ${index}`;
+  }
+
   function normalizeDocument(document, idFactory) {
     const result = clone(document || {});
     result.boardViews = Array.isArray(result.boardViews) ? result.boardViews : [];
+    result.sheetViews = Array.isArray(result.sheetViews) ? result.sheetViews : [];
     result.relationSets = Array.isArray(result.relationSets) ? result.relationSets : [];
-    if (!result.boardViews.length) {
-      const makeId = idFactory || (() => defaultIdFactory('board-view'));
-      result.boardViews.push(newView(makeId('board-view'), '既定ビュー'));
-    }
     result.boardViews = result.boardViews.map((view, index) => {
       const next = clone(view || {});
       next.boardViewId = idOf(next) || `board-view-${index + 1}`;
@@ -2142,16 +6040,137 @@
       }
       return next;
     });
+    result.sheetViews = result.sheetViews.map((view, index) => {
+      const next = clone(view || {});
+      next.viewId = String(next.viewId || next.sheetViewId || `sheet-view-${index + 1}`);
+      next.name = String(next.name || (index ? `シート ${index + 1}` : 'テーブル'));
+      next.viewMode = String(next.viewMode || 'pivot');
+      if (!Array.isArray(next.columns)) next.columns = [];
+      return next;
+    });
+    const available = new Map([
+      ...result.sheetViews.map(view => [`sheet:${view.viewId}`, { surface: 'sheet', viewId: view.viewId }]),
+      ...result.boardViews.map(view => [`board:${view.boardViewId}`, { surface: 'board', viewId: view.boardViewId }]),
+    ]);
+    const seen = new Set();
+    result.viewOrder = (Array.isArray(result.viewOrder) ? result.viewOrder : []).flatMap(ref => {
+      const key = `${ref?.surface}:${String(ref?.viewId || '')}`;
+      if (seen.has(key) || !available.has(key)) return [];
+      seen.add(key); return [clone(available.get(key))];
+    });
+    available.forEach((ref, key) => { if (!seen.has(key)) result.viewOrder.push(clone(ref)); });
+    const active = result.viewOrder.find(ref => ref.surface === result.activeViewRef?.surface
+      && ref.viewId === String(result.activeViewRef?.viewId || ''))
+      || result.viewOrder.find(ref => ref.surface === 'board' && ref.viewId === result.activeBoardViewId)
+      || result.viewOrder[0] || null;
+    result.activeViewRef = active ? clone(active) : null;
+    result.activeBoardViewId = active?.surface === 'board'
+      ? active.viewId : (result.boardViews.some(view => view.boardViewId === result.activeBoardViewId) ? result.activeBoardViewId : result.boardViews[0]?.boardViewId || null);
+    result.activeSheetViewId = active?.surface === 'sheet'
+      ? active.viewId : (result.sheetViews.some(view => view.viewId === result.activeSheetViewId) ? result.activeSheetViewId : result.sheetViews[0]?.viewId || null);
     return result;
+  }
+
+  function orderedViews(document) {
+    const result = normalizeDocument(document);
+    return result.viewOrder.map(ref => {
+      const view = ref.surface === 'board'
+        ? result.boardViews.find(item => item.boardViewId === ref.viewId)
+        : result.sheetViews.find(item => item.viewId === ref.viewId);
+      return view ? { ...clone(ref), view: clone(view), name: view.name, viewMode: view.viewMode || ref.surface } : null;
+    }).filter(Boolean);
   }
 
   function addView(document, options) {
     const settings = options || {};
     const makeId = settings.idFactory || (() => defaultIdFactory('board-view'));
     const result = normalizeDocument(document, makeId);
-    const view = newView(makeId('board-view'), settings.name || `ビュー ${result.boardViews.length + 1}`);
+    const view = newView(makeId('board-view'), uniqueViewName(
+      result, settings.name || `ビュー ${result.boardViews.length + 1}`,
+    ));
     result.boardViews.push(view);
+    result.viewOrder.push({ surface: 'board', viewId: view.boardViewId });
+    result.activeViewRef = { surface: 'board', viewId: view.boardViewId };
+    result.activeBoardViewId = view.boardViewId;
     return { document: result, activeBoardViewId: view.boardViewId, boardView: clone(view) };
+  }
+
+  function addSheetView(document, options) {
+    const settings = options || {};
+    const makeId = settings.idFactory || (() => defaultIdFactory('sheet-view'));
+    const result = normalizeDocument(document, makeId);
+    const id = makeId('sheet-view');
+    const baseName = String(settings.name || (settings.viewMode === 'tree' ? 'ツリー' : 'テーブル'));
+    const used = new Set(result.sheetViews.map(view => view.name));
+    let name = baseName; let suffix = 2;
+    while (used.has(name)) { name = `${baseName} ${suffix}`; suffix += 1; }
+    const view = { viewId: id, name, viewMode: settings.viewMode || 'pivot', columns: clone(settings.columns || []) };
+    result.sheetViews.push(view);
+    result.viewOrder.push({ surface: 'sheet', viewId: id });
+    result.activeSheetViewId = id; result.activeViewRef = { surface: 'sheet', viewId: id };
+    return { document: result, activeViewRef: clone(result.activeViewRef), sheetView: clone(view) };
+  }
+
+  function findMixedView(document, ref) {
+    const result = normalizeDocument(document);
+    const id = String(ref?.viewId || '');
+    const list = ref?.surface === 'board' ? result.boardViews : result.sheetViews;
+    const view = list.find(item => (ref?.surface === 'board' ? item.boardViewId : item.viewId) === id);
+    return { document: result, view, list };
+  }
+
+  function renameMixedView(document, ref, name) {
+    const { document: result, view, list } = findMixedView(document, ref);
+    if (!view) throw new RangeError('View was not found');
+    const nextName = String(name || '').trim();
+    if (!nextName) throw new TypeError('View name is required');
+    if (list.some(item => item !== view && String(item.name || '').trim() === nextName)) throw new Error('同じ名前のビューがあります');
+    view.name = nextName; return result;
+  }
+
+  function reorderMixedView(document, ref, toIndex) {
+    const result = normalizeDocument(document);
+    const from = result.viewOrder.findIndex(item => item.surface === ref?.surface && item.viewId === String(ref?.viewId || ''));
+    if (from < 0 || !Number.isInteger(toIndex) || toIndex < 0 || toIndex >= result.viewOrder.length) throw new RangeError('View reorder index is invalid');
+    const [item] = result.viewOrder.splice(from, 1); result.viewOrder.splice(toIndex, 0, item); return result;
+  }
+
+  function removeMixedView(document, ref) {
+    const result = normalizeDocument(document);
+    const id = String(ref?.viewId || '');
+    const orderIndex = result.viewOrder.findIndex(item => item.surface === ref?.surface && item.viewId === id);
+    if (orderIndex < 0) throw new RangeError('View was not found');
+    if (ref.surface === 'board') result.boardViews = result.boardViews.filter(view => view.boardViewId !== id);
+    else result.sheetViews = result.sheetViews.filter(view => view.viewId !== id);
+    const [removedRef] = result.viewOrder.splice(orderIndex, 1);
+    const activeViewRef = result.activeViewRef?.surface === ref.surface && result.activeViewRef?.viewId === id
+      ? clone(result.viewOrder[Math.min(orderIndex, result.viewOrder.length - 1)] || null) : clone(result.activeViewRef);
+    result.activeViewRef = activeViewRef;
+    if (ref.surface === 'board' && result.activeBoardViewId === id) result.activeBoardViewId = result.boardViews[0]?.boardViewId || null;
+    if (ref.surface === 'sheet' && result.activeSheetViewId === id) result.activeSheetViewId = result.sheetViews[0]?.viewId || null;
+    return { document: result, activeViewRef, removedViewRef: removedRef };
+  }
+
+  function duplicateMixedView(document, ref, options) {
+    const settings = options || {};
+    if (ref?.surface === 'board') {
+      const duplicated = duplicateView(document, ref.viewId, settings);
+      duplicated.document.viewOrder = normalizeDocument(duplicated.document).viewOrder;
+      const sourceIndex = duplicated.document.viewOrder.findIndex(item => item.surface === 'board' && item.viewId === ref.viewId);
+      duplicated.document.viewOrder = duplicated.document.viewOrder.filter(item => item.surface !== 'board' || item.viewId !== duplicated.activeBoardViewId);
+      duplicated.document.viewOrder.splice(sourceIndex + 1, 0, { surface: 'board', viewId: duplicated.activeBoardViewId });
+      duplicated.document.activeViewRef = { surface: 'board', viewId: duplicated.activeBoardViewId };
+      return { ...duplicated, activeViewRef: clone(duplicated.document.activeViewRef) };
+    }
+    const { document: result, view } = findMixedView(document, ref);
+    if (!view) throw new RangeError('View was not found');
+    const makeId = settings.idFactory || (() => defaultIdFactory('sheet-view'));
+    const duplicate = { ...clone(view), viewId: makeId('sheet-view'), name: `${view.name} のコピー` };
+    result.sheetViews.push(duplicate);
+    const sourceIndex = result.viewOrder.findIndex(item => item.surface === 'sheet' && item.viewId === ref.viewId);
+    result.viewOrder.splice(sourceIndex + 1, 0, { surface: 'sheet', viewId: duplicate.viewId });
+    result.activeSheetViewId = duplicate.viewId; result.activeViewRef = { surface: 'sheet', viewId: duplicate.viewId };
+    return { document: result, activeViewRef: clone(result.activeViewRef), sheetView: clone(duplicate) };
   }
 
   function renameView(document, boardViewId, name) {
@@ -2160,6 +6179,10 @@
     if (!view) throw new RangeError('BoardView was not found');
     const nextName = String(name || '').trim();
     if (!nextName) throw new TypeError('BoardView name is required');
+    if (result.boardViews.some(item => idOf(item) !== boardViewId
+      && String(item.name || '').trim() === nextName)) {
+      throw new TypeError('同じ名前のボードビューがあります');
+    }
     view.name = nextName;
     return result;
   }
@@ -2178,13 +6201,20 @@
 
   function removeView(document, boardViewId, activeBoardViewId) {
     const result = normalizeDocument(document);
-    if (result.boardViews.length === 1) throw new Error('少なくとも1件のボードビューが必要です');
     const index = result.boardViews.findIndex((item) => idOf(item) === boardViewId);
     if (index < 0) throw new RangeError('BoardView was not found');
-    const [removed] = result.boardViews.splice(index, 1);
-    const active = activeBoardViewId === boardViewId
-      ? result.boardViews[Math.min(index, result.boardViews.length - 1)].boardViewId
+    const currentActiveBoardViewId = activeBoardViewId === undefined
+      ? result.activeBoardViewId
       : activeBoardViewId;
+    const [removed] = result.boardViews.splice(index, 1);
+    result.viewOrder = result.viewOrder.filter(ref => ref.surface !== 'board' || ref.viewId !== boardViewId);
+    const active = currentActiveBoardViewId === boardViewId
+      ? result.boardViews[Math.min(index, result.boardViews.length - 1)]?.boardViewId || null
+      : currentActiveBoardViewId;
+    result.activeBoardViewId = active;
+    if (result.activeViewRef?.surface === 'board' && result.activeViewRef.viewId === boardViewId) {
+      result.activeViewRef = result.viewOrder[Math.min(index, result.viewOrder.length - 1)] || null;
+    }
     return { document: result, activeBoardViewId: active, removedBoardView: removed };
   }
 
@@ -2208,13 +6238,15 @@
     const source = result.boardViews[index];
     const duplicate = clone(source);
     duplicate.boardViewId = makeId('board-view');
-    duplicate.name = settings.name || `${source.name} のコピー`;
+    duplicate.name = uniqueViewName(result, settings.name || `${source.name} のコピー`, duplicate.boardViewId);
     if (source.relationSetId && settings.shareRelationSet !== true) {
       const relationId = makeId('relation-set');
       const relation = copyRelationSet(result, source.relationSetId, relationId);
       if (relation) duplicate.relationSetId = relation.relationSetId;
     }
     result.boardViews.splice(index + 1, 0, duplicate);
+    result.viewOrder.push({ surface: 'board', viewId: duplicate.boardViewId });
+    result.activeViewRef = { surface: 'board', viewId: duplicate.boardViewId };
     return { document: result, activeBoardViewId: duplicate.boardViewId, boardView: clone(duplicate) };
   }
 
@@ -2224,6 +6256,7 @@
       throw new TypeError('getDocument and setDocument are required');
     }
     const commit = (label, operation) => {
+      if (settings.readOnly === true) return { ok: false, reason: 'read-only' };
       const before = clone(settings.getDocument());
       const result = operation(before);
       const next = result?.document || result;
@@ -2238,6 +6271,11 @@
       reorder: (id, index) => commit('ボードビューを並べ替え', (doc) => reorderView(doc, id, index)),
       remove: (id, activeId) => commit('ボードビューを削除', (doc) => removeView(doc, id, activeId)),
       duplicate: (id, value) => commit('ボードビューを複製', (doc) => duplicateView(doc, id, value)),
+      addSheet: (value) => commit('シートビューを追加', (doc) => addSheetView(doc, value)),
+      renameMixed: (ref, name) => commit('ビュー名を変更', (doc) => renameMixedView(doc, ref, name)),
+      reorderMixed: (ref, index) => commit('ビューを並べ替え', (doc) => reorderMixedView(doc, ref, index)),
+      removeMixed: (ref) => commit('ビューを削除', (doc) => removeMixedView(doc, ref)),
+      duplicateMixed: (ref, value) => commit('ビューを複製', (doc) => duplicateMixedView(doc, ref, value)),
     });
   }
 
@@ -2291,53 +6329,157 @@
     if (!container?.appendChild || !controller) return null;
     const settings = options || {};
     const root = document.createElement('div');
-    root.className = 'bd-topic-view-controls';
+    root.className = 'bd-topic-view-controls db-view-switcher db-main-view-switcher';
     root.dataset.bdTopicViewControls = '1';
+    root.dataset.e2eId = 'board-common-view-tabs';
+    root.setAttribute('aria-label', 'シートとボードのビュー');
+    const tabs = document.createElement('div');
+    tabs.className = 'view-tabs db-view-tabs bd-common-view-tabs';
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', 'シートとボードのビュー');
     const select = document.createElement('select');
-    select.setAttribute('aria-label', 'ボードビュー');
-    select.dataset.bdTopicViewControl = 'view-select';
-    select.dataset.bdAction = 'topic-view-select';
+    select.className = 'tb-select db-view-select';
+    select.dataset.e2eId = 'board-common-view-select';
+    select.setAttribute('aria-label', 'ビュー切替');
+    select.title = 'ビュー切替';
+    root.appendChild(tabs);
+    root.appendChild(select);
+    const activeRef = () => {
+      const doc = normalizeDocument(settings.getDocument());
+      return settings.getActiveViewRef?.() || doc.activeViewRef
+        || (settings.getActiveBoardViewId?.() ? { surface: 'board', viewId: settings.getActiveBoardViewId() } : null);
+    };
+    const activate = (ref) => {
+      if (settings.setActiveViewRef) settings.setActiveViewRef(clone(ref));
+      else if (ref.surface === 'board') settings.setActiveBoardViewId?.(ref.viewId);
+    };
+    const iconHtml = (surface, viewMode) => {
+      const icons = {
+        board: 'presentation', pivot: 'table', tree: 'listTree', gallery: 'layoutGrid',
+        kanban: 'columns', calendar: 'calendar', timeline: 'clock', gantt: 'ganttChart', chart: 'barChart2',
+        graph: 'gitBranch', form: 'clipboardList',
+      };
+      const icon = surface === 'board' ? icons.board : (icons[viewMode] || icons.pivot);
+      return typeof global.lucide === 'function' ? global.lucide(icon, 12) : '';
+    };
+    const beginRename = (tab, ref, name) => {
+      if (settings.readOnly) return;
+      const input = document.createElement('input'); input.type = 'text'; input.value = name;
+      input.className = 'bd-topic-view-rename-input'; input.setAttribute('aria-label', 'ビュー名');
+      const finish = cancelled => {
+        if (!input.isConnected) return;
+        if (!cancelled && input.value.trim() && input.value.trim() !== name) {
+          try { controller.renameMixed(ref, input.value.trim()); }
+          catch (error) { global.showStatus?.(error?.message || 'ビュー名を変更できません', true); }
+        }
+        refresh();
+      };
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') finish(false);
+        else if (event.key === 'Escape') finish(true);
+      });
+      input.addEventListener('blur', () => finish(false));
+      tab.replaceChildren(input); input.focus?.(); input.select?.();
+    };
     const refresh = () => {
       const doc = normalizeDocument(settings.getDocument());
-      select.replaceChildren(...doc.boardViews.map((view) => {
-        const option = document.createElement('option');
-        option.value = view.boardViewId; option.textContent = view.name;
-        option.selected = view.boardViewId === settings.getActiveBoardViewId();
-        return option;
-      }));
+      const current = activeRef();
+      tabs.replaceChildren();
+      select.replaceChildren();
+      const ordered = orderedViews(doc);
+      if (!ordered.length) {
+        const empty = document.createElement('span'); empty.className = 'bd-common-view-empty';
+        empty.textContent = 'ビューがありません。＋から表示を追加してください'; tabs.appendChild(empty);
+      }
+      ordered.forEach((entry, index) => {
+        const ref = { surface: entry.surface, viewId: entry.viewId };
+        const refToken = `${ref.surface}-${String(ref.viewId).replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+        const tab = document.createElement('div'); tab.className = 'view-tab bd-common-view-tab';
+        tab.dataset.viewSurface = ref.surface; tab.dataset.viewId = ref.viewId;
+        tab.dataset.e2eId = `board-common-view-tab-${refToken}`;
+        tab.draggable = settings.readOnly !== true; tab.setAttribute('role', 'tab');
+        const selected = current?.surface === ref.surface && current?.viewId === ref.viewId;
+        tab.classList?.toggle?.('active', selected); tab.setAttribute('aria-selected', String(selected));
+        const option = document.createElement('option'); option.value = String(index);
+        option.textContent = String(entry.name || (ref.surface === 'board' ? 'ボード' : 'シート'));
+        option.selected = selected; select.appendChild(option);
+        const label = document.createElement('button'); label.type = 'button'; label.className = 'view-tab-label';
+        label.dataset.e2eId = `board-common-view-label-${refToken}`;
+        label.innerHTML = iconHtml(ref.surface, entry.viewMode);
+        const labelText = document.createElement('span');
+        labelText.textContent = String(entry.name || (ref.surface === 'board' ? 'ボード' : 'シート'));
+        label.appendChild(labelText);
+        label.disabled = false; label.addEventListener('click', () => activate(ref));
+        label.addEventListener('dblclick', event => { event.preventDefault(); beginRename(tab, ref, entry.name); });
+        const menu = document.createElement('details'); menu.className = 'bd-topic-view-overflow bd-common-view-menu';
+        menu.dataset.e2eId = `board-common-view-menu-${refToken}`;
+        const summary = document.createElement('summary'); summary.className = 'view-tab-more';
+        summary.innerHTML = typeof global.lucide === 'function' ? global.lucide('moreHorizontal', 14) : '…';
+        summary.dataset.e2eId = `board-common-view-menu-trigger-${refToken}`;
+        summary.setAttribute('aria-label', `${entry.name}のビュー操作`); menu.appendChild(summary);
+        const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; menu.appendChild(panel);
+        const action = (text, run, disabled, actionId, refreshAfter = true) => {
+          const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+          button.dataset.bdTopicViewMutation = actionId;
+          button.dataset.e2eId = `board-common-view-${actionId}-${refToken}`;
+          button.disabled = settings.readOnly === true || !!disabled;
+          button.addEventListener('click', async () => {
+            await run(); menu.open = false;
+            if (refreshAfter) refresh();
+          }); panel.appendChild(button);
+        };
+        action('名前変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
+        action('複製', () => controller.duplicateMixed(ref), false, 'duplicate');
+        action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
+        action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
+        action('削除', async () => {
+          const confirmed = typeof global.cfConfirm === 'function'
+            ? await global.cfConfirm(`「${entry.name}」を削除します。トピック本体は残り、このビュー固有の配置・ライン・グループ・表示設定だけが削除されます。`)
+            : false;
+          if (confirmed) controller.removeMixed(ref);
+        }, false, 'delete');
+        let longPress = 0;
+        label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
+        label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
+        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-ref', JSON.stringify(ref)));
+        tab.addEventListener('dragover', event => { if (!settings.readOnly) event.preventDefault(); });
+        tab.addEventListener('drop', event => {
+          if (settings.readOnly) return; event.preventDefault();
+          try { controller.reorderMixed(JSON.parse(event.dataTransfer?.getData('text/meldex-view-ref') || '{}'), index); }
+          catch {} refresh();
+        });
+        tab.appendChild(label); tab.appendChild(menu); tabs.appendChild(tab);
+      });
+      const add = document.createElement('details'); add.className = 'bd-topic-view-overflow bd-common-view-add';
+      add.dataset.e2eId = 'board-common-view-add-menu';
+      const addSummary = document.createElement('summary'); addSummary.className = 'view-tab-add tb-icon-btn';
+      addSummary.innerHTML = typeof global.lucide === 'function' ? global.lucide('plus', 16) : '＋';
+      addSummary.dataset.e2eId = 'board-common-view-add-trigger';
+      addSummary.setAttribute('aria-label', 'ビューを追加'); add.appendChild(addSummary);
+      const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu'; add.appendChild(addMenu);
+      [['board', 'ボード', () => controller.add()], ['pivot', 'テーブル', () => controller.addSheet({ viewMode: 'pivot', name: 'テーブル' })],
+        ['tree', 'ツリー', () => controller.addSheet({ viewMode: 'tree', name: 'ツリー' })]].forEach(([kind, text, run]) => {
+        const button = document.createElement('button'); button.type = 'button'; button.disabled = settings.readOnly === true;
+        button.dataset.bdTopicViewMutation = `add-${kind}`;
+        button.dataset.e2eId = `board-common-view-add-${kind}`;
+        button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
+        button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
+      });
+      tabs.appendChild(add);
     };
-    select.addEventListener('change', () => settings.setActiveBoardViewId(select.value));
-    root.appendChild(select);
-    const actions = [['add', '＋', '追加', () => controller.add()],
-      ['duplicate', '複製', '複製', () => controller.duplicate(select.value)],
-      ['delete', '削除', '削除', () => controller.remove(select.value, select.value)]];
-    actions.forEach(([actionId, text, label, run]) => {
-      const button = document.createElement('button');
-      button.type = 'button'; button.textContent = text; button.setAttribute('aria-label', label);
-      button.dataset.bdTopicViewAction = actionId;
-      button.dataset.bdAction = `topic-view-${actionId}`;
-      button.className = text === '＋' ? '' : 'bd-topic-view-wide-action';
-      button.addEventListener('click', () => { run(); refresh(); }); root.appendChild(button);
+    select.addEventListener('change', () => {
+      const entry = orderedViews(normalizeDocument(settings.getDocument()))[Number(select.value)];
+      if (!entry) return;
+      activate({ surface: entry.surface, viewId: entry.viewId });
     });
-    const overflow = document.createElement('details'); overflow.className = 'bd-topic-view-overflow';
-    const summary = document.createElement('summary'); summary.textContent = '•••';
-    summary.setAttribute('aria-label', 'ボードビュー操作'); overflow.appendChild(summary);
-    const menu = document.createElement('div'); menu.className = 'bd-topic-view-overflow-menu';
-    actions.slice(1).forEach(([actionId, text, label, run]) => {
-      const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
-      button.dataset.bdTopicViewAction = `${actionId}-compact`;
-      button.dataset.bdAction = `topic-view-${actionId}-compact`;
-      button.setAttribute('aria-label', label); button.addEventListener('click', () => {
-        run(); overflow.open = false; refresh();
-      }); menu.appendChild(button);
-    });
-    overflow.appendChild(menu); root.appendChild(overflow);
     refresh(); container.appendChild(root);
     return { root, refresh };
   }
 
   global.MeldexBoardTopicViews = Object.freeze({
     normalizeDocument, addView, renameView, reorderView, removeView, duplicateView,
+    orderedViews, addSheetView, renameMixedView, reorderMixedView, removeMixedView, duplicateMixedView,
     captureViewState, applyViewState, createController, attachToolbar,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
@@ -2586,6 +6728,103 @@
     return (Array.isArray(boardView?.groups) ? boardView.groups : []).map(normalizeGroup);
   }
 
+  const GROUP_VISUAL_FIELDS = Object.freeze([
+    'background', 'backgroundOpacity', 'opacity', 'borderColor', 'borderOpacity', 'borderWidth', 'borderStyle', 'borderRadius',
+    'shadow', 'padding', 'labelColor', 'labelFontSize', 'labelFontFamily', 'labelBold',
+  ]);
+
+  function normalizeGroupStyle(value, idFactory) {
+    const source = clone(value || {});
+    const groupStyleId = String(source.groupStyleId || source.styleId || idFactory?.('group-style') || '');
+    if (!groupStyleId) throw new TypeError('groupStyleId is required');
+    const visualSource = source.visualStyle || source.style || {};
+    const visualStyle = {};
+    GROUP_VISUAL_FIELDS.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(visualSource, key)) visualStyle[key] = clone(visualSource[key]);
+    });
+    ['backgroundOpacity', 'borderOpacity', 'opacity'].forEach(key => {
+      if (visualStyle[key] != null) visualStyle[key] = Math.max(0, Math.min(1, Number(visualStyle[key]) || 0));
+    });
+    return { ...source, groupStyleId, name: String(source.name || 'グループスタイル'), visualStyle };
+  }
+
+  function normalizeGroupStyles(document) {
+    const result = clone(document || {});
+    const seen = new Set();
+    result.groupStyles = (Array.isArray(result.groupStyles) ? result.groupStyles : [])
+      .map(style => normalizeGroupStyle(style))
+      .filter(style => { if (seen.has(style.groupStyleId)) return false; seen.add(style.groupStyleId); return true; });
+    result.activeGroupStyleId = result.groupStyles.some(style => style.groupStyleId === result.activeGroupStyleId)
+      ? result.activeGroupStyleId : (result.groupStyles[0]?.groupStyleId || null);
+    return result;
+  }
+
+  function resolveGroupStyle(document, groupValue) {
+    const group = normalizeGroup(groupValue);
+    const normalized = normalizeGroupStyles(document);
+    const base = normalized.groupStyles.find(style => style.groupStyleId === group.styleRef)?.visualStyle || {};
+    return { ...clone(base), ...clone(group.styleOverrides || {}) };
+  }
+
+  function assertUniqueGroupStyleName(document, name, exceptId) {
+    const wanted = String(name || '').trim().toLocaleLowerCase();
+    if (!wanted) throw new TypeError('group style name is required');
+    if (normalizeGroupStyles(document).groupStyles.some(style => style.groupStyleId !== exceptId
+      && style.name.trim().toLocaleLowerCase() === wanted)) throw new Error('同名のグループスタイルがあります');
+  }
+
+  function createGroupStyle(document, value, idFactory) {
+    const result = normalizeGroupStyles(document);
+    const style = normalizeGroupStyle(value, idFactory);
+    if (result.groupStyles.some(item => item.groupStyleId === style.groupStyleId)) throw new Error('groupStyleId already exists');
+    assertUniqueGroupStyleName(result, style.name);
+    result.groupStyles.push(style);
+    if (!result.activeGroupStyleId) result.activeGroupStyleId = style.groupStyleId;
+    return { document: result, groupStyle: clone(style) };
+  }
+
+  function updateGroupStyle(document, groupStyleId, changes) {
+    const result = normalizeGroupStyles(document);
+    const index = result.groupStyles.findIndex(style => style.groupStyleId === groupStyleId);
+    if (index < 0) throw new RangeError('group style was not found');
+    if (Object.prototype.hasOwnProperty.call(changes || {}, 'name')) assertUniqueGroupStyleName(result, changes.name, groupStyleId);
+    result.groupStyles[index] = normalizeGroupStyle({ ...result.groupStyles[index], ...clone(changes || {}), groupStyleId });
+    return result;
+  }
+
+  function duplicateGroupStyle(document, groupStyleId, value, idFactory) {
+    const source = normalizeGroupStyles(document).groupStyles.find(style => style.groupStyleId === groupStyleId);
+    if (!source) throw new RangeError('group style was not found');
+    return createGroupStyle(document, {
+      ...clone(source), groupStyleId: idFactory?.('group-style'), name: value?.name || `${source.name} のコピー`,
+    }, idFactory);
+  }
+
+  function applyGroupStyle(boardView, groupId, groupStyleId, clearOverrides = false) {
+    return updateGroup(boardView, groupId, { styleRef: groupStyleId || null,
+      styleOverrides: clearOverrides ? {} : clone(groupsOf(boardView).find(group => group.groupId === groupId)?.styleOverrides || {}) });
+  }
+
+  function removeGroupStyle(document, groupStyleId, options) {
+    const result = normalizeGroupStyles(document);
+    const style = result.groupStyles.find(item => item.groupStyleId === groupStyleId);
+    if (!style) throw new RangeError('group style was not found');
+    const affected = (result.boardViews || []).flatMap(view => (view.groups || []).filter(group => group.styleRef === groupStyleId));
+    if (affected.length && !['preserve', 'replace'].includes(options?.mode)) {
+      return { document: result, removed: false, confirmationRequired: true, affectedGroupCount: affected.length };
+    }
+    const replacement = options?.replacementId && result.groupStyles.some(item => item.groupStyleId === options.replacementId)
+      ? options.replacementId : null;
+    (result.boardViews || []).forEach(view => (view.groups || []).forEach(group => {
+      if (group.styleRef !== groupStyleId) return;
+      if (options?.mode === 'preserve') group.styleOverrides = { ...clone(style.visualStyle), ...clone(group.styleOverrides || {}) };
+      group.styleRef = replacement;
+    }));
+    result.groupStyles = result.groupStyles.filter(item => item.groupStyleId !== groupStyleId);
+    if (result.activeGroupStyleId === groupStyleId) result.activeGroupStyleId = replacement || result.groupStyles[0]?.groupStyleId || null;
+    return { document: result, removed: true, confirmationRequired: false, affectedGroupCount: affected.length };
+  }
+
   function createGroup(boardView, value, idFactory) {
     const result = clone(boardView || {});
     result.groups = groupsOf(result);
@@ -2762,6 +7001,8 @@
 
   global.MeldexBoardGroups = Object.freeze({
     normalizeGroup, createGroup, updateGroup, moveGroup, resizeGroup,
+    GROUP_VISUAL_FIELDS, normalizeGroupStyle, normalizeGroupStyles, resolveGroupStyle,
+    createGroupStyle, updateGroupStyle, duplicateGroupStyle, applyGroupStyle, removeGroupStyle,
     lineImpactForGroup, planGroupRemoval,
     removeGroupFrame, normalizeLibraries, saveTemplate, updateTemplate, duplicateTemplate,
     removeTemplate, applyTemplate, renderOptionsTab, assertUniqueTemplateName,
@@ -2777,6 +7018,10 @@
   'use strict';
 
   const LEGACY_PATH_T = Object.freeze({ top: 0, right: 0.25, bottom: 0.5, left: 0.75 });
+  const LEGACY_ANCHOR_ALIASES = Object.freeze({
+    'top-center': 'top', 'right-center': 'right',
+    'bottom-center': 'bottom', 'left-center': 'left',
+  });
 
   function clone(value) {
     if (Array.isArray(value)) return value.map(clone);
@@ -2902,20 +7147,69 @@
     return { x, y, ratio, distanceSquared: (point.x - x) ** 2 + (point.y - y) ** 2 };
   }
 
+  function intersectDragSegment(point, toward, first, second) {
+    const dragX = toward.x - point.x; const dragY = toward.y - point.y;
+    const edgeX = second.x - first.x; const edgeY = second.y - first.y;
+    const denominator = dragX * edgeY - dragY * edgeX;
+    if (Math.abs(denominator) < 1e-9) return null;
+    const offsetX = first.x - point.x; const offsetY = first.y - point.y;
+    const dragRatio = (offsetX * edgeY - offsetY * edgeX) / denominator;
+    const edgeRatio = (offsetX * dragY - offsetY * dragX) / denominator;
+    if (dragRatio < -1e-7 || dragRatio > 1 + 1e-7 || edgeRatio < -1e-7 || edgeRatio > 1 + 1e-7) return null;
+    return {
+      x: point.x + dragX * dragRatio,
+      y: point.y + dragY * dragRatio,
+      ratio: Math.max(0, Math.min(1, edgeRatio)),
+      dragRatio: Math.max(0, Math.min(1, dragRatio)),
+      distanceSquared: 0,
+    };
+  }
+
   function projectPointToOutline(shape, boundsValue, pointValue, options) {
     const bounds = normalizedBounds(boundsValue);
     const point = { x: Number(pointValue?.x) || 0, y: Number(pointValue?.y) || 0 };
     const points = outlinePoints(shape, bounds, options);
     const metrics = pathMetrics(points);
     let best = null;
-    for (let index = 0; index < points.length - 1; index += 1) {
-      const candidate = { ...projectToSegment(point, points[index], points[index + 1]), segment: index };
-      const tied = best && Math.abs(candidate.distanceSquared - best.distanceSquared) <= 0.25;
-      if (!best || candidate.distanceSquared < best.distanceSquared
-          || (tied && index === options?.previousSegment)) best = candidate;
+    const toward = options?.towardPoint && {
+      x: Number(options.towardPoint.x) || 0,
+      y: Number(options.towardPoint.y) || 0,
+    };
+    const useDragIntersection = toward && Math.hypot(toward.x - point.x, toward.y - point.y) > 1e-7;
+    if (useDragIntersection) {
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const intersection = intersectDragSegment(point, toward, points[index], points[index + 1]);
+        if (!intersection) continue;
+        const candidate = { ...intersection, segment: index };
+        if (!best || candidate.dragRatio < best.dragRatio) best = candidate;
+      }
     }
-    const length = metrics.lengths[best.segment]
+    if (!best) {
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const candidate = { ...projectToSegment(point, points[index], points[index + 1]), segment: index };
+        const tied = best && Math.abs(candidate.distanceSquared - best.distanceSquared) <= 0.25;
+        if (!best || candidate.distanceSquared < best.distanceSquared
+            || (tied && index === options?.previousSegment)) best = candidate;
+      }
+    }
+    let length = metrics.lengths[best.segment]
       + (metrics.lengths[best.segment + 1] - metrics.lengths[best.segment]) * best.ratio;
+    const snapDistance = Math.max(0, Number(options?.snapDistance) || 0);
+    if (snapDistance > 0) {
+      let snapped = null;
+      Object.values(LEGACY_PATH_T).forEach((pathT) => {
+        const candidate = pointAtPathT(shape, bounds, pathT, options);
+        const distanceSquared = (best.x - candidate.x) ** 2 + (best.y - candidate.y) ** 2;
+        if (distanceSquared <= snapDistance ** 2
+            && (!snapped || distanceSquared < snapped.distanceSquared)) {
+          snapped = { ...candidate, pathT, distanceSquared };
+        }
+      });
+      if (snapped) {
+        best = { ...best, x: snapped.x, y: snapped.y, segment: snapped.segment };
+        length = snapped.pathT * metrics.total;
+      }
+    }
     const pathT = length / metrics.total;
     return {
       point: { x: best.x, y: best.y },
@@ -2927,20 +7221,22 @@
   }
 
   function legacyAnchorToOutline(anchor) {
-    if (!Object.prototype.hasOwnProperty.call(LEGACY_PATH_T, anchor)) return null;
-    return { mode: 'outline', pathT: LEGACY_PATH_T[anchor], legacyAnchor: anchor };
+    const canonical = LEGACY_ANCHOR_ALIASES[anchor] || anchor;
+    if (!Object.prototype.hasOwnProperty.call(LEGACY_PATH_T, canonical)) return null;
+    return { mode: 'outline', pathT: LEGACY_PATH_T[canonical], legacyAnchor: anchor };
   }
 
   function projectLegacyAnchor(shape, boundsValue, anchor, options) {
     const bounds = normalizedBounds(boundsValue);
+    const canonical = LEGACY_ANCHOR_ALIASES[anchor] || anchor;
     const points = {
       top: { x: bounds.x + bounds.w / 2, y: bounds.y },
       right: { x: bounds.x + bounds.w, y: bounds.y + bounds.h / 2 },
       bottom: { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h },
       left: { x: bounds.x, y: bounds.y + bounds.h / 2 },
     };
-    if (!points[anchor]) return null;
-    const projected = projectPointToOutline(shape, bounds, points[anchor], options);
+    if (!points[canonical]) return null;
+    const projected = projectPointToOutline(shape, bounds, points[canonical], options);
     projected.outlinePosition.legacyAnchor = anchor;
     return projected;
   }
@@ -2978,7 +7274,14 @@
 
   function endpointFromLegacy(line, side, topicRefByLegacyId) {
     const endpoint = line?.[`${side}Endpoint`];
-    if (endpoint) return normalizeEndpoint(endpoint);
+    if (endpoint) {
+      const normalized = normalizeEndpoint(endpoint);
+      if (normalized.targetKind === 'topic' && typeof normalized.targetRef === 'string'
+          && topicRefByLegacyId?.[normalized.targetRef]) {
+        normalized.targetRef = clone(topicRefByLegacyId[normalized.targetRef]);
+      }
+      return normalized;
+    }
     const point = line?.[`${side}Point`];
     if (point) return normalizeEndpoint({ targetKind: 'point', targetRef: point });
     const legacyId = line?.[side];
@@ -3084,6 +7387,10 @@
     return (hash >>> 0).toString(36);
   }
 
+  function normalizePath(value) {
+    return String(value || '').trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  }
+
   function parseScalar(raw) {
     const value = typeof global.bdYamlScalar === 'function' ? global.bdYamlScalar(raw) : String(raw || '').trim();
     if (value && typeof value === 'object') return value;
@@ -3157,9 +7464,17 @@
       .filter((ref) => ref?.sourceId && ref?.topicId);
     const source = clone(document || {});
     const membership = clone(source.membership || {});
-    if (!Array.isArray(membership.manualTopicRefs)) {
-      membership.manualTopicRefs = clone(Array.isArray(membership.topicRefs) ? membership.topicRefs : refs);
-    }
+    const membershipRefs = Array.isArray(membership.manualTopicRefs)
+      ? membership.manualTopicRefs
+      : (Array.isArray(membership.topicRefs) ? membership.topicRefs : refs);
+    // 旧ボードや保存途中の文書には、削除済みカードに対応するnull/空TopicRefが
+    // membershipへ残ることがある。厳格な共通契約へ渡す前に、安定IDが揃う参照だけへ
+    // 収斂させる（タイトル等から別Topicを捏造しない）。
+    membership.manualTopicRefs = clone(membershipRefs.filter(
+      (ref) => ref && typeof ref === 'object'
+        && typeof ref.sourceId === 'string' && ref.sourceId.trim()
+        && typeof ref.topicId === 'string' && ref.topicId.trim(),
+    ));
     membership.mode = ['manual', 'query', 'hybrid'].includes(membership.mode)
       ? membership.mode : 'manual';
     if (membership.mode === 'manual' && !Object.prototype.hasOwnProperty.call(membership, 'queryDefinition')) {
@@ -3179,9 +7494,23 @@
         ? source.lastCompleteSnapshot : null,
     };
     const boardNormalized = global.MeldexBoardTopicViews.normalizeDocument(prepared);
-    return global.MeldexTopicViewDocument?.normalizeDocument
+    const normalized = global.MeldexTopicViewDocument?.normalizeDocument
       ? global.MeldexTopicViewDocument.normalizeDocument(boardNormalized)
       : boardNormalized;
+    // 新規カードを作成した直後の初回保存では、ライン端点が安定TopicRefへ移行する前の
+    // node id文字列で保存された版がある。ノード側のTopicRefを確定した後なら安全に対応付け
+    // できるため、読込時に全ビューのライン端点を同じ正規化経路へ通して再描画可能にする。
+    if (global.MeldexBoardOutlineEndpoints) {
+      const refsByLegacyId = Object.fromEntries((board?.nodes || [])
+        .filter(node => node?.id && node?.topicRef?.sourceId && node?.topicRef?.topicId)
+        .map(node => [node.id, node.topicRef]));
+      (normalized.boardViews || []).forEach((view) => {
+        view.lines = (view.lines || []).map(line => (
+          global.MeldexBoardOutlineEndpoints.normalizeLine(line, refsByLegacyId)
+        ));
+      });
+    }
+    return normalized;
   }
 
   function runtimeForCapture(board) {
@@ -3210,7 +7539,11 @@
       sources: [{ sourceId: 'local-vault' }],
       sheetViews: [],
       relationSets: [],
-      boardViews: [],
+      boardViews: [{
+        boardViewId: `board-view:${hashText(path)}`, name: '既定ビュー', relationSetId: null,
+        positionsByTopicRef: {}, groups: [], lines: [], hiddenTopicRefs: [], collapsedTopicRefs: [],
+        styleOverrides: {}, camera: { pan: { x: 0, y: 0 }, zoom: 1, rotation: 0 },
+      }],
       topicLayouts: [],
       lastCompleteSnapshot: null,
     }, board, path);
@@ -3227,9 +7560,20 @@
   }
 
   function captureRuntime(board) {
+    // hydrate後に追加されたカードにも、ビューとラインを保存する前に安定TopicRefを付与する。
+    // これが無いと初回保存だけ端点targetRefが一時的なnode idのまま残り、再読込時に
+    // viewLinesToLegacyが接続元・接続先を解決できない。
+    ensureTopicRefs(board, null, board.path);
     if (!global.MeldexBoardTopicViews) return null;
     if (!board.topicViewDocument) board.topicViewDocument = createDocument(board, board.path);
     const document = normalizeTopicDocument(board.topicViewDocument, board, board.path);
+    if (!document.boardViews.length) {
+      document.membership = document.membership || { mode: 'manual' };
+      document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+      board.topicViewDocument = document;
+      board.activeBoardViewId = null;
+      return null;
+    }
     const index = document.boardViews.findIndex((view) => view.boardViewId === board.activeBoardViewId);
     const targetIndex = index >= 0 ? index : 0;
     document.boardViews[targetIndex] = global.MeldexBoardTopicViews.captureViewState(
@@ -3312,9 +7656,8 @@
   }
 
   function updateBoardRecordDisplays(board, detail) {
-    const sourceId = String(detail?.sourceId || '');
     const byRef = new Map((detail?.topicRecords || []).map((record) => [
-      topicKey(canonicalRef(sourceId, record?.topicId)), record,
+      topicKey(record?.topicRef || canonicalRef(detail?.sourceId, record?.topicId)), record,
     ]));
     let changed = false;
     (board.nodes || []).forEach((node) => {
@@ -3324,6 +7667,55 @@
       if (node.text !== nextText) { node.text = nextText; changed = true; }
     });
     return changed;
+  }
+
+  function reconcileBoardPlacements(board, detail) {
+    if (!detail?.viewDocument || normalizePath(board.path) !== normalizePath(detail.dbPath || detail.legacyPath)) {
+      return false;
+    }
+    const document = normalizeTopicDocument(detail.viewDocument, board, board.path);
+    const activeId = board.activeBoardViewId || document.activeBoardViewId
+      || document.boardViews?.[0]?.boardViewId;
+    const placements = (document.placements || []).filter(item => item?.surface === 'board'
+      && (!activeId || String(item.viewId) === String(activeId)));
+    const allowed = new Set(placements.map(item => topicKey(item.topicRef)));
+    const records = new Map((detail.topicRecords || []).map(record => [
+      topicKey(record?.topicRef || canonicalRef(detail.sourceId, record?.topicId)), record,
+    ]));
+    const existing = new Map((board.nodes || []).filter(node => node?.topicRef)
+      .map(node => [topicKey(node.topicRef), node]));
+    const unbound = (board.nodes || []).filter(node => !node?.topicRef);
+    const nodes = [];
+    placements.forEach((placement, index) => {
+      const key = topicKey(placement.topicRef);
+      const record = records.get(key);
+      const position = placement.position || placement.boardPosition || {};
+      let node = existing.get(key);
+      if (!node) {
+        const id = `topic-${hashText(key)}`;
+        const x = Number.isFinite(+position.x) ? +position.x : 40 + (index % 5) * 180;
+        const y = Number.isFinite(+position.y) ? +position.y : 40 + Math.floor(index / 5) * 100;
+        node = typeof global.bdNode === 'function'
+          ? global.bdNode(recordText(record), x, y, position.w, position.h, { id, topicRef: clone(placement.topicRef) })
+          : { id, text: recordText(record), x, y, w: position.w || 160, h: position.h || 0,
+            topicRef: clone(placement.topicRef) };
+      } else {
+        node.topicRef = clone(placement.topicRef);
+        if (record) node.text = recordText(record);
+        if (Number.isFinite(+position.x)) node.x = +position.x;
+        if (Number.isFinite(+position.y)) node.y = +position.y;
+      }
+      node._topicCanonicalOnly = (record?.originDocumentId
+        && record.originDocumentId !== document.documentId)
+        || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
+      node._topicReadOnly = detail.readOnly === true;
+      nodes.push(node);
+    });
+    board.nodes = [...unbound, ...nodes];
+    board.topicViewDocument = document;
+    board.activeBoardViewId = activeId;
+    applyView(board, activeView(board));
+    return true;
   }
 
   function canonicalizeBoard(board, detail) {
@@ -3341,9 +7733,10 @@
       board.hiddenTopicRefs = (board.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       applyView(board, activeView(board));
     }
+    const placementsChanged = reconcileBoardPlacements(board, detail);
     const displayChanged = updateBoardRecordDisplays(board, detail);
-    if (replacements.size || displayChanged) redraw();
-    return { replacementCount: replacements.size, displayChanged };
+    if (replacements.size || placementsChanged || displayChanged) redraw();
+    return { replacementCount: replacements.size, placementsChanged, displayChanged };
   }
 
   function installTopicRecordListener() {
@@ -3353,7 +7746,10 @@
       for (const board of openBoards) {
         if (!board || board._topicBridgeDestroyed || !board.path) continue;
         const sourceId = String(event?.detail?.sourceId || '');
-        if (!(board.nodes || []).some((node) => String(node.topicRef?.sourceId || '') === sourceId)) continue;
+        const samePath = normalizePath(board.path) === normalizePath(
+          event?.detail?.dbPath || event?.detail?.legacyPath,
+        );
+        if (!samePath && !(board.nodes || []).some((node) => String(node.topicRef?.sourceId || '') === sourceId)) continue;
         canonicalizeBoard(board, event?.detail || {});
       }
     });
@@ -3368,6 +7764,10 @@
     const original = global.bdSave;
     const wrapped = async function meldexTopicAwareBoardSave() {
       const current = wrapped._meldexTopicBoard;
+      if (current?.readOnly || current?.readonly || current?.isReadOnly) {
+        global.showStatus?.('読み取り専用のボードは保存できません', true);
+        return false;
+      }
       const savedPath = current?.path || '';
       const result = await original.apply(this, arguments);
       if (result === true && savedPath && !current?._topicBridgeDestroyed
@@ -3494,23 +7894,26 @@
   }
 
   function switchView(board, boardViewId, options) {
-    captureRuntime(board);
+    const readOnly = !!(board?.readOnly || board?.readonly || board?.isReadOnly);
+    if (!readOnly) captureRuntime(board);
     const target = board.topicViewDocument.boardViews.find((view) => view.boardViewId === boardViewId);
     if (!target) return false;
-    if (!options?.skipUndo) global.bdPushUndo?.('ボードビューを切り替え');
+    if (!readOnly && !options?.skipUndo) global.bdPushUndo?.('ボードビューを切り替え');
     applyView(board, target);
-    global.bdDirty?.();
+    if (!readOnly) global.bdDirty?.();
     redraw();
     return true;
   }
 
   function shuffle(board) {
+    if (board?.readOnly || board?.readonly || board?.isReadOnly) return false;
     const view = captureRuntime(board);
     if (!view || !global.MeldexBoardShuffle) return false;
     const selected = new Set(board.selected || []);
     const hidden = new Set((view.hiddenTopicRefs || []).map(topicKey));
     const items = (board.nodes || []).map((node) => ({ ...node, topicRef: clone(node.topicRef),
-      editable: !node.readOnly, hidden: hidden.has(topicKey(node.topicRef)), visible: true }));
+      editable: !node.readOnly, locked: node.locked === true,
+      hidden: hidden.has(topicKey(node.topicRef)), visible: true }));
     const plan = global.MeldexBoardShuffle.planShuffle({
       items,
       selectedTopicRefs: items.filter((node) => selected.has(node.id)).map((node) => node.topicRef),
@@ -3547,12 +7950,22 @@
     };
   }
 
-  function setGroupTemplateLibraries(board, libraries, changedScope) {
+  function setGroupTemplateLibraries(board, libraries, changedScope, historyLabel) {
     const normalized = global.MeldexBoardGroups.normalizeLibraries(libraries);
     if (changedScope === 'common') {
+      const before = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
       writeCommonGroupTemplates(normalized.common);
+      const after = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
+      global.pushLocalStorageSettingsHistory?.(
+        historyLabel || '共通グループテンプレートを変更',
+        before,
+        after,
+        '全ボード共通のテンプレート設定',
+        redraw,
+      );
       return;
     }
+    global.bdPushUndo?.(historyLabel || 'グループテンプレートを変更');
     const existing = clone(board.topicViewDocument.groupTemplateLibraries || {});
     board.topicViewDocument.groupTemplateLibraries = { ...existing, file: clone(normalized.file) };
     global.bdDirty?.();
@@ -3584,6 +7997,16 @@
       redraw();
       return true;
     };
+    const commitDocument = (documentValue, label) => {
+      if (readOnly) return false;
+      global.bdPushUndo?.(label);
+      board.topicViewDocument = groupsApi.normalizeGroupStyles(documentValue);
+      const view = activeView(board);
+      if (view) applyView(board, view);
+      global.bdDirty?.();
+      redraw();
+      return true;
+    };
     const attempt = (callback) => {
       try { return callback(); }
       catch (error) {
@@ -3595,6 +8018,73 @@
       readOnly,
       listGroups: () => clone(active()?.groups || []),
       getGroup: (groupId) => clone(selectedGroup(groupId)),
+      listGroupStyles: () => clone(groupsApi.normalizeGroupStyles(board.topicViewDocument).groupStyles),
+      getGroupStyle: (groupStyleId) => clone(groupsApi.normalizeGroupStyles(board.topicViewDocument).groupStyles
+        .find(style => style.groupStyleId === groupStyleId) || null),
+      createGroupStyle(name, groupId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const group = selectedGroup(groupId);
+          const saved = groupsApi.createGroupStyle(board.topicViewDocument, {
+            name: String(name || 'グループスタイル').trim(),
+            visualStyle: group ? groupsApi.resolveGroupStyle(board.topicViewDocument, group) : {},
+          }, options?.idFactory || createTemplateId);
+          commitDocument(saved.document, 'グループスタイルを作成');
+          return { ok: true, groupStyle: saved.groupStyle };
+        });
+      },
+      updateGroupStyle(groupStyleId, changes) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => ({ ok: commitDocument(
+          groupsApi.updateGroupStyle(board.topicViewDocument, groupStyleId, changes), 'グループスタイルを変更',
+        ) }));
+      },
+      duplicateGroupStyle(groupStyleId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const saved = groupsApi.duplicateGroupStyle(board.topicViewDocument, groupStyleId, {}, options?.idFactory || createTemplateId);
+          commitDocument(saved.document, 'グループスタイルを複製');
+          return { ok: true, groupStyle: saved.groupStyle };
+        });
+      },
+      setActiveGroupStyle(groupStyleId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const next = groupsApi.normalizeGroupStyles(board.topicViewDocument);
+          if (!next.groupStyles.some(style => style.groupStyleId === groupStyleId)) throw new Error('グループスタイルが見つかりません');
+          next.activeGroupStyleId = groupStyleId;
+          return { ok: commitDocument(next, '既定グループスタイルを変更') };
+        });
+      },
+      applyGroupStyle(groupStyleId, groupId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => ({ ok: commitView(groupsApi.applyGroupStyle(active(), groupId, groupStyleId), 'グループスタイルを適用') }));
+      },
+      clearGroupOverrides(groupId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => ({ ok: commitView(groupsApi.updateGroup(active(), groupId, { styleOverrides: {} }), 'グループの個別上書きを解除') }));
+      },
+      promoteGroupOverrides(groupId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const group = selectedGroup(groupId);
+          if (!group?.styleRef) throw new Error('先に名前付きグループスタイルを適用してください');
+          const style = this.getGroupStyle(group.styleRef);
+          const nextDoc = groupsApi.updateGroupStyle(board.topicViewDocument, group.styleRef, {
+            visualStyle: { ...(style?.visualStyle || {}), ...(group.styleOverrides || {}) },
+          });
+          commitDocument(nextDoc, '個別上書きをグループスタイルへ反映');
+          return { ok: commitView(groupsApi.updateGroup(active(), groupId, { styleOverrides: {} }), 'グループの個別上書きを解除') };
+        });
+      },
+      removeGroupStyle(groupStyleId, mode, replacementId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const result = groupsApi.removeGroupStyle(board.topicViewDocument, groupStyleId, { mode, replacementId });
+          if (result.confirmationRequired) return { ok: false, ...result };
+          return { ok: commitDocument(result.document, 'グループスタイルを削除'), ...result };
+        });
+      },
       updateGroup(groupId, changes) {
         if (readOnly) return rejectReadOnly();
         return attempt(() => {
@@ -3618,7 +8108,7 @@
             idFactory: options?.idFactory || createTemplateId,
             name: String(name || group.name || 'グループテンプレート').trim(),
           });
-          setGroupTemplateLibraries(board, saved.libraries, scope);
+          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを保存');
           showGroupMessage('グループテンプレートを保存しました');
           return { ok: true, template: saved.template };
         });
@@ -3627,7 +8117,7 @@
         if (readOnly) return rejectReadOnly();
         return attempt(() => {
           const libraries = groupsApi.updateTemplate(groupTemplateLibraries(board), scope, templateId, { name: String(name || '').trim() });
-          setGroupTemplateLibraries(board, libraries, scope);
+          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレート名を変更');
           return { ok: true };
         });
       },
@@ -3635,7 +8125,7 @@
         if (readOnly) return rejectReadOnly();
         return attempt(() => {
           const libraries = groupsApi.removeTemplate(groupTemplateLibraries(board), scope, templateId);
-          setGroupTemplateLibraries(board, libraries, scope);
+          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレートを削除');
           return { ok: true };
         });
       },
@@ -3647,7 +8137,7 @@
             idFactory: options?.idFactory || createTemplateId,
             name: `${source?.name || 'グループ'} のコピー`,
           });
-          setGroupTemplateLibraries(board, saved.libraries, scope);
+          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを複製');
           return { ok: true, template: saved.template };
         });
       },
@@ -3665,11 +8155,18 @@
 
   function groupStyleField(root, labelText, key, value, type, onChange) {
     const label = document.createElement('label'); label.textContent = labelText;
-    const input = document.createElement('input'); input.type = type || 'text';
+    const input = document.createElement('input'); input.type = type === 'opacity-percent' ? 'number' : (type || 'text');
     if (type === 'checkbox') input.checked = !!value;
-    else input.value = value == null ? '' : String(value);
+    else if (type === 'opacity-percent') {
+      input.min = '0'; input.max = '100'; input.step = '1';
+      input.value = String(Math.round((value == null ? 1 : Math.max(0, Math.min(1, Number(value) || 0))) * 100));
+    } else input.value = value == null ? '' : String(value);
     input.dataset.groupStyleField = key;
-    input.addEventListener('change', () => onChange(type === 'checkbox' ? input.checked : input.value));
+    input.addEventListener('change', () => onChange(type === 'checkbox'
+      ? input.checked
+      : type === 'opacity-percent'
+        ? Math.max(0, Math.min(100, Number(input.value) || 0)) / 100
+        : input.value));
     label.appendChild(input); root.appendChild(label);
   }
 
@@ -3677,20 +8174,67 @@
     if (!root?.appendChild || !global.MeldexBoardGroups) return null;
     const controller = createGroupUiController(board, options);
     if (controller.readOnly) return null;
+    const panelMode = options?.panel === true;
     root.querySelectorAll?.('[data-bd-group-manager]').forEach((element) => element.remove());
-    const details = document.createElement('details');
-    details.className = 'bd-topic-view-overflow bd-group-manager';
+    const details = document.createElement(panelMode ? 'section' : 'details');
+    details.className = panelMode
+      ? 'bd-group-manager bd-group-manager--panel'
+      : 'bd-topic-view-overflow bd-group-manager';
     details.dataset.bdGroupManager = 'true';
-    const summary = document.createElement('summary'); summary.textContent = 'グループ'; details.appendChild(summary);
-    const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; details.appendChild(panel);
+    details.dataset.e2eId = 'board-group-manager';
+    if (!panelMode) {
+      const summary = document.createElement('summary'); summary.textContent = 'グループ'; details.appendChild(summary);
+    }
+    const panel = document.createElement('div');
+    panel.className = panelMode ? 'bd-group-manager-panel' : 'bd-topic-view-overflow-menu';
+    details.appendChild(panel);
+    const labeledControl = (labelText, control) => {
+      const label = document.createElement('label');
+      label.className = 'bd-group-manager-field';
+      const caption = document.createElement('span'); caption.textContent = labelText;
+      label.append(caption, control);
+      return label;
+    };
     const groupSelect = document.createElement('select'); groupSelect.setAttribute('aria-label', '編集するグループ');
+    groupSelect.dataset.e2eId = 'board-group-manager-group';
     const templateSelect = document.createElement('select'); templateSelect.setAttribute('aria-label', 'グループテンプレート');
+    templateSelect.dataset.e2eId = 'board-group-manager-template';
     const templateName = document.createElement('input'); templateName.placeholder = 'テンプレート名';
+    templateName.dataset.e2eId = 'board-group-manager-template-name';
     const scopeSelect = document.createElement('select');
+    scopeSelect.setAttribute('aria-label', 'テンプレートの保存範囲');
+    scopeSelect.dataset.e2eId = 'board-group-manager-scope';
     [['file', 'このファイル'], ['common', '共通']].forEach(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; scopeSelect.appendChild(option);
     });
     const optionsHost = document.createElement('div');
+    const styleManager = document.createElement('fieldset');
+    styleManager.className = 'bd-group-style-manager';
+    styleManager.dataset.bdGroupStyleManager = 'true';
+    const styleLegend = document.createElement('legend'); styleLegend.textContent = 'グループスタイル'; styleManager.appendChild(styleLegend);
+    const styleSelect = document.createElement('select'); styleSelect.setAttribute('aria-label', '名前付きグループスタイル');
+    styleSelect.dataset.e2eId = 'board-group-style-select';
+    const styleName = document.createElement('input'); styleName.placeholder = 'グループスタイル名';
+    styleName.dataset.e2eId = 'board-group-style-name';
+    const styleFields = document.createElement('div'); styleFields.className = 'bd-group-style-fields';
+    const styleActions = document.createElement('div'); styleActions.className = 'bd-group-style-actions';
+    styleManager.append(
+      labeledControl('スタイル', styleSelect),
+      labeledControl('名前', styleName),
+      styleFields,
+      styleActions,
+    );
+    const templateManager = document.createElement('fieldset');
+    templateManager.className = 'bd-group-template-manager';
+    const templateLegend = document.createElement('legend'); templateLegend.textContent = 'グループテンプレート';
+    const templateActions = document.createElement('div'); templateActions.className = 'bd-group-template-actions';
+    templateManager.append(
+      templateLegend,
+      labeledControl('保存範囲', scopeSelect),
+      labeledControl('名前', templateName),
+      labeledControl('テンプレート', templateSelect),
+      templateActions,
+    );
     const refreshOptions = () => {
       const group = controller.getGroup(groupSelect.value);
       if (!group) { optionsHost.replaceChildren(); return; }
@@ -3704,14 +8248,19 @@
         });
       };
       [['背景色', 'background', group.styleOverrides?.background, 'color'],
+        ['背景不透明度', 'backgroundOpacity', group.styleOverrides?.backgroundOpacity, 'opacity-percent'],
         ['透明度', 'opacity', group.styleOverrides?.opacity, 'number'],
         ['枠色', 'borderColor', group.styleOverrides?.borderColor, 'color'],
+        ['枠線不透明度', 'borderOpacity', group.styleOverrides?.borderOpacity, 'opacity-percent'],
         ['枠幅', 'borderWidth', group.styleOverrides?.borderWidth, 'number'],
         ['線種', 'borderStyle', group.styleOverrides?.borderStyle, 'text'],
         ['角丸', 'borderRadius', group.styleOverrides?.borderRadius, 'number'],
         ['影', 'shadow', group.styleOverrides?.shadow, 'text'],
         ['内側余白', 'padding', group.styleOverrides?.padding, 'number'],
-        ['ラベルサイズ', 'labelFontSize', group.styleOverrides?.labelFontSize, 'number']]
+        ['ラベル色', 'labelColor', group.styleOverrides?.labelColor, 'color'],
+        ['ラベルサイズ', 'labelFontSize', group.styleOverrides?.labelFontSize, 'number'],
+        ['ラベルフォント', 'labelFontFamily', group.styleOverrides?.labelFontFamily, 'text'],
+        ['ラベル太字', 'labelBold', group.styleOverrides?.labelBold, 'checkbox']]
         .forEach(([label, key, value, type]) => groupStyleField(section, label, key, value, type, (next) => applyStyle(key, next)));
       groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
       groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
@@ -3727,6 +8276,30 @@
       const selected = controller.listTemplates().find((template) => `${template.scope}:${template.templateId}` === templateSelect.value);
       templateName.value = selected?.name || templateName.value;
     };
+    const refreshStyles = () => {
+      const previous = styleSelect.value;
+      styleSelect.replaceChildren();
+      controller.listGroupStyles().forEach(style => {
+        const option = document.createElement('option'); option.value = style.groupStyleId;
+        option.textContent = `${board.topicViewDocument.activeGroupStyleId === style.groupStyleId ? '★ ' : ''}${style.name}`;
+        styleSelect.appendChild(option);
+      });
+      if (controller.getGroupStyle(previous)) styleSelect.value = previous;
+      const selected = controller.getGroupStyle(styleSelect.value);
+      styleName.value = selected?.name || '';
+      styleFields.replaceChildren();
+      if (!selected) return;
+      const updateVisual = (key, value) => controller.updateGroupStyle(selected.groupStyleId, {
+        visualStyle: { ...(controller.getGroupStyle(selected.groupStyleId)?.visualStyle || {}), [key]: value },
+      });
+      [['背景色', 'background', 'color'], ['背景不透明度', 'backgroundOpacity', 'opacity-percent'], ['透明度', 'opacity', 'number'], ['枠色', 'borderColor', 'color'], ['枠線不透明度', 'borderOpacity', 'opacity-percent'],
+        ['枠幅', 'borderWidth', 'number'], ['線種', 'borderStyle', 'text'], ['角丸', 'borderRadius', 'number'],
+        ['影', 'shadow', 'text'], ['内側余白', 'padding', 'number'], ['ラベル色', 'labelColor', 'color'],
+        ['ラベルサイズ', 'labelFontSize', 'number'], ['ラベルフォント', 'labelFontFamily', 'text'],
+        ['ラベル太字', 'labelBold', 'checkbox']]
+        .forEach(([label, key, type]) => groupStyleField(styleFields, label, key, selected.visualStyle?.[key], type,
+          value => { updateVisual(key, value); refreshAll(); }));
+    };
     const refreshAll = () => {
       const selectedId = groupSelect.value;
       groupSelect.replaceChildren();
@@ -3735,24 +8308,50 @@
         groupSelect.appendChild(option);
       });
       if (controller.getGroup(selectedId)) groupSelect.value = selectedId;
-      refreshTemplates(); refreshOptions();
+      refreshTemplates(); refreshStyles(); refreshOptions();
     };
     const selectedTemplate = () => {
       const [scope, ...parts] = String(templateSelect.value || '').split(':');
       return { scope, templateId: parts.join(':') };
     };
-    const button = (text, action) => {
+    const button = (text, e2eId, action) => {
       const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
-      element.addEventListener('click', async () => { await action(); refreshAll(); }); panel.appendChild(element);
+      element.dataset.e2eId = e2eId;
+      element.addEventListener('click', async () => { await action(); refreshAll(); }); templateActions.appendChild(element);
     };
-    panel.append(groupSelect, optionsHost, scopeSelect, templateName, templateSelect);
+    panel.append(labeledControl('編集するグループ', groupSelect), optionsHost, styleManager, templateManager);
     groupSelect.addEventListener('change', refreshOptions);
     templateSelect.addEventListener('change', () => { templateName.value = controller.getTemplate(selectedTemplate().scope, selectedTemplate().templateId)?.name || ''; });
-    button('現在値を保存', () => controller.saveGroupTemplate(scopeSelect.value, groupSelect.value, templateName.value));
-    button('適用', () => { const value = selectedTemplate(); controller.applyGroupTemplate(value.scope, value.templateId, groupSelect.value); });
-    button('名前変更', () => { const value = selectedTemplate(); controller.renameTemplate(value.scope, value.templateId, templateName.value); });
-    button('複製', () => { const value = selectedTemplate(); controller.duplicateTemplate(value.scope, value.templateId); });
-    button('削除', async () => {
+    styleSelect.addEventListener('change', refreshStyles);
+    const styleButton = (text, e2eId, action) => {
+      const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
+      element.dataset.e2eId = e2eId;
+      element.addEventListener('click', async () => { await action(); refreshAll(); });
+      styleActions.appendChild(element);
+    };
+    styleButton('作成', 'board-group-style-create', () => controller.createGroupStyle(styleName.value || 'グループスタイル', groupSelect.value));
+    styleButton('適用', 'board-group-style-apply', () => controller.applyGroupStyle(styleSelect.value, groupSelect.value));
+    styleButton('既定', 'board-group-style-default', () => controller.setActiveGroupStyle(styleSelect.value));
+    styleButton('名前変更', 'board-group-style-rename', () => controller.updateGroupStyle(styleSelect.value, { name: styleName.value }));
+    styleButton('複製', 'board-group-style-duplicate', () => controller.duplicateGroupStyle(styleSelect.value));
+    styleButton('上書きを反映', 'board-group-style-promote', () => controller.promoteGroupOverrides(groupSelect.value));
+    styleButton('上書きを解除', 'board-group-style-clear-overrides', () => controller.clearGroupOverrides(groupSelect.value));
+    styleButton('削除', 'board-group-style-delete', async () => {
+      const style = controller.getGroupStyle(styleSelect.value);
+      if (!style) return;
+      const affected = controller.removeGroupStyle(style.groupStyleId);
+      if (affected?.confirmationRequired) {
+        const confirmed = typeof global.cfConfirm === 'function'
+          ? await global.cfConfirm(`グループスタイル「${style.name}」を削除します。使用中の${affected.affectedGroupCount}件は現在の見た目を個別値として保持しますか？`)
+          : false;
+        if (confirmed) controller.removeGroupStyle(style.groupStyleId, 'preserve');
+      }
+    });
+    button('現在値を保存', 'board-group-template-save', () => controller.saveGroupTemplate(scopeSelect.value, groupSelect.value, templateName.value));
+    button('適用', 'board-group-template-apply', () => { const value = selectedTemplate(); controller.applyGroupTemplate(value.scope, value.templateId, groupSelect.value); });
+    button('名前変更', 'board-group-template-rename', () => { const value = selectedTemplate(); controller.renameTemplate(value.scope, value.templateId, templateName.value); });
+    button('複製', 'board-group-template-duplicate', () => { const value = selectedTemplate(); controller.duplicateTemplate(value.scope, value.templateId); });
+    button('削除', 'board-group-template-delete', async () => {
       const value = selectedTemplate();
       const template = controller.getTemplate(value.scope, value.templateId);
       if (!template) return;
@@ -3766,39 +8365,142 @@
     return { root: details, controller, refresh: refreshAll };
   }
 
+  function teardownMixedSheetView(board) {
+    try { board?._mixedSheetViewHost?.destroy?.(); } catch {}
+    if (board) board._mixedSheetViewHost = null;
+    const root = global._bdToolbarRoot?.();
+    root?.querySelector?.('[data-bd-mixed-sheet-host]')?.remove();
+    root?.querySelector?.('[data-bd-mixed-view-empty]')?.remove();
+    root?.querySelector?.('[data-bd-role="canvas"]')?.removeAttribute('hidden');
+  }
+
+  function showMixedViewEmptyState(board) {
+    const root = global._bdToolbarRoot?.();
+    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
+    if (!root || !canvas) return false;
+    teardownMixedSheetView(board);
+    canvas.hidden = true;
+    const empty = document.createElement('section');
+    empty.className = 'bd-mixed-view-empty-host'; empty.dataset.bdMixedViewEmpty = 'true';
+    empty.setAttribute('role', 'status');
+    empty.innerHTML = '<strong>ビューがありません</strong><span>上の＋からテーブル、ツリー、またはボードを追加してください。</span>';
+    root.appendChild(empty);
+    return true;
+  }
+
+  function switchMixedView(board, ref, options) {
+    if (!board?.topicViewDocument || !ref?.surface || !ref?.viewId) return false;
+    const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
+    const documentValue = normalizeTopicDocument(board.topicViewDocument, board, board.path);
+    const exists = ref.surface === 'board'
+      ? documentValue.boardViews.some(view => view.boardViewId === ref.viewId)
+      : documentValue.sheetViews.some(view => view.viewId === ref.viewId);
+    if (!exists) return false;
+    if (ref.surface === 'board') {
+      teardownMixedSheetView(board);
+      documentValue.activeViewRef = { surface: 'board', viewId: ref.viewId };
+      documentValue.activeBoardViewId = ref.viewId;
+      board.topicViewDocument = documentValue;
+      return switchView(board, ref.viewId, options);
+    }
+    if (!readOnly && board.activeBoardViewId && documentValue.boardViews.length) captureRuntime(board);
+    board.topicViewDocument.activeViewRef = { surface: 'sheet', viewId: ref.viewId };
+    board.topicViewDocument.activeSheetViewId = ref.viewId;
+    const root = global._bdToolbarRoot?.();
+    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
+    if (!root || !canvas) return false;
+    teardownMixedSheetView(board);
+    canvas.hidden = true;
+    const hostElement = document.createElement('section');
+    hostElement.className = 'bd-mixed-sheet-host'; hostElement.dataset.bdMixedSheetHost = 'true';
+    hostElement.setAttribute('aria-label', 'シートビュー');
+    const status = document.createElement('div'); status.className = 'bd-mixed-sheet-status'; status.textContent = 'シートビューを読み込んでいます';
+    const mountPoint = document.createElement('div'); mountPoint.className = 'bd-mixed-sheet-mount';
+    hostElement.append(status, mountPoint); root.appendChild(hostElement);
+    if (!global.MeldexTopicViewHost?.TopicViewHost) {
+      status.textContent = 'シート表示ホストを利用できません'; return false;
+    }
+    const runtimeId = `mixed-view:${board.topicViewDocument.documentId}:${ref.viewId}`;
+    const host = new global.MeldexTopicViewHost.TopicViewHost({
+      root: hostElement,
+      onStatus: (_block, state, reason) => {
+        status.dataset.status = state;
+        status.textContent = state === 'ready' ? '' : (reason || (state === 'loading' ? 'シートビューを読み込んでいます' : 'シートビューを表示できません'));
+        status.hidden = state === 'ready';
+      },
+    });
+    board._mixedSheetViewHost = host;
+    const sourceId = board.topicViewDocument.membership?.manualTopicRefs?.[0]?.sourceId || 'local-vault';
+    host.register({
+      blockId: runtimeId, resourceType: 'sheet', sourceId,
+      documentId: board.topicViewDocument.documentId, viewId: ref.viewId,
+      legacyPath: board.path || '', display: { interaction: readOnly ? 'read-only' : 'editable' },
+    }, hostElement, { runtimeBlockId: runtimeId, mountPoint });
+    host.setVisibilityForTest?.(runtimeId, true);
+    if (!readOnly) global.bdDirty?.();
+    return true;
+  }
+
   function mountToolbar(board) {
     const boardRoot = global._bdToolbarRoot?.();
-    const root = boardRoot?.nodeType === 1
+    const desktopRoot = boardRoot?.nodeType === 1
       ? (boardRoot.querySelector?.('[data-bd-role="toolbar-top"]') || boardRoot)
       : null;
+    const mobileRoot = global.document?.getElementById?.('cloud-mobile-boardbar') || null;
     const views = global.MeldexBoardTopicViews;
-    if (!root || !views || !board.topicViewDocument) return null;
-    root.querySelectorAll('[data-bd-topic-view-controls]').forEach((element) => element.remove());
-    let toolbar = null;
+    const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
+    const roots = [...new Set([desktopRoot, mobileRoot].filter(Boolean))];
+    if (!roots.length || !views || !board.topicViewDocument) return null;
+    roots.forEach((root) => {
+      root.querySelectorAll('[data-bd-topic-view-controls]').forEach((element) => element.remove());
+    });
+    const toolbars = [];
+    const refreshToolbars = () => toolbars.forEach((item) => item?.refresh?.());
     const controller = views.createController({
+      readOnly,
       getDocument: () => board.topicViewDocument,
       setDocument: (document) => { board.topicViewDocument = document; },
       pushUndo: (label) => global.bdPushUndo?.(label),
       onChange: (_document, result) => {
-        const nextId = result?.activeBoardViewId || board.activeBoardViewId;
-        if (nextId) switchView(board, nextId, { skipUndo: true });
+        const nextRef = result?.activeViewRef
+          || (result?.activeBoardViewId ? { surface: 'board', viewId: result.activeBoardViewId } : board.topicViewDocument.activeViewRef);
+        if (nextRef) switchMixedView(board, nextRef, { skipUndo: true });
+        else showMixedViewEmptyState(board);
         global.bdDirty?.();
-        toolbar?.refresh?.();
+        refreshToolbars();
       },
     });
-    toolbar = views.attachToolbar(root, controller, {
-      getDocument: () => board.topicViewDocument,
-      getActiveBoardViewId: () => board.activeBoardViewId,
-      setActiveBoardViewId: (id) => { switchView(board, id); toolbar?.refresh?.(); },
+    roots.forEach((root) => {
+      const attached = views.attachToolbar(root, controller, {
+        readOnly,
+        getDocument: () => board.topicViewDocument,
+        getActiveBoardViewId: () => board.activeBoardViewId,
+        setActiveBoardViewId: (id) => { switchView(board, id); refreshToolbars(); },
+        getActiveViewRef: () => board.topicViewDocument.activeViewRef
+          || { surface: 'board', viewId: board.activeBoardViewId },
+        setActiveViewRef: (ref) => { switchMixedView(board, ref); refreshToolbars(); },
+      });
+      if (!attached) return;
+      if (root === mobileRoot) {
+        attached.root.dataset.bdTopicViewMobile = '1';
+        root.prepend(attached.root);
+      }
+      toolbars.push(attached);
     });
-    global.MeldexBoardShuffle?.attachShuffleAction(toolbar?.root, () => shuffle(board));
-    toolbar.groupControls = mountGroupControls(root, board);
+    const toolbar = toolbars.find((item) => item.root?.parentElement === desktopRoot) || toolbars[0];
+    if (!toolbar) return null;
+    if (!readOnly) global.MeldexBoardShuffle?.attachShuffleAction(toolbar.root, () => shuffle(board));
+    desktopRoot?.querySelectorAll?.('[data-bd-group-manager]').forEach(element => element.remove());
+    const groupPanel = global.document?.getElementById?.('detail-tab-board-group-style') || null;
+    toolbar.groupControls = groupPanel ? mountGroupControls(groupPanel, board, { panel: true }) : null;
+    global.showBoardTabs?.({ groupStyle: !readOnly });
+    toolbar.toolbars = toolbars;
     return toolbar;
   }
 
   global.MeldexBoardTopicIntegration = Object.freeze({
     parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, serializeFrontmatter,
-    switchView, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
+    switchView, switchMixedView, teardownMixedSheetView, showMixedViewEmptyState, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
     installSaveHook, destroy,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
@@ -4423,7 +9125,7 @@
   'use strict';
 
   const MIME = 'application/x-meldex-topic-view+json';
-  const TYPES = Object.freeze({ sheet: ['database', 'smart-db'], board: ['board'] });
+  const TYPES = Object.freeze({ sheet: ['database'], board: ['board'] });
 
   function _leaf(path) {
     return String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '無題';
@@ -4448,15 +9150,57 @@
     });
   }
 
-  function _viewId(document, resourceType) {
-    const rows = resourceType === 'sheet' ? document?.sheetViews : document?.boardViews;
-    const view = Array.isArray(rows) ? rows[0] : null;
+  function _viewRows(viewDocument, resourceType) {
+    const rows = resourceType === 'sheet' ? viewDocument?.sheetViews : viewDocument?.boardViews;
+    return (Array.isArray(rows) ? rows : []).filter(row => row && typeof row === 'object');
+  }
+
+  function _rowViewId(view) {
     return String(view?.viewId || view?.sheetViewId || view?.boardViewId || '').trim();
   }
 
-  function _blockFrom(document, resourceType, selection, archiveRelativePath) {
-    const viewId = _viewId(document, resourceType);
-    if (!document?.documentId || !viewId) {
+  async function _chooseViewId(viewDocument, resourceType, preferredViewId) {
+    const rows = _viewRows(viewDocument, resourceType);
+    const requested = String(preferredViewId || (resourceType === 'sheet'
+      ? viewDocument?.activeSheetViewId : viewDocument?.activeBoardViewId)
+      || viewDocument?.activeView || '');
+    if (requested && rows.some(row => _rowViewId(row) === requested)) return requested;
+    if (rows.length <= 1 || !global.GBUI?.createModal || typeof global.document === 'undefined') {
+      return _rowViewId(rows[0]);
+    }
+    return new Promise(resolve => {
+      const body = global.document.createElement('div');
+      const label = global.document.createElement('label');
+      label.textContent = '表示するビュー';
+      const select = global.document.createElement('select');
+      select.className = 'gb-select'; select.setAttribute('aria-label', '移動先のビュー');
+      rows.forEach((row, index) => {
+        const option = global.document.createElement('option');
+        option.value = _rowViewId(row);
+        option.textContent = String(row.name || row.label || row.title || `ビュー ${index + 1}`);
+        select.appendChild(option);
+      });
+      label.appendChild(select); body.appendChild(label);
+      const choose = global.document.createElement('button');
+      choose.type = 'button'; choose.className = 'gb-btn gb-btn-primary'; choose.textContent = 'このビューを選択';
+      const cancel = global.document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+      let settled = false;
+      const modal = global.GBUI.createModal({
+        id: 'meldex-topic-target-view', title: '移動先のビュー', body,
+        footer: [cancel, choose], variant: 'mobile-sheet',
+        onClose: () => { if (!settled) resolve(''); },
+      });
+      const finish = value => { settled = true; modal.close('submit'); resolve(value); };
+      choose.addEventListener('click', () => finish(select.value));
+      cancel.addEventListener('click', () => finish(''));
+      modal.open();
+    });
+  }
+
+  async function _blockFrom(viewDocument, resourceType, selection, archiveRelativePath, preferredViewId) {
+    const viewId = await _chooseViewId(viewDocument, resourceType, preferredViewId);
+    if (!viewDocument?.documentId || !viewId) {
       throw new Error('選択した項目には埋め込み可能なビューがありません');
     }
     const logicalPath = _logicalPath(selection);
@@ -4467,7 +9211,7 @@
       blockId: global.crypto?.randomUUID?.() || ('embed-' + Date.now().toString(36)),
       resourceType,
       sourceId: String(selection.sourceId),
-      documentId: String(document.documentId),
+      documentId: String(viewDocument.documentId),
       viewId,
       legacyPath: logicalPath,
       dbPath: resourceType === 'sheet' ? logicalPath : undefined,
@@ -4492,7 +9236,8 @@
           sourceId: selection.sourceId, relativePath,
         });
         if (opened?.viewDocument) {
-          return _blockFrom(opened.viewDocument, resourceType, selection, relativePath);
+          return await _blockFrom(opened.viewDocument, resourceType, selection, relativePath,
+            selection?.viewId || selection?.currentViewId);
         }
       } catch (_) {
         // Legacy JSON files used the same suffix; the additive migration below is authoritative.
@@ -4506,13 +9251,14 @@
     const archiveRelativePath = migration?.archiveRelativePath;
     if (!document || !archiveRelativePath) throw new Error('ビュー参照の作成結果を確認できません');
     const registered = await _post('/topic-views/migration/open', {
-      sourceId: selection.sourceId, relativePath: archiveRelativePath,
+      sourceId: selection.sourceId, relativePath: archiveRelativePath, legacyPath: relativePath,
     });
     const verified = registered?.viewDocument;
     if (!verified || verified.documentId !== document.documentId) {
       throw new Error('作成したビューの読み戻し確認に失敗しました');
     }
-    return _blockFrom(verified, resourceType, selection, archiveRelativePath);
+    return _blockFrom(verified, resourceType, selection, archiveRelativePath,
+      selection?.viewId || selection?.currentViewId);
   }
 
   async function _selectionForPath(path) {
@@ -4615,7 +9361,7 @@
   }
 
   function transferPayloadForNode(node) {
-    const resourceType = node?.type === 'database' || node?.type === 'smart-db' ? 'sheet'
+    const resourceType = node?.type === 'database' ? 'sheet'
       : node?.type === 'board' ? 'board' : '';
     if (!resourceType || !node?.path) return null;
     return { kind: 'meldex-topic-view-selection-v1', resourceType, path: node.path, label: node.name || _leaf(node.path) };
@@ -4632,7 +9378,7 @@
   if (typeof document !== 'undefined') _bindDragSource();
   global.MeldexTopicViewPicker = {
     MIME, open, openExisting, requestCreate, resolveSelection, resolveTransferPayload,
-    transferPayloadForNode, relativePath: _relativePath,
+    transferPayloadForNode, relativePath: _relativePath, blockFromDocument: _blockFrom,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -4958,7 +9704,7 @@
   function _bindTransfer() {
     document.addEventListener('drop', async (event) => {
       const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
-      const data = event.dataTransfer?.getData(MIME);
+      const data = event.dataTransfer?.getData?.(MIME);
       if (!editable || !data) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -4968,8 +9714,8 @@
     });
     document.addEventListener('paste', (event) => {
       const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
-      const custom = event.clipboardData?.getData(MIME);
-      const markdown = event.clipboardData?.getData('text/plain') || '';
+      const custom = event.clipboardData?.getData?.(MIME);
+      const markdown = event.clipboardData?.getData?.('text/plain') || '';
       const parsed = custom ? _payload(custom) : _serializer().parseMarkdown(markdown)[0];
       const sel = global.getSelection?.();
       if (!editable || !parsed?.editable || !sel?.rangeCount) return;
@@ -5074,6 +9820,151 @@
 
 ;
 
+/* === gb-note-history.js === */
+;
+/* ノートの操作履歴を文書単位で保存・復元する。 */
+(function initMeldexNoteHistory(global) {
+  'use strict';
+
+  function normalizePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  }
+
+  function scope(path) {
+    return `page:${normalizePath(path)}`;
+  }
+
+  function matchingHosts(path) {
+    const normalized = normalizePath(path);
+    return Array.from(global.document?.querySelectorAll?.('[data-path]') || [])
+      .filter((host) => normalizePath(host?.dataset?.path) === normalized && host?.dataset?.loadFailed !== '1');
+  }
+
+  async function waitForHost(path, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    let hosts = matchingHosts(path);
+    while (!hosts.length && Date.now() < deadline) {
+      await new Promise((resolve) => global.setTimeout(resolve, 30));
+      hosts = matchingHosts(path);
+    }
+    return hosts;
+  }
+
+  function assertHostsAreSaved(path, hosts) {
+    const adapter = global.MeldexNoteSaveAdapter;
+    if (typeof adapter?.serialize !== 'function') return;
+    for (const host of hosts) {
+      let liveMarkdown;
+      try {
+        liveMarkdown = adapter.serialize(host);
+      } catch {
+        throw new Error('ノートの編集中内容を確認できないため、履歴の復元を中止しました');
+      }
+      if (liveMarkdown !== (host.dataset?.lastSavedMd || '')) {
+        throw new Error('同じノートに未保存の編集があるため、先に保存してから履歴を復元してください');
+      }
+    }
+  }
+
+  function partitionHostsAfterRestore(path, hosts) {
+    const adapter = global.MeldexNoteSaveAdapter;
+    if (typeof adapter?.serialize !== 'function') return { clean: hosts, dirty: [] };
+    const clean = [];
+    const dirty = [];
+    hosts.forEach((host) => {
+      let liveMarkdown = null;
+      try { liveMarkdown = adapter.serialize(host); } catch {}
+      const baseline = host.dataset?.lastSavedMd || '';
+      if (liveMarkdown === null || liveMarkdown !== baseline) {
+        dirty.push({ host, liveMarkdown, baseline });
+      } else {
+        clean.push(host);
+      }
+    });
+    dirty.forEach(({ liveMarkdown, baseline }) => {
+      if (liveMarkdown !== null) global.MeldexDraftRecovery?.queueDraft?.(path, liveMarkdown, baseline);
+    });
+    return { clean, dirty };
+  }
+
+  function lockHosts(hosts) {
+    return hosts.map((host) => {
+      if (!host || !('contentEditable' in host)) return { host, editable: null };
+      const editable = host.contentEditable;
+      host.contentEditable = 'false';
+      return { host, editable };
+    });
+  }
+
+  function unlockHosts(locks) {
+    locks.forEach(({ host, editable }) => {
+      if (host && editable !== null) host.contentEditable = editable;
+    });
+  }
+
+  function renderHost(host, path, markdown, result) {
+    if (!host || normalizePath(host.dataset?.path) !== normalizePath(path)) return;
+    if (!global.MeldexNoteSaveAdapter?.renderSavedMarkdownIntoCleanHost?.(host, path, markdown)) {
+      throw new Error('ノートの表示を安全に更新できないため、再読込してください');
+    }
+    host.dataset.lastSavedMd = result?.savedMd != null ? result.savedMd : markdown;
+    if (result?.etag) host.dataset.lastSavedEtag = result.etag;
+    if (result?.transport_revision) host.dataset.lastSavedTransportRevision = result.transport_revision;
+    global.MeldexImageLoading?.trackAll?.(host);
+  }
+
+  async function restore(path, markdown) {
+    // 「すべて」履歴から別タブへ移動した直後はopenPage()が非同期読込中になり得る。
+    // 対象ホストのpath確定を待ってからDOMと保存先を同じ版へ戻す。
+    const hosts = await waitForHost(path);
+    assertHostsAreSaved(path, hosts);
+    const locks = lockHosts(hosts);
+    try {
+      const host = hosts[0] || null;
+      let result;
+      if (host && global.MeldexNoteSaveAdapter?.performSave) {
+        result = await global.MeldexNoteSaveAdapter.performSave(host, path, markdown, { reason: 'history' });
+      } else {
+        const current = await global.apiFetch('/file?path=' + encodeURIComponent(path));
+        result = await global.apiPut('/file?path=' + encodeURIComponent(path), {
+          content: markdown,
+          if_match_etag: current?.etag || '',
+          transport_revision: current?.transport_revision || '',
+          skip_if_missing: true,
+        });
+      }
+      if (result?.conflictPending || result?.skipped || result?.missing) {
+        throw new Error('ノートの履歴を保存先へ反映できませんでした');
+      }
+      // 保存待ち中に同じノートを別パネルで開くことがある。途中参加ホストを再検査し、
+      // 未保存入力があればDOMを上書きせずドラフトへ保護する。
+      const latestHosts = partitionHostsAfterRestore(path, matchingHosts(path));
+      latestHosts.clean.forEach((item) => renderHost(item, path, markdown, result));
+      if (!latestHosts.dirty.length) await global.MeldexDraftRecovery?.markSynced?.(path);
+      global.markAutoVersionDirty?.(path, 'file');
+      return true;
+    } finally {
+      unlockHosts(locks);
+    }
+  }
+
+  function recordSavedEdit(path, beforeMarkdown, afterMarkdown, detail) {
+    if (typeof global.historyPush !== 'function' || beforeMarkdown === afterMarkdown) return false;
+    global.historyPush(
+      'ページ編集',
+      () => restore(path, beforeMarkdown),
+      () => restore(path, afterMarkdown),
+      scope(path),
+      detail || '内容を更新',
+    );
+    return true;
+  }
+
+  global.MeldexNoteHistory = Object.freeze({ scope, restore, recordSavedEdit });
+})(window);
+
+;
+
 /* === gb-scriptnote-role-model.js === */
 ;
 /* gb-scriptnote-role-model.js: ScriptNote schema v3 のキャラ・タイプ共通モデル */
@@ -5084,7 +9975,7 @@
   const NONE_REF = Object.freeze({ kind: 'none', id: 'none' });
   const NONE_LABEL = '（なし）';
   const FUNCTION_NAMES = new Set([
-    'セリフ', '心の声', 'モノローグ', 'ナレーション', 'ト書き', '擬音', 'プロット', 'コマ外注釈',
+    'セリフ', '心の声', 'モノローグ', 'ナレーション', 'ト書き', '擬音', 'プロット', 'コマ外アノテート',
     '右ページ', '左ページ', 'めくり', '改ページ', '見開き', '白紙', 'トビラ絵', '大ゴマ', '未完', '柱',
     'シーン見出し', '場面転換', 'Aパート', 'Bパート', 'Cパート',
     '第一幕', '第二幕', '第三幕', '場',
@@ -5734,75 +10625,121 @@
 
 ;
 
-/* === gb-timer-file-contract.js === */
+/* === gb-rail-contract.js === */
 ;
-/* ==============================
-   gb-timer-file-contract.js: .mel-timer / .timer.json 共通ファイル契約
-   ============================== */
-(function (global) {
+/* ================================================================
+   gb-rail-contract.js — 固定レールの順序・区切り・キーボード契約
+
+   レイアウト保存値とDOM描画が別々の順序表を持たないための単一正本。
+   既存レイアウトの幅・開閉・activeGroupId・未知のカスタムパネルは
+   変更せず、既定パネルだけを一度だけ正規順序へ移行する。
+   ================================================================ */
+(function () {
   'use strict';
 
-  function _plainObject(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  }
-
-  function titleFromPath(path) {
-    const name = String(path || '').replace(/\\/g, '/').split('/').pop() || 'タイマー';
-    return name.replace(/(\.mel-timer|\.timer\.json)$/i, '') || 'タイマー';
-  }
-
-  function normalizePayload(value) {
-    const payload = _plainObject(value);
-    const nestedTimer = _plainObject(payload.timer);
-    const timer = Object.keys(nestedTimer).length > 0 ? nestedTimer : payload;
-    return {
-      payload,
-      timer: { ...timer },
-      name: String(payload.name || '').trim(),
-      style: { ..._plainObject(payload.style) },
-    };
-  }
-
-  function parse(text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(String(text == null ? '' : text));
-    } catch (error) {
-      const invalid = new Error('タイマーファイルのJSONを読み取れません');
-      invalid.cause = error;
-      throw invalid;
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('タイマーファイルの内容が不正です');
-    }
-    return normalizePayload(parsed);
-  }
-
-  function build(sourcePayload, timerState, options) {
-    const source = _plainObject(sourcePayload);
-    const sourceTimer = _plainObject(source.timer);
-    const opts = options || {};
-    return {
-      ...source,
-      type: 'meldex-timer',
-      version: source.version || 1,
-      name: String(opts.name || '').trim() || String(source.name || '').trim() || titleFromPath(opts.path),
-      timer: { ...sourceTimer, ..._plainObject(timerState) },
-    };
-  }
-
-  function stringify(sourcePayload, timerState, options) {
-    return JSON.stringify(build(sourcePayload, timerState, options), null, 2) + '\n';
-  }
-
-  global.MeldexTimerFileContract = Object.freeze({
-    titleFromPath,
-    normalizePayload,
-    parse,
-    build,
-    stringify,
+  const VERSION = 3;
+  const RIGHT = Object.freeze([
+    { type: 'detail',      label: 'オプション',       icon: 'slidersHorizontal', section: 'primary' },
+    { type: 'preview',     label: 'ビューワー',       icon: 'panelTop',          section: 'primary' },
+    { type: 'subpanel',    label: 'サブパネル',       icon: 'panelRight',        section: 'primary', separatorAfter: true },
+    { type: 'information', label: 'プロパティ',       icon: 'info',              section: 'context' },
+    { type: 'tags',        label: 'タグ',             icon: 'tags',              section: 'context' },
+    { type: 'backlinks',   label: 'バックリンク',     icon: 'fileSymlink',       section: 'context' },
+    { type: 'annotation',  label: 'アノテート',       icon: 'squarePen',         section: 'context' },
+    { type: 'file-theme',  label: 'テーマ',           icon: 'palette',           section: 'context', separatorAfter: true },
+    { type: 'history',     label: 'ヒストリー',       icon: 'history',           section: 'record' },
+    { type: 'version',     label: 'バージョン管理',   icon: 'gitBranch',         section: 'record', separatorAfter: true },
+    { type: 'chat',        label: 'チャット',         icon: 'messagesSquare',    section: 'bottom' },
+  ]);
+  const RETIRED_TYPES = Object.freeze(['timer']);
+  const QUICK_MEMO = Object.freeze({
+    type: 'quick-memo', label: 'クイックメモ', icon: 'notebookPen', section: 'bottom', external: true,
   });
-})(typeof window !== 'undefined' ? window : globalThis);
+  const BY_TYPE = new Map(RIGHT.map((item, index) => [item.type, Object.freeze({ ...item, index })]));
+
+  function definitions() { return RIGHT.slice(); }
+  function defaults() { return RIGHT.map(item => [item.label, item.type]); }
+  function types() { return new Set(RIGHT.map(item => item.type)); }
+  function definition(type) { return BY_TYPE.get(String(type || '')) || null; }
+  function order(type) { return definition(type)?.index ?? Number.MAX_SAFE_INTEGER; }
+  function isBottom(type) { return definition(type)?.section === 'bottom' || type === QUICK_MEMO.type; }
+
+  function _focusableButtons(root) {
+    return Array.from(root.querySelectorAll('button.gb-dock-icon:not([disabled])'))
+      .filter(button => button.offsetParent !== null || !document.body.contains(root));
+  }
+
+  function _syncScrollState(scroll) {
+    if (!scroll) return;
+    const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+    scroll.classList.toggle('can-scroll-up', scroll.scrollTop > 1);
+    scroll.classList.toggle('can-scroll-down', scroll.scrollTop < max - 1);
+  }
+
+  function decorate(dockBar, side) {
+    if (!dockBar || !side || dockBar.dataset.railContractVersion === String(VERSION)) return;
+    dockBar.dataset.railContractVersion = String(VERSION);
+    const children = Array.from(dockBar.children);
+    const top = document.createElement('div');
+    const scroll = document.createElement('div');
+    const bottom = document.createElement('div');
+    top.className = 'gb-rail-shell-top';
+    scroll.className = 'gb-rail-shell-scroll';
+    bottom.className = 'gb-rail-shell-bottom';
+
+    children.forEach((node) => {
+      if (node.classList?.contains('gb-dock-rail-toggle')) {
+        top.appendChild(node);
+        return;
+      }
+      const type = node.dataset?.tabType || (node.classList?.contains('gb-dock-rail-quick-memo') ? QUICK_MEMO.type : '');
+      const def = definition(type) || (type === QUICK_MEMO.type ? QUICK_MEMO : null);
+      if (def) {
+        node.setAttribute('aria-label', def.label);
+        node.dataset.gbTooltip = def.label;
+        node.dataset.railSection = def.section;
+        if (def.separatorAfter) node.classList.add('gb-rail-separator-after');
+      }
+      (side === 'right' && isBottom(type) ? bottom : scroll).appendChild(node);
+    });
+
+    dockBar.replaceChildren(top, scroll, bottom);
+    scroll.addEventListener('scroll', () => _syncScrollState(scroll), { passive: true });
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => _syncScrollState(scroll))
+      : null;
+    resizeObserver?.observe(scroll);
+    requestAnimationFrame(() => _syncScrollState(scroll));
+
+    dockBar.addEventListener('keydown', (event) => {
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      const buttons = _focusableButtons(dockBar);
+      if (!buttons.length) return;
+      const current = Math.max(0, buttons.indexOf(document.activeElement));
+      let next = current;
+      if (event.key === 'ArrowUp') next = Math.max(0, current - 1);
+      if (event.key === 'ArrowDown') next = Math.min(buttons.length - 1, current + 1);
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = buttons.length - 1;
+      event.preventDefault();
+      buttons[next].focus();
+      buttons[next].scrollIntoView({ block: 'nearest' });
+    });
+  }
+
+  window.GBRailContract = Object.freeze({
+    version: VERSION,
+    quickMemo: QUICK_MEMO,
+    definitions,
+    defaults,
+    types,
+    retiredTypes: () => RETIRED_TYPES.slice(),
+    definition,
+    order,
+    isBottom,
+    decorate,
+  });
+})();
 
 ;
 
@@ -6096,12 +11033,13 @@ const GBLayout = (() => {
   }
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
-  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'version', 'subpanel']);
-  const FIXED_RAIL_RIGHT_DEFAULTS = [
-    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'], ['バージョン管理', 'version'],
-    ['チャット', 'chat'], ['タイマー', 'timer'],
-    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'],
+  const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
+    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+    ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
+    ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
   ];
+  const FIXED_RAIL_RIGHT_TYPES = window.GBRailContract?.types?.()
+    || new Set(FIXED_RAIL_RIGHT_DEFAULTS.map(([, type]) => type));
 
   function _fixedRailGeneratedId(prefix) {
     return `${prefix}-fixed-${Date.now().toString(36)}-${(++_paneIdCounter).toString(36)}`;
@@ -6163,7 +11101,8 @@ const GBLayout = (() => {
     rightDock.groups.forEach(group => {
       _collectFixedRailPanes(group?.root).forEach(pane => {
         if (!Array.isArray(pane.tabs)) return;
-        pane.tabs = pane.tabs.filter(tab => !['calendar', 'search'].includes(tab?.type));
+        const retiredTypes = new Set(window.GBRailContract?.retiredTypes?.() || ['timer']);
+        pane.tabs = pane.tabs.filter(tab => !['calendar', 'search'].includes(tab?.type) && !retiredTypes.has(tab?.type));
         if (pane.activeTabIndex >= pane.tabs.length) pane.activeTabIndex = pane.tabs.length ? 0 : -1;
       });
     });
@@ -6189,6 +11128,29 @@ const GBLayout = (() => {
       if (!rightDock.activeGroupId) rightDock.activeGroupId = group.id;
       seen.add(type);
     });
+    // 既存レイアウトは一度だけ正規順序へ移す。幅・開閉・activeGroupIdと、
+    // 未知のカスタムグループのスロットはそのまま保持する。
+    const railVersion = Number(window.GBRailContract?.version || 2);
+    if (Number(rightDock.meldexRailOrderVersion || 0) < railVersion) {
+      const ordered = rightDock.groups
+        .filter(group => {
+          const type = _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '';
+          return FIXED_RAIL_RIGHT_TYPES.has(type);
+        })
+        .sort((a, b) => {
+          const aType = _collectFixedRailPanes(a?.root)[0]?.tabs?.[0]?.type || '';
+          const bType = _collectFixedRailPanes(b?.root)[0]?.tabs?.[0]?.type || '';
+          const aOrder = window.GBRailContract?.order?.(aType) ?? FIXED_RAIL_RIGHT_DEFAULTS.findIndex(([, type]) => type === aType);
+          const bOrder = window.GBRailContract?.order?.(bType) ?? FIXED_RAIL_RIGHT_DEFAULTS.findIndex(([, type]) => type === bType);
+          return aOrder - bOrder;
+        });
+      let orderedIndex = 0;
+      rightDock.groups = rightDock.groups.map((group) => {
+        const type = _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '';
+        return FIXED_RAIL_RIGHT_TYPES.has(type) ? ordered[orderedIndex++] : group;
+      });
+      rightDock.meldexRailOrderVersion = railVersion;
+    }
     return node;
   }
 
@@ -6217,9 +11179,20 @@ const GBLayout = (() => {
   function ensureFixedRailDefaults() {
     if (!_root || window._gbSingleWindow) return false;
     if (!_hasFixedRailRoles(_root)) return false;
-    const before = _countFixedRailTabs(_root);
+    const rightDock = _findFixedRailPanelset(_root, 'right-sidebar');
+    const before = JSON.stringify({
+      tabs: _countFixedRailTabs(_root),
+      orderVersion: rightDock?.meldexRailOrderVersion || 0,
+      groups: rightDock?.groups?.map(group => _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '') || [],
+    });
     _ensureFixedRightRailDefaults(_root);
-    return _countFixedRailTabs(_root) !== before;
+    const afterDock = _findFixedRailPanelset(_root, 'right-sidebar');
+    const after = JSON.stringify({
+      tabs: _countFixedRailTabs(_root),
+      orderVersion: afterDock?.meldexRailOrderVersion || 0,
+      groups: afterDock?.groups?.map(group => _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '') || [],
+    });
+    return after !== before;
   }
 
   function _fixedRailPanelset(roots, role, activeIndex, popupWidth) {
@@ -6521,6 +11494,14 @@ const GBLayout = (() => {
         }
         if (tab.type === 'subpanel' && (!tab.icon || tab.icon === 'panelRight')) {
           tab.icon = 'panelRightDashed';
+        }
+        // 旧レイアウトに空／汎用アイコンが保存されていても、右サイドバーの
+        // 主要パネルは現行の種別アイコンへ揃える。
+        if (['information', 'backlinks', 'file-theme'].includes(tab.type)) {
+          const fallbackIcons = { information: 'info', backlinks: 'fileSymlink', 'file-theme': 'palette' };
+          const canonicalIcon = (typeof uiTypeIconName === 'function' ? uiTypeIconName(tab.type) : '')
+            || fallbackIcons[tab.type];
+          if (canonicalIcon) tab.icon = canonicalIcon;
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
@@ -6979,6 +11960,7 @@ const GBLayout = (() => {
     backBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'back');
     });
     const forwardBtn = document.createElement('button');
@@ -6994,6 +11976,7 @@ const GBLayout = (() => {
     forwardBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'forward');
     });
     navCtrls.appendChild(backBtn);
@@ -7358,6 +12341,13 @@ const GBLayout = (() => {
       const items = Array.isArray(payload?.items) && payload.items.length
         ? payload.items
         : [{ name: payload?.name, path: payload?.path, type: payload?.type }];
+      if (items.length !== 1) {
+        if (resolved) MeldexDnD.failDrop(resolved);
+        if (typeof showStatus === 'function') {
+          showStatus('複数選択はタブ列へ一括追加できないため、全件を変更しませんでした', true);
+        }
+        return;
+      }
       let insertIndex = _resolveInsertIndex();
       let openedFromDrop = 0;
       items.forEach((it) => {
@@ -7516,6 +12506,9 @@ const GBLayout = (() => {
   function _updatePaneNavButtons(paneId) {
     const paneInfo = _paneMap[paneId];
     const paneNode = paneInfo?.node || findNode(_root, paneId)?.node;
+    const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+      ? GBPanelSet.rightRailNavigationState(paneId)
+      : null;
     // 戻る/進む履歴はタブ単位（②タブ別ナビ履歴、2026-07-21）。ペインではなく
     // 「今アクティブなタブ」の navHistory/navIndex を読む。
     const activeTab = Array.isArray(paneNode?.tabs) ? paneNode.tabs[paneNode.activeTabIndex] : null;
@@ -7524,19 +12517,22 @@ const GBLayout = (() => {
     const backBtn = paneInfo?.el?.querySelector('.gb-pane-nav-back');
     const forwardBtn = paneInfo?.el?.querySelector('.gb-pane-nav-forward');
     const navCtrls = paneInfo?.el?.querySelector('.gb-pane-nav-ctrls');
-    // 戻る/進むは遷移先が存在する場合のみ表示（履歴がない時は非表示で幅を節約）
-    const backHidden = navIndex <= 0;
-    const forwardHidden = navIndex < 0 || navIndex >= history.length - 1;
+    // 戻る/進むは常に同じ場所へ表示する。履歴端では無効化し、操作の存在と位置を
+    // 失わせない（2026-08-26: 履歴が無い時に親ごと隠れて「機能が消えた」と見える回帰を修正）。
+    const backDisabled = railState ? !railState.canBack : navIndex <= 0;
+    const forwardDisabled = railState ? !railState.canForward : (navIndex < 0 || navIndex >= history.length - 1);
     if (backBtn) {
-      backBtn.disabled = backHidden;
-      backBtn.style.display = backHidden ? 'none' : '';
+      backBtn.disabled = backDisabled;
+      backBtn.style.display = '';
+      backBtn.setAttribute('aria-disabled', backDisabled ? 'true' : 'false');
     }
     if (forwardBtn) {
-      forwardBtn.disabled = forwardHidden;
-      forwardBtn.style.display = forwardHidden ? 'none' : '';
+      forwardBtn.disabled = forwardDisabled;
+      forwardBtn.style.display = '';
+      forwardBtn.setAttribute('aria-disabled', forwardDisabled ? 'true' : 'false');
     }
     if (navCtrls) {
-      navCtrls.style.display = (backHidden && forwardHidden) ? 'none' : '';
+      navCtrls.style.display = '';
     }
   }
 
@@ -8537,7 +13533,6 @@ const GBLayout = (() => {
       '#kanban-view',
       '.kanban-view',
       '.kanban-card',
-      '#smart-db-view',
       '#page-view',
       '#page-content',
       '#entity-view',
@@ -8696,7 +13691,7 @@ const GBLayout = (() => {
     if (typeof showStatus === 'function') showStatus('最後のパネルは閉じられません', true);
   }
 
-  function removePane(paneId, options) {
+  async function removePane(paneId, options) {
     const opts = options || {};
     const target = findNode(_root, paneId);
     if (!target?.node || target.node.type !== 'pane') return;
@@ -8712,6 +13707,14 @@ const GBLayout = (() => {
     const parentInfo = findParent(_root, paneId);
     if (!parentInfo) return;
     const before = !opts.skipHistory ? (opts.historyBefore || captureLayoutSnapshot()) : null;
+    const removalIds = [..._collectTabIds(target.node, new Set())];
+    if (typeof flushComponentInstancesBeforeRemoval === 'function'
+      && !await flushComponentInstancesBeforeRemoval(removalIds)) return false;
+    for (const tabId of removalIds) {
+      if (typeof removeComponentInstance === 'function') {
+        removeComponentInstance(tabId, { skipFlush: true });
+      }
+    }
 
     // split/panelset どちらの親でも _detachNodeById が一括処理
     // （単一化した split を兄弟で置換、panelset なら groups から除去し
@@ -9195,7 +14198,6 @@ const GBLayout = (() => {
     'preview',
     'chat',
     'calendar',
-    'timer',
     'history',
     'annotation',
     'sticky',
@@ -9531,7 +14533,7 @@ const GBLayout = (() => {
       mi.addEventListener('click', () => { closeMenu(false); fn(); });
       menu.appendChild(mi);
     }
-    function closeTabsOnSide(side) {
+    async function closeTabsOnSide(side) {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
@@ -9544,8 +14546,12 @@ const GBLayout = (() => {
       const closedTabs = pane.tabs.filter(shouldClose);
       if (!closedTabs.length) return;
       const before = captureLayoutSnapshot();
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(closedTabs.map(item => item.id))) return false;
       closedTabs.forEach(item => {
-        if (typeof removeComponentInstance === 'function') removeComponentInstance(item.id);
+        if (typeof removeComponentInstance === 'function') {
+          removeComponentInstance(item.id, { skipFlush: true });
+        }
       });
       pane.tabs = pane.tabs.filter((item, index) => !shouldClose(item, index));
       const nextActiveId = activeWillClose ? tab.id : activeId;
@@ -9584,7 +14590,7 @@ const GBLayout = (() => {
       addItem('左のタブを閉じる', () => closeTabsOnSide('left'), 'panelLeftClose', tabIndex <= 0);
       addItem('右のタブを閉じる', () => closeTabsOnSide('right'), 'panelRightClose', tabIndex < 0 || tabIndex >= (pane?.tabs?.length || 0) - 1);
     }
-    if (!isFixedRail) addItem('他のタブをすべて閉じる', () => {
+    if (!isFixedRail) addItem('他のタブをすべて閉じる', async () => {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
@@ -9592,9 +14598,12 @@ const GBLayout = (() => {
       const keep = pane.tabs.find(t => t.id === tab.id);
       if (!keep) return;
       const before = captureLayoutSnapshot();
+      const removalIds = pane.tabs.filter(t => t.id !== tab.id).map(t => t.id);
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(removalIds)) return false;
       pane.tabs.forEach(t => {
         if (t.id !== tab.id && typeof removeComponentInstance === 'function') {
-          removeComponentInstance(t.id);
+          removeComponentInstance(t.id, { skipFlush: true });
         }
       });
       pane.tabs = [keep];
@@ -9640,10 +14649,12 @@ const GBLayout = (() => {
   }
 
   // === レイアウトリセット ===
-  function resetLayout(options) {
+  async function resetLayout(options) {
     const opts = options || {};
     const before = !opts.skipHistory ? captureLayoutSnapshot() : null;
-    _root = defaultLayout();
+    const nextRoot = defaultLayout();
+    if (!await _removeOrphanComponentInstances(_root, nextRoot)) return false;
+    _root = nextRoot;
     _activePane = null;
     render();
     saveLayout();
@@ -9711,13 +14722,18 @@ const GBLayout = (() => {
     }
   }
 
-  function _removeOrphanComponentInstances(prevRoot, nextRoot) {
-    if (typeof removeComponentInstance !== 'function') return;
+  async function _removeOrphanComponentInstances(prevRoot, nextRoot) {
+    if (typeof removeComponentInstance !== 'function') return true;
     const prevIds = _collectTabIds(prevRoot, new Set());
     const nextIds = _collectTabIds(nextRoot, new Set());
-    prevIds.forEach((tabId) => {
-      if (!nextIds.has(tabId)) removeComponentInstance(tabId);
-    });
+    const orphanIds = [...prevIds].filter(tabId => !nextIds.has(tabId));
+    if (typeof flushComponentInstancesBeforeRemoval === 'function'
+      && !await flushComponentInstancesBeforeRemoval(orphanIds)) return false;
+    for (const tabId of orphanIds) {
+      if (removeComponentInstance(tabId, { skipFlush: true }) === false) return false;
+    }
+    return true;
+    return true;
   }
 
   function exportLayout() {
@@ -9731,12 +14747,13 @@ const GBLayout = (() => {
     };
   }
 
-  function restoreLayoutSnapshot(snapshot) {
+  async function restoreLayoutSnapshot(snapshot) {
     if (!snapshot?.layout) return false;
-    applyLayoutTree(snapshot.layout, {
+    const applied = await applyLayoutTree(snapshot.layout, {
       activePaneId: snapshot.activePaneId || '',
       skipSave: true,
     });
+    if (applied == null) return false;
     saveLayout({ immediate: true });
     return true;
   }
@@ -9762,12 +14779,12 @@ const GBLayout = (() => {
     return true;
   }
 
-  function applyLayoutTree(layout, options) {
+  async function applyLayoutTree(layout, options) {
     const nextRoot = _cloneLayoutTree(layout);
     if (!nextRoot || (nextRoot.type !== 'pane' && nextRoot.type !== 'split' && nextRoot.type !== 'panelset')) return null;
     _normalizePaneNode(nextRoot);
     const fixedRoot = _migrateLayoutToFixedRailsIfNeeded(nextRoot);
-    _removeOrphanComponentInstances(_root, fixedRoot);
+    if (!await _removeOrphanComponentInstances(_root, fixedRoot)) return null;
     _root = fixedRoot;
     _savedRootForMaximize = null;
     _maximizedPaneId = null;
@@ -10090,6 +15107,161 @@ const GBLayout = (() => {
 
   let _groupIdCounter = 0;
   let _panelsetIdCounter = 0;
+  const _rightRailHistory = new Map();
+
+  function _rightRailButtons() {
+    return Array.from(document.querySelectorAll('.gb-dock-fixed-right .gb-dock-icon[data-panelset-id]'));
+  }
+
+  function _nodeContainsId(node, targetId) {
+    if (!node) return false;
+    if (node.id === targetId) return true;
+    if (node.type === 'split') return (node.children || []).some(child => _nodeContainsId(child, targetId));
+    if (node.type === 'panelset') return (node.groups || []).some(group => _nodeContainsId(group?.root, targetId));
+    return false;
+  }
+
+  function _findRightRailPanelset(node, targetId) {
+    if (!node) return null;
+    if (node.type === 'panelset') {
+      if (_fixedDockSide(node) === 'right' && (node.id === targetId || _nodeContainsId(node, targetId))) return node;
+      for (const group of node.groups || []) {
+        const nested = _findRightRailPanelset(group?.root, targetId);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (node.type === 'split') {
+      for (const child of node.children || []) {
+        const nested = _findRightRailPanelset(child, targetId);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  function _rightRailContext(targetId, tabId) {
+    const id = String(targetId || '');
+    const requestedTabId = String(tabId || '');
+    const button = _rightRailButtons().find(btn => {
+      if (requestedTabId && btn.dataset.tabId !== requestedTabId) return false;
+      return btn.dataset.panelsetId === id || btn.dataset.paneId === id;
+    }) || null;
+    const panelsetNode = _findRightRailPanelset(GBLayout?.root, button?.dataset?.panelsetId || id);
+    if (!panelsetNode || panelsetNode.type !== 'panelset') return null;
+    return { panelsetId: panelsetNode.id, panelsetNode, button };
+  }
+
+  function _activeRightRailEntry(panelsetNode) {
+    const activeButton = _rightRailButtons().find(btn => (
+      btn.dataset.panelsetId === panelsetNode.id && btn.classList.contains('active')
+    ));
+    if (activeButton) {
+      return {
+        groupId: activeButton.dataset.groupId || '',
+        paneId: activeButton.dataset.paneId || '',
+        tabId: activeButton.dataset.tabId || '',
+      };
+    }
+    const group = (panelsetNode.groups || []).find(item => item?.id === panelsetNode.activeGroupId);
+    const pane = group?.root ? _collectPanesInGroup(group.root)[0] : null;
+    const tab = pane?.tabs?.[pane.activeTabIndex] || null;
+    if (!group || !pane || !tab) return null;
+    return { groupId: group.id, paneId: pane.id, tabId: tab.id || '' };
+  }
+
+  function _rightRailEntryFromButton(button) {
+    if (!button) return null;
+    return {
+      groupId: button.dataset.groupId || '',
+      paneId: button.dataset.paneId || '',
+      tabId: button.dataset.tabId || '',
+    };
+  }
+
+  function _sameRightRailEntry(left, right) {
+    return !!left && !!right
+      && left.groupId === right.groupId
+      && left.paneId === right.paneId
+      && left.tabId === right.tabId;
+  }
+
+  function _rightRailState(panelsetId) {
+    let state = _rightRailHistory.get(panelsetId);
+    if (!state) {
+      state = { entries: [], index: -1 };
+      _rightRailHistory.set(panelsetId, state);
+    }
+    return state;
+  }
+
+  function recordRightRailSwitch(targetId, tabId) {
+    const context = _rightRailContext(targetId, tabId);
+    if (!context?.button) return false;
+    const current = _activeRightRailEntry(context.panelsetNode);
+    const next = _rightRailEntryFromButton(context.button);
+    if (!current || !next || _sameRightRailEntry(current, next)) return false;
+    const state = _rightRailState(context.panelsetId);
+    if (!state.entries.length) {
+      state.entries.push(current);
+      state.index = 0;
+    } else if (!_sameRightRailEntry(state.entries[state.index], current)) {
+      state.entries.splice(state.index + 1);
+      state.entries.push(current);
+      state.index = state.entries.length - 1;
+    }
+    state.entries.splice(state.index + 1);
+    state.entries.push(next);
+    if (state.entries.length > 50) state.entries.splice(0, state.entries.length - 50);
+    state.index = state.entries.length - 1;
+    return true;
+  }
+
+  function _resolveRightRailEntry(panelsetNode, entry) {
+    const group = (panelsetNode.groups || []).find(item => item?.id === entry?.groupId);
+    if (!group?.root) return null;
+    const pane = _collectPanesInGroup(group.root).find(item => item?.id === entry.paneId);
+    const tabIndex = pane?.tabs?.findIndex(tab => (tab?.id || '') === entry.tabId) ?? -1;
+    if (!pane || tabIndex < 0) return null;
+    return { group, pane, tabIndex };
+  }
+
+  function rightRailNavigationState(targetId) {
+    const context = _rightRailContext(targetId);
+    if (!context) return null;
+    const state = _rightRailState(context.panelsetId);
+    return {
+      panelsetId: context.panelsetId,
+      canBack: state.index > 0,
+      canForward: state.index >= 0 && state.index < state.entries.length - 1,
+      index: state.index,
+      length: state.entries.length,
+    };
+  }
+
+  function navigateRightRail(targetId, direction) {
+    const context = _rightRailContext(targetId);
+    if (!context) return false;
+    const state = _rightRailState(context.panelsetId);
+    const delta = direction < 0 ? -1 : 1;
+    let nextIndex = state.index + delta;
+    while (nextIndex >= 0 && nextIndex < state.entries.length) {
+      const resolved = _resolveRightRailEntry(context.panelsetNode, state.entries[nextIndex]);
+      if (resolved) {
+        state.index = nextIndex;
+        context.panelsetNode.activeGroupId = resolved.group.id;
+        resolved.pane.activeTabIndex = resolved.tabIndex;
+        context.panelsetNode.collapsed = false;
+        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+        return true;
+      }
+      state.entries.splice(nextIndex, 1);
+      if (delta < 0) state.index = Math.min(state.index - 1, state.entries.length - 1);
+      nextIndex = state.index + delta;
+    }
+    return false;
+  }
 
   function _isFreeLayoutUiEnabled() {
     if (typeof GBLayout === 'undefined') return true;
@@ -10327,7 +15499,7 @@ const GBLayout = (() => {
   }
 
   // パネルセット内の特定グループを閉じる。残り 1 件になれば自動解体。
-  function closeGroup(panelsetNode, groupId) {
+  async function closeGroup(panelsetNode, groupId) {
     if (!panelsetNode || !groupId) return;
     const idx = (panelsetNode.groups || []).findIndex(g => g && g.id === groupId);
     if (idx < 0) return;
@@ -10341,7 +15513,9 @@ const GBLayout = (() => {
         if (n.type === 'split' && Array.isArray(n.children)) n.children.forEach(walk);
         if (n.type === 'panelset' && Array.isArray(n.groups)) n.groups.forEach(g2 => { if (g2?.root) walk(g2.root); });
       })(group.root);
-      ids.forEach(id => removeComponentInstance(id));
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(ids)) return false;
+      ids.forEach(id => removeComponentInstance(id, { skipFlush: true }));
     }
     panelsetNode.groups.splice(idx, 1);
     if (panelsetNode.groups.length === 0) {
@@ -10357,6 +15531,7 @@ const GBLayout = (() => {
     }
     if (typeof GBLayout?.render === 'function') GBLayout.render();
     if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+    return true;
   }
 
   // 列ヘッダとして panelset のタブバーを描画（上端・横帯）
@@ -10710,17 +15885,19 @@ const GBLayout = (() => {
     database: 'db',
     board: 'presentation',
     calendar: 'calendar',
-    'smart-db': 'databaseSearch',
     // 補助パネル
     outliner: 'folderTree',
     preview: 'tvMinimal',
     detail: 'slidersHorizontal',
     version: 'gitBranch',
     chat: 'messagesSquare',
-    timer: 'timer',
     history: 'history',
-    annotation: 'stickyNote',
+    annotation: 'squarePen',
     tags: 'tag',
+    information: 'info',
+    backlinks: 'fileSymlink',
+    'file-theme': 'palette',
+    subpanel: 'panelRight',
     // その他
     search: 'search',
   };
@@ -10808,8 +15985,13 @@ const GBLayout = (() => {
     return collapsed ? '右サイドバーを開く' : '右サイドバーを閉じる';
   }
 
+  function _toggleRailIcon(side, collapsed) {
+    if (side === 'left') return collapsed ? 'panelLeftOpen' : 'panelLeftClose';
+    return collapsed ? 'panelRightOpen' : 'panelRightClose';
+  }
+
   function _renderRailToggle(panelsetNode, side) {
-    const iconName = side === 'left' ? 'panelLeft' : 'panelRight';
+    const iconName = _toggleRailIcon(side, !!panelsetNode.collapsed);
     const btn = _railButton(
       'gb-dock-icon gb-dock-rail-toggle',
       iconName,
@@ -10833,7 +16015,6 @@ const GBLayout = (() => {
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
-    { type: 'smart-db', label: 'スマートシート', icon: 'smart-db' },
   ]);
 
   function _mainPaneIdForRailApp() {
@@ -10931,7 +16112,6 @@ const GBLayout = (() => {
 
   function _rightRailStandaloneUrl(tab) {
     const type = tab?.type || '';
-    if (type === 'timer') return 'timer-standalone.html';
     if (type === 'preview') return 'viewer.html';
     return '';
   }
@@ -11005,16 +16185,10 @@ const GBLayout = (() => {
     });
   }
 
-  // 右レールの一番下に置くクイックメモ。メインパネルや右サイドバーを占領せず、
-  // 作業領域の上へフロートパネルとして一時的に開く。
-  // Cloud静的版はローカルAPIが無く保存できないため、ボタン自体を出さない。
+  // 右レールの一番下に置くクイックメモ。Desktop はローカル保存、Cloud は
+  // standalone の Cloud adapter を使い、同じUIから別契約を明示的に選ぶ。
   function _isQuickMemoRailAvailable() {
-    if (typeof GBQuickMemoPanel === 'undefined') return false;
-    try {
-      return !!document.body && document.body.dataset.cloudMode !== 'dropbox';
-    } catch {
-      return false;
-    }
+    return typeof GBQuickMemoPanel !== 'undefined';
   }
 
   function _appendRightRailQuickMemo(dockBar) {
@@ -11189,6 +16363,7 @@ const GBLayout = (() => {
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
           const activateFixedTab = () => {
+            if (fixedSide === 'right') recordRightRailSwitch(pane.id, tab.id || '');
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
             if (panelsetNode.collapsed) {
@@ -11285,13 +16460,9 @@ const GBLayout = (() => {
         if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
       }
     });
-    if (fixedSide === 'right') {
-      const optionButton = dockBar.querySelector('.gb-dock-icon[data-tab-type="detail"]');
-      const firstPanelButton = dockBar.querySelector('.gb-dock-icon:not(.gb-dock-rail-toggle)');
-      if (optionButton && firstPanelButton && optionButton !== firstPanelButton) {
-        dockBar.insertBefore(optionButton, firstPanelButton);
-      }
-      _appendRightRailQuickMemo(dockBar);
+    if (fixedSide === 'right') _appendRightRailQuickMemo(dockBar);
+    if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {
+      window.GBRailContract.decorate(dockBar, fixedSide);
     }
     // ==== 本体 ====
     const body = document.createElement('div');
@@ -11344,6 +16515,9 @@ const GBLayout = (() => {
     reorderOrMoveGroup,
     dropGroupOnPane,
     insertGroupAsColumn,
+    recordRightRailSwitch,
+    rightRailNavigationState,
+    navigateRightRail,
   };
 })();
 
@@ -11363,9 +16537,8 @@ const GBTabs = (() => {
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
     search: 'search', scriptnote: 'bookOpenText', version: 'gitBranch',
-    timer: 'timer',
   };
-  const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search', 'timer']);
+  const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
   function tabIcon(type) {
     if (typeof uiTypeIconName === 'function') {
@@ -11645,6 +16818,9 @@ const GBTabs = (() => {
     const idx = pane.tabs.findIndex(t => t.id === tabId);
     if (idx < 0) return;
     const alreadyActive = pane.activeTabIndex === idx;
+    if (!alreadyActive && typeof GBPanelSet?.recordRightRailSwitch === 'function') {
+      GBPanelSet.recordRightRailSwitch(paneId, tabId);
+    }
     pane.activeTabIndex = idx;
     const revealed = _ensurePaneVisible(paneId, { activate: !opts.preserveActivePane });
     const previousActivePane = GBLayout.activePane;
@@ -11678,13 +16854,13 @@ const GBTabs = (() => {
   }
 
   // タブを閉じる
-  function closeTab(paneId, tabId, options) {
+  async function closeTab(paneId, tabId, options) {
     const opts = options || {};
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
     if (!paneInfo) return;
     if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
-      return;
+      return false;
     }
     // 左右サイドバー（固定レール）のパネルは 1 パネル = 1 タブ 構成のため、
     // タブを閉じるとパネルごと消えてレールのアイコンも失われる。
@@ -11692,13 +16868,36 @@ const GBTabs = (() => {
     // ここで止める（サイドバー自体はレール先頭のボタンで開閉する）。
     if (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId)) {
       if (typeof showStatus === 'function') showStatus('サイドバーのパネルは閉じられません（レールのボタンで開閉できます）', true);
-      return;
+      return false;
     }
     const pane = paneInfo.node;
 
-    const idx = pane.tabs.findIndex(t => t.id === tabId);
-    if (idx < 0) return;
-    const closedTab = pane.tabs[idx];
+    let idx = pane.tabs.findIndex(t => t.id === tabId);
+    if (idx < 0) return false;
+    let closedTab = pane.tabs[idx];
+    // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
+    // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
+    if (closedTab?.type === 'scriptnote' && typeof getComponentInstance === 'function') {
+      const component = getComponentInstance(tabId);
+      if (component && typeof component.flush === 'function') {
+        let flushed = false;
+        try {
+          flushed = (await component.flush()) !== false;
+        } catch (_) {
+          flushed = false;
+        }
+        if (!flushed) {
+          if (typeof showStatus === 'function') {
+            showStatus('シナリオを保存できなかったため、タブを閉じませんでした', true);
+          }
+          return false;
+        }
+        // await中に別操作でタブ構成が変わっていないか、破棄直前に再確認する。
+        idx = pane.tabs.findIndex(t => t.id === tabId);
+        if (idx < 0) return true;
+        closedTab = pane.tabs[idx];
+      }
+    }
     const before = (!opts.skipHistory && typeof GBLayout.captureLayoutSnapshot === 'function')
       ? GBLayout.captureLayoutSnapshot()
       : null;
@@ -11706,7 +16905,8 @@ const GBTabs = (() => {
 
     // コンポーネントインスタンスを破棄（メモリリーク防止）
     if (typeof removeComponentInstance === 'function') {
-      removeComponentInstance(tabId);
+      // scriptnoteは上でflush済み。destroy側のfail-closed境界へ明示する。
+      if (removeComponentInstance(tabId, { skipFlush: true }) === false) return false;
     }
 
     if (idx < pane.activeTabIndex) {
@@ -11733,7 +16933,7 @@ const GBTabs = (() => {
             closedTab?.label || closedTab?.path || ''
           );
         }
-        return;
+        return true;
       }
       if (!_restoreFolderFallbackTab(pane)) {
         // 最後の1ペインなら空のまま維持
@@ -11755,6 +16955,7 @@ const GBTabs = (() => {
         closedTab?.label || closedTab?.path || ''
       );
     }
+    return true;
   }
 
   // タブを別ペインに移動（同ペイン内の並べ替えにも対応）
@@ -11952,7 +17153,7 @@ const GBTabs = (() => {
   // 右レールの既定パネル一覧（gb-layout.js の FIXED_RAIL_RIGHT_DEFAULTS と同じ並び）。
   // 片方だけに項目を足すと、初期レイアウトと欠損補填で並びがずれる。
   const UTILITY_PANE_TYPES = new Set([
-    'outliner', 'detail', 'preview', 'subpanel', 'chat', 'timer',
+    'outliner', 'detail', 'preview', 'subpanel', 'chat',
     'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
@@ -12098,20 +17299,16 @@ const GBTabs = (() => {
     const leftDock = _dock(leftPane, { collapsed: false, popupWidth: ratios.leftWidth });
     leftDock.meldexRole = 'left-sidebar';
 
-    const rightPanes = [
-      _pane([_tab('オプション', 'detail')]),
-      _pane([_tab('ビューワー', 'preview')]),
-      _pane([_tab('サブパネル', 'subpanel')]),
-      _pane([_tab('バージョン管理', 'version')]),
-      _pane([_tab('チャット', 'chat')]),
-      _pane([_tab('タイマー', 'timer')]),
-      _pane([_tab('ヒストリー', 'history')]),
-      _pane([_tab('注釈', 'annotation')]),
-      _pane([_tab('タグ', 'tags')]),
+    const rightDefaults = window.GBRailContract?.defaults?.() || [
+      ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+      ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
+      ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
     ];
+    const rightPanes = rightDefaults.map(([label, type]) => _pane([_tab(label, type)]));
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });
     const rightDock = _panelset(rightPanes, 0, { collapsed: false, popupWidth: ratios.rightWidth });
     rightDock.meldexRole = 'right-sidebar';
+    rightDock.meldexRailOrderVersion = Number(window.GBRailContract?.version || 3);
 
     const workDock = _dock(mainPane, { collapsed: false });
     workDock.meldexRole = 'main';
@@ -12160,12 +17357,11 @@ const GBDocking = (() => {
     board: 'ボード',
     calendar: 'スケジュール',
     preview: 'ビューワー',
-    'smart-db': 'スマートシート',
     folder: 'フォルダ',
     outliner: 'フォルダツリー',
     chat: 'チャット',
     history: 'ヒストリー',
-    annotation: '注釈',
+    annotation: 'アノテート',
     detail: 'オプション',
     search: '検索',
   };
@@ -13167,7 +18363,7 @@ const GBDocking = (() => {
     if (explicit > 0) return explicit;
     const types = _collectPanelsetTabTypes(panelsetNode);
     if (types.includes('outliner')) return DEFAULT_OUTLINER_W;
-    const rightDockTypes = new Set(['preview', 'timer', 'detail', 'version', 'chat', 'calendar', 'history', 'annotation']);
+    const rightDockTypes = new Set(['preview', 'detail', 'version', 'chat', 'calendar', 'history', 'annotation']);
     if (types.some(type => rightDockTypes.has(type))) return DEFAULT_RIGHT_DOCK_W;
     return 0;
   }
@@ -13798,12 +18994,39 @@ function setComponentInstance(tabId, instance) {
   _componentInstances[tabId] = instance;
 }
 
-function removeComponentInstance(tabId) {
+function removeComponentInstance(tabId, options = {}) {
   const inst = _componentInstances[tabId];
   if (inst) {
-    inst.destroy();
+    const destroyed = inst.destroy(options);
+    if (destroyed === false) return false;
     delete _componentInstances[tabId];
   }
+  return true;
+}
+
+// 保存を持つコンポーネントを破棄する全画面共通境界。複数タブは全件の
+// flush成功を確認してから破棄へ進めるため、途中失敗で一部だけ消さない。
+async function flushComponentInstancesBeforeRemoval(tabIds) {
+  const ids = [...new Set((Array.isArray(tabIds) ? tabIds : [tabIds]).filter(Boolean))];
+  for (const tabId of ids) {
+    const inst = _componentInstances[tabId];
+    if (!inst || typeof inst.flush !== 'function') continue;
+    let flushed = false;
+    try { flushed = (await inst.flush()) !== false; }
+    catch (_) { flushed = false; }
+    if (!flushed) {
+      if (typeof showStatus === 'function') {
+        showStatus('保存を確認できなかったため、画面を閉じたり置換したりしませんでした', true);
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+async function removeComponentInstanceSafely(tabId) {
+  if (!await flushComponentInstancesBeforeRemoval([tabId])) return false;
+  return removeComponentInstance(tabId, { skipFlush: true });
 }
 
 // 全インスタンスを走査
@@ -14040,6 +19263,200 @@ class DetailComponent extends ToolComponent {
   }
 }
 
+function _railContextSnapshot() {
+  const ctx = window.GBOptionTargetContext?.get?.() || { targets: [], selectionRevision: 0, origin: '' };
+  return {
+    ...ctx,
+    targets: Array.isArray(ctx.targets) ? ctx.targets.map(target => ({ ...target })) : [],
+  };
+}
+
+function _railTargetStyleContext(target) {
+  const kind = String(target?.kind || '').toLowerCase();
+  if (kind === 'database' || kind === 'entity' || kind === 'db') return 'db';
+  if (kind === 'folder') return 'folder';
+  if (kind === 'board') return 'board';
+  if (kind === 'scriptnote' || kind === 'scenario') return 'scriptnote';
+  if (kind === 'calendar') return 'calendar';
+  if (kind === 'page' || kind === 'note') return 'page';
+  const path = String(target?.contextPath || target?.path || '').toLowerCase();
+  if (path.endsWith('.board') || path.endsWith('.board.json')) return 'board';
+  if (path.endsWith('.scenario') || path.endsWith('.scenario.json')) return 'scriptnote';
+  return null;
+}
+
+function _railNormalizeTargetPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').toLocaleLowerCase();
+}
+
+function _railActiveStylePath(ctx) {
+  const appState = typeof state !== 'undefined' ? state : null;
+  if (ctx === 'page') return appState?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
+  if (ctx === 'folder') return typeof _folderPath !== 'undefined' ? _folderPath : '';
+  if (ctx === 'board') return (typeof bd !== 'undefined' && bd?.path) || appState?.currentBoardPath || '';
+  if (ctx === 'scriptnote') return typeof _getScriptNoteEditorForFileStyle === 'function'
+    ? (_getScriptNoteEditorForFileStyle()?._path || '') : '';
+  return '';
+}
+
+function _railStyleIsReadOnly(ctx) {
+  if (ctx === 'board' && typeof bd !== 'undefined') return bd?.readOnly === true;
+  if (ctx === 'scriptnote' && typeof _getScriptNoteEditorForFileStyle === 'function') {
+    return _getScriptNoteEditorForFileStyle()?.readOnly === true;
+  }
+  return false;
+}
+
+function _railTargetHeaderHtml(path, scopeLabel) {
+  const descriptor = window.GBOptionTargetContext?.describe?.(
+    path ? { targets: [{ path }], selectionRevision: 0, origin: 'version-tab' } : { targets: [] },
+    scopeLabel ? { scopeLabel } : undefined,
+  ) || {
+    label: scopeLabel || (String(path || '').replace(/\\/g, '/').split('/').pop() || 'ファイルが選択されていません'),
+    title: scopeLabel || path || 'ファイルが選択されていません',
+    kind: scopeLabel ? 'scope' : (path ? 'file' : 'empty'),
+  };
+  return `<div class="gb-context-target-header" data-context-target-header="1" data-target-kind="${esc(descriptor.kind || 'file')}" title="${esc(descriptor.title || descriptor.label || '')}" aria-label="現在の対象: ${esc(descriptor.label || '')}"><span class="gb-context-target-header__caption">現在の対象</span><span class="gb-context-target-header__name">${esc(descriptor.label || '')}</span></div>`;
+}
+
+class ContextRailComponent extends ToolComponent {
+  create() {
+    this.el = document.createElement('div');
+    this.el.className = `gb-tool-context-rail gb-tool-${this.constructor.toolType || 'context'}`;
+    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
+    this.targetHeaderEl = document.createElement('div');
+    this.targetHeaderEl.className = 'gb-context-target-header';
+    this.targetHeaderEl.dataset.contextTargetHeader = '1';
+    this.bodyEl = document.createElement('div');
+    this.bodyEl.className = 'gb-context-target-body';
+    this.el.append(this.targetHeaderEl, this.bodyEl);
+    this._onTargetChanged = () => this.renderTarget();
+    document.addEventListener('meldex:option-target-changed', this._onTargetChanged);
+    return this.el;
+  }
+
+  _targetHeaderHtml(path, scopeLabel) {
+    return _railTargetHeaderHtml(path, scopeLabel);
+  }
+
+  activate() {
+    super.activate();
+    this.renderTarget();
+  }
+
+  destroy() {
+    document.removeEventListener('meldex:option-target-changed', this._onTargetChanged);
+    this._onTargetChanged = null;
+    super.destroy();
+  }
+
+  _renderTargetHeader(ctx, options) {
+    if (!this.targetHeaderEl) return;
+    if (this.constructor.hideTargetHeader) {
+      this.targetHeaderEl.hidden = true;
+      return;
+    }
+    const descriptor = window.GBOptionTargetContext?.describe?.(ctx, options) || {
+      label: 'ファイルが選択されていません',
+      title: 'ファイルが選択されていません',
+      kind: 'empty',
+      count: 0,
+      path: '',
+    };
+    this.targetHeaderEl.hidden = false;
+    this.targetHeaderEl.dataset.targetKind = descriptor.kind || 'file';
+    this.targetHeaderEl.dataset.targetCount = String(descriptor.count || 0);
+    this.targetHeaderEl.dataset.targetPath = descriptor.path || '';
+    this.targetHeaderEl.title = descriptor.title || descriptor.label || '';
+    this.targetHeaderEl.setAttribute('aria-label', `現在の対象: ${descriptor.label || ''}`);
+    this.targetHeaderEl.innerHTML = `<span class="gb-context-target-header__caption">現在の対象</span><span class="gb-context-target-header__name">${esc(descriptor.label || '')}</span>`;
+  }
+
+  _empty(message) {
+    if (this.bodyEl) this.bodyEl.innerHTML = `<div class="gb-empty-placeholder">${esc(message)}</div>`;
+  }
+}
+
+class InformationComponent extends ContextRailComponent {
+  static toolType = 'information';
+  static hideTargetHeader = true;
+
+  renderTarget() {
+    if (!this.el) return;
+    const ctx = _railContextSnapshot();
+    this._renderTargetHeader(ctx);
+    const target = ctx.targets[0];
+    if (!target) return this._empty('ファイルまたはフォルダを選択してください');
+    const path = target.contextPath || target.path;
+    if (!window.MeldexFileInfoPanel?.renderInto) return this._empty('プロパティパネルを読み込めませんでした');
+    void window.MeldexFileInfoPanel.renderInto(this.bodyEl, path, {
+      kind: target.kind || 'file',
+      type: target.kind || 'file',
+      isCurrent: () => window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) !== false,
+    });
+  }
+}
+
+class BacklinksComponent extends ContextRailComponent {
+  static toolType = 'backlinks';
+
+  renderTarget() {
+    if (!this.el) return;
+    const ctx = _railContextSnapshot();
+    this._renderTargetHeader(ctx);
+    if (ctx.targets[0]?.kind === 'folder') return this._empty('フォルダそのものはバックリンクの対象外です');
+    if (!window.GbBacklinks?.render) return this._empty('バックリンクを読み込めませんでした');
+    void window.GbBacklinks.render(ctx, this.bodyEl);
+  }
+}
+
+class FileThemeComponent extends ContextRailComponent {
+  static toolType = 'file-theme';
+
+  renderTarget() {
+    if (!this.el) return;
+    const snapshot = _railContextSnapshot();
+    this._renderTargetHeader(snapshot);
+    const target = snapshot.targets[0];
+    this.el.dataset.fileThemeState = 'empty';
+    this.el.dataset.fileThemeTargetPath = target?.contextPath || target?.path || '';
+    this.el.dataset.fileThemeTargetKind = target?.kind || '';
+    if (snapshot.targets.length > 1) return this._empty('テーマを編集する対象を1件だけ選択してください');
+    if (!target) return this._empty('テーマを設定するファイルまたはフォルダを選択してください');
+    const ctx = _railTargetStyleContext(target);
+    if (!ctx) return this._empty('この種類はファイル別テーマに対応していません。対応するノート、シート、ボード、シナリオ、カレンダー、フォルダを開いてください');
+    const targetPath = target.path || target.contextPath || '';
+    const activePath = _railActiveStylePath(ctx);
+    if (activePath && targetPath && _railNormalizeTargetPath(activePath) !== _railNormalizeTargetPath(targetPath)) {
+      this.el.dataset.fileThemeState = 'target-mismatch';
+      return this._empty('選択対象が現在の編集画面と一致しません。対象を開いてからテーマを編集してください');
+    }
+    if (typeof window.renderFileStyleTab !== 'function') return this._empty('テーマ設定を読み込めませんでした。画面を再読み込みしてください');
+    try {
+      window.renderFileStyleTab(ctx, this.bodyEl);
+      if (!snapshot.targets.length || window.GBOptionTargetContext?.isCurrentRevision?.(snapshot.selectionRevision) === false) return;
+      const hasThemePanel = !!this.bodyEl.querySelector('[data-file-theme-panel]');
+      const hasStyleFields = !!this.bodyEl.querySelector('.gb-section--detail, [data-fs-theme-select]');
+      if (!hasThemePanel && !hasStyleFields) {
+        this.el.dataset.fileThemeState = 'unavailable';
+        return this._empty('現在の対象のテーマ設定を読み込めませんでした。対象を開き直すか、画面を再読み込みしてください');
+      }
+      if (_railStyleIsReadOnly(ctx)) {
+        const notice = document.createElement('div'); notice.className = 'gb-section-desc';
+        notice.dataset.fileThemeReadOnly = '1'; notice.textContent = '読み取り専用のため、テーマ設定は表示のみです';
+        this.bodyEl.firstElementChild?.prepend?.(notice);
+        this.bodyEl.querySelectorAll('button, input, select, textarea').forEach(control => { control.disabled = true; });
+        this.el.dataset.fileThemeState = 'read-only';
+      } else {
+        this.el.dataset.fileThemeState = 'ready';
+      }
+    } catch (error) {
+      this.el.dataset.fileThemeState = 'error';
+      this._empty(`テーマ設定を表示できませんでした: ${error?.message || '不明なエラー'}`);
+    }
+  }
+}
+
 // === FolderComponent ===
 class FolderComponent extends ToolComponent {
   create() {
@@ -14156,14 +19573,14 @@ class VersionComponent extends ToolComponent {
     if (!this.el) return;
     if ((this.state.timelineKind || '') === PRODUCTION_DAILY_KIND) {
       this._timelineEntries = [];
-      this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+      this.el.innerHTML = `${_railTargetHeaderHtml('', '制作進行の日次記録')}<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
         ${this._buildTimelineHtml('', 'file', [])}
       </div>`;
       this._bindVersionActions();
       this._mountProductionDailyRecords();
       return;
     }
-    this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+    this.el.innerHTML = `${_railTargetHeaderHtml('')}<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
         ${this._buildKindFilterHtml(this.state.timelineKind || 'named,auto,edit')}
@@ -14203,7 +19620,22 @@ class VersionComponent extends ToolComponent {
     this.state.versionPath = path;
     this.state.versionType = vType;
     if (!this.el || this._destroyed) return;
-    this.el.innerHTML = '<div class="gb-history-loading" style="padding:16px;color:var(--fg2);">読み込み中...</div>';
+    this.el.innerHTML = `${_railTargetHeaderHtml(path)}<div class="gb-history-loading" style="padding:16px;color:var(--fg2);">読み込み中...</div>`;
+    if (vType === 'annotations') {
+      let versions = [];
+      try {
+        versions = await apiFetch('/annotations/versions?target=' + encodeURIComponent(path));
+      } catch (error) {
+        if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
+        this.el.innerHTML = `${_railTargetHeaderHtml(path)}<div class="gb-section-desc" role="alert" style="padding:16px;">${esc(error?.message || 'アノテートバージョンを読み込めませんでした')}</div>`;
+        return;
+      }
+      if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
+      this._timelineEntries = [];
+      this.el.innerHTML = _railTargetHeaderHtml(path) + this._buildAnnotationVersionsHtml(path, versions);
+      this._bindVersionActions();
+      return;
+    }
     const isFolder = vType === 'folder';
     const isDb = vType === 'db';
     const timelineKind = this.state.timelineKind || 'named,auto,edit';
@@ -14232,7 +19664,8 @@ class VersionComponent extends ToolComponent {
     }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
-    this.el.innerHTML = this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
+    this.el.innerHTML = _railTargetHeaderHtml(path, timelineKind === PRODUCTION_DAILY_KIND ? '制作進行の日次記録' : '')
+      + this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();
     if (timelineKind === PRODUCTION_DAILY_KIND) this._mountProductionDailyRecords();
   }
@@ -14259,6 +19692,11 @@ class VersionComponent extends ToolComponent {
       timelineDelete: () => deleteVersion(path, versionName, vType),
       save: () => saveManualVersion(path, vType),
       refresh: () => this._loadVersions(this.state.versionPath || path, this.state.versionType || vType),
+      annotationSave: () => this._saveAnnotationVersion(path),
+      annotationPreview: () => this._showAnnotationVersion(path, versionName, false),
+      annotationCompare: () => this._showAnnotationVersion(path, versionName, true),
+      annotationRestore: () => this._restoreAnnotationVersion(path, versionName),
+      annotationDelete: () => this._deleteAnnotationVersion(path, versionName),
     };
     const fn = calls[action];
     if (!fn) return;
@@ -14267,6 +19705,7 @@ class VersionComponent extends ToolComponent {
     const reloadActions = new Set([
       'save', 'saveCurrent', 'restore', 'delete', 'saveFolder', 'restoreFolder', 'deleteFolder', 'promoteFolder',
       'timelineRestore', 'timelineDelete', 'timelineRestoreFolder', 'timelineDeleteFolder', 'timelinePromoteFolder',
+      'annotationSave', 'annotationRestore', 'annotationDelete',
     ]);
     if (reloadActions.has(action)) {
       const reloadPath = this.state.versionPath || path;
@@ -14275,12 +19714,56 @@ class VersionComponent extends ToolComponent {
     }
   }
 
+  async _saveAnnotationVersion(path) {
+    const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+    const label = await cfPrompt('アノテートバージョン名:', defaultLabel);
+    if (label === null || !String(label).trim()) return;
+    await apiPost('/annotations/versions/save', { target: path, label: String(label).trim() });
+    if (typeof showStatus === 'function') showStatus('アノテートバージョンを保存しました');
+  }
+
+  async _readAnnotationVersion(path, versionName) {
+    return apiFetch('/annotations/versions/read?target=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
+  }
+
+  async _showAnnotationVersion(path, versionName, compare) {
+    const data = await this._readAnnotationVersion(path, versionName);
+    const saved = Array.isArray(data?.savedAnnotations) ? data.savedAnnotations : [];
+    const current = Array.isArray(data?.currentAnnotations) ? data.currentAnnotations : [];
+    const savedText = JSON.stringify(saved, null, 2);
+    const label = data?.version?.label || '保存版';
+    if (typeof showDiffModal === 'function') {
+      if (compare) showDiffModal(savedText, JSON.stringify(current, null, 2), label, '現在のアノテート');
+      else showDiffModal('', savedText, '', `${label}（${saved.length}件）`);
+      return;
+    }
+    if (typeof cfAlert === 'function') await cfAlert(`${label}\n\n${savedText}`);
+  }
+
+  async _restoreAnnotationVersion(path, versionName) {
+    const current = await this._readAnnotationVersion(path, versionName);
+    if (!await cfConfirm('このアノテートバージョンに復元しますか？\n（現在のアノテートは自動保存されます）')) return;
+    const result = await apiPost('/annotations/versions/restore', {
+      target: path,
+      version: versionName,
+      expectedRevision: current?.annotationWriteRevision || '',
+    });
+    if (typeof loadAnnotations === 'function') await loadAnnotations();
+    if (typeof showStatus === 'function') showStatus(`${Number(result?.count || 0)}件のアノテートを復元しました`);
+  }
+
+  async _deleteAnnotationVersion(path, versionName) {
+    if (!await cfConfirm('この手動保存バージョンを削除しますか？')) return;
+    await apiDelete('/annotations/versions/' + encodeURIComponent(versionName) + '?target=' + encodeURIComponent(path));
+    if (typeof showStatus === 'function') showStatus('アノテートバージョンを削除しました');
+  }
+
   async _promoteFolderVersion(path, versionName) {
     const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
-    const label = await cfPrompt('スナップショット名:', defaultLabel);
+    const label = await cfPrompt('手動復元ポイント名:', defaultLabel);
     if (label === null) return;
     await apiPost('/version/promote', { path, version: versionName, type: 'folder', label });
-    showStatus('スナップショットにしました');
+    showStatus('手動復元ポイントとして保存しました');
   }
 
   _previewEditEntry(entry) {
@@ -14401,7 +19884,7 @@ class VersionComponent extends ToolComponent {
   }
 
   _timelineLabel(entry) {
-    if (entry.type === 'named') return entry.label ? `スナップショット「${entry.label}」` : 'スナップショット';
+    if (entry.type === 'named') return entry.label ? `復元ポイント「${entry.label}」` : '復元ポイント';
     if (entry.type === 'auto') return entry.label && entry.label !== '自動復元ポイント' ? `自動復元ポイント: ${entry.label}` : '自動復元ポイント';
     return entry.label || entry.body_diff_summary || entry.action || '変更レコード';
   }
@@ -14431,7 +19914,7 @@ class VersionComponent extends ToolComponent {
     const type = entry.version_type || entry.snapshot_kind || this.state.versionType || 'file';
     if (type === 'folder') {
       return `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelineShowFolderFiles', path, version, 'folder')} title="一覧">${typeof lucide === 'function' ? lucide('eye', 12) : '一覧'}</button>
-        ${entry.type === 'auto' ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelinePromoteFolder', path, version, 'folder')} title="スナップショットにする">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '保存'}</button>` : ''}
+        ${entry.type === 'auto' ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelinePromoteFolder', path, version, 'folder')} title="手動復元ポイントとして保存">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '保存'}</button>` : ''}
         <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('timelineRestoreFolder', path, version, 'folder')} title="復元">${typeof lucide === 'function' ? lucide('rotateCcw', 12) : '復元'}</button>
         ${entry.type === 'named' ? `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('timelineDeleteFolder', path, version, 'folder')} title="削除">${typeof lucide === 'function' ? lucide('trash2', 12) : '削除'}</button>` : ''}`;
     }
@@ -14452,7 +19935,7 @@ class VersionComponent extends ToolComponent {
         ? `<span class="gb-badge gb-badge-auto">${typeof lucide === 'function' ? lucide('bot', 11) : ''}${esc(entry.actor_model || 'LLM')}</span>`
         : entry.actor_kind ? `<span class="gb-badge gb-badge-manual">${esc(entry.user || entry.actor_kind)}</span>` : '';
       const typeBadge = entry.type === 'named'
-        ? '<span class="gb-badge gb-badge-manual">スナップショット</span>'
+        ? '<span class="gb-badge gb-badge-manual">手動復元ポイント</span>'
         : entry.type === 'auto'
           ? '<span class="gb-badge gb-badge-auto">自動</span>'
           : '<span class="gb-badge gb-badge-manual">変更</span>';
@@ -14471,7 +19954,7 @@ class VersionComponent extends ToolComponent {
 
     return `<section class="gb-version-timeline" style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
-        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 現バージョンを保存</button>
+        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 復元ポイントを作成</button>
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
         ${this._buildKindFilterHtml(kind)}
         <select data-e2e-id="version-timeline-actor-filter" data-version-filter="actor" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
@@ -14488,7 +19971,7 @@ class VersionComponent extends ToolComponent {
   _buildKindFilterHtml(kind) {
     return `<select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
       ${this._versionSelectOption('named,auto,edit', '全て', kind)}
-      ${this._versionSelectOption('named', 'スナップショット', kind)}
+      ${this._versionSelectOption('named', '手動復元ポイント', kind)}
       ${this._versionSelectOption('auto', '復元ポイント', kind)}
       ${this._versionSelectOption('edit', '変更ログ', kind)}
       ${this._versionSelectOption(PRODUCTION_DAILY_KIND, '制作進行の日次記録', kind)}
@@ -14551,7 +20034,7 @@ class VersionComponent extends ToolComponent {
             <span class="gb-history-size">${fileCount}ファイル${totalSize ? ', ' + totalSize : ''}</span>
             <div class="gb-history-actions">
               <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('showFolderFiles', folderPath, v.name, 'folder')} title="一覧">一覧</button>
-              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="スナップショットにする">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
+              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="手動復元ポイントとして保存">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
               <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('restoreFolder', folderPath, v.name, 'folder')} title="復元">復元</button>
               ${v.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('deleteFolder', folderPath, v.name, 'folder')} title="削除">${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
             </div>
@@ -14609,6 +20092,38 @@ class VersionComponent extends ToolComponent {
     </div>`;
   }
 
+  _buildAnnotationVersionsHtml(path, versions) {
+    const rows = Array.isArray(versions) && versions.length
+      ? versions.map(version => {
+          const badge = version.auto
+            ? '<span class="gb-badge gb-badge-auto">自動</span>'
+            : '<span class="gb-badge gb-badge-manual">手動</span>';
+          const label = version.label ? ` — ${esc(version.label)}` : '';
+          return `<div class="gb-history-row gb-history-row-compact">
+            ${badge}
+            <span class="gb-history-label">${esc(this._formatVersionDate(version))}${label}</span>
+            <span class="gb-history-size">${Number(version.annotationCount || 0)}件</span>
+            <div class="gb-history-actions">
+              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationPreview', path, version.name, 'annotations')}>表示</button>
+              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationCompare', path, version.name, 'annotations')}>比較</button>
+              <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('annotationRestore', path, version.name, 'annotations')}>復元</button>
+              ${version.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('annotationDelete', path, version.name, 'annotations')}>${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="gb-section-desc" style="padding:8px 0;">アノテートバージョンがありません</div>';
+    return `<div class="gb-version-panel" style="overflow:auto;flex:1;padding:8px;">
+      <div class="gb-version-panel-header" style="display:flex;align-items:center;gap:6px;padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:8px;">
+        ${typeof lucide === 'function' ? lucide('gitBranch', 16) : ''}
+        <span style="font-weight:bold;font-size:13px;">アノテートのバージョン管理</span>
+        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('annotationSave', path, '', 'annotations')}>+ 復元ポイントを作成</button>
+        <button class="gb-btn gb-btn-xs gb-btn-quiet" ${this._versionButtonAttrs('refresh', path, '', 'annotations')} title="更新">${typeof lucide === 'function' ? lucide('refreshCw', 12) : '↻'}</button>
+      </div>
+      <div class="gb-section-desc" style="padding-bottom:8px;">${esc(path)}</div>
+      <div class="gb-history-list">${rows}</div>
+    </div>`;
+  }
+
   getState() {
     return {
       versionPath: this.state.versionPath || '',
@@ -14643,1611 +20158,16 @@ registerToolComponent('page',       { cls: EditorComponent, icon: 'page', label:
 // CanvasComponent は gb-tool-canvas.js で登録済み (Phase C)。計画書 §8.2 より requiresViewLock=false。
 // CalendarComponent は gb-tool-calendar.js で登録済み (Phase C)。requiresViewLock=true。
 registerToolComponent('chat',       { cls: ChatComponent, icon: 'messagesSquare', label: 'チャット', multi: false });
-registerToolComponent('annotation', { cls: AnnotationComponent, icon: 'stickyNote', label: '注釈', multi: false });
+registerToolComponent('annotation', { cls: AnnotationComponent, icon: 'squarePen', label: 'アノテート', multi: false });
 registerToolComponent('history',    { cls: HistoryComponent, icon: 'history', label: 'ヒストリー', multi: false });
 registerToolComponent('detail',     { cls: DetailComponent, icon: 'slidersHorizontal', label: 'オプション', multi: false });
+registerToolComponent('information',{ cls: InformationComponent, icon: 'info', label: 'プロパティ', multi: false });
+registerToolComponent('backlinks',  { cls: BacklinksComponent, icon: 'fileSymlink', label: 'バックリンク', multi: false });
+registerToolComponent('file-theme', { cls: FileThemeComponent, icon: 'palette', label: 'テーマ', multi: false });
 registerToolComponent('folder',     { cls: FolderComponent, icon: 'folder', label: 'フォルダビュー', multi: true, requiresViewLock: true });
 registerToolComponent('media',      { cls: MediaComponent, icon: 'galleryThumbnails', label: 'メディア', multi: true, requiresViewLock: true });
 registerToolComponent('compare',    { cls: CompareComponent, icon: 'columns', label: '比較', multi: true, requiresViewLock: true });
 registerToolComponent('version',    { cls: VersionComponent, icon: 'gitBranch', label: 'バージョン管理', multi: true });
-
-;
-
-/* === gb-tool-timer.js === */
-;
-/* ==============================
-   gb-tool-timer.js: TimerComponent
-   ============================== */
-
-class TimerComponent extends ToolComponent {
-  constructor(paneId, tabId) {
-    super(paneId, tabId);
-    this.displayMode = 'digital';
-    this.timerRunning = false;
-    this.totalSeconds = 300;
-    this.elapsed = 0;
-    this.countUp = false;
-    this.timerStarted = false;
-    this.timerStartMs = 0;
-    this.elapsedAtStart = 0;
-    this._timerInterval = null;
-    this._resizeObserver = null;
-    this._resizeHandler = null;
-    this._drawFrame = null;
-    this._drawTimeouts = [];
-    this._canvas = null;
-    this._ctx = null;
-    this._timerFileStyle = {};
-  }
-
-  create() {
-    this.el = document.createElement('div');
-    this.el.className = 'gb-timer-root';
-    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;height:100%;min-height:0;overflow:hidden;background:var(--timer-bg,var(--content-bg,var(--bg)));color:var(--timer-fg,var(--fg));';
-    this.el.innerHTML = `
-      <div class="gb-timer-top">
-        <div class="gb-timer-toolbar-row gb-timer-toolbar-row--main">
-          <div class="gb-timer-inputs">
-            <span class="gb-num-unit gb-timer-num-unit"><input class="gb-num-input gb-timer-time-input" data-timer-role="hours" type="number" min="0" max="99" step="1" value="0" aria-label="時間" title="タイマーの時間を0から99で設定します"><span class="unit">時間</span></span>
-            <span class="gb-num-unit gb-timer-num-unit"><input class="gb-num-input gb-timer-time-input" data-timer-role="minutes" type="number" min="0" max="59" step="1" value="5" aria-label="分" title="タイマーの分を0から59で設定します"><span class="unit">分</span></span>
-            <span class="gb-num-unit gb-timer-num-unit"><input class="gb-num-input gb-timer-time-input" data-timer-role="seconds" type="number" min="0" max="59" step="1" value="0" aria-label="秒" title="タイマーの秒を0から59で設定します"><span class="unit">秒</span></span>
-            <button class="tb-icon-btn gb-timer-countup-toggle" data-timer-role="countup" data-timer-action="toggleCountUp" type="button" aria-label="カウントアップ" aria-pressed="false" title="0から設定時間まで計測します">${this._icon('arrowUp', 14)}</button>
-          </div>
-          <div class="tb-spacer"></div>
-          <label class="gb-timer-mode-field" title="タイマーの表示形式を切り替えます">
-            <span class="gb-timer-toolbar-label">表示</span>
-            <select class="gb-select gb-select-sm gb-timer-mode-select" data-timer-role="displayMode" aria-label="表示モード" title="タイマーの表示形式を選択します">
-              <option value="digital">デジタル</option>
-              <option value="analog">バー（円形）</option>
-              <option value="circle">円形</option>
-              <option value="bar">バー</option>
-            </select>
-          </label>
-          <button class="tb-icon-btn gb-timer-settings-btn" data-timer-action="openSettings" type="button" aria-label="タイマー設定" title="カレンダー連動、アラーム、保存済みタイマーを設定します">${this._icon('settings', 14)}</button>
-        </div>
-        <div class="gb-timer-toolbar-row gb-timer-toolbar-row--controls">
-          <button class="gb-btn gb-btn-sm" data-timer-action="start" type="button" title="設定した時間でタイマーを開始します">${this._icon('play', 14)} <span>開始</span></button>
-          <button class="gb-btn gb-btn-sm" data-timer-action="pause" type="button" title="動作中のタイマーを一時停止します">${this._icon('pause', 14)} <span>一時停止</span></button>
-          <button class="gb-btn gb-btn-sm" data-timer-action="reset" type="button" title="経過時間を0に戻します">${this._icon('rotateCcw', 14)} <span>リセット</span></button>
-        </div>
-      </div>
-      <div class="gb-timer-display" style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
-        <canvas data-timer-role="canvas" style="position:absolute;inset:0;width:100%;height:100%;display:block;"></canvas>
-        <div class="gb-timer-display-readout" data-timer-role="readout">05:00</div>
-      </div>`;
-    this._canvas = this.el.querySelector('[data-timer-role="canvas"]');
-    this._ctx = this._canvas.getContext('2d');
-    this._bindEvents();
-    this._updateControlButtons();
-    this._setupResize();
-    this._queueInitialDraws();
-    return this.el;
-  }
-
-  activate() {
-    super.activate();
-    this._queueInitialDraws();
-  }
-
-  destroy() {
-    this._pauseTimer();
-    if (this._drawFrame) cancelAnimationFrame(this._drawFrame);
-    this._drawFrame = null;
-    this._drawTimeouts.forEach(id => clearTimeout(id));
-    this._drawTimeouts = [];
-    if (this._resizeObserver) this._resizeObserver.disconnect();
-    this._resizeObserver = null;
-    if (this._resizeHandler) window.removeEventListener('resize', this._resizeHandler);
-    this._resizeHandler = null;
-    super.destroy();
-  }
-
-  getState() {
-    this._updateElapsedFromClock();
-    const state = {
-      displayMode: this.displayMode,
-      totalSeconds: this.totalSeconds,
-      elapsed: this.elapsed,
-      countUp: this.countUp,
-      timerRunning: this.timerRunning,
-      timerStarted: this.timerStarted,
-      elapsedAtStart: this.elapsedAtStart,
-      timerStartMs: this.timerStartMs,
-    };
-    if (Object.keys(this._timerFileStyle).length) state._timerFileStyle = { ...this._timerFileStyle };
-    return state;
-  }
-
-  restoreState(savedState) {
-    if (!savedState) return;
-    this.displayMode = savedState.displayMode || 'digital';
-    this.totalSeconds = Number(savedState.totalSeconds) || 300;
-    this.elapsed = Math.max(0, Number(savedState.elapsed) || 0);
-    this.countUp = !!savedState.countUp;
-    this.timerStarted = !!savedState.timerStarted;
-    this._timerFileStyle = savedState._timerFileStyle && typeof savedState._timerFileStyle === 'object'
-      ? { ...savedState._timerFileStyle }
-      : {};
-    this._applyTimerFileStyle();
-    if (savedState.timerRunning) {
-      const now = Date.now();
-      const savedElapsedAtStart = Number(savedState.elapsedAtStart);
-      const savedStartMs = Number(savedState.timerStartMs);
-      this.timerRunning = false;
-      this.elapsedAtStart = Number.isFinite(savedElapsedAtStart) ? Math.max(0, savedElapsedAtStart) : this.elapsed;
-      this.timerStartMs = Number.isFinite(savedStartMs) && savedStartMs > 0 ? savedStartMs : now;
-      const elapsedFromClock = Math.max(0, Math.floor((now - this.timerStartMs) / 1000));
-      this.elapsed = Math.min(this.totalSeconds, Math.max(this.elapsed, this.elapsedAtStart + elapsedFromClock));
-      this._startTicking();
-    } else {
-      this.elapsedAtStart = this.elapsed;
-      this.timerStartMs = 0;
-    }
-    this._writeControlsFromState();
-    this._updateModeButtons();
-    this._drawTimer();
-  }
-
-  _applyTimerFileStyle() {
-    if (!this.el?.style) return;
-    for (const key of ['--timer-bg', '--timer-fg', '--accent']) {
-      this.el.style.removeProperty(key);
-      const value = String(this._timerFileStyle?.[key] || '').trim();
-      if (/^#[0-9a-f]{6}$/i.test(value)) this.el.style.setProperty(key, value);
-    }
-  }
-
-  _icon(name, size) {
-    return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  _bindEvents() {
-    const modeSelect = this.el.querySelector('[data-timer-role="displayMode"]');
-    modeSelect?.addEventListener('change', () => {
-      this.displayMode = modeSelect.value || 'digital';
-      this._updateModeButtons();
-      this._drawTimer();
-    });
-    this.el.querySelectorAll('[data-timer-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset.timerAction;
-        if (action === 'start') this._startTimer();
-        else if (action === 'pause') this._pauseTimer();
-        else if (action === 'reset') this._resetTimer();
-        else if (action === 'toggleCountUp') {
-          this.countUp = !this.countUp;
-          this._writeControlsFromState();
-          if (!this.timerRunning) {
-            this._readControls();
-            this._drawTimer();
-          }
-        } else if (action === 'openSettings') {
-          if (typeof this._timerAdvancedShowSettingsDialog === 'function') this._timerAdvancedShowSettingsDialog();
-          else if (typeof showStatus === 'function') showStatus('タイマー設定を開けませんでした', true);
-        }
-      });
-    });
-    this.el.querySelectorAll('[data-timer-role="hours"], [data-timer-role="minutes"], [data-timer-role="seconds"]').forEach(input => {
-      input.addEventListener('input', () => {
-        if (!this.timerRunning) {
-          this._readControls();
-          this._drawTimer();
-        }
-      });
-      input.addEventListener('change', () => {
-        if (!this.timerRunning) {
-          this._readControls();
-          this._drawTimer();
-        }
-      });
-    });
-  }
-
-  _setupResize() {
-    const display = this.el.querySelector('.gb-timer-display');
-    if (window.ResizeObserver && display) {
-      this._resizeObserver = new ResizeObserver(() => this._requestDrawTimer());
-      this._resizeObserver.observe(display);
-    } else {
-      this._resizeHandler = () => this._requestDrawTimer();
-      window.addEventListener('resize', this._resizeHandler);
-    }
-  }
-
-  _requestDrawTimer() {
-    if (!this.el || !this._canvas) return;
-    if (this._drawFrame) cancelAnimationFrame(this._drawFrame);
-    this._drawFrame = requestAnimationFrame(() => {
-      this._drawFrame = null;
-      this._drawTimer();
-    });
-  }
-
-  _queueInitialDraws() {
-    this._requestDrawTimer();
-    [0, 50, 150, 350].forEach(ms => {
-      const timeoutId = setTimeout(() => {
-        this._drawTimeouts = this._drawTimeouts.filter(id => id !== timeoutId);
-        if (this.el?.isConnected) this._drawTimer();
-      }, ms);
-      this._drawTimeouts.push(timeoutId);
-    });
-  }
-
-  _readControls() {
-    const h = parseInt(this.el.querySelector('[data-timer-role="hours"]')?.value, 10) || 0;
-    const m = parseInt(this.el.querySelector('[data-timer-role="minutes"]')?.value, 10) || 0;
-    const s = parseInt(this.el.querySelector('[data-timer-role="seconds"]')?.value, 10) || 0;
-    this.totalSeconds = Math.max(0, h * 3600 + m * 60 + s);
-    const countup = this.el.querySelector('[data-timer-role="countup"]');
-    this.countUp = countup?.tagName === 'INPUT' ? !!countup.checked : countup?.getAttribute('aria-pressed') === 'true';
-  }
-
-  _writeControlsFromState() {
-    const h = Math.floor(this.totalSeconds / 3600);
-    const m = Math.floor((this.totalSeconds % 3600) / 60);
-    const s = this.totalSeconds % 60;
-    const hours = this.el?.querySelector('[data-timer-role="hours"]');
-    const minutes = this.el?.querySelector('[data-timer-role="minutes"]');
-    const seconds = this.el?.querySelector('[data-timer-role="seconds"]');
-    const countup = this.el?.querySelector('[data-timer-role="countup"]');
-    if (hours) hours.value = String(h);
-    if (minutes) minutes.value = String(m);
-    if (seconds) seconds.value = String(s);
-    if (countup?.tagName === 'INPUT') countup.checked = this.countUp;
-    else if (countup) {
-      countup.setAttribute('aria-pressed', this.countUp ? 'true' : 'false');
-      countup.classList.toggle('active', this.countUp);
-      countup.title = this.countUp ? 'カウントアップ中: 0から設定時間まで計測します' : 'カウントアップに切り替えます';
-    }
-    this._updateModeButtons();
-    this._updateControlButtons();
-  }
-
-  _updateModeButtons() {
-    const mode = ['digital', 'analog', 'circle', 'bar'].includes(this.displayMode) ? this.displayMode : 'digital';
-    this.displayMode = mode;
-    const select = this.el?.querySelector('[data-timer-role="displayMode"]');
-    if (select && select.value !== mode) select.value = mode;
-    this.el?.querySelectorAll('[data-timer-mode]').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.timerMode === mode);
-    });
-  }
-
-  _updateControlButtons() {
-    const start = this.el?.querySelector('[data-timer-action="start"]');
-    const pause = this.el?.querySelector('[data-timer-action="pause"]');
-    if (start) start.disabled = !!this.timerRunning;
-    if (pause) pause.disabled = !this.timerRunning;
-  }
-
-  _updateElapsedFromClock() {
-    if (!this.timerRunning) return;
-    this.elapsed = this.elapsedAtStart + Math.floor((Date.now() - this.timerStartMs) / 1000);
-  }
-
-  _remainingSeconds() {
-    return this.countUp ? this.elapsed : Math.max(0, this.totalSeconds - this.elapsed);
-  }
-
-  _formatTime(value) {
-    const s = Math.max(0, Math.floor(value));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
-  }
-
-  _startTimer() {
-    if (this.timerRunning) return;
-    const prevTotal = this.totalSeconds;
-    const prevCountUp = this.countUp;
-    this._readControls();
-    if (!this.timerStarted || this.totalSeconds !== prevTotal || this.countUp !== prevCountUp || this.elapsed >= this.totalSeconds) {
-      this.elapsed = 0;
-    }
-    if (this.totalSeconds <= 0) return;
-    this.elapsedAtStart = this.elapsed;
-    this.timerStartMs = Date.now();
-    this._startTicking();
-  }
-
-  _startTicking() {
-    if (this._timerInterval) clearInterval(this._timerInterval);
-    this.timerRunning = true;
-    this.timerStarted = true;
-    this._updateControlButtons();
-    const tick = () => {
-      this._updateElapsedFromClock();
-      if (this.elapsed >= this.totalSeconds) {
-        this.elapsed = this.totalSeconds;
-        this._pauseTimer();
-        this.timerStarted = false;
-        this._notifyDone();
-      }
-      this._drawTimer();
-    };
-    this._timerInterval = setInterval(tick, 1000);
-    tick();
-  }
-
-  _pauseTimer() {
-    if (this.timerRunning) {
-      this._updateElapsedFromClock();
-      this.elapsed = Math.min(this.totalSeconds, this.elapsed);
-    }
-    if (this._timerInterval) clearInterval(this._timerInterval);
-    this._timerInterval = null;
-    this.timerRunning = false;
-    this._updateControlButtons();
-    this._drawTimer();
-  }
-
-  _resetTimer() {
-    this._pauseTimer();
-    this.elapsed = 0;
-    this.timerStarted = false;
-    this.elapsedAtStart = 0;
-    this.timerStartMs = 0;
-    this._updateControlButtons();
-    this._drawTimer();
-  }
-
-  _notifyDone() {
-    try { new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU').play().catch(() => {}); } catch {}
-    if ('Notification' in window && Notification.permission === 'granted') {
-      try { new Notification('タイマー完了', { body: this._formatTime(this.totalSeconds) + ' 経過' }); } catch {}
-    }
-    if (typeof showStatus === 'function') showStatus('タイマーが完了しました');
-  }
-
-  _drawTimer() {
-    if (!this._canvas || !this._ctx) return;
-    const display = this.el?.querySelector('.gb-timer-display');
-    const rect = display?.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect?.width || 320));
-    const h = Math.max(1, Math.floor(rect?.height || 240));
-    if (this._canvas.width !== w) this._canvas.width = w;
-    if (this._canvas.height !== h) this._canvas.height = h;
-    const ctx = this._ctx;
-    const remaining = this._remainingSeconds();
-    const progress = this.totalSeconds > 0 ? Math.max(0, Math.min(1, this.countUp ? this.elapsed / this.totalSeconds : remaining / this.totalSeconds)) : 0;
-    const style = getComputedStyle(document.documentElement);
-    const fg = style.getPropertyValue('--fg').trim() || '#d4d4d4';
-    const accent = style.getPropertyValue('--accent').trim() || '#569cd6';
-    const bg3 = style.getPropertyValue('--bg3').trim() || '#2d2d2d';
-
-    ctx.clearRect(0, 0, w, h);
-    this._updateReadout(remaining, w, h);
-    if (this.displayMode === 'digital') this._drawDigital(ctx, w, h);
-    else if (this.displayMode === 'analog') this._drawAnalog(ctx, w, h, remaining, progress, fg, accent, bg3);
-    else if (this.displayMode === 'circle') this._drawCircle(ctx, w, h, remaining, progress, accent, bg3);
-    else this._drawBar(ctx, w, h, remaining, progress, fg, accent, bg3);
-  }
-
-  _updateReadout(remaining, w, h) {
-    const readout = this.el?.querySelector('[data-timer-role="readout"]');
-    if (!readout) return;
-    const size = Math.max(18, Math.min(72, w / 4.4, h / 1.7));
-    readout.textContent = this._formatTime(remaining);
-    readout.style.fontSize = `${size}px`;
-  }
-
-  _drawDigital(_ctx, _w, _h) {
-    // The readout is DOM text so it remains visible even when canvas layout is delayed.
-  }
-
-  _drawAnalog(ctx, w, h, remaining, progress, fg, accent, bg3) {
-    const r = Math.max(6, Math.min(w, h) * 0.36);
-    const cx = w / 2;
-    const cy = h / 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = bg3;
-    ctx.lineWidth = Math.max(1, Math.min(4, r * 0.12));
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = Math.max(2, Math.min(8, r * 0.22));
-    ctx.stroke();
-    ctx.font = `bold ${Math.max(8, r / 2.5)}px monospace`;
-    void remaining;
-    void fg;
-  }
-
-  _drawCircle(ctx, w, h, remaining, progress, accent, bg3) {
-    const r = Math.max(6, Math.min(w, h) * 0.36);
-    const cx = w / 2;
-    const cy = h / 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = bg3;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
-    ctx.closePath();
-    ctx.fillStyle = accent;
-    ctx.globalAlpha = 0.72;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    void remaining;
-  }
-
-  _drawBar(ctx, w, h, remaining, progress, fg, accent, bg3) {
-    const barH = Math.max(8, Math.min(56, h / 4));
-    const barW = w * 0.82;
-    const x = (w - barW) / 2;
-    const y = h / 2 - barH / 2;
-    ctx.fillStyle = bg3;
-    ctx.fillRect(x, y, barW, barH);
-    ctx.fillStyle = accent;
-    ctx.fillRect(x, y, barW * progress, barH);
-    void remaining;
-    void fg;
-  }
-}
-
-function openTimerPanel() {
-  if (typeof openToolTab === 'function') {
-    openToolTab('timer');
-    return;
-  }
-  if (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' && GBLayout.root) {
-    const existing = typeof GBTabs.findPaneWithTab === 'function' ? GBTabs.findPaneWithTab('timer', '') : null;
-    if (existing) {
-      GBTabs.activateTab(existing.paneId, existing.tabId);
-      return;
-    }
-    const paneId = GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id;
-    if (paneId) {
-      GBTabs.addTab(paneId, 'タイマー', 'timer', '');
-      return;
-    }
-  }
-  if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-  else console.warn('Timer panel could not be opened: pane system is unavailable');
-}
-
-registerToolComponent('timer', { cls: TimerComponent, icon: 'timer', label: 'タイマー', multi: false });
-window.openTimerPanel = openTimerPanel;
-
-;
-
-/* === gb-tool-timer-advanced.js === */
-;
-/* ==============================
-   gb-tool-timer-advanced.js: Timer panel automation and presets
-   ============================== */
-
-(() => {
-  if (typeof TimerComponent === 'undefined') return;
-
-  const SETTINGS_KEY = 'gb:timer-advanced-settings';
-  const PRESETS_KEY = 'gb:timer-presets';
-  const TIMER_HISTORY_SCOPE = 'timer:settings';
-  const CALENDAR_POLL_MS = 30000;
-  const CALENDAR_START_WINDOW_MS = 120000;
-  const LOUD_ALARM_NAME = 'alarm';
-  const CUSTOM_ALARM_NAME = 'custom';
-  const DEFAULT_SETTINGS = Object.freeze({
-    calendarEnabled: false,
-    calendarId: '',
-    alarmSound: LOUD_ALARM_NAME,
-    alarmCustomName: '',
-    alarmCustomDataUrl: '',
-    alarmVolume: 70,
-    countdownEnabled: true,
-    countdownVoice: false,
-    countdownEvery10: true,
-    countdownEvery5: false,
-    countdownLast10: false,
-    repeatSingle: false,
-  });
-
-  function _timerReadJson(key, fallback) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(key) || '');
-      return parsed && typeof parsed === 'object' ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  function _timerWriteJson(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function _timerStorageHistoryKeys(keys) {
-    const list = Array.isArray(keys) ? keys : [keys];
-    return [...new Set(list.filter(Boolean))];
-  }
-
-  function _timerCaptureStorageHistory(keys) {
-    if (typeof captureLocalStorageSettings !== 'function') return null;
-    if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-      && isLocalStorageSettingsHistorySuppressed()) return null;
-    return captureLocalStorageSettings(_timerStorageHistoryKeys(keys));
-  }
-
-  function _timerStorageHistoryDetail(keys) {
-    const labels = {
-      [SETTINGS_KEY]: '拡張設定',
-      [PRESETS_KEY]: '保存済みタイマー',
-    };
-    return _timerStorageHistoryKeys(keys).map(key => labels[key] || key).join(' / ');
-  }
-
-  function _timerRefreshPanelsAfterHistory(keys) {
-    const changed = new Set(_timerStorageHistoryKeys(keys));
-    if (typeof forEachComponent !== 'function') return;
-    forEachComponent(component => {
-      if (!component || !(component instanceof TimerComponent)) return;
-      if (typeof component._timerAdvancedReloadFromStorage === 'function') {
-        component._timerAdvancedReloadFromStorage(changed);
-      }
-    });
-  }
-
-  function _timerPushStorageHistory(label, beforeSnapshot, keys, detail) {
-    if (!beforeSnapshot || typeof historyPush !== 'function'
-      || typeof captureLocalStorageSettings !== 'function'
-      || typeof restoreLocalStorageSettings !== 'function'
-      || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
-    const keyList = _timerStorageHistoryKeys(keys);
-    const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, captureLocalStorageSettings(keyList));
-    let beforeKey = '';
-    let afterKey = '';
-    try {
-      beforeKey = JSON.stringify(snapshots.before);
-      afterKey = JSON.stringify(snapshots.after);
-    } catch {}
-    if (beforeKey && beforeKey === afterKey) return false;
-    historyPush(
-      label || 'タイマー: 設定変更',
-      () => restoreLocalStorageSettings(snapshots.before, _timerRefreshPanelsAfterHistory),
-      () => restoreLocalStorageSettings(snapshots.after, _timerRefreshPanelsAfterHistory),
-      TIMER_HISTORY_SCOPE,
-      detail || _timerStorageHistoryDetail(keyList)
-    );
-    return true;
-  }
-
-  function _timerId(prefix) {
-    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  }
-
-  function _timerEsc(value) {
-    return MeldexEscape.html(value);
-  }
-
-  function _timerIcon(name, size = 14) {
-    return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  function _timerClampInt(value, min, max, fallback) {
-    const n = parseInt(value, 10);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(min, Math.min(max, n));
-  }
-
-  function _timerConfirm(message, options) {
-    if (typeof cfConfirm === 'function') return cfConfirm(message, options);
-    return Promise.resolve(window.confirm(message));
-  }
-
-  function _timerUser() {
-    try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; }
-  }
-
-  function _timerLocalDateTime(date) {
-    const d = date || new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
-  }
-
-  function _timerFormatHuman(seconds) {
-    const s = Math.max(0, Math.floor(seconds));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    const parts = [];
-    if (h) parts.push(`${h}時間`);
-    if (m) parts.push(`${m}分`);
-    if (sec || !parts.length) parts.push(`${sec}秒`);
-    return parts.join('');
-  }
-
-  function _timerNormalizeSettings(raw) {
-    const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-    next.alarmVolume = _timerClampInt(next.alarmVolume, 0, 100, DEFAULT_SETTINGS.alarmVolume);
-    ['calendarEnabled', 'countdownEnabled', 'countdownVoice', 'countdownEvery10', 'countdownEvery5', 'countdownLast10', 'repeatSingle']
-      .forEach(key => { next[key] = !!next[key]; });
-    next.calendarId = String(next.calendarId || '');
-    next.alarmCustomName = String(next.alarmCustomName || '');
-    next.alarmCustomDataUrl = String(next.alarmCustomDataUrl || '').startsWith('data:audio/') ? String(next.alarmCustomDataUrl) : '';
-    if (next.alarmCustomDataUrl && !next.alarmCustomName) next.alarmCustomName = '設定した音源';
-    if (String(next.alarmSound || '') === 'none') next.alarmSound = 'none';
-    else if (String(next.alarmSound || '') === CUSTOM_ALARM_NAME) next.alarmSound = CUSTOM_ALARM_NAME;
-    else next.alarmSound = LOUD_ALARM_NAME;
-    if (next.countdownEnabled && next.countdownLast10) next.countdownLast10 = false;
-    return next;
-  }
-
-  function _timerNormalizeItem(item, fallbackName) {
-    const seconds = Math.max(1, Number(item?.totalSeconds) || 300);
-    return {
-      id: item?.id || _timerId('timer'),
-      name: String(item?.name || fallbackName || 'タイマー'),
-      totalSeconds: seconds,
-      countUp: !!item?.countUp,
-      displayMode: ['digital', 'analog', 'circle', 'bar'].includes(item?.displayMode) ? item.displayMode : 'digital',
-      alarmSound: item?.alarmSound === 'none' ? 'none' : item?.alarmSound === CUSTOM_ALARM_NAME ? CUSTOM_ALARM_NAME : item?.alarmSound ? LOUD_ALARM_NAME : undefined,
-      countdownEnabled: item?.countdownEnabled === undefined ? undefined : !!item.countdownEnabled,
-      countdownVoice: item?.countdownVoice === undefined ? undefined : !!item.countdownVoice,
-      countdownEvery10: item?.countdownEvery10 === undefined ? undefined : !!item.countdownEvery10,
-      countdownEvery5: item?.countdownEvery5 === undefined ? undefined : !!item.countdownEvery5,
-      countdownLast10: item?.countdownLast10 === undefined ? undefined : !!item.countdownLast10,
-    };
-  }
-
-  function _timerReadItems(key) {
-    const raw = _timerReadJson(key, []);
-    return Array.isArray(raw) ? raw.map((item, idx) => _timerNormalizeItem(item, `タイマー ${idx + 1}`)) : [];
-  }
-
-  function _timerStartOfDay(date) {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-
-  function _timerEndOfDay(date) {
-    const d = _timerStartOfDay(date);
-    d.setDate(d.getDate() + 1);
-    return d;
-  }
-
-  const baseCreate = TimerComponent.prototype.create;
-  TimerComponent.prototype.create = function() {
-    const el = baseCreate.call(this);
-    this._timerAdvancedInit();
-    this._timerAdvancedMount();
-    this._timerAdvancedSyncControls();
-    this._timerAdvancedReconcileCalendarPolling();
-    return el;
-  };
-
-  const baseDestroy = TimerComponent.prototype.destroy;
-  TimerComponent.prototype.destroy = function() {
-    this._timerAdvancedClearPendingAutoStart?.();
-    this._timerAdvancedClearCountdownTimers?.();
-    this._timerAdvancedStopAlarmAudio?.();
-    this._timerAdvancedCancelSpeech?.();
-    this._timerAdvancedStopCalendarPolling?.();
-    this._timerAdvancedCloseSettingsDialog?.();
-    baseDestroy.call(this);
-  };
-
-  const baseActivate = TimerComponent.prototype.activate;
-  TimerComponent.prototype.activate = function() {
-    baseActivate.call(this);
-    if (typeof historySetScope === 'function') historySetScope(TIMER_HISTORY_SCOPE);
-  };
-
-  const baseGetState = TimerComponent.prototype.getState;
-  TimerComponent.prototype.getState = function() {
-    return {
-      ...baseGetState.call(this),
-      advancedSettings: this._timerAdvancedSettings || _timerNormalizeSettings(_timerReadJson(SETTINGS_KEY, DEFAULT_SETTINGS)),
-      activeTimerLabel: this._timerAdvancedActiveLabel || '',
-    };
-  };
-
-  const baseRestoreState = TimerComponent.prototype.restoreState;
-  TimerComponent.prototype.restoreState = function(savedState) {
-    baseRestoreState.call(this, savedState);
-    if (savedState?.advancedSettings) {
-      this._timerAdvancedSettings = _timerNormalizeSettings({ ...this._timerAdvancedSettings, ...savedState.advancedSettings });
-      this._timerAdvancedSaveSettings({ skipHistory: true });
-    }
-    this._timerAdvancedActiveLabel = savedState?.activeTimerLabel || this._timerAdvancedActiveLabel || '';
-    this._timerAdvancedSyncControls?.();
-    this._timerAdvancedReconcileCalendarPolling?.();
-  };
-
-  const baseStartTicking = TimerComponent.prototype._startTicking;
-  TimerComponent.prototype._startTicking = function() {
-    const fresh = !this.timerStarted || this.elapsed <= 0;
-    if (fresh) this._timerAdvancedResetCountdownState();
-    baseStartTicking.call(this);
-    this._timerAdvancedScheduleCountdowns?.();
-  };
-
-  const baseStartTimer = TimerComponent.prototype._startTimer;
-  TimerComponent.prototype._startTimer = function() {
-    this._timerAdvancedClearPendingAutoStart?.();
-    this._timerAdvancedCancelSpeech?.();
-    this._timerAdvancedTimerSource = this._timerAdvancedNextStartSource || 'manual';
-    this._timerAdvancedNextStartSource = '';
-    return baseStartTimer.call(this);
-  };
-
-  const basePauseTimer = TimerComponent.prototype._pauseTimer;
-  TimerComponent.prototype._pauseTimer = function() {
-    this._timerAdvancedClearPendingAutoStart?.();
-    this._timerAdvancedClearCountdownTimers?.();
-    this._timerAdvancedStopAlarmAudio?.();
-    this._timerAdvancedCancelSpeech?.();
-    return basePauseTimer.call(this);
-  };
-
-  const baseUpdateElapsed = TimerComponent.prototype._updateElapsedFromClock;
-  TimerComponent.prototype._updateElapsedFromClock = function() {
-    baseUpdateElapsed.call(this);
-    this._timerAdvancedCheckCountdown?.();
-  };
-
-  const baseResetTimer = TimerComponent.prototype._resetTimer;
-  TimerComponent.prototype._resetTimer = function() {
-    this._timerAdvancedClearPendingAutoStart?.();
-    this._timerAdvancedStopAlarmAudio?.();
-    baseResetTimer.call(this);
-    this._timerAdvancedActiveLabel = '';
-    this._timerAdvancedTimerSource = '';
-    this._timerAdvancedResetCountdownState();
-    this._timerAdvancedSyncControls?.();
-  };
-
-  TimerComponent.prototype._timerAdvancedInit = function() {
-    this._timerAdvancedSettings = _timerNormalizeSettings(_timerReadJson(SETTINGS_KEY, DEFAULT_SETTINGS));
-    this._timerPresets = _timerReadItems(PRESETS_KEY);
-    this._timerCalendars = [];
-    this._timerCalendarStartedKeys = this._timerCalendarStartedKeys || new Set();
-    this._timerAdvancedCountdownKeys = new Set();
-    this._timerAdvancedCountdownTimers = [];
-    this._timerAdvancedPreviousRemaining = null;
-    this._timerAdvancedActiveLabel = this._timerAdvancedActiveLabel || '';
-    this._timerAdvancedAutoStartTimer = null;
-    this._timerAdvancedAlarmAudio = null;
-    this._timerAdvancedTimerSource = this._timerAdvancedTimerSource || '';
-    this._timerAdvancedNextStartSource = '';
-  };
-
-  TimerComponent.prototype._timerAdvancedReloadFromStorage = function(changedKeys) {
-    const changed = changedKeys instanceof Set ? changedKeys : new Set(changedKeys || []);
-    if (changed.has(SETTINGS_KEY)) {
-      this._timerAdvancedSettings = _timerNormalizeSettings(_timerReadJson(SETTINGS_KEY, DEFAULT_SETTINGS));
-    }
-    if (changed.has(PRESETS_KEY)) {
-      this._timerPresets = _timerReadItems(PRESETS_KEY);
-    }
-    this._timerAdvancedSyncControls();
-    this._timerAdvancedRenderPresets();
-    this._timerAdvancedReconcileCalendarPolling();
-  };
-
-  TimerComponent.prototype._timerAdvancedMount = function() {
-    this._timerAdvancedModal = null;
-  };
-
-  TimerComponent.prototype._timerAdvancedPanelRoot = function() {
-    return this._timerAdvancedModal?.querySelector?.('[data-timer-advanced]')
-      || this.el?.querySelector?.('[data-timer-advanced]')
-      || null;
-  };
-
-  TimerComponent.prototype._timerAdvancedShowSettingsDialog = function() {
-    if (this._timerAdvancedModal?.isConnected) {
-      this._timerAdvancedModal.querySelector('.gb-timer-settings-modal')?.focus?.();
-      return;
-    }
-    if (typeof window.GBUI?.createModal !== 'function') {
-      throw new Error('タイマー設定を初期化できませんでした。');
-    }
-    const body = document.createElement('div');
-    body.innerHTML = this._timerAdvancedHtml();
-    const modalApi = window.GBUI.createModal({
-      id: 'timer-settings',
-      title: 'タイマー設定',
-      body: [...body.childNodes],
-      variant: 'standard',
-      extraClass: 'gb-timer-settings-modal',
-      geometryKey: 'timer-settings',
-      minWidth: '0',
-      initialFocus: '[data-timer-setting], [data-timer-action]',
-      returnFocus: document.activeElement,
-      closeLabel: 'タイマー設定を閉じる',
-      closeOnEsc: true,
-      closeOnOverlay: true,
-      onClose: () => {
-        this._timerAdvancedModal = null;
-      },
-    });
-    const overlay = modalApi.overlay;
-    overlay.classList.add('modal-overlay', 'gb-timer-settings-overlay');
-    overlay.dataset.timerSettingsModal = '1';
-    overlay.dataset.e2eId = 'timer-settings-overlay';
-    overlay._timerSettingsModalApi = modalApi;
-    modalApi.modal.dataset.gbTooltipDisabled = 'true';
-    modalApi.modal.dataset.e2eId = 'timer-settings-dialog';
-    modalApi.header.classList.add('gb-timer-settings-header');
-    modalApi.body.classList.add('gb-timer-settings-body');
-    const closeButton = modalApi.header.querySelector('.gb-modal-close');
-    if (closeButton) {
-      closeButton.classList.add('tb-icon-btn');
-      closeButton.dataset.timerSettingsClose = '';
-      closeButton.dataset.e2eId = 'timer-settings-close';
-      closeButton.title = 'タイマー設定を閉じます';
-    }
-    this._timerAdvancedModal = overlay;
-    const panel = this._timerAdvancedPanelRoot();
-    this._timerAdvancedBindEvents(panel);
-    this._timerAdvancedRenderCalendars();
-    this._timerAdvancedRenderPresets();
-    this._timerAdvancedSyncControls();
-    this._timerAdvancedLoadCalendars();
-    if (typeof replaceIcons === 'function') replaceIcons();
-    modalApi.open();
-  };
-
-  TimerComponent.prototype._timerAdvancedCloseSettingsDialog = function() {
-    const overlay = this._timerAdvancedModal;
-    if (!overlay) return false;
-    const closed = overlay._timerSettingsModalApi?.close?.('programmatic');
-    if (!overlay._timerSettingsModalApi) {
-      overlay.remove?.();
-      this._timerAdvancedModal = null;
-      return true;
-    }
-    return closed;
-  };
-
-  TimerComponent.prototype._timerAdvancedHtml = function() {
-    return `
-      <div class="gb-timer-advanced" data-timer-advanced>
-        <section class="gb-timer-panel-section">
-          <div class="gb-timer-panel-title">${_timerIcon('calendarClock', 14)} カレンダー連動</div>
-          <div class="gb-timer-row">
-            <label class="gb-timer-check" title="選択したカレンダーの開始時刻に合わせてタイマーを開始します"><input data-timer-setting="calendarEnabled" type="checkbox"> 有効</label>
-            <select class="gb-select gb-timer-calendar-select" data-timer-calendar-select data-e2e-id="timer-calendar-select" aria-label="連動カレンダー" title="タイマーと連動するカレンダーを選択します"></select>
-            <button class="tb-icon-btn" type="button" data-timer-action="refreshCalendars" aria-label="カレンダー一覧を更新" title="カレンダー一覧を再取得します">${_timerIcon('refreshCw', 14)}</button>
-            <span class="gb-timer-muted" data-timer-calendar-status></span>
-          </div>
-        </section>
-        <section class="gb-timer-panel-section">
-          <div class="gb-timer-panel-title">${_timerIcon('bell', 14)} アラームとカウントダウン</div>
-          <div class="gb-timer-row">
-            <select class="gb-select" data-timer-setting="alarmSound" aria-label="アラーム音" title="タイマー完了時に鳴らす音を選択します">
-              <option value="alarm">警報音</option>
-              <option value="custom">設定した音源</option>
-              <option value="none">なし</option>
-            </select>
-            <label class="gb-timer-range" title="アラーム音の音量を調整します">音量 <input type="range" min="0" max="100" step="5" data-timer-setting="alarmVolume"><span data-timer-volume-label></span></label>
-            <button class="tb-icon-btn" type="button" data-timer-action="testAlarm" aria-label="アラーム音を試聴" title="現在のアラーム音を試聴します">${_timerIcon('volume2', 14)}</button>
-          </div>
-          <div class="gb-timer-row gb-timer-alarm-source-row">
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="chooseAlarmSource" aria-label="アラーム音源を選択" title="アラームに使う音源ファイルを選択します">${_timerIcon('music', 13)} 音源を選択</button>
-            <button class="tb-icon-btn" type="button" data-timer-action="clearAlarmSource" aria-label="設定した音源を削除" title="設定した音源を削除します">${_timerIcon('x', 13)}</button>
-            <span class="gb-timer-source-name" data-timer-alarm-source-name></span>
-            <input class="gb-timer-alarm-file" data-timer-alarm-file type="file" accept="audio/*" aria-label="アラーム音源ファイル">
-          </div>
-          <div class="gb-timer-row gb-timer-row--wrap">
-            <label class="gb-timer-check" title="通知を合成音声で読み上げます"><input data-timer-setting="countdownVoice" type="checkbox"> 音声で通知</label>
-            <label class="gb-timer-check" title="残り時間の節目を通知します"><input data-timer-setting="countdownEnabled" type="checkbox"> カウントダウン</label>
-            <label class="gb-timer-check" title="残り10分ごとに通知します"><input data-timer-setting="countdownEvery10" type="checkbox"> 10分刻み</label>
-            <label class="gb-timer-check" title="残り5分ごとに通知します"><input data-timer-setting="countdownEvery5" type="checkbox"> 5分刻み</label>
-            <label class="gb-timer-check" title="残り10秒から1秒まで数字を通知します"><input data-timer-setting="countdownLast10" type="checkbox"> ラスト10秒</label>
-          </div>
-        </section>
-        <section class="gb-timer-panel-section">
-          <div class="gb-timer-panel-title">${_timerIcon('listChecks', 14)} 保存済みタイマー</div>
-          <div class="gb-timer-row">
-            <input class="gb-input gb-timer-name-input" data-timer-preset-name data-e2e-id="timer-preset-name" type="text" placeholder="設定名" title="保存済みタイマーに登録する名前を入力します">
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="savePreset" title="現在の時間、表示、通知設定を保存します">${_timerIcon('save', 13)} 保存</button>
-            <label class="gb-timer-check" title="カウントダウン完了後に同じタイマーを再開始します"><input data-timer-setting="repeatSingle" type="checkbox"> 現在のタイマーを繰り返す</label>
-          </div>
-          <div class="gb-timer-preset-list" data-timer-preset-list></div>
-        </section>
-      </div>`;
-  };
-
-  TimerComponent.prototype._timerAdvancedBindEvents = function(panel) {
-    panel = panel || this._timerAdvancedPanelRoot();
-    if (!panel || panel._timerAdvancedBound) return;
-    panel._timerAdvancedBound = true;
-    panel.addEventListener('click', e => this._timerAdvancedHandleClick(e));
-    panel.addEventListener('change', e => this._timerAdvancedHandleSettingChange(e));
-    panel.addEventListener('change', e => this._timerAdvancedHandleAlarmFile(e));
-    panel.addEventListener('input', e => this._timerAdvancedHandleSettingInput(e));
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleClick = async function(e) {
-    const btn = e.target.closest('[data-timer-action]');
-    if (!btn) return;
-    const action = btn.dataset.timerAction;
-    const id = btn.dataset.timerPresetId;
-    if (action === 'refreshCalendars') this._timerAdvancedLoadCalendars();
-    else if (action === 'testAlarm') this._timerAdvancedPlayAlarm();
-    else if (action === 'chooseAlarmSource') this._timerAdvancedChooseAlarmSource();
-    else if (action === 'clearAlarmSource') this._timerAdvancedClearAlarmSource();
-    else if (action === 'savePreset') this._timerAdvancedSavePreset();
-    else if (action === 'loadPreset') this._timerAdvancedApplyItem(this._timerPresets.find(item => item.id === id), false, { settingsHistoryLabel: 'タイマー: プリセット読み込み' });
-    else if (action === 'startPreset') this._timerAdvancedApplyItem(this._timerPresets.find(item => item.id === id), true, { settingsHistoryLabel: 'タイマー: プリセット開始' });
-    else if (action === 'deletePreset') await this._timerAdvancedDeletePreset(id);
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleSettingChange = function(e) {
-    const input = e.target.closest('[data-timer-setting], [data-timer-calendar-select]');
-    if (!input) return;
-    this._timerAdvancedUpdateSettingFromInput(input);
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleSettingInput = function(e) {
-    const input = e.target.closest('input[type="range"][data-timer-setting]');
-    if (!input) return;
-    this._timerAdvancedUpdateSettingFromInput(input, true);
-  };
-
-  TimerComponent.prototype._timerAdvancedUpdateSettingFromInput = function(input, transient) {
-    const key = input.dataset.timerSetting || (input.matches('[data-timer-calendar-select]') ? 'calendarId' : '');
-    if (!key) return;
-    if (transient) {
-      if (!this._timerAdvancedSettingsHistoryBefore) {
-        this._timerAdvancedSettingsHistoryBefore = _timerCaptureStorageHistory([SETTINGS_KEY]);
-      }
-    } else if (!this._timerAdvancedSettingsHistoryBefore) {
-      this._timerAdvancedSettingsHistoryBefore = _timerCaptureStorageHistory([SETTINGS_KEY]);
-    }
-    let value = input.type === 'checkbox' ? !!input.checked : input.value;
-    if (key === 'alarmVolume') value = _timerClampInt(value, 0, 100, DEFAULT_SETTINGS.alarmVolume);
-    this._timerAdvancedSettings[key] = value;
-    if (key === 'countdownEnabled' && value) this._timerAdvancedSettings.countdownLast10 = false;
-    if (key === 'countdownLast10' && value) this._timerAdvancedSettings.countdownEnabled = false;
-    this._timerAdvancedSettings = _timerNormalizeSettings(this._timerAdvancedSettings);
-    this._timerAdvancedSyncControls();
-    this._timerAdvancedSaveSettings({ skipHistory: true });
-    if (!transient) {
-      const before = this._timerAdvancedSettingsHistoryBefore;
-      this._timerAdvancedSettingsHistoryBefore = null;
-      _timerPushStorageHistory('タイマー: 拡張設定変更', before, [SETTINGS_KEY], key);
-    }
-    if (key === 'calendarEnabled' || key === 'calendarId') this._timerAdvancedReconcileCalendarPolling();
-    if (key === 'alarmSound' && value === CUSTOM_ALARM_NAME && !this._timerAdvancedSettings.alarmCustomDataUrl
-      && typeof this._timerAdvancedChooseAlarmSource === 'function') {
-      this._timerAdvancedChooseAlarmSource();
-    }
-    if (key.startsWith('countdown')) {
-      this._timerAdvancedResetCountdownState();
-      if (this.timerRunning) this._timerAdvancedScheduleCountdowns();
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedSetSettingDisabled = function(panel, key, disabled) {
-    const input = panel?.querySelector?.(`[data-timer-setting="${key}"]`);
-    if (!input) return;
-    input.disabled = !!disabled;
-    const label = input.closest?.('.gb-timer-check, .gb-timer-range');
-    label?.classList?.toggle?.('is-disabled', !!disabled);
-  };
-
-  TimerComponent.prototype._timerAdvancedSyncControls = function() {
-    const panel = this._timerAdvancedPanelRoot();
-    if (!panel) return;
-    const settings = this._timerAdvancedSettings || _timerNormalizeSettings(_timerReadJson(SETTINGS_KEY, DEFAULT_SETTINGS));
-    panel.querySelectorAll('[data-timer-setting]').forEach(input => {
-      const key = input.dataset.timerSetting;
-      if (!(key in settings)) return;
-      if (input.type === 'checkbox') input.checked = !!settings[key];
-      else input.value = String(settings[key]);
-    });
-    const calSel = panel.querySelector('[data-timer-calendar-select]');
-    if (calSel) calSel.value = settings.calendarId || '';
-    const volumeLabel = panel.querySelector('[data-timer-volume-label]');
-    if (volumeLabel) volumeLabel.textContent = `${settings.alarmVolume}%`;
-    const sourceLabel = panel.querySelector('[data-timer-alarm-source-name]');
-    if (sourceLabel) sourceLabel.textContent = settings.alarmCustomName ? `設定音源: ${settings.alarmCustomName}` : '設定音源なし';
-    const clearSourceBtn = panel.querySelector('[data-timer-action="clearAlarmSource"]');
-    if (clearSourceBtn) clearSourceBtn.disabled = !settings.alarmCustomDataUrl;
-    const nameInput = panel.querySelector('[data-timer-preset-name]');
-    if (nameInput && !nameInput.value) nameInput.value = this._timerAdvancedActiveLabel || '';
-    const voiceEnabled = !!settings.countdownVoice;
-    const intervalEnabled = voiceEnabled && !!settings.countdownEnabled;
-    const last10Enabled = voiceEnabled && !!settings.countdownLast10;
-    this._timerAdvancedSetSettingDisabled(panel, 'countdownEnabled', !voiceEnabled || last10Enabled);
-    this._timerAdvancedSetSettingDisabled(panel, 'countdownEvery10', !intervalEnabled);
-    this._timerAdvancedSetSettingDisabled(panel, 'countdownEvery5', !intervalEnabled);
-    this._timerAdvancedSetSettingDisabled(panel, 'countdownLast10', !voiceEnabled || intervalEnabled);
-  };
-
-  TimerComponent.prototype._timerAdvancedSaveSettings = function(options = {}) {
-    const before = options.skipHistory ? null : _timerCaptureStorageHistory([SETTINGS_KEY]);
-    if (!_timerWriteJson(SETTINGS_KEY, this._timerAdvancedSettings || DEFAULT_SETTINGS)) {
-      if (typeof showStatus === 'function') showStatus('タイマー設定を保存できませんでした');
-      return false;
-    }
-    if (!options.skipHistory) {
-      _timerPushStorageHistory(options.label || 'タイマー: 拡張設定変更', before, [SETTINGS_KEY], options.detail || '');
-    }
-    return true;
-  };
-
-  TimerComponent.prototype._timerAdvancedCurrentItem = function(name) {
-    this._readControls();
-    return _timerNormalizeItem({
-      id: _timerId('timer'),
-      name: name || this._timerAdvancedActiveLabel || `タイマー ${this._formatTime(this.totalSeconds)}`,
-      totalSeconds: this.totalSeconds,
-      countUp: this.countUp,
-      displayMode: this.displayMode,
-      alarmSound: this._timerAdvancedSettings.alarmSound,
-      countdownEnabled: this._timerAdvancedSettings.countdownEnabled,
-      countdownVoice: this._timerAdvancedSettings.countdownVoice,
-      countdownEvery10: this._timerAdvancedSettings.countdownEvery10,
-      countdownEvery5: this._timerAdvancedSettings.countdownEvery5,
-      countdownLast10: this._timerAdvancedSettings.countdownLast10,
-    });
-  };
-
-  TimerComponent.prototype._timerAdvancedSavePreset = function() {
-    const input = this._timerAdvancedPanelRoot()?.querySelector?.('[data-timer-preset-name]');
-    const name = String(input?.value || '').trim() || `タイマー ${this._formatTime(this.totalSeconds)}`;
-    const item = this._timerAdvancedCurrentItem(name);
-    const before = _timerCaptureStorageHistory([PRESETS_KEY]);
-    this._timerPresets.push(item);
-    _timerWriteJson(PRESETS_KEY, this._timerPresets);
-    _timerPushStorageHistory('タイマー: プリセット保存', before, [PRESETS_KEY], item.name);
-    if (input) input.value = '';
-    this._timerAdvancedRenderPresets();
-    if (typeof showStatus === 'function') showStatus('タイマー設定を保存しました');
-  };
-
-  TimerComponent.prototype._timerAdvancedRenderPresets = function() {
-    const list = this._timerAdvancedPanelRoot()?.querySelector?.('[data-timer-preset-list]');
-    if (!list) return;
-    if (!this._timerPresets.length) {
-      list.innerHTML = '<div class="gb-timer-empty">保存済みタイマーはありません</div>';
-      return;
-    }
-    list.innerHTML = this._timerPresets.map(item => {
-      const itemId = _timerEsc(item.id);
-      const itemName = _timerEsc(item.name);
-      return `
-      <div class="gb-timer-preset-item" data-timer-preset-id="${itemId}">
-        <div class="gb-timer-item-main">
-          <span class="gb-timer-item-name">${itemName}</span>
-          <span class="gb-timer-muted">${this._formatTime(item.totalSeconds)}</span>
-        </div>
-        <button class="tb-icon-btn" type="button" data-timer-action="loadPreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を読み込み" title="${itemName}を読み込み">${_timerIcon('download', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="startPreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を開始" title="${itemName}を開始">${_timerIcon('play', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="deletePreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を削除" title="${itemName}を削除">${_timerIcon('trash2', 14)}</button>
-      </div>`;
-    }).join('');
-    if (typeof replaceIcons === 'function') replaceIcons();
-  };
-
-  TimerComponent.prototype._timerAdvancedApplyItem = function(item, start, options = {}) {
-    if (!item) return;
-    const normalized = _timerNormalizeItem(item);
-    this._timerAdvancedClearPendingAutoStart();
-    this._timerAdvancedCancelSpeech();
-    if (this.timerRunning || this._timerInterval) this._pauseTimer();
-    this.totalSeconds = normalized.totalSeconds;
-    this.countUp = !!normalized.countUp;
-    this.displayMode = normalized.displayMode;
-    this.elapsed = 0;
-    this.elapsedAtStart = 0;
-    this.timerStarted = false;
-    this.timerStartMs = 0;
-    this._timerAdvancedActiveLabel = normalized.name;
-    this._timerAdvancedApplyItemSettings(normalized, options);
-    this._writeControlsFromState();
-    this._updateModeButtons();
-    this._timerAdvancedSyncControls();
-    this._drawTimer();
-    if (start) this._timerAdvancedStartTimerAs(options.source || 'preset');
-  };
-
-  TimerComponent.prototype._timerAdvancedApplyItemSettings = function(item, options = {}) {
-    const before = options.skipSettingsHistory ? null : _timerCaptureStorageHistory([SETTINGS_KEY]);
-    ['alarmSound', 'countdownEnabled', 'countdownVoice', 'countdownEvery10', 'countdownEvery5', 'countdownLast10'].forEach(key => {
-      if (item[key] !== undefined) this._timerAdvancedSettings[key] = item[key];
-    });
-    this._timerAdvancedSettings = _timerNormalizeSettings(this._timerAdvancedSettings);
-    this._timerAdvancedSaveSettings({ skipHistory: true });
-    if (!options.skipSettingsHistory) {
-      _timerPushStorageHistory(
-        options.settingsHistoryLabel || 'タイマー: プリセット適用',
-        before,
-        [SETTINGS_KEY],
-        item.name || ''
-      );
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedDeletePreset = async function(id) {
-    const item = this._timerPresets.find(preset => preset.id === id);
-    if (!item) return;
-    if (!await _timerConfirm(`タイマー設定「${item.name}」を削除しますか？`, { danger: true, okLabel: '削除' })) return;
-    const before = _timerCaptureStorageHistory([PRESETS_KEY]);
-    this._timerPresets = this._timerPresets.filter(preset => preset.id !== id);
-    _timerWriteJson(PRESETS_KEY, this._timerPresets);
-    _timerPushStorageHistory('タイマー: プリセット削除', before, [PRESETS_KEY], item.name);
-    this._timerAdvancedRenderPresets();
-  };
-
-  TimerComponent.prototype._timerAdvancedClearPendingAutoStart = function() {
-    if (this._timerAdvancedAutoStartTimer) {
-      clearTimeout(this._timerAdvancedAutoStartTimer);
-      this._timerAdvancedAutoStartTimer = null;
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedScheduleAutoStart = function(callback) {
-    this._timerAdvancedClearPendingAutoStart();
-    this._timerAdvancedAutoStartTimer = setTimeout(() => {
-      this._timerAdvancedAutoStartTimer = null;
-      callback();
-    }, 700);
-  };
-
-  TimerComponent.prototype._timerAdvancedCancelSpeech = function() {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try { window.speechSynthesis.cancel(); } catch {}
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedStartTimerAs = function(source) {
-    this._timerAdvancedNextStartSource = source || 'manual';
-    this._startTimer();
-  };
-
-  TimerComponent.prototype._timerAdvancedResetCountdownState = function() {
-    this._timerAdvancedClearCountdownTimers?.();
-    this._timerAdvancedCountdownKeys = new Set();
-    this._timerAdvancedPreviousRemaining = null;
-  };
-
-  TimerComponent.prototype._timerAdvancedClearCountdownTimers = function() {
-    (this._timerAdvancedCountdownTimers || []).forEach(timerId => clearTimeout(timerId));
-    this._timerAdvancedCountdownTimers = [];
-  };
-
-  TimerComponent.prototype._timerAdvancedCountdownThresholds = function() {
-    const settings = this._timerAdvancedSettings || DEFAULT_SETTINGS;
-    if (!settings.countdownVoice || this.countUp || this.totalSeconds <= 0) return [];
-    const thresholds = new Set();
-    if (settings.countdownEnabled && settings.countdownEvery10) {
-      for (let s = 600; s < this.totalSeconds; s += 600) thresholds.add(s);
-    }
-    if (settings.countdownEnabled && settings.countdownEvery5) {
-      for (let s = 300; s < this.totalSeconds; s += 300) thresholds.add(s);
-    }
-    if (settings.countdownLast10) {
-      for (let s = 10; s >= 1; s -= 1) {
-        if (s <= this.totalSeconds) thresholds.add(s);
-      }
-    }
-    return [...thresholds].sort((a, b) => b - a);
-  };
-
-  TimerComponent.prototype._timerAdvancedPreciseRemainingSeconds = function() {
-    if (!this.timerRunning || !this.timerStartMs) return this._remainingSeconds();
-    const preciseElapsed = this.elapsedAtStart + Math.max(0, (Date.now() - this.timerStartMs) / 1000);
-    return this.countUp ? preciseElapsed : Math.max(0, this.totalSeconds - preciseElapsed);
-  };
-
-  TimerComponent.prototype._timerAdvancedScheduleCountdowns = function() {
-    this._timerAdvancedClearCountdownTimers();
-    if (!this.timerRunning || this.countUp) return;
-    const currentRemaining = this._timerAdvancedPreciseRemainingSeconds();
-    this._timerAdvancedCountdownThresholds().forEach(threshold => {
-      const key = String(threshold);
-      if (this._timerAdvancedCountdownKeys.has(key)) return;
-      if (threshold > currentRemaining) return;
-      const delayMs = Math.max(0, Math.round((currentRemaining - threshold) * 1000));
-      const timerId = setTimeout(() => {
-        this._timerAdvancedCountdownTimers = (this._timerAdvancedCountdownTimers || []).filter(id => id !== timerId);
-        if (!this.timerRunning || this.countUp || this._timerAdvancedCountdownKeys.has(key)) return;
-        this._timerAdvancedCountdownKeys.add(key);
-        this._timerAdvancedAnnounceCountdown(threshold);
-      }, delayMs);
-      this._timerAdvancedCountdownTimers.push(timerId);
-    });
-  };
-
-  TimerComponent.prototype._timerAdvancedCheckCountdown = function() {
-    if (!this.timerRunning || this.countUp) return;
-    const remaining = this._remainingSeconds();
-    const previous = this._timerAdvancedPreviousRemaining;
-    this._timerAdvancedPreviousRemaining = remaining;
-    if (previous === null || previous === undefined) return;
-    this._timerAdvancedCountdownThresholds().forEach(threshold => {
-      const key = String(threshold);
-      if (this._timerAdvancedCountdownKeys.has(key)) return;
-      if (previous > threshold && remaining <= threshold) {
-        this._timerAdvancedCountdownKeys.add(key);
-        this._timerAdvancedAnnounceCountdown(threshold);
-      }
-    });
-  };
-
-  TimerComponent.prototype._timerAdvancedAnnounceCountdown = function(seconds) {
-    const message = `残り${_timerFormatHuman(seconds)}`;
-    const speechMessage = seconds <= 10 ? String(seconds) : message;
-    if (this._timerAdvancedSettings.countdownVoice && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(speechMessage);
-        utterance.lang = 'ja-JP';
-        utterance.rate = seconds <= 10 ? 1.25 : 0.98;
-        window.speechSynthesis.speak(utterance);
-      } catch {}
-    }
-    if (typeof showStatus === 'function') showStatus(message);
-  };
-
-  TimerComponent.prototype._timerAdvancedPlayAlarm = function(sound, volume) {
-    const name = sound || this._timerAdvancedSettings?.alarmSound || DEFAULT_SETTINGS.alarmSound;
-    if (name === 'none') return;
-    const vol = Math.max(0, Math.min(1, (volume ?? this._timerAdvancedSettings?.alarmVolume ?? 70) / 100));
-    if (name === CUSTOM_ALARM_NAME && typeof this._timerAdvancedPlayCustomAlarm === 'function') {
-      this._timerAdvancedPlayCustomAlarm(volume);
-      return;
-    }
-    try {
-      this._timerAdvancedStopAlarmAudio?.();
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const master = ctx.createGain();
-      master.gain.value = vol * 0.42;
-      master.connect(ctx.destination);
-      const tones = [];
-      for (let i = 0; i < 12; i += 1) {
-        const start = i * 0.22;
-        tones.push([i % 2 ? 1320 : 1760, start, 0.17, 'square']);
-        tones.push([i % 2 ? 660 : 880, start, 0.17, 'sawtooth']);
-      }
-      tones.forEach(([freq, start, length, type]) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = type || 'square';
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
-        gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + start + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + length);
-        osc.connect(gain);
-        gain.connect(master);
-        osc.start(ctx.currentTime + start);
-        osc.stop(ctx.currentTime + start + length + 0.04);
-      });
-      setTimeout(() => ctx.close().catch(() => {}), 3200);
-    } catch {}
-  };
-
-  TimerComponent.prototype._notifyDone = function() {
-    this._timerAdvancedPlayAlarm();
-    const label = this._timerAdvancedActiveLabel ? `${this._timerAdvancedActiveLabel} ` : '';
-    if ('Notification' in window && Notification.permission === 'granted') {
-      try { new Notification('タイマー完了', { body: `${label}${this._formatTime(this.totalSeconds)} 経過` }); } catch {}
-    }
-    if (typeof showStatus === 'function') showStatus(`${label}タイマーが完了しました`);
-    this._timerAdvancedHandleTimerDone();
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleTimerDone = function() {
-    const source = this._timerAdvancedTimerSource || 'manual';
-    if (source !== 'calendar' && this._timerAdvancedSettings?.repeatSingle && !this.countUp && this.totalSeconds > 0) {
-      this._timerAdvancedScheduleAutoStart(() => {
-        if (!this.timerRunning) this._startTimer();
-      });
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedLoadCalendars = async function() {
-    const status = this._timerAdvancedPanelRoot()?.querySelector?.('[data-timer-calendar-status]');
-    if (status) status.textContent = '読込中...';
-    try {
-      const calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(_timerUser()));
-      this._timerCalendars = Array.isArray(calendars) ? calendars : [];
-      this._timerAdvancedRenderCalendars();
-      if (status) status.textContent = this._timerCalendars.length ? '' : 'カレンダーなし';
-    } catch {
-      this._timerCalendars = [];
-      this._timerAdvancedRenderCalendars();
-      if (status) status.textContent = '取得失敗';
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedRenderCalendars = function() {
-    const select = this._timerAdvancedPanelRoot()?.querySelector?.('[data-timer-calendar-select]');
-    if (!select) return;
-    const current = this._timerAdvancedSettings?.calendarId || '';
-    const options = ['<option value="">カレンダーを選択</option>', '<option value="__all__">すべてのカレンダー</option>'];
-    (this._timerCalendars || []).forEach(cal => {
-      options.push(`<option value="${_timerEsc(cal.id)}">${_timerEsc(cal.name || '無題カレンダー')}</option>`);
-    });
-    select.innerHTML = options.join('');
-    select.value = [...select.options].some(opt => opt.value === current) ? current : '';
-  };
-
-  TimerComponent.prototype._timerAdvancedReconcileCalendarPolling = function() {
-    if (this._timerAdvancedSettings?.calendarEnabled && this._timerAdvancedSettings.calendarId) {
-      this._timerAdvancedStartCalendarPolling();
-    } else {
-      this._timerAdvancedStopCalendarPolling();
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedStartCalendarPolling = function() {
-    if (this._timerCalendarPollTimer) return;
-    this._timerAdvancedCheckCalendarEvents();
-    this._timerCalendarPollTimer = setInterval(() => this._timerAdvancedCheckCalendarEvents(), CALENDAR_POLL_MS);
-  };
-
-  TimerComponent.prototype._timerAdvancedStopCalendarPolling = function() {
-    if (this._timerCalendarPollTimer) clearInterval(this._timerCalendarPollTimer);
-    this._timerCalendarPollTimer = null;
-  };
-
-  TimerComponent.prototype._timerAdvancedCheckCalendarEvents = async function() {
-    const settings = this._timerAdvancedSettings || DEFAULT_SETTINGS;
-    if (!settings.calendarEnabled || !settings.calendarId || typeof apiFetch !== 'function') return;
-    const now = new Date();
-    const start = _timerLocalDateTime(_timerStartOfDay(now));
-    const end = _timerLocalDateTime(_timerEndOfDay(now));
-    try {
-      const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(_timerUser()));
-      const event = (Array.isArray(events) ? events : []).find(ev => this._timerAdvancedShouldStartEvent(ev, now));
-      if (!event) return;
-      this._timerAdvancedStartFromCalendarEvent(event, now);
-    } catch {}
-  };
-
-  TimerComponent.prototype._timerAdvancedShouldStartEvent = function(ev, now) {
-    if (!ev || !ev.start || ev.all_day) return false;
-    const selected = this._timerAdvancedSettings.calendarId;
-    if (selected !== '__all__' && ev.calendar_id !== selected) return false;
-    const start = new Date(ev.start);
-    if (Number.isNaN(start.getTime())) return false;
-    const end = ev.end ? new Date(ev.end) : new Date(start.getTime() + 3600000);
-    if (Number.isNaN(end.getTime()) || end <= now) return false;
-    const delta = now.getTime() - start.getTime();
-    if (delta < 0 || delta > CALENDAR_START_WINDOW_MS) return false;
-    const key = `${ev.id || ev.title}:${ev.start}`;
-    if (this._timerCalendarStartedKeys.has(key)) return false;
-    this._timerCalendarStartedKeys.add(key);
-    return true;
-  };
-
-  TimerComponent.prototype._timerAdvancedStartFromCalendarEvent = function(ev, now) {
-    const start = new Date(ev.start);
-    const end = ev.end ? new Date(ev.end) : new Date(start.getTime() + 3600000);
-    const seconds = Math.max(1, Math.ceil((end.getTime() - now.getTime()) / 1000));
-    if (this.timerRunning || this._timerInterval) this._pauseTimer();
-    this._timerAdvancedActiveLabel = ev.title || 'カレンダーイベント';
-    this.totalSeconds = seconds;
-    this.elapsed = 0;
-    this.countUp = false;
-    this.timerStarted = false;
-    this.elapsedAtStart = 0;
-    this.timerStartMs = 0;
-    this._writeControlsFromState();
-    this._timerAdvancedSyncControls();
-    this._drawTimer();
-    this._timerAdvancedStartTimerAs('calendar');
-    if (typeof showStatus === 'function') {
-      showStatus(`カレンダー連動: ${this._timerAdvancedActiveLabel} のタイマーを開始しました`);
-    }
-  };
-})();
-
-;
-
-/* === gb-tool-timer-custom-alarm.js === */
-;
-/* ==============================
-   gb-tool-timer-custom-alarm.js: custom alarm source for timer
-   ============================== */
-
-(() => {
-  if (typeof TimerComponent === 'undefined') return;
-
-  const SETTINGS_KEY = 'gb:timer-advanced-settings';
-  const TIMER_HISTORY_SCOPE = 'timer:settings';
-  const LOUD_ALARM_NAME = 'alarm';
-  const CUSTOM_ALARM_NAME = 'custom';
-  const MAX_CUSTOM_ALARM_BYTES = 3 * 1024 * 1024;
-
-  function _timerCustomStorageKeys(keys) {
-    const list = Array.isArray(keys) ? keys : [keys];
-    return [...new Set(list.filter(Boolean))];
-  }
-
-  function _timerCustomCaptureHistory(keys) {
-    if (typeof captureLocalStorageSettings !== 'function') return null;
-    if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-      && isLocalStorageSettingsHistorySuppressed()) return null;
-    return captureLocalStorageSettings(_timerCustomStorageKeys(keys));
-  }
-
-  function _timerCustomRefreshPanelsAfterHistory(keys) {
-    const changed = new Set(_timerCustomStorageKeys(keys));
-    if (typeof forEachComponent !== 'function') return;
-    forEachComponent(component => {
-      if (!component || !(component instanceof TimerComponent)) return;
-      component._timerAdvancedReloadFromStorage?.(changed);
-    });
-  }
-
-  function _timerCustomPushHistory(label, beforeSnapshot, keys, detail) {
-    if (!beforeSnapshot || typeof historyPush !== 'function'
-      || typeof captureLocalStorageSettings !== 'function'
-      || typeof restoreLocalStorageSettings !== 'function'
-      || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
-    const keyList = _timerCustomStorageKeys(keys);
-    const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, captureLocalStorageSettings(keyList));
-    let beforeKey = '';
-    let afterKey = '';
-    try {
-      beforeKey = JSON.stringify(snapshots.before);
-      afterKey = JSON.stringify(snapshots.after);
-    } catch {}
-    if (beforeKey && beforeKey === afterKey) return false;
-    historyPush(
-      label || 'タイマー: 音源設定変更',
-      () => restoreLocalStorageSettings(snapshots.before, _timerCustomRefreshPanelsAfterHistory),
-      () => restoreLocalStorageSettings(snapshots.after, _timerCustomRefreshPanelsAfterHistory),
-      TIMER_HISTORY_SCOPE,
-      detail || '音源設定'
-    );
-    return true;
-  }
-
-  function _timerCustomReadFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(reader.error || new Error('audio file read failed'));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function _timerCustomShowStatus(message) {
-    if (typeof showStatus === 'function') showStatus(message);
-  }
-
-  function _timerCustomSettings(component, patch = {}) {
-    const current = component._timerAdvancedSettings || {};
-    const next = { ...current, ...patch };
-    next.alarmCustomName = String(next.alarmCustomName || '');
-    next.alarmCustomDataUrl = String(next.alarmCustomDataUrl || '').startsWith('data:audio/')
-      ? String(next.alarmCustomDataUrl)
-      : '';
-    if (String(next.alarmSound || '') !== 'none' && String(next.alarmSound || '') !== CUSTOM_ALARM_NAME) {
-      next.alarmSound = LOUD_ALARM_NAME;
-    }
-    if (next.alarmCustomDataUrl && !next.alarmCustomName) next.alarmCustomName = '設定した音源';
-    return next;
-  }
-
-  function _timerCustomSave(component) {
-    if (typeof component._timerAdvancedSaveSettings === 'function') {
-      return component._timerAdvancedSaveSettings({ skipHistory: true });
-    }
-    try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(component._timerAdvancedSettings || {}));
-      return true;
-    } catch {
-      _timerCustomShowStatus('タイマー設定を保存できませんでした');
-      return false;
-    }
-  }
-
-  TimerComponent.prototype._timerAdvancedHandleAlarmFile = async function(e) {
-    const input = e.target.closest('input[data-timer-alarm-file]');
-    if (!input) return;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) return;
-    if (!String(file.type || '').startsWith('audio/')) {
-      _timerCustomShowStatus('音声ファイルを選択してください');
-      return;
-    }
-    if (file.size > MAX_CUSTOM_ALARM_BYTES) {
-      _timerCustomShowStatus('音源ファイルは3MB以下にしてください');
-      return;
-    }
-    const beforeHistory = _timerCustomCaptureHistory([SETTINGS_KEY]);
-    const beforeSettings = { ...(this._timerAdvancedSettings || {}) };
-    try {
-      const dataUrl = await _timerCustomReadFileAsDataUrl(file);
-      if (!dataUrl.startsWith('data:audio/')) throw new Error('invalid audio data');
-      this._timerAdvancedSettings = _timerCustomSettings(this, {
-        alarmSound: CUSTOM_ALARM_NAME,
-        alarmCustomName: file.name || '設定した音源',
-        alarmCustomDataUrl: dataUrl,
-      });
-      if (!_timerCustomSave(this)) {
-        this._timerAdvancedSettings = beforeSettings;
-        this._timerAdvancedSyncControls?.();
-        return;
-      }
-      _timerCustomPushHistory('タイマー: 音源設定変更', beforeHistory, [SETTINGS_KEY], file.name || '');
-      this._timerAdvancedSyncControls?.();
-      _timerCustomShowStatus('アラーム音源を設定しました');
-    } catch {
-      this._timerAdvancedSettings = beforeSettings;
-      this._timerAdvancedSyncControls?.();
-      _timerCustomShowStatus('音源ファイルを読み込めませんでした');
-    }
-  };
-
-  TimerComponent.prototype._timerAdvancedChooseAlarmSource = function() {
-    this._timerAdvancedPanelRoot?.()?.querySelector?.('[data-timer-alarm-file]')?.click?.();
-  };
-
-  TimerComponent.prototype._timerAdvancedClearAlarmSource = function() {
-    const before = _timerCustomCaptureHistory([SETTINGS_KEY]);
-    this._timerAdvancedStopAlarmAudio?.();
-    this._timerAdvancedSettings = _timerCustomSettings(this, {
-      alarmSound: this._timerAdvancedSettings?.alarmSound === CUSTOM_ALARM_NAME ? LOUD_ALARM_NAME : this._timerAdvancedSettings?.alarmSound,
-      alarmCustomName: '',
-      alarmCustomDataUrl: '',
-    });
-    if (_timerCustomSave(this)) {
-      _timerCustomPushHistory('タイマー: 音源設定削除', before, [SETTINGS_KEY], '設定した音源');
-      _timerCustomShowStatus('設定した音源を削除しました');
-    }
-    this._timerAdvancedSyncControls?.();
-  };
-
-  TimerComponent.prototype._timerAdvancedStopAlarmAudio = function() {
-    const audio = this._timerAdvancedAlarmAudio;
-    this._timerAdvancedAlarmAudio = null;
-    if (!audio) return;
-    try {
-      audio.pause();
-      audio.currentTime = 0;
-    } catch {}
-  };
-
-  TimerComponent.prototype._timerAdvancedPlayCustomAlarm = function(volume) {
-    const settings = this._timerAdvancedSettings || {};
-    const src = String(settings.alarmCustomDataUrl || '');
-    if (!src.startsWith('data:audio/')) {
-      _timerCustomShowStatus('アラーム音源が設定されていません');
-      this._timerAdvancedPlayAlarm?.(LOUD_ALARM_NAME, volume);
-      return;
-    }
-    try {
-      this._timerAdvancedStopAlarmAudio();
-      const audio = new Audio(src);
-      audio.volume = Math.max(0, Math.min(1, (volume ?? settings.alarmVolume ?? 70) / 100));
-      this._timerAdvancedAlarmAudio = audio;
-      audio.addEventListener('ended', () => {
-        if (this._timerAdvancedAlarmAudio === audio) this._timerAdvancedAlarmAudio = null;
-      }, { once: true });
-      audio.play().catch(() => _timerCustomShowStatus('アラーム音源を再生できませんでした'));
-      setTimeout(() => {
-        if (this._timerAdvancedAlarmAudio === audio) this._timerAdvancedStopAlarmAudio();
-      }, 12000);
-    } catch {
-      _timerCustomShowStatus('アラーム音源を再生できませんでした');
-    }
-  };
-})();
 
 ;
 
@@ -16277,6 +20197,8 @@ class CalendarComponent extends ToolComponent {
     this._undoLoadWindow = null;
     this._startDay = parseInt(localStorage.getItem('gb-cal-start-day') || '0');
     this._multiDayCount = this._normalizeMultiDayCount(localStorage.getItem('gb:cal-multi-day-count') || '3');
+    this._ganttScale = localStorage.getItem('gb:cal-gantt-scale') || 'day';
+    this._ganttGroup = localStorage.getItem('gb:cal-gantt-group') || 'none';
     this._selectedMiniDates = new Set();
     this._lastMiniDateStr = '';
     const sidebarMode = localStorage.getItem('gb:cal-sidebar-mode') || '';
@@ -16359,6 +20281,7 @@ class CalendarComponent extends ToolComponent {
     <option value="day">日</option>
     <option value="tasks">ToDoリスト</option>
     <option value="shifts">シフト</option>
+    <option value="gantt">ガント</option>
     <option value="clock12">アナログ時計（12時間）</option>
     <option value="clock24">アナログ時計（24時間）</option>
   </select>
@@ -16377,7 +20300,6 @@ class CalendarComponent extends ToolComponent {
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="自動割り当て" aria-label="自動割り当て">${lucide('calculator', 16)}</button>
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="productionManagement" data-e2e-id="gb-production-management-open" title="管理操作" aria-label="管理操作">${lucide('settings2', 16)}</button>
     <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート" data-e2e-id="gb-production-open-templates">${lucide('layoutTemplate', 16)}</button>
-    <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>
     <div class="sep gb-cal-calendar-control"></div>
     <button type="button" class="tb-icon-btn" data-cal-action="reload" title="再読み込み" aria-label="再読み込み" data-e2e-id="gb-production-task-refresh"><span class="ico ico-refreshCw"></span></button>
     <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="sync" title="同期" aria-label="同期"><span class="ico ico-calendarSync"></span></button>
@@ -16526,10 +20448,6 @@ class CalendarComponent extends ToolComponent {
       case 'undo': if (typeof meldexUndo === 'function') meldexUndo(); break;
       case 'redo': if (typeof meldexRedo === 'function') meldexRedo(); break;
       case 'reload': this.reload(); break;
-      case 'timer':
-        if (typeof openTimerPanel === 'function') openTimerPanel();
-        else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-        break;
       case 'sync': this._showSyncModal(); break;
       case 'toggleSidebar': this._toggleSidebar(); break;
       case 'sidebarOnly': if (typeof this._setSidebarOnly === 'function') this._setSidebarOnly(!this._sidebarOnly); break;
@@ -16556,6 +20474,10 @@ class CalendarComponent extends ToolComponent {
       else this._date.setDate(this._date.getDate() + dir * this._multiDayCount);
     }
     else if (this._view === 'shifts') this._addMonths(dir); // シフト表は月単位の表のため月送り
+    else if (this._view === 'gantt') {
+      const step = this._ganttScale === 'month' ? 90 : this._ganttScale === 'week' ? 21 : 7;
+      this._date.setDate(this._date.getDate() + dir * step);
+    }
     else this._date.setDate(this._date.getDate() + dir);
     this._loadEvents().then(() => this._render());
     this._renderMiniCal();
@@ -16636,6 +20558,8 @@ class CalendarComponent extends ToolComponent {
       calendarPath: this.state.calendarPath || '',
       multiDayCount: this._multiDayCount,
       selectedMiniDates: this._selectedMiniDateList(),
+      ganttScale: this._ganttScale,
+      ganttGroup: this._ganttGroup,
       productionTaskSelection: this.state.productionTaskSelection || null,
       productionTaskLastSheetName: this.state.productionTaskLastSheetName || '',
     };
@@ -16649,6 +20573,8 @@ class CalendarComponent extends ToolComponent {
       this._multiDayCount = this._normalizeMultiDayCount(s.multiDayCount || this._multiDayCount);
       this._selectedMiniDates = new Set(Array.isArray(s.selectedMiniDates) ? s.selectedMiniDates.filter(v => /^\d{4}-\d{2}-\d{2}$/.test(String(v))) : []);
       this._lastMiniDateStr = this._selectedMiniDateList()[0] || '';
+      this._ganttScale = ['day', 'week', 'month'].includes(s.ganttScale) ? s.ganttScale : this._ganttScale;
+      this._ganttGroup = ['none', 'calendar', 'source'].includes(s.ganttGroup) ? s.ganttGroup : this._ganttGroup;
     }
   }
 
@@ -16753,7 +20679,7 @@ class CalendarComponent extends ToolComponent {
     const cal = this._selectedCalendar() || this._firstCalendar();
     if (cal && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id, { visible: 1 }).catch(() => {});
+      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
       this._renderCalendarList?.();
     }
     return cal?.id || '';
@@ -16774,7 +20700,7 @@ class CalendarComponent extends ToolComponent {
     localStorage.setItem('gb:cal-selected-id', cal.id);
     if (options.ensureVisible !== false && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id, { visible: 1 }).catch(() => {});
+      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
     }
     if (options.render !== false) {
       this._renderCalendarList();
@@ -16784,6 +20710,7 @@ class CalendarComponent extends ToolComponent {
   }
 
   _showStatus(msg, isError) {
+    if (!this._statusEl?.isConnected) this._statusEl = this.el?.querySelector('.gb-cal-status') || null;
     if (this._statusEl) { this._statusEl.textContent = msg; this._statusEl.style.color = isError ? 'var(--red)' : 'var(--cal-muted-fg, var(--fg2))'; }
     // 親のshowStatusも呼ぶ
     if (typeof showStatus === 'function') showStatus(msg, isError);
@@ -16931,10 +20858,15 @@ class CalendarComponent extends ToolComponent {
     }
     if (!this._undoStack.length || this._undoBusy) return;
     this._undoBusy = true;
+    const entry = this._undoStack.pop();
     try {
       this._redoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
-      await this._restoreSnapshot(this._undoStack.pop());
+      await this._restoreSnapshot(entry);
       this._notifyParentHistory();
+    } catch (error) {
+      this._redoStack.pop();
+      this._undoStack.push(entry);
+      return false;
     } finally {
       this._undoBusy = false;
     }
@@ -16950,16 +20882,26 @@ class CalendarComponent extends ToolComponent {
     }
     if (!this._redoStack.length || this._undoBusy) return;
     this._undoBusy = true;
+    const entry = this._redoStack.pop();
     try {
       this._undoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
-      await this._restoreSnapshot(this._redoStack.pop());
+      await this._restoreSnapshot(entry);
       this._notifyParentHistory();
+    } catch (error) {
+      this._undoStack.pop();
+      this._redoStack.push(entry);
+      return false;
     } finally {
       this._undoBusy = false;
     }
   }
 
   async _restoreSnapshot(snap) {
+    const failures = [];
+    const attempt = async (label, operation) => {
+      try { await operation(); }
+      catch (error) { failures.push(`${label}: ${error?.message || error}`); }
+    };
     try {
       // 一時ID・保存未確定（saving/confirming/retrying/unsaved）のイベントは
       // まだサーバーに存在しないか状態が確定していないため、アンドゥ/リドゥの
@@ -16971,30 +20913,42 @@ class CalendarComponent extends ToolComponent {
       const curEvIds = new Set(curEvents.map(e => e.id));
       for (const ev of curEvents) {
         if (!snapEvIds.has(ev.id) && this._eventIntersectsUndoWindow(ev, snap.eventWindow)) {
-          await apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }).catch(() => {});
+          await attempt(`イベント削除 ${ev.id}`, () => apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }));
         }
       }
       for (const ev of snapEvents) {
-        const { id, ...data } = ev; data.user = data.user || this._getUser();
+        const { id, created, modified, uid, ical_uid, recurrence_id, original_start, ...data } = ev;
+        data.user = data.user || this._getUser();
         if (curEvIds.has(id)) {
-          await apiPut('/cal/events/' + id, data).catch(() => {});
+          await attempt(`イベント更新 ${id}`, () => apiPut('/cal/events/' + id, data));
         } else {
-          await apiPost('/cal/events', { ...data, id }).catch(() => apiPut('/cal/events/' + id, data).catch(() => {}));
+          await attempt(`イベント作成 ${id}`, async () => {
+            try { await apiPost('/cal/events', { ...data, id }); }
+            catch { await apiPut('/cal/events/' + id, data); }
+          });
         }
       }
       const snapTasks = snap.tasks || [];
       const snapTkIds = new Set(snapTasks.map(t => t.id));
       const curTkIds = new Set((this._tasks || []).map(t => t.id));
-      for (const t of this._tasks || []) { if (!snapTkIds.has(t.id)) await apiFetch('/cal/tasks/' + t.id, { method: 'DELETE' }).catch(() => {}); }
+      for (const t of this._tasks || []) {
+        if (!snapTkIds.has(t.id)) await attempt(`ToDo削除 ${t.id}`, () => apiFetch('/cal/tasks/' + t.id, { method: 'DELETE' }));
+      }
       for (const t of snapTasks) {
-        const { id, ...data } = t;
-        if (curTkIds.has(id)) await apiPut('/cal/tasks/' + id, data).catch(() => {});
-        else await apiPost('/cal/tasks', { ...data, id }).catch(() => {});
+        const { id, created, modified, external_id, task_source, last_synced, ...data } = t;
+        if (curTkIds.has(id)) await attempt(`ToDo更新 ${id}`, () => apiPut('/cal/tasks/' + id, data));
+        else await attempt(`ToDo作成 ${id}`, () => apiPost('/cal/tasks', { ...data, id }));
       }
       await this._loadEvents(); await this._loadTasks();
       this._render(); this._renderTodayTasks();
+      if (failures.length) throw new Error(failures.join(' / '));
       this._showStatus('元に戻しました');
-    } catch { this._showStatus('元に戻す操作に失敗', true); }
+    } catch (error) {
+      // 部分成功時も現役サーバー状態を再取得済み。失敗を呼出元へ返して共通履歴が
+      // entry を undo 側へ戻せるようにし、成功通知を出さない。
+      this._showStatus('元に戻す操作に失敗', true);
+      throw error;
+    }
   }
 
   _notifyParentHistory() {
@@ -17073,6 +21027,8 @@ class CalendarComponent extends ToolComponent {
       tab.state.surface = this._surface;
       tab.state.multiDayCount = this._multiDayCount;
       tab.state.selectedMiniDates = this._selectedMiniDateList();
+      tab.state.ganttScale = this._ganttScale;
+      tab.state.ganttGroup = this._ganttGroup;
       tab.state.productionTaskSelection = this.state.productionTaskSelection || null;
       tab.state.productionTaskLastSheetName = this.state.productionTaskLastSheetName || '';
     } catch {}
@@ -17098,6 +21054,7 @@ class CalendarComponent extends ToolComponent {
       this._view === 'multi' ? this._multiDayTitle() :
       this._view === 'tasks' ? 'ToDoリスト' :
       this._view === 'shifts' ? `${y}年${m+1}月 シフト表` :
+      this._view === 'gantt' ? 'ガント' :
       `${y}年${m+1}月`;
     this._syncMultiDayControls();
     if (this._view === 'month') this._renderMonth();
@@ -17106,6 +21063,7 @@ class CalendarComponent extends ToolComponent {
     else if (this._view === 'day') this._renderDay();
     else if (this._view === 'tasks') this._renderTaskBoard();
     else if (this._view === 'shifts') this._renderShiftView(renderSeq);
+    else if (this._view === 'gantt' && typeof this._renderGantt === 'function') this._renderGantt();
     if (!['week', 'multi', 'day'].includes(this._view) && typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
     // Audit-P1 H-6 (残作業): カレンダーイベント要素にコメントバッジを描画
     if (this._contentEl && typeof CommentBadges !== 'undefined' && typeof CommentBadges.refreshCalendar === 'function') {
@@ -18635,7 +22593,7 @@ CalendarComponent.prototype._renderCalendarList = function() {
       if (cb.checked) this._visibleCalIds.add(c.id); else this._visibleCalIds.delete(c.id);
       if (!cb.checked && this._selectedCalendarId === c.id) this._selectedCalendarId = '';
       this._ensureSelectedCalendar?.();
-      apiPut('/cal/calendars/' + c.id, { visible: cb.checked ? 1 : 0 });
+      apiPut('/cal/calendars/' + c.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: cb.checked ? 1 : 0 });
       this._renderCalendarList();
       this._render();
     });
@@ -19040,6 +22998,206 @@ CalendarComponent.prototype._deleteTask = async function(id) {
   }
 };
 
+// スケジュールの予定・ToDo・制作タスク投影を同じ行モデルへ変換するガント表示。
+CalendarComponent.prototype._ganttWindow = function() {
+  const spanDays = this._ganttScale === 'month' ? 366 : this._ganttScale === 'week' ? 84 : 28;
+  const start = new Date(this._date);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - Math.floor(spanDays / 4));
+  const end = new Date(start);
+  end.setDate(end.getDate() + spanDays);
+  return { start, end, spanDays };
+};
+
+CalendarComponent.prototype._ganttEventEditReason = function(ev) {
+  if (ev?._recurrence_instance) return '繰り返し予定は元の予定から編集してください';
+  if (ev?.read_only || ev?.readonly) return '読み取り専用の予定です';
+  if (['shift', 'shift-break', 'attendance'].includes(String(ev?.calendar_source || ''))) return '投影された予定は元データから編集してください';
+  return '';
+};
+
+CalendarComponent.prototype._ganttDateValue = function(date, original, isEnd) {
+  const value = new Date(date);
+  if (_calIsDateOnlyValue(original)) {
+    if (isEnd) value.setDate(value.getDate() - 1);
+    return _calDateOnlyString(value);
+  }
+  return this._localDateTimeStr(value);
+};
+
+CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range, win) {
+  const reason = this._ganttEventEditReason(ev);
+  if (reason) {
+    bar.classList.add('is-readonly');
+    bar.title = `${ev.title || ''}\n${reason}`;
+    return;
+  }
+  const handles = bar.querySelectorAll('[data-gantt-resize]');
+  const begin = (pointerEvent, mode) => {
+    if (pointerEvent.button !== 0) return;
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+    bar.setPointerCapture?.(pointerEvent.pointerId);
+    const startX = pointerEvent.clientX;
+    const originalStart = new Date(range.start);
+    const originalEnd = new Date(range.end);
+    const windowMs = win.end - win.start;
+    const trackWidth = Math.max(1, track.getBoundingClientRect().width);
+    let deltaDays = 0;
+    const onMove = moveEvent => {
+      deltaDays = Math.round(((moveEvent.clientX - startX) / trackWidth) * windowMs / 86400000);
+      const deltaMs = deltaDays * 86400000;
+      let nextStart = mode === 'end' ? originalStart : new Date(originalStart.getTime() + deltaMs);
+      let nextEnd = mode === 'start' ? originalEnd : new Date(originalEnd.getTime() + deltaMs);
+      if (nextEnd <= nextStart) {
+        if (mode === 'start') nextStart = new Date(nextEnd.getTime() - 86400000);
+        else nextEnd = new Date(nextStart.getTime() + 86400000);
+      }
+      const left = Math.max(0, Math.min(100, ((nextStart - win.start) / windowMs) * 100));
+      const right = Math.max(left + 0.3, Math.min(100, ((nextEnd - win.start) / windowMs) * 100));
+      bar.style.left = `${left}%`;
+      bar.style.width = `${Math.max(0.6, right - left)}%`;
+    };
+    const onUp = async upEvent => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+      bar.releasePointerCapture?.(upEvent?.pointerId ?? pointerEvent.pointerId);
+      if (!deltaDays) return;
+      const deltaMs = deltaDays * 86400000;
+      let nextStart = mode === 'end' ? originalStart : new Date(originalStart.getTime() + deltaMs);
+      let nextEnd = mode === 'start' ? originalEnd : new Date(originalEnd.getTime() + deltaMs);
+      if (nextEnd <= nextStart) {
+        if (mode === 'start') nextStart = new Date(nextEnd.getTime() - 86400000);
+        else nextEnd = new Date(nextStart.getTime() + 86400000);
+      }
+      const patch = {
+        start: this._ganttDateValue(nextStart, ev.start, false),
+        end: this._ganttDateValue(nextEnd, ev.end || ev.start, true),
+      };
+      if (this._eventIsUndoable(ev)) this._pushUndo(mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
+      try {
+        await _calApplyEventTimePatch(this, ev, patch);
+        await this._loadEvents();
+        this._render();
+      } catch (error) {
+        this._showStatus?.('ガントの更新に失敗しました: ' + (error?.message || error), true);
+        await this._loadEvents();
+        this._render();
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  };
+  bar.addEventListener('pointerdown', event => {
+    if (event.target.closest('[data-gantt-resize]')) return;
+    begin(event, 'move');
+  });
+  handles.forEach(handle => handle.addEventListener('pointerdown', event => begin(event, handle.dataset.ganttResize)));
+};
+
+CalendarComponent.prototype._renderGantt = function() {
+  const host = this._contentEl;
+  const win = this._ganttWindow();
+  const rangeMs = win.end - win.start;
+  const calendarNames = new Map((this._calendars || []).map(calendar => [String(calendar.id), calendar.name || 'カレンダー']));
+  const events = (this._events || []).filter(event => this._isCalVisible(event));
+  const items = [];
+  const unscheduled = [];
+  events.forEach(event => {
+    const range = _calEventRange(event);
+    if (!range) { unscheduled.push({ kind: 'event', title: event.title || '無題', source: event }); return; }
+    items.push({ kind: 'event', title: event.title || '無題', start: range.start, end: range.end, source: event,
+      groupCalendar: calendarNames.get(String(event.calendar_id)) || 'カレンダー',
+      groupSource: event.calendar_source === 'production-task'
+        ? '制作タスク'
+        : (event.calendar_source && event.calendar_source !== 'local' ? '外部・投影' : '予定') });
+  });
+  (this._tasks || []).forEach(task => {
+    const due = task.due_date ? _calParseDateValue(task.due_date) : null;
+    if (!due) { unscheduled.push({ kind: 'task', title: task.title || '無題ToDo', source: task }); return; }
+    due.setHours(12, 0, 0, 0);
+    items.push({ kind: 'task', title: task.title || '無題ToDo', start: due, end: due, source: task, groupCalendar: 'ToDo', groupSource: 'ToDo' });
+  });
+  const groupKey = item => this._ganttGroup === 'calendar' ? item.groupCalendar : this._ganttGroup === 'source' ? item.groupSource : '';
+  items.sort((a, b) => groupKey(a).localeCompare(groupKey(b), 'ja') || a.start - b.start || a.title.localeCompare(b.title, 'ja'));
+
+  host.innerHTML = `<div class="gb-cal-gantt-settings" data-e2e-id="schedule-gantt-settings">
+    <span class="gb-cal-gantt-kind">${lucide('ganttChart', 14)} ガント</span>
+    <label>目盛 <select class="gb-select gb-select-sm" data-gantt-setting="scale"><option value="day">日</option><option value="week">週</option><option value="month">月</option></select></label>
+    <label>グループ <select class="gb-select gb-select-sm" data-gantt-setting="group"><option value="none">なし</option><option value="calendar">カレンダー</option><option value="source">種類</option></select></label>
+    <span class="gb-cal-gantt-range">${esc(this._localDateStr(win.start))} – ${esc(this._localDateStr(new Date(win.end.getTime() - 86400000)))}</span>
+  </div>`;
+  const scaleSelect = host.querySelector('[data-gantt-setting="scale"]');
+  const groupSelect = host.querySelector('[data-gantt-setting="group"]');
+  scaleSelect.value = this._ganttScale;
+  groupSelect.value = this._ganttGroup;
+  scaleSelect.addEventListener('change', () => { this._ganttScale = scaleSelect.value; localStorage.setItem('gb:cal-gantt-scale', this._ganttScale); this._persistViewToTabState(this._view); this._render(); });
+  groupSelect.addEventListener('change', () => { this._ganttGroup = groupSelect.value; localStorage.setItem('gb:cal-gantt-group', this._ganttGroup); this._persistViewToTabState(this._view); this._render(); });
+
+  const chart = document.createElement('div');
+  chart.className = 'gb-cal-gantt';
+  chart.dataset.e2eId = 'schedule-gantt';
+  // 日表示でも全日付をそのまま出すと、右サイドバーを開いた狭い作業幅で
+  // ラベル同士が重なる。表示期間を最大10目盛ほどへ間引き、バーの座標と
+  // 日単位の操作精度は変えずに見出しだけを読みやすく保つ。
+  const tickDays = this._ganttScale === 'month'
+    ? 30
+    : this._ganttScale === 'week'
+      ? 7
+      : Math.max(1, Math.ceil(win.spanDays / 10));
+  const header = document.createElement('div');
+  header.className = 'gb-cal-gantt-row gb-cal-gantt-header';
+  const headerLeft = document.createElement('div'); headerLeft.className = 'gb-cal-gantt-left'; headerLeft.textContent = '項目';
+  const headerTrack = document.createElement('div'); headerTrack.className = 'gb-cal-gantt-track';
+  for (let day = 0; day <= win.spanDays; day += tickDays) {
+    const tickDate = new Date(win.start); tickDate.setDate(tickDate.getDate() + day);
+    const tick = document.createElement('span'); tick.className = 'gb-cal-gantt-tick'; tick.style.left = `${(day / win.spanDays) * 100}%`;
+    tick.textContent = this._ganttScale === 'month' ? `${tickDate.getFullYear()}/${tickDate.getMonth() + 1}` : `${tickDate.getMonth() + 1}/${tickDate.getDate()}`;
+    headerTrack.appendChild(tick);
+  }
+  header.append(headerLeft, headerTrack); chart.appendChild(header);
+
+  let previousGroup = null;
+  items.forEach(item => {
+    const group = groupKey(item);
+    if (group && group !== previousGroup) {
+      const groupRow = document.createElement('div'); groupRow.className = 'gb-cal-gantt-group'; groupRow.textContent = group; chart.appendChild(groupRow); previousGroup = group;
+    }
+    const row = document.createElement('div'); row.className = 'gb-cal-gantt-row';
+    const left = document.createElement('button'); left.type = 'button'; left.className = 'gb-cal-gantt-left gb-cal-gantt-item-title'; left.textContent = item.title;
+    left.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id));
+    const track = document.createElement('div'); track.className = 'gb-cal-gantt-track';
+    const todayPos = ((new Date().setHours(0,0,0,0) - win.start) / rangeMs) * 100;
+    if (todayPos >= 0 && todayPos <= 100) { const todayLine = document.createElement('span'); todayLine.className = 'gb-cal-gantt-today'; todayLine.style.left = `${todayPos}%`; track.appendChild(todayLine); }
+    const leftPct = Math.max(0, Math.min(100, ((item.start - win.start) / rangeMs) * 100));
+    const endPct = Math.max(0, Math.min(100, ((item.end - win.start) / rangeMs) * 100));
+    if (endPct >= 0 && leftPct <= 100 && item.end >= win.start && item.start <= win.end) {
+      const bar = document.createElement('div');
+      bar.className = item.kind === 'task' ? 'gb-cal-gantt-milestone' : 'gb-cal-gantt-bar';
+      bar.style.left = `${leftPct}%`;
+      if (item.kind === 'event') bar.style.width = `${Math.max(0.6, endPct - leftPct)}%`;
+      bar.style.setProperty('--gantt-color', item.kind === 'task' ? 'var(--green)' : this._sanitizeEventColor(item.source.color));
+      bar.title = `${item.title}\n${this._localDateStr(item.start)} – ${this._localDateStr(item.end)}`;
+      if (item.kind === 'event') {
+        bar.innerHTML = '<span data-gantt-resize="start" aria-hidden="true"></span><b></b><span data-gantt-resize="end" aria-hidden="true"></span>';
+        this._bindGanttEventDrag(bar, track, item.source, { start: item.start, end: item.end }, win);
+      }
+      track.appendChild(bar);
+    }
+    row.append(left, track); chart.appendChild(row);
+  });
+  if (!items.length) { const empty = document.createElement('div'); empty.className = 'gb-cal-gantt-empty'; empty.textContent = '表示期間内の予定はありません'; chart.appendChild(empty); }
+  host.appendChild(chart);
+  if (unscheduled.length) {
+    const section = document.createElement('div'); section.className = 'gb-cal-gantt-unscheduled';
+    section.innerHTML = `<strong>未スケジュール (${unscheduled.length})</strong>`;
+    unscheduled.forEach(item => { const button = document.createElement('button'); button.type = 'button'; button.textContent = item.title; button.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id)); section.appendChild(button); });
+    host.appendChild(section);
+  }
+};
+
 function _gbCalTransitionDialog(modalApi, reason, openNext) {
   if (!modalApi?.close?.(reason)) return false;
   const continueAfterRemoval = () => {
@@ -19074,13 +23232,17 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.id = 'sh-save'; saveButton.className = 'sh-save gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.textContent = '保存';
   const deleteButton = existing ? document.createElement('button') : null;
+  const historyButton = existing ? document.createElement('button') : null;
   if (deleteButton) {
     deleteButton.type = 'button'; deleteButton.id = 'sh-delete'; deleteButton.className = 'sh-delete gb-btn gb-btn-sm gb-btn-danger danger'; deleteButton.textContent = '削除';
+  }
+  if (historyButton) {
+    historyButton.type = 'button'; historyButton.id = 'sh-history'; historyButton.className = 'sh-history gb-btn gb-btn-sm'; historyButton.textContent = '版を見る';
   }
   let busy = false, deleteConfirmPending = false;
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-shift', title: existing ? 'シフト編集' : '新規シフト', body: [...content.childNodes],
-    footer: [deleteButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
+    footer: [deleteButton, historyButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
     minWidth: '0', initialFocus: '#sh-user', closeLabel: 'シフト編集を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: () => !busy,
   });
@@ -19089,7 +23251,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   panel.classList.add('gb-cal-modal'); panel.dataset.e2eId = 'calendar-tool-shift-dialog'; panel.style.cssText = _gbCalModalSizeStyle(350, 'overflow:hidden;');
   const setBusy = (next) => {
     busy = next; panel.setAttribute('aria-busy', next ? 'true' : 'false');
-    [saveButton, deleteButton].filter(Boolean).forEach(button => { button.disabled = next; });
+    [saveButton, deleteButton, historyButton].filter(Boolean).forEach(button => { button.disabled = next; });
   };
   modalApi.open();
   this._fillShiftUserCandidates?.(panel);
@@ -19129,6 +23291,20 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     if (modalApi.isOpen()) setBusy(false);
   });
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  historyButton?.addEventListener('click', event => {
+    window.MeldexCalendarItemHistory?.open('shift', existing.id, {
+      returnFocus: event.currentTarget,
+      onRestored: async () => {
+        await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
+        this._renderCalendarList?.();
+        this._render();
+        modalApi.close('restored');
+        this._showStatus('シフトを復元しました');
+      },
+    }).catch(error => {
+      status.textContent = error?.message || 'シフトの版を開けませんでした。';
+    });
+  });
   deleteButton?.addEventListener('click', async () => {
     if (busy || deleteConfirmPending) return;
     deleteConfirmPending = true;
@@ -21347,55 +25523,6 @@ function bdMarkFastCardRenderUsed() {
   _bdFastCardRenderUsed = true;
 }
 
-function bdAppendFastNodeAnchors(div, node) {
-  if (!div || !node || !node.id || node.minimized || node.locked) return;
-  ['top', 'bottom', 'left', 'right'].forEach(pos => {
-    const anchor = document.createElement('div');
-    anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
-    if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
-    // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
-    // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
-    anchor.addEventListener('pointerdown', (ev) => {
-      if (typeof bdHandleAnchorPointerDown === 'function') {
-        bdHandleAnchorPointerDown(ev, div, node, pos);
-        return;
-      }
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const startX = ev.clientX;
-      const startY = ev.clientY;
-      let dragged = false;
-      const onMove = (mv) => {
-        if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) >= 4) dragged = true;
-      };
-      const onUp = () => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        document.removeEventListener('pointercancel', onUp);
-        if (dragged) return;
-        const hasConnSel = (typeof bd !== 'undefined' && bd.selectedConnIds instanceof Set && bd.selectedConnIds.size > 0);
-        if (hasConnSel) {
-          bd.connecting = node.id;
-          bd._connLabel = '';
-          bd._connOrigin = 'anchor';
-          bd._connFromAnchor = (typeof _bdHudPosToAnchorName === 'function') ? _bdHudPosToAnchorName(pos) : '';
-          if (typeof window.showStatus === 'function') {
-            window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
-          }
-          return;
-        }
-        if (typeof _bdAnchorAddCard === 'function') _bdAnchorAddCard(node.id, pos);
-      };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
-      document.addEventListener('pointercancel', onUp);
-    });
-    div.appendChild(anchor);
-  });
-}
-
 function bdAppendFastNode(node) {
   if (!node || !node.id || typeof document === 'undefined') return false;
   const container = document.getElementById('bd-nodes');
@@ -23282,7 +27409,9 @@ function bdParseMd(raw) {
       const tcm = props.match(/textColor:\s*'((?:[^'\\]|\\.)*)'/); if (tcm) t.textColor = tcm[1].replace(/\\'/g, "'");
       const tscm = props.match(/textStrokeColor:\s*'((?:[^'\\]|\\.)*)'/); if (tscm) t.textStrokeColor = tscm[1].replace(/\\'/g, "'");
       const tswm = props.match(/textStrokeWidth:\s*(\d+)/); if (tswm) t.textStrokeWidth = +tswm[1];
+      const bgom = props.match(/bgOpacity:\s*([\d.]+)/); if (bgom) t.bgOpacity = Math.max(0, Math.min(1, +bgom[1]));
       const bcm = props.match(/borderColor:\s*'((?:[^'\\]|\\.)*)'/); if (bcm) t.borderColor = bcm[1].replace(/\\'/g, "'");
+      const bom = props.match(/borderOpacity:\s*([\d.]+)/); if (bom) t.borderOpacity = Math.max(0, Math.min(1, +bom[1]));
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
@@ -23473,6 +27602,7 @@ function bdParseMd(raw) {
         const lm = cl.match(/label:\s*"((?:[^"\\]|\\.)*)"/); if(lm) c.label = lm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
         const sm = cl.match(/style:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/); if(sm) c.style = String(parseConnScalar(sm[1]) ?? '');
         const cm = cl.match(/color:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/); if(cm && cm[1]!=='true'&&cm[1]!=='false') c.color = String(parseConnScalar(cm[1]) ?? '');
+        const com = cl.match(/colorOpacity:\s*([\d.]+)/); if(com) c.colorOpacity = Math.max(0, Math.min(1, +com[1]));
         const hm = cl.match(/hidden:\s*(\w+)/); if(hm) c.hidden = hm[1]==='true';
         const stm = cl.match(/straight:\s*(\w+)/); if(stm) c.straight = stm[1]==='true';
         const ptm = cl.match(/pathType:\s*([^\s,}]+)/); if(ptm) c.pathType = ptm[1];
@@ -23809,7 +27939,7 @@ function bdToMd() {
   // Xmindメタ（note, checked, progress, markers, shape, font）
   const cardOverrideMetaKeys = [
     'shape', 'fontSize', 'fontBold', 'fontItalic', 'textColor', 'textStrokeColor',
-    'textStrokeWidth', 'borderColor', 'borderWidth', 'borderRadius', 'cardStyle',
+    'textStrokeWidth', 'bgOpacity', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius', 'cardStyle',
     'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
     'cloudSubBumpRatio', 'cloudSubWidthRatio', 'cloudSubHeightRatio',
   ];
@@ -23845,7 +27975,9 @@ function bdToMd() {
       if (hasOwn(n, 'textColor')) parts.push('textColor: ' + fmtJsonString(n.textColor));
       if (hasOwn(n, 'textStrokeColor')) parts.push('textStrokeColor: ' + fmtJsonString(n.textStrokeColor));
       if (hasOwn(n, 'textStrokeWidth')) parts.push('textStrokeWidth: ' + (+n.textStrokeWidth || 0));
+      if (hasOwn(n, 'bgOpacity')) parts.push('bgOpacity: ' + _bdNormalizeStyleOpacity(n.bgOpacity, 1));
       if (hasOwn(n, 'borderColor')) parts.push('borderColor: ' + fmtJsonString(n.borderColor));
+      if (hasOwn(n, 'borderOpacity')) parts.push('borderOpacity: ' + _bdNormalizeStyleOpacity(n.borderOpacity, 1));
       if (hasOwn(n, 'borderWidth')) parts.push('borderWidth: ' + (+n.borderWidth || 0));
       if (hasOwn(n, 'borderRadius')) parts.push('borderRadius: ' + (+n.borderRadius || 0));
       if (hasOwn(n, 'cardStyle') && n.cardStyle) parts.push('cardStyle: ' + n.cardStyle);
@@ -23975,6 +28107,7 @@ function bdToMd() {
       if (c.label) s += `, label: ${fmtJsonString(c.label)}`;
       if (hasOwn(c, 'style')) s += `, style: ${fmtJsonString(c.style)}`;
       if (hasOwn(c, 'color')) s += `, color: ${fmtJsonString(c.color)}`;
+      if (hasOwn(c, 'colorOpacity')) s += `, colorOpacity: ${_bdNormalizeStyleOpacity(c.colorOpacity, 1)}`;
       // v0.5.320: pathType を 3 種 (curve/straight/orthogonal) に統合して書き出す。
       // curve は既定のため省略、straight/orthogonal のみ明示。
       if (hasOwn(c, 'pathType') || hasOwn(c, 'straight')) {
@@ -24562,7 +28695,7 @@ function _bdApplyTextOutline(txt, width, color, nodeKey) {
 // 雲型の輪郭に沿った「外側の枠線」となる。
 // clip-path はカード div にかけず、SVG の overflow: visible を利用して
 // 外側 stroke がカードの矩形 bbox を超えて描画できるようにする。
-function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
+function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor, borderOpacity = 1, bgOpacity = 1) {
   const svgNS = 'http://www.w3.org/2000/svg';
   let svg = div.querySelector(':scope > svg.bd-cloud-border-svg');
   const bw = Math.max(0, +borderWidth || 0);
@@ -24597,6 +28730,7 @@ function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
     const d = pathStr.replace(/^path\(['"]?/, '').replace(/['"]?\)$/, '');
     p.setAttribute('d', d);
     p.setAttribute('fill', bg || 'transparent');
+    p.setAttribute('fill-opacity', String(_bdNormalizeStyleOpacity(bgOpacity, 1)));
     // 形状ごとの stroke 接続方式:
     //   - トゲ (直線/曲線): peak を鋭く尖らせたいので miter + 大きな miterlimit
     //     (鋭角で miterlimit を超えて自動 bevel にならないよう miterlimit=40)
@@ -24612,10 +28746,12 @@ function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor) {
     }
     if (bw > 0 && bc) {
       p.setAttribute('stroke', bc);
+      p.setAttribute('stroke-opacity', String(_bdNormalizeStyleOpacity(borderOpacity, 1)));
       // stroke-width = 2*bw → stroke の外側半分 (= bw px) のみが可視となる
       p.setAttribute('stroke-width', String(bw * 2));
     } else {
       p.setAttribute('stroke', 'none');
+      p.removeAttribute('stroke-opacity');
       p.removeAttribute('stroke-width');
     }
     // v0.5.244 で選択ハイライトを bbox 矩形 (`.bd-selection-rect`) に変更したため、
@@ -24778,6 +28914,13 @@ function bdRender() {
 }
 /* gb-canvas-engine.part02.js */
 
+const BD_LINE_WIDTH_MAX = 200;
+function _bdNormalizeLineWidth(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.max(0, Math.min(BD_LINE_WIDTH_MAX, Number(fallback) || 0));
+  return Math.max(0, Math.min(BD_LINE_WIDTH_MAX, number));
+}
+
 // --- フレーム描画 ---
 function bdDrawFrames() {
   document.querySelectorAll('.bd-frame').forEach(f=>f.remove());
@@ -24799,17 +28942,24 @@ function bdDrawFrames() {
     frame.dataset.groupId = g.groupId || g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
     g.x = x0 - 12; g.y = y0 - 22; g.w = x1 - x0 + 24; g.h = y1 - y0 + 34;
-    const groupStyle = g.styleOverrides || g.style || {};
-    if (groupStyle.background) frame.style.background = groupStyle.background;
-    if (groupStyle.borderColor) frame.style.borderColor = groupStyle.borderColor;
+    const groupStyle = globalThis.MeldexBoardGroups?.resolveGroupStyle
+      ? globalThis.MeldexBoardGroups.resolveGroupStyle(bd.topicViewDocument || {}, g)
+      : (g.styleOverrides || g.style || {});
+    if (groupStyle.background) frame.style.background = _bdColorWithOpacity(groupStyle.background, groupStyle.backgroundOpacity);
+    if (groupStyle.borderColor) frame.style.borderColor = _bdColorWithOpacity(groupStyle.borderColor, groupStyle.borderOpacity);
     if (Number.isFinite(+groupStyle.borderWidth)) frame.style.borderWidth = Math.max(0, +groupStyle.borderWidth) + 'px';
     if (groupStyle.borderStyle) frame.style.borderStyle = groupStyle.borderStyle;
     if (Number.isFinite(+groupStyle.borderRadius)) frame.style.borderRadius = Math.max(0, +groupStyle.borderRadius) + 'px';
     if (Number.isFinite(+groupStyle.opacity)) frame.style.opacity = Math.max(0, Math.min(1, +groupStyle.opacity));
     if (groupStyle.shadow) frame.style.boxShadow = groupStyle.shadow;
+    if (Number.isFinite(+groupStyle.padding)) frame.style.padding = Math.max(0, +groupStyle.padding) + 'px';
     frame.classList.toggle('bd-group-locked', !!g.locked);
     frame.classList.toggle('bd-group-collapsed', !!g.collapsed);
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
+    if (groupStyle.labelColor) label.style.color = groupStyle.labelColor;
+    if (Number.isFinite(+groupStyle.labelFontSize)) label.style.fontSize = Math.max(8, +groupStyle.labelFontSize) + 'px';
+    if (groupStyle.labelFontFamily) label.style.fontFamily = groupStyle.labelFontFamily;
+    if (groupStyle.labelBold) label.style.fontWeight = '700';
     label.style.cursor = 'move';
     label.ondblclick = (ev) => {
       ev.stopPropagation();
@@ -25268,6 +29418,7 @@ function _bdRenderFreeBezierEditOverlay(svg, conn, pathData, fn, tn, fe, te, fp,
     if (typeof bdPushUndo === 'function') bdPushUndo();
     const side = (conn.from === conn.to && ev.shiftKey) ? 'to' : defaultSide;
     const key = side === 'from' ? 'fromAnchor' : 'toAnchor';
+    delete conn[side === 'from' ? 'fromEndpoint' : 'toEndpoint'];
     conn[key] = anchorName;
     // 両端同一アンカーになる縮退を回避 — 自己ループ時のみ適用 (別カードなら同じ名前でも
     // 座標が異なるため縮退しない。非自己ループで強制補正するとユーザー意図に反する)
@@ -25374,6 +29525,75 @@ function _bdFindNearestAnchor(cardEl, node, pos, target) {
   return best;
 }
 
+function _bdProjectCardOutlineEndpoint(cardEl, node, pos, target, previousPosition, options) {
+  const api = typeof MeldexBoardOutlineEndpoints !== 'undefined'
+    ? MeldexBoardOutlineEndpoints : null;
+  if (!api?.projectPointToOutline || !node || !pos || !target) return null;
+  const width = cardEl?.offsetWidth ?? node.w ?? 160;
+  const height = cardEl?.offsetHeight ?? node.h ?? 60;
+  const shape = cardEl?.dataset?.shape || node.shape || 'rect';
+  return api.projectPointToOutline(
+    shape,
+    { ...node, x: pos.x, y: pos.y, w: width, h: height },
+    target,
+    {
+      ...node,
+      previousSegment: previousPosition?.segment,
+      snapDistance: options?.snapDistance,
+      towardPoint: options?.towardPoint,
+    },
+  );
+}
+
+function _bdCardOutlineEndpointPoint(cardEl, node, pos, endpoint) {
+  const api = typeof MeldexBoardOutlineEndpoints !== 'undefined'
+    ? MeldexBoardOutlineEndpoints : null;
+  if (!api?.pointAtPathT || !endpoint?.outlinePosition || !node || !pos) return null;
+  const width = cardEl?.offsetWidth ?? node.w ?? 160;
+  const height = cardEl?.offsetHeight ?? node.h ?? 60;
+  const shape = cardEl?.dataset?.shape || node.shape || 'rect';
+  return api.pointAtPathT(
+    shape,
+    { ...node, x: pos.x, y: pos.y, w: width, h: height },
+    endpoint.outlinePosition.pathT,
+    node,
+  );
+}
+
+function _bdOutlinePathDistance(first, second) {
+  const a = ((Number(first?.pathT) || 0) % 1 + 1) % 1;
+  const b = ((Number(second?.pathT) || 0) % 1 + 1) % 1;
+  const direct = Math.abs(a - b);
+  return Math.min(direct, 1 - direct);
+}
+
+function _bdConnectionTopicTargetRef(node, cardId) {
+  if (node?.topicRef?.sourceId && node?.topicRef?.topicId) {
+    return { sourceId: String(node.topicRef.sourceId), topicId: String(node.topicRef.topicId) };
+  }
+  return cardId;
+}
+
+function _bdSetConnectionOutlineEndpoint(conn, side, cardId, node, projected) {
+  if (!conn || !projected?.outlinePosition) return false;
+  const endpointKey = side === 'from' ? 'fromEndpoint' : 'toEndpoint';
+  if (side === 'from') {
+    conn.from = cardId;
+    delete conn.fromPoint;
+    delete conn.fromAnchor;
+  } else {
+    conn.to = cardId;
+    delete conn.toPoint;
+    delete conn.toAnchor;
+  }
+  conn[endpointKey] = {
+    targetKind: 'topic',
+    targetRef: _bdConnectionTopicTargetRef(node, cardId),
+    outlinePosition: { ...projected.outlinePosition, mode: 'outline' },
+  };
+  return true;
+}
+
 // Phase 3: 接続線の端点ハンドルドラッグで from/to カードまたは固定座標を変更する。
 // カード上にドロップすると接続先更新 + 最近接アンカーに自動設定。空白へのドロップは自由端として固定する。
 // 座標変換は bdScreenToWorld を使い、pan/回転/アプリ zoom に追従。undo はカード変更確定時のみ push する。
@@ -25392,6 +29612,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
     const otherSide = side === 'from' ? 'to' : 'from';
     const otherCardId = otherSide === 'from' ? conn.from : conn.to;
     const otherAnchorName = otherSide === 'from' ? conn.fromAnchor : conn.toAnchor;
+    const otherOutlineEndpoint = otherSide === 'from' ? conn.fromEndpoint : conn.toEndpoint;
     const otherFreePoint = bdNormalizeConnectionPoint(otherSide === 'from' ? conn.fromPoint : conn.toPoint);
     const previousEndpointPair = typeof bdConnectionEndpointKey === 'function'
       ? {
@@ -25408,7 +29629,12 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
         : { x: otherNode.x, y: otherNode.y };
       const ow = otherEl?.offsetWidth ?? otherNode.w ?? 160;
       const oh = otherEl?.offsetHeight ?? otherNode.h ?? 60;
-      if (otherAnchorName && typeof _bdGetCardAnchorPoint === 'function') {
+      const exactOtherPoint = _bdCardOutlineEndpointPoint(
+        otherEl, otherNode, otherPos, otherOutlineEndpoint,
+      );
+      if (exactOtherPoint) {
+        otherPt = exactOtherPoint;
+      } else if (otherAnchorName && typeof _bdGetCardAnchorPoint === 'function') {
         otherPt = _bdGetCardAnchorPoint(otherNode, otherEl, otherPos, otherAnchorName);
       } else {
         otherPt = { x: otherPos.x + ow / 2, y: otherPos.y + oh / 2 };
@@ -25469,39 +29695,36 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
           const pos = typeof bdNodeCanvasPosition === 'function'
             ? bdNodeCanvasPosition(newNode)
             : { x: newNode.x, y: newNode.y };
-          // 2026-04-18: ドロップ先がアンカー HUD の場合、最近接計算ではなくその HUD の
-          // 示すアンカー名を直接採用する。楕円形状などで HUD 位置と最近接アンカーが
-          // 食い違うケースに対応するため。
-          const hitHud = target?.closest?.('.bd-anchor-hud');
-          const hudPos = hitHud
-            ? ['top','bottom','left','right'].find(p => hitHud.classList.contains(p))
-            : null;
-          const newAnchor = (hudPos && typeof _bdHudPosToAnchorName === 'function')
-            ? _bdHudPosToAnchorName(hudPos)
-            : _bdFindNearestAnchor(cardEl, newNode, pos, dropW);
-          // 同じカード・同じアンカーへ戻す場合は変更不要 (undo を積まない)
+          const endpointKey = side === 'from' ? 'fromEndpoint' : 'toEndpoint';
+          const previousPosition = (side === 'from' ? conn.fromEndpoint : conn.toEndpoint)?.outlinePosition;
+          const snapDistance = (up.pointerType === 'touch' ? 12 : 6) / Math.max(0.05, Number(bd.zoom) || 1);
+          const projected = _bdProjectCardOutlineEndpoint(
+            cardEl, newNode, pos, dropW, previousPosition, { snapDistance },
+          );
+          if (!projected) {
+            if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'endpoint-drop-cancel' });
+            return;
+          }
+          const otherEndpoint = side === 'from' ? conn.toEndpoint : conn.fromEndpoint;
+          const otherCard = side === 'from' ? conn.to : conn.from;
+          if (newCardId === otherCard && otherEndpoint?.outlinePosition
+              && _bdOutlinePathDistance(projected.outlinePosition, otherEndpoint.outlinePosition) < 0.001
+              && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+            projected.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+              projected.outlinePosition, 'forward', { step: 0.25 },
+            );
+          }
+          // 同じカード・同じ輪郭位置へ戻す場合は変更不要 (undo を積まない)
           const oldCardId = side === 'from' ? conn.from : conn.to;
-          const oldAnchor = side === 'from' ? conn.fromAnchor : conn.toAnchor;
-          if (oldCardId === newCardId && oldAnchor === newAnchor) {
+          const oldPosition = conn[endpointKey]?.outlinePosition;
+          if (oldCardId === newCardId && oldPosition
+              && _bdOutlinePathDistance(oldPosition, projected.outlinePosition) < 0.0001) {
             if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'endpoint-drop-unchanged' });
             return;
           }
           // 実際に変更するのでここで undo push
           if (typeof bdPushUndo === 'function') bdPushUndo();
-          if (side === 'from') {
-            conn.from = newCardId;
-            conn.fromAnchor = newAnchor;
-            delete conn.fromPoint;
-          } else {
-            conn.to = newCardId;
-            conn.toAnchor = newAnchor;
-            delete conn.toPoint;
-          }
-          // 自己ループ同一アンカー縮退防止
-          if (conn.from === conn.to && conn.fromAnchor && conn.fromAnchor === conn.toAnchor) {
-            const otherKey = side === 'from' ? 'toAnchor' : 'fromAnchor';
-            conn[otherKey] = _bdOppositeAnchor(newAnchor);
-          }
+          _bdSetConnectionOutlineEndpoint(conn, side, newCardId, newNode, projected);
           if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], previousEndpointPair, reason: 'endpoint-drop' });
           if (typeof bdDirty === 'function') bdDirty();
           return;
@@ -25519,10 +29742,12 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
             conn.from = '';
             conn.fromPoint = { x: dropW.x, y: dropW.y };
             delete conn.fromAnchor;
+            delete conn.fromEndpoint;
           } else {
             conn.to = '';
             conn.toPoint = { x: dropW.x, y: dropW.y };
             delete conn.toAnchor;
+            delete conn.toEndpoint;
           }
           if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], previousEndpointPair, reason: 'endpoint-drop-free' });
           if (typeof bdDirty === 'function') bdDirty();
@@ -25685,26 +29910,27 @@ function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint)
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
 }
 
-// 太さから矢印マーカーの寸法 (markerWidth/Height と refX) を算出する共通式。
-// _bdEnsureArrowMarker (矢印そのものの描画) と bdDrawConns (端点の後退量 GAP の逆算) の
-// 両方から使う。太さ上限20 (スタイル管理のスライダー max) まで比例して大きくなる (2026-08-14
-// 上限16px撤廃。旧上限では太さ5.4以上で矢印が頭打ちになり、線の太さが矢印を上回っていた)。
+// 矢印は線方向の長さを固定し、線に直交する幅だけを線幅へ追従させる。
+// ライブ描画、端点後退量、スタイルプレビューでこの2軸ジオメトリを共有する。
 function _bdArrowMarkerGeometry(strokeWidth) {
-  const size = Math.max(8, strokeWidth * 2.6 + 2);
-  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
-  return { size, refX };
+  const width = _bdNormalizeLineWidth(strokeWidth, 1);
+  const axisLength = 14;
+  const crossSpan = Math.max(8, width + 8);
+  const refX = 3;
+  const refY = crossSpan / 2;
+  return { axisLength, crossSpan, refX, refY };
 }
 
-function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId) {
+function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId, colorOpacity = 1) {
   if (!defs || !markerId) return '';
   const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  const { size, refX } = _bdArrowMarkerGeometry(strokeWidth);
+  const { axisLength, crossSpan, refX, refY } = _bdArrowMarkerGeometry(strokeWidth);
   marker.setAttribute('id', markerId);
   if (connId) marker.dataset.connId = connId;
-  marker.setAttribute('markerWidth', size);
-  marker.setAttribute('markerHeight', size);
+  marker.setAttribute('markerWidth', axisLength);
+  marker.setAttribute('markerHeight', crossSpan);
   marker.setAttribute('refX', refX);
-  marker.setAttribute('refY', size / 2);
+  marker.setAttribute('refY', refY);
   // orientDeg が数値なら固定角度、未指定なら path の接線方向に自動 (start/end で逆転)
   if (Number.isFinite(+orientDeg)) {
     marker.setAttribute('orient', String(+orientDeg));
@@ -25713,8 +29939,9 @@ function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, con
   }
   marker.setAttribute('markerUnits', 'userSpaceOnUse');
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', `M0,0 L${size - 1},${size / 2} L0,${size} Z`);
+  path.setAttribute('d', `M0,0 L${axisLength - 1},${refY} L0,${crossSpan} Z`);
   path.setAttribute('fill', color);
+  path.setAttribute('fill-opacity', String(_bdNormalizeStyleOpacity(colorOpacity, 1)));
   marker.appendChild(path);
   defs.appendChild(marker);
   return `url(#${markerId})`;
@@ -26055,12 +30282,12 @@ function _bdBuildConnectionPathData(conn, pts, structure, connStyle, bulgeOffset
 }
 /* gb-canvas-engine.part03.js */
 function _bdConnectionStrokeWidth(conn, connStyle, defaultWidth) {
-  const fallback = Number.isFinite(+defaultWidth) ? Math.max(0, +defaultWidth) : 1;
+  const fallback = _bdNormalizeLineWidth(defaultWidth, 1);
   if (conn && Object.prototype.hasOwnProperty.call(conn, 'width') && Number.isFinite(+conn.width)) {
-    return Math.max(0, +conn.width);
+    return _bdNormalizeLineWidth(conn.width, fallback);
   }
   if (connStyle && Number.isFinite(+connStyle.width) && +connStyle.width !== 0) {
-    return Math.max(0, +connStyle.width);
+    return _bdNormalizeLineWidth(connStyle.width, fallback);
   }
   return fallback;
 }
@@ -26222,7 +30449,7 @@ function bdDrawConns(options) {
     const arrowOnToSide = arrow === 'end' || arrow === 'both';
     const NO_ARROW_GAP = 2;
     const arrowEndpointGap = (arrowOnFromSide || arrowOnToSide)
-      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.size - g.refX; })()
+      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.axisLength - g.refX; })()
       : 0;
     const GAP_FROM = arrowOnFromSide ? arrowEndpointGap : NO_ARROW_GAP;
     const GAP_TO = arrowOnToSide ? arrowEndpointGap : NO_ARROW_GAP;
@@ -26272,7 +30499,9 @@ function bdDrawConns(options) {
     hasUserAnchor = !!(fromA || toA);
     // v0.5.330: 連続角度ベースの自動ルート (矢印が斜め含む 8 方向に自然追従するため)。
     // 量子化アンカー名は使わず、実際のカード間ベクトルに沿って端点と外向き方向を直接算出。
-    if (selfLoop && !fromA && !toA) {
+    const hasExactFrom = !!c.fromEndpoint?.outlinePosition;
+    const hasExactTo = !!c.toEndpoint?.outlinePosition;
+    if (selfLoop && !fromA && !toA && !hasExactFrom && !hasExactTo) {
       const def = _bdDefaultSelfLoopAnchors(pathType);
       fromA = def.from; toA = def.to;
     }
@@ -26435,21 +30664,34 @@ function bdDrawConns(options) {
     }
     }
 
-    const outlineEndpointPoint = (endpoint, node, pos, width, height, gap) => {
+    const outlineEndpointPoint = (endpoint, node, element, pos, width, height, gap) => {
       if (!endpoint?.outlinePosition || !node || typeof MeldexBoardOutlineEndpoints === 'undefined') return null;
       const point = MeldexBoardOutlineEndpoints.pointAtPathT(
-        node.shape || 'rect', { ...node, x: pos.x, y: pos.y, w: width, h: height },
+        element?.dataset?.shape || node.shape || 'rect',
+        { ...node, x: pos.x, y: pos.y, w: width, h: height },
         endpoint.outlinePosition.pathT, node,
       );
       const cx = pos.x + width / 2; const cy = pos.y + height / 2;
       const length = Math.hypot(point.x - cx, point.y - cy) || 1;
-      return { x: point.x + ((point.x - cx) / length) * gap,
-        y: point.y + ((point.y - cy) / length) * gap };
+      const out = { x: (point.x - cx) / length, y: (point.y - cy) / length };
+      return { x: point.x + out.x * gap, y: point.y + out.y * gap, out };
     };
-    const exactFrom = outlineEndpointPoint(c.fromEndpoint, fn, fp, fw, fh, GAP_FROM);
-    const exactTo = outlineEndpointPoint(c.toEndpoint, tn, tp, tw, th, GAP_TO);
-    if (exactFrom) { x1 = exactFrom.x; y1 = exactFrom.y; hasUserAnchor = true; }
-    if (exactTo) { x2 = exactTo.x; y2 = exactTo.y; hasUserAnchor = true; }
+    // 輪郭位置を明示した端点は、矢印がない側では輪郭そのものをパス端点にする。
+    // 矢印側の gap はマーカー先端を輪郭へ合わせるためにだけ残す。
+    const exactFrom = outlineEndpointPoint(
+      c.fromEndpoint, fn, fe, fp, fw, fh, arrowOnFromSide ? GAP_FROM : 0,
+    );
+    const exactTo = outlineEndpointPoint(
+      c.toEndpoint, tn, te, tp, tw, th, arrowOnToSide ? GAP_TO : 0,
+    );
+    if (exactFrom) {
+      x1 = exactFrom.x; y1 = exactFrom.y; autoFromOut = exactFrom.out;
+      hasUserAnchor = true; effectiveStructure = '';
+    }
+    if (exactTo) {
+      x2 = exactTo.x; y2 = exactTo.y; autoToOut = exactTo.out;
+      hasUserAnchor = true; effectiveStructure = '';
+    }
 
     // v0.5.250: 同じカードペア間に複数ラインがある場合、各ラインを区別するためのオフセット。
     // - 曲線 (curve): 端点はカード側で固定し、制御点 c1/c2 を垂直にシフトして曲線を上下 (または左右) に膨らませる。
@@ -26513,6 +30755,7 @@ function bdDrawConns(options) {
     p.style.strokeWidth = strokeWidth + 'px';
     if (connStyle.style === 'dashed') p.style.strokeDasharray = '6 3';
     if (connStyle.color) p.style.stroke = connStyle.color;
+    p.style.strokeOpacity = String(_bdNormalizeStyleOpacity(connStyle.colorOpacity, 1));
     if (c.hidden) {
       p.classList.add('bd-conn-hidden');
       p.style.opacity = '0.18';
@@ -26525,7 +30768,7 @@ function bdDrawConns(options) {
       // 揃えていたが、これが原因でハンドル調整や斜め配置時に矢印向きがラインと乖離していた。
       // auto-start-reverse に統一することで、曲線のベジェ接線・直角線の終端 segment 方向・
       // 直線の方向すべてに矢印がなめらかに追従する (= 8 方向含む任意方向に対応)。
-      const markerRef = _bdEnsureArrowMarker(defs, `bd-arrow-${c.id}`, arrowColor, strokeWidth, undefined, c.id);
+      const markerRef = _bdEnsureArrowMarker(defs, `bd-arrow-${c.id}`, arrowColor, strokeWidth, undefined, c.id, connStyle.colorOpacity);
       if (arrow === 'start' || arrow === 'both') p.setAttribute('marker-start', markerRef);
       if (arrow === 'end' || arrow === 'both') p.setAttribute('marker-end', markerRef);
     }
@@ -26826,9 +31069,6 @@ function bdDrawConns(options) {
     const id = (typeof el.id === 'string' && el.id.startsWith('bdn-')) ? el.id.slice(4) : '';
     el.classList.toggle('bd-line-endpoint', !!id && _endpointNodeIds.has(id));
   });
-  // ライン選択中はアンカー内の「+」を隠す (アンカークリック = カード追加 ではなく元の接続モードに戻す)
-  const _bdCanvasEl = document.getElementById('bd-canvas');
-  if (_bdCanvasEl) _bdCanvasEl.classList.toggle('bd-has-conn-selection', _selConnIds.size > 0);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDrawConns', _bdDrawPerf, drawMeta);
 }
 
@@ -27014,13 +31254,14 @@ function bdFinishEdit() {
     const el = document.querySelector('.bd-node.bd-editing');
     let editedNode = null;
     let changed = false;
+    let beforeText = '';
     if (el) {
       el.classList.remove('bd-editing');
       const txt = el.querySelector('.bd-text');
       txt.contentEditable = 'false';
       editedNode = bd.nodes.find(v=>v.id===bd.editing);
       if (editedNode) {
-        const beforeText = editedNode.text || '';
+        beforeText = editedNode.text || '';
         const nextText = txt.innerText.trim();
         changed = nextText !== beforeText;
         if (changed) {
@@ -27035,7 +31276,15 @@ function bdFinishEdit() {
       if (caret) caret.remove();
     }
     bd.editing = null;
-    if (changed) bdDirty();
+    if (changed && editedNode?._topicCanonicalOnly && editedNode?.topicRef) {
+      const attemptedText = editedNode.text;
+      void window.MeldexTopicPlacementUI.updateProjectedBoardText(editedNode, attemptedText)
+        .catch((error) => {
+          if (editedNode.text === attemptedText) editedNode.text = beforeText;
+          if (typeof showStatus === 'function') showStatus(error?.message || 'トピックの保存に失敗しました', true);
+          if (typeof bdRender === 'function') bdRender();
+        });
+    } else if (changed) bdDirty();
     // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
     if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
     if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
@@ -27595,7 +31844,7 @@ function bdFitAll(_retryCount) {
 // --- 保存 ---
 function bdDirty() {
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
-  bd.dirty=true; markAutoVersionDirty(); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
+  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
 }
 // 工程2-C項目2: 保存応答/エラーが409（本物の競合）かどうかを判定する。
@@ -28604,6 +32853,41 @@ function _bdDrawMinimapViewport(ctx, canvasEl, scale, ox, oy, accentColor, zoom)
   ctx.stroke();
 }
 
+function _bdBindPreviewMinimapInteraction(canvas) {
+  // ペインのsnapshotはcanvas要素をcloneするがイベントリスナーは複製しない。
+  // DOM属性ではなくexpandoで実要素ごとの接続状態を判定し、clone側にも再接続する。
+  if (!canvas || canvas._bdMinimapInteractionBound) return;
+  canvas._bdMinimapInteractionBound = true;
+  let dragging = false;
+  const panTo = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+    const bounds = _bdMinimapBounds();
+    if (!bounds || bounds.w === 0 || bounds.h === 0) return;
+    const scale = _bdMinimapScale(width, height, bounds);
+    const centerX = bounds.x0 + bounds.w / 2;
+    const centerY = bounds.y0 + bounds.h / 2;
+    const offsetX = width / 2 - centerX * scale;
+    const offsetY = height / 2 - centerY * scale;
+    const worldX = (event.clientX - rect.left - offsetX) / scale;
+    const worldY = (event.clientY - rect.top - offsetY) / scale;
+    const boardCanvas = document.getElementById('bd-canvas');
+    if (!boardCanvas) return;
+    const zoom = _bdSafeMinimapZoom();
+    bd.panX = boardCanvas.clientWidth / 2 - worldX * zoom;
+    bd.panY = boardCanvas.clientHeight / 2 - worldY * zoom;
+    bdTransform();
+  };
+  canvas.addEventListener('pointerdown', event => { dragging = true; panTo(event); });
+  canvas.addEventListener('pointermove', event => { if (dragging) panTo(event); });
+  canvas.addEventListener('pointerup', () => { dragging = false; });
+  canvas.addEventListener('mouseleave', () => { dragging = false; });
+  // legacy snapshotは実ペインへ切り替えた後にclickを再送するため、click単独でも
+  // パンできる契約を持たせる。ライブ面ではpointerdownと同じ地点なので冪等。
+  canvas.addEventListener('click', panTo);
+}
+
 function _bdDrawPreviewMinimap() {
   const pane = document.getElementById('gb-preview-pane');
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
@@ -28625,33 +32909,8 @@ function _bdDrawPreviewMinimap() {
       });
       pane._bdMinimapRO.observe(pane);
     }
-    // クリック/ドラッグでパン
-    let dragging = false;
-    const panTo = (e) => {
-      const r = canvas.getBoundingClientRect();
-      const W = r.width, H = r.height;
-      const bounds = _bdMinimapBounds();
-      if (!bounds || bounds.w === 0 || bounds.h === 0) return;
-      // 描画時と同じscale/offset（パネルにフィット、中心＝ボード全体の重心）
-      const scale = _bdMinimapScale(W, H, bounds);
-      const centerX = bounds.x0 + bounds.w / 2;
-      const centerY = bounds.y0 + bounds.h / 2;
-      const ox = W / 2 - centerX * scale;
-      const oy = H / 2 - centerY * scale;
-      const worldX = (e.clientX - r.left - ox) / scale;
-      const worldY = (e.clientY - r.top - oy) / scale;
-      const c = document.getElementById('bd-canvas');
-      if (!c) return;
-      const zoom = _bdSafeMinimapZoom();
-      bd.panX = c.clientWidth / 2 - worldX * zoom;
-      bd.panY = c.clientHeight / 2 - worldY * zoom;
-      bdTransform();
-    };
-    canvas.addEventListener('pointerdown', (e) => { dragging = true; panTo(e); });
-    canvas.addEventListener('pointermove', (e) => { if (dragging) panTo(e); });
-    canvas.addEventListener('pointerup', () => { dragging = false; });
-    canvas.addEventListener('mouseleave', () => { dragging = false; });
   }
+  _bdBindPreviewMinimapInteraction(canvas);
   const rect = pane.getBoundingClientRect();
   const pixelW = Math.max(1, Math.round(rect.width * devicePixelRatio));
   const pixelH = Math.max(1, Math.round(rect.height * devicePixelRatio));
@@ -28710,8 +32969,9 @@ function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentCol
     const x = rect.x * scale + ox;
     const y = rect.y * scale + oy;
     const statusDef = (n.status && typeof bdStatusDef === 'function') ? bdStatusDef(n.status) : null;
+    const nodeStyle = (typeof bdGetNodeStyle === 'function') ? bdGetNodeStyle(n) : null;
     ctx.fillStyle = _bdMinimapNodeFillColor(n, statusDef);
-    ctx.globalAlpha = statusDef ? (statusDef.opacity ?? 1) : 1;
+    ctx.globalAlpha = (statusDef ? (statusDef.opacity ?? 1) : 1) * _bdNormalizeStyleOpacity(nodeStyle?.bgOpacity, 1);
     ctx.fillRect(x, y, rect.w * scale, rect.h * scale);
     ctx.globalAlpha = 1;
   });
@@ -28723,7 +32983,7 @@ function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentCol
     const style = (typeof bdGetConnectionStyle === 'function') ? bdGetConnectionStyle(c) : null;
     ctx.strokeStyle = c.color || style?.color || accentColor || '#888';
     ctx.lineWidth = Math.max(0.5, Math.min(2, (c.width || style?.width || 1) * 0.35));
-    ctx.globalAlpha = c.hidden ? 0.18 : 1;
+    ctx.globalAlpha = (c.hidden ? 0.18 : 1) * _bdNormalizeStyleOpacity(style?.colorOpacity, 1);
     if (c.hidden) ctx.setLineDash([3, 5]);
     else ctx.setLineDash([]);
     ctx.beginPath();
@@ -31483,7 +35743,7 @@ function _bdDefaultDepthStyles() {
 // 雲型 / トゲ型 のシェイプ固有パラメータ (cloudBumpWidth 等) は depth.shape が cloud 系のときのみ
 // _bdApplyDepthCardFieldsToNode 内で追加適用するため、ここには含めない。
 const _BD_DEPTH_CARD_FIELDS = [
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth',
   'shape', 'width',
 ];
@@ -31514,7 +35774,7 @@ function _bdNormalizeDepthCardShape(value) {
   return '';
 }
 const _BD_DEPTH_LINE_FIELDS = [
-  'color', 'width', 'style', 'arrow', 'pathType',
+  'color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType',
   'branchRatio', 'cornerRadius',
   'labelBgColor', 'labelBorderColor', 'labelBorderWidth', 'labelTextColor',
   'fontBold', 'fontItalic', 'fontFamily',
@@ -31527,7 +35787,10 @@ function _bdNormalizeDepthLine(raw, _fallback) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const out = {
     color: src.color != null ? String(src.color) : '',
-    width: Number.isFinite(+src.width) ? Math.max(0, Math.min(20, +src.width)) : 0,
+    colorOpacity: _bdNormalizeStyleOpacity(src.colorOpacity, 1),
+    width: typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(src.width, 0)
+      : (Number.isFinite(+src.width) ? Math.max(0, Math.min(200, +src.width)) : 0),
     style: src.style === 'dashed' ? 'dashed' : '',
     arrow: ['end', 'start', 'both'].includes(src.arrow) ? src.arrow : '',
     // v0.5.320: pathType を 3 種 (curve/straight/orthogonal) に統合。旧 free-bezier は curve、
@@ -31575,8 +35838,10 @@ function bdNormalizeDepthStyles(styles) {
       fontFamily: typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(raw.fontFamily) : String(raw.fontFamily || ''),
       width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback.width,
       bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback.bgColor,
+      bgOpacity: _bdNormalizeStyleOpacity(raw.bgOpacity, _bdNormalizeStyleOpacity(fallback.bgOpacity, 1)),
       textColor: raw.textColor != null ? String(raw.textColor) : (fallback.textColor || ''),
       borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback.borderColor || ''),
+      borderOpacity: _bdNormalizeStyleOpacity(raw.borderOpacity, _bdNormalizeStyleOpacity(fallback.borderOpacity, 1)),
       borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback.borderWidth) ? +fallback.borderWidth : 0),
       borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback.borderRadius) ? +fallback.borderRadius : 6),
       textStrokeColor: raw.textStrokeColor != null ? String(raw.textStrokeColor) : '',
@@ -31874,6 +36139,46 @@ function bdFocusSelected(force) {
   bd.panY = ch / 2 - (n.y + nh / 2) * zoom;
   bdTransform();
   document.getElementById('bd-zoom-label').textContent = Math.round(bd.zoom * 100) + '%';
+}
+
+function bdEnsureNodeVisible(nodeId, options) {
+  const canvas = document.getElementById('bd-canvas');
+  const nodeEl = nodeId ? document.getElementById('bdn-' + nodeId) : null;
+  if (!canvas || !nodeEl || !nodeEl.isConnected) return false;
+  const canvasRect = canvas.getBoundingClientRect();
+  const nodeRect = nodeEl.getBoundingClientRect();
+  if (canvasRect.width <= 0 || canvasRect.height <= 0 || nodeRect.width <= 0 || nodeRect.height <= 0) return false;
+  const margin = Math.max(12, Number(options?.margin) || 32);
+  const safeLeft = canvasRect.left + Math.min(margin, canvasRect.width / 4);
+  const safeRight = canvasRect.right - Math.min(margin, canvasRect.width / 4);
+  const safeTop = canvasRect.top + Math.min(margin, canvasRect.height / 4);
+  const safeBottom = canvasRect.bottom - Math.min(margin, canvasRect.height / 4);
+  let screenDx = 0;
+  let screenDy = 0;
+  if (nodeRect.left < safeLeft) screenDx = safeLeft - nodeRect.left;
+  else if (nodeRect.right > safeRight) screenDx = safeRight - nodeRect.right;
+  if (nodeRect.top < safeTop) screenDy = safeTop - nodeRect.top;
+  else if (nodeRect.bottom > safeBottom) screenDy = safeBottom - nodeRect.bottom;
+  if (Math.abs(screenDx) < 0.5 && Math.abs(screenDy) < 0.5) return false;
+
+  const radians = -(Number(bd.rotation) || 0) * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  bd.panX += screenDx * cos - screenDy * sin;
+  bd.panY += screenDx * sin + screenDy * cos;
+  bdTransform();
+  return true;
+}
+
+function bdFollowActiveNode(nodeId, options) {
+  if (!nodeId) return;
+  const follow = () => {
+    if (bd._activeNode !== nodeId) return;
+    bdEnsureNodeVisible(nodeId, options);
+  };
+  requestAnimationFrame(follow);
+  const delayMs = Math.max(0, Number(options?.delayMs) || 0);
+  if (delayMs > 0) setTimeout(() => requestAnimationFrame(follow), delayMs);
 }
 // --- 3. Z-order ---
 function bdMoveZ(direction) {
@@ -32626,7 +36931,7 @@ function bdCommentMenuFor(nodeId, rect, trigger) {
     }, anchorEl ? { anchorEl } : undefined);
   }));
   menu.appendChild(_bdHudMenuItem('コメント一覧を開く', () => {
-    // 注釈パネルを開き、このカードに絞り込んだフィルタを設定 (CommentBadges._openPanelForTarget 相当)
+    // アノテートパネルを開き、このカードに絞り込んだフィルタを設定 (CommentBadges._openPanelForTarget 相当)
     if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
     else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
     const typeSel = document.getElementById('rp-ann-type'); if (typeSel) typeSel.value = 'comment';
@@ -33200,6 +37505,62 @@ function _bdPrepareContextMenuSelection(nodeId) {
   if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
 }
 
+function _bdApplyBulkTopicSelection(ids, activeNodeId, reason) {
+  const known = new Set((bd.nodes || []).map(node => node.id));
+  const next = new Set(Array.from(ids || []).filter(id => known.has(id)));
+  if (activeNodeId && known.has(activeNodeId)) next.add(activeNodeId);
+  bd.selected = next;
+  bd._activeNode = activeNodeId && next.has(activeNodeId) ? activeNodeId : (next.values().next().value || null);
+  document.querySelectorAll('.bd-node').forEach(el => {
+    el.classList.toggle('bd-selected', next.has(el.id.replace('bdn-', '')));
+  });
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([...next], reason || 'bulk-select');
+  if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi();
+  return next;
+}
+
+function _bdAncestorTopicIds(nodeId) {
+  const byId = new Map((bd.nodes || []).map(node => [node.id, node]));
+  const result = new Set();
+  let currentId = nodeId;
+  while (currentId && byId.has(currentId) && !result.has(currentId)) {
+    result.add(currentId);
+    currentId = byId.get(currentId)?.parent || '';
+  }
+  return result;
+}
+
+function _bdDescendantTopicIds(nodeId) {
+  const result = new Set();
+  const queue = [nodeId];
+  while (queue.length) {
+    const currentId = queue.shift();
+    if (!currentId || result.has(currentId)) continue;
+    result.add(currentId);
+    (bd.nodes || []).forEach(node => {
+      if (node?.parent === currentId && !result.has(node.id)) queue.push(node.id);
+    });
+  }
+  return result;
+}
+
+function bdGroupSelectedNodes() {
+  const nodeIds = [...(bd.selected || [])].filter(id => bd.nodes.some(node => node.id === id));
+  if (nodeIds.length < 2) return null;
+  bdPushUndo();
+  if (!Array.isArray(bd.groups)) bd.groups = [];
+  const group = { id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds,
+    styleRef: bd.topicViewDocument?.activeGroupStyleId || null, styleOverrides: {} };
+  bd.groups.push(group);
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
+  } else bdRender();
+  bdDirty();
+  if (typeof showStatus === 'function') showStatus(`${nodeIds.length}件のトピックをグループ化しました`);
+  return group;
+}
+
 function bdContextMenu(e, nodeId) {
   _bdCloseAllContextMenus();
   const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'トピックメニュー' : 'ボードメニュー');
@@ -33257,6 +37618,9 @@ function bdContextMenu(e, nodeId) {
     //     「拡張」サブ / 「サイズ設定」/「表示サイズ」 はすべて廃止または移設。
     //   - 編集 UI はオプションパネルへ一本化、ポップアップは切替と状態トグルに専念する。
     const targetNodeIds = multi ? [...bd.selected] : [nodeId];
+    const topicPlacementSource = !multi
+      ? window.MeldexTopicPlacementUI?.boardSource?.(nd) || null
+      : null;
     const isLinkCard = nd && !!nd.link;
     const isImageCard = nd && !!nd.img;
     const isRootCard = nd && !nd.parent;
@@ -33326,7 +37690,6 @@ function bdContextMenu(e, nodeId) {
       linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
       linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
       linkifySub.item('ボード', () => bdLinkifyCardAs(nodeId, 'board'));
-      linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
       linkifySub.sep();
       linkifySub.item('既存ファイル...', () => bdLinkifyCardFromExisting(nodeId));
       item('接続トピックを全選択', () => {
@@ -33339,13 +37702,26 @@ function bdContextMenu(e, nodeId) {
           });
         }
         bdDescendants(nodeId).forEach(id => ids.add(id));
-        bd.selected = ids;
-        document.querySelectorAll('.bd-node').forEach(el => el.classList.toggle('bd-selected', bd.selected.has(el.id.replace('bdn-', ''))));
-        if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-        if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi();
+        _bdApplyBulkTopicSelection(ids, nodeId, 'connected-topic-select');
+      });
+      const appendHierarchySelection = (label, ids, reason, disabledReason) => {
+        if (ids.size <= 1) {
+          const disabled = _bdContextMenuItem(menu, label, null, { disabled: true, html: false });
+          disabled.title = disabledReason;
+          disabled.setAttribute('aria-description', disabledReason);
+          return;
+        }
+        item(label, () => _bdApplyBulkTopicSelection(ids, nodeId, reason));
+      };
+      appendHierarchySelection('親トピックを全選択', _bdAncestorTopicIds(nodeId), 'ancestor-topic-select', '親トピックがありません');
+      appendHierarchySelection('子トピックを全選択', _bdDescendantTopicIds(nodeId), 'descendant-topic-select', '子トピックがありません');
+    }
+    if (topicPlacementSource) {
+      window.MeldexTopicPlacementUI.menuItems(topicPlacementSource).forEach(menuItem => {
+        item(menuItem.label, menuItem.action);
       });
     }
-    item('複製', () => {
+    item(topicPlacementSource ? 'トピックの見た目を複製' : '複製', () => {
       bdPushUndo();
       const ids = multi ? [...bd.selected] : [nodeId];
       const sourceNodes = ids.map(id => bd.nodes.find(v => v.id === id)).filter(Boolean);
@@ -33443,7 +37819,7 @@ function bdContextMenu(e, nodeId) {
     //   書式編集 (色・フォントサイズ・太字/斜体・形状・角丸・影・雲型等) はオプションパネルに一本化。
     //   ここでは「スタイル選択」「階層別スタイル on/off」「スタイル管理」のみ扱う。
     {
-      const cardStylePanel = _bdCreateContextSubmenu(menu, 'カードスタイル', 160);
+      const cardStylePanel = _bdCreateContextSubmenu(menu, 'トピックスタイル', 160);
       const currentStyleId = nd?.cardStyle || bd.activeCardStyle || '';
       const isHierarchical = !nd?.cardStyle;
       const restoreItem = _bdContextMenuItem(cardStylePanel, radioMark(isHierarchical) + esc('階層別スタイルに戻す'), () => {
@@ -33728,7 +38104,7 @@ function bdContextMenu(e, nodeId) {
         if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       });
 
-      // フキダシのしっぽ (追加する / 削除する の2択。注釈の付箋メニューと同じ構成に揃える)。
+      // フキダシのしっぽ (追加する / 削除する の2択。アノテートの付箋メニューと同じ構成に揃える)。
       // Alt+Shift+ドラッグを知らなくても到達できる導線。
       const tailSub = sub('フキダシのしっぽ');
       const hasTail = typeof bdCardHasTail === 'function' ? bdCardHasTail(nd) : !!nd.tail;
@@ -33762,13 +38138,7 @@ function bdContextMenu(e, nodeId) {
       nrmSub.item('高さを揃える', () => bdNormalize('height'));
       nrmSub.item('幅を揃える', () => bdNormalize('width'));
       nrmSub.item('サイズを揃える', () => bdNormalize('size'));
-      item('グループ化', () => {
-        bdPushUndo();
-        bd.groups.push({ id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds: [...bd.selected] });
-        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
-        else bdRender();
-        bdDirty();
-      });
+      item('グループ化', () => bdGroupSelectedNodes());
     }
     // 注: ルート直下の「フォーカス (Space)」および「拡張」サブ全体 (ノート編集/チェックボックス/
     // 進捗/フォント設定/マーカー/ドリルダウン/ステータス) は廃止。
@@ -33804,7 +38174,6 @@ function bdContextMenu(e, nodeId) {
       ['シート', 'database'],
       ['シナリオ', 'scriptnote'],
       ['ボード', 'board'],
-      ['タイマー', 'timer'],
     ].forEach(([label, type]) => {
       newLinkSub.item(label, () => {
         if (typeof bdCreateLinkedFileCardAt === 'function') bdCreateLinkedFileCardAt(clickWx, clickWy, type);
@@ -34967,23 +39336,79 @@ function bdInitInteraction(root) {
     return preview;
   }
 
-  function lineToolStartPoint(start) {
+  function lineToolStartPoint(start, towardWorld) {
     if (!start) return null;
     if (start.fromPoint && typeof bdNormalizeConnectionPoint === 'function') {
       const point = bdNormalizeConnectionPoint(start.fromPoint);
       if (point) return point;
     }
     if (start.nid) {
-      const n = bd.nodes.find(v => v.id === start.nid);
-      if (!n) return null;
-      const el = start.nodeEl || document.getElementById('bdn-' + start.nid);
-      const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
-      return {
-        x: pos.x + ((el?.offsetWidth || n.w || 100) / 2),
-        y: pos.y + ((el?.offsetHeight || n.h || 60) / 2),
-      };
+      const projected = bdProjectLineDragEndpoint(
+        start.nid, start.nodeEl, start.startWorld, start.pointerType, towardWorld,
+      );
+      if (projected?.point) return projected.point;
     }
     return null;
+  }
+
+  function bdProjectLineDragEndpoint(cardId, cardEl, worldPoint, pointerType, towardWorld) {
+    if (!cardId || !worldPoint || typeof _bdProjectCardOutlineEndpoint !== 'function') return null;
+    const node = bd.nodes.find(item => item.id === cardId);
+    if (!node) return null;
+    const el = cardEl || document.getElementById('bdn-' + cardId);
+    const pos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(node) : { x: node.x, y: node.y };
+    const snapDistance = (pointerType === 'touch' ? 12 : 6) / Math.max(0.05, Number(bd.zoom) || 1);
+    return _bdProjectCardOutlineEndpoint(
+      el, node, pos, worldPoint, null, { snapDistance, towardPoint: towardWorld },
+    );
+  }
+
+  function bdCreateDraggedConnection(start, targetEl, dropWorld) {
+    if (!start || !dropWorld || typeof bdCreateConnection !== 'function') return null;
+    const fromId = start.nid || '';
+    const toId = targetEl?.id?.startsWith('bdn-') ? targetEl.id.slice(4) : '';
+    const fromPoint = fromId ? null : bdNormalizeConnectionPoint(start.fromPoint || start.startWorld);
+    const toPoint = toId ? null : bdNormalizeConnectionPoint(dropWorld);
+    if ((!fromId && !fromPoint) || (!toId && !toPoint)) return null;
+    if (fromId && toId && typeof bdCanCreateConnection === 'function'
+        && !bdCanCreateConnection(fromId, toId)) return null;
+
+    const fromProjection = fromId
+      ? bdProjectLineDragEndpoint(fromId, start.nodeEl, start.startWorld, start.pointerType, dropWorld)
+      : null;
+    const toProjection = toId
+      ? bdProjectLineDragEndpoint(toId, targetEl, dropWorld, start.pointerType, start.startWorld)
+      : null;
+    if ((fromId && !fromProjection) || (toId && !toProjection)) return null;
+
+    if (fromId === toId && fromId && fromProjection?.outlinePosition && toProjection?.outlinePosition
+        && typeof _bdOutlinePathDistance === 'function'
+        && _bdOutlinePathDistance(fromProjection.outlinePosition, toProjection.outlinePosition) < 0.001
+        && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+      toProjection.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+        toProjection.outlinePosition, 'forward', { step: 0.25 },
+      );
+    }
+
+    bdPushUndo();
+    const created = bdCreateConnection(fromId, toId, { fromPoint, toPoint });
+    if (!created) return null;
+    if (fromId && typeof _bdSetConnectionOutlineEndpoint === 'function') {
+      _bdSetConnectionOutlineEndpoint(
+        created, 'from', fromId, bd.nodes.find(item => item.id === fromId), fromProjection,
+      );
+    }
+    if (toId && typeof _bdSetConnectionOutlineEndpoint === 'function') {
+      _bdSetConnectionOutlineEndpoint(
+        created, 'to', toId, bd.nodes.find(item => item.id === toId), toProjection,
+      );
+    }
+    if (typeof bdDrawConns === 'function') {
+      bdDrawConns({ connIds: [created.id], reason: 'pointer-line-create' });
+    }
+    if (typeof bdDirty === 'function') bdDirty();
+    return created;
   }
 
   function eraseConnection(conn) {
@@ -35213,7 +39638,7 @@ function bdInitInteraction(root) {
             subWidth: ns.cloudSubWidthRatio, subHeight: ns.cloudSubHeightRatio,
           } : undefined);
           if (path && typeof _bdApplyCloudShape === 'function') {
-            _bdApplyCloudShape(el, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '');
+            _bdApplyCloudShape(el, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity);
           }
         }
       }
@@ -35298,20 +39723,16 @@ function bdInitInteraction(root) {
       return;
     }
 
-    if (e.button===0 && bd.tool === 'add-line' && nodeEl) {
+    if (e.button===0 && bd.tool === 'add-line') {
       e.preventDefault();
-      const nid = nodeEl.id.replace('bdn-','');
-      bdSelect(nid);
-      bd._lineToolDrag = { nid, nodeEl, startX: e.clientX, startY: e.clientY, dragged: false };
-      ensureConnPreview();
-      return;
-    }
-
-    if (e.button===0 && bd.tool === 'add-line' && !nodeEl) {
-      e.preventDefault();
-      const fromPoint = bdScreenToWorld(e.clientX, e.clientY);
-      bdSelect(null);
-      bd._lineToolDrag = { fromPoint, startX: e.clientX, startY: e.clientY, dragged: false };
+      const startWorld = bdScreenToWorld(e.clientX, e.clientY);
+      const nid = nodeEl ? nodeEl.id.replace('bdn-','') : '';
+      if (nid) bdSelect(nid);
+      else bdSelect(null);
+      bd._lineToolDrag = {
+        nid, nodeEl, fromPoint: nid ? null : startWorld, startWorld,
+        startX: e.clientX, startY: e.clientY, pointerType: e.pointerType, dragged: false,
+      };
       ensureConnPreview();
       return;
     }
@@ -35372,12 +39793,16 @@ function bdInitInteraction(root) {
 
     if (e.button!==0) return;
 
-    // Alt + 左ドラッグ (ノード上): 旧・右ドラッグと同じ接続線作成モード
-    if (e.altKey && nodeEl) {
+    // Alt + 左ドラッグ: カード輪郭上／ボード上の任意点からラインを作成する。
+    if (e.altKey) {
       e.preventDefault();
-      const nid = nodeEl.id.replace('bdn-','');
-      if (!bd.selected.has(nid) && !e.shiftKey) bdSelect(nid);
-      bd._rightDragNode = { nid, startX: e.clientX, startY: e.clientY, nodeEl, dragged: false };
+      const startWorld = bdScreenToWorld(e.clientX, e.clientY);
+      const nid = nodeEl ? nodeEl.id.replace('bdn-','') : '';
+      if (nid && !bd.selected.has(nid) && !e.shiftKey) bdSelect(nid);
+      bd._rightDragNode = {
+        nid, nodeEl, fromPoint: nid ? null : startWorld, startWorld,
+        startX: e.clientX, startY: e.clientY, pointerType: e.pointerType, dragged: false,
+      };
       return;
     }
 
@@ -35597,9 +40022,9 @@ function bdInitInteraction(root) {
       const dx = e.clientX - (start.startX || e.clientX);
       const dy = e.clientY - (start.startY || e.clientY);
       if (!start.dragged && Math.sqrt(dx*dx+dy*dy) > 4) start.dragged = true;
-      const startPt = lineToolStartPoint(start);
+      const _w = bdScreenToWorld(e.clientX, e.clientY);
+      const startPt = lineToolStartPoint(start, _w);
       if (startPt) {
-        const _w = bdScreenToWorld(e.clientX, e.clientY);
         preview.setAttribute('x1', startPt.x);
         preview.setAttribute('y1', startPt.y);
         preview.setAttribute('x2', _w.x);
@@ -35607,7 +40032,7 @@ function bdInitInteraction(root) {
       }
     }
     if (erasing) eraseAtClientPoint(e.clientX, e.clientY);
-    // 右ドラッグ接続線
+    // Alt+左ドラッグ接続線
     if (bd._rightDragNode) {
       const rd = bd._rightDragNode;
       const dx = e.clientX - rd.startX, dy = e.clientY - rd.startY;
@@ -35618,12 +40043,11 @@ function bdInitInteraction(root) {
       if (rd.dragged) {
         const preview = ensureConnPreview();
         if (preview) {
-          const n = bd.nodes.find(v=>v.id===rd.nid);
-          if (n) {
-            const _w = bdScreenToWorld(e.clientX, e.clientY);
-            const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
-            preview.setAttribute('x1', pos.x + (rd.nodeEl.offsetWidth||100)/2);
-            preview.setAttribute('y1', pos.y + (rd.nodeEl.offsetHeight||60)/2);
+          const _w = bdScreenToWorld(e.clientX, e.clientY);
+          const startPt = lineToolStartPoint(rd, _w);
+          if (startPt) {
+            preview.setAttribute('x1', startPt.x);
+            preview.setAttribute('y1', startPt.y);
             preview.setAttribute('x2', _w.x);
             preview.setAttribute('y2', _w.y);
           }
@@ -35795,25 +40219,10 @@ function bdInitInteraction(root) {
     if (bd._lineToolDrag) {
       const start = bd._lineToolDrag;
       document.getElementById('bd-conn-preview')?.remove();
-      const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-      const dropW = bdScreenToWorld(e.clientX, e.clientY);
-      let created = null;
-      if (targetEl) {
-        const toId = targetEl.id.replace('bdn-','');
-        if (start.nid) {
-          if ((start.dragged || toId !== start.nid) && bdCanCreateConnection(start.nid, toId)) {
-            bdPushUndo();
-            created = bdCreateConnection(start.nid, toId);
-          }
-        } else if (start.fromPoint) {
-          bdPushUndo();
-          created = bdCreateConnection('', toId, { fromPoint: start.fromPoint });
-        }
-      } else if (start.dragged || start.nid) {
-        bdPushUndo();
-        if (start.nid) created = bdCreateConnection(start.nid, '', { toPoint: dropW });
-        else created = bdCreateConnection('', '', { fromPoint: start.fromPoint, toPoint: dropW });
-      }
+      const targetEl = start.dragged
+        ? boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY)) : null;
+      const created = start.dragged
+        ? bdCreateDraggedConnection(start, targetEl, bdScreenToWorld(e.clientX, e.clientY)) : null;
       if (created) showStatus('ラインを追加しました');
       bd._lineToolDrag = null;
     }
@@ -35822,16 +40231,9 @@ function bdInitInteraction(root) {
       const rd = bd._rightDragNode;
       document.getElementById('bd-conn-preview')?.remove();
       if (rd.dragged) {
-        // ドロップ先ノードを検出してライン作成
         const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-        if (targetEl) {
-          const toId = targetEl.id.replace('bdn-','');
-          if (bdCanCreateConnection(rd.nid, toId)) { bdPushUndo(); if (bdCreateConnection(rd.nid, toId)) showStatus('ラインを追加しました'); }
-        } else {
-          const dropW = bdScreenToWorld(e.clientX, e.clientY);
-          bdPushUndo();
-          if (bdCreateConnection(rd.nid, '', { toPoint: dropW })) showStatus('ラインを追加しました');
-        }
+        const created = bdCreateDraggedConnection(rd, targetEl, bdScreenToWorld(e.clientX, e.clientY));
+        if (created) showStatus('ラインを追加しました');
       }
       // ドラッグしなかった場合は何もしない (ノード選択は pointerdown 時に済んでいる)
       bd._rightDragNode = null;
@@ -35861,7 +40263,7 @@ function bdInitInteraction(root) {
       // 移動量が小さければ右クリックメニュー。nid があればノードメニュー、なければ空白メニュー
       if (bd._rightClickPos) {
         const dx=Math.abs(e.clientX-bd._rightClickPos.x), dy=Math.abs(e.clientY-bd._rightClickPos.y);
-        // 注釈ツールバーオン時はボードの右クリックメニューを出さない (注釈描画の邪魔になるため)
+        // アノテートツールバーオン時はボードの右クリックメニューを出さない (アノテート描画の邪魔になるため)
         if (dx<15 && dy<15 && !bdIsAnnotationModeActive()) {
           const menuNid = bd._rightClickPos.nid;
           // ノード上で右クリックした場合、そのノードが未選択なら選択してからメニューを出す
@@ -36650,6 +41052,7 @@ function bdInitKeyboard(root) {
           bd._activeNode = next;
           bdApplySelectionDomClass();
           if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+          if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(next);
         }
         return;
       }
@@ -36657,7 +41060,11 @@ function bdInitKeyboard(root) {
       // 矢印のみ: アクティブノード移動
       const active = bd._activeNode || (bd.selected.size===1 ? [...bd.selected][0] : null);
       const next = bdFindNearest(active || (bd.nodes[0]?.id), arrow);
-      if (next) { bdSelect(next); bd._activeNode = next; }
+      if (next) {
+        bdSelect(next);
+        bd._activeNode = next;
+        if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(next);
+      }
       return;
     }
 
@@ -37205,7 +41612,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="トピック追加" aria-label="トピック追加">${_bdIcon('credit-card', 16)}</button>
-      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル" aria-label="カードスタイル" aria-haspopup="menu" aria-expanded="false">
+      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="トピックスタイル" aria-label="トピックスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
@@ -37334,12 +41741,12 @@ function _bdCardPathShapePreviewHtml(style, common) {
   const textColor = _bdPresetSafeCssColor(style.textColor, 'var(--fg)');
   const borderWidth = _bdPresetClampedNumber(style.borderWidth, 0, 0, 24);
   const strokeAttrs = borderWidth > 0
-    ? `stroke="${_bdEscAttr(borderColor)}" stroke-width="${borderWidth * 2}"`
+    ? `stroke="${_bdEscAttr(borderColor)}" stroke-opacity="${_bdNormalizeStyleOpacity(style.borderOpacity, 1)}" stroke-width="${borderWidth * 2}"`
     : 'stroke="none"';
   const joinAttrs = shape === 'thorn' || shape === 'thorn-curve'
     ? 'stroke-linejoin="miter" stroke-miterlimit="40"'
     : 'stroke-linejoin="round"';
-  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(textColor)};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
+  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(textColor)};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" fill-opacity="${_bdNormalizeStyleOpacity(style.bgOpacity, 1)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
 }
 
 // テキストフチを text-shadow の多方向重ねで擬似描画する。
@@ -37389,13 +41796,21 @@ function _bdCardStylePreviewHtml(style) {
     const pathHtml = _bdCardPathShapePreviewHtml(style, { fontCss, shadowCss });
     if (pathHtml) return pathHtml;
   }
-  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(bgColor)};color:${_bdEscAttr(textColor)};border:${borderWidth}px solid ${_bdEscAttr(borderColor)};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
+  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(_bdColorWithOpacity(bgColor, style.bgOpacity))};color:${_bdEscAttr(textColor)};border:${borderWidth}px solid ${_bdEscAttr(_bdColorWithOpacity(borderColor, style.borderOpacity))};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
 }
 
 function _bdLineStylePreviewHtml(style) {
   if (!style) return '<span class="bd-style-line-preview-empty"></span>';
   const color = _bdPresetSafeCssColor(style.color, 'var(--accent)');
-  const strokeWidth = _bdPresetClampedNumber(style.width, 2, 0, 24);
+  const sourceStrokeWidth = typeof _bdNormalizeLineWidth === 'function'
+    ? _bdNormalizeLineWidth(style.width, 2)
+    : _bdPresetClampedNumber(style.width, 2, 0, 200);
+  // 200pxまでの保存値を保持したまま、20px高のプレビューへ同率縮小する。
+  const geometry = typeof _bdArrowMarkerGeometry === 'function'
+    ? _bdArrowMarkerGeometry(sourceStrokeWidth)
+    : { axisLength: 14, crossSpan: Math.max(8, sourceStrokeWidth + 8), refX: 3, refY: Math.max(8, sourceStrokeWidth + 8) / 2 };
+  const previewScale = Math.min(1, 12 / Math.max(12, geometry.crossSpan));
+  const strokeWidth = sourceStrokeWidth * previewScale;
   const dash = style.style === 'dashed' ? 'stroke-dasharray="6 3"' : '';
   // v0.5.320: 旧 free-bezier → curve、orthogonal-curve → orthogonal に統合。
   // 直角線のコーナー半径 >0 ならプレビューでも角丸表示。
@@ -37409,11 +41824,14 @@ function _bdLineStylePreviewHtml(style) {
     : pathType === 'straight'
       ? 'M6,10 L50,10'
       : 'M6,14 C18,4 38,4 50,14';
-  const markerSize = Math.max(7, Math.min(12, strokeWidth * 2.2 + 2));
-  const refX = Math.max(1, Math.min(markerSize * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  const markerAxisLength = geometry.axisLength * previewScale;
+  const markerCrossSpan = geometry.crossSpan * previewScale;
+  const refX = geometry.refX * previewScale;
+  const refY = geometry.refY * previewScale;
   const markerId = `bd-preview-arrow-${Math.random().toString(36).slice(2, 8)}`;
   const pathId = `bd-preview-path-${Math.random().toString(36).slice(2, 8)}`;
-  const marker = `<marker id="${markerId}" markerWidth="${markerSize}" markerHeight="${markerSize}" refX="${refX}" refY="${markerSize / 2}" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0,0 L${markerSize - 1},${markerSize / 2} L0,${markerSize} Z" fill="${_bdEscAttr(color)}"/></marker>`;
+  const colorOpacity = _bdNormalizeStyleOpacity(style.colorOpacity, 1);
+  const marker = `<marker id="${markerId}" markerWidth="${markerAxisLength}" markerHeight="${markerCrossSpan}" refX="${refX}" refY="${refY}" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0,0 L${Math.max(0, markerAxisLength - previewScale)},${refY} L0,${markerCrossSpan} Z" fill="${_bdEscAttr(color)}" fill-opacity="${colorOpacity}"/></marker>`;
   const markerAttrs = strokeWidth > 0 ? [
     (style.arrow === 'start' || style.arrow === 'both') ? `marker-start="url(#${markerId})"` : '',
     (style.arrow === 'end' || style.arrow === 'both') ? `marker-end="url(#${markerId})"` : '',
@@ -37450,7 +41868,7 @@ function _bdLineStylePreviewHtml(style) {
       labelSvg = `${bgRect}${borderRect}<text x="28" y="12" text-anchor="middle" dominant-baseline="middle" fill="${_bdEscAttr(labelTextColor)}" font-size="9" ${fontAttr} ${strokeAttr}>Aa</text>`;
     }
   }
-  return `<svg width="62" height="20" viewBox="0 0 56 20" fill="none" xmlns="http://www.w3.org/2000/svg"><defs>${marker}</defs><path id="${pathId}" d="${d}" stroke="${_bdEscAttr(color)}" stroke-width="${strokeWidth}" ${dash} stroke-linecap="${style.arrow ? 'butt' : 'round'}" stroke-linejoin="round" ${markerAttrs}/>${labelSvg}</svg>`;
+  return `<svg width="62" height="20" viewBox="0 0 56 20" fill="none" xmlns="http://www.w3.org/2000/svg"><defs>${marker}</defs><path id="${pathId}" d="${d}" stroke="${_bdEscAttr(color)}" stroke-opacity="${colorOpacity}" stroke-width="${strokeWidth}" ${dash} stroke-linecap="${style.arrow ? 'butt' : 'round'}" stroke-linejoin="round" ${markerAttrs}/>${labelSvg}</svg>`;
 }
 
 function _bdStylePickerLargePreviewHtml(kind, style) {
@@ -37496,7 +41914,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet', '.smart-db.json',
+    '.mel-sheet',
     '.mel-timer', '.timer.json',
   ];
 
@@ -37549,8 +41967,8 @@ const GBLinkRouter = (() => {
     const extension = ext(lower);
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
-    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
-    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-sheet')) return 'database';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
     if (extension === 'pdf') return 'pdf';
     if (extension === 'csv') return 'csv';
@@ -37606,12 +42024,11 @@ const GBLinkRouter = (() => {
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
-    else if (explicitType === 'timer') entry = { type: 'timer', label: nextLabel, path: nextPath };
+    else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
     else if (explicitType === 'html') entry = { type: 'html', label: nextLabel, path: nextPath };
     else if (explicitType === 'entity') entry = { type: 'entity', label: nextLabel, path: nextPath };
     else if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) entry = { type: explicitType, label: nextLabel, path: nextPath };
-    else if (explicitType === 'smart-db') entry = { type: 'smart-db', label: nextLabel, path: nextPath };
     else if (explicitType === 'folder') entry = { type: 'folder', label: nextLabel, path: nextPath };
     else if (explicitType === 'calendar') entry = { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
     else if (explicitType === 'pdf' || (explicitType === 'document' && extension === 'pdf')) {
@@ -37625,8 +42042,8 @@ const GBLinkRouter = (() => {
     } else if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
-    else if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) entry = { type: 'smart-db', label: nextLabel, path: nextPath };
-    else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'timer', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
     else if (extension === 'html' || extension === 'htm') entry = { type: 'html', label: nextLabel, path: nextPath };
     else if (IMAGE_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
@@ -37870,7 +42287,7 @@ function _bdOpenExternalActionUrl(path) {
   return false;
 }
 
-const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
+const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'html', 'folder', 'calendar', 'csv', 'media', 'board']);
 const _BD_DEFAULT_OPEN_TARGET_KEY = 'gb:board-default-open-target:v1';
 const _BD_VALID_OPEN_TARGETS = new Set(['main', 'right-sidebar']);
 const _bdResolvedLinkTypeCache = new Map();
@@ -38159,7 +42576,7 @@ function _bdPaneActiveType(pane) {
 }
 
 function _bdIsUtilityPane(pane) {
-  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'calendar', 'timer']);
+  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'calendar']);
   return utilityTypes.has(_bdPaneActiveType(pane));
 }
 
@@ -38194,8 +42611,8 @@ function _bdInferLinkType(path, explicitType) {
   const ext = _bdLinkExt(lower);
   if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
   if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || ext === 'board') return 'board';
-  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
-  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (lower.endsWith('.mel-sheet')) return 'database';
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (ext === 'md' || ext === 'txt') return 'page';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'csv') return 'csv';
@@ -38222,12 +42639,11 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (_bdIsExternalUrl(nextPath)) return { type: 'html', label: nextLabel, path: nextPath, urlExternal: true };
   if (explicitType === 'scriptnote') return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (explicitType === 'board') return { type: 'board', label: nextLabel, path: nextPath };
-  if (explicitType === 'timer') return { type: 'timer', label: nextLabel, path: nextPath };
+  if (explicitType === 'timer' || explicitType === 'unsupported') return { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
   if (explicitType === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (explicitType === 'html') return { type: 'html', label: nextLabel, path: nextPath };
   if (explicitType === 'entity') return { type: 'entity', label: nextLabel, path: nextPath };
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
-  if (explicitType === 'smart-db') return { type: 'smart-db', label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
   if (explicitType === 'pdf' || (explicitType === 'document' && ext === 'pdf')) {
@@ -38241,8 +42657,8 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
   if (ext === 'board') return { type: 'board', label: nextLabel, path: nextPath };
-  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return { type: 'smart-db', label: nextLabel, path: nextPath };
-  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return { type: 'timer', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-sheet')) return { type: 'database', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
   if (ext === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (ext === 'html' || ext === 'htm') return { type: 'html', label: nextLabel, path: nextPath };
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
@@ -38358,7 +42774,7 @@ function _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState) {
   const activeTab = tabs[index];
   if (!activeTab || activeTab.pinned) return '';
   if (activeTab.path && activeTab.path !== entry.path) {
-    const dbTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const dbTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
     if (dbTypes.has(activeTab.type) && typeof _navPushWithViewState === 'function') {
       const paneCtx = typeof getPaneContext === 'function' ? getPaneContext(targetPaneId) : null;
       _navPushWithViewState({
@@ -38450,10 +42866,6 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
   const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));
-  if (standaloneType === 'smart-db' && _bdIsStandaloneBoardSurface()) {
-    if (typeof showStatus === 'function') showStatus('スマートシートはMeldex本体で開いてください', true);
-    return false;
-  }
   return MeldexBoardOpenTarget.open(path, opts.target, {
     ...opts,
     label,
@@ -38804,12 +43216,19 @@ function _bdStandaloneUrlForEntry(entry) {
   const viewerUrl = _bdStandaloneViewerUrl(entry);
   if (viewerUrl) return viewerUrl;
   if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
+  if (entry.type === 'scriptnote') {
+    const query = new URLSearchParams({
+      single: '1',
+      open: 'scriptnote',
+      path: entry.path,
+      label: entry.label || String(entry.path).split(/[/\\]/).pop() || '',
+    });
+    return 'Meldex.html?' + query.toString();
+  }
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
     return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
   }
   if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (entry.type === 'timer') return 'timer-standalone.html?open=' + encodeURIComponent(entry.path);
   return '';
 }
 
@@ -38950,9 +43369,8 @@ function _bdFileIcon(ext, path, linkType) {
   if (_bdIsExternalUrl(path)) return 'globe';
   if (explicitType === 'scriptnote') return byType('scriptnote', 'bookOpenText');
   if (explicitType === 'board') return byType('board', 'presentation');
-  if (explicitType === 'timer') return byType('timer', 'timer');
+  if (explicitType === 'timer' || explicitType === 'unsupported') return 'fileQuestion';
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return byType('database', 'db');
-  if (explicitType === 'smart-db') return byType('smart-db', 'databaseSearch');
   if (explicitType === 'csv') return 'table';
   if (explicitType === 'html') return 'globe';
   if (explicitType === 'folder') return byType('folder', 'folder');
@@ -38960,8 +43378,8 @@ function _bdFileIcon(ext, path, linkType) {
   // 複合拡張子（アプリ種別）を優先判定
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return byType('scriptnote', 'bookOpenText');
   if (name.endsWith('.mel-board') || name.endsWith('.board.json') || name.endsWith('.canvas.json')) return byType('board', 'presentation');
-  if (name.endsWith('.mel-sheet') || name.endsWith('.smart-db.json')) return byType('smart-db', 'databaseSearch');
-  if (name.endsWith('.mel-timer') || name.endsWith('.timer.json')) return byType('timer', 'timer');
+  if (name.endsWith('.mel-sheet')) return byType('database', 'db');
+  if (name.endsWith('.mel-timer') || name.endsWith('.timer.json')) return 'fileQuestion';
   const nextExt = String(ext || '').toLowerCase();
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(nextExt)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(nextExt)) return 'clapperboard';
@@ -38970,9 +43388,9 @@ function _bdFileIcon(ext, path, linkType) {
   if (nextExt === 'csv') return 'table';
   if (nextExt === 'board') return byType('board', 'presentation');
   if (nextExt === 'mel-board') return byType('board', 'presentation');
-  if (nextExt === 'mel-sheet') return byType('smart-db', 'databaseSearch');
+  if (nextExt === 'mel-sheet') return byType('database', 'db');
   if (nextExt === 'mel-scenario') return byType('scriptnote', 'bookOpenText');
-  if (nextExt === 'mel-timer') return byType('timer', 'timer');
+  if (nextExt === 'mel-timer') return 'fileQuestion';
   if (nextExt === 'json') return 'fileText';
   if (nextExt === 'pdf') return 'fileText';
   return 'file';
@@ -39207,10 +43625,10 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 
 /* === gb-board-bulk-import.js === */
 ;
-/* gb-board-bulk-import.js — シート / スマートシートのエントリを一括でリンクカードとしてボードに読み込む。
+/* gb-board-bulk-import.js — シートのトピックを一括でリンクカードとしてボードに読み込む。
  *
- * ボード左上メニュー「シート/スマートシートから一括読込...」から起動。
- *   Step 1: 対象 (現在 Meldex で開いているシート / スマートシートのタブ) を選ぶ
+ * ボード左上メニュー「シートから一括読込...」から起動。
+ *   Step 1: 対象 (現在 Meldex で開いているシートのタブ) を選ぶ
  *   Step 2: ビューを選ぶ (ビューのフィルタを適用)
  *   Step 3: 該当エントリを取得 → 先頭の画像プロパティを並行フェッチ → グリッド配置で一括作成
  *
@@ -39220,9 +43638,9 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 (function () {
   'use strict';
 
-  // 対象候補として扱うタブ型。ここに含まれる型のタブがあれば「開いているシート/スマートシート」として列挙する。
+  // 対象候補として扱う通常シートのタブ型。
   const SUPPORTED_TAB_TYPES = new Set([
-    'smart-db', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
   ]);
   let _activeBulkImportModal = null;
 
@@ -39233,7 +43651,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     }
     const candidates = _collectCandidates();
     if (!candidates.length) {
-      if (typeof showStatus === 'function') showStatus('開いているシート / スマートシートのタブがありません', true);
+      if (typeof showStatus === 'function') showStatus('開いているシートのタブがありません', true);
       return;
     }
     _openWizard(candidates);
@@ -39278,7 +43696,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     body.className = 'bd-bulk-import-content';
     body.innerHTML = `
       <label class="bd-bulk-import-field" for="${sourceId}">
-        <span class="bd-bulk-import-label">対象のシート / スマートシート</span>
+        <span class="bd-bulk-import-label">対象のシート</span>
         <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
       </label>
       <label class="bd-bulk-import-field" for="${viewId}">
@@ -39299,7 +43717,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: uid,
-      title: 'シート / スマートシートから一括読込',
+      title: 'シートから一括読込',
       body,
       footer: [cancelBtn, goBtn],
       variant: 'standard',
@@ -39436,11 +43854,6 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 
   async function _getViewsFor(target) {
     if (!target) return [];
-    if (target.type === 'smart-db') {
-      // スマートシートはトップレベルの filters が「全体ビュー」として機能する。
-      // ユーザー定義ビューの概念はスマートシートには現状ない。
-      return [{ label: 'スマートシート全体 (フィルタ適用)', kind: 'smart-all' }];
-    }
     // 通常のシート: 「現在のフィルタ」「保存済みビュー」「すべて」を列挙。
     const views = [];
     if (typeof getCurrentDbViewConfigEntry === 'function') {
@@ -39459,93 +43872,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
   }
 
   async function _fetchEntries(target, view) {
-    if (target.type === 'smart-db') {
-      return await _fetchSmartDbEntries(target.path);
-    }
     return await _fetchDbEntries(target.path, view);
-  }
-
-  async function _fetchSmartDbEntries(path) {
-    const def = await _loadSmartDbDefinition(path);
-    if (def?.sourceType === 'all-files') {
-      const data = await _fetchSmartDbAllFilesData(path, def);
-      let files = Array.isArray(data?.files) ? data.files.slice() : [];
-      if (typeof applyGlobalIndexFilters === 'function') files = applyGlobalIndexFilters(files, def.filters || []);
-      if (typeof applyGlobalIndexSort === 'function') files = applyGlobalIndexSort(files, def.sortBy || 'modified', def.sortDir || 'desc');
-      return files
-        .filter(file => file && (file.path || file.abs_path))
-        .map(file => ({
-          path: file.abs_path || file.path,
-          name: file.name || String(file.abs_path || file.path || '').split(/[\\/]/).pop() || '',
-          source: 'smart-db',
-        }));
-    }
-    const filters = Array.isArray(def?.filters) ? def.filters : [];
-    const bulkSources = (typeof _smartDbEffectiveSources === 'function')
-      ? _smartDbEffectiveSources(def)
-      : (Array.isArray(def?.sources) ? def.sources.filter(s => s && s.path) : []);
-    let bulkUrl = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters));
-    if (bulkSources.length) bulkUrl += '&sources=' + encodeURIComponent(JSON.stringify(bulkSources));
-    const payload = _currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.entities)
-      ? state.smartDbData
-      : await apiFetch(bulkUrl);
-    const entities = Array.isArray(payload?.entities) ? payload.entities : [];
-    return entities
-      .filter(e => e && e.path)
-      .map(e => ({ path: e.path, name: e.name || '', source: 'smart-db' }));
-  }
-
-  async function _loadSmartDbDefinition(path) {
-    const pathText = String(path || '');
-    if (pathText.startsWith('smart-db:')) {
-      const id = pathText.slice('smart-db:'.length);
-      if (state?.currentSmartDb && (state.currentSmartDb.id === id || state.currentSmartDb._filePath === id)) {
-        return state.currentSmartDb;
-      }
-      let saved = [];
-      try {
-        saved = typeof getSavedSmartDbs === 'function'
-          ? getSavedSmartDbs()
-          : JSON.parse(localStorage.getItem('smartDbs') || '[]');
-      } catch { saved = []; }
-      const found = (saved || []).find(d => d?.id === id || d?._filePath === id) || {};
-      if (!_isRawSmartDbDefinition(found)) throw new Error('スマートシートが見つかりません');
-      return typeof normalizeSmartDbDefinition === 'function' ? normalizeSmartDbDefinition(found) : found;
-    }
-    const fileData = await apiFetch('/file?path=' + encodeURIComponent(pathText));
-    let def = {};
-    try { def = JSON.parse(fileData?.content || '{}') || {}; } catch { throw new Error('スマートシートJSONを読み込めません'); }
-    if (!_isRawSmartDbDefinition(def)) throw new Error('スマートシート定義が空です');
-    if (typeof normalizeSmartDbDefinition === 'function') def = normalizeSmartDbDefinition(def);
-    def._filePath = pathText;
-    return def;
-  }
-
-  function _isRawSmartDbDefinition(def) {
-    if (!def || typeof def !== 'object' || Array.isArray(def)) return false;
-    if (!Object.keys(def).length) return false;
-    return def.type === 'smart-db'
-      || def.sourceType === 'all-files'
-      || def.sourceType === 'db-entities'
-      || Array.isArray(def.filters)
-      || !!def.id
-      || !!def.name;
-  }
-
-  function _currentSmartDbMatches(path, def) {
-    const current = state?.currentSmartDb;
-    if (!current) return false;
-    const pathText = String(path || '');
-    return current === def
-      || current.id === def?.id
-      || (current._filePath && current._filePath === pathText)
-      || pathText === 'smart-db:' + current.id;
-  }
-
-  async function _fetchSmartDbAllFilesData(path, def) {
-    if (_currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.files)) return state.smartDbData;
-    if (typeof loadGlobalIndexData === 'function') return await loadGlobalIndexData(def);
-    return await apiFetch('/global-index');
   }
 
   async function _fetchDbEntries(dbPath, view) {
@@ -39890,7 +44217,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 
 /* === gb-board-ui.js === */
 ;
-/* gb-board-info-panel.js: ボード選択を共通ファイル情報パネルへ接続する */
+/* gb-board-info-panel.js: ボード選択を共通ファイルプロパティパネルへ接続する */
 (function initMeldexBoardInfoPanel(global) {
   'use strict';
 
@@ -40225,6 +44552,18 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 
 function _bdClone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function _bdNormalizeStyleOpacity(value, fallback = 1) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : fallback;
+}
+
+function _bdColorWithOpacity(color, opacity) {
+  if (!color) return color || '';
+  const normalized = _bdNormalizeStyleOpacity(opacity, 1);
+  if (normalized >= 1) return color;
+  return `color-mix(in srgb, ${color} ${Math.round(normalized * 10000) / 100}%, transparent)`;
 }
 
 function _bdEscAttr(value) {
@@ -40603,9 +44942,9 @@ function bdApplyStylePresetMigration() {
   // 注意: bdGetNodeStyle/bdGetConnectionStyle は内部で bdEnsureBoardUiState を呼ぶため
   // 再帰呼び出しを起こす。ここでは override + base style を直接合成する。
   if (currentVersion < 6) {
-    const cardOverrideKeys = ['bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+    const cardOverrideKeys = ['bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
       'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape'];
-    const lineOverrideKeys = ['color', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio', 'cornerRadius'];
+    const lineOverrideKeys = ['color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio', 'cornerRadius'];
     if (Array.isArray(bd.nodes)) {
       bd.nodes.forEach(node => {
         if (!node?.id) return;
@@ -40619,8 +44958,10 @@ function bdApplyStylePresetMigration() {
           id: customId,
           name: 'カスタム',
           bgColor: pick('bgColor', '') || '',
+          bgOpacity: _bdNormalizeStyleOpacity(pick('bgOpacity', 1), 1),
           textColor: pick('textColor', '') || '',
           borderColor: pick('borderColor', '') || '',
+          borderOpacity: _bdNormalizeStyleOpacity(pick('borderOpacity', 1), 1),
           borderWidth: Number.isFinite(+pick('borderWidth', 0)) ? Math.max(0, +pick('borderWidth', 0)) : 0,
           borderRadius: Number.isFinite(+pick('borderRadius', 6)) ? Math.max(0, +pick('borderRadius', 6)) : 6,
           fontSize: Number.isFinite(+pick('fontSize', 13)) ? Math.max(8, +pick('fontSize', 13)) : 13,
@@ -40655,6 +44996,7 @@ function bdApplyStylePresetMigration() {
           id: customId,
           name: 'カスタム',
           color: pick('color', '') || '',
+          colorOpacity: _bdNormalizeStyleOpacity(pick('colorOpacity', 1), 1),
           width: Number.isFinite(+pick('width', 0)) ? Math.max(0, +pick('width', 0)) : 0,
           style: pick('style', '') === 'dashed' ? 'dashed' : '',
           arrow: ['end', 'start', 'both', ''].includes(rawArrow) ? rawArrow : 'end',
@@ -40686,8 +45028,10 @@ function bdNormalizeCardStyles(styles) {
           id: style.id || '',
           name: style.name || 'トピック',
           bgColor: style.bgColor || '',
+          bgOpacity: _bdNormalizeStyleOpacity(style.bgOpacity, 1),
           textColor: style.textColor || '',
           borderColor: style.borderColor || '',
+          borderOpacity: _bdNormalizeStyleOpacity(style.borderOpacity, 1),
           borderWidth: Number.isFinite(+style.borderWidth) ? Math.max(0, +style.borderWidth) : 0,
           borderRadius: Number.isFinite(+style.borderRadius) ? Math.max(0, +style.borderRadius) : 6,
           fontSize: Number.isFinite(+style.fontSize) ? Math.max(8, +style.fontSize) : 13,
@@ -40736,9 +45080,10 @@ function bdNormalizeLineStyles(styles) {
           id: style.id || '',
           name: style.name || def?.name || 'ライン',
           color: style.color || def?.color || '',
-          width: Number.isFinite(+style.width)
-            ? Math.max(0, +style.width)
-            : (Number.isFinite(+def?.width) ? +def.width : 0),
+          colorOpacity: _bdNormalizeStyleOpacity(style.colorOpacity, _bdNormalizeStyleOpacity(def?.colorOpacity, 1)),
+          width: typeof _bdNormalizeLineWidth === 'function'
+            ? _bdNormalizeLineWidth(style.width, Number.isFinite(+def?.width) ? +def.width : 0)
+            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def?.width) ? +def.width : 0)),
           style: style.style === 'dashed'
             ? 'dashed'
             : (style.style === '' ? '' : (def?.style ?? '')),
@@ -40826,8 +45171,10 @@ function bdGetNodeStyle(node) {
   const nodeCloudSubHeightRatio = node?.cloudSubHeightRatio !== undefined ? node.cloudSubHeightRatio : node?.cloudSubBumpRatio;
   const baseStyle = {
     bgColor: node?.bgColor !== undefined ? node.bgColor : (style?.bgColor || ''),
+    bgOpacity: _bdNormalizeStyleOpacity(node?.bgOpacity !== undefined ? node.bgOpacity : style?.bgOpacity, 1),
     textColor: node?.textColor !== undefined ? node.textColor : (style?.textColor || ''),
     borderColor: node?.borderColor !== undefined ? node.borderColor : (style?.borderColor || ''),
+    borderOpacity: _bdNormalizeStyleOpacity(node?.borderOpacity !== undefined ? node.borderOpacity : style?.borderOpacity, 1),
     borderWidth: node?.borderWidth !== undefined ? node.borderWidth : (style?.borderWidth ?? 0),
     borderRadius: node?.borderRadius !== undefined ? node.borderRadius : (style?.borderRadius ?? 6),
     fontSize: node?.fontSize !== undefined ? node.fontSize : (style?.fontSize ?? 13),
@@ -40870,7 +45217,10 @@ function bdGetConnectionStyle(conn) {
   const hasLineValue = key => conn && Object.prototype.hasOwnProperty.call(conn, key);
   return {
     color: hasLineValue('color') ? conn.color : (style?.color || themeLineColor || ''),
-    width: hasWidth ? conn.width : (style?.width ?? 0),
+    colorOpacity: _bdNormalizeStyleOpacity(hasLineValue('colorOpacity') ? conn.colorOpacity : style?.colorOpacity, 1),
+    width: typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(hasWidth ? conn.width : (style?.width ?? 0), 0)
+      : Math.max(0, Math.min(200, +(hasWidth ? conn.width : (style?.width ?? 0)) || 0)),
     style: hasLineValue('style') ? (conn.style === 'dashed' ? 'dashed' : '') : (style?.style || ''),
     arrow: hasArrow ? conn.arrow : (style?.arrow ?? 'end'),
     pathType: hasPathType
@@ -40914,8 +45264,10 @@ function bdGetConnectionStyle(conn) {
 function bdClearCardStyleOverrides(node) {
   [
     'bgColor',
+    'bgOpacity',
     'textColor',
     'borderColor',
+    'borderOpacity',
     'borderWidth',
     'borderRadius',
     'fontSize',
@@ -40983,7 +45335,7 @@ function bdCreateNodeWithStyle(text, x, y, opts) {
 // 内容系 (text/img/link/linkType) と状態系 (locked/collapsed/minimized/contained/note 等) はコピーしない。
 const _BD_INHERIT_STYLE_KEYS = [
   'cardStyle', '_userCardStyle',
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic',
   'textStrokeColor', 'textStrokeWidth',
   'shape',
@@ -41078,6 +45430,7 @@ function bdAddChildToSelected() {
       else bdAutoLayout(root.id);
     }
     bdSelect(child.id);
+    if (typeof bdFollowActiveNode === 'function') bdFollowActiveNode(child.id, { delayMs: 520 });
     bdDirty();
     return child;
   } finally {
@@ -41176,6 +45529,11 @@ function bdAddSiblingToSelected() {
       bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling' });
     }
     bdSelect(sib.id);
+    if (typeof bdFollowActiveNode === 'function') {
+      const followDelay = typeof BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS === 'number'
+        ? Math.max(520, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS + 160) : 520;
+      bdFollowActiveNode(sib.id, { delayMs: followDelay });
+    }
     bdDirty();
     return sib;
   } finally {
@@ -41269,7 +45627,8 @@ function bdCreateConnectionWithStyle(fromId, toId, opts) {
     : nextOpts.pathType === 'orthogonal' ? 'orthogonal'
     : nextOpts.pathType === 'straight' ? 'straight' : 'curve';
   else if (nextOpts.straight !== undefined) conn.pathType = nextOpts.straight ? 'straight' : 'curve';
-  if (nextOpts.width !== undefined) conn.width = nextOpts.width;
+  if (nextOpts.width !== undefined) conn.width = typeof _bdNormalizeLineWidth === 'function'
+    ? _bdNormalizeLineWidth(nextOpts.width, 0) : Math.max(0, Math.min(200, +nextOpts.width || 0));
   return conn;
 }
 
@@ -41375,7 +45734,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   const menu = document.createElement('div');
   menu.className = 'ab-dropdown tool-menu-dropdown bd-style-picker-menu';
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', kind === 'card' ? 'カードスタイル' : 'ラインスタイル');
+  menu.setAttribute('aria-label', kind === 'card' ? 'トピックスタイル' : 'ラインスタイル');
   menu.innerHTML = styles.map(style => `
     <button type="button" class="bd-style-picker-item${style.id === activeId ? ' active' : ''}" role="menuitemradio" aria-checked="${style.id === activeId ? 'true' : 'false'}" aria-label="${_bdEscAttr(style.name)}" data-bd-style-pick="${_bdEscAttr(style.id)}">
       <span class="bd-style-picker-preview">${_bdStylePickerPreview(kind, style)}</span>
@@ -41404,7 +45763,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
     if (typeof opts.onAfterPick === 'function') opts.onAfterPick(styleId);
     if (typeof bindMeldexDropdownKeySwitch === 'function') bindStyleKeySwitch(getFreshTrigger());
     if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(getFreshTrigger());
-    showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイルを選択: ${styles.find(style => style.id === styleId)?.name || ''}`);
+    showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイルを選択: ${styles.find(style => style.id === styleId)?.name || ''}`);
   };
   const bindStyleKeySwitch = trigger => {
     if (typeof bindMeldexDropdownKeySwitch !== 'function' || !trigger) return;
@@ -41468,7 +45827,7 @@ function bdRefreshBoardToolbar(root) {
   const cardPreview = _bdToolbarControl(toolbarRoot, 'card-style-preview', 'bd-card-style-preview');
   if (cardPreview) cardPreview.innerHTML = _bdCardStylePreviewHtml(cardStyle);
   const cardStyleBtn = _bdToolbarControl(toolbarRoot, 'card-style-select', 'bd-card-style-select');
-  if (cardStyleBtn) cardStyleBtn.title = `カードスタイル: ${cardStyle?.name || ''}`.trim();
+  if (cardStyleBtn) cardStyleBtn.title = `トピックスタイル: ${cardStyle?.name || ''}`.trim();
   const linePreview = _bdToolbarControl(toolbarRoot, 'line-style-preview', 'bd-line-style-preview');
   if (linePreview) linePreview.innerHTML = _bdLineStylePreviewHtml(lineStyle);
   const lineStyleBtn = _bdToolbarControl(toolbarRoot, 'line-style-select', 'bd-line-style-select');
@@ -41902,7 +46261,7 @@ function _bdSelectionSummaryHtml() {
       <div class="bd-detail-hint">${hintParts.join(' / ')} が選択されています。</div>
       ${nodeCount ? `<div class="bd-detail-section">
         <div class="bd-detail-section-title">トピック一括変更</div>
-        <label class="bd-detail-field bd-detail-field-wide"><span>カードスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
+        <label class="bd-detail-field bd-detail-field-wide"><span>トピックスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
         <div class="bd-detail-field bd-detail-field-wide"><span>スタイル</span>${_bdStyleSummaryHtml('card', cardStyle)}</div>
       </div>` : ''}
       ${connCount ? `<div class="bd-detail-section">
@@ -42059,19 +46418,19 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
-  // 以前は「情報」を出せる場合に note-editor を開いていたが、hasInformation() は
-  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「情報」タブへ
-  // 飛んでいた (2026-08-13 ユーザー指摘)。「情報」はタブから明示的に開く。
+  // 以前は「プロパティ」を出せる場合に note-editor を開いていたが、hasInformation() は
+  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「プロパティ」タブへ
+  // 飛んでいた (2026-08-13 ユーザー指摘)。「プロパティ」はタブから明示的に開く。
   const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-card'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'board-card')
       : 'board-card');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -42083,14 +46442,14 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'board-line')
       : 'board-line');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -42103,31 +46462,34 @@ function _bdSetBoardPrimaryTab() {
   }
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
-  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true, groupStyle: true });
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // デフォルトはテーマタブ。ユーザーが backlinks / board-note / スタイル管理タブを選んでいた場合は尊重。
   const nextTab = typeof _bdResolveCurrentBoardTab === 'function'
-    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
+    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'], 'file-style')
     : 'file-style';
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
 
-// 3つのスタイル管理タブ (カードスタイル / ラインスタイル / 階層別スタイル) のコンテンツを
+// スタイル管理タブ (カード / ライン / 階層別 / グループ) のコンテンツを
 // 初期化 / 再描画する。各タブは一度レンダー済みなら以後のイベント反映で済むため毎回は再描画しない。
 function _bdEnsureBoardStyleManagerTabs() {
   const renderers = [
     { id: 'detail-tab-board-card-style', kind: 'card' },
     { id: 'detail-tab-board-line-style', kind: 'line' },
     { id: 'detail-tab-board-depth-style', kind: 'depth' },
+    { id: 'detail-tab-board-group-style', kind: 'group' },
   ];
   renderers.forEach(entry => {
     const el = document.getElementById(entry.id);
     if (!el) return;
     // 既にレンダー済みなら skip (子要素が存在する)
     if (el.childElementCount > 0) return;
-    if (entry.kind === 'depth') {
+    if (entry.kind === 'group') {
+      window.MeldexBoardTopicIntegration?.mountGroupControls?.(el, bd, { panel: true });
+    } else if (entry.kind === 'depth') {
       if (typeof _bdRenderDepthStyleInPanel === 'function') _bdRenderDepthStyleInPanel(el);
     } else {
       if (typeof _bdRenderStyleManagerInPanel === 'function') _bdRenderStyleManagerInPanel(entry.kind, el, null);
@@ -42181,7 +46543,7 @@ function _bdBuildNodeDetailHtml(node) {
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
       </div>
       <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードスタイル</div>
+        <div class="bd-detail-section-title">トピックスタイル</div>
         <div class="bd-detail-style-row">
           ${_bdDetailStyleTriggerHtml('card', node.cardStyle || bd.activeCardStyle, 'data-bd-node-style-pick')}
           <button type="button" class="bd-detail-style-action" data-bd-action="save-node-card-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
@@ -42201,7 +46563,7 @@ function _bdBuildNodeDetailHtml(node) {
         </div>
       </div>
       <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードサイズ</div>
+        <div class="bd-detail-section-title">トピックサイズ</div>
         <label class="bd-detail-field"><span>幅</span><input type="number" class="gb-fmt-num" min="40" value="${Math.round(node.w || style.width || 160)}" data-bd-field="w"></label>
         <label class="bd-detail-field"><span>高さ</span><input type="number" class="gb-fmt-num" min="0" value="${Math.round(node.h || 0)}" data-bd-field="h"></label>
       </div>
@@ -42251,7 +46613,7 @@ function _bdBuildNodeDetailHtml(node) {
 
 function bdClearConnectionStyleOverrides(conn) {
   [
-    'color', 'width', 'style', 'arrow', 'straight', 'pathType',
+    'color', 'colorOpacity', 'width', 'style', 'arrow', 'straight', 'pathType',
     'branchRatio', 'cornerRadius',
     'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
     'fontBold', 'fontItalic',
@@ -42516,7 +46878,8 @@ function _bdUpdateConnectionFromField(conn, field, value) {
     case 'width': {
       const num = parseInt(value, 10);
       if (!Number.isFinite(num) || num <= 0) delete conn.width;
-      else conn.width = Math.max(1, num);
+      else conn.width = typeof _bdNormalizeLineWidth === 'function'
+        ? _bdNormalizeLineWidth(num, 1) : Math.max(1, Math.min(200, num));
       break;
     }
     case 'styleRef':
@@ -42678,7 +47041,7 @@ function _bdBindNodeDetailPanel(nodeId) {
         // widget は effective style（base + node の個別 override）を表示する。
         const eff = typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(node) : {};
         const displayStyle = { ...baseCardStyle };
-        ['bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius', 'fontSize',
+        ['bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius', 'fontSize',
          'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape', 'width',
          'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
          'cloudSubWidthRatio', 'cloudSubHeightRatio']
@@ -42717,7 +47080,7 @@ function _bdBindNodeDetailPanel(nodeId) {
       bdPushUndo();
       if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(target);
       rerenderNodeDetail();
-      showStatus(`カードスタイル「${style.name}」の個別設定をクリアしました`);
+      showStatus(`トピックスタイル「${style.name}」の個別設定をクリアしました`);
     });
     root.querySelector('[data-bd-action="manage-card-styles"]')?.addEventListener('click', () => {
       bdOpenCardStyleManager();
@@ -42811,7 +47174,7 @@ function _bdBindConnectionDetailPanel(connId) {
         // widget は effective style（base + conn の個別 override）を表示する
         const eff = typeof bdGetConnectionStyle === 'function' ? bdGetConnectionStyle(conn) : {};
         const displayStyle = { ...baseLineStyle };
-        ['color', 'width', 'style', 'arrow', 'pathType',
+        ['color', 'colorOpacity', 'width', 'style', 'arrow', 'pathType',
          'branchRatio', 'cornerRadius',
          'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
          'fontBold', 'fontItalic',
@@ -43195,10 +47558,10 @@ function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
     div.style.borderColor = 'transparent';
     div.style.borderWidth = '0px';
     div.style.borderStyle = 'solid';
-  } else if (nodeStyle.bgColor) div.style.background = nodeStyle.bgColor;
+  } else if (nodeStyle.bgColor) div.style.background = _bdColorWithOpacity(nodeStyle.bgColor, nodeStyle.bgOpacity);
   if (nodeStyle.textColor) div.style.color = nodeStyle.textColor;
   if (!isImageNode && (nodeStyle.borderColor || nodeStyle.borderWidth)) {
-    div.style.borderColor = nodeStyle.borderColor || 'transparent';
+    div.style.borderColor = _bdColorWithOpacity(nodeStyle.borderColor || 'transparent', nodeStyle.borderOpacity);
     div.style.borderWidth = (nodeStyle.borderWidth || 0) + 'px';
     div.style.borderStyle = 'solid';
   }
@@ -43253,8 +47616,6 @@ function bdAppendNodeHuds(div, node, opts) {
   if (opts.showStatus && !opts.fastCardRender) bdAppendStatusHud(div, node);
   if (opts.showMarkers && typeof BD_MARKERS !== 'undefined') bdAppendMarkerHud(div, node);
   if (!opts.fastCardRender) bdAppendCommentHud(div, node);
-  const anchorPositions = (opts.fastCardRender || opts.showAnchors === false) ? [] : ['top', 'bottom', 'left', 'right'];
-  anchorPositions.forEach(pos => bdAppendAnchorHud(div, node, pos));
   if (node.link || node.imageSourcePath || node.img) bdAppendLinkBadge(div, node, opts.showStatus);
   if (opts.showMenuButtons) bdAppendCardMenuButton(div, node);
 }
@@ -43468,19 +47829,41 @@ function bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up,
   if (typeof bdPushUndo === 'function') bdPushUndo();
   const conn = (typeof bdCreateConnection === 'function') ? bdCreateConnection(fromNid, toId, { label: '' }) : null;
   if (!conn) return;
-  if (fromAnchor) conn.fromAnchor = fromAnchor;
-  const hitHud = target?.closest?.('.bd-anchor-hud');
-  const hudPos = hitHud ? ['top', 'bottom', 'left', 'right'].find(p => hitHud.classList.contains(p)) : null;
-  if (hudPos && typeof _bdHudPosToAnchorName === 'function') {
-    conn.toAnchor = _bdHudPosToAnchorName(hudPos);
-  } else if (typeof _bdFindNearestAnchor === 'function') {
-    const toNode = bd.nodes.find(nn => nn.id === toId);
-    if (toNode) conn.toAnchor = _bdFindNearestAnchor(cardEl, toNode, { x: toNode.x, y: toNode.y }, getWorld(up.clientX, up.clientY));
-  }
-  // v0.5.332: 自己ループで両端が同じアンカーに落ちたら対向アンカーへ自動振り替え (零長線防止)
-  if (toId === fromNid && conn.fromAnchor && conn.fromAnchor === conn.toAnchor
-      && typeof _bdOppositeAnchor === 'function') {
-    conn.toAnchor = _bdOppositeAnchor(conn.fromAnchor);
+  const fromNode = bd.nodes.find(nn => nn.id === fromNid);
+  const toNode = bd.nodes.find(nn => nn.id === toId);
+  if (typeof _bdProjectCardOutlineEndpoint === 'function'
+      && typeof _bdSetConnectionOutlineEndpoint === 'function' && fromNode && toNode) {
+    const fromEl = document.getElementById('bdn-' + fromNid);
+    const fromPos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(fromNode) : { x: fromNode.x, y: fromNode.y };
+    const toPos = typeof bdNodeCanvasPosition === 'function'
+      ? bdNodeCanvasPosition(toNode) : { x: toNode.x, y: toNode.y };
+    const fromPoint = typeof _bdGetCardAnchorPoint === 'function'
+      ? _bdGetCardAnchorPoint(fromNode, fromEl, fromPos, fromAnchor)
+      : { x: fromPos.x, y: fromPos.y };
+    const fromProjected = _bdProjectCardOutlineEndpoint(fromEl, fromNode, fromPos, fromPoint);
+    const toProjected = _bdProjectCardOutlineEndpoint(
+      cardEl, toNode, toPos, getWorld(up.clientX, up.clientY),
+    );
+    if (fromProjected) _bdSetConnectionOutlineEndpoint(conn, 'from', fromNid, fromNode, fromProjected);
+    if (toProjected) {
+      if (toId === fromNid && fromProjected?.outlinePosition
+          && typeof _bdOutlinePathDistance === 'function'
+          && _bdOutlinePathDistance(fromProjected.outlinePosition, toProjected.outlinePosition) < 0.001
+          && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+        toProjected.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+          toProjected.outlinePosition, 'forward', { step: 0.25 },
+        );
+      }
+      _bdSetConnectionOutlineEndpoint(conn, 'to', toId, toNode, toProjected);
+    }
+  } else {
+    if (fromAnchor) conn.fromAnchor = fromAnchor;
+    if (typeof _bdFindNearestAnchor === 'function' && toNode) {
+      conn.toAnchor = _bdFindNearestAnchor(
+        cardEl, toNode, { x: toNode.x, y: toNode.y }, getWorld(up.clientX, up.clientY),
+      );
+    }
   }
   if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'anchor-connect');
   else if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'anchor-connect' });
@@ -43656,7 +48039,7 @@ function bdAppendCardMenuButton(div, node) {
   menuBtn.type = 'button';
   menuBtn.className = 'bd-card-menu-btn';
   menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
-  menuBtn.textContent = '...';
+  menuBtn.innerHTML = '<span></span><span></span><span></span>';
   menuBtn.title = 'トピックメニュー';
   menuBtn.setAttribute('aria-label', 'トピックメニュー');
   menuBtn.setAttribute('aria-haspopup', 'menu');
@@ -43893,7 +48276,7 @@ function bdApplyNodeDynamicShape(div, node) {
         subWidth: ns.cloudSubWidthRatio,
         subHeight: ns.cloudSubHeightRatio,
       } : undefined);
-      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '');
+      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity);
     }
   }
   if ((shape === 'ellipse' || shape === 'cloud' || shape === 'thorn' || shape === 'thorn-curve' || shape === 'fluffy') && typeof _bdComputeShapePadding === 'function') {
@@ -45032,6 +49415,11 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
     style.fontFamily = _bdNormalizeFontFamily(value);
     return;
   }
+  if (field === 'bgOpacity' || field === 'borderOpacity' || field === 'colorOpacity') {
+    const number = Number(value);
+    style[field] = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) / 100 : 1;
+    return;
+  }
   if (kind === 'card') {
     if (['borderWidth', 'borderRadius', 'fontSize', 'width', 'textStrokeWidth'].includes(field)) {
       const num = parseInt(value, 10) || 0;
@@ -45075,7 +49463,9 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
     return;
   }
   if (field === 'width') {
-    style.width = Math.max(0, parseInt(value, 10) || 0);
+    style.width = typeof _bdNormalizeLineWidth === 'function'
+      ? _bdNormalizeLineWidth(parseInt(value, 10), 0)
+      : Math.max(0, Math.min(200, parseInt(value, 10) || 0));
   } else if (field === 'pathType') {
     // v0.5.320: 3 種に統合。旧 free-bezier → curve、旧 orthogonal-curve → orthogonal。
     if (value === 'free-bezier') style.pathType = 'curve';
@@ -45117,9 +49507,11 @@ function _bdStyleFieldNeedsFullRebuild(kind, field) {
 // 共通ヘルパー: カードスタイルの色系フィールドをリセット（計画書 §4-2）
 function _bdResetCardColors(style) {
   style.bgColor = '';
+  style.bgOpacity = 1;
   style.textColor = '';
   style.textStrokeColor = '';
   style.borderColor = '';
+  style.borderOpacity = 1;
 }
 
 // スタイルの「ユーザー定義デフォルト」用スナップショットを作る。
@@ -45186,6 +49578,7 @@ function _bdResetStyleToDefault(kind, style) {
   if (kind === 'card') _bdResetCardColors(style);
   else {
     style.color = '';
+    style.colorOpacity = 1;
     style.labelTextColor = '';
     style.labelBgColor = '';
     style.labelBorderColor = '';
@@ -45276,8 +49669,8 @@ async function _bdSaveBoardStyleAsNew(kind) {
   if (!source) return null;
   const baseName = source.name && source.name !== 'カスタム'
     ? `${source.name} 2`
-    : (kind === 'card' ? '新しいカードスタイル' : '新しいラインスタイル');
-  const input = await cfPrompt(kind === 'card' ? 'カードスタイル名' : 'ラインスタイル名', baseName);
+    : (kind === 'card' ? '新しいトピックスタイル' : '新しいラインスタイル');
+  const input = await cfPrompt(kind === 'card' ? 'トピックスタイル名' : 'ラインスタイル名', baseName);
   if (input == null) return null;
   const name = String(input).trim();
   if (!name) return null;
@@ -45294,7 +49687,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
   return next;
 }
 
@@ -45309,7 +49702,7 @@ function _bdSaveCurrentBoardStyle(kind) {
   // 全ボード共通のグローバルデフォルトにも保存 (他のボードを開いたときも反映される)
   _bdSaveGlobalStyleDefault(kind, style);
   bdDirty();
-  showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
 }
 
 // ノード個別のカードスタイルをカスタム化する。
@@ -45442,8 +49835,8 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   bdEnsureBoardUiState();
   const base = bdGetCardStyleById(node.cardStyle || bd.activeCardStyle);
   const source = _bdCardStyleSnapshotFromNode(node, base);
-  const baseName = source.name && source.name !== 'カスタム' ? `${source.name} 2` : '新しいカードスタイル';
-  const input = await cfPrompt('カードスタイル名', baseName);
+  const baseName = source.name && source.name !== 'カスタム' ? `${source.name} 2` : '新しいトピックスタイル';
+  const input = await cfPrompt('トピックスタイル名', baseName);
   if (input == null) return null;
   const name = String(input).trim();
   if (!name) return null;
@@ -45464,7 +49857,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`カードスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`トピックスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
   return next;
 }
 
@@ -45500,7 +49893,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
 // これで同じスタイルを参照する他のカードにも変更が反映される。
 // `bdClearCardStyleOverrides` のキー一覧と同期すること (width は n.w が別管理なので除外)。
 const _BD_CARD_OVERRIDE_KEYS = [
-  'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+  'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth',
   'shape',
   'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset',
@@ -45528,12 +49921,12 @@ function _bdSaveCurrentNodeCardStyle(node) {
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
-    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
-    : `カードスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
+    ? `トピックスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
+    : `トピックスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
 }
 
 const _BD_LINE_OVERRIDE_KEYS = [
-  'color', 'width', 'style', 'arrow', 'straight', 'pathType',
+  'color', 'colorOpacity', 'width', 'style', 'arrow', 'straight', 'pathType',
   'branchRatio', 'cornerRadius',
   'labelTextColor', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth',
   'fontBold', 'fontItalic',
@@ -45680,11 +50073,17 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
 
   if (kind === 'card') {
     // --- Row 1: 色 + 書式 + サイズ ---
-    // 並び順: 背景色 → 枠線色 → 文字色 → 文字フチ色。
+    // 並び順: 背景色 → 背景不透明度 → 枠線色 → 枠線不透明度 → 文字色 → 文字フチ色。
     // 文字色・文字フチ色スウォッチは背景を bgColor に揃え、実際の見え方をプレビュー。
     const row1 = fmt.makeRow({ wrap: true });
     row1.appendChild(tag('bgColor')(fmt.makeSwatchBg({ title: '背景色', color: style.bgColor || '', onPick: (c) => setField('bgColor', c) })));
+    const bgOpacityInp = fmt.makeNumInput({ title: '背景不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.bgOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('bgOpacity', v == null ? 100 : v) });
+    tag('bgOpacity')(bgOpacityInp);
+    row1.appendChild(fmt.makeGroup([fmt.makeLabel('背景'), bgOpacityInp, fmt.makeLabel('%')]));
     row1.appendChild(tag('borderColor')(fmt.makeSwatchBg({ title: '枠線色', color: style.borderColor || '', onPick: (c) => setField('borderColor', c) })));
+    const borderOpacityInp = fmt.makeNumInput({ title: '枠線不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.borderOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('borderOpacity', v == null ? 100 : v) });
+    tag('borderOpacity')(borderOpacityInp);
+    row1.appendChild(fmt.makeGroup([fmt.makeLabel('枠線'), borderOpacityInp, fmt.makeLabel('%')]));
     row1.appendChild(tag('textColor')(fmt.makeSwatchText({ title: '文字色', color: style.textColor || '', iconName: 'type', bgColor: style.bgColor || '', onPick: (c) => setField('textColor', c) })));
     row1.appendChild(tag('textStrokeColor')(fmt.makeSwatchText({ title: '文字フチ色', color: style.textStrokeColor || '', iconName: 'typeOutline', bgColor: style.bgColor || '', onPick: (c) => setField('textStrokeColor', c) })));
     row1.appendChild(tag('fontBold')(fmt.makeToggle({ html: '<b>B</b>', title: '太字', active: !!style.fontBold, onToggle: (on) => setField('fontBold', on) })));
@@ -45764,7 +50163,10 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
   // --- Row 1: 色 + 太さ + ライン種 + 矢印 ---
   const lrow1 = fmt.makeRow({ wrap: true });
   lrow1.appendChild(tag('color')(fmt.makeSwatchBg({ title: '色', color: style.color || '', onPick: (c) => setField('color', c) })));
-  const lwInp = fmt.makeNumInput({ title: '太さ', value: style.width, min: 0, max: 20, onChange: (v) => setField('width', v == null ? 0 : v) });
+  const colorOpacityInp = fmt.makeNumInput({ title: 'ライン不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.colorOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('colorOpacity', v == null ? 100 : v) });
+  tag('colorOpacity')(colorOpacityInp);
+  lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('不透明度'), colorOpacityInp, fmt.makeLabel('%')]));
+  const lwInp = fmt.makeNumInput({ title: '太さ', value: style.width, min: 0, max: 200, onChange: (v) => setField('width', v == null ? 0 : v) });
   tag('width')(lwInp);
   lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('太さ'), lwInp, fmt.makeLabel('px')]));
   const lstyleSel = fmt.makeSelect({
@@ -45958,7 +50360,7 @@ function _bdNextStyle(kind, styles) {
     ? bdDefaultLineStylesForBoard(typeof bd !== 'undefined' ? bd : undefined)
     : BD_DEFAULT_LINE_STYLES;
   const seed = kind === 'card' ? _bdClone(cardDefaults[0]) : _bdClone(lineDefaults[0]);
-  const baseName = kind === 'card' ? '新しいカードスタイル' : '新しいラインスタイル';
+  const baseName = kind === 'card' ? '新しいトピックスタイル' : '新しいラインスタイル';
   seed.name = _bdMakeUniqueStyleName(baseName, styles);
   seed.id = _bdNormalizeStyleId(`${kind}-style-${Date.now().toString(36)}`, `${kind}-style`);
   styles.push(seed);
@@ -46228,7 +50630,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   document.body.appendChild(popup);
   _bdStyleManagerPopup = popup;
   _bdStyleManagerPopupAnchor = currentAnchor;
-  _bdConfigureStyleManagerPopup(popup, `${kind === 'card' ? 'カード' : 'ライン'}スタイル管理`, currentAnchor);
+  _bdConfigureStyleManagerPopup(popup, `${kind === 'card' ? 'トピック' : 'ライン'}スタイル管理`, currentAnchor);
   _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const render = () => {
@@ -46239,7 +50641,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
     const activeRef = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
     const activeStyleId = bd[activeRef] || '';
     const currentId = opts.currentId || activeStyleId;
-    const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
+    const itemLabel = kind === 'card' ? 'トピックスタイル' : 'ラインスタイル';
     const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     const copyIcon = typeof lucide === 'function' ? lucide('copy', 14) : '複製';
     const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
@@ -46375,7 +50777,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       live._default = _bdCloneStyleForDefault(live);
       _bdSaveGlobalStyleDefault(kind, live);
       bdDirty();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
       render();
     });
 
@@ -46389,7 +50791,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       if (typeof opts.onSelect === 'function') opts.onSelect(live.id);
       render();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」をデフォルトに戻しました`);
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトに戻しました`);
     });
 
     popup.querySelector('[data-bd-popup-delete]')?.addEventListener('click', async () => {
@@ -46399,7 +50801,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
       const usage = _bdCountStyleUsage(kind, live.id);
       const usageMsg = usage > 0 ? `\n\nこのスタイルは ${usage} 個の${unitLabel}で使用中です。削除すると、それらは別のスタイルに切り替わります。` : '';
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
+      const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
       if (!ok) return;
       const arr = liveArr();
       const liveIndex = arr.findIndex(style => style.id === live.id);
@@ -46426,7 +50828,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       opts.currentId = fallbackId;
       if (typeof opts.onSelect === 'function') opts.onSelect(fallbackId);
       render();
-      showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しました`);
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しました`);
     });
   };
 
@@ -46457,7 +50859,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   const selected = displayStyles.find(s => s.id === effectiveId) || displayStyles[0];
   if (kind === 'card') _bdLastCardEditId = selected.id;
   else _bdLastLineEditId = selected.id;
-  const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
+  const itemLabel = kind === 'card' ? 'トピックスタイル' : 'ラインスタイル';
   const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
   const activeStyleId = bd[activeRef] || '';
   const isSelectedActive = selected.id === activeStyleId;
@@ -46567,7 +50969,7 @@ function _bdStyleRefOptions(kind) {
   const styles = typeof _bdDisplayedManagedStyles === 'function'
     ? _bdDisplayedManagedStyles(kind)
     : (kind === 'card' ? (bd.cardStyles || []) : (bd.lineStyles || []));
-  const label = kind === 'card' ? '個別カード設定' : '個別ライン設定';
+  const label = kind === 'card' ? '個別トピック設定' : '個別ライン設定';
   return [
     { v: '', l: label },
     ...(styles || []).map(style => ({ v: style.id || '', l: style.name || style.id || 'スタイル' })),
@@ -46613,7 +51015,7 @@ function _bdAppendDepthStyleRefRow(container, kind, selected, liveDepth, onApply
   if (!container || !fmt) return;
   const row = fmt.makeRow({ wrap: true });
   row.classList.add('bd-depth-style-ref-row');
-  const label = fmt.makeLabel(kind === 'card' ? '元カードスタイル' : '元ラインスタイル');
+  const label = fmt.makeLabel(kind === 'card' ? '元トピックスタイル' : '元ラインスタイル');
   const value = kind === 'card' ? (selected.cardStyleRef || '') : (selected.lineStyleRef || '');
   const select = fmt.makeSelect({
     opts: _bdStyleRefOptions(kind),
@@ -46823,7 +51225,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     // カードスタイル部
     const cardHeader = document.createElement('div');
     cardHeader.className = 'bd-detail-section-title';
-    cardHeader.textContent = 'カードスタイル';
+    cardHeader.textContent = 'トピックスタイル';
     depthFieldsEl.appendChild(cardHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'card', selected, liveDepth, () => {
       applyDepthStyles();
@@ -47242,7 +51644,7 @@ function bdOpenFilterMenu(anchor) {
   });
   // 表示モード: 既定 false / ON で有効（計画書 §4-3-A）
   const modes = [
-    { key: '_showShadow', label: 'カード影' },
+    { key: '_showShadow', label: 'トピック影' },
     { key: '_textRotateOnLine', label: 'ライン上テキスト回転' },
   ];
   modes.forEach(({ key, label }) => {
@@ -48086,7 +52488,8 @@ class CanvasComponent extends ToolComponent {
     if (this._bdDump) {
       if (typeof bdLoadState === 'function') bdLoadState(this._bdDump);
       this._bdDump = null;
-    } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
+    } else if (!this._boardLoadPending && !this._activatingForReload
+        && this.state.boardPath && bd.path !== this.state.boardPath) {
       this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
     }
     if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
@@ -48105,6 +52508,12 @@ class CanvasComponent extends ToolComponent {
     if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
     if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
+    const ownTab = this._ownTab();
+    const boardPath = this.state.boardPath || ownTab?.path
+      || ((typeof bd !== 'undefined' && bd?.path) ? bd.path : '');
+    if (boardPath) {
+      window.GBOptionTargetContext?.set({ path: boardPath, kind: 'board' }, 'board-open');
+    }
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   }
 
@@ -48279,6 +52688,7 @@ const MeldexExportSave = (() => {
     'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
   ]);
   const LARGE_BLOB_PICKER_THRESHOLD = 8 * 1024 * 1024;
+  const ASSET_BASE_TOKEN = '__MELDEX_ASSET_BASE__';
 
   function _sanitizeFileName(name, fallback = '無題', maxLen = 180) {
     let safe = String(name || fallback)
@@ -48350,6 +52760,11 @@ const MeldexExportSave = (() => {
     return typeof window !== 'undefined' && !!(window.MeldexStandaloneFS || window.BoardStandaloneFS);
   }
 
+  function _isBrowserDataContext() {
+    try { return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.(); }
+    catch { return false; }
+  }
+
   // 単独アプリには /api/save-file-dialog（サーバー側ネイティブダイアログ）が無いため、
   // ブラウザの通常ダウンロード（Blob URL + <a download>）でファイルを書き出す。
   // 保存先フォルダを選ばせられない点は本体の名前を付けて保存ダイアログに劣るが、
@@ -48389,6 +52804,212 @@ const MeldexExportSave = (() => {
     return { ok: true, path: initialfile };
   }
 
+  async function _saveTextWithBrowserPicker(content, initialfile, options = {}) {
+    const blob = new Blob([options.bom ? '\uFEFF' + String(content || '') : String(content || '')], {
+      type: options.mime || 'text/html;charset=utf-8',
+    });
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        const handle = await window.showSaveFilePicker({ suggestedName: initialfile });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        _notifyManualSaveSuccess(options.okMessage || '保存しました');
+        return { ok: true, path: handle.name || initialfile, etag: '', browser_destination: 'file-picker' };
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          if (typeof showStatus === 'function') showStatus(options.cancelMessage || '保存をキャンセルしました');
+          return false;
+        }
+      }
+    }
+    if (!_downloadBlobDirect(blob, initialfile)) {
+      if (typeof showStatus === 'function') showStatus(options.errorMessage || '保存に失敗しました', true);
+      return false;
+    }
+    _notifyManualSaveSuccess((options.okMessage || '保存しました') + '（ダウンロード: ' + initialfile + '）');
+    return { ok: true, path: initialfile, etag: '', browser_destination: 'download' };
+  }
+
+  function _validatePublicationPackage(publicationPackage) {
+    const html = String(publicationPackage?.html || '');
+    const assets = Array.isArray(publicationPackage?.assets) ? publicationPackage.assets : [];
+    const names = new Set();
+    for (const asset of assets) {
+      const name = String(asset?.name || '');
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(name) || name.includes('..')) {
+        throw new Error('公開資産のファイル名が安全ではありません');
+      }
+      if (names.has(name.toLowerCase())) throw new Error('公開資産のファイル名が重複しています');
+      if (!(asset.blob instanceof Blob) || Number(asset.size) !== asset.blob.size
+        || !/^[0-9a-f]{64}$/.test(String(asset.sha256 || ''))) {
+        throw new Error('公開資産manifestの整合性を確認できません');
+      }
+      names.add(name.toLowerCase());
+      if (!html.includes(`${ASSET_BASE_TOKEN}/${name}`)) {
+        throw new Error('公開HTMLと資産manifestの参照が一致しません');
+      }
+    }
+    const refs = Array.from(html.matchAll(/__MELDEX_ASSET_BASE__\/([A-Za-z0-9][A-Za-z0-9._-]{0,159})/g), match => match[1]);
+    if (refs.some(name => !names.has(name.toLowerCase()))) {
+      throw new Error('公開HTMLにmanifest未登録の資産があります');
+    }
+    return { html, assets };
+  }
+
+  async function _publicationGeneration(html, assets) {
+    if (!globalThis.crypto?.subtle) throw new Error('公開packageの整合性hashを計算できません');
+    const parts = [String(html)];
+    [...assets].sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach(asset => {
+      parts.push('\0asset\0', String(asset.name), '\0', String(asset.sha256));
+    });
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(parts.join('')));
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('').slice(0, 24);
+  }
+
+  function _splitStem(fileName) {
+    const safe = _sanitizeFileName(fileName || '公開.html', '公開.html', 180);
+    const match = safe.match(/(\.[^.]+)$/);
+    return { fileName: safe, stem: match ? safe.slice(0, -match[1].length) : safe };
+  }
+
+  async function _materializePublicationPackage(publicationPackage, fileName) {
+    const { html, assets } = _validatePublicationPackage(publicationPackage);
+    const { fileName: safeFileName, stem } = _splitStem(fileName);
+    const generation = await _publicationGeneration(html, assets);
+    const assetDirectory = `${stem}.assets`;
+    return {
+      html: html.replaceAll(ASSET_BASE_TOKEN, `${assetDirectory}/${generation}`),
+      assets,
+      fileName: safeFileName,
+      assetDirectory,
+      generation,
+    };
+  }
+
+  async function _blobBase64(blob) {
+    const reader = new FileReader();
+    const dataUrl = await new Promise((resolve, reject) => {
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('公開資産を読み込めませんでした'));
+      reader.readAsDataURL(blob);
+    });
+    return dataUrl.split(',', 2)[1] || '';
+  }
+
+  async function _blobSha256(blob) {
+    if (!globalThis.crypto?.subtle?.digest) throw new Error('公開資産の整合性hashを確認できません');
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _verifyPublicationAssetHandle(handle, asset) {
+    if (!handle || typeof handle.getFile !== 'function') {
+      throw new Error(`公開資産の保存後検証に対応していません: ${asset.name}`);
+    }
+    const saved = await handle.getFile();
+    if (Number(saved?.size) !== Number(asset.size) || await _blobSha256(saved) !== asset.sha256) {
+      throw new Error(`公開資産の保存後検証に失敗しました: ${asset.name}`);
+    }
+  }
+
+  async function _publicationAssetPayload(assets) {
+    const payload = [];
+    for (const asset of assets) {
+      payload.push({
+        name: asset.name,
+        mime: asset.mime || asset.blob.type || 'application/octet-stream',
+        size: asset.size,
+        sha256: asset.sha256,
+        content_base64: await _blobBase64(asset.blob),
+      });
+    }
+    return payload;
+  }
+
+  async function _directoryHasFile(directory, name) {
+    try { await directory.getFileHandle(name, { create: false }); return true; }
+    catch { return false; }
+  }
+
+  async function _uniqueHtmlFileName(directory, requested) {
+    const split = splitFileName(requested, '公開', '.html');
+    if (!await _directoryHasFile(directory, split.initialfile)) return split.initialfile;
+    const stem = split.initialfile.slice(0, -split.extension.length);
+    for (let index = 2; index <= 9999; index += 1) {
+      const candidate = `${stem} (${index})${split.extension}`;
+      if (!await _directoryHasFile(directory, candidate)) return candidate;
+    }
+    throw new Error('同名の公開packageが多すぎるため保存できません');
+  }
+
+  async function _savePublicationPackageBrowser(publicationPackage, initialfile, options) {
+    const checked = _validatePublicationPackage(publicationPackage);
+    if (!checked.assets.length) {
+      return _saveTextWithBrowserPicker(checked.html, initialfile, options);
+    }
+    if (typeof window.showDirectoryPicker === 'function') {
+      try {
+        const directory = await window.showDirectoryPicker({ mode: 'readwrite' });
+        const chosenName = await _uniqueHtmlFileName(directory, initialfile);
+        const materialized = await _materializePublicationPackage(checked, chosenName);
+        const assetRoot = await directory.getDirectoryHandle(materialized.assetDirectory, { create: true });
+        const generationRoot = await assetRoot.getDirectoryHandle(materialized.generation, { create: true });
+        for (const asset of materialized.assets) {
+          const handle = await generationRoot.getFileHandle(asset.name, { create: true });
+          const writable = await handle.createWritable();
+          await writable.write(asset.blob);
+          await writable.close();
+          await _verifyPublicationAssetHandle(handle, asset);
+        }
+        // HTMLを最後に確定する。途中失敗時は旧HTMLを上書きせず、未参照の世代だけが残る。
+        const htmlHandle = await directory.getFileHandle(materialized.fileName, { create: true });
+        const htmlWritable = await htmlHandle.createWritable();
+        await htmlWritable.write(new Blob([
+          options?.bom ? '\uFEFF' + materialized.html : materialized.html,
+        ], { type: 'text/html;charset=utf-8' }));
+        await htmlWritable.close();
+        _notifyManualSaveSuccess(options?.okMessage || 'HTML packageを保存しました');
+        return {
+          ok: true,
+          path: materialized.fileName,
+          etag: '',
+          browser_destination: 'directory-picker',
+          publication_assets: {
+            count: materialized.assets.length,
+            total_bytes: materialized.assets.reduce((sum, asset) => sum + asset.size, 0),
+            directory: materialized.assetDirectory,
+            generation: materialized.generation,
+          },
+        };
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          if (typeof showStatus === 'function') showStatus(options?.cancelMessage || '保存をキャンセルしました');
+          return false;
+        }
+        if (typeof showStatus === 'function') showStatus(options?.errorMessage || error?.message || '保存に失敗しました', true);
+        return false;
+      }
+    }
+    if (typeof window.MeldexArchiveZipEngine?.buildZip !== 'function') {
+      if (typeof showStatus === 'function') showStatus('このブラウザでは複数ファイルのHTML packageを安全に保存できません', true);
+      return false;
+    }
+    const materialized = await _materializePublicationPackage(checked, initialfile);
+    const entries = [{ name: materialized.fileName, data: new TextEncoder().encode(materialized.html) }];
+    for (const asset of materialized.assets) {
+      entries.push({
+        name: `${materialized.assetDirectory}/${materialized.generation}/${asset.name}`,
+        data: new Uint8Array(await asset.blob.arrayBuffer()),
+      });
+    }
+    const zipBytes = await window.MeldexArchiveZipEngine.buildZip(entries);
+    const zipName = `${materialized.fileName.replace(/\.html?$/i, '')}-html-package.zip`;
+    if (!_downloadBlobDirect(new Blob([zipBytes], { type: 'application/zip' }), zipName)) return false;
+    _notifyManualSaveSuccess('HTML packageをZIPで保存しました。展開して利用してください。');
+    return { ok: true, path: zipName, etag: '', browser_destination: 'package-download' };
+  }
+
   async function _standaloneSaveBlob(blob, options = {}) {
     const fallbackExtension = options.extension || '.bin';
     const { initialfile } = splitFileName(
@@ -48424,6 +53045,14 @@ const MeldexExportSave = (() => {
   }
 
   async function saveText(content, options = {}) {
+    if (_isBrowserDataContext()) {
+      const { initialfile } = splitFileName(
+        options.initialfile || options.filename || '',
+        options.title || options.fallbackTitle || '無題',
+        options.extension || '.txt'
+      );
+      return _saveTextWithBrowserPicker(content, initialfile, options);
+    }
     if (_isStandaloneContext()) return _standaloneSaveText(content, options);
     const fallbackExtension = options.extension || '.txt';
     const { initialfile, extension } = splitFileName(
@@ -48438,6 +53067,8 @@ const MeldexExportSave = (() => {
       filetypes: options.filetypes || [['すべてのファイル', '*.*']],
       content: options.bom ? '\uFEFF' + String(content || '') : String(content || ''),
       register_publish_path: !!options.registerPublishPath,
+      ...(options.publishContext ? { publish_context: options.publishContext } : {}),
+      ...(options.operationId ? { operation_id: String(options.operationId) } : {}),
     }, {
       ok: options.okMessage || '保存しました',
       cancel: options.cancelMessage || '保存をキャンセルしました',
@@ -48446,11 +53077,17 @@ const MeldexExportSave = (() => {
   }
 
   async function saveTextDirect(path, content, options = {}) {
+    if (_isBrowserDataContext()) {
+      return saveText(content, { ...options, initialfile: guessNameFromPath(path, '公開.html') });
+    }
     try {
       const res = await apiPost('/save-file-direct', {
         path,
         content: options.bom ? '\uFEFF' + String(content || '') : String(content || ''),
         allow_register: !!options.allowRegister,
+        ...(options.ifMatchEtag ? { if_match_etag: String(options.ifMatchEtag) } : {}),
+        ...(options.createOnly ? { create_only: true } : {}),
+        ...(options.publishContext ? { publish_context: options.publishContext } : {}),
       });
       if (res?.ok) {
         _notifyManualSaveSuccess((options.okMessage || '上書き保存しました') + ': ' + res.path);
@@ -48463,6 +53100,62 @@ const MeldexExportSave = (() => {
     }
   }
 
+  async function savePublicationPackage(publicationPackage, options = {}) {
+    const fallbackExtension = options.extension || '.html';
+    const { initialfile, extension } = splitFileName(
+      options.initialfile || options.filename || '',
+      options.title || options.fallbackTitle || '公開',
+      fallbackExtension
+    );
+    if (_isBrowserDataContext() || _isStandaloneContext()) {
+      return _savePublicationPackageBrowser(publicationPackage, initialfile, options);
+    }
+    const checked = _validatePublicationPackage(publicationPackage);
+    return _showDialog({
+      title: options.dialogTitle || 'HTML packageとして保存',
+      initialfile,
+      defaultextension: extension,
+      filetypes: options.filetypes || [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
+      content: options.bom ? '\uFEFF' + checked.html : checked.html,
+      publication_assets: await _publicationAssetPayload(checked.assets),
+      register_publish_path: !!options.registerPublishPath,
+      ...(options.publishContext ? { publish_context: options.publishContext } : {}),
+      ...(options.operationId ? { operation_id: String(options.operationId) } : {}),
+    }, {
+      ok: options.okMessage || 'HTML packageを保存しました',
+      cancel: options.cancelMessage || '保存をキャンセルしました',
+      error: options.errorMessage || 'HTML packageの保存に失敗しました',
+    });
+  }
+
+  async function savePublicationPackageDirect(path, publicationPackage, options = {}) {
+    if (_isBrowserDataContext() || _isStandaloneContext()) {
+      return savePublicationPackage(publicationPackage, {
+        ...options,
+        initialfile: guessNameFromPath(path, '公開.html'),
+      });
+    }
+    const checked = _validatePublicationPackage(publicationPackage);
+    try {
+      const res = await apiPost('/save-file-direct', {
+        path,
+        content: options.bom ? '\uFEFF' + checked.html : checked.html,
+        publication_assets: await _publicationAssetPayload(checked.assets),
+        ...(options.ifMatchEtag ? { if_match_etag: String(options.ifMatchEtag) } : {}),
+        ...(options.createOnly ? { create_only: true } : {}),
+        ...(options.publishContext ? { publish_context: options.publishContext } : {}),
+      });
+      if (res?.ok) {
+        _notifyManualSaveSuccess((options.okMessage || '公開HTMLを更新しました') + ': ' + res.path);
+        return res;
+      }
+      return false;
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus(options.errorMessage || error?.message || '公開HTMLの更新に失敗しました', true);
+      return false;
+    }
+  }
+
   async function saveBlob(blob, options = {}) {
     const fallbackExtension = options.extension || '.bin';
     const { initialfile, extension } = splitFileName(
@@ -48470,6 +53163,17 @@ const MeldexExportSave = (() => {
       options.title || options.fallbackTitle || '無題',
       fallbackExtension
     );
+    if (_isBrowserDataContext()) {
+      // Cloud/PWA ではデスクトップ専用の保存APIへ到達させない。Blobの大きさに
+      // かかわらず browser picker を優先し、利用できない場合はdownloadへ落とす。
+      const pickerResult = await _saveBlobWithBrowserPicker(blob, initialfile, {
+        ok: options.okMessage || '保存しました',
+        cancel: options.cancelMessage || '保存をキャンセルしました',
+        error: options.errorMessage || '保存に失敗しました',
+      });
+      if (pickerResult !== null) return pickerResult;
+      return _standaloneSaveBlob(blob, { ...options, initialfile });
+    }
     if (_isStandaloneContext()) {
       // 単独アプリには /api/save-file-dialog が無い。File System Access API
       // (showSaveFilePicker) が使える環境ではファイル名/保存先を選べる方を優先し、
@@ -48567,6 +53271,8 @@ const MeldexExportSave = (() => {
     splitFileName,
     saveText,
     saveTextDirect,
+    savePublicationPackage,
+    savePublicationPackageDirect,
     saveBlob,
     saveUrl,
   };
@@ -48583,7 +53289,7 @@ if (typeof window !== 'undefined') {
 ;
 /* 公開 HTML ランタイム生成
  *
- * 役割: 現在のビュー (page/database/csv/smart-db/calendar/entity) を
+ * 役割: 現在のビュー (page/database/csv/calendar/entity) を
  *   現テーマを完全再現した静的 HTML としてエクスポートする。
  *   + 編集不可 (input を span 化 / contenteditable 除去)
  *   + 画像埋込 / フォント埋込 / CSS 変数取込
@@ -48733,7 +53439,7 @@ const MeldexPublicRuntime = (() => {
   // ==========================================================================
   // ビュータイプごとの入力要素取得・CSS ファイル・追加 CSS を決定
   // ==========================================================================
-  function _resolveViewDef(viewType) {
+  function _resolveViewDef(viewType, publishCfg) {
     if (viewType === 'page' || viewType === 'entity') {
       const el = viewType === 'entity'
         ? document.getElementById('entity-view')
@@ -48845,20 +53551,6 @@ const MeldexPublicRuntime = (() => {
         notFound: 'CSV が開かれていません',
       };
     }
-    if (viewType === 'smart-db') {
-      const el = (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard')
-        ? document.getElementById('smart-db-dashboard-area')
-        : document.getElementById('smart-db-table');
-      return {
-        el,
-        cssFiles: ['gb-tools.css', 'gb-ui.css'],
-        extraCss:
-          'body { padding: 16px; }\n'
-          + 'table { border-collapse: collapse; table-layout: auto; width: 100%; }\n'
-          + 'th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }\n',
-        notFound: 'スマートシートが開かれていません',
-      };
-    }
     if (viewType === 'calendar') {
       const calRoot = document.querySelector('.gb-cal-root');
       return {
@@ -48866,6 +53558,61 @@ const MeldexPublicRuntime = (() => {
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss: 'body { padding: 16px; }\n',
         notFound: 'カレンダーが開かれていません',
+      };
+    }
+    if (viewType === 'board') {
+      const snapshot = publishCfg?.board_snapshot;
+      if (snapshot?.schema !== 'meldex.board-publish-snapshot.v1'
+        || snapshot.contextPolicy !== 'saved-active-board'
+        || !snapshot.canvasHtml
+        || !snapshot.bounds?.width
+        || !snapshot.bounds?.height) {
+        return { el: null, cssFiles: [], extraCss: '', notFound: '保存済みボードの公開スナップショットを確認できません' };
+      }
+      const holder = document.createElement('div');
+      holder.innerHTML = snapshot.canvasHtml;
+      const el = holder.firstElementChild;
+      const bounds = snapshot.bounds;
+      return {
+        el,
+        disposeEl: holder,
+        cssFiles: ['gb-tools.css', 'gb-ui.css'],
+        extraCss: 'body { padding: 16px; }\n#bd-canvas { margin: 0 auto; }\n',
+        notFound: 'ボードの公開内容を構築できません',
+        preTransform: (_original, clone) => {
+          clone.style.position = 'relative';
+          clone.style.flex = 'none';
+          clone.style.width = bounds.width + 'px';
+          clone.style.height = bounds.height + 'px';
+          clone.style.overflow = 'hidden';
+          const world = clone.querySelector('[data-bd-role="world"]');
+          if (!world) return;
+          world.style.position = 'absolute';
+          world.style.left = '0';
+          world.style.top = '0';
+          world.style.transformOrigin = '0 0';
+          world.style.transform = `translate(${-bounds.x0}px, ${-bounds.y0}px)`;
+          world.querySelectorAll('[data-bd-role="svg"]').forEach(svg => {
+            svg.setAttribute('width', String(bounds.width));
+            svg.setAttribute('height', String(bounds.height));
+            svg.style.width = bounds.width + 'px';
+            svg.style.height = bounds.height + 'px';
+            svg.style.overflow = 'visible';
+          });
+          const resizeLayer = world.querySelector('[data-bd-role="resize-layer"]');
+          if (resizeLayer) resizeLayer.innerHTML = '';
+          clone.querySelectorAll('.bd-selected, .bd-selection-preview, .bd-drag-preview')
+            .forEach(node => node.classList.contains('bd-selected') ? node.classList.remove('bd-selected') : node.remove());
+        },
+        runtimeExtras: {
+          publish_manifest: {
+            schema: 'meldex.publish-manifest.v1',
+            kind: 'board',
+            context_policy: 'saved-active-board',
+            active_board_view_id: snapshot.activeBoardViewId || '',
+            source_revision: snapshot.sourceRevision || '',
+          },
+        },
       };
     }
     return { el: null, cssFiles: [], extraCss: '', notFound: 'この種別は公開 HTML 未対応です' };
@@ -48908,13 +53655,14 @@ const MeldexPublicRuntime = (() => {
   // ==========================================================================
   // 公開 HTML 構築メイン: viewType + publish 設定から自己完結 HTML 文字列を返す
   // ==========================================================================
-  async function buildPublishHtml(viewType, publishCfg) {
+  async function buildPublishHtml(viewType, publishCfg, options) {
     publishCfg = publishCfg || {};
+    const assetCollector = options?.assetCollector || null;
     if (typeof MeldexExportHtml === 'undefined') {
       showStatus('HTML 出力エンジンを読み込めませんでした', true);
       return null;
     }
-    const def = _resolveViewDef(viewType);
+    const def = _resolveViewDef(viewType, publishCfg);
     if (!def.el) {
       showStatus(def.notFound || '公開対象が見つかりません', true);
       return null;
@@ -48926,7 +53674,10 @@ const MeldexPublicRuntime = (() => {
       });
       MeldexExportHtml.convertDataRuby(clone);
       if (typeof def.preTransform === 'function') def.preTransform(def.el, clone);
-      await MeldexExportHtml.embedImages(clone);
+      await MeldexExportHtml.embedImages(clone, assetCollector);
+      MeldexExportHtml.sanitizePublishedClone(clone, {
+        preserveFormControls: !!def.preserveFormControls,
+      });
 
     // CSS: ルート変数 + 追加 CSS ファイル + ビュー固有 CSS + 公開ランタイム CSS
     const varDecls = typeof MeldexExportHtml.collectCssVars === 'function'
@@ -48937,19 +53688,23 @@ const MeldexPublicRuntime = (() => {
       + ' font-family: var(--ui-font, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif);'
       + ' font-size: var(--ui-font-size, 15px); }\n';
     for (const f of def.cssFiles) {
-      cssText += await MeldexExportHtml.fetchCss(f) + '\n';
+      cssText += await MeldexExportHtml.fetchCss(f, undefined, assetCollector) + '\n';
     }
-    cssText += def.extraCss + '\n';
+    cssText += (MeldexExportHtml.inlineCssAssets
+      ? await MeldexExportHtml.inlineCssAssets(def.extraCss, document.baseURI, assetCollector)
+      : def.extraCss) + '\n';
     // 公開ランタイム用の補助スタイル (メッセージ表示等)
     cssText += '#meldex-publish-msg { margin-top: 10px; color: var(--accent, #4a90d9); font-size: 13px; }\n';
 
     // フォント埋込 (publish 設定で制御)
     const fontCss = publishCfg.embed_font !== false
-      ? await MeldexExportHtml.embedFont()
+      ? await MeldexExportHtml.embedFont(undefined, assetCollector)
       : '';
 
-    // ランタイム設定 (def.runtimeExtras があればマージ)
-    const runtimeCfg = {
+    const isFormPublication = !!def.preserveFormControls && !!clone.querySelector('form[data-publish-form]');
+    // ランタイム設定は公開フォームにだけ埋め込む。通常公開へdb pathやtokenを
+    // 混ぜない。
+    const runtimeCfg = isFormPublication ? {
       db_path: publishCfg.db_path || (typeof state !== 'undefined' && state.currentDbPath) || '',
       form_submit_enabled: !!publishCfg.form_submit_enabled,
       form_submit_token: publishCfg.form_submit_token || '',
@@ -48964,15 +53719,30 @@ const MeldexPublicRuntime = (() => {
           ? String(publishCfg.server_public_url).replace(/\/+$/, '') + '/api/public-form/submit'
           : ''),
       ...(def.runtimeExtras || {}),
-    };
-    const extraHeadHtml =
-      '<script type="application/json" id="meldex-publish-cfg">'
-      + _jsonForScript(runtimeCfg)
-      + '</script>\n'
-      + '<script>' + RUNTIME_SCRIPT + '</script>';
+    } : {};
+    const connectOrigins = [];
+    if (isFormPublication) {
+      for (const value of [runtimeCfg.submit_url, runtimeCfg.feedback_google_url]) {
+        try {
+          const url = new URL(String(value || ''), document.baseURI);
+          if (url.protocol === 'https:' || url.protocol === 'http:') connectOrigins.push(url.origin);
+        } catch {}
+      }
+    }
+    const assetSource = assetCollector ? "'self' data:" : 'data:';
+    const csp = isFormPublication
+      ? `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; script-src 'unsafe-inline'; connect-src ${Array.from(new Set(connectOrigins)).join(' ') || "'none'"}; form-action 'none'`
+      : `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; media-src ${assetSource}; form-action 'none'`;
+    const extraHeadHtml = '<meta http-equiv="Content-Security-Policy" content="'
+      + MeldexEscape.html(csp) + '">\n'
+      + (isFormPublication
+        ? '<script type="application/json" id="meldex-publish-cfg">'
+          + _jsonForScript(runtimeCfg)
+          + '</script>\n<script>' + RUNTIME_SCRIPT + '</script>'
+        : '');
 
     // body: クローン済み HTML + メッセージ領域
-    const bodyHtml = clone.outerHTML + '\n<div id="meldex-publish-msg"></div>';
+    const bodyHtml = clone.outerHTML + (isFormPublication ? '\n<div id="meldex-publish-msg"></div>' : '');
 
     const title = publishCfg.title || (typeof _getViewTitle === 'function' ? _getViewTitle(viewType) : 'Meldex');
       return MeldexExportHtml.buildHtml(title, bodyHtml, cssText, fontCss, extraHeadHtml);
@@ -48984,8 +53754,18 @@ const MeldexPublicRuntime = (() => {
     }
   }
 
+  async function buildPublishPackage(viewType, publishCfg) {
+    if (typeof MeldexExportHtml?.createAssetCollector !== 'function') {
+      return { html: await buildPublishHtml(viewType, publishCfg), assets: [] };
+    }
+    const assetCollector = MeldexExportHtml.createAssetCollector();
+    const html = await buildPublishHtml(viewType, publishCfg, { assetCollector });
+    return { html, assets: assetCollector.assets.slice() };
+  }
+
   return {
     buildPublishHtml,
+    buildPublishPackage,
   };
 })();
 
@@ -49555,10 +54335,12 @@ function _sn2JoinPath(folder = '', fileName = '') {
   return f ? f + '/' + n : n;
 }
 
-function _sn2SetActiveScriptNotePath(ctx, targetPath) {
+function _sn2SetActiveScriptNotePath(ctx, targetPath, saveResult = {}) {
   const { comp, editor } = ctx || {};
   if (!editor || !targetPath) return;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
   const oldPath = editor._path || '';
+  const oldDocumentKey = coordinator && oldPath ? coordinator.documentKeyForPath(oldPath) : '';
   if (editor._saveTimer) {
     clearTimeout(editor._saveTimer);
     editor._saveTimer = null;
@@ -49566,6 +54348,23 @@ function _sn2SetActiveScriptNotePath(ctx, targetPath) {
   if (oldPath && oldPath !== targetPath && typeof _sn2Editors !== 'undefined') delete _sn2Editors[oldPath];
   editor._path = targetPath;
   editor._dirty = false;
+  // 「名前を付けて保存」は別文書を作るため、元ファイルのetag/revisionを
+  // 新しい保存先へ持ち越さない。PUT応答の新しい文書IDとrevisionを次回保存の
+  // CAS基準として即座に確定する。
+  editor._lastSavedEtag = saveResult?.etag || '';
+  editor._lastSavedTransportRevision = coordinator && (saveResult?.transport_revision || saveResult?.etag)
+    ? coordinator.normalizeTransportRevision(
+      coordinator.currentTransportName(),
+      saveResult.transport_revision || saveResult.etag,
+    )
+    : (saveResult?.transport_revision || saveResult?.etag || '');
+  if (coordinator) {
+    const targetDocumentKey = coordinator.bindDocumentIdentity(targetPath, saveResult || {});
+    if (oldDocumentKey && oldDocumentKey !== targetDocumentKey) {
+      coordinator.unregisterParticipant?.(oldDocumentKey, editor);
+    }
+    coordinator.registerParticipant?.(targetDocumentKey, editor);
+  }
   if (typeof createScriptNoteRowIdSet === 'function') editor._lastSavedRowIds = createScriptNoteRowIdSet(editor.doc);
   if (typeof _sn2Editors !== 'undefined') {
     _sn2Editors[targetPath] = editor;
@@ -49611,6 +54410,46 @@ async function _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath = '', optio
     okLabel: '上書き',
     cancelLabel: 'キャンセル',
   });
+}
+
+async function _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targetExists) {
+  const text = JSON.stringify(exportDoc, null, 2);
+  const independentCopy = String(targetPath || '').replace(/\\/g, '/') !== String(sourcePath || '').replace(/\\/g, '/');
+  if (!independentCopy) return { doc: exportDoc, text, documentId: '', independentCopy: false };
+
+  const identity = window.MeldexDocumentIdentity;
+  const format = identity?.formatForPath?.(targetPath, text) || null;
+  if (!format) {
+    // .scriptnote.json等の旧形式は文書ID基盤の対象外。元の.mel-scenario由来IDを
+    // 持ち込むと保存直後と再読込後でdocumentKeyが変わるため、IDだけを除外する。
+    const legacyDoc = JSON.parse(text);
+    if (legacyDoc?.meldex && typeof legacyDoc.meldex === 'object') {
+      delete legacyDoc.meldex.document_id;
+      if (Object.keys(legacyDoc.meldex).length === 1 && legacyDoc.meldex.metadata_version != null) {
+        delete legacyDoc.meldex;
+      }
+    }
+    return { doc: legacyDoc, text: JSON.stringify(legacyDoc, null, 2), documentId: '', independentCopy: true };
+  }
+  let documentId = '';
+  if (targetExists && typeof apiFetch === 'function') {
+    try {
+      const current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
+      documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
+    } catch {}
+  }
+  if (!documentId) {
+    documentId = identity?.newDocumentId?.() || '';
+  }
+  if (!documentId) return { doc: exportDoc, text, documentId: '', independentCopy: true };
+
+  const doc = JSON.parse(text);
+  doc.meldex = {
+    ...(doc.meldex && typeof doc.meldex === 'object' ? doc.meldex : {}),
+    metadata_version: 1,
+    document_id: documentId,
+  };
+  return { doc, text: JSON.stringify(doc, null, 2), documentId, independentCopy: true };
 }
 
 async function _sn2FetchCssWithImports(url, seen = new Set()) {
@@ -49660,13 +54499,38 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
     ? editor.collectDoc()
     : (typeof serializeScriptNoteDoc === 'function' ? serializeScriptNoteDoc(editor.doc) : editor.doc);
   clearPendingSave();
+  const normalizedSourcePath = String(sourcePath || '').replace(/\\/g, '/');
+  const normalizedTargetPath = String(targetPath || '').replace(/\\/g, '/');
+  if (normalizedSourcePath && normalizedSourcePath === normalizedTargetPath) {
+    // 既定名のまま保存してもforce_overwriteでCASを迂回しない。通常保存キューの
+    // etag/transport_revision検証をそのまま通す。
+    const saved = typeof editor.save === 'function' ? await editor.save() : false;
+    return saved !== false;
+  }
   if (!(await _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath, options))) return false;
   const targetExists = await _sn2ScriptNoteFileExists(targetPath);
-  await apiPut('/file?path=' + encodeURIComponent(targetPath), {
-    content: JSON.stringify(exportDoc, null, 2),
+  const prepared = await _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targetExists);
+  const rawSaveResult = await apiPut('/file?path=' + encodeURIComponent(targetPath), {
+    content: prepared.text,
     ...(targetExists ? { force_overwrite: true } : { create_only: true }),
   });
-  _sn2SetActiveScriptNotePath(ctx, targetPath);
+  const documentId = rawSaveResult?.document_id || prepared.documentId || '';
+  const saveResult = documentId ? { ...(rawSaveResult || {}), document_id: documentId } : (rawSaveResult || {});
+  if (prepared.independentCopy && editor.doc) {
+    if (prepared.documentId) {
+      editor.doc.meldex = {
+        ...(prepared.doc?.meldex || editor.doc.meldex || {}),
+        metadata_version: 1,
+        document_id: documentId || prepared.documentId,
+      };
+    } else if (prepared.doc?.meldex && typeof prepared.doc.meldex === 'object') {
+      // 旧形式へ切り替えた後の通常保存でも、元.mel-scenarioの文書IDを再混入させない。
+      editor.doc.meldex = { ...prepared.doc.meldex };
+    } else {
+      delete editor.doc.meldex;
+    }
+  }
+  _sn2SetActiveScriptNotePath(ctx, targetPath, saveResult);
   return true;
 }
 
@@ -50903,6 +55767,9 @@ class ScriptNoteEditor {
     this._lastSavedEtag = '';
     this._lastSavedTransportRevision = '';
     this._dirty = false;
+    this._readOnly = false;
+    this._readOnlySnapshot = '';
+    this._readOnlyDisabledState = new WeakMap();
     this._saveTimer = null;
     this._bound = false;
     this._roleMenu = null;
@@ -51007,6 +55874,59 @@ class ScriptNoteEditor {
     return serializeScriptNoteDoc(this.doc);
   }
 
+  setReadOnly(readOnly) {
+    const next = !!readOnly;
+    if (next === this._readOnly) {
+      if (next && this.doc && !this._readOnlySnapshot) {
+        this._readOnlySnapshot = JSON.stringify(serializeScriptNoteDoc(this.doc));
+      }
+      this._applyReadOnlyDom?.();
+      return;
+    }
+    if (next && this.doc) {
+      // 外部でロックされた瞬間にDOM上の入力を失わない。dirtyは維持し、
+      // 以後の変更操作だけを止める。
+      try { this._syncAllFromDom(); } catch {}
+    }
+    this._readOnly = next;
+    this._readOnlySnapshot = next && this.doc
+      ? JSON.stringify(serializeScriptNoteDoc(this.doc))
+      : '';
+    if (next && this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this.doc) this._render();
+    else this._applyReadOnlyDom?.();
+  }
+
+  _applyReadOnlyDom() {
+    if (!this.host) return;
+    const readOnly = !!this._readOnly;
+    this.host.dataset.readOnly = readOnly ? 'true' : 'false';
+    this.host.setAttribute('aria-readonly', readOnly ? 'true' : 'false');
+    this.host.querySelectorAll('.sn2-text, .sn2-custom-text').forEach((el) => {
+      el.contentEditable = readOnly ? 'false' : 'true';
+      el.setAttribute('aria-readonly', readOnly ? 'true' : 'false');
+    });
+    this.host.querySelectorAll('button, input, select, textarea').forEach((el) => {
+      if (readOnly) {
+        if (!this._readOnlyDisabledState.has(el)) this._readOnlyDisabledState.set(el, !!el.disabled);
+        el.disabled = true;
+      } else if (this._readOnlyDisabledState.has(el)) {
+        el.disabled = this._readOnlyDisabledState.get(el);
+        this._readOnlyDisabledState.delete(el);
+      }
+    });
+    this.host.querySelectorAll('[draggable="true"]').forEach((el) => {
+      el.draggable = !readOnly;
+    });
+    this.host.querySelectorAll('.sn2-handle, .sn2-col-resizer').forEach((el) => {
+      el.style.pointerEvents = readOnly ? 'none' : '';
+      el.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+    });
+  }
+
   _showConflictPending(documentKey, path) {
     window.MeldexConflictPendingBanner?.show?.(documentKey, {
       label: '競合を保留中',
@@ -51025,6 +55945,63 @@ class ScriptNoteEditor {
     this._showConflictPending(documentKey, path);
   }
 
+  async _chooseConflictAction() {
+    if (!window.GBUI?.createModal) {
+      const overwrite = typeof cfConfirm === 'function'
+        ? await cfConfirm('このシナリオは他の場所で更新されています。今の編集内容で上書きしますか？')
+        : false;
+      return overwrite ? 'overwrite' : 'defer';
+    }
+    return new Promise((resolve) => {
+      let selected = 'defer';
+      let finished = false;
+      const description = document.createElement('div');
+      description.className = 'gb-section-desc';
+      description.id = 'scriptnote-conflict-description';
+      description.textContent = '自分の未保存内容と、相手が保存した最新版があります。残し方を選んでください。';
+      const makeButton = (action, label, primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gb-btn gb-btn-sm' + (primary ? ' gb-btn-primary' : '');
+        button.dataset.conflictAction = action;
+        button.dataset.e2eId = `scriptnote-conflict-${action}`;
+        button.textContent = label;
+        return button;
+      };
+      const overwrite = makeButton('overwrite', '自分の編集で上書き', true);
+      const reload = makeButton('reload', '相手の最新版を再読込');
+      const saveAs = makeButton('save-as', '別名保存');
+      const defer = makeButton('defer', '保留');
+      const modalApi = window.GBUI.createModal({
+        id: 'scriptnote-conflict-dialog',
+        title: 'シナリオの保存競合',
+        body: description,
+        footer: [overwrite, reload, saveAs, defer],
+        variant: 'standard',
+        geometryKey: 'scriptnote-conflict-dialog',
+        initialFocus: overwrite,
+        returnFocus: this.host,
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          if (finished) return;
+          finished = true;
+          resolve(selected);
+        },
+      });
+      modalApi.overlay.dataset.e2eId = 'scriptnote-conflict-dialog-overlay';
+      modalApi.modal.dataset.e2eId = 'scriptnote-conflict-dialog';
+      modalApi.modal.setAttribute('aria-describedby', description.id);
+      modalApi.overlay.addEventListener('click', (event) => {
+        const action = event.target?.closest?.('[data-conflict-action]')?.dataset?.conflictAction;
+        if (!action || finished) return;
+        selected = action;
+        modalApi.close('choice');
+      });
+      modalApi.open();
+    });
+  }
+
   async _reviewConflict(path, documentKey) {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     const record = coordinator?.requestConflictReview?.(documentKey) || null;
@@ -51032,14 +56009,16 @@ class ScriptNoteEditor {
     const generation = record?.generation ?? null;
     window.MeldexConflictPendingBanner?.hide?.(documentKey);
     try {
-      const keepLocal = typeof cfConfirm === 'function'
-        ? await cfConfirm('このシナリオは他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は失われます）')
-        : false;
+      const action = await this._chooseConflictAction();
       if (this._path !== path) {
         this._restoreConflictReview(documentKey, record, path);
         return;
       }
-      if (keepLocal) {
+      if (action === 'defer') {
+        this._restoreConflictReview(documentKey, record, path);
+        return;
+      }
+      if (action === 'overwrite') {
         const json = JSON.stringify(this.collectDoc(), null, 2);
         const result = await apiPut('/file?path=' + encodeURIComponent(path), {
           content: json,
@@ -51064,6 +56043,57 @@ class ScriptNoteEditor {
         if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
         await window.MeldexDraftRecovery?.markSynced?.(path);
         if (typeof showStatus === 'function') showStatus('自分の編集でシナリオを上書き保存しました');
+        return;
+      }
+
+      if (action === 'save-as') {
+        const localJson = JSON.stringify(this.collectDoc(), null, 2);
+        await window.MeldexDraftRecovery?.saveDraft?.(path, localJson, this._lastSavedEtag || '');
+        const fallback = path.replace(/\.scriptnote\.json$/i, '_copy.scriptnote.json')
+          .replace(/\.mel-scenario$/i, '_copy.mel-scenario');
+        const nextPath = typeof cfPrompt === 'function'
+          ? await cfPrompt('別名保存', fallback === path ? path + '_copy' : fallback)
+          : '';
+        if (!nextPath) {
+          this._restoreConflictReview(documentKey, record, path);
+          return;
+        }
+        const targetExists = typeof _sn2ScriptNoteFileExists === 'function'
+          ? await _sn2ScriptNoteFileExists(nextPath)
+          : false;
+        if (targetExists && typeof cfConfirm === 'function' && !await cfConfirm(
+          '同名のシナリオが既にあります。上書きしますか？',
+          { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' },
+        )) {
+          this._restoreConflictReview(documentKey, record, path);
+          return;
+        }
+        const exportDoc = JSON.parse(localJson);
+        const prepared = typeof _sn2PrepareSaveAsDocument === 'function'
+          ? await _sn2PrepareSaveAsDocument(exportDoc, nextPath, path, targetExists)
+          : { doc: exportDoc, text: localJson, independentCopy: true };
+        const result = await apiPut('/file?path=' + encodeURIComponent(nextPath), {
+          content: prepared.text,
+          ...(targetExists ? { force_overwrite: true } : { create_only: true }),
+        });
+        if (this._path !== path) throw new Error('表示中のシナリオが切り替わったため、別名保存結果を確定できません');
+        const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+        if (coordinator && !resolved) throw new Error('シナリオの競合状態が更新されました');
+        this.doc = createScriptNoteDoc(prepared.doc || exportDoc);
+        const component = typeof getActiveScriptNoteComponent === 'function'
+          ? getActiveScriptNoteComponent()
+          : null;
+        if (typeof _sn2SetActiveScriptNotePath === 'function') {
+          _sn2SetActiveScriptNotePath({ comp: component?._editor === this ? component : null, editor: this }, nextPath, result || {});
+        } else {
+          this._path = nextPath;
+          this._dirty = false;
+          this._lastSavedEtag = result?.etag || '';
+        }
+        this._render();
+        if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+        await window.MeldexDraftRecovery?.markSynced?.(path);
+        if (typeof showStatus === 'function') showStatus('シナリオを別名で保存しました');
         return;
       }
 
@@ -51102,7 +56132,19 @@ class ScriptNoteEditor {
   }
 
   async save() {
-    if (!this._path || !this.doc) return true;
+    if (!this.doc) return true;
+    if (this._readOnly) {
+      if (this._dirty && typeof showStatus === 'function') {
+        showStatus('編集ロック中です。未保存の内容は保持しています。ロック解除後に保存してください', true);
+      }
+      return !this._dirty;
+    }
+    if (!this._path) {
+      if (this._dirty && typeof showStatus === 'function') {
+        showStatus('保存先が未確定のシナリオは閉じられません。名前を付けて保存してください', true);
+      }
+      return !this._dirty;
+    }
     const savePath = this._path;
     const json = JSON.stringify(this.collectDoc(), null, 2);
     const prevIds = this._lastSavedRowIds || new Set();
@@ -51132,7 +56174,7 @@ class ScriptNoteEditor {
         : await sendFn();
       if (saveResult?.conflictPending) {
         this._dirty = true;
-        window.MeldexDraftRecovery?.queueDraft?.(savePath, json, this._lastSavedEtag || '');
+        await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
         this._showConflictPending(documentKey, savePath);
         return false;
       }
@@ -51154,6 +56196,9 @@ class ScriptNoteEditor {
         this._lastSavedRowIds = currIds;
         if (unchanged) this._dirty = false;
       }
+      // 保存要求と現在内容が一致する時だけ回復用下書きを同期済みにする。
+      // 保存中に追加編集された場合は、その新しい下書きを消さない。
+      if (unchanged) await window.MeldexDraftRecovery?.markSynced?.(savePath);
       // 削除された行IDを抽出し、該当コメントを孤児化 (annotation_unification_plan.md §5.3)
       const removed = [...prevIds].filter(id => !currIds.has(id));
       if (removed.length > 0) {
@@ -51188,11 +56233,12 @@ class ScriptNoteEditor {
           localEtag: this._lastSavedTransportRevision || this._lastSavedEtag || '',
           serverDetail: (e && e.meldexDetail && typeof e.meldexDetail === 'object') ? e.meldexDetail : null,
         });
-        window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
+        await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
         this._showConflictPending(documentKey, savePath);
         showStatus('シナリオは上書きされていません。別の端末で更新されています。最新のシナリオを開き直してから編集内容を反映してください', true);
         return false;
       }
+      await window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
       if (typeof showStatus === 'function') showStatus('保存失敗: ' + e.message, true);
       return false;
     }
@@ -52325,6 +57371,7 @@ class ScriptNoteEditor {
       editor.style.removeProperty('width');
       settleWrapPacking(true);
       this._bind();
+      this._applyReadOnlyDom();
       this._adjustRubySpacing();
       settleWrapPacking(true);
       // 縦書き折り返し: 各段のヘッダー高さを測定し行に適用 + テキスト幅拡張
@@ -52349,6 +57396,7 @@ class ScriptNoteEditor {
     this.host.innerHTML = '';
     this.host.appendChild(scroll);
     this._bind();
+    this._applyReadOnlyDom();
     this._adjustRubySpacing();
     // 縦書き: ヘッダーの高さを測定し行に適用（ヘッダーと行の下端を揃える）
     // + テキストが折り返して幅が必要な行はmin-widthを拡張
@@ -52613,7 +57661,11 @@ class ScriptNoteEditor {
     if (visCols._text !== false) {
       textDiv = document.createElement('div');
       textDiv.className = 'sn2-text';
-      textDiv.contentEditable = 'true';
+      textDiv.contentEditable = this._readOnly ? 'false' : 'true';
+      textDiv.setAttribute('role', 'textbox');
+      textDiv.setAttribute('aria-multiline', 'true');
+      textDiv.setAttribute('aria-label', `本文、${idx + 1}行、タイプ${row.role || '未設定'}`);
+      textDiv.setAttribute('aria-readonly', this._readOnly ? 'true' : 'false');
       textDiv.dataset.rowId = row.id;
       textDiv.dataset.e2eId = `sn-row-${row.id}-text`;
       // 再描画をまたいでテキストセル範囲選択の表示を復元する
@@ -52674,7 +57726,7 @@ class ScriptNoteEditor {
       if (col.align) cell.dataset.align = col.align;
       if (col.valign) cell.dataset.valign = col.valign;
       const val = row.columns[col.id] ?? '';
-      const colControlLabel = `${col.label || col.id || '列'}列`;
+      const colControlLabel = `${col.label || col.id || '列'}列、${idx + 1}行`;
       if (col.type === 'number') {
         const inp = document.createElement('input');
         inp.type = 'number';
@@ -52709,7 +57761,10 @@ class ScriptNoteEditor {
       } else {
         const inp = document.createElement('div');
         inp.className = 'sn2-custom-text';
-        inp.contentEditable = 'true';
+        inp.contentEditable = this._readOnly ? 'false' : 'true';
+        inp.setAttribute('role', 'textbox');
+        inp.setAttribute('aria-multiline', 'true');
+        inp.setAttribute('aria-readonly', this._readOnly ? 'true' : 'false');
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         inp.setAttribute('aria-label', colControlLabel);
         inp.textContent = val;
@@ -52960,7 +58015,7 @@ class ScriptNoteEditor {
     if (headings.some(h => r.startsWith(h)) || /^\d+\s*[.．]/.test(r)) return 'heading';
     if (typeof SPECIAL_CHARA !== 'undefined' && Array.isArray(SPECIAL_CHARA) && SPECIAL_CHARA.includes(r)) return 'action';
     const actions = ['ト書き', 'ト', '動作', '説明', 'N', 'ナレーション', 'ナレ', 'SE', 'ME', 'M',
-                     'コマ外注釈', '擬音', 'モノローグ', '心の声', 'BGM', 'テロップ', '（間）',
+                     'コマ外アノテート', '擬音', 'モノローグ', '心の声', 'BGM', 'テロップ', '（間）',
                      '地の文', '独白', '傍白', '歌', '群衆'];
     if (actions.includes(r)) return 'action';
     return 'dialogue';
@@ -52972,6 +58027,20 @@ class ScriptNoteEditor {
     if (this._bound) return;
     this._bound = true;
     const host = this.host;
+
+    const blockReadOnlyMutation = (event) => {
+      if (!this._readOnly) return;
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+    };
+    ['beforeinput', 'input', 'paste', 'cut', 'drop'].forEach((type) => {
+      host.addEventListener(type, blockReadOnlyMutation, true);
+    });
+    host.addEventListener('pointerdown', (event) => {
+      if (!this._readOnly) return;
+      if (!event.target.closest?.('.sn2-handle, .sn2-col-resizer, button, input, select, [contenteditable="true"]')) return;
+      blockReadOnlyMutation(event);
+    }, true);
 
     // === ホイール/矩形選択/行コピー/右ドラッグパン → gb-scriptnote-interactions.js に移動 ===
     this._bindInteractionEvents(host);
@@ -53215,8 +58284,10 @@ class ScriptNoteEditor {
     host.addEventListener('input', (e) => {
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
-      this._dirty = true;
-      this._scheduleSave();
+      // DOM上の現在値を先にモデルへ同期してから共通dirty入口へ通す。
+      // これにより最大250msの回復用下書きにも、2秒autosaveにも、
+      // 直前の文字（IME確定文字を含む）が欠けずに入る。
+      this._syncRowFromDom(text, { skipUndo: true });
       // 編集のたびに自動ルビ/自動リンク/縦中横を再適用 (デバウンス)
       // IME 変換中はスキップ (compositionend 側で拾う)
       this._scheduleTextCellLiveResize?.(text);
@@ -53255,7 +58326,24 @@ class ScriptNoteEditor {
     });
 
     host.addEventListener('keydown', (e) => {
-      if (e.isComposing) return;
+      // Chromium/WindowsのIMEでは keydown.isComposing が false のまま
+      // keyCode=229 だけが届く区間がある。compositionイベントで保持した状態も
+      // 併用し、確定Enter/Ctrl+Enter/Undoを行・履歴操作へ流さない。
+      if (e.isComposing || this._imeComposing || e.keyCode === 229) {
+        // 既定のIME確定処理は止めず、同じイベントがdocument側の
+        // ショートカットルーターへ届くことだけを防ぐ。
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (this._readOnly) {
+        const modifyingKey = e.key === 'Enter' || e.key === 'Backspace' || e.key === 'Delete'
+          || e.key.length === 1 || e.ctrlKey || e.metaKey || e.altKey;
+        if (modifyingKey) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
 
       // アクティブセル（クリックで強調表示のみ・未編集）に対する矢印/Tab/Enter/Escapeは
       // ここでナビゲーションとして処理する。編集中のセルや無関係のターゲットには影響しない。
@@ -53478,11 +58566,6 @@ class ScriptNoteEditor {
       const isVertical = this.doc.editor?.viewMode === 'vertical';
 
       if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey)) {
-        if (this._cellEditMode && typeof this._exitEditMode === 'function') {
-          e.preventDefault();
-          this._exitEditMode();
-          return;
-        }
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.addRow', e)) return;
         e.preventDefault();
         const splitOffset = this._getTextOffset(text);
@@ -54963,7 +60046,7 @@ class ScriptNoteEditor {
       if (annData) {
         try {
           const ann = JSON.parse(annData);
-          this._pushUndo('注釈テキスト挿入');
+          this._pushUndo('アノテートテキスト挿入');
           document.execCommand('insertText', false, ann.text || '[メモ]');
           this._syncRowFromDom(textDiv, { skipUndo: true });
         } catch {}
@@ -54989,7 +60072,36 @@ class ScriptNoteEditor {
   }
 
   _markDirty(options = {}) {
+    if (this._readOnly) {
+      // 詳細パネル等の間接入口が先にモデルを書き換えても、ロック取得時の
+      // スナップショットへ戻してdirty化・下書き・PUTを発生させない。
+      if (this._readOnlySnapshot) {
+        try {
+          this.doc = createScriptNoteDoc(JSON.parse(this._readOnlySnapshot));
+          this._calcCache = null;
+          this._render();
+        } catch {}
+      }
+      if (typeof showStatus === 'function') showStatus('編集ロック中のため変更できません', true);
+      return false;
+    }
     this._dirty = true;
+    // 本体の2秒autosaveより先に、通常編集を回復用ストアへ退避する。
+    // MeldexDraftRecovery.queueDraft()側が同一pathを250msでデバウンスするため、
+    // 連続入力でIndexedDB書込を増やさず、保存・遷移失敗時にも直近内容を残せる。
+    if (this._path && this.doc) {
+      try {
+        const draftJson = JSON.stringify(serializeScriptNoteDoc(this.doc), null, 2);
+        window.MeldexDraftRecovery?.queueDraft?.(
+          this._path,
+          draftJson,
+          this._lastSavedEtag || '',
+        );
+      } catch (_) {
+        // 下書き直列化の失敗で編集操作自体を壊さない。本体save()/flush()側でも
+        // 失敗時にsaveDraft()をawaitし、閉鎖・遷移を停止する。
+      }
+    }
     this._scheduleSave();
     // sync-from-dom の最中（= 既に _pushUndo 処理中のフラッシュ経路）では
     // デバウンス undo を仕込み直さない。再発火ループ防止。
@@ -55002,7 +60114,7 @@ class ScriptNoteEditor {
   }
 
   _scheduleSave() {
-    if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+    if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty(this._path, 'file');
     if (this._saveTimer) clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => { this._saveTimer = null; this.save(); }, 2000);
   }
@@ -57047,11 +62159,12 @@ Object.assign(ScriptNoteEditor.prototype, {
   // （テキスト系）か、タイプメニューを開く（_role）。それ以外は強調表示のみでフォーカスする。
   _setActiveCell(rowId, colId, enterEdit) {
     if (!rowId || !colId) return;
+    if (this._readOnly && enterEdit) return;
     // 既存のアクティブセル強調をすべて解除（テキスト系セルはcontentEditableも復元する）
     this.host?.querySelectorAll('.sn2-cell-active').forEach(el => {
       el.classList.remove('sn2-cell-active');
       if (el.classList.contains('sn2-text') || el.classList.contains('sn2-custom-text')) {
-        el.contentEditable = 'true';
+        el.contentEditable = this._readOnly ? 'false' : 'true';
       }
     });
     // 他の選択系（矩形セル・テキストセル・行・タイプセル選択）とは相互排他
@@ -57095,6 +62208,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _enterEditMode(cellEl) {
+    if (this._readOnly) return;
     if (!cellEl) cellEl = this._getCellElement(this._activeCellRowId, this._activeCellColId);
     if (!cellEl) return;
     this._cellEditMode = true;
@@ -57153,7 +62267,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       el.classList.remove('sn2-cell-active');
       // 非アクティブに戻すテキスト系セルは、直接クリックでの即編集に戻す
       if (el.classList.contains('sn2-text') || el.classList.contains('sn2-custom-text')) {
-        el.contentEditable = 'true';
+        el.contentEditable = this._readOnly ? 'false' : 'true';
       }
     });
     this._activeCellRowId = null;
@@ -58401,6 +63515,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${match.rowId}"]`);
     const textEl = rowEl?.querySelector('.sn2-text');
     if (!textEl) return;
+    // 検索結果の選択は書式編集の意思表示ではない。共通の選択範囲書式
+    // ポップアップを抑止し、検索／置換パネルだけを維持する。
+    window.GBTextSelectionFormat?.suppressFor?.(600);
     textEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
     this._selectVisibleTextRange(textEl, match.start, match.end);
   },
@@ -58488,7 +63605,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         <button type="button" class="sn2-header-popup-item" data-sn-search-replace-all>全置換</button>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;">
-        <span class="sn2-search-count" style="font-size:11px;color:var(--fg2);">0 / 0</span>
+        <span class="sn2-search-count" style="font-size:11px;color:var(--fg2);white-space:nowrap;">0 / 0</span>
         <button type="button" class="sn2-header-popup-item" data-sn-search-close>閉じる</button>
       </div>`;
     const queryInput = popup.querySelector('.sn2-search-input');
@@ -58514,6 +63631,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btnReplaceAll.disabled = disabled;
     };
 
+    let queryNeedsActivation = false;
     const syncState = (preferred = null, focusCurrent = true) => {
       this._searchState.query = queryInput.value;
       this._searchState.replace = replaceInput.value;
@@ -58527,6 +63645,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       const currentQuery = queryInput.value;
       if (this._searchState.query !== currentQuery || !Array.isArray(this._searchState.matches)) {
         syncState(null, focusCurrent);
+        queryNeedsActivation = false;
+        return true;
+      }
+      if (queryNeedsActivation) {
+        queryNeedsActivation = false;
+        if (focusCurrent && this._searchState.matches.length) {
+          this._activateSearchMatch(this._searchState.matches[this._searchState.index]);
+        }
         return true;
       }
       if (!this._searchState.matches.length) {
@@ -58540,7 +63666,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     queryInput.addEventListener('compositionstart', () => { queryComposing = true; });
     queryInput.addEventListener('compositionend', () => {
       queryComposing = false;
-      syncState(null, true);
+      syncState(null, false);
+      queryNeedsActivation = true;
+    });
+    queryInput.addEventListener('input', () => {
+      if (!queryComposing) {
+        syncState(null, false);
+        queryNeedsActivation = true;
+      }
     });
     replaceInput.addEventListener('input', () => {
       this._searchState.replace = replaceInput.value;
@@ -63094,6 +68227,9 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _showRoleMenu(roleBtn, opts) {
     this._closeRoleMenu();
+    // タイプメニューの操作中は、直前の文字選択から遅延表示される
+    // 書式ポップアップが Escape を先取りしないよう抑止する。
+    window.GBTextSelectionFormat?.suppressFor?.(1200);
     const sel = window.getSelection();
     this._roleMenuSavedRange = null;
     if (sel && sel.rangeCount) {
@@ -63123,7 +68259,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const pageSettings = typeof PAGE_SETTINGS !== 'undefined' && Array.isArray(PAGE_SETTINGS)
       ? PAGE_SETTINGS : ['改ページ', 'めくり', '見開き', '白紙', 'トビラ絵', '大ゴマ', '未完'];
     const specialCharas = typeof SPECIAL_CHARA !== 'undefined' && Array.isArray(SPECIAL_CHARA)
-      ? SPECIAL_CHARA : ['プロット', 'ト書き', 'ナレーション', '擬音', 'コマ外注釈'];
+      ? SPECIAL_CHARA : ['プロット', 'ト書き', 'ナレーション', '擬音', 'コマ外アノテート'];
     const chars = this._getCharacterList();
 
     const select = (val) => {
@@ -63292,6 +68428,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.addEventListener('keydown', menuKeyHandler);
     // _closeRoleMenuで解除するため保持
     this._roleMenuKeyHandler = menuKeyHandler;
+    const escapeKeyHandler = (e) => {
+      if (!this._roleMenu || e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._closeRoleMenu();
+      this._restoreRangeAfterRoleMenu(roleBtn.closest('.sn2-row'));
+    };
+    // document の capture listener が先に Escape を消費する画面でも
+    // タイプメニューを確実に閉じられるよう、window capture で受ける。
+    window.addEventListener('keydown', escapeKeyHandler, true);
+    this._roleMenuEscapeKeyHandler = escapeKeyHandler;
 
     // 位置決め
     const rect = roleBtn.getBoundingClientRect();
@@ -63322,6 +68469,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (this._roleMenuKeyHandler) {
       document.removeEventListener('keydown', this._roleMenuKeyHandler);
       this._roleMenuKeyHandler = null;
+    }
+    if (this._roleMenuEscapeKeyHandler) {
+      window.removeEventListener('keydown', this._roleMenuEscapeKeyHandler, true);
+      this._roleMenuEscapeKeyHandler = null;
     }
     if (this._roleMenu) {
       this._roleMenu.remove();
@@ -65001,7 +70152,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         closeHandler = null;
       }
       if (escapeHandler) {
-        document.removeEventListener('keydown', escapeHandler, true);
+        window.removeEventListener('keydown', escapeHandler, true);
         escapeHandler = null;
       }
     };
@@ -65063,7 +70214,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       ev.stopPropagation();
       closePopup();
     };
-    document.addEventListener('keydown', escapeHandler, true);
+    window.addEventListener('keydown', escapeHandler, true);
     setTimeout(() => {
       if (!popup.isConnected) return;
       closeHandler = (ev) => {
@@ -65107,19 +70258,60 @@ Object.assign(ScriptNoteEditor.prototype, {
     const optionsWrap = body.querySelector('[data-column-options-wrap]');
     const options = body.querySelector('[data-column-options]');
     let busy = false;
-    const returnFocus = () => {
-      if (owner?.isConnected && owner !== document.body) return owner;
+    const parentHeader = () => {
       const columnId = afterColId || '_text';
-      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || this.host;
+      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || null;
     };
-    const restoreParentFocus = reason => {
-      if (reason === 'submitted') return;
+    const returnFocus = () => {
+      return parentHeader() || (owner?.isConnected && owner !== document.body ? owner : this.host);
+    };
+    const restoreParentFocusIfUnclaimed = () => {
+      let interactionClaimed = false;
+      let trackingInteraction = false;
+      let finished = false;
+      let restoreAttempts = 0;
+      const stop = () => {
+        finished = true;
+        if (!trackingInteraction) return;
+        trackingInteraction = false;
+        document.removeEventListener('pointerdown', claimInteraction, true);
+        document.removeEventListener('keydown', claimInteraction, true);
+      };
+      const claimInteraction = () => {
+        interactionClaimed = true;
+        stop();
+      };
+      // 閉じる操作自身は数えず、閉鎖後に利用者が始めた操作だけをfocus復帰の
+      // 打切り条件にする。ブラウザ既定のfocus移動や再描画は利用者操作ではない。
       setTimeout(() => {
-        const target = returnFocus();
-        const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(dialog => dialog.isConnected);
-        const topDialog = dialogs[dialogs.length - 1];
-        if (target?.isConnected && (!topDialog || topDialog.contains(target))) target.focus();
+        if (finished || interactionClaimed || trackingInteraction) return;
+        trackingInteraction = true;
+        document.addEventListener('pointerdown', claimInteraction, true);
+        document.addEventListener('keydown', claimInteraction, true);
       }, 0);
+      const restore = () => {
+        if (interactionClaimed) {
+          stop();
+          return;
+        }
+        const target = parentHeader();
+        if (!target?.isConnected) {
+          stop();
+          return;
+        }
+        const activeDialog = document.activeElement?.closest?.(
+          '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+        );
+        if (activeDialog) {
+          stop();
+          return;
+        }
+        try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+        restoreAttempts += 1;
+        if (restoreAttempts < 100) setTimeout(restore, 50);
+        else stop();
+      };
+      restore();
     };
     const modal = globalThis.GBUI.createModal({
       id: 'scriptnote-add-column', title: '列を追加', body, footer: [cancel, add],
@@ -65127,7 +70319,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       extraClass: 'sn2-column-modal', initialFocus: name, returnFocus,
       closeLabel: '列の追加を閉じる', closeOnEsc: true, closeOnOverlay: true,
       onBeforeClose: reason => !busy || reason === 'submitted',
-      onClose: restoreParentFocus,
+      // 閉じるボタン自身が除去されるclick経路では、ブラウザ既定のfocus移動や
+      // ヘッダー再描画が同期復帰を上書きすることがあるため、短い監視期間だけ
+      // 親ヘッダーを再確認する。利用者の次操作や別ダイアログは上書きしない。
+      onClose: reason => {
+        if (reason === 'submitted') return;
+        restoreParentFocusIfUnclaimed();
+      },
     });
     modal.overlay.dataset.e2eId = 'scriptnote-add-column-overlay';
     modal.modal.dataset.e2eId = 'scriptnote-add-column-dialog';
@@ -65451,8 +70649,12 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (typeof showStatus === 'function') showStatus('チャットを開けません', true);
   }
 
-  function stripIds(root) {
+  function stripIds(root, surface) {
     root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
+    // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
+    // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
+    // プロパティ・リンクファイル・作成操作を特定できなくなる。
   }
 
   function applyReadOnly(root, readOnly, reason) {
@@ -65561,6 +70763,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       editor: null,
       data: options.data || null,
       staticContent: false,
+      attachmentRefreshSeq: 0,
     };
 
     async function save() {
@@ -65601,7 +70804,69 @@ Object.assign(ScriptNoteEditor.prototype, {
       return true;
     }
 
+    async function refreshAttachmentsOnly() {
+      const refreshSeq = ++state.attachmentRefreshSeq;
+      try {
+        const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true });
+        if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
+          return false;
+        }
+        const currentSection = root.querySelector('.meldex-entity-attachments-section');
+        if (!currentSection
+          || typeof MeldexSheetEntryAttachments === 'undefined'
+          || typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection !== 'function') {
+          return false;
+        }
+        const nextSectionData = {
+          ...(state.data || {}),
+          entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
+          revision: refreshed?.revision ?? state.data?.revision,
+        };
+        const staging = document.createElement('div');
+        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
+          readOnly: root.dataset.readOnly === '1',
+          surface: state.surface,
+          onReload: refreshAttachmentsOnly,
+        });
+        if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
+          return false;
+        }
+        const nextSection = staging.firstElementChild;
+        if (!nextSection) return false;
+        currentSection.replaceWith(nextSection);
+        // 添付操作でもエントリrevisionは進む。ただし別端末が本文を更新していた
+        // 場合まで本文側のCAS基準を進めると、その変更を次回保存で上書きできて
+        // しまう。取得本文が現在の保存済みbaselineと一致し、保存処理も進行中で
+        // ない時だけ、添付操作によるrevision更新として追随する。
+        const bodyBaselineUnchanged = !!state.editor
+          && !state.saving
+          && refreshed?.page_content != null
+          && String(refreshed.page_content) === String(state.editor.dataset.lastSavedMd || '');
+        state.data = {
+          ...(state.data || {}),
+          entry_attachments: nextSectionData.entry_attachments,
+          ...(bodyBaselineUnchanged && refreshed?.revision != null ? { revision: refreshed.revision } : {}),
+          ...(bodyBaselineUnchanged && refreshed?.freetext_etag ? { freetext_etag: refreshed.freetext_etag } : {}),
+        };
+        if (bodyBaselineUnchanged && refreshed?.revision != null) {
+          state.editor.dataset.lastSavedRevision = String(refreshed.revision);
+        }
+        if (bodyBaselineUnchanged && refreshed?.freetext_etag) {
+          state.editor.dataset.lastSavedEtag = String(refreshed.freetext_etag);
+        }
+        if (typeof replaceIcons === 'function') replaceIcons();
+        return true;
+      } catch (error) {
+        if (!state.disposed && root.dataset.meldexEntityDetail === id && typeof showStatus === 'function') {
+          showStatus('リンク一覧を再読み込みできませんでした: ' + (error?.userMessage || error?.message || error), true);
+        }
+        return false;
+      }
+    }
+
     async function render() {
+      // 全面再描画を開始した時点で、旧DOM向けの添付一覧応答を無効化する。
+      state.attachmentRefreshSeq += 1;
       root.dataset.meldexEntityDetail = id;
       root.dataset.surface = state.surface;
       root.dataset.path = state.path;
@@ -65649,10 +70914,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       const actions = document.createElement('div');
       actions.className = 'meldex-entity-detail-actions';
       if (state.surface === 'main') actions.id = 'entity-create-note-btn';
-      actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
       // 旧・専用コピー用ボタンは廃止した（シート表示・ビュー状態・エントリ操作の改善計画
       // 2026-08-04）。列一覧内の文字選択に応じたコピーポップアップ（gb-entity-props-selection.js）
       // に置き換わったため、専用ボタンは不要になった。
+      actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
       const postId = xPostId(data);
       if (postId && typeof window.reimportXBookmarkPost === 'function') {
         actions.appendChild(button('Xからこのポストを再インポート', 'refreshCw', async () => {
@@ -65682,6 +70947,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
           readOnly: access.readOnly,
+          ctx: options.ctx,
         });
       }
 
@@ -65689,7 +70955,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
-          onReload: () => render(),
+          onReload: refreshAttachmentsOnly,
         });
       }
 
@@ -65717,7 +70983,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         preview.append(previewBar, frame);
         root.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
-        if (state.surface !== 'main') stripIds(root);
+        if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
         return true;
       }
@@ -65745,25 +71011,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       root.appendChild(toolbar);
       root.appendChild(editor);
 
-      if (!raw.trim() && !access.readOnly) {
-        editor.hidden = true;
-        toolbar.hidden = true;
-        editor.style.display = 'none';
-        toolbar.style.display = 'none';
-        const createNote = button('ノートを作成', 'filePlus', async () => {
-          editor.hidden = false;
-          toolbar.hidden = false;
-          editor.style.display = 'block';
-          toolbar.style.display = '';
-          editor.dataset.entityNoteCreated = '1';
-          editor.innerHTML = '<p><br></p>';
-          state.dirty = true;
-          await flush();
-          editor.focus();
-          createNote.remove();
-        }, 'entity-create-note');
-        actions.insertBefore(createNote, actions.firstChild);
-      }
+      // 空のトピック本文も通常の編集欄として維持する。新規ファイル作成は
+      // 「リンクを追加」メニューへ集約し、上部に別の作成ボタンを増やさない。
 
       editor.addEventListener('click', event => {
         const link = event.target.closest?.('.auto-link');
@@ -65789,14 +71038,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         });
       });
 
-      if (state.surface !== 'main') stripIds(root);
+      if (state.surface !== 'main') stripIds(root, state.surface);
       applyReadOnly(root, access.readOnly, access.reason);
       delete root.dataset.loadFailed;
       if (typeof replaceIcons === 'function') replaceIcons();
       return true;
     }
 
-    const controller = { get editor() { return state.editor; }, flush, dispose, ready: null };
+    const controller = { get editor() { return state.editor; }, flush, dispose, rerender: render, ready: null };
     root._meldexEntityDetailController = controller;
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(render).catch(error => {
       if (!state.disposed) {

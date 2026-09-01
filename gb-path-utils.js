@@ -144,7 +144,7 @@
   }
 
   const MELDEX_CURRENT_FILE_SUFFIXES = [
-    '.scriptnote.json', '.smart-db.json', '.timer.json', '.board.md',
+    '.scriptnote.json', '.timer.json', '.board.md',
     '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
   ];
 

@@ -29,20 +29,8 @@ function _ufCloseOverlay(overlay, reason = 'programmatic') {
 }
 
 function showUnifiedFilterModal() {
-  // スマートシート表示中は state.currentDbPath が null なので、
-  // ここで通常シート用ダイアログを開くと保存先が無く条件が消える。
-  // スマートシート専用のフィルタ設定ダイアログにルーティングする。
-  if (state.currentSmartDb && typeof showSmartDbFilterModal === 'function') {
-    showSmartDbFilterModal(state.currentSmartDb.id);
-    return;
-  }
   const options = arguments[0] || {};
   const { ctx } = _ufResolveContext(options);
-  const smartDb = ctx?.smartDb || state.currentSmartDb;
-  if (smartDb && typeof showSmartDbFilterModal === 'function') {
-    showSmartDbFilterModal(smartDb.id);
-    return;
-  }
   const dbPath = ctx?.dbPath || state.currentDbPath;
   const filterMode = ctx?.filter ?? state.filter ?? 'disabled';
   const advFilters = dbPath ? getAdvancedFilters(dbPath, { ctx }) : [];

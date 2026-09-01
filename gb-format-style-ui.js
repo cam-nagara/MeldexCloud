@@ -69,6 +69,18 @@
       if (typeof updateCsSwatch === 'function') updateCsSwatch(key, '');
       return;
     }
+    if (key === '--ui-accent' && /^#[0-9a-f]{6}$/i.test(String(value))
+      && typeof _settingsThemeApplyAccentColor === 'function') {
+      if (typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getUseOsAccentColor?.()) {
+        MeldexThemeManager.setUseOsAccentColor(false);
+      }
+      if (_settingsThemeApplyAccentColor(value)) {
+        const mode = document.getElementById('settings-theme-accent-mode');
+        if (mode) mode.value = 'custom';
+        if (typeof _settingsThemeSyncAccentSwatch === 'function') _settingsThemeSyncAccentSwatch();
+        return;
+      }
+    }
     if (key.includes('font') && typeof setThemeFontSetting === 'function') {
       setThemeFontSetting(key, value || '');
     } else if (typeof setColorSetting === 'function') {
@@ -121,7 +133,75 @@
     return id;
   }
 
+  function _themeUiPopupStateId(previewEl, target) {
+    const requested = previewEl?.dataset?.themeUiEditStateId
+      || previewEl?.dataset?.themeUiStateId
+      || 'normal';
+    const states = Array.isArray(target?.states) ? target.states : [];
+    return states.includes(requested) ? requested : (states[0] || 'normal');
+  }
+
+  function _themeUiStateLabel(target, stateId) {
+    return target?.stateLabels?.[stateId]
+      || ({ normal: 'オフ／通常', hover: 'カーソルオーバー', selected: 'オン／選択' })[stateId]
+      || stateId;
+  }
+
+  function _themeUiRowFormatDef(targetId, stateId) {
+    if (!targetId || typeof _settingsThemePreviewAutoTargetForRow !== 'function') return null;
+    const sections = typeof UI_STYLE_SECTIONS !== 'undefined' ? Object.values(UI_STYLE_SECTIONS) : [];
+    for (const defs of sections) {
+      for (const candidate of defs || []) {
+        const resolved = _settingsThemePreviewAutoTargetForRow(candidate);
+        if (resolved?.targetId === targetId && resolved?.stateId === stateId) return candidate;
+      }
+    }
+    return null;
+  }
+
+  function _themeUiFormatDef(previewEl, fallbackDef) {
+    const targetId = previewEl?.dataset?.themeUiTargetId || fallbackDef?.__themeUiTargetId || '';
+    if (!targetId || typeof MeldexThemeManager === 'undefined') return fallbackDef;
+    const target = (MeldexThemeManager.THEME_UI_TARGETS || []).find(item => item.id === targetId);
+    const stateId = _themeUiPopupStateId(previewEl, target);
+    const vars = target?.formatVars?.[stateId];
+    const rowDef = vars ? null : _themeUiRowFormatDef(targetId, stateId);
+    if (!vars && !rowDef) return fallbackDef;
+    return {
+      ...(fallbackDef || {}),
+      ...(rowDef || {}),
+      label: `${target.label}（${_themeUiStateLabel(target, stateId)}）`,
+      text: target.label,
+      ...(vars ? {
+        fg: vars.fg,
+        bg: vars.bg,
+        line: vars.border,
+        width: vars.borderWidth,
+        lineStyle: vars.borderStyle,
+        leftAccent: vars.leftAccent,
+        underline: vars.underline,
+        accent: vars.accent,
+        bold: vars.bold,
+        italic: vars.italic,
+        font: vars.font,
+        fontSize: vars.fontSize,
+        lineHeight: vars.lineHeight,
+      } : {}),
+      __themeUiTargetId: target.id,
+      __themeUiStateId: stateId,
+    };
+  }
+
   function _defByPreview(previewEl) {
+    const directBgKey = previewEl?.dataset?.styleBgKey || '';
+    if (directBgKey) {
+      return {
+        label: previewEl?.dataset?.styleLabel || 'パネルの背景',
+        bg: directBgKey,
+        bgType: previewEl?.dataset?.styleBgType || '',
+        __backgroundOnly: true,
+      };
+    }
     const stateId = previewEl?.dataset?.themeStateId || '';
     if (stateId && typeof window.settingsThemeStateCoverageManifest === 'function') {
       const entry = window.settingsThemeStateCoverageManifest().find(item => item.id === stateId);
@@ -137,14 +217,18 @@
     }
     const id = previewEl?.dataset?.styleId || '';
     const registered = id && _settingsStyleDefs.get(id);
-    if (registered) return registered;
+    if (registered) return _themeUiFormatDef(previewEl, registered);
     const section = previewEl?.dataset?.styleSection || '';
     const label = previewEl?.dataset?.styleLabel || '';
     if (section && label) {
       const exact = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
-      if (exact) return exact;
+      if (exact) return _themeUiFormatDef(previewEl, {
+        ...exact,
+        __themeUiTargetId: previewEl?.dataset?.themeUiTargetId || '',
+        __themeUiStateId: previewEl?.dataset?.themeUiStateId || '',
+      });
     }
-    return _defByLabel(label);
+    return _themeUiFormatDef(previewEl, _defByLabel(label));
   }
 
   function _isBgOnlySettingsDef(def) {
@@ -195,7 +279,7 @@
   function _mapSettingsDef(def) {
     const map = {};
     const fields = [];
-    const isCaret = CARET_RE.test(def.label || '');
+    const isCaret = !def.__themeUiTargetId && CARET_RE.test(def.label || '');
     const isLine = !!def.line && !def.fg && !def.bg;
     const add = (prop, key, fieldName) => {
       if (!key || map[prop]) return;
@@ -207,11 +291,13 @@
       add(prop, def.fg);
     }
     if (def.bg) add('bgColor', def.bg);
+    if (def.__backgroundOnly) return { map, fields: [...new Set(fields)] };
     if (!isCaret && !isLine) {
       // 明示的に定義されたフィールドを優先追加。
       // ベースキーが抽出できない行（--fg のように共通変数のみの行）では
       // _settingsKey が '' を返すため、仮想フィールドは add() で自動スキップされる。
       add('fontSize', _settingsKey(def, 'fontSize', '-font-size'));
+      if (def.lineHeight) map.lineHeight = def.lineHeight;
       add('fontFamily', _settingsKey(def, 'font', '-font'));
       add('fontWeight', _settingsKey(def, 'bold', '-bold'), 'bold');
       add('fontStyle', _settingsKey(def, 'italic', '-italic'), 'italic');
@@ -219,6 +305,9 @@
       add('textStrokeWidth', _settingsKey(def, 'strokeWidth', '-stroke-width'));
       add('leftAccent', _settingsKey(def, 'leftAccent', '-left-accent'));
       add('underline', _settingsKey(def, 'underline', '-underline'));
+      // 見出し等は要素固有のアクセント、ボタン等はテーマ共通アクセントを編集する。
+      // 詳細設定にある色・文字・装飾の契約をプレビュー側でも欠落させない。
+      add('accentColor', _settingsKey(def, 'accent', '-accent-color') || '--ui-accent');
       // 背景色仮想フィールドは def に bg プロパティが明示されていないときだけ生成する
       // （bg: null は「背景色コントロールを出さない」という明示的指定）
       if (!map.bgColor && !Object.prototype.hasOwnProperty.call(def || {}, 'bg')) {
@@ -230,7 +319,48 @@
       const prop = isCaret ? 'caretWidth' : 'borderWidth';
       add(prop, def.width);
     }
+    if (def.lineStyle) add('borderStyle', def.lineStyle);
     return { map, fields: [...new Set(fields)] };
+  }
+
+  function _makeThemeUiApplicationPopupEditor(def, previewEl) {
+    if (!def
+      || typeof _settingsThemePreviewAutoTargetForRow !== 'function'
+      || typeof renderThemeUiApplicationEditor !== 'function'
+      || typeof renderThemeUiAutoToneControls !== 'function'
+      || typeof MeldexThemeManager === 'undefined') return null;
+    const explicitTargetId = def.__themeUiTargetId || previewEl?.dataset?.themeUiTargetId || '';
+    const resolved = explicitTargetId
+      ? { targetId: explicitTargetId, stateId: def.__themeUiStateId || previewEl?.dataset?.themeUiEditStateId || previewEl?.dataset?.themeUiStateId || 'normal' }
+      : _settingsThemePreviewAutoTargetForRow(def);
+    const target = resolved && (MeldexThemeManager.THEME_UI_TARGETS || [])
+      .find(item => item.id === resolved.targetId);
+    if (!target) return null;
+
+    const host = document.createElement('section');
+    host.className = 'gb-fmt-theme-ui-editor';
+    host.dataset.themeUiPopupTarget = target.id;
+    host.dataset.themeUiPopupState = resolved.stateId || 'normal';
+    host.dataset.e2eId = _e2eId('settings-theme-preview-auto', target.id);
+    const stateOptions = (Array.isArray(target.states) ? target.states : [])
+      .map(stateId => `<option value="${_e(stateId)}"${stateId === resolved.stateId ? ' selected' : ''}>${_e(_themeUiStateLabel(target, stateId))}</option>`)
+      .join('');
+    host.innerHTML = `<div class="gb-fmt-theme-ui-editor-title">
+      <span>テーマカラーの自動適用設定</span>
+      <span class="gb-fmt-theme-ui-editor-target">${_e(target.label)}</span>
+    </div>
+    ${stateOptions ? `<label class="gb-fmt-theme-ui-state-row"><span>編集する状態</span><select class="gb-select" data-theme-ui-popup-state-select aria-label="編集する状態">${stateOptions}</select></label>` : ''}
+    ${renderThemeUiApplicationEditor({ targetIds: [target.id], hideLabel: true })}
+    <details class="gb-fmt-theme-ui-tone" open>
+      <summary>自動（明／暗）の強さ</summary>
+      ${renderThemeUiAutoToneControls()}
+    </details>`;
+    host.querySelector('[data-theme-ui-popup-state-select]')?.addEventListener('change', (event) => {
+      previewEl.dataset.themeUiEditStateId = event.currentTarget.value;
+      window.openStylePreviewPopup?.(previewEl);
+    });
+    host.querySelectorAll('.cs-theme-ui-target').forEach(details => { details.open = true; });
+    return host;
   }
 
   function _settingsValues(def, map) {
@@ -248,6 +378,7 @@
       accentColor: map.accentColor ? _cssVar(map.accentColor) : '',
       borderColor: map.borderColor ? _cssVar(map.borderColor) : '',
       borderWidth: map.borderWidth ? _pxNumber(_cssVar(map.borderWidth), 1) : '',
+      borderStyle: map.borderStyle ? (_cssVar(map.borderStyle) || 'none') : '',
       caretColor: map.caretColor ? _cssVar(map.caretColor) : '',
       caretWidth: map.caretWidth ? _pxNumber(_cssVar(map.caretWidth), 2) : '',
     };
@@ -257,9 +388,11 @@
     const { map } = _mapSettingsDef(def);
     const values = _settingsValues(def, map);
     const isCaret = CARET_RE.test(def.label || '');
+    const previewSize = _previewFontSize(def.label);
     const bg = map.bgColor && !_isTransparent(values.bgColor) ? `var(${map.bgColor})` : PAGE_BG;
     const fg = map.textColor ? `var(${map.textColor})` : def.line ? `var(${def.line})` : 'var(--fg)';
     const lineWidth = map.borderWidth ? `var(${map.borderWidth})` : '3px';
+    const lineStyle = map.borderStyle ? `var(${map.borderStyle}, none)` : 'solid';
     const fallbackAccent = map.borderColor ? `var(${map.borderColor})` : fg;
     const accent = map.accentColor ? `var(${map.accentColor}, ${fallbackAccent})` : fallbackAccent;
     const parts = [
@@ -268,12 +401,16 @@
     ];
     if (map.fontWeight) parts.push(`font-weight:var(${map.fontWeight})`);
     if (map.fontStyle) parts.push(`font-style:var(${map.fontStyle})`);
-    if (map.fontSize) parts.push(`font-size:var(${map.fontSize})`, 'line-height:1.3');
+    if (map.fontSize) {
+      const fallback = previewSize ? `, ${previewSize}px` : '';
+      parts.push(`font-size:var(${map.fontSize}${fallback})`);
+    }
+    if (map.lineHeight) parts.push(`line-height:var(${map.lineHeight}, ${_lineHeightFallback(def)}%)`);
     if (map.fontFamily) parts.push(`font-family:var(${map.fontFamily}, inherit)`);
     if (map.textStrokeColor) parts.push(`-webkit-text-stroke-color:var(${map.textStrokeColor})`, `-webkit-text-stroke-width:var(${map.textStrokeWidth || '--_zero'}, 0px)`, 'paint-order:stroke fill');
     if (values.leftAccent) parts.push(`box-shadow:-${STYLE_LEFT_ACCENT_WIDTH} 0 0 0 ${accent}`, `padding-left:${STYLE_LEFT_ACCENT_WIDTH}`);
     if (values.underline) parts.push(`border-bottom:${STYLE_UNDERLINE_WIDTH} solid ${accent}`);
-    if (def.line) parts.push(`border-bottom:${lineWidth} solid var(${def.line})`);
+    if (def.line) parts.push(`border-bottom:${lineWidth} ${lineStyle} var(${def.line})`);
     if (isCaret) {
       const caretColor = `var(${map.caretColor || '--editor-caret-color'})`;
       const caretWidth = `var(${map.caretWidth || '--editor-caret-width'}, 2px)`;
@@ -287,8 +424,7 @@
         `background-size:${caretWidth} calc(100% - 10px)`
       );
     }
-    const previewSize = _previewFontSize(def.label);
-    if (previewSize && !isCaret) parts.push(`font-size:${previewSize}px`, 'line-height:1.3');
+    if (previewSize && !map.fontSize && !isCaret) parts.push(`font-size:${previewSize}px`);
     return parts.join(';');
   }
 
@@ -301,11 +437,15 @@
 
   function _refreshSettingsPreviewElement(previewEl, def) {
     if (!previewEl?.setAttribute || !def) return;
+    if (previewEl.dataset?.stylePreviewNative === '1') return;
     previewEl.setAttribute('style', _settingsPreviewStyleForRender(def));
   }
 
   function _settingsPreviewE2eId(def, styleId = '') {
-    const numberKeys = Array.isArray(def?.numbers) ? def.numbers.map(item => item?.key || '').filter(Boolean).join('_') : '';
+    const numberKeys = [
+      ...(Array.isArray(def?.numbers) ? def.numbers : []),
+      ...(Array.isArray(def?.popupNumbers) ? def.popupNumbers : []),
+    ].map(item => item?.key || '').filter(Boolean).join('_');
     return _e2eId(
       'settings-theme-style-preview',
       def?.fg,
@@ -324,6 +464,62 @@
   function _numberSpecValue(spec) {
     const fallback = spec?.fallback ?? spec?.value ?? spec?.min ?? 0;
     return _pxNumber(_cssVar(spec?.key), fallback);
+  }
+
+  function _lineHeightFallback(def) {
+    const key = String(def?.lineHeight || '');
+    if (key === '--page-text-line-height') return 160;
+    if (/^--page-h[1-6]-line-height$/.test(key)) return 130;
+    if (/^--outliner-/.test(key)) return 115;
+    return 100;
+  }
+
+  function _popupNumberSpecs(def, map) {
+    const specs = [
+      ...(Array.isArray(def?.numbers) ? def.numbers : []),
+      ...(Array.isArray(def?.popupNumbers) ? def.popupNumbers : []),
+    ];
+    if (map?.lineHeight && !specs.some(spec => spec?.key === map.lineHeight)) {
+      specs.push({
+        label: '行間',
+        key: map.lineHeight,
+        units: ['px', '%'],
+        defaultUnit: '%',
+        fallback: _lineHeightFallback(def),
+        unitLimits: {
+          px: { min: 8, max: 200, step: 1 },
+          '%': { min: 50, max: 400, step: 1 },
+        },
+      });
+    }
+    return specs;
+  }
+
+  function _popupNumberState(spec, previewEl) {
+    const units = Array.isArray(spec?.units) && spec.units.length
+      ? spec.units.map(unit => String(unit))
+      : [String(spec?.unit || '')];
+    const raw = _cssVar(spec?.key);
+    const numeric = _pxNumber(raw, null);
+    let unit = units.includes('%') && /%\s*$/.test(raw) ? '%'
+      : units.includes('px') && /px\s*$/i.test(raw) ? 'px'
+        : (spec?.defaultUnit || units[0] || '');
+    let value = numeric;
+    if (value == null || !Number.isFinite(value)) {
+      const useComputedLineHeight = Array.isArray(spec?.units) && spec.units.length > 1;
+      const computedLineHeight = useComputedLineHeight && previewEl ? _pxNumber(getComputedStyle(previewEl).lineHeight, null) : null;
+      const computedFontSize = useComputedLineHeight && previewEl ? _pxNumber(getComputedStyle(previewEl).fontSize, null) : null;
+      if (useComputedLineHeight && Number.isFinite(computedLineHeight) && Number.isFinite(computedFontSize) && computedFontSize > 0 && unit === '%') {
+        value = computedLineHeight / computedFontSize * 100;
+      } else if (useComputedLineHeight && Number.isFinite(computedLineHeight) && unit === 'px') {
+        value = computedLineHeight;
+      } else {
+        value = Number(spec?.fallback ?? spec?.value ?? spec?.min ?? 0);
+      }
+    } else if (units.includes('%') && !/[a-z%]\s*$/i.test(raw)) value *= 100;
+    if (!units.includes(unit)) unit = units[0] || '';
+    if (Number.isFinite(value)) value = Math.round(value * 100) / 100;
+    return { value, unit, units };
   }
 
   function _numberAttr(name, value) {
@@ -354,13 +550,14 @@
     </div>`;
   }
 
-  function _makePopupNumberRows(def, previewEl) {
-    if (!Array.isArray(def?.numbers) || !def.numbers.length) return [];
-    return def.numbers.map(spec => {
+  function _makePopupNumberRows(def, previewEl, specs = []) {
+    if (!Array.isArray(specs) || !specs.length) return [];
+    return specs.map(spec => {
       const key = spec?.key || '';
       if (!key) return null;
-      const value = _numberSpecValue(spec);
-      const unit = spec.unit || '';
+      const numberState = _popupNumberState(spec, previewEl);
+      const value = numberState.value;
+      let selectedUnit = numberState.unit;
       const controlId = _e2eId('settings-theme-number', key);
       const label = spec.label || key || '数値';
       const row = document.createElement('div');
@@ -380,7 +577,7 @@
 
       const updateValue = (val) => {
         const strVal = String(val == null ? '' : val).trim();
-        const finalVal = strVal ? strVal + (unit || '') : '';
+        const finalVal = strVal ? strVal + selectedUnit : '';
         if (typeof applySettingsThemeStyleSetting === 'function') {
           applySettingsThemeStyleSetting(key, finalVal);
         } else {
@@ -413,9 +610,19 @@
       numInput.type = 'number';
       numInput.className = 'gb-fmt-text cs-number-input';
       numInput.value = String(value);
-      if (spec.min != null) numInput.min = String(spec.min);
-      if (spec.max != null) numInput.max = String(spec.max);
-      numInput.step = String(spec.step ?? 1);
+      const applyBounds = () => {
+        const limits = spec.unitLimits?.[selectedUnit] || spec;
+        if (limits.min != null) numInput.min = String(limits.min); else numInput.removeAttribute('min');
+        if (limits.max != null) numInput.max = String(limits.max); else numInput.removeAttribute('max');
+        numInput.step = String(limits.step ?? 1);
+        const rangeEl = row.querySelector('input[type="range"]');
+        if (rangeEl) {
+          if (limits.min != null) rangeEl.min = String(limits.min); else rangeEl.removeAttribute('min');
+          if (limits.max != null) rangeEl.max = String(limits.max); else rangeEl.removeAttribute('max');
+          rangeEl.step = String(limits.step ?? 1);
+        }
+      };
+      applyBounds();
       numInput.setAttribute('data-e2e-id', controlId + '-input');
       numInput.setAttribute('aria-label', label);
       numInput.title = label;
@@ -433,10 +640,41 @@
       });
       row.appendChild(numInput);
 
-      if (unit) {
+      if (numberState.units.length > 1) {
+        const unitSelect = document.createElement('select');
+        unitSelect.className = 'gb-select gb-fmt-sel';
+        unitSelect.setAttribute('aria-label', `${label}の単位`);
+        unitSelect.title = `${label}の単位`;
+        unitSelect.style.width = '52px';
+        numberState.units.forEach(unit => {
+          const option = document.createElement('option');
+          option.value = unit;
+          option.textContent = unit;
+          option.selected = unit === selectedUnit;
+          unitSelect.appendChild(option);
+        });
+        unitSelect.addEventListener('change', () => {
+          const previousUnit = selectedUnit;
+          const nextUnit = unitSelect.value;
+          const current = Number(numInput.value);
+          const fontSize = Math.max(1, _pxNumber(getComputedStyle(previewEl).fontSize, 13));
+          if (Number.isFinite(current) && previousUnit !== nextUnit) {
+            const converted = previousUnit === '%' && nextUnit === 'px'
+              ? current * fontSize / 100
+              : previousUnit === 'px' && nextUnit === '%'
+                ? current / fontSize * 100
+                : current;
+            numInput.value = String(Math.round(converted * 100) / 100);
+          }
+          selectedUnit = nextUnit;
+          applyBounds();
+          updateValue(numInput.value);
+        });
+        row.appendChild(unitSelect);
+      } else if (selectedUnit) {
         const unitSpan = document.createElement('span');
         unitSpan.className = 'cs-number-unit';
-        unitSpan.textContent = unit;
+        unitSpan.textContent = selectedUnit;
         unitSpan.style.fontSize = '11px';
         unitSpan.style.color = 'var(--fg2)';
         unitSpan.style.marginLeft = '2px';
@@ -525,9 +763,11 @@
     const def = _defByPreview(previewEl);
     if (!def) return;
     const { map, fields } = _mapSettingsDef(def);
-    const hasNumbers = Array.isArray(def.numbers) && def.numbers.length > 0;
-    if (!fields.length && !hasNumbers) return;
-    const extraNumberRows = _makePopupNumberRows(def, previewEl);
+    const popupNumberSpecs = _popupNumberSpecs(def, map);
+    const hasNumbers = popupNumberSpecs.length > 0;
+    const themeUiEditor = _makeThemeUiApplicationPopupEditor(def, previewEl);
+    if (!fields.length && !hasNumbers && !themeUiEditor) return;
+    const extraNumberRows = _makePopupNumberRows(def, previewEl, popupNumberSpecs);
     const stateEntry = def.__themeStateEntry || null;
     const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
       ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
@@ -555,22 +795,25 @@
     const cancelStateEdit = () => {
       if (!stateEntry || stateEditCancelled) return;
       stateEditCancelled = true;
-      stateStylesBefore.forEach(({ key, value, priority }) => {
-        if (value) document.documentElement.style.setProperty(key, value, priority);
-        else document.documentElement.style.removeProperty(key);
-        if (typeof updateCsSwatch === 'function') updateCsSwatch(key, value);
-      });
-      statePreviewStylesBefore.forEach(({ key, value, priority }) => {
-        if (value) previewEl.style.setProperty(key, value, priority);
-        else previewEl.style.removeProperty(key);
-      });
-      syncStateAccentSwatches();
-      if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(stateDirtyBefore);
-      previewEl.classList.remove('is-selected');
-      previewEl.setAttribute('aria-pressed', 'false');
-      openedPopup?._gbFmtCleanup?.();
-      openedPopup?.remove();
-      previewEl.focus({ preventScroll: true });
+      try {
+        stateStylesBefore.forEach(({ key, value, priority }) => {
+          if (value) document.documentElement.style.setProperty(key, value, priority);
+          else document.documentElement.style.removeProperty(key);
+          if (typeof updateCsSwatch === 'function') updateCsSwatch(key, value);
+        });
+        statePreviewStylesBefore.forEach(({ key, value, priority }) => {
+          if (value) previewEl.style.setProperty(key, value, priority);
+          else previewEl.style.removeProperty(key);
+        });
+        syncStateAccentSwatches();
+        if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(stateDirtyBefore);
+      } finally {
+        previewEl.classList.remove('is-selected');
+        previewEl.setAttribute('aria-pressed', 'false');
+        openedPopup?._gbFmtCleanup?.();
+        openedPopup?.remove();
+        previewEl.focus({ preventScroll: true });
+      }
     };
     if (stateEntry?.state === 'selected') {
       const selected = !previewEl.classList.contains('is-selected');
@@ -582,6 +825,10 @@
       fields,
       values: _settingsValues(def, map),
       bgColorType: def.bgType || '',
+      ...(themeUiEditor ? {
+        className: 'gb-fmt-popup--theme-preview-auto',
+        extraRowTop: [themeUiEditor],
+      } : {}),
       ...(extraNumberRows.length ? { extraRow2: extraNumberRows } : {}),
       onChange(prop, value) {
         const stateKey = stateEntry && ({
@@ -613,10 +860,12 @@
         else if (prop === 'fontFamily' && map.fontFamily) _setThemeStyle(map.fontFamily, value || '');
         else if (prop === 'textStrokeColor' && map.textStrokeColor) _setThemeStyle(map.textStrokeColor, value || '');
         else if (prop === 'textStrokeWidth' && map.textStrokeWidth) _setThemeStyle(map.textStrokeWidth, value == null ? '' : value + 'px');
-        else if (prop === 'leftAccent' && map.leftAccent) _setThemeStyle(map.leftAccent, value ? STYLE_LEFT_ACCENT_WIDTH : '');
+        else if (prop === 'leftAccent' && map.leftAccent) _setThemeStyle(map.leftAccent, value ? STYLE_LEFT_ACCENT_WIDTH : '0px');
         else if (prop === 'underline' && map.underline) _setThemeStyle(map.underline, value ? STYLE_UNDERLINE_WIDTH : '');
+        else if (prop === 'accentColor' && map.accentColor) _setThemeStyle(map.accentColor, value || '');
         else if (prop === 'borderColor' && map.borderColor) _setThemeStyle(map.borderColor, value || '');
         else if (prop === 'borderWidth' && map.borderWidth) _setThemeStyle(map.borderWidth, value == null ? '' : value + 'px');
+        else if (prop === 'borderStyle' && map.borderStyle) _setThemeStyle(map.borderStyle, value || 'none');
         else if (prop === 'caretColor' && map.caretColor) _setThemeStyle(map.caretColor, value || '');
         else if (prop === 'caretWidth' && map.caretWidth) _setThemeStyle(map.caretWidth, value == null ? '' : value + 'px');
         if (stateEntry && typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
@@ -632,9 +881,18 @@
         },
       } : {}),
     });
+    if (themeUiEditor && typeof bindThemeUiApplicationEditor === 'function') {
+      bindThemeUiApplicationEditor(themeUiEditor);
+      if (typeof syncThemeUiApplicationSelectors === 'function') syncThemeUiApplicationSelectors(themeUiEditor);
+    }
     if (stateEntry && openedPopup) {
       const escapeCancelHandler = (event) => {
-        if (event.key !== 'Escape' || document.querySelector('.gb-palette-popup')) return;
+        const openPalette = [...document.querySelectorAll('.gb-palette-popup')].some((palette) => {
+          if (palette.hidden || !palette.isConnected) return false;
+          const style = getComputedStyle(palette);
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        });
+        if (event.key !== 'Escape' || openPalette) return;
         event.preventDefault();
         event.stopPropagation();
         cancelStateEdit();
@@ -798,7 +1056,7 @@
       add('bgColor', map.bgColor || (supportsGeneratedTextStyle ? _virtualFileField(base, '-bg', '背景色', 'color') : null));
       add('textStrokeColor', _findField(fields, _isStrokeColorField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-color', '文字フチ色', 'color') : null));
       add('textStrokeWidth', _findField(fields, _isStrokeWidthField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-width', '文字フチ幅', 'pxtext') : null));
-      add('leftAccent', _findField(fields, _isLeftAccentField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-left-accent', '左アクセントバー', 'toggle', { on: STYLE_LEFT_ACCENT_WIDTH, off: '' }) : null));
+      add('leftAccent', _findField(fields, _isLeftAccentField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-left-accent', '左アクセントバー', 'toggle', { on: STYLE_LEFT_ACCENT_WIDTH, off: '0px' }) : null));
       add('underline', _findField(fields, _isUnderlineField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-underline', '行の下線', 'toggle', { on: STYLE_UNDERLINE_WIDTH, off: '' }) : null));
       add('accentColor', _findField(fields, _isAccentColorField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-accent-color', 'アクセントカラー', 'color') : null));
     }
@@ -966,8 +1224,8 @@
     return labels.length ? labels.join(' / ') : '';
   }
 
-  function renderFileStyleTabUnified(ctx) {
-    let el = document.getElementById('detail-tab-file-style');
+  function renderFileStyleTabUnified(ctx, hostEl) {
+    let el = hostEl || document.getElementById('detail-tab-file-style');
     if (!el) {
       const rpDetail = document.getElementById('rp-detail');
       if (rpDetail) _ensureDetailTabShell(rpDetail);

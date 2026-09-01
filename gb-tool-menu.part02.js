@@ -4,8 +4,7 @@ function buildToolMenuItems(toolType) {
   const hasFile = !!currentPath;
   const newItemType = {
     page: 'page', scriptnote: 'scriptnote', database: 'database',
-    board: 'board', calendar: 'calendar', csv: 'page',
-    'smart-db': 'smart-db', folder: 'page'
+    board: 'board', calendar: 'calendar', csv: 'page', folder: 'page'
   };
   const isFolderTool = toolType === 'folder';
 
@@ -35,6 +34,10 @@ function buildToolMenuItems(toolType) {
     },
     scriptnote: {
       import: [
+        { label: 'Excelからシナリオを作成...', action: () => {
+          if (typeof importXlsxToOutliner === 'function') importXlsxToOutliner();
+          else _showUnavailableToolMenuAction('Excelからシナリオを作成');
+        } },
         { label: '旧シナリオからインポート...', action: context => showScriptNoteImportModal({ trigger: context?.trigger }) },
       ],
       export: [
@@ -54,6 +57,10 @@ function buildToolMenuItems(toolType) {
         { label: 'CSVからインポート...', action: () => {
           if (typeof importCsvToDb === 'function') importCsvToDb();
           else _showUnavailableToolMenuAction('CSVからインポート');
+        }, disabled: !hasFile },
+        { label: 'Excelからインポート...', action: () => {
+          if (typeof importXlsxToDb === 'function') importXlsxToDb();
+          else _showUnavailableToolMenuAction('Excelからインポート');
         }, disabled: !hasFile },
       ],
       export: [
@@ -93,13 +100,6 @@ function buildToolMenuItems(toolType) {
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('csv'); }, disabled: !hasFile },
       ],
     },
-    'smart-db': {
-      export: [
-        { label: 'CSVとして保存...', action: () => _exportFile('db', 'csv'), disabled: !hasFile },
-        { label: '公開を更新', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('smart-db'); }, disabled: !hasFile },
-        { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('smart-db'); }, disabled: !hasFile },
-      ],
-    },
   };
 
   // --- サブメニュー組み立て ---
@@ -118,14 +118,17 @@ function buildToolMenuItems(toolType) {
   // --- ツール固有の項目（サブメニュー以外） ---
   const specific = {
     page: [
+      { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('page', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: 'オプションを表示', action: () => { if (typeof toggleOptionPanel === 'function') toggleOptionPanel(); else if (typeof toggleDetailPanel === 'function') toggleDetailPanel(); }, disabled: !hasFile },
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
     ],
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
+      { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
+      { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
       { label: 'シート横断検索', action: context => { if (typeof showDbSearchModal === 'function') showDbSearchModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '整合性検証', action: () => { if (typeof onValidateClick === 'function') onValidateClick(); }, disabled: !hasFile },
@@ -135,27 +138,28 @@ function buildToolMenuItems(toolType) {
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     board: [
-      { label: '新規リンクカード: ノート', action: () => {
+      { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('board', { trigger: context?.trigger }); }, disabled: !hasFile },
+      { label: '新規リンクトピック: ノート', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'page');
       } },
-      { label: '新規リンクカード: シート', action: () => {
+      { label: '新規リンクトピック: シート', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'database');
       } },
-      { label: '新規リンクカード: ボード', action: () => {
+      { label: '新規リンクトピック: ボード', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'board');
       } },
-      { label: '既存ファイルへのリンクカード...', action: () => {
+      { label: '既存ファイルへのリンクトピック...', action: () => {
         if (typeof bdPromptAddLinkCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdPromptAddLinkCardAt(pos.x, pos.y);
       } },
-      { label: 'シート / スマートシートから一括読込...', action: () => {
+      { label: 'シートから一括読込...', action: () => {
         if (typeof bdOpenBulkLinkImport === 'function') bdOpenBulkLinkImport();
       }, disabled: !hasFile },
     ],
@@ -175,14 +179,12 @@ function buildToolMenuItems(toolType) {
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     folder: [
+      { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('folder', { trigger: context?.trigger }); } },
       { label: '現在のフォルダを開く', action: () => { const path = getCurrentFilePath(); if (path && typeof openNative === 'function') openNative(path); }, disabled: !hasFile },
       { label: 'スライドショー', action: () => { if (typeof openFolderSlideshow === 'function') openFolderSlideshow(); }, disabled: !hasFile },
       { separator: true },
       { label: '表示設定', action: () => { if (typeof showFolderDisplaySettings === 'function') showFolderDisplaySettings(); } },
       { label: 'オプションを表示', action: () => { if (typeof showFolderPanelSettings === 'function') showFolderPanelSettings(); } },
-    ],
-    'smart-db': [
-      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
   };
 
@@ -193,7 +195,6 @@ function buildToolMenuItems(toolType) {
     { label: 'シート', icon: 'db', action: () => _createFolderViewItem('database') },
     { label: 'ボード', icon: 'presentation', action: () => _createFolderViewItem('board') },
     { label: 'カレンダー', icon: 'calendar', action: () => _createFolderViewItem('calendar') },
-    { label: 'スマートシート', icon: 'databaseSearch', action: () => _createFolderViewItem('smart-db') },
   ];
   const common = isFolderTool
     ? [{ label: '新規作成', icon: 'plus', submenu: folderCreateItems }]
@@ -295,6 +296,29 @@ async function importCsvToDb() {
     if (typeof selectDatabase === 'function') selectDatabase(dbPath);
   } catch (e) {
     if (typeof showStatus === 'function') showStatus('CSVのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
+  }
+}
+
+// シート: 「インポート」→「Excelからインポート...」
+// Scenario用のブラウザーFile inputとは共有せず、現在のシート専用routeへ送る。
+async function importXlsxToDb() {
+  const dbPath = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : null;
+  if (!dbPath) { _showUnavailableToolMenuAction('Excelからインポート'); return; }
+  let path = '';
+  try {
+    path = await openFileDialog('Excelファイルを選択', '', [['Excel', '*.xlsx'], ['すべてのファイル', '*.*']]);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('ファイル選択でエラーが発生しました: ' + (e?.userMessage || e?.message || e), true);
+    return;
+  }
+  if (!path) return;
+  try {
+    const result = await apiPost('/import-xlsx', { xlsx_path: path, db_path: dbPath });
+    const count = Number(result?.count || 0);
+    if (typeof showStatus === 'function') showStatus('Excelインポート完了（' + count + '件）');
+    if (typeof selectDatabase === 'function') selectDatabase(dbPath);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('Excelのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
   }
 }
 
@@ -512,7 +536,7 @@ async function _showSaveAsModal(srcPath, options = {}) {
       });
       modalApi.close('saved');
       showStatus('「' + (res.new_name || newName) + '」に保存しました', false, { showSaveDialog: true });
-      if (typeof loadOutliner === 'function') loadOutliner();
+      if (typeof window.loadOutliner === 'function') window.loadOutliner();
     } catch (e) {
       const message = '保存に失敗: ' + (e.message || e);
       setStatus(message, true);

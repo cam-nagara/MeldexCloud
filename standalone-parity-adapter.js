@@ -10,7 +10,6 @@
     scenario: 'scenario-standalone.html',
     board: 'board-standalone.html',
     sheet: 'sheet-standalone.html',
-    timer: 'timer-standalone.html',
     viewer: 'viewer.html',
   });
   const TYPE_APP = Object.freeze({
@@ -19,7 +18,6 @@
     scriptnote: 'scenario',
     scenario: 'scenario',
     board: 'board',
-    timer: 'timer',
     pivot: 'sheet',
     database: 'sheet',
     sheet: 'sheet',
@@ -36,7 +34,7 @@
     file_info: 'ファイル情報',
     publish: '公開',
     backlinks: 'バックリンク',
-    annotations_comments: '注釈・コメント',
+    annotations_comments: 'アノテート・コメント',
   });
 
   let currentConfig = null;
@@ -593,8 +591,8 @@
     const classification = classify(capability);
     if (feature === 'file_info' && classification.status === 'available'
         && global.MeldexFileInfoPanel?.renderInto) {
-      // タグは本体のフォルダパネル→情報タブと同じく表示する（以前は単独アプリだけ
-      // 抑止していたため、同じ情報タブなのに内容が食い違っていた）。
+      // タグは本体のフォルダパネル→プロパティタブと同じく表示する（以前は単独アプリだけ
+      // 抑止していたため、同じプロパティタブなのに内容が食い違っていた）。
       if (!path) {
         await global.MeldexFileInfoPanel.renderInto(parts.panel, '');
         return;
@@ -755,7 +753,6 @@
           tab?.path,
           tab?.state?.pagePath,
           tab?.state?.dbPath,
-          tab?.state?.smartDbPath,
           tab?.state?.boardPath,
           tab?.state?.scenarioPath,
           tab?.state?.scriptnotePath,

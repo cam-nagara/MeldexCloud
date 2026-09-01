@@ -972,7 +972,6 @@ function _settingsCanonicalPanelName(name) {
   if (raw === '詳細') return '全般';
   if (raw === 'ナレッジ層') return 'LLM';
   if (raw === 'コスト' || raw === 'LLM費用' || raw === 'LLMコスト管理' || raw === '利用料金' || raw === 'AI料金' || raw === 'AI使用量' || raw === 'AI API使用量') return 'LLMコスト';
-  if (raw === 'Discord' || raw === 'Discord連携' || raw === 'Discord Bot連携') return 'Discord Bot';
   if (raw === 'アプリ情報' || raw === 'このアプリについて' || raw === 'About') return '';
   if (raw === '送信設定' || raw === 'クラッシュ送信設定' || raw === 'フィードバック・送信設定') return 'フィードバック';
   if (raw === '連携') return '拡張機能';
@@ -986,7 +985,6 @@ function _settingsPanelDisplayName(name, options) {
   const labels = {
     'LLM': 'チャットAI',
     'LLMコスト': 'AI使用量',
-    'Discord Bot': 'Discord連携',
   };
   return labels[canonical] || canonical;
 }

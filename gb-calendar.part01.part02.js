@@ -146,6 +146,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
       }
       return;
     }
+    await _awaitCalendarSnapshotReady(dbPath);
     _calPushUndo('リサイズ');
     await apiPut('/calendar-db/events/'+encodeURIComponent(ev.name),{
       db_path:dbPath,

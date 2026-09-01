@@ -290,20 +290,38 @@
       configureStroke(context, activeStroke, logicalWidth, logicalHeight);
     }
 
-    function continueStroke(event) {
-      if (!activeStroke || activeStroke.pointerId !== event.pointerId) return;
+    function appendStrokeSample(event) {
       const point = pointFromEvent(canvas, event);
       const previous = activeStroke.points[activeStroke.points.length - 1];
-      if (Math.hypot(point.nx - previous.x, point.ny - previous.y) < 0.0015) return;
+      const distance = Math.hypot(
+        (point.nx - previous.x) * logicalWidth,
+        (point.ny - previous.y) * logicalHeight,
+      );
+      // 本体の注釈ペンと同じく、0.5 CSS px 未満だけを重複点として除外する。
+      // キャンバス寸法に依存する正規化閾値では、小さいパネルほど入力点を
+      // 間引きすぎて直線的になるため、実座標で判定する。
+      if (distance < 0.5) return false;
       context.beginPath();
       context.moveTo(previous.x * logicalWidth, previous.y * logicalHeight);
       context.lineTo(point.nx * logicalWidth, point.ny * logicalHeight);
       context.stroke();
       activeStroke.points.push({ x: point.nx, y: point.ny });
+      return true;
+    }
+
+    function continueStroke(event) {
+      if (!activeStroke || activeStroke.pointerId !== event.pointerId) return;
+      const samples = typeof event.getCoalescedEvents === 'function'
+        ? event.getCoalescedEvents()
+        : null;
+      for (const sample of samples?.length ? samples : [event]) appendStrokeSample(sample);
+      // ブラウザによっては現在のイベントが coalesced 配列へ入らないため補完する。
+      if (samples?.length) appendStrokeSample(event);
     }
 
     function endStroke(event) {
       if (!activeStroke || activeStroke.pointerId !== event.pointerId) return;
+      continueStroke(event);
       const command = activeStroke;
       activeStroke = null;
       if (command.points.length === 1) drawStroke(context, command, logicalWidth, logicalHeight);

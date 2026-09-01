@@ -389,8 +389,8 @@ async function openCsvFile(label, path, opts) {
     // フェッチより前に呼ぶと、切替直後・読込完了前の取り消しがこの読込完了で
     // 上書きされ消える（app/docs/undo-pane-context_plan_2026-07-25.md §9 既知バグ）。
     if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('csv:' + path);
-    // 独立した描画先（サブパネル等）は注釈オーバーレイを描画しないため、メイン画面の
-    // 注釈対象（ann.targetPath）をここで奪わない。
+    // 独立した描画先（サブパネル等）はアノテートオーバーレイを描画しないため、メイン画面の
+    // アノテート対象（ann.targetPath）をここで奪わない。
     if (!openOpts.skipGlobalUi) _csvRefreshAnnotationTarget();
     if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
     if (!openOpts.skipGlobalUi) showStatus('CSV: ' + label);

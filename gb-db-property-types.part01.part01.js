@@ -64,6 +64,7 @@ function _ptContextForDbPath(dbPath, ctx) {
 function setPropertyType(dbPath, propName, typeConfig, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
   const currentTypes = getPropertyTypes(targetPath, ctxOverride) || {};
+  const previousConfig = JSON.parse(JSON.stringify(currentTypes[propName] || {}));
   const protectionLevel = _dbSchemaProtectionLevel(targetPath, propName);
   if (protectionLevel
     && Object.prototype.hasOwnProperty.call(currentTypes, propName)
@@ -85,7 +86,23 @@ function setPropertyType(dbPath, propName, typeConfig, ctxOverride) {
     if (_ptIsCurrentDbPath(targetPath)) state.dbMetadata = targetMetadata;
   }
   // バックエンドに永続保存
-  return _savePropertyTypesToBackend(targetPath, undefined, ctxOverride);
+  let save;
+  try {
+    save = _savePropertyTypesToBackend(targetPath, undefined, ctxOverride);
+  } catch (error) {
+    _ptRestoreLocalStoredTypeConfig(targetPath, propName, previousConfig, ctxOverride);
+    throw error;
+  }
+  return Promise.resolve(save).then((saved) => {
+    if (saved === false) {
+      _ptRestoreLocalStoredTypeConfig(targetPath, propName, previousConfig, ctxOverride);
+      return false;
+    }
+    return true;
+  }).catch((error) => {
+    _ptRestoreLocalStoredTypeConfig(targetPath, propName, previousConfig, ctxOverride);
+    throw error;
+  });
 }
 
 function _ptRestoreLocalStoredTypeConfig(dbPath, propName, previousConfig, ctx) {
@@ -140,11 +157,11 @@ async function _ptApplyStoredTypeConfig(dbPath, propName, previousConfig, reques
 function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, ctx) {
   if (typeof historyPush !== 'function' || typeof _dbScope !== 'function') return;
   if (!dbPath || !propName) return;
-  const beforeType = (beforeConfig && beforeConfig.type) || 'text';
-  const afterType = (afterConfig && afterConfig.type) || 'text';
-  if (beforeType === afterType) return;
   const before = JSON.parse(JSON.stringify(beforeConfig || {}));
   const after = JSON.parse(JSON.stringify(afterConfig || {}));
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  const beforeType = before.type || 'text';
+  const afterType = after.type || 'text';
   const _resolveCtx = () => (typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(dbPath) : ctx);
   const _restore = async (fromCfg, toCfg) => {
     const rc = _resolveCtx();
@@ -156,7 +173,7 @@ function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, c
       try { renderDbPropertySettingsPanel(dbPath, propName); } catch {}
     }
   };
-  historyPush('列タイプ変更: ' + propName,
+  historyPush((beforeType === afterType ? '列設定変更: ' : '列タイプ変更: ') + propName,
     () => _restore(after, before),
     () => _restore(before, after),
     (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
@@ -185,7 +202,7 @@ function _dbSchemaProtectionLevel(dbPath, propName) {
 function _showSchemaProtectionBlockedStatus(level) {
   if (typeof showStatus !== 'function') return;
   if (level === 'all') { showStatus('制作管理に必要な列は削除できません。非表示を利用してください', true); return; }
-  if (level === 'required') { showStatus('スタッフ管理に必要な列は削除できません。非表示を利用してください', true); return; }
+  if (level === 'required') { showStatus('ユーザー管理に必要な列は削除できません。非表示を利用してください', true); return; }
   if (level === 'computed') { showStatus('自動計算列のため、削除・列名変更・型変更はできません', true); }
 }
 
@@ -1006,7 +1023,7 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
       target_file: dbPath,
       old_col: oldName,
       new_col: newName,
-    }).catch((e) => console.warn('列名変更時の注釈参照更新に失敗:', e));
+    }).catch((e) => console.warn('列名変更時のアノテート参照更新に失敗:', e));
   }
   if (!bulkRenamed) {
     try {
@@ -1042,77 +1059,13 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
 
 function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
   const dbPath = dbPathOverride || state.currentDbPath;
-  if (!dbPath) return;
-  const ctx = ctxOverride || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
-  const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || (_ptIsCurrentDbPath(dbPath) ? state.pivotData : null);
-  const types = getPropertyTypes(dbPath);
-  const current = types[propName] || { type: 'text' };
-
-  // Select型の既存オプションを収集
-  const existingValues = new Set();
-  if (pivotData?.entities) {
-    Object.values(pivotData.entities).forEach(ent => {
-      (ent[propName] || []).forEach(v => existingValues.add(v.value));
-    });
+  if (!dbPath || !propName) return null;
+  // 旧APIを呼ぶ拡張や既存コードも、廃止したモーダルではなく列設定タブへ誘導する。
+  if (typeof _setSelectedColumns === 'function') _setSelectedColumns(dbPath, [propName], propName);
+  if (typeof showDbPropertySettingsForColumn === 'function') {
+    showDbPropertySettingsForColumn(dbPath, propName, { switchTab: true, ctx: ctxOverride || null });
   }
-
-  if (!globalThis.GBUI?.createModal) throw new Error('列タイプ設定を初期化できませんでした');
-  const existingDialog = document.querySelector('[data-e2e-id="db-property-type-dialog"]');
-  if (existingDialog) { existingDialog.focus(); return existingDialog.closest('.gb-modal-overlay')?._dbPropertyTypeApi || null; }
-  const scopeId = 'modal-' + Math.random().toString(36).slice(2, 8);
-  const content = document.createElement('div');
-  content.setAttribute('data-pt-root', '');
-  content.innerHTML = `
-      <div class="gb-section-desc">列: ${esc(propName)}</div>
-      <div class="field"><label>型</label>
-        <select id="pt-type" data-onchange="onPropertyTypeChange(this.closest('[data-pt-root]'))">
-          ${renderPropertyTypeOptions(current.type)}
-        </select>
-      </div>
-      ${_renderPropertyMultiplicityControls(current.type, scopeId)}
-      <div id="pt-options"></div>`;
-  const cancelButton = document.createElement('button');
-  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.id = 'modal-pt-apply'; applyButton.textContent = '適用';
-  let busy = false;
-  const modalApi = globalThis.GBUI.createModal({
-    id: 'db-property-type', title: '列タイプの設定', body: content, footer: [cancelButton, applyButton],
-    variant: 'standard', geometryKey: 'db-property-type', minWidth: '0', initialFocus: '#pt-type',
-    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
-    closeLabel: '列タイプ設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
-    onBeforeClose: reason => reason === 'saved' || !busy,
-  });
-  const o = modalApi.overlay;
-  o._dbPropertyTypeApi = modalApi;
-  o.dataset.e2eId = 'db-property-type-overlay';
-  modalApi.modal.dataset.e2eId = 'db-property-type-dialog';
-  modalApi.modal.classList.add('pt-modal');
-  modalApi.modal.style.width = 'min(760px, calc(100vw - 24px))';
-  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
-  const root = content;
-  root._ptModalApi = modalApi;
-  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
-  applyButton.addEventListener('click', async () => {
-    if (busy) return;
-    busy = true; cancelButton.disabled = true; applyButton.disabled = true;
-    let saved = null;
-    try {
-      saved = await applyPropertyType(propName, root);
-    } catch (error) {
-      console.warn('列設定の保存に失敗:', error);
-      showStatus('列設定の保存に失敗しました: ' + (error?.message || error), true);
-    }
-    if (saved) { modalApi.close('saved'); return; }
-    busy = false; cancelButton.disabled = false; applyButton.disabled = false; applyButton.focus({ preventScroll: true });
-  });
-
-  // 型別オプションを表示
-  _ptSetState(root, current, [...existingValues], propName, dbPath, pivotData, ctx);
-  onPropertyTypeChange(root);
-  if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
-  modalApi.open();
-  return modalApi;
+  return null;
 }
 
 // DB一覧から選択するピッカー（relation参照先DB・MSRソース用）

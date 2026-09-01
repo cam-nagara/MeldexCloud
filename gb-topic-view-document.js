@@ -2,7 +2,7 @@
 (function initMeldexTopicViewDocument(global) {
   'use strict';
 
-  const MEMBERSHIP_MODES = new Set(['manual', 'query', 'hybrid']);
+  const MEMBERSHIP_MODES = new Set(['manual']);
   const SURFACES = new Set(['sheet', 'board']);
 
   function clone(value) {
@@ -60,11 +60,20 @@
     const result = clone(source);
     result.mode = source.mode;
     result.manualTopicRefs = uniqueTopicRefs(source.manualTopicRefs);
-    if (source.mode !== 'manual') {
-      result.queryDefinition = clone(object(source.queryDefinition, 'membership.queryDefinition'));
-    } else if (!Object.prototype.hasOwnProperty.call(result, 'queryDefinition')) {
-      result.queryDefinition = null;
+    delete result.queryDefinition;
+    return result;
+  }
+
+  function normalizeSystemProvider(value) {
+    const source = object(value, 'TopicViewDocument.systemProvider');
+    const result = clone(source);
+    result.providerId = requiredString(source.providerId, 'systemProvider.providerId');
+    result.scopeId = requiredString(source.scopeId, 'systemProvider.scopeId');
+    const capabilities = source.capabilities === undefined ? ['read-only'] : source.capabilities;
+    if (!Array.isArray(capabilities) || capabilities.length !== 1 || capabilities[0] !== 'read-only') {
+      throw new TypeError('systemProvider capabilities must be read-only');
     }
+    result.capabilities = ['read-only'];
     return result;
   }
 
@@ -115,6 +124,39 @@
     return result;
   }
 
+  function viewId(surface, view, index) {
+    const value = surface === 'board'
+      ? (view?.boardViewId || view?.viewId)
+      : (view?.viewId || view?.sheetViewId || view?.id);
+    return String(value || `${surface}-view-${index + 1}`);
+  }
+
+  function normalizeViewOrder(source, sheetViews, boardViews) {
+    const available = new Map();
+    sheetViews.forEach((view, index) => available.set(`sheet:${viewId('sheet', view, index)}`, { surface: 'sheet', viewId: viewId('sheet', view, index) }));
+    boardViews.forEach((view, index) => available.set(`board:${viewId('board', view, index)}`, { surface: 'board', viewId: viewId('board', view, index) }));
+    const result = [];
+    const seen = new Set();
+    (Array.isArray(source) ? source : []).forEach((ref) => {
+      const surface = ref?.surface;
+      const id = String(ref?.viewId || '');
+      const key = `${surface}:${id}`;
+      if (!seen.has(key) && available.has(key)) { seen.add(key); result.push(clone(available.get(key))); }
+    });
+    available.forEach((ref, key) => { if (!seen.has(key)) result.push(clone(ref)); });
+    return result;
+  }
+
+  function normalizeActiveViewRef(source, result) {
+    const refs = result.viewOrder || [];
+    const requested = source?.activeViewRef;
+    const exact = refs.find(ref => ref.surface === requested?.surface && ref.viewId === String(requested?.viewId || ''));
+    if (exact) return clone(exact);
+    const legacySurface = source.defaultSurface === 'sheet' ? 'sheet' : 'board';
+    const legacyId = legacySurface === 'sheet' ? source.activeSheetViewId : source.activeBoardViewId;
+    return clone(refs.find(ref => ref.surface === legacySurface && (!legacyId || ref.viewId === String(legacyId))) || refs[0] || null);
+  }
+
   function normalizeDocument(value) {
     const source = object(value, 'TopicViewDocument');
     const result = clone(source);
@@ -122,9 +164,34 @@
     if (!SURFACES.has(source.defaultSurface)) throw new TypeError('defaultSurface is invalid');
     result.schemaVersion = source.schemaVersion ?? 1;
     result.defaultSurface = source.defaultSurface;
-    result.membership = normalizeMembership(source.membership);
+    result.membership = normalizeMembership(source.membership || { mode: 'manual', manualTopicRefs: [] });
+    result.systemProvider = source.systemProvider == null ? null : normalizeSystemProvider(source.systemProvider);
+    if (result.systemProvider && result.membership.manualTopicRefs.length) {
+      throw new TypeError('system topic views use their provider, not membership');
+    }
     result.sheetViews = clone(Array.isArray(source.sheetViews) ? source.sheetViews : []);
     result.boardViews = clone(Array.isArray(source.boardViews) ? source.boardViews : []);
+    result.sheetViews.forEach((view, index) => { if (!view.viewId) view.viewId = viewId('sheet', view, index); });
+    result.boardViews.forEach((view, index) => { if (!view.boardViewId) view.boardViewId = viewId('board', view, index); });
+    result.viewOrder = normalizeViewOrder(source.viewOrder, result.sheetViews, result.boardViews);
+    result.activeViewRef = normalizeActiveViewRef(source, result);
+    result.activeSheetViewId = result.activeViewRef?.surface === 'sheet'
+      ? result.activeViewRef.viewId : (source.activeSheetViewId || result.sheetViews[0]?.viewId || null);
+    result.activeBoardViewId = result.activeViewRef?.surface === 'board'
+      ? result.activeViewRef.viewId : (source.activeBoardViewId || result.boardViews[0]?.boardViewId || null);
+    result.groupStyles = (Array.isArray(source.groupStyles) ? source.groupStyles : []).map((style, index) => ({
+      ...clone(style || {}),
+      groupStyleId: String(style?.groupStyleId || style?.styleId || `group-style-${index + 1}`),
+      name: String(style?.name || `グループスタイル ${index + 1}`),
+      visualStyle: clone(style?.visualStyle || style?.style || {}),
+    }));
+    const activeGroupStyleId = String(source.activeGroupStyleId || '');
+    result.activeGroupStyleId = result.groupStyles.some(style => style.groupStyleId === activeGroupStyleId)
+      ? activeGroupStyleId : (result.groupStyles[0]?.groupStyleId || null);
+    result.placements = clone(Array.isArray(source.placements) ? source.placements : []);
+    if (global.MeldexTopicContract?.normalizeTopicPlacement) {
+      result.placements = result.placements.map(global.MeldexTopicContract.normalizeTopicPlacement);
+    }
     result.relationSets = (Array.isArray(source.relationSets) ? source.relationSets : [])
       .map(normalizeRelationSet);
     result.topicLayouts = clone(Array.isArray(source.topicLayouts) ? source.topicLayouts : []);
@@ -134,13 +201,10 @@
     return result;
   }
 
-  function resolveMembership(document, queryTopicRefs) {
+  function resolveMembership(document, providerTopicRefs) {
     const membership = normalizeDocument(document).membership;
-    const manual = membership.manualTopicRefs;
-    const queried = uniqueTopicRefs(queryTopicRefs);
-    if (membership.mode === 'manual') return manual;
-    if (membership.mode === 'query') return queried;
-    return uniqueTopicRefs([...manual, ...queried]);
+    if (!normalizeDocument(document).systemProvider) return membership.manualTopicRefs;
+    return uniqueTopicRefs(providerTopicRefs);
   }
 
   function relationSetById(document, relationSetId) {
@@ -189,7 +253,9 @@
     topicRefKey,
     uniqueTopicRefs,
     normalizeMembership,
+    normalizeSystemProvider,
     normalizeRelationSet,
+    normalizeViewOrder,
     normalizeDocument,
     resolveMembership,
     relationSetById,

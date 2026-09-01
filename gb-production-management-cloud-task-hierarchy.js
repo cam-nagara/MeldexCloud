@@ -18,7 +18,7 @@
     return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/0+$/, '').replace(/\.$/, '');
   }
 
-  async function _pmCloudTaskDurationMaps(provider, internals) {
+  async function _pmCloudTaskDurationMaps(provider, internals, templateId = '') {
     const specs = {
       targets: ['作業対象リスト', '基準作業時間'],
       contents: ['作業内容リスト', '作業時間倍率'],
@@ -31,6 +31,7 @@
         values.set(name, _pmCloudDurationNumber(props?.[valueProp], 1));
       });
       for (const entry of await _pmCloudListEntries(provider, internals, sheet)) {
+        if (templateId && _pmCloudPropValue(entry.frontmatter, '作業テンプレート') !== templateId) continue;
         const name = entry.name;
         if (!name) continue;
         values.set(name, _pmCloudDurationNumber(_pmCloudPropValue(entry.frontmatter, valueProp), values.get(name) ?? 1));
@@ -48,8 +49,8 @@
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
   }
 
-  async function _pmCloudApplyTaskDurations(provider, internals, rows) {
-    const maps = await _pmCloudTaskDurationMaps(provider, internals);
+  async function _pmCloudApplyTaskDurations(provider, internals, rows, templateId = '') {
+    const maps = await _pmCloudTaskDurationMaps(provider, internals, templateId);
     (rows || []).forEach(row => {
       const targetHours = maps.targets.get(String(row?.['作業対象リスト'] || '')) ?? 1;
       const contentRatio = maps.contents.get(String(row?.['作業内容リスト'] || '')) ?? 1;
@@ -65,12 +66,12 @@
   // テンプレート生成・カレンダードロップ経路（_pmCloudCreateFromTemplate）用: 作業対象・
   // 作業内容・作業規模の3分類が揃っている場合だけ計算式で目標作業時間_値／目標作業時間を
   // 上書きする。分類が1つでも欠けている場合はテンプレートの明示値（手動指定値）を温存する。
-  async function _pmCloudApplyTemplateInstanceDuration(provider, internals, props) {
+  async function _pmCloudApplyTemplateInstanceDuration(provider, internals, props, templateId = '') {
     const target = String(props?.['作業対象リスト'] || '').trim();
     const content = String(props?.['作業内容リスト'] || '').trim();
     const scale = String(props?.['作業規模リスト'] || '').trim();
     if (!target || !content || !scale) return props;
-    await _pmCloudApplyTaskDurations(provider, internals, [props]);
+    await _pmCloudApplyTaskDurations(provider, internals, [props], templateId);
     return props;
   }
 

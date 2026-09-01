@@ -95,6 +95,13 @@
   }
 }
 
+@media (pointer: coarse), (max-width: 560px) {
+  .sa-tags-button {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .sa-tags-overlay {
   position: fixed;
   inset: 0;

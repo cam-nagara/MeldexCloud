@@ -3,7 +3,6 @@
 
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
-  const NEVER = '__MELDEX_QUICK_MEMO_NEVER__';
   let syncing = false;
 
   function readJson(key, fallback) {
@@ -160,24 +159,21 @@
     };
   }
 
-  function smartDbDefinition(sheetPath = 'クイックメモ') {
-    const name = sheetPath.split('/').filter(Boolean).pop() || 'クイックメモ';
-    return {
-      type: 'smart-db',
-      id: 'file:' + name + '.smart-db.json',
-      name,
-      sourceType: 'db-entities',
-      filters: [
-        { property: '種別', field: 'value', operator: 'equals', value: 'メモ' },
-        { property: 'タグ', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '追加日時', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '更新日時', field: 'value', operator: 'not_contains', value: NEVER },
-        { property: '保存先', field: 'value', operator: 'not_contains', value: NEVER },
-      ],
-      views: { table: {}, dashboard: { widgets: [] } },
-      activeView: 'table',
-      created: nowIso(),
-    };
+  function quickMemoViewConfig(current) {
+    const config = current && typeof current === 'object' ? { ...current } : {};
+    const views = Array.isArray(config.savedViews) ? config.savedViews.map(view => ({ ...view })) : [];
+    if (!views.some(view => view.id === 'quick-memo-default')) {
+      views.unshift({
+        id: 'quick-memo-default', name: 'クイックメモ', viewMode: 'pivot',
+        sortConfig: { key: '更新日時', dir: 'desc' },
+        colOrder: ['種別', 'タグ', '追加日時', '更新日時', '保存先', 'メモID', 'URL', '共有タイトル', '共有元'],
+        advancedFilters: [{ property: '種別', field: 'value', operator: 'equals', value: 'メモ' }],
+        systemManaged: true,
+      });
+    }
+    config.savedViews = views;
+    if (!Number.isInteger(config.currentViewIdx)) config.currentViewIdx = 0;
+    return config;
   }
 
   async function ensureMemoWorkspace(item = {}) {
@@ -193,6 +189,14 @@
         body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
       }).catch(() => undefined);
     }
+    const defaults = {
+      種別: { type: 'select', options: ['メモ'] }, タグ: { type: 'multi-select', options: [] },
+      追加日時: { type: 'date', withTime: true }, 更新日時: { type: 'date', withTime: true },
+      保存先: { type: 'text' }, メモID: { type: 'text' }, URL: { type: 'url' },
+      共有タイトル: { type: 'text' }, 共有元: { type: 'text' },
+    };
+    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true }).catch(() => ({}));
+    const existingTypes = existing?.property_types || existing?.propertyTypes || {};
     await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
       method: 'PUT',
       silentError: true,
@@ -200,29 +204,10 @@
         type: 'settings-db',
         storage: 'sqlite',
         cloud_storage: 'sheet-store-v1',
-        property_types: {
-          種別: { type: 'select', options: ['メモ'] },
-          タグ: { type: 'multi-select', options: [] },
-          追加日時: { type: 'date', withTime: true },
-          更新日時: { type: 'date', withTime: true },
-          保存先: { type: 'text' },
-          メモID: { type: 'text' },
-          URL: { type: 'url' },
-          共有タイトル: { type: 'text' },
-          共有元: { type: 'text' },
-        },
+        property_types: { ...defaults, ...existingTypes },
+        view_config: quickMemoViewConfig(existing?.view_config || existing?.viewConfig),
       }),
     });
-    if (sheetPath !== 'クイックメモ') return;
-    try {
-      await apiFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), { silentError: true });
-    } catch {
-      await jsonFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), {
-        method: 'POST',
-        silentError: true,
-        body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(sheetPath), null, 2) }),
-      });
-    }
   }
 
   async function saveViaExistingApis(item) {

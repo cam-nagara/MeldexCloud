@@ -23,10 +23,6 @@
       id: 'sheet', title: 'Meldex Sheet', defaultFilename: '',
       defaultExtension: '', extensions: [],
     },
-    timer: {
-      id: 'timer', title: 'Meldex Timer', defaultFilename: '無題.mel-timer',
-      defaultExtension: '.mel-timer', extensions: ['.mel-timer', '.timer.json'],
-    },
     board: {
       id: 'board', title: 'Meldex Board', defaultFilename: '無題.mel-board',
       defaultExtension: '.mel-board', extensions: ['.mel-board', '.board.md'],
@@ -169,8 +165,7 @@
     const app = sheetLink ? 'sheet'
       : hint.includes('board') || ['.mel-board', '.board.md'].some((ext) => lower.endsWith(ext)) ? 'board'
       : hint.includes('scenario') || hint.includes('scriptnote') || ['.mel-scenario', '.scriptnote.json'].some((ext) => lower.endsWith(ext)) ? 'scenario'
-        : hint.includes('timer') || ['.mel-timer', '.timer.json'].some((ext) => lower.endsWith(ext)) ? 'timer'
-          : ['.md', '.txt'].some((ext) => lower.endsWith(ext)) ? 'note' : '';
+        : ['.md', '.txt'].some((ext) => lower.endsWith(ext)) ? 'note' : '';
     if (!app) throw new Error('このリンク先を開けるMeldex単独アプリがありません');
     await ensureReady({ requireConnection: true });
     if (sheetLink) {
@@ -376,8 +371,7 @@
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
     if (lower.endsWith('.mel-sheet')) return 'sheet';
-    if (lower.endsWith('.smart-db.json')) return 'smart-db';
-    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (lower.endsWith('.md') || lower.endsWith('.txt')) return 'page';
     return 'unknown';
   }
@@ -431,7 +425,7 @@
         }
         scanned += 1;
         if (scanned > 500) { truncated = true; break; }
-        if (!_fileNameMatches(path, ['.md', '.board.md', '.txt', '.json', '.scriptnote.json', '.smart-db.json', '.timer.json', '.csv', '.mel-board', '.mel-scenario', '.mel-sheet', '.mel-timer'])) continue;
+        if (!_fileNameMatches(path, ['.md', '.board.md', '.txt', '.json', '.scriptnote.json', '.timer.json', '.csv', '.mel-board', '.mel-scenario', '.mel-sheet', '.mel-timer'])) continue;
         try {
           const content = await provider.readText(path);
           if (content.toLocaleLowerCase('ja').includes(query)) {
@@ -790,11 +784,6 @@
       scenarioTypes: [], characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},
     }, null, 2) + '\n';
     if (id === 'sheet') return '';
-    if (id === 'timer') return JSON.stringify({
-      type: 'meldex-timer', version: 1, name: safeTitle === '無題' ? '' : safeTitle,
-      timer: { displayMode: 'digital', totalSeconds: 300, elapsed: 0, countUp: false,
-        timerRunning: false, timerStarted: false, elapsedAtStart: 0, timerStartMs: 0 },
-    }, null, 2) + '\n';
     return `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${safeTitle || '無題'}\n\n`;
   }
 

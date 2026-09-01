@@ -235,6 +235,7 @@
       editor.style.removeProperty('width');
       settleWrapPacking(true);
       this._bind();
+      this._applyReadOnlyDom();
       this._adjustRubySpacing();
       settleWrapPacking(true);
       // 縦書き折り返し: 各段のヘッダー高さを測定し行に適用 + テキスト幅拡張

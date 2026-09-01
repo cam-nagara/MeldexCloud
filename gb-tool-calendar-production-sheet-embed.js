@@ -170,8 +170,6 @@
       pivotData: null,
       filter: 'disabled',
       viewMode: 'welcome',
-      smartDb: null,
-      smartDbData: null,
       containerEl: instance.containerEl,
       tableId: instance.tableId,
       _selectedEntities: new Set(),

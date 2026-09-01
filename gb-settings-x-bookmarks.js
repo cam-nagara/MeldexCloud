@@ -65,9 +65,10 @@
     const folderText = data?.folder_count
       ? ` / フォルダ${data.folder_count} / フォルダ反映${data?.folder_updates || 0}`
       : (data?.folder_error ? ' / フォルダ取得失敗' : '');
+    const folderStateText = ` / フォルダ未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`;
     const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 投稿者アイコン${data?.downloaded_author_icons || 0} / 画像失敗${data?.media_failed || 0} / アイコン失敗${data?.author_icon_failed || 0}${folderText}`;
     const reasonText = reason ? ` / 停止: ${reason}` : '';
-    return `${prefix || ''}${countText}${pageText} / ${itemText}${reasonText}`;
+    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${reasonText}`;
   }
 
   function openUrl(url) {
@@ -93,6 +94,8 @@
       const maxResults = document.getElementById('x-bookmarks-max-results');
       if (saveDir) saveDir.value = config.save_dir || 'Xブックマーク';
       if (maxResults) maxResults.value = String(config.max_results || 100);
+      const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders');
+      if (scheduledFolders) scheduledFolders.checked = config.scheduled_include_folders === true;
       setInputValue('x-bookmarks-client-id', config.client_id || '');
       setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
       setInputValue('x-bookmarks-auth-url', config.auth_url || '');
@@ -170,6 +173,7 @@
         auth_url: authUrl,
         token_url: tokenUrl,
         api_base: apiBase,
+        scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
       };
       if (schedulePayload) body.schedule = schedulePayload;
       await apiPost('/x-bookmarks/config', body, { silentError: true });
@@ -209,7 +213,7 @@
   }
 
   function setSyncBusy(isBusy) {
-    ['x-bookmarks-sync', 'x-bookmarks-duplicates'].forEach(id => {
+    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates'].forEach(id => {
       const btn = document.getElementById(id);
       if (btn) btn.disabled = !!isBusy;
     });
@@ -238,7 +242,7 @@
       setStatus('Xブックマークを保存しています...', false);
       const data = await runBackgroundJob(
         '/x-bookmarks/sync',
-        { mode: mode || 'incremental', max_results: maxResults },
+        { mode: mode || 'incremental', max_results: maxResults, ack_cost_notice: true },
         {
           onProgress: (progress) => {
             setStatus(formatJobProgress(progress, { unit: '件保存済み', defaultPhase: '取得中' }), false);
@@ -258,6 +262,27 @@
         return;
       }
       setStatus('保存できませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
+    }
+  }
+
+  async function syncFolders() {
+    if (syncInFlight) return;
+    if (!window.confirm('Xのフォルダ一覧と各フォルダ内容を追加取得します。従量課金でフォルダ情報を更新しますか？')) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      setStatus('フォルダ情報を更新しています...', false);
+      const data = await runBackgroundJob(
+        '/x-bookmarks/folders/sync', { ack_cost_notice: true },
+        { onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件確認済み', defaultPhase: 'フォルダ情報を取得中' }), false) }
+      );
+      await loadStatus({ preserveStatus: true });
+      setStatus(`フォルダ情報を更新しました。反映${data?.folder_updates || 0} / 未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`, false);
+    } catch (err) {
+      setStatus('フォルダ情報を更新できませんでした。再試行できます: ' + (err.userMessage || err.message || err), true);
     } finally {
       syncInFlight = false;
       setSyncBusy(false);
@@ -427,6 +452,7 @@
     document.getElementById('x-bookmarks-connect')?.addEventListener('click', connect);
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
+    document.getElementById('x-bookmarks-sync-folders')?.addEventListener('click', syncFolders);
     const consoleLink = document.getElementById('x-bookmarks-console-link');
     if (consoleLink) {
       consoleLink.setAttribute('data-gb-tooltip', X_DEVELOPER_CONSOLE_HELP);
@@ -438,6 +464,7 @@
     document.getElementById('x-bookmarks-save-config')?.addEventListener('click', () => saveConfig({ showSuccess: true }));
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);
+    document.getElementById('x-bookmarks-scheduled-folders')?.addEventListener('change', saveConfig);
     [
       'x-bookmarks-client-id',
       'x-bookmarks-redirect-uri',
@@ -515,10 +542,15 @@
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
       <div id="x-bookmarks-schedule-container" class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;"></div>
+      <label class="gb-field-row" style="justify-content:flex-start;">
+        <input id="x-bookmarks-scheduled-folders" type="checkbox">
+        <span class="gb-label">定期保存でもXのフォルダを更新（追加料金あり） ${fieldHelp('フォルダ一覧と各フォルダ内容の追加API取得が発生します。既定はオフです。')}</span>
+      </label>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <button type="button" id="x-bookmarks-save-config" class="gb-btn gb-btn-sm">${icon('save', 14)} 接続設定を保存</button>
         <button type="button" id="x-bookmarks-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Xに接続</button>
         <button type="button" id="x-bookmarks-sync" class="gb-btn gb-btn-sm">${icon('download', 14)} 差分を保存</button>
+        <button type="button" id="x-bookmarks-sync-folders" class="gb-btn gb-btn-sm">${icon('refreshCw', 14)} フォルダ情報を更新</button>
         <button type="button" id="x-bookmarks-duplicates" class="gb-btn gb-btn-sm">${icon('copyCheck', 14)} 重複を整理</button>
         <button type="button" id="x-bookmarks-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('unlink', 14)} 接続を解除</button>
       </div>

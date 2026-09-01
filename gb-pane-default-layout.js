@@ -8,7 +8,7 @@
   // 右レールの既定パネル一覧（gb-layout.js の FIXED_RAIL_RIGHT_DEFAULTS と同じ並び）。
   // 片方だけに項目を足すと、初期レイアウトと欠損補填で並びがずれる。
   const UTILITY_PANE_TYPES = new Set([
-    'outliner', 'detail', 'preview', 'subpanel', 'chat', 'timer',
+    'outliner', 'detail', 'preview', 'subpanel', 'chat',
     'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
@@ -154,20 +154,16 @@
     const leftDock = _dock(leftPane, { collapsed: false, popupWidth: ratios.leftWidth });
     leftDock.meldexRole = 'left-sidebar';
 
-    const rightPanes = [
-      _pane([_tab('オプション', 'detail')]),
-      _pane([_tab('ビューワー', 'preview')]),
-      _pane([_tab('サブパネル', 'subpanel')]),
-      _pane([_tab('バージョン管理', 'version')]),
-      _pane([_tab('チャット', 'chat')]),
-      _pane([_tab('タイマー', 'timer')]),
-      _pane([_tab('ヒストリー', 'history')]),
-      _pane([_tab('注釈', 'annotation')]),
-      _pane([_tab('タグ', 'tags')]),
+    const rightDefaults = window.GBRailContract?.defaults?.() || [
+      ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+      ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
+      ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
     ];
+    const rightPanes = rightDefaults.map(([label, type]) => _pane([_tab(label, type)]));
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });
     const rightDock = _panelset(rightPanes, 0, { collapsed: false, popupWidth: ratios.rightWidth });
     rightDock.meldexRole = 'right-sidebar';
+    rightDock.meldexRailOrderVersion = Number(window.GBRailContract?.version || 3);
 
     const workDock = _dock(mainPane, { collapsed: false });
     workDock.meldexRole = 'main';

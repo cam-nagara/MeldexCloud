@@ -10,9 +10,8 @@ const GBTabs = (() => {
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
     search: 'search', scriptnote: 'bookOpenText', version: 'gitBranch',
-    timer: 'timer',
   };
-  const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search', 'timer']);
+  const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
   function tabIcon(type) {
     if (typeof uiTypeIconName === 'function') {
@@ -292,6 +291,9 @@ const GBTabs = (() => {
     const idx = pane.tabs.findIndex(t => t.id === tabId);
     if (idx < 0) return;
     const alreadyActive = pane.activeTabIndex === idx;
+    if (!alreadyActive && typeof GBPanelSet?.recordRightRailSwitch === 'function') {
+      GBPanelSet.recordRightRailSwitch(paneId, tabId);
+    }
     pane.activeTabIndex = idx;
     const revealed = _ensurePaneVisible(paneId, { activate: !opts.preserveActivePane });
     const previousActivePane = GBLayout.activePane;
@@ -325,13 +327,13 @@ const GBTabs = (() => {
   }
 
   // タブを閉じる
-  function closeTab(paneId, tabId, options) {
+  async function closeTab(paneId, tabId, options) {
     const opts = options || {};
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
     if (!paneInfo) return;
     if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
-      return;
+      return false;
     }
     // 左右サイドバー（固定レール）のパネルは 1 パネル = 1 タブ 構成のため、
     // タブを閉じるとパネルごと消えてレールのアイコンも失われる。
@@ -339,13 +341,36 @@ const GBTabs = (() => {
     // ここで止める（サイドバー自体はレール先頭のボタンで開閉する）。
     if (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId)) {
       if (typeof showStatus === 'function') showStatus('サイドバーのパネルは閉じられません（レールのボタンで開閉できます）', true);
-      return;
+      return false;
     }
     const pane = paneInfo.node;
 
-    const idx = pane.tabs.findIndex(t => t.id === tabId);
-    if (idx < 0) return;
-    const closedTab = pane.tabs[idx];
+    let idx = pane.tabs.findIndex(t => t.id === tabId);
+    if (idx < 0) return false;
+    let closedTab = pane.tabs[idx];
+    // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
+    // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
+    if (closedTab?.type === 'scriptnote' && typeof getComponentInstance === 'function') {
+      const component = getComponentInstance(tabId);
+      if (component && typeof component.flush === 'function') {
+        let flushed = false;
+        try {
+          flushed = (await component.flush()) !== false;
+        } catch (_) {
+          flushed = false;
+        }
+        if (!flushed) {
+          if (typeof showStatus === 'function') {
+            showStatus('シナリオを保存できなかったため、タブを閉じませんでした', true);
+          }
+          return false;
+        }
+        // await中に別操作でタブ構成が変わっていないか、破棄直前に再確認する。
+        idx = pane.tabs.findIndex(t => t.id === tabId);
+        if (idx < 0) return true;
+        closedTab = pane.tabs[idx];
+      }
+    }
     const before = (!opts.skipHistory && typeof GBLayout.captureLayoutSnapshot === 'function')
       ? GBLayout.captureLayoutSnapshot()
       : null;
@@ -353,7 +378,8 @@ const GBTabs = (() => {
 
     // コンポーネントインスタンスを破棄（メモリリーク防止）
     if (typeof removeComponentInstance === 'function') {
-      removeComponentInstance(tabId);
+      // scriptnoteは上でflush済み。destroy側のfail-closed境界へ明示する。
+      if (removeComponentInstance(tabId, { skipFlush: true }) === false) return false;
     }
 
     if (idx < pane.activeTabIndex) {
@@ -380,7 +406,7 @@ const GBTabs = (() => {
             closedTab?.label || closedTab?.path || ''
           );
         }
-        return;
+        return true;
       }
       if (!_restoreFolderFallbackTab(pane)) {
         // 最後の1ペインなら空のまま維持
@@ -402,6 +428,7 @@ const GBTabs = (() => {
         closedTab?.label || closedTab?.path || ''
       );
     }
+    return true;
   }
 
   // タブを別ペインに移動（同ペイン内の並べ替えにも対応）

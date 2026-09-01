@@ -126,7 +126,20 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
     }
     try {
       if (typeof renameDbProperty === 'function') {
-        await renameDbProperty(targetDbPath, oldName, newName, ctx);
+        if (window.MeldexTopicPlacementUI?.renameColumn) {
+          const renamed = await window.MeldexTopicPlacementUI.renameColumn({
+            dbPath: targetDbPath, oldName, newName, ctx, viewId: ctx?.currentViewId,
+            rename: () => renameDbProperty(targetDbPath, oldName, newName, ctx),
+            rollback: () => renameDbProperty(targetDbPath, newName, oldName, ctx),
+          });
+          if (!renamed) {
+            renderPivot(ctx);
+            restoreActiveCellByProp(oldName, ctx);
+            return;
+          }
+        } else {
+          await renameDbProperty(targetDbPath, oldName, newName, ctx);
+        }
       }
     } catch (err) {
       showStatus(
@@ -285,10 +298,16 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       return;
     }
     const stableEntryId = _renEntities?.[oldName]?._id || _renEntities?.[oldName]?.entry_id || '';
+    const projectedEntity = _renEntities?.[oldName];
     // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
     // 保存に失敗したら catch で旧名へ戻す。
     _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
     try {
+      if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
+        await window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName);
+        restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
+        return;
+      }
       const renamePath = typeof _dbResolveEntityPathForRename === 'function'
         ? await _dbResolveEntityPathForRename(dbPath, oldName)
         : _entityPath(dbPath, oldName);
@@ -327,8 +346,19 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         renderPivot(_renCtx); doAfter(); return;
       }
       const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';
+      const projectedEntity = _renEntitiesTab?.[oldName];
       // 楽観的更新: 先に新名を表示してからサーバ保存
       _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
+      if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
+        window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName)
+          .then(() => setTimeout(doAfter, 50))
+          .catch((error) => {
+            _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+            if (typeof showStatus === 'function') showStatus(error?.message || '名前の変更に失敗しました', true);
+            doAfter();
+          });
+        return;
+      }
       const renamePathPromise = typeof _dbResolveEntityPathForRename === 'function'
         ? _dbResolveEntityPathForRename(dbPath, oldName)
         : Promise.resolve(_entityPath(dbPath, oldName));

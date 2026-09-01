@@ -63,7 +63,7 @@ function _forcedNavPush(entry, paneId) {
 }
 
 function _getDbViewScrollContainer(ctx, viewMode) {
-  const mode = ['calendar', 'tasks', 'shifts'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
+  const mode = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
   const names = {
     pivot: 'pivot-view',
     tree: 'tree-view',
@@ -157,7 +157,6 @@ function navOpen(entry, opts) {
     return openArchiveFolder(entry.archivePath, entry.member || '', o);
   }
   if (entry.type === 'calendar') return openCalendarFile(entry.label, entry.path, o);
-  if (entry.type === 'smart-db' && typeof openSmartDbFile === 'function') return openSmartDbFile(entry.label, entry.path, o);
 }
 function _withNavFlag(result) {
   if (result && typeof result.then === 'function') {
@@ -176,8 +175,6 @@ let state = {
   currentEntityPath: null, // 現在選択中のエントリパス
   currentPagePath: null, // 現在選択中のページパス
   currentBoardPath: null, // 現在選択中のボードパス
-  currentSmartDb: null, // 現在選択中のスマートDB定義
-  smartDbData: null, // スマートDBのAPIレスポンス
   pivotData: null,
   filter: 'disabled', // 'disabled' | 'all' | 'adopted' | 'nobotsu'
   view: 'pivot', // 'pivot' | 'entity' | 'page'

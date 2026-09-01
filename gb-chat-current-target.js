@@ -1,5 +1,5 @@
 /* Chat target resolution: reference target is optional and independent from chat storage. */
-const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'tasks', 'shifts', 'chart', 'graph', 'form']);
 const _CHAT_TARGET_MODES = new Set(['follow-main', 'manual', 'detached']);
 
 function _chatRuntimeState() {
@@ -8,15 +8,6 @@ function _chatRuntimeState() {
 
 function _chatStatePath(key) {
   return (typeof state !== 'undefined' && state) ? String(state[key] || '') : '';
-}
-
-function _chatCurrentSmartDbPath() {
-  try {
-    const current = (typeof state !== 'undefined' && state) ? state.currentSmartDb : null;
-    return String(current?._filePath || current?.path || current?.id || '');
-  } catch {
-    return '';
-  }
 }
 
 function _chatTabPath(tab, ...keys) {
@@ -36,7 +27,6 @@ function _chatCurrentTargetFromTab(tab) {
   if (type === 'page') return { path: _chatTabPath(tab, 'pagePath') || _chatStatePath('currentPagePath'), kind: 'file' };
   if (type === 'board') return { path: _chatTabPath(tab, 'boardPath') || _chatStatePath('currentBoardPath'), kind: 'file' };
   if (type === 'scriptnote') return { path: _chatTabPath(tab, 'scenarioPath', 'scriptnotePath'), kind: 'file' };
-  if (type === 'smart-db') return { path: _chatTabPath(tab, 'smartDbPath', 'dbPath') || _chatCurrentSmartDbPath() || _chatStatePath('currentDbPath'), kind: 'file' };
   if (_CHAT_TARGET_DB_VIEW_TYPES.has(type) || _CHAT_TARGET_DB_VIEW_TYPES.has(rawType)) {
     return { path: _chatTabPath(tab, 'dbPath') || _chatStatePath('currentDbPath'), kind: 'folder' };
   }
@@ -90,8 +80,8 @@ function _chatTargetFromViewObject(view) {
   if (type === 'folder') return { path: view.path || '', kind: 'folder' };
   if (type === 'entity') return { path: view.entityPath || view.path || '', kind: 'file' };
   if (type === 'pivot' || type === 'database') return { path: view.dbPath || view.path || '', kind: 'folder' };
-  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'media' || type === 'html' || type === 'csv' || type === 'smart-db') {
-    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.smartDbPath || view.csvPath || '', kind: 'file' };
+  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'media' || type === 'html' || type === 'csv') {
+    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.csvPath || '', kind: 'file' };
   }
   return { path: view.path || '', kind: view.path ? 'file' : '' };
 }

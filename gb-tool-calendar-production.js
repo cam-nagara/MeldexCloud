@@ -13,7 +13,7 @@
   // renderAllocation が担う。
   const PRODUCTION_SHEET_TABS = [
     { key: 'tasks', id: 'production-task-list', label: 'タスクリスト', icon: 'listTodo' },
-    { key: 'works', id: 'production-managed-works', label: 'プロジェクト一覧', icon: 'folderKanban' },
+    { key: 'works', id: 'production-managed-works', label: 'プロジェクト', icon: 'folderKanban' },
   ];
 
   function _pmIcon(name, size = 14) {
@@ -189,17 +189,13 @@
         action: () => _pmRunCalendarToolbarAction(component, 'bulkCreateTasks'),
       },
       {
-        id: 'production-templates', label: 'テンプレート', icon: 'layoutTemplate',
-        action: () => _pmRunCalendarToolbarAction(component, 'template'),
-      },
-      {
         // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
         // improvement-plan-2026-08-04.md §4-1）。dropboxModeでも無効化しない。
         id: 'production-recalculate', label: '自動割り当て', icon: 'calculator',
         action: () => _pmRunCalendarToolbarAction(component, 'recalculate'),
       },
       {
-        id: 'production-management', label: '管理操作', icon: 'settings2',
+        id: 'production-management', label: '制作設定', icon: 'settings2',
         action: () => _pmRunCalendarToolbarAction(component, 'productionManagement'),
       },
       {
@@ -272,7 +268,7 @@
   // 通常の行追加操作で行う。
   window.openProductionStaffRegistrySheet = async function () {
     if (!window.MeldexUserRegistry || typeof selectDatabase !== 'function') {
-      _pmStatus('スタッフ管理シートを開けませんでした', true);
+      _pmStatus('ユーザー管理シートを開けませんでした', true);
       return;
     }
     try {
@@ -281,10 +277,10 @@
         const ensured = await window.MeldexUserRegistry.ensure();
         config = { path: ensured?.path || '' };
       }
-      if (!config?.path) throw new Error('スタッフ管理シートの場所を確認できませんでした');
+      if (!config?.path) throw new Error('ユーザー管理シートの場所を確認できませんでした');
       await selectDatabase(config.path, null, { fromExplorer: true });
     } catch (error) {
-      _pmStatus(error?.message || 'スタッフ管理シートを開けませんでした', true);
+      _pmStatus(error?.message || 'ユーザー管理シートを開けませんでした', true);
     }
   };
 

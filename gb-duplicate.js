@@ -46,7 +46,9 @@ function showClipSearchResults(results, query) {
   let html = `<div class="gb-section-desc" style="margin-bottom:var(--ui-space-3);">「${esc(query)}」の検索結果（${results.results.length} 件）</div>`;
   html += '<div class="clip-search-grid">';
   results.results.forEach((r, index) => {
-    const thumbUrl = API_BASE + '/thumb?path=' + encodeURIComponent(r.path) + '&size=120';
+    const thumbUrl = window.MeldexSheetAttachments?.thumbUrlForPath
+      ? window.MeldexSheetAttachments.thumbUrlForPath(r.path, 120)
+      : '/api/thumbnail?path=' + encodeURIComponent(String(r.path || '').replace(/\\/g, '/')) + '&size=120';
     const score = Math.round(r.score * 100);
     html += `<div class="clip-search-item" role="button" tabindex="0" data-clip-search-result data-path="${esc(r.path)}" data-e2e-id="clip-search-result-${index}" aria-label="${esc(r.name)} を開く">
       <img class="clip-search-thumb" src="${thumbUrl}" alt="${esc(r.name)}" data-meldex-content-image onerror="this.alt='読込失敗';">

@@ -37,7 +37,7 @@
     return _rootKind(root) + ':' + _normalizePath(root?.path || root?.rootPath).toLowerCase();
   }
 
-  function _selectionFor(root, path, name, kind) {
+  function _selectionFor(root, path, name, kind, type) {
     const normalizedPath = _normalizePath(path || root.path || root.rootPath);
     return {
       path: normalizedPath,
@@ -48,6 +48,7 @@
       sourceId: root.sourceId || '',
       workspaceId: root.workspaceId || '',
       kind: kind || 'folder',
+      type: type || (kind === 'folder' ? 'folder' : ''),
     };
   }
 
@@ -200,7 +201,7 @@
   const _FILE_TYPE_ICONS = {
     folder: 'folder', database: 'database', calendar: 'calendar',
     page: 'fileText', board: 'layoutGrid', chat: 'messagesSquare',
-    'smart-db': 'database', scriptnote: 'bookOpenText', timer: 'timer',
+    scriptnote: 'bookOpenText', unsupported: 'fileQuestion',
     image: 'image', video: 'film', audio: 'music', html: 'globe', csv: 'fileSpreadsheet',
     document: 'fileText', archive: 'fileArchive', app: 'terminal', psd: 'image', clip: 'image', '3d': 'box',
   };
@@ -248,7 +249,9 @@
     children.dataset.loaded = '0';
 
     const selectRow = () => {
-      state.selected = _selectionFor(root, path, name, isFile ? 'file' : 'folder');
+      state.selected = _selectionFor(
+        root, path, name, isFile ? 'file' : 'folder', isFile ? folder.type : 'folder',
+      );
       _markSelectedAcross(state, row);
       _setCurrentPathText(state.current, _rowLabelText(state.selected));
       state.ok.disabled = false;
@@ -550,8 +553,8 @@
               return rp && (_normalizePath(d.path) === rp || _normalizePath(d.path).startsWith(rp + '/'));
             }) : null;
             state.selected = matchedRoot
-              ? _selectionFor(matchedRoot, d.path, d.name, 'file')
-              : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file' };
+              ? _selectionFor(matchedRoot, d.path, d.name, 'file', d.type)
+              : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file', type: d.type || '' };
             _markSelectedAcross(state, row);
             _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
             state.ok.disabled = false;

@@ -461,7 +461,8 @@
 /* v0.5.250: z-index を 8 → 11 に引き上げて bd-text (z-index:9) の上に出す。
    カード選択中 (.bd-selected .bd-text) は pointer-events:auto になるため、
    z-index が下だと bd-text にイベントを奪われ、ボタン左側が押せなくなる現象が発生していた。 */
-.bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); font-size: 11px; line-height: 1; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
+.bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 2px; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
+.bd-card-menu-btn > span { width: 3px; height: 3px; flex: 0 0 3px; border-radius: 999px; background: currentColor; }
 .bd-card-menu-btn:hover { background: var(--bg3); color: var(--fg); }
 /* 画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く (v0.5.248)。
    背景色は `background-clip: border-box` 既定 + `border-radius: 50%` で楕円形にクリップされる。 */
@@ -1024,7 +1025,8 @@
   /* セルの寸法は表レイアウト内部の値。JS側（gb-note-enhance.part03.js）も物理プロパティで
      書き込むため、ここも物理のまま揃える（論理プロパティにすると列幅調整が効かなくなる）。 */
   min-width: 1em;
-  height: calc(1em * var(--page-text-line-height, 1.6));
+  height: auto;
+  line-height: var(--page-text-line-height, 160%);
 }
 #page-content td:empty::before, #page-content th:empty::before,
 #entity-freetext td:empty::before, #entity-freetext th:empty::before,

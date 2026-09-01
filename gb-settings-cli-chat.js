@@ -129,12 +129,47 @@ async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
   });
   const body = { cli_chat_enabled: document.getElementById('settings-cli-chat-enabled')?.checked !== false, cli_chat_providers: providers };
   const status = container.querySelector('#settings-cli-chat-status');
+  const settingsRoot = container.closest('.modal-overlay') || document;
+  const relayContainer = settingsRoot.querySelector?.('#settings-workspace-cli-relay-container')
+    || document.getElementById('settings-workspace-cli-relay-container');
+  const relayEditable = !!relayContainer?.querySelector?.('#settings-workspace-cli-enabled');
+  let previousCli = null;
+  let previousRelay = null;
+  let cliWriteAttempted = false;
+  let relayWriteAttempted = false;
   try {
     if (status) { status.textContent = '保存中...'; status.style.color = 'var(--fg2)'; }
+    // CLI本体とworkspace中継は1つの設定domainとして扱う。両方のsnapshotを
+    // 取得できるまで書き込まず、後段失敗時は逆順で補償する。
+    const cliSnapshot = await apiFetch('/cli-chat/config', { silentError: true });
+    if (!cliSnapshot || typeof cliSnapshot !== 'object' || !cliSnapshot.providers || typeof cliSnapshot.providers !== 'object') {
+      throw new Error('CLIチャット設定の保存前状態を確認できませんでした');
+    }
+    previousCli = {
+      cli_chat_enabled: cliSnapshot.enabled !== false,
+      cli_chat_providers: cliSnapshot.providers,
+    };
+    if (relayEditable) {
+      const relaySnapshot = await apiFetch('/workspace-cli/config', { silentError: true });
+      if (!relaySnapshot || typeof relaySnapshot !== 'object') {
+        throw new Error('workspace中継設定の保存前状態を確認できませんでした');
+      }
+      previousRelay = {
+        enabled: relaySnapshot.enabled === true,
+        node_name: String(relaySnapshot.node_name || ''),
+        poll_interval_seconds: Number(relaySnapshot.poll_interval_seconds || 5) || 5,
+        enabled_workspace_ids: Array.isArray(relaySnapshot.enabled_workspace_ids)
+          ? relaySnapshot.enabled_workspace_ids.map(String)
+          : [],
+        provider: String(relaySnapshot.provider || 'codex'),
+      };
+    }
+    cliWriteAttempted = true;
     await apiPut('/cli-chat/config', body);
-    if (typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
-      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(container.closest('.modal-overlay') || document, { silent: true, skipReload: true });
-      if (relayOk === false) return false;
+    if (relayEditable && typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
+      relayWriteAttempted = true;
+      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(settingsRoot, { silent: true, skipReload: true });
+      if (relayOk === false) throw new Error('workspace中継設定を保存できませんでした');
     }
     if (status) { status.textContent = '保存しました。未検出のままならMeldexを再起動してください。'; status.style.color = 'var(--fg2)'; }
     if (typeof window.GBChatCli?.loadChatConfig === 'function') {
@@ -142,12 +177,30 @@ async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
       if (!options.backgroundChatRefresh) await reload;
     }
     if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-    if (!options.skipReload) await renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document);
+    if (!options.skipReload) await renderCliChatSettingsForSettings(settingsRoot);
     if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定を保存しました');
     return true;
   } catch (e) {
-    if (status) { status.textContent = '保存に失敗しました: ' + (e?.message || e); status.style.color = 'var(--red)'; }
+    const rollbackFailures = [];
+    if (relayWriteAttempted && previousRelay) {
+      try { await apiPut('/workspace-cli/config', previousRelay); }
+      catch (rollbackError) { rollbackFailures.push(rollbackError?.message || String(rollbackError)); }
+    }
+    if (cliWriteAttempted && previousCli) {
+      try { await apiPut('/cli-chat/config', previousCli); }
+      catch (rollbackError) { rollbackFailures.push(rollbackError?.message || String(rollbackError)); }
+    }
+    const rollbackWarning = rollbackFailures.length
+      ? ' 保存前状態を自動復元できませんでした。設定を再読込してください。'
+      : '';
+    if (status) { status.textContent = '保存に失敗しました: ' + (e?.message || e) + rollbackWarning; status.style.color = 'var(--red)'; }
     if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定の保存に失敗しました', true);
+    if (rollbackFailures.length && options.propagateRollbackFailure) {
+      const rollbackError = new Error((e?.message || String(e)) + rollbackWarning);
+      rollbackError.settingsRollbackFailed = true;
+      rollbackError.settingsDomain = 'cli-chat';
+      throw rollbackError;
+    }
     return false;
   }
 }

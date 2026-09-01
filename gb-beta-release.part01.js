@@ -314,7 +314,12 @@
   }
 
   function _createConsentCheckbox(id, text, checked, options = {}) {
-    const input = _el('input', { id, type: 'checkbox', class: 'meldex-beta-consent-checkbox' });
+    const input = _el('input', {
+      id,
+      type: 'checkbox',
+      class: 'meldex-beta-consent-checkbox',
+      dataset: { gbTooltipDisabled: 'true' },
+    });
     input.checked = !!checked;
     const labelContent = [input, _el('span', { text })];
     if (options.required === true) {

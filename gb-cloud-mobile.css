@@ -17,6 +17,16 @@
   display: none;
 }
 
+@media (max-width: 640px) {
+  .settings-modal #settings-virtual-user-name,
+  .settings-modal #settings-virtual-user-add,
+  .settings-modal [data-workspace-new-user],
+  .settings-modal [data-workspace-user-add] {
+    min-height: calc(44px / var(--meldex-ui-zoom, 1)) !important;
+    box-sizing: border-box !important;
+  }
+}
+
 @media (min-width: 0px), (max-width: 1024px), (pointer: coarse) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] {
     min-height: var(--cloud-visual-vh, 100dvh);
@@ -1055,7 +1065,6 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #pivot-view,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #pivot-table,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .pivot-table,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .smart-db-view,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .sn2-editor {
     font-size: var(--cloud-mobile-ui-font-size);
     line-height: var(--cloud-mobile-ui-line-height);
@@ -1300,6 +1309,10 @@
     margin-top: 0 !important;
     padding-top: var(--ui-space-3, 8px) !important;
     padding-bottom: calc(var(--ui-space-4, 12px) + var(--cloud-mobile-safe-bottom, 0px)) !important;
+  }
+
+  body .settings-modal > .gb-modal-shell-footer button {
+    min-height: 44px !important;
   }
 
   /* マップ済み予定パネルのスマホ用フッター（グリッド・全幅ボタン）は、Cloud/

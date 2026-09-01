@@ -17,6 +17,210 @@
     return creationKey.slice(title.length + 1).split('|').length === 4;
   }
 
+  const PM_WORK_TEMPLATE_SHEET = '作業テンプレート';
+  const PM_WORK_TEMPLATE_RELATION = '作業テンプレート';
+  const PM_WORK_TEMPLATE_DEFAULT_NAME = '既定の作業テンプレート';
+  const PM_WORK_TEMPLATE_CHILD_SHEETS = ['タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト'];
+
+  async function _pmCloudEnsureDefaultWorkTemplate(provider, internals) {
+    const entries = await _pmCloudListEntries(provider, internals, PM_WORK_TEMPLATE_SHEET);
+    let entry = entries.find(item => item.name === PM_WORK_TEMPLATE_DEFAULT_NAME
+      || _pmCloudPropValue(item.frontmatter, 'テンプレート名') === PM_WORK_TEMPLATE_DEFAULT_NAME);
+    let created = false;
+    if (!entry) {
+      const path = await _pmCloudUpsertEntry(provider, internals, PM_WORK_TEMPLATE_SHEET,
+        PM_WORK_TEMPLATE_DEFAULT_NAME, { 'テンプレート名': PM_WORK_TEMPLATE_DEFAULT_NAME, 'リビジョン': '1' },
+        'テンプレート名', PM_WORK_TEMPLATE_DEFAULT_NAME, { reuseName: true, createNew: true });
+      const parsed = await _pmCloudReadFrontmatter(provider, path);
+      entry = { path, name: PM_WORK_TEMPLATE_DEFAULT_NAME, frontmatter: parsed.frontmatter || {}, body: parsed.body || '' };
+      created = true;
+    }
+    return { path: entry.path, id: String(entry.frontmatter?.id || _pmHash(entry.path).slice(0, 12)), created };
+  }
+
+  function _pmCloudMigrationCandidate(value) {
+    return [{ value: String(value), status: '採用', note: '', created: new Date().toISOString() }];
+  }
+
+  async function _pmCloudMigrateTemplateMembership(provider, internals) {
+    const workTemplate = await _pmCloudEnsureDefaultWorkTemplate(provider, internals);
+    const snapshots = new Map();
+    const updates = [];
+    let workEntries = [];
+    for (const sheet of [...PM_WORK_TEMPLATE_CHILD_SHEETS, '作品リスト']) {
+      const entries = await _pmCloudListEntries(provider, internals, sheet);
+      if (sheet === '作品リスト') workEntries = entries;
+      for (const entry of entries) {
+        const fm = { ...(entry.frontmatter || {}), properties: { ...(entry.frontmatter?.properties || {}) } };
+        let changed = false;
+        if (PM_WORK_TEMPLATE_CHILD_SHEETS.includes(sheet) && !String(fm.production_template_child_name || '').trim()) {
+          fm.production_template_child_name = entry.name;
+          changed = true;
+        }
+        if (sheet === '作業内容リスト' && Object.prototype.hasOwnProperty.call(fm.properties, '表示名')) {
+          const oldDisplayName = _pmCloudPropValue(fm, '表示名').trim();
+          delete fm.properties['表示名'];
+          const oldNote = _pmCloudPropValue(fm, '備考').trim();
+          const preserved = !!oldDisplayName && oldDisplayName !== entry.name;
+          if (preserved && !oldNote.split('\n').includes(`旧表示名: ${oldDisplayName}`)) {
+            fm.properties['備考'] = _pmCloudMigrationCandidate([oldNote, `旧表示名: ${oldDisplayName}`].filter(Boolean).join('\n'));
+          }
+          const history = Array.isArray(fm.production_template_membership_migration)
+            ? [...fm.production_template_membership_migration] : [];
+          history.push({ migrated_at: new Date().toISOString(), removed_property: '表示名',
+            old_value: oldDisplayName, entry_name: entry.name, preserved_in_note: preserved });
+          fm.production_template_membership_migration = history;
+          changed = true;
+        }
+        const relation = sheet === '作品リスト' ? '使用する作業テンプレート' : PM_WORK_TEMPLATE_RELATION;
+        if (!_pmCloudPropValue(fm, relation)) {
+          fm.properties[relation] = _pmCloudMigrationCandidate(workTemplate.id);
+          changed = true;
+        }
+        if (changed) {
+          fm.modified = new Date().toISOString();
+          snapshots.set(entry.path, typeof entry.sourceText === 'string'
+            ? entry.sourceText
+            : await provider.readText(entry.path));
+          updates.push({ entry, frontmatter: fm });
+        }
+      }
+    }
+    try {
+      for (const update of updates) {
+        const text = _pmCloudFrontmatterText(update.frontmatter, update.entry.body || '');
+        await provider.writeText(update.entry.path, text);
+        // 後続の旧タスクリスト移行へ同じ一覧を渡すため、書込み後の正本状態へ更新する。
+        // 古いfrontmatterを渡すと作品行の更新時にテンプレート所属を巻き戻し、次回initで
+        // 同じ4行を再移行してしまう。
+        update.entry.frontmatter = update.frontmatter;
+        update.entry.sourceText = text;
+      }
+    } catch (error) {
+      for (const [path, text] of snapshots) await provider.writeText(path, text);
+      if (workTemplate.created && typeof provider.deletePath === 'function') {
+        await provider.deletePath(workTemplate.path);
+      }
+      throw error;
+    }
+    return { migrated: updates.length, template_id: workTemplate.id, work_entries: workEntries };
+  }
+
+  function _pmCloudProductionSourceId(provider, internals) {
+    const parsed = window.MeldexSourceFolderRegistry?.parseSourcePath?.(_pmCloudRoot(internals));
+    return String(parsed?.sourceId || provider?.sourceId || provider?.id || 'source');
+  }
+
+  async function _pmCloudEnsureTaskTopic(provider, internals, entry) {
+    const fm = { ...(entry.frontmatter || {}) };
+    const sourceId = String(fm.topicRef?.sourceId || _pmCloudProductionSourceId(provider, internals));
+    const topicId = String(fm.topicRef?.topicId || fm.id || ('production-' + _pmHash(entry.path).slice(0, 24)));
+    const topicRef = { sourceId, topicId };
+    const topicPath = `_meldex/topics/v1/sources/${encodeURIComponent(sourceId)}/records/${encodeURIComponent(topicId)}.json`;
+    const now = new Date().toISOString();
+    const envelope = { schemaVersion: 1, topicRef, record: { topicId, title: entry.name,
+      properties: {}, propertyValuesByFamilyId: {}, propertyValueOrder: [], note: null, resources: [],
+      revision: 1, schemaVersion: 1, createdAt: now, updatedAt: now, updatedBy: null },
+      createdByMutationId: `production-task-link-${topicId}`, updatedAt: now };
+    if (typeof provider.writeJsonMerged === 'function') {
+      await provider.writeJsonMerged(topicPath, current => current?.record ? current : envelope,
+        { fallbackValue: {}, retries: 4 });
+    } else {
+      try { await provider.readText(topicPath); } catch (error) {
+        if (!_pmCloudIsNotFoundError(error)) throw error;
+        await provider.writeText(topicPath, JSON.stringify(envelope));
+      }
+    }
+    if (fm.topicRef?.sourceId === sourceId && fm.topicRef?.topicId === topicId) return topicRef;
+    fm.topicRef = topicRef;
+    fm.modified = now;
+    await provider.writeText(entry.path, _pmCloudFrontmatterText(fm, entry.body || ''));
+    return topicRef;
+  }
+
+  async function _pmCloudEnsureTaskTopics(provider, internals, taskSheet, cachedEntries = null) {
+    let migrated = 0;
+    const entries = Array.isArray(cachedEntries)
+      ? cachedEntries
+      : await _pmCloudListEntries(provider, internals, taskSheet, { concurrency: 8 });
+    await _pmCloudMapBounded(entries, 4, async entry => {
+      const before = entry.frontmatter?.topicRef;
+      await _pmCloudEnsureTaskTopic(provider, internals, entry);
+      if (!before?.sourceId || !before?.topicId) migrated += 1;
+    });
+    return { migrated };
+  }
+
+  function _pmCloudTopicResourceId(mutationId) {
+    return 'production-resource-' + _pmHash(String(mutationId)).slice(0, 24);
+  }
+
+  async function _pmCloudCreateTopicResource(provider, internals, body) {
+    const ref = body?.topicRef || body?.topic_ref || {};
+    const sourceId = String(ref.sourceId || '').trim(), topicId = String(ref.topicId || '').trim();
+    const kind = String(body?.type || '').trim().toLowerCase();
+    const mutationId = String(body?.mutation_id || body?.mutationId || '').trim();
+    if (!sourceId || !topicId) throw _pmCloudError(400, 'TopicRefを確認できません');
+    if (!['note', 'chat'].includes(kind)) throw _pmCloudError(400, 'type は note または chat を指定してください');
+    if (!/^[A-Za-z0-9._:-]{8,255}$/.test(mutationId)) throw _pmCloudError(400, 'mutation_id が不正です');
+    const topicPath = `_meldex/topics/v1/sources/${encodeURIComponent(sourceId)}/records/${encodeURIComponent(topicId)}.json`;
+    let envelope;
+    try { envelope = JSON.parse(await provider.readText(topicPath)); }
+    catch (error) { if (_pmCloudIsNotFoundError(error)) throw _pmCloudError(404, 'Topic正本が見つかりません'); throw error; }
+    const existing = (envelope?.record?.resources || []).find(item => item?.creationMutationId === mutationId);
+    if (existing) return { ok: true, idempotent: true, topicRef: { sourceId, topicId }, resource: existing, record: envelope.record };
+    const resourceId = _pmCloudTopicResourceId(mutationId);
+    const fallbackLabel = kind === 'note' ? '新規ノート' : '新規チャット';
+    const label = String(body?.label || fallbackLabel).trim().replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) || fallbackLabel;
+    const user = String(body?.current_user || global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous')
+      .replace(/[\\/:*?"<>|]+/g, '_') || 'anonymous';
+    const userSegment = user === '.' || user === '..' ? 'anonymous' : user;
+    const resourcePath = kind === 'note'
+      ? `_meldex/topics/v1/resources/${encodeURIComponent(topicId)}/${resourceId}.md`
+      : `_chat/llm/${userSegment}/${label}-${resourceId.slice(-8)}.md`;
+    const created = new Date().toISOString();
+    const content = kind === 'note'
+      ? `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(resourceId)}\n---\n# ${label}\n\n`
+      : `---\ntype: chat\nprovider: ''\nmodel: ''\ncreated: ${created}\ntags: []\nuser: ${JSON.stringify(user)}\nowner: ${JSON.stringify(user)}\ntitle: ${JSON.stringify(label)}\nmessages: []\n---\n\n`;
+    let wroteResource = false;
+    try {
+      let currentText = '';
+      try { currentText = await provider.readText(resourcePath); }
+      catch (error) { if (!_pmCloudIsNotFoundError(error)) throw error; }
+      if (currentText && currentText !== content) throw _pmCloudError(409, '同じ作成IDの保存先に別のファイルがあります');
+      if (!currentText) { await provider.writeText(resourcePath, content); wroteResource = true; }
+      const resource = { resourceId, resourceType: kind === 'note' ? 'note-link' : 'chat-link', href: resourcePath,
+        label, creationMutationId: mutationId };
+      const updateEnvelope = current => {
+        const base = current?.record ? current : envelope;
+        const resources = Array.isArray(base.record.resources) ? [...base.record.resources] : [];
+        if (!resources.some(item => item?.creationMutationId === mutationId)) resources.push(resource);
+        return { ...base, record: { ...base.record, resources, revision: Number(base.record.revision || 0) + 1,
+          updatedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
+      };
+      let saved;
+      if (typeof provider.writeJsonMerged === 'function') saved = await provider.writeJsonMerged(topicPath, updateEnvelope, { fallbackValue: envelope, retries: 4 });
+      else { saved = updateEnvelope(envelope); await provider.writeText(topicPath, JSON.stringify(saved)); }
+      const finalEnvelope = saved?.record ? saved : JSON.parse(await provider.readText(topicPath));
+      return { ok: true, idempotent: false, topicRef: { sourceId, topicId }, resource, record: finalEnvelope.record };
+    } catch (error) {
+      let linkedByConcurrentRetry = false;
+      try {
+        const latest = JSON.parse(await provider.readText(topicPath));
+        linkedByConcurrentRetry = (latest?.record?.resources || []).some(item => item?.creationMutationId === mutationId);
+      } catch (_readLatestError) {}
+      if (linkedByConcurrentRetry) {
+        const latest = JSON.parse(await provider.readText(topicPath));
+        const linked = latest.record.resources.find(item => item?.creationMutationId === mutationId);
+        return { ok: true, idempotent: true, topicRef: { sourceId, topicId }, resource: linked, record: latest.record };
+      }
+      if (wroteResource && typeof provider.deletePath === 'function') {
+        try { if (await provider.readText(resourcePath) === content) await provider.deletePath(resourcePath); } catch (_cleanupError) {}
+      }
+      throw error;
+    }
+  }
+
   async function _pmCloudLegacyCopyPath(provider, internals, entry, taskSheet) {
     const root = _pmCloudRoot(internals);
     const baseName = _pmSafeName(entry?.name || '無題');
@@ -170,8 +374,12 @@
     return { copied, removed, matched: candidates.length, conflicts, conflict_copies_removed: conflictCleanup.removed, existing_keys: [...existingKeys] };
   }
 
-  async function _pmCloudMigrateLegacyWorkspace(provider, internals) {
-    const workEntries = await _pmCloudListEntries(provider, internals, '作品リスト', { concurrency: 8 });
+  async function _pmCloudMigrateLegacyWorkspace(
+    provider, internals, cachedWorkEntries = null, defaultTemplateId = ''
+  ) {
+    const workEntries = Array.isArray(cachedWorkEntries)
+      ? cachedWorkEntries
+      : await _pmCloudListEntries(provider, internals, '作品リスト', { concurrency: 8 });
     const legacyEntries = await _pmCloudListEntries(provider, internals, 'タスクリスト', { concurrency: 8 });
     const worksByTitle = new Map();
     workEntries.forEach(work => {
@@ -209,6 +417,7 @@
       }
       if (!registeredSheet) {
         const props = { 'タスクリストシート': taskSheet };
+        if (defaultTemplateId) props['使用する作業テンプレート'] = defaultTemplateId;
         if (work) await _pmCloudUpdateEntryAtPath(provider, work.path, props, work);
         else await _pmCloudUpsertEntry(provider, internals, '作品リスト', workTitle, props, '', '', { reuseName: true, createNew: true });
         result.works += 1;

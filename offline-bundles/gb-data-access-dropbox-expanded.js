@@ -31,12 +31,18 @@
     return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset)).toISOString().slice(0, 10);
   }
 
-  function state(rows, user, timestamp) {
+  function sameScope(row, scope) {
+    return String(row?.workspace_id || '') === String(scope?.workspace_id || '')
+      && String(row?.member_id || '') === String(scope?.member_id || '');
+  }
+
+  function state(rows, user, timestamp, scope = null) {
     const day = String(timestamp || '').slice(0, 10);
     const previous = dayOffset(day, -1);
     const targetEpoch = Date.parse(timestamp);
     const latest = (Array.isArray(rows) ? rows : [])
-      .filter(row => row.user === user && String(row.timestamp || '').slice(0, 10) >= previous
+      .filter(row => row.user === user && (!scope || sameScope(row, scope))
+        && String(row.timestamp || '').slice(0, 10) >= previous
         && String(row.timestamp || '').slice(0, 10) <= day && TIME_ENTRY_TYPES.includes(row.type)
         && !Number.isNaN(Date.parse(row.timestamp)) && Date.parse(row.timestamp) <= targetEpoch)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
@@ -44,12 +50,12 @@
     return ({ clock_in: 'working', break_start: 'away', break_end: 'working', clock_out: 'off' })[latest?.type] || 'initial';
   }
 
-  function assertNormalAction(rows, user, type, timestamp, now = Date.now()) {
+  function assertNormalAction(rows, user, type, timestamp, now = Date.now(), scope = null) {
     if (Math.abs(now - Date.parse(timestamp)) > 5 * 60 * 1000) {
       fail('打刻時刻が現在時刻から離れています。時刻設定を確認してください', 400, 'CLOCK_TIMESTAMP_OUT_OF_RANGE');
     }
     const allowed = { initial: ['clock_in'], working: ['clock_out', 'break_start'], away: ['break_end'], off: ['clock_in'] };
-    if (!allowed[state(rows, user, timestamp)].includes(type)) {
+    if (!allowed[state(rows, user, timestamp, scope)].includes(type)) {
       fail('現在の勤務状態ではこの打刻はできません', 409, 'CLOCK_STATE_CONFLICT');
     }
   }
@@ -58,10 +64,13 @@
     const targets = new Map();
     entries.filter(Boolean).forEach((entry) => {
       const user = String(entry.user || '');
+      const workspace_id = String(entry.workspace_id || '');
+      const member_id = String(entry.member_id || '');
       const day = String(entry.timestamp || '').slice(0, 10);
       if (!user || !strictDate(day)) return;
       [day, dayOffset(day, -1)].forEach((candidate) => {
-        if (candidate) targets.set(`${user}\u0000${candidate}`, { user, day: candidate });
+        if (candidate) targets.set(`${workspace_id}\u0000${member_id}\u0000${user}\u0000${candidate}`,
+          { user, day: candidate, workspace_id, member_id });
       });
     });
     return [...targets.values()];
@@ -326,22 +335,34 @@
 
   function createMutationService(deps) {
     const { readStore, writeStore, deriveEvent, randomId, nowIso } = deps;
+    const scopeForUser = typeof deps.scopeForUser === 'function' ? deps.scopeForUser : (() => ({ workspace_id: '', member_id: '' }));
+    const targetKey = target => [String(target.workspace_id || ''), String(target.member_id || ''), String(target.user || '')].join('\u0000');
+    const eventId = target => {
+      if (!target.workspace_id && !target.member_id) return `attendance:${target.user}:${target.day}`;
+      return `attendance:${encodeURIComponent(target.workspace_id || '')}:${encodeURIComponent(target.member_id || target.user)}:${target.day}`;
+    };
 
     async function ensureCalendars(targets) {
       const calendars = await readStore('calendars');
       let changed = false;
       const byUser = new Map();
-      for (const { user } of targets) {
-        if (byUser.has(user)) continue;
-        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user);
+      for (const target of targets) {
+        const { user } = target;
+        const key = targetKey(target);
+        if (byUser.has(key)) continue;
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user
+          && String(row.workspace_id || '') === String(scope.workspace_id || '')
+          && String(row.member_id || '') === String(scope.member_id || ''));
         if (!calendar) {
           const now = nowIso();
           calendar = { id: randomId('attendance-cal'), name: `実績: ${user}`, color: '#6a9955', user,
-            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin', created: now, modified: now };
+            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin',
+            workspace_id: String(scope.workspace_id || ''), member_id: String(scope.member_id || ''), created: now, modified: now };
           calendars.push(calendar);
           changed = true;
         }
-        byUser.set(user, calendar.id);
+        byUser.set(key, calendar.id);
       }
       if (changed) await writeStore('calendars', calendars);
       return byUser;
@@ -350,20 +371,26 @@
     async function sync(timeRows, targets) {
       if (!targets.length) return;
       const events = await readStore('events');
-      for (const { user, day } of targets) {
-        const existing = events.find(row => row.id === `attendance:${user}:${day}`);
+      for (const target of targets) {
+        const existing = events.find(row => row.id === eventId(target));
         if (existing && existing.calendar_source !== 'attendance') {
           fail('勤怠由来予定IDが通常予定と衝突しています', 409, 'ATTENDANCE_EVENT_COLLISION');
         }
       }
       const calendarIds = await ensureCalendars(targets);
-      for (const { user, day } of targets) {
-        const id = `attendance:${user}:${day}`;
+      for (const target of targets) {
+        const { user, day } = target;
+        const id = eventId(target);
         const index = events.findIndex(row => row.id === id);
         const existing = index >= 0 ? events[index] : null;
-        const derived = deriveEvent(timeRows, user, day, existing);
+        const scope = { ...(scopeForUser(user) || {}), ...target };
+        const derived = deriveEvent(timeRows, user, day, existing, scope);
         if (derived) {
-          derived.calendar_id = calendarIds.get(user) || existing?.calendar_id || '';
+          derived.id = id;
+          derived.calendar_id = calendarIds.get(targetKey(target)) || existing?.calendar_id || '';
+          derived.color_override = null;
+          derived.workspace_id = String(scope.workspace_id || existing?.workspace_id || '');
+          derived.member_id = String(scope.member_id || existing?.member_id || '');
           if (index >= 0) events[index] = derived;
           else events.push(derived);
         } else if (index >= 0) {
@@ -435,6 +462,749 @@
   });
   window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease });
 })();
+/* Shared calendar history engine and browser-local active /cal/* adapter. */
+(function () {
+  'use strict';
+
+  const internals = window.__MeldexPwaDataAccessInternals;
+  const handlers = window.__MeldexPwaDataAccessExtensions;
+  if (!internals || !Array.isArray(handlers)) return;
+
+  const { NOT_HANDLED } = internals;
+  const STORE_KEY = 'meldex-cloud-calendar-store-v1';
+  const LEASE_KEY = 'meldex-cloud-calendar-lease-v1';
+  const LEASE_DURATION_MS = 5000;
+  const LEASE_HEARTBEAT_MS = 1000;
+  const HISTORY_LIMIT = 30;
+  const STORE_NAMES = Object.freeze({ event: 'events', todo: 'tasks', shift: 'shifts' });
+  let localQueue = Promise.resolve();
+
+  function httpError(status, message, code) {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code || `HTTP_${status}`;
+    return error;
+  }
+
+  function stableJson(value) {
+    if (Array.isArray(value)) return '[' + value.map(stableJson).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function revision(value) {
+    const bytes = new TextEncoder().encode(stableJson(value ?? null));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function clone(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  function createHistoryEngine(options) {
+    const names = options.names || STORE_NAMES;
+    const fail = (message, status, code) => { throw options.error(message, status, code); };
+    const context = async (kind, itemId) => {
+      const storeName = names[kind];
+      if (!storeName) fail('履歴対象の種類が不正です', 400, 'CALENDAR_HISTORY_KIND_INVALID');
+      const rows = await options.read(storeName);
+      const current = rows.find(row => String(row?.id) === String(itemId)) || null;
+      const allVersions = await options.read(options.historyStore);
+      const versions = allVersions.filter(row => row?.itemKind === kind && String(row?.itemId) === String(itemId));
+      const authorizationSnapshot = current || versions.find(row => row?.snapshot)?.snapshot || null;
+      if (!authorizationSnapshot) fail('対象が見つかりません', 404, 'CALENDAR_HISTORY_TARGET_NOT_FOUND');
+      if (!(await options.canAccess(kind, authorizationSnapshot))) {
+        fail('この項目の履歴を操作する権限がありません', 403, 'CALENDAR_HISTORY_FORBIDDEN');
+      }
+      return { storeName, rows, current, allVersions, versions };
+    };
+    const verified = async (ctx, versionId) => {
+      const saved = ctx.versions.find(row => String(row?.versionId) === String(versionId));
+      if (!saved) fail('指定した版がありません', 404, 'CALENDAR_HISTORY_VERSION_NOT_FOUND');
+      if (await revision(saved.snapshot ?? null) !== String(saved.sourceRevision || '')) {
+        fail('保存版の整合性を確認できません', 409, 'CALENDAR_HISTORY_TAMPERED');
+      }
+      return saved;
+    };
+    const capture = async (kind, itemId, snapshot, label) => {
+      const all = await options.read(options.historyStore);
+      const sourceRevision = await revision(snapshot);
+      const matching = all.filter(row => row?.itemKind === kind && String(row?.itemId) === String(itemId));
+      if (matching[0]?.sourceRevision === sourceRevision) return matching[0].versionId;
+      const record = {
+        versionId: randomId('calv'), itemKind: kind, itemId: String(itemId), sourceRevision,
+        snapshot: clone(snapshot), label: String(label || '変更前'), actor: options.actor(), createdAt: new Date().toISOString(),
+      };
+      const others = all.filter(row => row?.itemKind !== kind || String(row?.itemId) !== String(itemId));
+      await options.write(options.historyStore, [record, ...matching.slice(0, options.limit - 1), ...others]);
+      return record.versionId;
+    };
+    const compensated = async (storeNames, operation) => {
+      const uniqueNames = [...new Set(storeNames)];
+      const checkpoints = new Map();
+      for (const name of uniqueNames) checkpoints.set(name, await options.read(name));
+      try { return await operation(); }
+      catch (error) {
+        try {
+          for (const name of uniqueNames) await options.write(name, checkpoints.get(name));
+        } catch (rollbackError) {
+          const result = options.error(
+            `カレンダー更新の失敗後に復旧できません。元のエラー: ${error?.message || error}; 復元エラー: ${rollbackError?.message || rollbackError}`,
+            503, 'CALENDAR_COMPENSATION_FAILED',
+          );
+          result.cause = rollbackError;
+          throw result;
+        }
+        throw error;
+      }
+    };
+    return Object.freeze({
+      revision,
+      capture,
+      compensated,
+      async list(kind, itemId) {
+        const ctx = await context(kind, itemId);
+        return {
+          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current),
+          versions: ctx.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
+        };
+      },
+      async compare(kind, itemId, versionId) {
+        const ctx = await context(kind, itemId); const saved = await verified(ctx, versionId);
+        if (saved.snapshot && !(await options.canAccess(kind, saved.snapshot))) {
+          fail('この保存版を表示する権限がありません', 403, 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+        }
+        const keys = [...new Set([...Object.keys(saved.snapshot || {}), ...Object.keys(ctx.current || {})])].sort();
+        return {
+          itemKind: kind, itemId: String(itemId), versionId: saved.versionId,
+          currentRevision: await revision(ctx.current), version: clone(saved.snapshot), current: clone(ctx.current),
+          changes: keys.filter(key => stableJson(saved.snapshot?.[key]) !== stableJson(ctx.current?.[key])).map(field => ({
+            field, versionValue: saved.snapshot?.[field], currentValue: ctx.current?.[field],
+          })),
+        };
+      },
+      async restore(kind, itemId, versionId, expectedRevision, apply) {
+        const ctx = await context(kind, itemId); const saved = await verified(ctx, versionId);
+        if (saved.snapshot && !(await options.canAccess(kind, saved.snapshot))) {
+          fail('この保存版を復元する権限がありません', 403, 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+        }
+        if (await revision(ctx.current) !== String(expectedRevision || '')) {
+          fail('表示後に項目が変更されたため復元を中止しました', 409, 'CALENDAR_HISTORY_REVISION_CONFLICT');
+        }
+        const desired = clone(saved.snapshot);
+        if (desired && String(desired.id || '') !== String(itemId)) {
+          fail('保存版の対象IDが一致しません', 409, 'CALENDAR_HISTORY_ID_MISMATCH');
+        }
+        return compensated(options.compensationStores(kind, ctx.storeName), async () => {
+          await capture(kind, itemId, ctx.current, '復元前');
+          await apply({ ...ctx, desired });
+          return { ok: true, itemKind: kind, itemId: String(itemId), item: desired,
+            revision: await revision(desired), reload: { itemKind: kind, itemId: String(itemId) } };
+        });
+      },
+    });
+  }
+
+  function emptyDocument() {
+    return {
+      schemaVersion: 1,
+      stores: { calendars: [], events: [], tasks: [], time: [], shifts: [], 'schedule-templates': [] },
+      versions: [],
+      calendarVisibility: {},
+    };
+  }
+
+  function readDocument() {
+    let parsed;
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      parsed = raw ? JSON.parse(raw) : emptyDocument();
+    } catch {
+      throw httpError(409, '保存されているカレンダーの整合性を確認できません', 'CALENDAR_STORE_TAMPERED');
+    }
+    if (!parsed || parsed.schemaVersion !== 1 || !parsed.stores || !Array.isArray(parsed.versions)) {
+      throw httpError(409, '保存されているカレンダーの形式が不正です', 'CALENDAR_STORE_INVALID');
+    }
+    for (const name of Object.keys(emptyDocument().stores)) {
+      if (!Array.isArray(parsed.stores[name])) parsed.stores[name] = [];
+    }
+    if (!parsed.calendarVisibility || typeof parsed.calendarVisibility !== 'object' || Array.isArray(parsed.calendarVisibility)) {
+      parsed.calendarVisibility = {};
+    }
+    let colorMigrated = false;
+    parsed.stores.events = parsed.stores.events.map(row => {
+      if (Object.prototype.hasOwnProperty.call(row || {}, 'color_override')) return row;
+      colorMigrated = true;
+      const normalized = normalizedEventColor(parsed, row);
+      delete normalized.uses_calendar_color;
+      return normalized;
+    });
+    if (colorMigrated) writeDocument(parsed);
+    return parsed;
+  }
+
+  function calendarVisibilityKey(calendarId) {
+    return [activeWorkspaceId(), actor(), String(calendarId || '')].map(encodeURIComponent).join('|');
+  }
+
+  function calendarWithVisibility(doc, row) {
+    const result = clone(row);
+    const saved = doc.calendarVisibility?.[calendarVisibilityKey(row?.id)];
+    result.visible = saved == null ? 1 : (saved ? 1 : 0);
+    return result;
+  }
+
+  function setCalendarVisibility(doc, calendarId, visible) {
+    if (!doc.calendarVisibility || typeof doc.calendarVisibility !== 'object') doc.calendarVisibility = {};
+    doc.calendarVisibility[calendarVisibilityKey(calendarId)] = visible ? 1 : 0;
+  }
+
+  function writeDocument(documentValue) {
+    const serialized = JSON.stringify(documentValue);
+    try {
+      localStorage.setItem(STORE_KEY, serialized);
+      if (localStorage.getItem(STORE_KEY) !== serialized) throw new Error('write verification failed');
+    } catch {
+      throw httpError(507, 'カレンダーを端末へ保存できません。空き容量とブラウザの保存許可を確認してください', 'CALENDAR_STORAGE_FAILED');
+    }
+  }
+
+  function actor() {
+    try {
+      if (typeof getUsername === 'function') return String(getUsername() || 'anonymous').trim() || 'anonymous';
+      return String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous').trim() || 'anonymous';
+    } catch {
+      return 'anonymous';
+    }
+  }
+
+  function role() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return { access: String(state.access || state.role || '').toLowerCase(), isOwner: state.isOwner === true };
+  }
+
+  function isAdmin() {
+    const current = role();
+    return current.isOwner || ['admin', 'owner'].includes(current.access);
+  }
+
+  function activeWorkspaceId() {
+    return String(window.MeldexWorkspaces?.getActiveId?.() || 'cloud-local-workspace');
+  }
+
+  function activeMemberId(user, explicit = '') {
+    if (String(explicit || '').trim()) return String(explicit).trim();
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const members = state.members || state.workspace?.members || [];
+    const member = Array.isArray(members)
+      ? members.find(item => String(item?.name || item?.user || '') === String(user || '')) : null;
+    return String(member?.id || member?.member_id || (activeWorkspaceId() && user ? `${activeWorkspaceId()}::${user}` : ''));
+  }
+
+  function rowInActiveWorkspace(row) {
+    const value = String(row?.workspace_id || '');
+    return !value || value === activeWorkspaceId();
+  }
+
+  function assertWritable() {
+    if (role().access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+      throw httpError(403, '閲覧専用モードではカレンダーを変更できません', 'CALENDAR_READ_ONLY');
+    }
+  }
+
+  function randomId(prefix) {
+    if (crypto.randomUUID) return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return `${prefix}_` + [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function canOwn(row, fields) {
+    return isAdmin() || fields.some(field => String(row?.[field] || '') === actor());
+  }
+
+  function eventMembers(row) {
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    return Array.isArray(members) ? members.map(String) : [];
+  }
+
+  function canAccessCalendar(row) {
+    return canOwn(row, ['user']) || eventMembers(row).includes(actor());
+  }
+
+  function canEditEvent(doc, row) {
+    if (canOwn(row, ['user', 'creator']) || eventMembers(row).includes(actor())) return true;
+    const calendar = doc.stores.calendars.find(item => String(item.id) === String(row?.calendar_id || ''));
+    return !!calendar && (canOwn(calendar, ['user']) || (calendar.edit_role === 'editor' && role().access === 'editor'));
+  }
+
+  function calendarForEvent(doc, row) {
+    return doc.stores.calendars.find(item => String(item.id) === String(row?.calendar_id || '')) || null;
+  }
+
+  function isGeneratedEvent(row) {
+    return ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(row?.calendar_source || ''))
+      || String(row?.id || '').startsWith('shift:') || String(row?.id || '').startsWith('att:');
+  }
+
+  function normalizedEventColor(doc, value) {
+    const row = clone(value || {});
+    const calendar = calendarForEvent(doc, row);
+    const legacyColor = String(row.color || '').trim();
+    let override;
+    if (Object.prototype.hasOwnProperty.call(row, 'color_override')) {
+      override = String(row.color_override || '').trim();
+    } else {
+      const generated = ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(row.calendar_source || ''));
+      const calendarColor = String(calendar?.color || '').trim();
+      override = !generated && legacyColor && (!calendarColor || legacyColor !== calendarColor) ? legacyColor : '';
+    }
+    row.color_override = override || null;
+    row.uses_calendar_color = !override;
+    row.color = override || String(calendar?.color || '').trim() || legacyColor || '#569cd6';
+    return row;
+  }
+
+  function normalizeEventColorForWrite(doc, row, previous = null) {
+    const output = row;
+    const hasOverride = Object.prototype.hasOwnProperty.call(output, 'color_override');
+    if (hasOverride) {
+      const override = String(output.color_override || '').trim();
+      output.color_override = override || null;
+      return output;
+    }
+    if (!Object.prototype.hasOwnProperty.call(output, 'color')) {
+      if (previous && Object.prototype.hasOwnProperty.call(previous, 'color_override')) {
+        output.color_override = previous.color_override;
+      } else if (!previous) {
+        output.color_override = null;
+      }
+      return output;
+    }
+    const calendar = calendarForEvent(doc, { ...previous, ...output });
+    const incoming = String(output.color || '').trim();
+    const calendarColor = String(calendar?.color || '').trim();
+    output.color_override = !incoming || (calendarColor && incoming === calendarColor) ? null : incoming;
+    return output;
+  }
+
+  async function matchesExpectedRevision(doc, kind, row, expected) {
+    if (!expected) return true;
+    if (expected === await revision(row)) return true;
+    return kind === 'event' && expected === await revision(normalizedEventColor(doc, row));
+  }
+
+  function canAccess(doc, kind, row) {
+    if (!row) return false;
+    if (!rowInActiveWorkspace(row)) return false;
+    if (kind === 'event') return canEditEvent(doc, row);
+    if (kind === 'todo') return canOwn(row, ['user', 'assignee']);
+    if (kind === 'shift') return canOwn(row, ['user']);
+    return false;
+  }
+
+  function assertOwner(body, fields, message, code) {
+    if (!isAdmin() && fields.some(field => body?.[field] && String(body[field]) !== actor())) {
+      throw httpError(403, message, code);
+    }
+  }
+
+  function assertOwnerUnchanged(previous, body, fields, message, code) {
+    if (!isAdmin() && fields.some(field => Object.prototype.hasOwnProperty.call(body || {}, field)
+      && String(body[field] || '') !== String(previous?.[field] || ''))) {
+      throw httpError(403, message, code);
+    }
+  }
+
+  function historyId() {
+    return randomId('calv');
+  }
+
+  async function captureVersion(doc, kind, itemId, snapshot, label) {
+    const sourceRevision = await revision(snapshot);
+    const matching = doc.versions.filter(row => row.itemKind === kind && String(row.itemId) === String(itemId));
+    if (matching[0]?.sourceRevision === sourceRevision) return matching[0].versionId;
+    const record = {
+      versionId: historyId(), itemKind: kind, itemId: String(itemId), sourceRevision,
+      snapshot: clone(snapshot), label: String(label || '変更前'), actor: actor(), createdAt: new Date().toISOString(),
+    };
+    const retained = matching.slice(0, HISTORY_LIMIT - 1);
+    const others = doc.versions.filter(row => row.itemKind !== kind || String(row.itemId) !== String(itemId));
+    doc.versions = [record, ...retained, ...others];
+    return record.versionId;
+  }
+
+  async function verifiedVersion(doc, kind, itemId, versionId) {
+    const saved = doc.versions.find(row => row.itemKind === kind
+      && String(row.itemId) === String(itemId) && String(row.versionId) === String(versionId));
+    if (!saved) throw httpError(404, '指定した版がありません', 'CALENDAR_HISTORY_VERSION_NOT_FOUND');
+    if (await revision(saved.snapshot ?? null) !== String(saved.sourceRevision || '')) {
+      throw httpError(409, '保存版の整合性を確認できません', 'CALENDAR_HISTORY_TAMPERED');
+    }
+    return saved;
+  }
+
+  function historyContext(doc, kind, itemId) {
+    const storeName = STORE_NAMES[kind];
+    if (!storeName) throw httpError(400, '履歴対象の種類が不正です', 'CALENDAR_HISTORY_KIND_INVALID');
+    const current = doc.stores[storeName].find(row => String(row.id) === String(itemId)) || null;
+    const versions = doc.versions.filter(row => row.itemKind === kind && String(row.itemId) === String(itemId));
+    const authorizationSnapshot = current || versions.find(row => row.snapshot)?.snapshot || null;
+    if (!authorizationSnapshot) throw httpError(404, '対象が見つかりません', 'CALENDAR_HISTORY_TARGET_NOT_FOUND');
+    if (!canAccess(doc, kind, authorizationSnapshot)) {
+      throw httpError(403, 'この項目の履歴を操作する権限がありません', 'CALENDAR_HISTORY_FORBIDDEN');
+    }
+    return { storeName, current, versions };
+  }
+
+  function syncShiftEvent(doc, shift, itemId = '') {
+    const prefix = `shift:${shift?.id || itemId}`;
+    doc.stores.events = doc.stores.events.filter(row => !(String(row.id) === prefix
+      || String(row.id).startsWith(prefix + ':break:')));
+    if (!shift) return;
+    const workspaceId = String(shift.workspace_id || '');
+    const memberId = String(shift.member_id || '');
+    let calendar = doc.stores.calendars.find(row => row.source === 'shift'
+      && String(row.user || '') === String(shift.user || '')
+      && String(row.workspace_id || '') === workspaceId
+      && String(row.member_id || '') === memberId);
+    if (!calendar) {
+      const now = new Date().toISOString();
+      calendar = {
+        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#d19a66',
+        user: shift.user || actor(), source: 'shift', visible: 1, sort_order: 0,
+        folder: workspaceId || 'シフトカレンダー', edit_role: 'admin', workspace_id: workspaceId,
+        member_id: memberId, created: now, modified: now,
+      };
+      doc.stores.calendars.push(calendar);
+    }
+    doc.stores.events.push({
+      id: prefix, title: `勤務 ${shift.user || ''}`.trim(),
+      start: `${shift.date}T${shift.start_time || '00:00'}:00`,
+      end: `${shift.date}T${shift.end_time || shift.start_time || '00:00'}:00`,
+      all_day: false, color: calendar.color, color_override: null, calendar_source: 'shift',
+      user: shift.user || actor(), creator: shift.user || actor(), calendar_id: calendar.id,
+      workspace_id: workspaceId, member_id: memberId, shift_id: shift.id,
+      modified: shift.modified || new Date().toISOString(),
+    });
+  }
+
+  function readStorageLease() {
+    const raw = localStorage.getItem(LEASE_KEY);
+    if (!raw) return null;
+    try {
+      const lease = JSON.parse(raw);
+      if (!lease || typeof lease.token !== 'string' || !Number.isFinite(Number(lease.expiresAt))) {
+        throw new Error('invalid lease');
+      }
+      return lease;
+    } catch {
+      throw httpError(409, 'カレンダー更新ロックの整合性を確認できません', 'CALENDAR_LEASE_TAMPERED');
+    }
+  }
+
+  function verifyStorageLease(token, renew = false) {
+    const now = Date.now();
+    const current = readStorageLease();
+    if (current?.token !== token || Number(current.expiresAt) <= now) {
+      throw httpError(409, '別の画面がカレンダー更新ロックを引き継ぎました', 'CALENDAR_LEASE_LOST');
+    }
+    if (renew) {
+      const renewed = { token, expiresAt: now + LEASE_DURATION_MS };
+      try { localStorage.setItem(LEASE_KEY, JSON.stringify(renewed)); }
+      catch {
+        throw httpError(507, 'カレンダー更新ロックを保存できません', 'CALENDAR_LOCK_STORAGE_FAILED');
+      }
+      const verified = readStorageLease();
+      if (verified?.token !== token || Number(verified.expiresAt) !== renewed.expiresAt) {
+        throw httpError(409, '別の画面がカレンダー更新ロックを引き継ぎました', 'CALENDAR_LEASE_LOST');
+      }
+    }
+  }
+
+  async function withStorageLease(operation) {
+    if (navigator?.locks?.request) {
+      return navigator.locks.request('meldex-browser-calendar-write', { mode: 'exclusive' }, () => operation(null));
+    }
+    const token = randomId('lease');
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const now = Date.now();
+      const current = readStorageLease();
+      if (!current || Number(current.expiresAt || 0) <= now) {
+        // Give other contexts that observed the same expired lease a chance to
+        // publish their claim. Only the final visible claimant may enter.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const latest = readStorageLease();
+        if (latest && Number(latest.expiresAt || 0) > Date.now()) continue;
+        try {
+          localStorage.setItem(LEASE_KEY, JSON.stringify({ token, expiresAt: Date.now() + LEASE_DURATION_MS }));
+        } catch {
+          throw httpError(507, 'カレンダー更新ロックを保存できません', 'CALENDAR_LOCK_STORAGE_FAILED');
+        }
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (readStorageLease()?.token === token) {
+          let heartbeatError = null;
+          const heartbeat = setInterval(() => {
+            try { verifyStorageLease(token, true); }
+            catch (error) { heartbeatError = error; clearInterval(heartbeat); }
+          }, LEASE_HEARTBEAT_MS);
+          const lease = {
+            verify() {
+              if (heartbeatError) throw heartbeatError;
+              verifyStorageLease(token, false);
+            },
+            heartbeat() {
+              if (heartbeatError) throw heartbeatError;
+              verifyStorageLease(token, true);
+            },
+          };
+          try { return await operation(lease); }
+          finally {
+            clearInterval(heartbeat);
+            try {
+              if (readStorageLease()?.token === token) localStorage.removeItem(LEASE_KEY);
+            } catch {}
+          }
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw httpError(409, '別の画面がカレンダーを更新中です', 'CALENDAR_LEASE_CONFLICT');
+  }
+
+  async function mutate(operation) {
+    const execute = async lease => {
+      assertWritable();
+      const doc = readDocument();
+      const result = await operation(doc);
+      // The document was read before asynchronous hashing/history work. A
+      // successor lease must fence this stale snapshot out before full replace.
+      if (lease) lease.heartbeat();
+      writeDocument(doc);
+      if (lease) lease.verify();
+      return result;
+    };
+    const queued = localQueue.then(() => withStorageLease(execute), () => withStorageLease(execute));
+    localQueue = queued.catch(() => undefined);
+    return queued;
+  }
+
+  function filterRows(doc, name, url) {
+    const rows = doc.stores[name];
+    const requestedUser = url.searchParams.get('user') || '';
+    if (!isAdmin() && requestedUser && requestedUser !== actor()) {
+      throw httpError(403, '他のメンバーのカレンダーデータは参照できません', 'CALENDAR_READ_FORBIDDEN');
+    }
+    const start = url.searchParams.get('start') || url.searchParams.get('date_from') || '';
+    const end = url.searchParams.get('end') || url.searchParams.get('date_to') || '';
+    return rows.filter(row => {
+      if (!rowInActiveWorkspace(row)) return false;
+      if (!isAdmin()) {
+        const accessible = name === 'events' ? canEditEvent(doc, row)
+          : (name === 'calendars' ? canAccessCalendar(row) : canOwn(row, ['user', 'assignee']));
+        if (!accessible) return false;
+      } else if (requestedUser && requestedUser !== actor()) {
+        const visible = name === 'events'
+          ? [row.user, row.creator, ...eventMembers(row)].map(String).includes(requestedUser)
+          : [row.user, row.assignee].map(String).includes(requestedUser);
+        if (!visible) return false;
+      }
+      const value = String(row.start || row.date || row.due_date || row.timestamp || '');
+      return (!start || value >= start) && (!end || value <= end);
+    }).map(row => name === 'events' ? normalizedEventColor(doc, row)
+      : (name === 'calendars' ? calendarWithVisibility(doc, row) : clone(row)));
+  }
+
+  async function createItem(doc, kind, body) {
+    const storeName = STORE_NAMES[kind];
+    const now = new Date().toISOString();
+    const id = String(body?.id || randomId(kind));
+    if (doc.stores[storeName].some(row => String(row.id) === id)) {
+      throw httpError(409, '同じIDのデータが既に存在します', 'CALENDAR_ID_CONFLICT');
+    }
+    const row = { id, created: now, modified: now, ...clone(body || {}) };
+    delete row.expectedRevision;
+    if (kind === 'event') {
+      if (isGeneratedEvent(row)) {
+        throw httpError(409, '自動生成されたシフト予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+      }
+      row.title = row.title || '無題'; row.user = row.user || row.creator || actor(); row.creator = row.creator || row.user;
+      const calendar = calendarForEvent(doc, row);
+      row.workspace_id = String(calendar?.workspace_id || row.workspace_id || activeWorkspaceId());
+      row.member_id = String(calendar?.member_id || row.member_id || '');
+      assertOwner(row, ['user', 'creator'], '他のメンバー名義の予定は作成できません', 'EVENT_USER_MISMATCH');
+      normalizeEventColorForWrite(doc, row);
+    } else if (kind === 'todo') {
+      row.title = row.title || '無題'; row.status = row.status || 'todo'; row.priority = row.priority || 'medium'; row.user = row.user || actor();
+      assertOwner(row, ['user'], '他のメンバー名義のToDoは作成できません', 'TASK_USER_MISMATCH');
+    } else {
+      row.user = row.user || actor();
+      row.workspace_id = String(row.workspace_id || activeWorkspaceId());
+      row.member_id = activeMemberId(row.user, row.member_id);
+      assertOwner(row, ['user'], '他のメンバー名義のシフトは作成できません', 'SHIFT_USER_MISMATCH');
+    }
+    await captureVersion(doc, kind, id, null, '作成前');
+    doc.stores[storeName].push(row);
+    if (kind === 'shift') syncShiftEvent(doc, row);
+    return { ok: true, id, revision: await revision(row) };
+  }
+
+  async function updateItem(doc, kind, itemId, body) {
+    const storeName = STORE_NAMES[kind];
+    const index = doc.stores[storeName].findIndex(row => String(row.id) === String(itemId));
+    if (index < 0) throw httpError(404, '対象が見つかりません', 'CALENDAR_ROW_NOT_FOUND');
+    const previous = doc.stores[storeName][index];
+    if (!canAccess(doc, kind, previous)) throw httpError(403, 'この項目を編集する権限がありません', 'CALENDAR_EDIT_FORBIDDEN');
+    const expected = String(body?.expectedRevision || body?._calendar_expected_revision || '');
+    if (!(await matchesExpectedRevision(doc, kind, previous, expected))) {
+      throw httpError(409, '表示後に項目が変更されたため保存を中止しました', 'CALENDAR_REVISION_CONFLICT');
+    }
+    if (kind === 'event' && (isGeneratedEvent(previous) || isGeneratedEvent({ id: itemId, ...(body || {}) }))) {
+      throw httpError(409, '自動生成されたシフト予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+    }
+    const patch = clone(body || {}); delete patch.expectedRevision; delete patch._calendar_expected_revision;
+    if (kind === 'event') {
+      assertOwnerUnchanged(previous, patch, ['user', 'creator'], '予定の所有者は変更できません', 'EVENT_USER_MISMATCH');
+      normalizeEventColorForWrite(doc, patch, previous);
+    }
+    if (kind === 'todo') assertOwnerUnchanged(previous, patch, ['user'], 'ToDoの所有者は変更できません', 'TASK_USER_MISMATCH');
+    if (kind === 'shift') assertOwnerUnchanged(previous, patch, ['user'], 'シフトの担当者は変更できません', 'SHIFT_USER_MISMATCH');
+    await captureVersion(doc, kind, itemId, previous, '更新前');
+    const next = { ...previous, ...patch, id: previous.id, modified: new Date().toISOString() };
+    if (kind === 'event') {
+      const calendar = calendarForEvent(doc, next);
+      next.workspace_id = String(calendar?.workspace_id || next.workspace_id || activeWorkspaceId());
+      next.member_id = String(calendar?.member_id || next.member_id || '');
+    } else if (kind === 'shift') {
+      next.workspace_id = String(next.workspace_id || activeWorkspaceId());
+      next.member_id = activeMemberId(next.user, next.member_id);
+    }
+    doc.stores[storeName][index] = next;
+    if (kind === 'shift') syncShiftEvent(doc, next);
+    return { ok: true, revision: await revision(next) };
+  }
+
+  async function deleteItem(doc, kind, itemId, body) {
+    const storeName = STORE_NAMES[kind];
+    const index = doc.stores[storeName].findIndex(row => String(row.id) === String(itemId));
+    if (index < 0) throw httpError(404, '対象が見つかりません', 'CALENDAR_ROW_NOT_FOUND');
+    const previous = doc.stores[storeName][index];
+    if (!canAccess(doc, kind, previous)) throw httpError(403, 'この項目を削除する権限がありません', 'CALENDAR_DELETE_FORBIDDEN');
+    if (kind === 'event' && isGeneratedEvent(previous)) {
+      throw httpError(409, '自動生成された予定は元データから変更してください', 'GENERATED_EVENT_READONLY');
+    }
+    const expected = String(body?.expectedRevision || body?._calendar_expected_revision || '');
+    if (!(await matchesExpectedRevision(doc, kind, previous, expected))) {
+      throw httpError(409, '表示後に項目が変更されたため削除を中止しました', 'CALENDAR_REVISION_CONFLICT');
+    }
+    await captureVersion(doc, kind, itemId, previous, '削除前');
+    doc.stores[storeName].splice(index, 1);
+    if (kind === 'shift') syncShiftEvent(doc, null, itemId);
+    return { ok: true, revision: await revision(null) };
+  }
+
+  async function listHistory(doc, kind, itemId) {
+    const context = historyContext(doc, kind, itemId);
+    return {
+      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current),
+      versions: context.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
+    };
+  }
+
+  async function compareHistory(doc, kind, itemId, versionId) {
+    const context = historyContext(doc, kind, itemId);
+    const saved = await verifiedVersion(doc, kind, itemId, versionId);
+    if (saved.snapshot && !canAccess(doc, kind, saved.snapshot)) {
+      throw httpError(403, 'この保存版を表示する権限がありません', 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+    }
+    const keys = [...new Set([...Object.keys(saved.snapshot || {}), ...Object.keys(context.current || {})])].sort();
+    return {
+      itemKind: kind, itemId: String(itemId), versionId: saved.versionId,
+      currentRevision: await revision(context.current), version: clone(saved.snapshot), current: clone(context.current),
+      changes: keys.filter(key => stableJson(saved.snapshot?.[key]) !== stableJson(context.current?.[key])).map(field => ({
+        field, versionValue: saved.snapshot?.[field], currentValue: context.current?.[field],
+      })),
+    };
+  }
+
+  async function restoreHistory(doc, kind, itemId, versionId, expectedRevision) {
+    const context = historyContext(doc, kind, itemId);
+    const saved = await verifiedVersion(doc, kind, itemId, versionId);
+    if (saved.snapshot && !canAccess(doc, kind, saved.snapshot)) {
+      throw httpError(403, 'この保存版を復元する権限がありません', 'CALENDAR_HISTORY_VERSION_FORBIDDEN');
+    }
+    if (await revision(context.current) !== String(expectedRevision || '')) {
+      throw httpError(409, '表示後に項目が変更されたため復元を中止しました', 'CALENDAR_HISTORY_REVISION_CONFLICT');
+    }
+    const desired = clone(saved.snapshot);
+    if (desired && String(desired.id || '') !== String(itemId)) {
+      throw httpError(409, '保存版の対象IDが一致しません', 'CALENDAR_HISTORY_ID_MISMATCH');
+    }
+    await captureVersion(doc, kind, itemId, context.current, '復元前');
+    doc.stores[context.storeName] = doc.stores[context.storeName].filter(row => String(row.id) !== String(itemId));
+    if (desired) {
+      if (kind === 'event') normalizeEventColorForWrite(doc, desired);
+      doc.stores[context.storeName].push(desired);
+    }
+    if (kind === 'shift') syncShiftEvent(doc, desired);
+    return {
+      ok: true, itemKind: kind, itemId: String(itemId), item: desired,
+      revision: await revision(desired), reload: { itemKind: kind, itemId: String(itemId) },
+    };
+  }
+
+  async function handle({ method, body, url, pathname }) {
+    if (!window.MeldexRuntimeAdapter?.isBrowserMode?.()) return NOT_HANDLED;
+    if (pathname === '/cal/sync/status' && method === 'GET') {
+      return { enabled: true, configured: false, ical: false, google: false, microsoft: false, caldav: false };
+    }
+    if (pathname === '/cal/alerts' && method === 'GET') return [];
+    const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
+    if (historyRoute) {
+      const kind = historyRoute[1]; const itemId = decodeURIComponent(historyRoute[2]);
+      const versionId = historyRoute[3] ? decodeURIComponent(historyRoute[3]) : '';
+      if (method === 'GET' && !versionId) return listHistory(readDocument(), kind, itemId);
+      if (method === 'GET' && versionId && !historyRoute[4]) return compareHistory(readDocument(), kind, itemId, versionId);
+      if (method === 'POST' && versionId && historyRoute[4]) {
+        return mutate(doc => restoreHistory(doc, kind, itemId, versionId, String(body?.expectedRevision || '')));
+      }
+      return NOT_HANDLED;
+    }
+    const route = pathname.match(/^\/cal\/(calendars|events|tasks|time|shifts|schedule-templates)(?:\/([^/]+))?$/);
+    if (!route) return NOT_HANDLED;
+    const name = route[1]; const itemId = route[2] ? decodeURIComponent(route[2]) : '';
+    const kind = Object.keys(STORE_NAMES).find(key => STORE_NAMES[key] === name);
+    if (method === 'GET' && !itemId) return filterRows(readDocument(), name, url);
+    if (method === 'GET' && itemId) {
+      const doc = readDocument(); const row = doc.stores[name].find(item => String(item.id) === itemId);
+      if (!row || (kind && !canAccess(doc, kind, row))) throw httpError(row ? 403 : 404, row ? 'この項目を参照する権限がありません' : '対象が見つかりません', row ? 'CALENDAR_READ_FORBIDDEN' : 'CALENDAR_ROW_NOT_FOUND');
+      return name === 'events' ? normalizedEventColor(doc, row)
+        : (name === 'calendars' ? calendarWithVisibility(doc, row) : clone(row));
+    }
+    if (name === 'calendars' && method === 'PUT' && itemId && Object.prototype.hasOwnProperty.call(body || {}, 'visible')) {
+      return mutate(doc => {
+        const row = doc.stores.calendars.find(item => String(item.id) === itemId);
+        if (!row || !canAccessCalendar(row)) throw httpError(row ? 403 : 404, row ? 'このカレンダーを変更する権限がありません' : '対象が見つかりません', row ? 'CALENDAR_EDIT_FORBIDDEN' : 'CALENDAR_ROW_NOT_FOUND');
+        setCalendarVisibility(doc, itemId, Number(body.visible) !== 0);
+        return { ok: true };
+      });
+    }
+    if (!kind) return NOT_HANDLED;
+    if (method === 'POST' && !itemId) return mutate(doc => createItem(doc, kind, body));
+    if (method === 'PUT' && itemId) return mutate(doc => updateItem(doc, kind, itemId, body));
+    if (method === 'DELETE' && itemId) return mutate(doc => deleteItem(doc, kind, itemId, body));
+    return NOT_HANDLED;
+  }
+
+  handle.__meldexBrowserCalendar = true;
+  if (typeof window.MeldexRuntimeAdapter?.isBrowserMode === 'function') handlers.unshift(handle);
+  window.MeldexCloudCalendarDataAccess = Object.freeze({ createHistoryEngine, revision, stableJson });
+  window.MeldexBrowserCalendarStore = Object.freeze({ STORE_KEY, LEASE_KEY, HISTORY_LIMIT, revision });
+})();
 (function () {
   'use strict';
 
@@ -495,8 +1265,8 @@
   const CALENDAR_STORE_DIR = '_calendar';
   const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
   const CALENDAR_DB_FIELDS = [
-    'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'location', 'url', 'description',
-    'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members',
+    'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'color_override', 'location', 'url', 'description',
+    'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members', 'workspace_id', 'member_id',
     'linkedEntryId', 'linkedEntryPath', 'linkedEntrySourceProperty', 'linkedAutoGenerated',
   ];
   const WORKSPACE_SCAN_EXCLUDES = ['_chat/', '_calendar/', '_meldex/', '_trash/', '_versions/', '_backup/', '_meldex_pwa/', 'node_modules/'];
@@ -2410,30 +3180,7 @@
     return result;
   }
 
-  function _candidateMatches(candidate, field, operator, filterValue) {
-    const target = field === 'status' ? candidate.status : candidate.value;
-    const targetText = String(target == null ? '' : target);
-    const filterText = String(filterValue == null ? '' : filterValue);
-    if (operator === 'equals') return targetText === filterText;
-    if (operator === 'not_equals') return targetText !== filterText;
-    if (operator === 'contains') return targetText.includes(filterText);
-    if (operator === 'not_contains') return !targetText.includes(filterText);
-    if (operator === 'empty') return !targetText.trim();
-    if (operator === 'not_empty') return !!targetText.trim();
-    return false;
-  }
-
-  function _valuesMatch(values, field, operator, filterValue) {
-    const list = Array.isArray(values) ? values : [];
-    if (!list.length) return operator === 'empty' || operator === 'not_contains';
-    if (operator === 'not_equals' || operator === 'not_contains') {
-      return list.every(candidate => _candidateMatches(candidate, field, operator, filterValue));
-    }
-    return list.some(candidate => _candidateMatches(candidate, field, operator, filterValue));
-  }
-
-  async function _smartDb(provider, url) {
-    const filters = JSON.parse(url.searchParams.get('filters') || '[]');
+  async function _sheetSearch(provider, url) {
     const q = String(url.searchParams.get('q') || '').toLowerCase();
     const scope = _normalizeFolderPath(url.searchParams.get('scope') || '');
     const dbs = scope ? [{ path: scope }] : await _findDatabaseFolders(provider, '', 6);
@@ -2451,25 +3198,13 @@
           });
           if (!haystack.some(text => String(text).toLowerCase().includes(q))) return;
         }
-        let ok = true;
-        const matchedProps = {};
-        filters.forEach((flt) => {
-          if (!ok || !flt?.property) return;
-          const values = props[flt.property] || [];
-          if (!_valuesMatch(values, flt.field || 'value', flt.operator || 'contains', flt.value || '')) {
-            ok = false;
-            return;
-          }
-          matchedProps[flt.property] = values;
-        });
-        if (!ok) return;
         matched.push({
           name: entityName,
           path: _joinPath(dbPath, entityName + '.md'),
           db_path: dbPath,
           db_name: _basename(dbPath),
           root_name: 'vault',
-          matched_props: filters.length ? matchedProps : props,
+          matched_props: props,
           created: '',
           modified: props._modified || '',
         });
@@ -2477,7 +3212,7 @@
     }
     return {
       entities: matched,
-      filter_properties: filters.map(f => f.property).filter(Boolean),
+      filter_properties: [],
       total_dbs_scanned: dbs.length,
       total_entities_scanned: totalEntities,
     };
@@ -2523,6 +3258,71 @@
   async function _writeStore(provider, name, rows) {
     await _directoryHandle(provider, CALENDAR_STORE_DIR, true);
     await provider.writeJson(_calendarStorePath(name), Array.isArray(rows) ? rows : []);
+  }
+
+  async function _calendarCompensated(provider, storeNames, operation) {
+    return _calendarHistoryEngine(provider).compensated(storeNames, operation);
+  }
+
+  const CLOUD_CALENDAR_HISTORY_STORE = 'item-versions';
+  const CLOUD_CALENDAR_HISTORY_LIMIT = 30;
+  const CLOUD_CALENDAR_HISTORY_NAMES = Object.freeze({ event: 'events', todo: 'tasks', shift: 'shifts' });
+
+  function _calendarHistoryEngine(provider) {
+    const shared = window.MeldexCloudCalendarDataAccess;
+    if (!shared?.createHistoryEngine) {
+      throw _calendarError('カレンダー履歴エンジンが読み込まれていません', 503, 'CALENDAR_HISTORY_ENGINE_UNAVAILABLE');
+    }
+    return shared.createHistoryEngine({
+      names: CLOUD_CALENDAR_HISTORY_NAMES,
+      historyStore: CLOUD_CALENDAR_HISTORY_STORE,
+      limit: CLOUD_CALENDAR_HISTORY_LIMIT,
+      actor: _calendarActor,
+      error: (message, status, code) => _calendarError(message, status, code),
+      read: name => _readStore(provider, name),
+      write: (name, rows) => _writeStore(provider, name, rows),
+      canAccess: (kind, snapshot) => _calendarCanAccessHistorySnapshot(provider, kind, snapshot),
+      compensationStores: (kind, storeName) => kind === 'shift'
+        ? [CLOUD_CALENDAR_HISTORY_STORE, storeName, 'events']
+        : [CLOUD_CALENDAR_HISTORY_STORE, storeName],
+    });
+  }
+
+  function _calendarItemRevision(value) {
+    return window.MeldexCloudCalendarDataAccess.revision(value);
+  }
+
+  function _calendarCaptureVersion(provider, kind, itemId, snapshot, label) {
+    return _calendarHistoryEngine(provider).capture(kind, itemId, snapshot, label);
+  }
+
+  async function _calendarCanAccessHistorySnapshot(provider, kind, snapshot) {
+    if (!snapshot) return true;
+    if (kind === 'event') return _calendarCanEditEvent(provider, snapshot);
+    if (kind === 'todo') return _calendarCanOwnRecord(snapshot, ['user', 'assignee']);
+    if (kind === 'shift') return _calendarRoleIsAdmin() || String(snapshot.user || '') === _calendarActor();
+    return false;
+  }
+
+  async function _calendarHistoryList(provider, kind, itemId) {
+    return _calendarHistoryEngine(provider).list(kind, itemId);
+  }
+
+  async function _calendarHistoryCompare(provider, kind, itemId, versionId) {
+    return _calendarHistoryEngine(provider).compare(kind, itemId, versionId);
+  }
+
+  async function _calendarHistoryRestore(provider, kind, itemId, versionId, expectedRevision) {
+    _assertCalendarWritable();
+    return _calendarHistoryEngine(provider).restore(kind, itemId, versionId, expectedRevision, async context => {
+      const nextRows = context.rows.filter(row => String(row?.id) !== String(itemId));
+      if (context.desired) nextRows.push(context.desired);
+      await _writeStore(provider, context.storeName, nextRows);
+      if (kind === 'shift') {
+        if (context.desired) await window.MeldexCloudShiftSync?.sync?.(provider, context.desired);
+        else await window.MeldexCloudShiftSync?.remove?.(provider, itemId);
+      }
+    });
   }
 
   function _sharedEditHistory() {
@@ -2661,11 +3461,13 @@
       content: CLOUD_ATTENDANCE.buildCsv(entries, shifts, startDay, endDay, format) };
   }
 
-  function _deriveCloudAttendanceEvent(rows, user, day, existing) {
+  function _deriveCloudAttendanceEvent(rows, user, day, existing, scope = {}) {
     const parts = String(day || '').split('-').map(Number);
     const next = parts.length === 3 ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1)) : new Date(NaN);
     const nextDay = Number.isNaN(next.getTime()) ? day : next.toISOString().slice(0, 10);
     const records = (Array.isArray(rows) ? rows : []).filter(row => row.user === user
+      && String(row.workspace_id || '') === String(scope.workspace_id || '')
+      && String(row.member_id || '') === String(scope.member_id || '')
       && String(row.timestamp || '') >= day && String(row.timestamp || '') <= `${nextDay}T23:59:59`)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
         || String(a.id || '').localeCompare(String(b.id || '')));
@@ -2687,7 +3489,7 @@
     const lastOut = [...scoped].reverse().find(row => row.type === 'clock_out');
     const labels = { clock_in: '出勤', clock_out: '退勤', break_start: '離席', break_end: '復帰' };
     return {
-      ...(existing || {}), id: `attendance:${user}:${day}`, title: `実績 ${user}`,
+      ...(existing || {}), title: `実績 ${user}`,
       start: first.timestamp, end: lastOut?.timestamp || scoped.at(-1)?.timestamp || first.timestamp,
       all_day: 0, color: '#6a9955',
       description: scoped.filter(row => row.timestamp).map(row => `${String(row.timestamp).slice(11, 16)} ${labels[row.type] || row.type || ''}`).join('\n'),
@@ -2704,6 +3506,10 @@
       deriveEvent: _deriveCloudAttendanceEvent,
       randomId: _randomId,
       nowIso: _nowIso,
+      scopeForUser: user => {
+        const workspace_id = _calendarWorkspaceId();
+        return { workspace_id, member_id: _calendarMemberId(user) };
+      },
     });
   }
 
@@ -2732,27 +3538,151 @@
     return true;
   }
 
+  function _calendarCanViewCalendar(row) {
+    if (_calendarRoleIsAdmin() || String(row?.user || '') === _calendarActor()) return true;
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    return Array.isArray(members) && members.map(String).includes(_calendarActor());
+  }
+
+  function _calendarWorkspaceId() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return String(window.MeldexWorkspaces?.getActiveId?.() || state.workspaceId || state.workspace_id || '');
+  }
+
+  function _calendarMemberId(user, explicit = '') {
+    if (String(explicit || '').trim()) return String(explicit).trim();
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const members = state.members || state.workspace?.members || [];
+    const member = Array.isArray(members)
+      ? members.find(item => String(item?.name || item?.user || '') === String(user || '')) : null;
+    const stable = String(member?.id || member?.member_id || '').trim();
+    const workspace = _calendarWorkspaceId();
+    return stable || (workspace && user ? `${workspace}::${user}` : '');
+  }
+
+  function _calendarRowInWorkspace(row) {
+    const rowWorkspace = String(row?.workspace_id || '');
+    const active = _calendarWorkspaceId();
+    return !rowWorkspace || !active || rowWorkspace === active;
+  }
+
+  function _effectiveDropboxEventColor(row, calendars) {
+    const result = { ...(row || {}) };
+    const calendar = (calendars || []).find(item => String(item.id) === String(result.calendar_id || ''));
+    const legacy = String(result.color || '').trim();
+    let override = Object.prototype.hasOwnProperty.call(result, 'color_override')
+      ? String(result.color_override || '').trim() : '';
+    if (!Object.prototype.hasOwnProperty.call(result, 'color_override')) {
+      const generated = ['attendance', 'shift', 'shift-break', 'production-task'].includes(String(result.calendar_source || ''));
+      const calendarColor = String(calendar?.color || '').trim();
+      override = !generated && legacy && (!calendarColor || legacy !== calendarColor) ? legacy : '';
+    }
+    result.color_override = override || null;
+    result.uses_calendar_color = !override;
+    result.color = override || String(calendar?.color || '').trim() || legacy || '#569cd6';
+    result.workspace_id = String(calendar?.workspace_id || result.workspace_id || '');
+    result.member_id = String(calendar?.member_id || result.member_id || '');
+    return result;
+  }
+
+  async function _normalizeDropboxEventForWrite(provider, row, previous = null) {
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(row?.calendar_id ?? previous?.calendar_id ?? ''));
+    const result = row;
+    result.workspace_id = String(calendar?.workspace_id || result.workspace_id || previous?.workspace_id || _calendarWorkspaceId());
+    result.member_id = String(calendar?.member_id || result.member_id || previous?.member_id || '');
+    if (Object.prototype.hasOwnProperty.call(result, 'color_override')) {
+      result.color_override = String(result.color_override || '').trim() || null;
+    } else if (Object.prototype.hasOwnProperty.call(result, 'color')) {
+      const incoming = String(result.color || '').trim();
+      const calendarColor = String(calendar?.color || '').trim();
+      result.color_override = !incoming || (calendarColor && incoming === calendarColor) ? null : incoming;
+    } else if (previous && Object.prototype.hasOwnProperty.call(previous, 'color_override')) {
+      result.color_override = previous.color_override;
+    } else if (!previous) {
+      result.color_override = null;
+    }
+    return result;
+  }
+
+  async function _readMigratedDropboxEvents(provider) {
+    const operation = async guardedProvider => {
+      const current = await _readStore(guardedProvider, 'events');
+      if (!current.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) {
+        return current;
+      }
+      const calendars = await _readStore(guardedProvider, 'calendars');
+      const migrated = current.map(row => {
+        const normalized = _effectiveDropboxEventColor(row, calendars);
+        delete normalized.uses_calendar_color;
+        return normalized;
+      });
+      await _writeStore(guardedProvider, 'events', migrated);
+      return migrated;
+    };
+    const lease = window.MeldexCloudCalendarLease;
+    if (!lease?.withLease) return operation(provider);
+    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+  }
+
+  async function _calendarVisibilityRows(provider) {
+    return _readStore(provider, 'calendar-visibility');
+  }
+
+  function _calendarVisibilityKey(row) {
+    return String(row?.workspace_id || '') === _calendarWorkspaceId()
+      && String(row?.user || '') === _calendarActor();
+  }
+
+  async function _calendarRowsWithVisibility(provider, rows) {
+    const preferences = await _calendarVisibilityRows(provider);
+    return rows.map(row => {
+      const saved = preferences.find(item => _calendarVisibilityKey(item)
+        && String(item.calendar_id || '') === String(row.id || ''));
+      return { ...row, visible: saved == null ? 1 : (Number(saved.visible) ? 1 : 0) };
+    });
+  }
+
+  async function _setDropboxCalendarVisibility(provider, calendarId, visible) {
+    const rows = await _calendarVisibilityRows(provider);
+    const index = rows.findIndex(item => _calendarVisibilityKey(item)
+      && String(item.calendar_id || '') === String(calendarId || ''));
+    const preference = {
+      id: `${_calendarWorkspaceId()}::${_calendarActor()}::${calendarId}`,
+      workspace_id: _calendarWorkspaceId(), user: _calendarActor(),
+      calendar_id: String(calendarId || ''), visible: visible ? 1 : 0, modified: _nowIso(),
+    };
+    if (index >= 0) rows[index] = { ...rows[index], ...preference };
+    else rows.push(preference);
+    await _writeStore(provider, 'calendar-visibility', rows);
+  }
+
   async function _calendarList(provider, name, url) {
-    const rows = await _readStore(provider, name);
+    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider) : await _readStore(provider, name);
     const requestedUser = url.searchParams.get('user') || '';
     if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
       throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');
     }
     if (name === 'events') {
+      const calendars = await _readStore(provider, 'calendars');
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
       if (_calendarRoleIsAdmin()) {
-        return rows.filter(row => (!user || row.user === user || row.creator === user)
-          && _dateInRange(row.start || row.due_date, start, end));
+        const filterUser = user && user !== _calendarActor() ? user : '';
+        return rows.filter(row => _calendarRowInWorkspace(row)
+          && (!filterUser || row.user === filterUser || row.creator === filterUser)
+          && _dateInRange(row.start || row.due_date, start, end))
+          .map(row => _effectiveDropboxEventColor(row, calendars));
       }
       const actor = _calendarActor();
       return rows.filter(row => {
         let members = row?.members;
         try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
         const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
-        return visible && _dateInRange(row.start || row.due_date, start, end);
-      });
+        return _calendarRowInWorkspace(row) && visible && _dateInRange(row.start || row.due_date, start, end);
+      }).map(row => _effectiveDropboxEventColor(row, calendars));
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
@@ -2765,18 +3695,28 @@
       const from = url.searchParams.get('date_from') || '';
       const to = url.searchParams.get('date_to') || '';
       const taskId = url.searchParams.get('task_id') || '';
-      return rows.filter(row => (!user || row.user === user) && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
+      return rows.filter(row => _calendarRowInWorkspace(row) && (!user || row.user === user)
+        && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
     }
     if (name === 'shifts') {
-      if (_calendarRoleIsAdmin()) return _filterRows(rows, url, ['user', 'month']);
+      if (_calendarRoleIsAdmin()) {
+        const filterUrl = new URL(url.toString());
+        if (filterUrl.searchParams.get('user') === _calendarActor()) filterUrl.searchParams.delete('user');
+        return _filterRows(rows, filterUrl, ['user', 'month']).filter(_calendarRowInWorkspace);
+      }
       const actor = _calendarActor();
       const month = url.searchParams.get('month') || '';
-      return rows.filter(row => row.user === actor && (!month || String(row.date || '').startsWith(month)));
+      return rows.filter(row => _calendarRowInWorkspace(row) && row.user === actor && (!month || String(row.date || '').startsWith(month)));
     }
     const filtered = _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
-    if (_calendarRoleIsAdmin()) return filtered;
+    if (name === 'calendars') {
+      const accessible = _calendarRoleIsAdmin()
+        ? filtered.filter(_calendarRowInWorkspace)
+        : filtered.filter(row => _calendarRowInWorkspace(row) && _calendarCanViewCalendar(row));
+      return _calendarRowsWithVisibility(provider, accessible);
+    }
+    if (_calendarRoleIsAdmin()) return filtered.filter(_calendarRowInWorkspace);
     const actor = _calendarActor();
-    if (name === 'calendars') return filtered.filter(row => row.user === actor);
     if (name === 'tasks') return filtered.filter(row => row.user === actor);
     if (name === 'schedule-templates') return filtered.filter(row => row.user === actor);
     return filtered.filter(row => !row.user || row.user === actor);
@@ -2821,8 +3761,10 @@
         const operationNow = new Date(Number.isFinite(latestCurrent) && latestCurrent >= wallClock ? latestCurrent + 1 : wallClock).toISOString();
         const timestamp = CLOUD_ATTENDANCE.validTimestamp(correction ? (body?.timestamp || operationNow) : operationNow);
         if (!timestamp) throw _calendarError('打刻日時が不正です', 400, 'INVALID_CLOCK_TIMESTAMP');
+        const workspace_id = String(body?.workspace_id || _calendarWorkspaceId());
+        const member_id = _calendarMemberId(user, body?.member_id);
         const entry = { id, type, user, timestamp, note: String(body?.note || ''), task_id: String(body?.task_id || ''),
-          operation_id: operationId, created: operationNow, modified: operationNow };
+          workspace_id, member_id, operation_id: operationId, created: operationNow, modified: operationNow };
         if (operationId) {
           const replay = snapshot.time.find(row => String(row.operation_id || '') === operationId);
           if (replay) {
@@ -2837,7 +3779,7 @@
           throw _calendarError('同じIDの打刻が既に存在します', 409, 'CLOCK_ID_CONFLICT');
         }
         if (!correction) {
-          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp);
+          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp, Date.now(), entry);
         }
         const nextRows = snapshot.time.concat(entry);
         await mutations.sync(nextRows, CLOUD_ATTENDANCE.affectedTargets(entry));
@@ -2855,25 +3797,28 @@
       const actor = _calendarActor();
       const shift = { id, created: now, modified: now, ...(body || {}) };
       shift.user = shift.user || actor;
+      shift.workspace_id = String(shift.workspace_id || _calendarWorkspaceId());
+      shift.member_id = _calendarMemberId(shift.user, shift.member_id);
       shift.type = shift.type || 'work';
       shift.date = shift.date || '';
       if (!_calendarRoleIsAdmin() && shift.user !== actor) {
         throw _calendarError('他のメンバーのシフトは作成できません', 403, 'SHIFT_USER_MISMATCH');
       }
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
         const existingIdx = snapshot.shifts.findIndex(item => String(item.id) === String(id));
         if (existingIdx >= 0 && !_calendarRoleIsAdmin() && snapshot.shifts[existingIdx].user !== actor) {
           throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
         }
+        await _calendarCaptureVersion(provider, 'shift', id, existingIdx >= 0 ? snapshot.shifts[existingIdx] : null, existingIdx >= 0 ? '更新前' : '作成前');
         if (existingIdx >= 0) snapshot.shifts[existingIdx] = { ...snapshot.shifts[existingIdx], ...shift,
           id: snapshot.shifts[existingIdx].id, modified: now };
         else snapshot.shifts.push(shift);
         await _writeStore(provider, name, snapshot.shifts);
         await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? snapshot.shifts[existingIdx] : shift);
         return { ok: true, id };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const row = { id, created: now, modified: now, ...(body || {}) };
@@ -2887,7 +3832,9 @@
       row.name = row.name || 'マイカレンダー';
       row.color = row.color || '#569cd6';
       row.user = row.user || _calendarActor();
-      row.visible = row.visible == null ? 1 : row.visible;
+      row.workspace_id = String(row.workspace_id || _calendarWorkspaceId());
+      row.member_id = _calendarMemberId(row.user, row.member_id);
+      delete row.visible;
       _assertRequestedOwner(row, ['user'], '他のメンバー名義のカレンダーは作成できません', 'CALENDAR_USER_MISMATCH');
     }
     if (name === 'events') {
@@ -2898,6 +3845,7 @@
       if (!(await _calendarCanUseCalendar(provider, row.calendar_id))) {
         throw _calendarError('指定されたカレンダーへ予定を作成する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
       }
+      await _normalizeDropboxEventForWrite(provider, row);
     }
     if (name === 'tasks') {
       row.title = row.title || '無題';
@@ -2909,6 +3857,15 @@
     if (name === 'schedule-templates') {
       row.user = row.user || _calendarActor();
       _assertRequestedOwner(row, ['user'], '他のメンバー名義の勤務テンプレートは作成できません', 'TEMPLATE_USER_MISMATCH');
+    }
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, null, '作成前');
+        rows.push(row);
+        await _writeStore(provider, name, rows);
+        return { ok: true, id };
+      });
     }
     rows.push(row);
     await _writeStore(provider, name, rows);
@@ -2951,7 +3908,7 @@
     if (name === 'shifts') {
       const actor = _calendarActor();
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         const shiftIdx = snapshot.shifts.findIndex(row => String(row.id) === String(id));
         if (shiftIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
         const previous = snapshot.shifts[shiftIdx];
@@ -2963,11 +3920,16 @@
           throw _calendarError('シフトの担当者を他のメンバーへ変更できません', 403, 'SHIFT_USER_MISMATCH');
         }
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        await _calendarCaptureVersion(provider, 'shift', id, previous, '更新前');
         snapshot.shifts[shiftIdx] = { ...previous, ...(body || {}), id: previous.id, modified: _nowIso() };
+        snapshot.shifts[shiftIdx].workspace_id = String(snapshot.shifts[shiftIdx].workspace_id || _calendarWorkspaceId());
+        snapshot.shifts[shiftIdx].member_id = _calendarMemberId(
+          snapshot.shifts[shiftIdx].user, snapshot.shifts[shiftIdx].member_id,
+        );
         await _writeStore(provider, name, snapshot.shifts);
         await window.MeldexCloudShiftSync?.sync?.(provider, snapshot.shifts[shiftIdx]);
         return { ok: true };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const idx = rows.findIndex(row => String(row.id) === String(id));
@@ -2977,6 +3939,13 @@
       throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
     }
     if (name === 'calendars') {
+      const visibilityRequested = Object.prototype.hasOwnProperty.call(body || {}, 'visible');
+      const sharedKeys = Object.keys(body || {}).filter(key => !['visible', 'expectedRevision', '_calendar_expected_revision'].includes(key));
+      if (visibilityRequested && sharedKeys.length === 0) {
+        if (!_calendarCanViewCalendar(previous)) throw _calendarError('このカレンダーを表示する権限がありません', 403, 'CALENDAR_READ_FORBIDDEN');
+        await _setDropboxCalendarVisibility(provider, id, Number(body.visible) !== 0);
+        return { ok: true };
+      }
       if (!_calendarCanUpdateCalendar(previous)) throw _calendarError('このカレンダーを編集する権限がありません', 403, 'CALENDAR_EDIT_FORBIDDEN');
       if (!_calendarRoleIsAdmin() && Object.prototype.hasOwnProperty.call(body || {}, 'edit_role')) {
         throw _calendarError('カレンダー編集権限は管理者のみ変更できます', 403, 'CALENDAR_ROLE_ADMIN_REQUIRED');
@@ -2990,6 +3959,7 @@
       if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
         throw _calendarError('指定されたカレンダーへ予定を移動する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
       }
+      await _normalizeDropboxEventForWrite(provider, body, previous);
     }
     if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
       throw _calendarError('このToDoを編集する権限がありません', 403, 'TASK_EDIT_FORBIDDEN');
@@ -3001,8 +3971,22 @@
     if (name === 'schedule-templates') {
       _assertOwnerFieldsUnchanged(previous, body, ['user'], '勤務テンプレートの所有者は変更できません', 'TEMPLATE_USER_MISMATCH');
     }
-    rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, previous, '更新前');
+        rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
+        await _writeStore(provider, name, rows);
+        return { ok: true };
+      });
+    }
+    const patch = { ...(body || {}) };
+    if (name === 'calendars') delete patch.visible;
+    rows[idx] = { ...rows[idx], ...patch, id: rows[idx].id, modified: _nowIso() };
     await _writeStore(provider, name, rows);
+    if (name === 'calendars' && Object.prototype.hasOwnProperty.call(body || {}, 'visible')) {
+      await _setDropboxCalendarVisibility(provider, id, Number(body.visible) !== 0);
+    }
     return { ok: true };
   }
 
@@ -3030,18 +4014,19 @@
     }
     if (name === 'shifts') {
       const mutations = _cloudCalendarMutationService(provider);
-      return mutations.runShift(async (snapshot) => {
+      return mutations.runShift(async (snapshot) => _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, 'shifts', 'events'], async () => {
         const previous = snapshot.shifts.find(row => String(row.id) === String(id));
         if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
         if (!_calendarRoleIsAdmin() && previous.user !== _calendarActor()) {
           throw _calendarError('他のメンバーのシフトは削除できません', 403, 'SHIFT_OWNER_REQUIRED');
         }
         await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        await _calendarCaptureVersion(provider, 'shift', id, previous, '削除前');
         const nextRows = snapshot.shifts.filter(row => String(row.id) !== String(id));
         await _writeStore(provider, name, nextRows);
         await window.MeldexCloudShiftSync?.remove?.(provider, id);
         return { ok: true };
-      });
+      }));
     }
     const rows = await _readStore(provider, name);
     const previous = rows.find(row => String(row.id) === String(id));
@@ -3060,6 +4045,15 @@
     }
     if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
       throw _calendarError('この勤務テンプレートを削除する権限がありません', 403, 'TEMPLATE_DELETE_FORBIDDEN');
+    }
+    if (name === 'events' || name === 'tasks') {
+      const kind = name === 'events' ? 'event' : 'todo';
+      return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
+        await _calendarCaptureVersion(provider, kind, id, previous, '削除前');
+        const compensatedRows = rows.filter(row => String(row.id) !== String(id));
+        await _writeStore(provider, name, compensatedRows);
+        return { ok: true };
+      });
     }
     const nextRows = rows.filter(row => String(row.id) !== String(id));
     await _writeStore(provider, name, nextRows);
@@ -4203,7 +5197,7 @@
     return alerts;
   }
 
-  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
+  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
 
   function _relocateText(text, oldPath, newPath) {
     const oldNorm = _normalizeFolderPath(oldPath);
@@ -4239,7 +5233,59 @@
     return { rewritten_count: rewritten.length, failed_count: failed, rewritten_paths: rewritten.slice(0, 100), truncated: rewritten.length > 100 };
   }
 
-  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.txt', '.csv']);
+  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-scenario', '.scriptnote.json', '.board.md', '.txt', '.csv']);
+
+  function _searchReplaceByteFormat(bytes, path) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    const startsWith = signature => signature.every((value, index) => view[index] === value);
+    if (startsWith([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00])) return 'sqlite';
+    if (startsWith([0x50, 0x4b, 0x03, 0x04]) || startsWith([0x50, 0x4b, 0x05, 0x06]) || startsWith([0x50, 0x4b, 0x07, 0x08])) return 'portable-zip';
+    const lower = String(path || '').toLowerCase();
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
+    return 'text';
+  }
+
+  async function _readVerifiedSearchReplaceText(provider, path) {
+    let bytes;
+    let revision = '';
+    if (typeof provider?.readBytesFresh === 'function') {
+      const read = await provider.readBytesFresh(path);
+      bytes = read?.bytes;
+      revision = String(read?.revision || read?.rev || '').trim();
+    } else if (typeof provider?.downloadAsFile === 'function') {
+      bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
+    } else {
+      throw new Error('安全な形式判定に必要なbyte読込へ対応していません');
+    }
+    const format = _searchReplaceByteFormat(bytes, path);
+    if (format !== 'text') throw new Error(`${format}形式は通常の検索置換に対応していません`);
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    }
+    if (text.includes('\u0000')) throw new Error('未対応のbinary形式は通常の検索置換に対応していません');
+    const originalBytes = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes || []);
+    return { text: text.replace(/^\uFEFF/, ''), revision, bytes: originalBytes };
+  }
+
+  function _scenarioSearchReplaceDocument(text, path) {
+    let document;
+    try { document = JSON.parse(String(text || '')); } catch { throw new Error(`不正なシナリオ形式です: ${_basename(path)}`); }
+    if (!document || typeof document !== 'object' || Array.isArray(document) || !Array.isArray(document.rows)
+      || document.rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) || typeof (row.text ?? '') !== 'string')) {
+      throw new Error(`不正なシナリオ形式です: ${_basename(path)}`);
+    }
+    return document;
+  }
+
+  function _scenarioDisplayFields(document) {
+    const fields = [];
+    if (typeof document?.title === 'string') fields.push({ owner: document, key: 'title', field: 'title' });
+    (document?.rows || []).forEach((row, index) => fields.push({ owner: row, key: 'text', field: `row:${index}` }));
+    return fields;
+  }
 
   function _searchPattern(q, caseSensitive, useRegex) {
     if (!q) return null;
@@ -4341,11 +5387,17 @@
         }
       }
       try {
-        const content = await provider.readText(normalized);
-        const matches = _collectTextMatches(content, pattern, '');
+        const { text: content, revision } = await _readVerifiedSearchReplaceText(provider, normalized);
+        let matches;
+        if (lower.endsWith('.mel-scenario')) {
+          const document = _scenarioSearchReplaceDocument(content, normalized);
+          matches = _scenarioDisplayFields(document).flatMap(({ owner, key, field }) => _collectTextMatches(owner[key], pattern, field));
+        } else {
+          matches = _collectTextMatches(content, pattern, '');
+        }
         if (matches.length) {
           const type = await _classifyFileType(provider, normalized, { allFiles: true }).catch(() => 'page');
-          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches });
+          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches, etag: revision });
         }
       } catch {}
     }, root);
@@ -4538,35 +5590,38 @@
     return text.replace(once, replacement);
   }
 
-  function _replaceNestedText(value, pattern, replacement, state) {
+  function _replaceSheetPropertyDisplayValues(value, pattern, replacement, state) {
     if (typeof value === 'string') return _replaceStringValue(value, pattern, replacement, state);
-    if (Array.isArray(value)) return value.map(item => _replaceNestedText(item, pattern, replacement, state));
-    if (value && typeof value === 'object') {
-      const out = {};
-      Object.entries(value).forEach(([key, item]) => { out[key] = _replaceNestedText(item, pattern, replacement, state); });
-      return out;
+    if (Array.isArray(value)) return value.map(item => _replaceSheetPropertyDisplayValues(item, pattern, replacement, state));
+    if (!value || typeof value !== 'object') return value;
+    const out = { ...value };
+    ['value', 'note', 'rich_html'].forEach((key) => {
+      if (typeof out[key] === 'string') out[key] = _replaceStringValue(out[key], pattern, replacement, state);
+    });
+    return out;
+  }
+
+  function _replaceSheetDisplayFrontmatter(frontmatter, pattern, replacement, state) {
+    const next = { ...(frontmatter || {}) };
+    ['title', 'name', 'display_name'].forEach((key) => {
+      if (typeof next[key] === 'string') next[key] = _replaceStringValue(next[key], pattern, replacement, state);
+    });
+    if (next.properties && typeof next.properties === 'object' && !Array.isArray(next.properties)) {
+      next.properties = Object.fromEntries(Object.entries(next.properties).map(([name, value]) => [
+        name,
+        _replaceSheetPropertyDisplayValues(value, pattern, replacement, state),
+      ]));
     }
-    return value;
+    return next;
   }
 
   async function _replaceInSheetStoreEntry(provider, path, body, pattern) {
     const stored = await _readSheetStoreEntry(provider, path);
     if (!stored) return null;
-    const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const replacement = String(body?.replace ?? '');
-    const nextFrontmatter = _replaceNestedText(stored.frontmatter, pattern, replacement, state);
-    const nextBody = _replaceStringValue(stored.body || '', pattern, replacement, state);
-    _rejectProductionReservedLegacyPropertyObject(stored.dbPath, nextFrontmatter?.properties);
-    if (state.count > 0) {
-      await _requireUnlocked(provider, stored.dbPath, { action: 'replace-sheet-store' });
-      const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
-      if (physical?.kind === 'file') await _writeEntity(provider, stored.path, nextFrontmatter, nextBody);
-      else await _writeSheetStoreEntryOnly(provider, stored.path, nextFrontmatter, nextBody);
-    }
-    return { ok: true, count: state.count };
+    throw new Error('シート構造ストアは通常の検索置換に対応していません');
   }
 
-  async function _cloudReplace(provider, body) {
+  async function _cloudReplace(provider, body, options = {}) {
     const path = _normalizeFolderPath(body?.path || '');
     const q = String(body?.search || '');
     if (!path || !q) throw new Error('path, search は必須です');
@@ -4580,16 +5635,115 @@
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
     const lower = path.toLowerCase();
-    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return { ok: true, count: 0 };
+    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
+      await _readVerifiedSearchReplaceText(provider, path);
+    }
+    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) throw new Error('この形式は通常の検索置換に対応していません');
     await _requireUnlocked(provider, path, { action: 'replace' });
-    const content = await provider.readText(path);
+    const { text: content, revision, bytes: originalBytes } = await _readVerifiedSearchReplaceText(provider, path);
+    if (!revision || typeof provider?.uploadBytesConditional !== 'function') {
+      const error = new Error('厳密な競合検出に対応していないため検索置換を中止しました');
+      error.status = 503;
+      error.code = 'strict_cas_unavailable';
+      throw error;
+    }
+    const expectedRevision = String(body?.etag || '').trim();
+    if (expectedRevision && revision !== expectedRevision) {
+      const error = new Error('確認後に置換対象が更新されたため、一括置換を中止しました');
+      error.status = 409;
+      error.code = 'replace_target_changed';
+      error.path = path;
+      throw error;
+    }
     const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
-    const next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    let next;
+    if (lower.endsWith('.mel-scenario')) {
+      const document = _scenarioSearchReplaceDocument(content, path);
+      const replacement = String(body?.replace ?? '');
+      _scenarioDisplayFields(document).some(({ owner, key }) => {
+        owner[key] = _replaceStringValue(owner[key], pattern, replacement, state);
+        return state.remaining === 0;
+      });
+      next = JSON.stringify(document, null, 2);
+    } else {
+      next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    }
+    const nextBytes = new TextEncoder().encode(next);
     if (state.count > 0) {
       _rejectProductionReservedLegacyPropertyObject(_dirname(path), _parseFrontmatter(next).frontmatter?.properties);
-      await provider.writeText(path, next);
+    }
+    if (options.prepareOnly) {
+      return { path, count: state.count, revision, originalBytes, nextBytes };
+    }
+    if (state.count > 0) {
+      await provider.uploadBytesConditional(path, nextBytes, revision);
     }
     return { ok: true, count: state.count };
+  }
+
+  async function _cloudReplaceBatch(provider, body) {
+    const targets = body?.targets;
+    if (!Array.isArray(targets) || !targets.length) throw Object.assign(new Error('targets は1件以上必要です'), { status: 400 });
+    if (targets.length > 500) throw Object.assign(new Error('一度に置換できるファイルは500件までです'), { status: 413 });
+    const search = String(body?.search || '');
+    if (!search) throw Object.assign(new Error('search は必須です'), { status: 400 });
+
+    const common = {
+      search,
+      replace: String(body?.replace ?? ''),
+      case: _truthy(body?.case),
+      regex: _truthy(body?.regex),
+      all: _truthy(body?.all),
+    };
+    const plans = [];
+    const seen = new Set();
+    for (const item of targets) {
+      const path = _normalizeFolderPath(item?.path || '');
+      const etag = String(item?.etag || '').trim();
+      const key = path.toLowerCase();
+      if (!path || !etag) throw Object.assign(new Error('各置換対象には検索時のetagが必要です'), { status: 428 });
+      if (seen.has(key)) throw Object.assign(new Error(`置換対象が重複しています: ${path}`), { status: 400 });
+      seen.add(key);
+      plans.push(await _cloudReplace(provider, { ...common, path, etag }, { prepareOnly: true }));
+    }
+
+    const changed = plans.filter(plan => plan.count > 0);
+    if (!changed.length) return { ok: true, count: 0, file_count: 0, reverted: false };
+    const committed = [];
+    try {
+      for (const plan of changed) {
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const committedRevision = String(saved?.revision || saved?.rev || '').trim();
+        if (!committedRevision) throw Object.assign(new Error('置換後の世代を確認できません'), { status: 503, code: 'strict_cas_unavailable' });
+        committed.push({ plan, committedRevision });
+      }
+    } catch (error) {
+      const compensationFailures = [];
+      for (const entry of [...committed].reverse()) {
+        try {
+          await provider.uploadBytesConditional(entry.plan.path, entry.plan.originalBytes, entry.committedRevision);
+        } catch (rollbackError) {
+          compensationFailures.push({ path: entry.plan.path, error: String(rollbackError?.message || rollbackError) });
+        }
+      }
+      if (compensationFailures.length) {
+        const failed = new Error('一括置換の補償復旧に失敗しました。対象ファイルを再読込してください');
+        failed.status = 500;
+        failed.code = 'replace_batch_compensation_failed';
+        failed.failures = compensationFailures;
+        throw failed;
+      }
+      const reverted = new Error('一括置換は完了できなかったため、変更済みファイルを元に戻しました');
+      reverted.status = Number(error?.status || 500);
+      reverted.code = 'replace_batch_reverted';
+      throw reverted;
+    }
+    return {
+      ok: true,
+      count: changed.reduce((sum, plan) => sum + plan.count, 0),
+      file_count: changed.length,
+      reverted: false,
+    };
   }
 
   async function _cloudLinkDictFuriganaKeys(provider, dbPath) {
@@ -4724,6 +5878,21 @@
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
+    const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
+    if (historyRoute) {
+      const kind = historyRoute[1];
+      const itemId = decodeURIComponent(historyRoute[2]);
+      const versionId = historyRoute[3] ? decodeURIComponent(historyRoute[3]) : '';
+      if (method === 'GET' && !versionId) return _calendarHistoryList(provider, kind, itemId);
+      if (method === 'GET' && versionId && !historyRoute[4]) return _calendarHistoryCompare(provider, kind, itemId, versionId);
+      if (method === 'POST' && versionId && historyRoute[4]) {
+        const leaseToken = String(body?._calendar_lease_token || '').trim();
+        return _withCloudCalendarLease(provider, leasedProvider => _calendarHistoryRestore(
+          leasedProvider, kind, itemId, versionId, String(body?.expectedRevision || ''),
+        ), leaseToken);
+      }
+      return NOT_HANDLED;
+    }
     if (pathname === '/cal/sync/status' && method === 'GET') {
       return { enabled: true, configured: false, ical: true, google: false, microsoft: false, caldav: false };
     }
@@ -4748,6 +5917,12 @@
     const routeBody = { ...(body || {}) };
     delete routeBody._calendar_lease_token;
     if (method === 'GET' && !id) return _calendarList(provider, name, url);
+    if (method === 'GET' && id && ['events', 'tasks', 'shifts'].includes(name)) {
+      const visibleRows = await _calendarList(provider, name, url);
+      const row = visibleRows.find(item => String(item?.id) === String(id));
+      if (!row) throw _calendarError('対象が見つからないか、参照権限がありません', 404, 'CALENDAR_ROW_NOT_FOUND');
+      return row;
+    }
     if (method === 'POST' && !id) return _withCloudCalendarLease(provider, leasedProvider => _calendarCreate(leasedProvider, name, routeBody), leaseToken);
     if (method === 'PUT' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarUpdate(leasedProvider, name, id, routeBody), leaseToken);
     if (method === 'DELETE' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarDelete(leasedProvider, name, id), leaseToken);
@@ -4849,7 +6024,7 @@
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
-    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar', 'smart-db'].includes(String(body?.type || ''))) {
+    if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
       const label = _validateItemName(body?.label || '無題', 'label');
@@ -4869,20 +6044,7 @@
         await _ensureFolderNote(provider, path, 'calendar-db');
         return { ok: true, node: { type: 'calendar', label: name, path } };
       }
-      const name = await _uniqueName(provider, parent, label, '.smart-db.json');
-      const path = _joinPath(parent, name + '.smart-db.json');
-      await _requireUnlocked(provider, path, { action: 'outliner-add-smart-db' });
-      await provider.writeJson(path, {
-        type: 'smart-db',
-        id: 'file:' + path,
-        name,
-        sourceType: 'db-entities',
-        filters: [{ property: 'ステータス', field: 'value', operator: 'equals', value: '進行中' }],
-        views: { table: {}, dashboard: { widgets: [] } },
-        activeView: 'table',
-        created: _nowIso(),
-      });
-      return { ok: true, node: { type: 'smart-db', label: name, path } };
+      throw new Error(`不正なタイプ: ${type}`);
     }
 
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
@@ -4918,11 +6080,12 @@
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
+    if (pathname === '/sheet-search' && method === 'GET') return _sheetSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
     if (pathname === '/search-unified' && method === 'GET') return _cloudUnifiedSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/replace-batch' && method === 'PUT') return _cloudReplaceBatch(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
     // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。

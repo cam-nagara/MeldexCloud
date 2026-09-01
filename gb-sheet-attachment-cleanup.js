@@ -182,7 +182,17 @@
     const usedCount = targets.filter(item => item.used).length;
     const lines = [`添付ファイル${targets.length}件をゴミ箱へ移動します。`];
     if (usedCount) lines.push(`このうち${usedCount}件は現在シートで使われています。削除すると表示できなくなります。`);
-    if (!await _confirmDelete(lines.join('\n'))) {
+    let confirmation = null;
+    if (window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact) {
+      confirmation = await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        targets.map(item => ({ path: item.path, kind: 'file' })),
+        lines.join('\n'),
+        { danger: true, okLabel: 'ゴミ箱へ移動', cancelLabel: 'キャンセル', operation: 'trash' },
+      );
+    } else {
+      confirmation = await _confirmDelete(lines.join('\n'));
+    }
+    if (!confirmation) {
       _setStatus('削除を取り消しました');
       return;
     }
@@ -190,12 +200,17 @@
     _setStatus('添付ファイルをゴミ箱へ移動しています...');
     _beginBusy();
     try {
+      const confirmationPayload = typeof window.MeldexDeleteImpactWarning?.confirmationPayload === 'function'
+        ? window.MeldexDeleteImpactWarning.confirmationPayload(confirmation)
+        : {};
       const result = await apiPost('/outliner/delete-batch', {
         items: targets.map(item => ({ path: item.path })),
+        ...confirmationPayload,
       });
       const failed = Array.isArray(result?.failed) ? result.failed : [];
       if (failed.length) {
-        _setStatus(`${failed.length}件を削除できませんでした`, true);
+        const detail = failed.map(item => item?.detail || item?.status || '').filter(Boolean).join(' / ');
+        _setStatus(`${failed.length}件を削除できませんでした${detail ? `: ${detail}` : ''}`, true);
       } else {
         _setStatus(`添付ファイル${targets.length}件をゴミ箱へ移動しました`);
       }
@@ -208,6 +223,9 @@
   }
 
   async function showSheetAttachmentCleanupModal(dbPath) {
+    const returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement
+      : null;
     const path = String(dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '');
     if (!path) {
       if (typeof showStatus === 'function') showStatus('シートが開かれていません', true);
@@ -270,6 +288,7 @@
       extraClass: 'gb-attachment-cleanup-modal',
       geometryKey: 'sheet-attachment-cleanup',
       initialFocus: '#gb-attach-unused-only',
+      returnFocus: returnFocus || undefined,
       closeOnEsc: true,
       closeOnOverlay: true,
       onBeforeClose: () => Number(cleanupState?.busyDepth || 0) === 0,

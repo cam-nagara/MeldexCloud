@@ -35,6 +35,46 @@ function bdFocusSelected(force) {
   bdTransform();
   document.getElementById('bd-zoom-label').textContent = Math.round(bd.zoom * 100) + '%';
 }
+
+function bdEnsureNodeVisible(nodeId, options) {
+  const canvas = document.getElementById('bd-canvas');
+  const nodeEl = nodeId ? document.getElementById('bdn-' + nodeId) : null;
+  if (!canvas || !nodeEl || !nodeEl.isConnected) return false;
+  const canvasRect = canvas.getBoundingClientRect();
+  const nodeRect = nodeEl.getBoundingClientRect();
+  if (canvasRect.width <= 0 || canvasRect.height <= 0 || nodeRect.width <= 0 || nodeRect.height <= 0) return false;
+  const margin = Math.max(12, Number(options?.margin) || 32);
+  const safeLeft = canvasRect.left + Math.min(margin, canvasRect.width / 4);
+  const safeRight = canvasRect.right - Math.min(margin, canvasRect.width / 4);
+  const safeTop = canvasRect.top + Math.min(margin, canvasRect.height / 4);
+  const safeBottom = canvasRect.bottom - Math.min(margin, canvasRect.height / 4);
+  let screenDx = 0;
+  let screenDy = 0;
+  if (nodeRect.left < safeLeft) screenDx = safeLeft - nodeRect.left;
+  else if (nodeRect.right > safeRight) screenDx = safeRight - nodeRect.right;
+  if (nodeRect.top < safeTop) screenDy = safeTop - nodeRect.top;
+  else if (nodeRect.bottom > safeBottom) screenDy = safeBottom - nodeRect.bottom;
+  if (Math.abs(screenDx) < 0.5 && Math.abs(screenDy) < 0.5) return false;
+
+  const radians = -(Number(bd.rotation) || 0) * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  bd.panX += screenDx * cos - screenDy * sin;
+  bd.panY += screenDx * sin + screenDy * cos;
+  bdTransform();
+  return true;
+}
+
+function bdFollowActiveNode(nodeId, options) {
+  if (!nodeId) return;
+  const follow = () => {
+    if (bd._activeNode !== nodeId) return;
+    bdEnsureNodeVisible(nodeId, options);
+  };
+  requestAnimationFrame(follow);
+  const delayMs = Math.max(0, Number(options?.delayMs) || 0);
+  if (delayMs > 0) setTimeout(() => requestAnimationFrame(follow), delayMs);
+}
 // --- 3. Z-order ---
 function bdMoveZ(direction) {
   const ids = [...bd.selected]; if (!ids.length) return;
@@ -786,7 +826,7 @@ function bdCommentMenuFor(nodeId, rect, trigger) {
     }, anchorEl ? { anchorEl } : undefined);
   }));
   menu.appendChild(_bdHudMenuItem('コメント一覧を開く', () => {
-    // 注釈パネルを開き、このカードに絞り込んだフィルタを設定 (CommentBadges._openPanelForTarget 相当)
+    // アノテートパネルを開き、このカードに絞り込んだフィルタを設定 (CommentBadges._openPanelForTarget 相当)
     if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
     else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
     const typeSel = document.getElementById('rp-ann-type'); if (typeSel) typeSel.value = 'comment';

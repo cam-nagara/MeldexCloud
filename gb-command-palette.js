@@ -16,6 +16,7 @@
     list: null,
     scope: null,
     hint: null,
+    status: null,
     items: [],
     activeIndex: 0,
     query: '',
@@ -39,7 +40,6 @@
     { label: 'シート', icon: 'database', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
     { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
-    { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
   ];
 
   const DEFAULT_PANEL_SECTIONS = [{
@@ -51,7 +51,6 @@
       { label: 'シート', icon: 'database', type: 'database' },
       { label: 'ボード', icon: 'presentation', type: 'board' },
       { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
-      { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
     ],
   }];
 
@@ -60,7 +59,6 @@
     scriptnote: 'シナリオ',
     board: 'ボード',
     database: 'シート',
-    'smart-db': 'スマートシート',
     calendar: 'カレンダー',
     csv: 'CSV',
     image: '画像',
@@ -83,7 +81,6 @@
     scriptnote: 'scriptnote',
     board: 'board',
     database: 'database',
-    'smart-db': 'smart-db',
     calendar: 'calendar',
     csv: 'csv',
     image: 'image',
@@ -271,6 +268,23 @@
     if (type === 'page' && typeof openPage === 'function') openPage(label, openPath);
   }
 
+  function _openUnifiedSearchResult(entry) {
+    _openFile(entry);
+    const firstMatch = Array.isArray(entry?.matches) ? entry.matches[0] : null;
+    const detail = {
+      path: _entryOpenPath(entry),
+      type: entry?.type || _navTypeForEntry(entry),
+      query: state.query,
+      match: firstMatch || null,
+    };
+    // Opening a panel can be asynchronous. Consumers may handle the event
+    // immediately or after their view is mounted; retries keep this navigation
+    // advisory and never mutate document data.
+    [0, 180, 600].forEach(delay => setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('meldex:search-result-open', { detail }));
+    }, delay));
+  }
+
   function _readRecentItems() {
     try {
       const recent = JSON.parse(localStorage.getItem('meldex-recent') || '[]');
@@ -280,9 +294,28 @@
     }
   }
 
+  function _entryLocationKeys(entry) {
+    const keys = [];
+    const root = _normalize(_entryRootKey(entry));
+    const path = _normalize(String(entry?.path || '').replace(/\\/g, '/').replace(/^\/+/, ''));
+    const absolute = _normalize(String(entry?.abs_path || entry?.absPath || '').replace(/\\/g, '/'));
+    if (path) keys.push(`${root}\n${path}`);
+    if (absolute) keys.push(`absolute\n${absolute}`);
+    return keys;
+  }
+
   function _recentCommands() {
+    const indexedKeys = new Set((state.globalIndexFiles || []).flatMap(_entryLocationKeys));
+    if (!indexedKeys.size) return [];
+    const seen = new Set();
     return _readRecentItems()
       .filter(entry => entry && entry.path)
+      .filter(entry => {
+        const match = _entryLocationKeys(entry).find(key => indexedKeys.has(key));
+        if (!match || seen.has(match)) return false;
+        seen.add(match);
+        return true;
+      })
       .slice(0, MAX_RECENT_ITEMS)
       .map((entry, index) => {
         const type = _navTypeForEntry(entry);
@@ -313,7 +346,6 @@
       scriptnote: 'bookOpenText',
       board: 'presentation',
       database: 'database',
-      'smart-db': 'databaseZap',
       calendar: 'calendar',
       csv: 'table',
       image: 'image',
@@ -440,6 +472,18 @@
       ));
     });
     items.push(
+      _command('search:current-panel', 'コマンド', '現在のパネルを検索・置換', 'ノート・シナリオ・シート・ボード・フォルダ', 'search', () => {
+        const activePane = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
+        const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(activePane) : null;
+        const type = tab?.type === 'pivot' ? 'database' : (tab?.type || 'page');
+        if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace(type);
+      }, { keywords: ['find', 'replace', '検索', '置換', '現在'], priority: 66 }),
+      _command('search:source-folders', 'コマンド', 'ソースフォルダ全体を検索・置換', '表示した対象だけを一括処理', 'folderSearch', () => {
+        if (typeof openVaultSearchReplacePanel === 'function') openVaultSearchReplacePanel('');
+      }, { keywords: ['vault', 'source folder', '全文検索', '一括置換'], priority: 65 }),
+      _command('system-sheet:all-files', 'コマンド', '全ファイルをシートで表示', 'すべてのソースフォルダを横断', 'tableProperties', () => {
+        if (typeof openAllFilesSheet === 'function') openAllFilesSheet();
+      }, { keywords: ['files', 'ファイル', '横断', 'シート'], priority: 61 }),
       _command('trash:open', 'コマンド', '削除済みファイルを開く', 'ゴミ箱', 'trash2', () => _openTrash(), { keywords: ['trash', 'ゴミ箱', '削除'], priority: 60 }),
       _command('settings:open', 'コマンド', '設定を開く', '', 'settings', () => _openSettings(), { keywords: ['preferences', 'config'], priority: 62 }),
       _command('user:settings', 'コマンド', 'ユーザー設定を開く', '', 'userRound', () => _openSettings('ユーザー'), { keywords: ['user', 'profile', 'アカウント'], priority: 58 }),
@@ -470,8 +514,10 @@
         { name: '表示・起動', icon: 'monitorCog', desc: '表示サイズ、見やすさ、起動時の動作' },
         { name: 'テーマ', icon: 'palette', desc: 'テーマ、テーマカラー、フォント' },
         { name: 'ショートカット', icon: 'keyboard', desc: 'キーボード操作' },
-        { name: 'AI・Discord', icon: 'bot', desc: 'AIキー、AI使用量、Discord連携' },
-        { name: 'インポート', icon: 'download', desc: '外部取り込み、Notion同期、拡張機能' },
+        { name: 'AI', icon: 'bot', desc: 'AIキー、AI使用量' },
+        { name: 'インポート', icon: 'download', desc: '外部取り込み、Notion同期' },
+        { name: 'Webクリップ', icon: 'blocks', desc: 'Web Clipper、Xブックマーク、Xアカウント保存' },
+        { name: '拡張機能', icon: 'puzzle', desc: '追加機能の導入と状態確認' },
         { name: '導入・アプリ連携', icon: 'download', desc: 'サンプル、ホーム画面追加、ファイル関連付け' },
         { name: '履歴・引き継ぎ', icon: 'history', desc: 'Undo、バージョン保存、設定移行' },
         { name: 'ゴミ箱・データ保守', icon: 'database', desc: 'ゴミ箱、バックアップ、内部データ' },
@@ -500,8 +546,12 @@
         `search:${key}`, '検索結果', label,
         `${sources.join('・') || '検索'} / ${file.path}`,
         _iconForFileType(displayType),
-        () => _openFile({ ...file, type, label, mediaType }),
-        { keywords: [file.path, label], meta: file.score == null ? '開く' : Number(file.score).toFixed(3), fileKey: key },
+        () => _openUnifiedSearchResult({ ...file, type, label, mediaType }),
+        {
+          keywords: [file.path, label],
+          meta: file.matches?.[0]?.line ? `L${file.matches[0].line}` : (file.score == null ? '開く' : Number(file.score).toFixed(3)),
+          fileKey: key,
+        },
       ));
     }
     return out;
@@ -558,6 +608,12 @@
   function _clearList() {
     if (!state.list) return;
     while (state.list.firstChild) state.list.firstChild.remove();
+  }
+
+  function _setPaletteStatus(message, error = false) {
+    if (!state.status) return;
+    state.status.textContent = String(message || '');
+    state.status.dataset.error = error ? '1' : '0';
   }
 
   function _renderList() {
@@ -658,18 +714,27 @@
     _renderList();
 
     if (state.mode !== 'root') { _updateSearchHint(null); return; }
+    const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
+    if (seq !== state.seq) return;
+    // Recents are rendered only after they have been reconciled with the
+    // currently active global index. This prevents stale absolute paths or a
+    // different workspace from leaking into the normal candidate list.
+    items = _filterItems(_baseCommands(), state.query);
+    state.items = items;
+    state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
+    _renderList();
     // タグ条件だけが入っている場合も検索を通す（文字列は空でよい。2-F）。
     const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
     const hasQueryTokens = _tokenize(state.query).length >= GLOBAL_FILE_MIN_QUERY;
     // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
     // 検索結果が返ってから追加で反映する。
     _updateSearchHint(null);
-    if (!hasQueryTokens && !hasTagCondition) return;
+    if (!hasQueryTokens && !hasTagCondition) { _setPaletteStatus(''); return; }
+
+    _setPaletteStatus('検索中…');
 
     const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
     if (hasQueryTokens) {
-      const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
-      if (seq !== state.seq) return;
       const fileItems = _globalFileCommands(files, state.query, existingKeys);
       items = _filterItems([...items, ...fileItems], state.query);
     }
@@ -681,11 +746,13 @@
         _updateSearchHint(data);
       } catch (error) {
         console.warn('[command-palette] unified search failed', error);
+        if (seq === state.seq) _setPaletteStatus('本文検索を完了できませんでした。ファイル名の結果だけを表示しています', true);
       }
     }
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
+    if (state.status?.dataset.error !== '1') _setPaletteStatus(`${items.length}件の候補`);
   }
 
   function _moveActive(delta) {
@@ -822,6 +889,13 @@
     hint.dataset.e2eId = 'command-palette-search-hint';
     hint.style.cssText = 'display:none;padding:4px 14px 0;font-size:11px;line-height:1.4;color:var(--fg2);';
 
+    const status = document.createElement('div');
+    status.id = 'cmd-palette-status';
+    status.className = 'cmd-palette-hint';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'min-height:18px;padding:3px 14px 0;font-size:11px;line-height:1.35;color:var(--fg2);';
+
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
     list.className = 'cmd-palette-list';
@@ -836,7 +910,7 @@
       footer.appendChild(span);
     });
 
-    palette.append(header, hint, list, footer);
+    palette.append(header, hint, status, list, footer);
     overlay.appendChild(palette);
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) closeCommandPalette();
@@ -860,6 +934,7 @@
     state.list = list;
     state.scope = scope;
     state.hint = hint;
+    state.status = status;
   }
 
   function _ensureOverlay() {
@@ -1093,7 +1168,7 @@
     _bindLeftChromeButton('left-chrome-floating-help', (event) => _openHelp(event));
     _bindLeftChromeButton('left-chrome-floating-trash', () => _openTrash());
     _bindLeftChromeButton('left-chrome-floating-settings', () => _openSettings());
-    _bindLeftChromeButton('left-chrome-floating-user', () => _openSettings('ユーザー'));
+    _bindLeftChromeButton('left-chrome-floating-user', () => _openSettings('プロフィール'));
     _syncLeftChromeUser();
   }
 

@@ -154,7 +154,7 @@
 
   async function _renderNotionSyncSettings(container, options = {}) {
     if (_isCloudMode()) {
-      container.textContent = 'Notion同期はデスクトップ版のローカル連携です。クラウド版で制作データを開いている場合も、Notionへの片方向pushはデスクトップ版から実行してください。';
+      container.textContent = 'MeldexからNotionへ送る機能はデスクトップ版のローカル連携です。NotionからMeldexへ取り込む接続状態とは別に管理されます。';
       return;
     }
     let cfg = {};
@@ -167,10 +167,11 @@
     container.dataset.notionHasToken = hasToken ? '1' : '0';
 
     container.innerHTML = `
+      <div class="notion-sync-heading">MeldexからNotionへ送る</div>
       <details class="notion-sync-section" data-e2e-id="notion-integration-section" ${hasToken ? '' : 'open'}>
         <summary class="notion-sync-section-summary" data-e2e-id="notion-integration-summary" aria-label="Notionインテグレーション設定">
           インテグレーション設定
-          <span class="${hasToken ? 'notion-sync-state-ok' : 'notion-sync-state-danger'}">${hasToken ? '（接続済み）' : '（未設定）'}</span>
+          <span class="${hasToken ? 'notion-sync-state-ok' : 'notion-sync-state-danger'}">${hasToken ? '（送信接続済み）' : '（送信未設定）'}</span>
         </summary>
         <div class="notion-sync-help">
           <ol style="padding-left:20px;margin:6px 0;">

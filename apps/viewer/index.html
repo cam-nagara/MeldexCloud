@@ -60,9 +60,10 @@
   <div class="layer" id="layerA"></div>
   <div class="layer" id="layerB"></div>
   <div id="viewer-loading" class="viewer-loading-state hidden" aria-live="polite">
-    <div class="viewer-loading-card">
+    <div class="viewer-loading-card" role="status">
       <span class="viewer-loading-spinner" aria-hidden="true"></span>
       <span id="viewer-loading-text">読み込み中...</span>
+      <button id="viewer-retry" class="viewer-retry hidden" type="button">再試行</button>
     </div>
   </div>
   <div class="nav-area left" id="nav-prev-area"><span class="ico ico-chevronLeft" aria-hidden="true"></span></div>
@@ -94,6 +95,7 @@
   <button id="btn-flip-v" class="tb-icon-btn" title="上下反転" aria-label="上下反転"><span class="ico ico-flipVertical2"></span></button>
   <button id="btn-rotate" class="tb-icon-btn" title="回転 (Q)" aria-label="回転"><span class="ico ico-rotateCw"></span></button>
   <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
+  <button id="btn-annotation-versions" class="tb-icon-btn" title="現在の画像・PDFのアノテートバージョン" aria-label="現在の画像・PDFのアノテートバージョン" data-e2e-id="standalone-viewer-annotation-versions" hidden><span class="ico ico-gitBranch"></span></button>
   <button id="btn-default-apps" class="tb-icon-btn" title="既定アプリに設定" aria-label="既定アプリに設定" data-standalone-default-apps-open hidden><span class="ico ico-fileCog"></span></button>
 </div>
 <input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
@@ -143,6 +145,7 @@
 <script src="viewer-annotation-notes.js"></script>
 <script src="viewer-annotation-legacy.js"></script>
 <script src="viewer-annotations.js"></script>
+<script src="standalone-version-history.js"></script>
 <script src="viewer-context-menu.js"></script>
 </body>
 </html>

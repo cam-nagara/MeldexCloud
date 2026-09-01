@@ -8,7 +8,7 @@
      - 先読みはしない（preload="metadata"のみ）。プレビューURLフォールバックの概念もない
        （動画はfile-rawをそのまま使い、Range対応のFileResponseでネイティブ<video>のシーク/
        ストリーミングに対応済み）。
-     - 注釈オーバーレイはviewer-annotation-scene.jsが `layer.querySelectorAll('img, canvas')` で
+     - アノテートオーバーレイはviewer-annotation-scene.jsが `layer.querySelectorAll('img, canvas')` で
        対象を探すため、video要素は自動的に対象外になる（無理に対応しない。エラーも出ない）。
    公開: window.MeldexViewerVideo */
 (function () {
@@ -88,8 +88,7 @@
   }
 
   // メタデータ取得完了（寸法確定）を待つ。showGroup()のレイヤー入替タイミング制御に使う。
-  // タイムアウト時は false ではなく true で解決する（読み込みが遅くてもネイティブコントロールで
-  // 再生できるため、画像のプレビューURLフォールバックのようなブロッキングは不要）。
+  // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
   function waitForVideoReady(video, timeoutMs = 3000) {
     return new Promise(resolve => {
       if (!video) { resolve(false); return; }
@@ -106,7 +105,7 @@
       };
       const onReady = () => finish(true);
       const onError = () => finish(false);
-      timer = setTimeout(() => finish(true), timeoutMs);
+      timer = setTimeout(() => finish(false), timeoutMs);
       video.addEventListener('loadedmetadata', onReady, { once: true });
       video.addEventListener('error', onError, { once: true });
     });

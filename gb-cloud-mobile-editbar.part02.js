@@ -206,7 +206,7 @@
     const showEditBar = enabled && !modalOpen && keyboardOpen && !!editable && !annotationTextInput;
     const showChatBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !!chatInput;
     const showInputBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !showChatBar && !!plainInput;
-    const showAnnotationBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && (annotationActive || annotationRequested) && (!keyboardOpen || !!annotationTextInput);
+    const showAnnotationBar = enabled && _isAnnotationPhoneViewport() && !modalOpen && !showEditBar && !showChatBar && !showInputBar && (annotationActive || annotationRequested) && (!keyboardOpen || !!annotationTextInput);
     const showBoardBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && !showAnnotationBar && !keyboardOpen && _isBoardActive();
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');

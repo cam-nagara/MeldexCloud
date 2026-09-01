@@ -28,7 +28,7 @@
     const selector = tablist.classList.contains('gb-pane-tabs')
       ? ':scope > .gb-pane-tabs-scroll > .gb-tab'
       : ':scope > [role="tab"]';
-    // #detail-tab-bar（オプションパネル）や #smart-db-view-tabs のように、
+    // #detail-tab-bar（オプションパネル）のように、
     // 複数の対象タイプ用タブを同じタブバーへ同居させ、現在のタイプに合わない
     // タブを `hidden` 属性で隠す実装がある。ここで hidden を素通りさせると、
     // スマホ用ドロップダウンに無関係な20件前後のタブが並び、実質的に目的の

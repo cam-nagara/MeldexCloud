@@ -120,6 +120,14 @@
   cursor: pointer;
 }
 
+@media (pointer: coarse), (max-width: 640px) {
+  .meldex-entity-attachment-add-btn,
+  .meldex-entity-attachment-menu .ab-dropdown-item {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+}
+
 .meldex-entity-attachments-list {
   display: flex;
   flex-direction: column;

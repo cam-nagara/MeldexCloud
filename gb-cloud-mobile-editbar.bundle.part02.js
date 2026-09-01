@@ -1,3 +1,9 @@
+    _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
+  }
+
+  function _saveSelection() {
+    const sel = window.getSelection?.();
+    if (!sel || !sel.rangeCount) return false;
     const range = sel.getRangeAt(0);
     const editable = _editableFromNode(range.commonAncestorContainer);
     if (!editable) return false;
@@ -17,6 +23,15 @@
     if (!editable) return false;
     editable.focus?.({ preventScroll: true });
     if (!_savedRange) return true;
+    const rangeRoot = _savedRange.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+      ? _savedRange.commonAncestorContainer
+      : _savedRange.commonAncestorContainer?.parentElement;
+    if (!rangeRoot?.isConnected || !editable.contains(rangeRoot)) {
+      // contenteditableのtextContent/innerHTML更新後は旧RangeのnodeがDOM外になる。
+      // Phone編集バーがそのRangeを復元すると選択APIが失敗し、直後の実選択も失われる。
+      _savedRange = null;
+      return true;
+    }
     const sel = window.getSelection?.();
     if (!sel) return false;
     sel.removeAllRanges();
@@ -425,7 +440,7 @@
     _annotationBar.id = 'cloud-mobile-annotationbar';
     _annotationBar.className = 'cloud-mobile-annotationbar';
     _annotationBar.setAttribute('role', 'toolbar');
-    _annotationBar.setAttribute('aria-label', 'スマホ用注釈ツールバー');
+    _annotationBar.setAttribute('aria-label', 'スマホ用アノテートツールバー');
     _annotationBar.hidden = true;
     const row = document.createElement('div');
     row.className = 'cloud-mobile-annotationbar-row';
@@ -646,7 +661,7 @@
     const showEditBar = enabled && !modalOpen && keyboardOpen && !!editable && !annotationTextInput;
     const showChatBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !!chatInput;
     const showInputBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !showChatBar && !!plainInput;
-    const showAnnotationBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && (annotationActive || annotationRequested) && (!keyboardOpen || !!annotationTextInput);
+    const showAnnotationBar = enabled && _isAnnotationPhoneViewport() && !modalOpen && !showEditBar && !showChatBar && !showInputBar && (annotationActive || annotationRequested) && (!keyboardOpen || !!annotationTextInput);
     const showBoardBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && !showAnnotationBar && !keyboardOpen && _isBoardActive();
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');

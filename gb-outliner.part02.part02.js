@@ -316,16 +316,25 @@ function _openOutlinerCreatedNode(nd, name) {
   }
   else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
   else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
-  else if (nd.type === 'smart-db') { if (typeof openSmartDbFile === 'function') openSmartDbFile(name, nd.path, _expOpts); }
   else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
 }
 
-// 追加API呼び出し前の既存子ノード名（事後確認での新規判定に使用）
+function _outlinerCreateItemIdentity(type, name) {
+  const normalizedType = String(type || '').trim();
+  const normalizedName = String(name || '').trim();
+  return normalizedType && normalizedName ? `${normalizedType}\n${normalizedName}` : '';
+}
+
+// 追加API呼び出し前の既存子ノード識別子（事後確認での新規判定に使用）。
+// 「無題」のような同名項目は種類をまたいで共存できるため、名前だけでは比較しない。
 function _outlinerSnapshotChildNames(container) {
   const names = new Set();
   container.querySelectorAll(':scope > .tree-node').forEach(node => {
     const d = node._nodeData;
-    if (d && !d._pendingCreate && d.name) names.add(d.name);
+    const identity = d && !d._pendingCreate
+      ? _outlinerCreateItemIdentity(d.type, d.name)
+      : '';
+    if (identity) names.add(identity);
   });
   return names;
 }
@@ -334,7 +343,11 @@ function _outlinerSnapshotChildNames(container) {
 // 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
 function _outlinerFindNewItemInListing(items, type, existingNames) {
   if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
-  return items.find(it => it && it.type === type && it.name && !existingNames.has(it.name)) || null;
+  return items.find(it => {
+    if (!it || it.type !== type || !it.name) return false;
+    const identity = _outlinerCreateItemIdentity(it.type, it.name);
+    return identity && !existingNames.has(identity);
+  }) || null;
 }
 
 // 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）

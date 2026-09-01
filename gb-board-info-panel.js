@@ -1,4 +1,4 @@
-/* gb-board-info-panel.js: ボード選択を共通ファイル情報パネルへ接続する */
+/* gb-board-info-panel.js: ボード選択を共通ファイルプロパティパネルへ接続する */
 (function initMeldexBoardInfoPanel(global) {
   'use strict';
 

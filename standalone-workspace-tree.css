@@ -171,6 +171,7 @@ html[data-standalone-cloud] body {
 .sa-workspace-drawer button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  border-color: transparent;
 }
 
 .sa-workspace-drawer button:focus-visible,

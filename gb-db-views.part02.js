@@ -326,8 +326,9 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       ev.stopPropagation();
       if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
     });
-    wrap.appendChild(img);
-    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます' });
+    const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'db-card-image-host' });
+    wrap.appendChild(imageHost || img);
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像を読み込んでいます' });
     appended += 1;
   });
   if (!appended) return false;
@@ -553,9 +554,9 @@ function renderGallery(ctx) {
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(container, 'image', 'トピックがありません', 'トピックを追加して開始してください', ctx);
+      _dbRenderEmptyStateWithCreate(container, 'layoutGrid', 'トピックがありません', 'トピックを追加して開始してください', ctx);
     } else {
-      renderEmptyState(container, 'image', 'トピックがありません', 'トピックを追加して開始してください');
+      renderEmptyState(container, 'layoutGrid', 'トピックがありません', 'トピックを追加して開始してください');
     }
     return;
   }
@@ -656,6 +657,10 @@ function renderGallery(ctx) {
       propRow.appendChild(nameSpan);
       const valSpan = document.createElement('span');
       valSpan.className = 'gallery-card-prop-val';
+      valSpan.dataset.e2eId = ['gallery-card-property', dbPath, entityName, propName]
+        .map(value => encodeURIComponent(String(value || ''))).join(':');
+      valSpan.dataset.entityName = String(entityName || '');
+      valSpan.dataset.propertyName = String(propName || '');
       if (!ptcG?.source && typeof _dbRichAppendValuePreview === 'function') {
         // 互換テスト用: _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || []));
         _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || [], undefined, ctx?.filter));
@@ -794,6 +799,8 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
       } else {
         const empty = document.createElement('span');
         empty.className = 'kanban-card-image-preview';
+        empty.dataset.e2eId = ['kanban-card-property', dbPath, card.name, propName]
+          .map(value => encodeURIComponent(String(value || ''))).join(':');
         empty.textContent = '画像を追加';
         _attachDbCardInlineEditor(empty, {
           dbPath, entityName: card.name, propName, propertyConfig: ptc, values: card.data[propName] || [],
@@ -811,6 +818,8 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
     propRow.appendChild(nameSpan);
     const valueHost = document.createElement('span');
     valueHost.className = 'kanban-card-prop-value';
+    valueHost.dataset.e2eId = ['kanban-card-property', dbPath, card.name, propName]
+      .map(value => encodeURIComponent(String(value || ''))).join(':');
     if (typeof _dbRichAppendValuePreview === 'function' && vals.length) {
       _dbRichAppendValuePreview(valueHost, vals);
     } else {

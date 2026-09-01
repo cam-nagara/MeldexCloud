@@ -125,7 +125,14 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null,
     returnFocus: trigger || undefined,
     closeLabel: 'テンプレートプレビューを閉じる',
     onBeforeClose: reason => !busy || reason === 'applied' || reason === 'superseded',
-    onClose: releaseOverflowLock,
+    onClose: () => {
+      releaseOverflowLock();
+      // スマホの重ね下シートを閉じた直後は、親ギャラリーの再有効化が
+      // MutationObserverの次周期になる。親カードが再び操作可能になった時点でも
+      // フォーカスを補完し、戻る先を本文や背面toolbarへ流さない。
+      requestAnimationFrame(() => _focusDbTemplateTrigger(trigger));
+      setTimeout(() => _focusDbTemplateTrigger(trigger), 60);
+    },
   });
   const overlay = modalApi.overlay;
   const modal = modalApi.modal;

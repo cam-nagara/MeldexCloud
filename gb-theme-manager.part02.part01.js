@@ -90,6 +90,9 @@
       if (targetId === 'section-bar') {
         return `${selector}{border-left-color:${colorCss}!important}`;
       }
+      if (targetId === 'folder-tree-folder') {
+        return `${selector}{outline-color:${colorCss}!important}`;
+      }
       if (targetId === 'note-heading') {
         return _themeUiNoteHeadingAccentRule(selector, colorCss);
       }
@@ -242,6 +245,7 @@
     fallback('--ui-bg-control', '--bg3', '#2d2d2d');
     fallback('--ui-bg-control-hover', '--bg4', '#3e3e3e');
     if (!next['--ui-bg-control-active']) next['--ui-bg-control-active'] = 'color-mix(in srgb, var(--accent) 18%, var(--bg3))';
+    fallback('--ui-control-active-fg', '--fg', '#ffffff');
     fallback('--ui-popup-bg', '--bg2', '#252525');
     fallback('--ui-accent', '--accent', '#569cd6');
     if (!next['--accent-bg']) next['--accent-bg'] = 'color-mix(in srgb, var(--accent) 12%, transparent)';
@@ -555,16 +559,6 @@
     fallback('--chat-active-bg', '--ui-accent', '#2563eb');
     fallback('--chat-active-fg', '--ui-fg-strong', '#ffffff');
     fallback('--chat-accent', '--accent', '#569cd6');
-    fallback('--timer-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-panel-bg', '--bg2', '#252525');
-    fallback('--timer-display-bg', '--content-bg', '#1e1e1e');
-    fallback('--timer-fg', '--fg', '#d4d4d4');
-    fallback('--timer-muted-fg', '--fg2', '#969696');
-    fallback('--timer-border', '--border', '#333333');
-    fallback('--timer-hover-bg', '--ui-hover-bg', '#3e3e3e');
-    fallback('--timer-active-bg', '--ui-accent', '#2563eb');
-    fallback('--timer-active-fg', '--ui-fg-strong', '#ffffff');
-    fallback('--timer-accent', '--accent', '#569cd6');
     fallback('--history-bg', '--content-bg', '#1e1e1e');
     fallback('--history-row-bg', '--bg2', '#252525');
     fallback('--history-fg', '--fg', '#d4d4d4');

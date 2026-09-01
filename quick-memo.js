@@ -14,6 +14,7 @@
     recording: null,
     recordChunks: [],
     saveTimer: 0,
+    savePromise: null,
     flushRequested: false,
     share: null,
     currentMode: 'text',
@@ -22,6 +23,7 @@
     selectedTagIds: [],
     tagIdsByName: {},
     commonTagColors: {}, // 共通タグ由来の候補: 名前 → 色（#rrggbb、無ければ空文字）。スウォッチ表示用
+    tagCatalog: { tags: [], groups: [] },
     defaultPresetTagNames: [], // 既定プリセット（標準）に属するタグ名。候補帯の並び順3段目に使う
     voiceTimerInterval: null,
     voiceStartTime: 0,
@@ -31,13 +33,17 @@
     installPrompt: null,
     textHistory: { canUndo: false, canRedo: false },
     drawingHistory: { canUndo: false, canRedo: false },
-    // 右サイドバーの「情報」タブが、いま開いているメモのファイルを知るために使う。
+    // 右サイドバーの「プロパティ」タブが、いま開いているメモのファイルを知るために使う。
     // 新規メモ（未保存）のときは空文字のまま。
     currentPath: '',
+    currentVersionTarget: { path: '', type: 'file' },
   };
   if (typeof window !== 'undefined') {
     window.MeldexQuickMemo = window.MeldexQuickMemo || {};
     window.MeldexQuickMemo.currentPath = () => state.currentPath || '';
+    window.MeldexQuickMemo.currentVersionTarget = () => ({ ...state.currentVersionTarget });
+    window.MeldexQuickMemo.currentVisibleText = () => `${els.titleInput?.value || ''}\n${els.editor?.innerText || ''}`;
+    window.MeldexQuickMemo.reloadCurrentVersion = () => reloadCurrentVersion();
     // Meldex本体のフロートパネル（gb-quick-memo-panel.js）が、閉じる前に
     // 書きかけを保存させるために呼ぶ。単独アプリでも同じ経路を使える。
     window.MeldexQuickMemo.flush = () => saveNow({ manual: true });
@@ -55,6 +61,11 @@
     }
     return new URLSearchParams(location.search).get('embed') === '1';
   }
+
+  function isDesktopEmbedded() {
+    const params = new URLSearchParams(location.search || '');
+    return params.get('embed') === '1' && params.get('host') === 'meldex-desktop';
+  }
   let editorController = null;
   let drawingController = null;
   let libraryController = null;
@@ -70,6 +81,7 @@
 
   async function init() {
     bindElements();
+    applyHostUi();
     const controllerErrors = setupControllers();
     await hydrateDurableRecords();
     restoreDraft();
@@ -78,12 +90,15 @@
     registerCloseContract();
     switchMode(state.currentMode);
     initCloudMode();
+    await loadStorageLocation();
     loadTags();
     listenInstallPrompt();
     registerServiceWorker();
     setStatus(controllerErrors.length
       ? '一部の補助機能を読み込めませんでした。基本操作は利用できます'
       : '入力できます');
+    await openRequestedMemo();
+    document.documentElement.dataset.quickMemoReady = '1';
     controllerErrors.forEach(error => console.error('quick memo controller initialization failed', error));
     setTimeout(flushPendingQueue, 120);
   }
@@ -91,7 +106,7 @@
   function bindElements() {
     [
       'syncStatus', 'menuBtn', 'quickMemoMenu', 'listBtn', 'menuListBtn', 'workspaceBtn',
-      'installBtn', 'newMemoBtn', 'saveBtn',
+      'installBtn', 'newMemoBtn', 'saveBtn', 'storageLocation',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
       'modeSelect', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
       'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
@@ -100,7 +115,33 @@
       'listView', 'listBackBtn', 'listSearch', 'listTagFilter', 'listContent', 'listMoreBtn', 'editorView',
     ].forEach((id) => { els[id] = document.getElementById(id); });
     els.toolbarGroups = document.querySelectorAll('.qm-toolbar-group');
-    els.toolbar = document.querySelector('.qm-toolbar');
+    els.toolbar = document.querySelector('.qm-mode-tools');
+  }
+
+  function applyHostUi() {
+    if (!isDesktopEmbedded() || !els.saveBtn) return;
+    els.saveBtn.hidden = true;
+    els.saveBtn.setAttribute('aria-hidden', 'true');
+  }
+
+  async function loadStorageLocation() {
+    if (!els.storageLocation) return;
+    if (isCloudMode()) {
+      els.storageLocation.textContent = '保存先: Dropbox / クイックメモ';
+      els.storageLocation.title = els.storageLocation.textContent;
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/api/quick-memo/config`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || '保存先を確認できませんでした');
+      const path = String(payload.quick_memo_folder || '').trim();
+      els.storageLocation.textContent = path ? `保存先: ${path}` : '保存先: ホームフォルダ / クイックメモ';
+      els.storageLocation.title = els.storageLocation.textContent;
+    } catch {
+      els.storageLocation.textContent = '保存先: ホームフォルダ / クイックメモ';
+      els.storageLocation.title = els.storageLocation.textContent;
+    }
   }
 
   function setupControllers() {
@@ -267,7 +308,11 @@
   }
 
   function switchMode(mode) {
-    const nextMode = ['text', 'pen', 'voice'].includes(mode) ? mode : 'text';
+    const speechAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    const nextMode = ['text', 'pen', 'voice'].includes(mode)
+      && !(mode === 'voice' && isCloudMode() && !speechAvailable)
+      ? mode
+      : 'text';
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
     state.currentMode = nextMode;
     els.modeSelect.value = state.currentMode;
@@ -330,6 +375,11 @@
   function restoreDraft() {
     const draft = readJson(CURRENT_KEY, null);
     if (!draft) return;
+    state.currentPath = String(draft.server_path || '');
+    state.currentVersionTarget = {
+      path: String(draft.version_path || draft.server_path || ''),
+      type: draft.version_type === 'db' ? 'db' : 'file',
+    };
     els.titleInput.value = draft.title || '';
     state.selectedTags = Array.isArray(draft.tags) ? [...draft.tags] : parseTags(draft.tags || '');
     state.selectedTagIds = Array.isArray(draft.tag_ids) ? [...draft.tag_ids] : [];
@@ -385,6 +435,8 @@
     clearTimeout(state.saveTimer);
     _stopVoiceCapture();
     state.share = null;
+    state.currentPath = '';
+    state.currentVersionTarget = { path: '', type: 'file' };
     els.titleInput.value = '';
     els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
     state.selectedTags = [];
@@ -424,6 +476,10 @@
   async function openExistingMemo(memo) {
     _stopVoiceCapture();
     state.currentPath = String(memo.server_path || memo.path || '');
+    state.currentVersionTarget = {
+      path: String(memo.version_path || memo.server_path || memo.path || ''),
+      type: memo.version_type === 'db' ? 'db' : 'file',
+    };
     state.share = {
       source_url: memo.source_url || '',
       share_title: memo.share_title || '',
@@ -446,6 +502,42 @@
     libraryController.hide();
     switchMode('text');
     setStatus('過去のメモを開きました');
+  }
+
+  async function openMemoPath(path) {
+    const targetPath = String(path || '').trim();
+    if (!targetPath) throw new Error('クイックメモの保存先を確認できません');
+    let memo;
+    if (isCloudMode()) {
+      const result = await window.MeldexStandaloneCloud.readText(targetPath);
+      memo = libraryController.parseMemoText(result?.content ?? result, targetPath);
+    } else {
+      const query = new URLSearchParams({ path: targetPath });
+      const response = await fetch(`${API_BASE}/api/quick-memo/item?${query}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || payload.detail || 'クイックメモを読み込めませんでした');
+      memo = payload.memo || payload;
+    }
+    await openExistingMemo(memo);
+  }
+
+  async function openRequestedMemo() {
+    const path = new URLSearchParams(location.search || '').get('open');
+    if (!path) return false;
+    try {
+      await openMemoPath(path);
+      return true;
+    } catch (error) {
+      setStatus('引き継いだクイックメモを開けませんでした: ' + (error?.message || error), true);
+      return false;
+    }
+  }
+
+  async function reloadCurrentVersion() {
+    const path = String(state.currentPath || '').trim();
+    if (!path) throw new Error('復元したメモの保存先を確認できません');
+    await openMemoPath(path);
+    setStatus('バージョンを復元しました');
   }
 
   function applyIncomingShare() {
@@ -542,6 +634,8 @@
   }
 
   async function saveNow(opts) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = 0;
     const memo = collectMemo();
     const storedDraft = persistDraft(memo);
     const queued = enqueueMemo(memo);
@@ -658,26 +752,32 @@
     return drainQueue({ manual: false, pending: true });
   }
 
-  async function drainQueue(opts) {
+  function drainQueue(opts) {
     if (state.saving) {
       state.flushRequested = true;
-      return false;
+      return state.savePromise || Promise.resolve(false);
     }
     state.saving = true;
-    setStatus(opts && opts.manual ? '保存中...' : '自動保存中...');
-    try {
-      let ok = false;
-      do {
-        state.flushRequested = false;
-        ok = await flushQueue();
-      } while (ok && state.flushRequested);
-      state.dirty = !ok;
-      const pendingMessage = isCloudMode() ? 'Dropbox接続後に自動送信' : 'Meldex起動後に自動送信';
-      setStatus(ok ? 'Meldexに保存済み' : pendingMessage);
-      return ok;
-    } finally {
-      state.saving = false;
-    }
+    state.savePromise = (async () => {
+      setStatus(opts && opts.manual ? '保存中...' : '自動保存中...');
+      try {
+        let ok = false;
+        do {
+          state.flushRequested = false;
+          ok = await flushQueue();
+        // 保存中に入った新しい編集は、先行要求が旧スナップショットとして
+        // remaining を残した場合（ok=false）でも、同じ flush 呼び出し内で送る。
+        } while (state.flushRequested);
+        state.dirty = !ok;
+        const pendingMessage = isCloudMode() ? 'Dropbox接続後に自動送信' : 'Meldex起動後に自動送信';
+        setStatus(ok ? (isCloudMode() ? 'Dropboxに保存済み' : 'Meldexに保存済み') : pendingMessage);
+        return ok;
+      } finally {
+        state.saving = false;
+        state.savePromise = null;
+      }
+    })();
+    return state.savePromise;
   }
 
   async function flushQueue() {
@@ -696,8 +796,17 @@
         const current = readJson(CURRENT_KEY, {});
         if (current.memo_id === item.memo_id) {
           current.server_path = result.path || current.server_path || '';
+          current.version_path = result.version_path || current.version_path || current.server_path || '';
+          current.version_type = result.version_type === 'db' ? 'db' : 'file';
+          state.currentPath = current.server_path;
+          state.currentVersionTarget = {
+            path: current.version_path,
+            type: current.version_type,
+          };
           current.target_sheet = result.target_sheet || current.target_sheet || item.target_sheet || '';
-          if (Array.isArray(result.tags)) {
+          // 保存中にタグを付け外しした場合、古い要求の戻り値で現在の選択を
+          // 巻き戻さない。updated_at が同じ要求に限ってサーバー正規化を反映する。
+          if (Array.isArray(result.tags) && current.updated_at === item.updated_at) {
             current.tags = result.tags;
             state.selectedTags = [...result.tags];
             renderTagChips();
@@ -1032,6 +1141,26 @@
     // ダイアログを提供する（クラウド単独アプリ共通）。二重表示を避けるため、
     // quick-memo.js自身のインストールボタンはクラウドモードでは隠す。
     if (els.installBtn) els.installBtn.style.display = 'none';
+    if (els.saveBtn) {
+      els.saveBtn.setAttribute('aria-label', 'Dropboxへ保存');
+      els.saveBtn.setAttribute('title', 'Dropboxへ保存');
+      const textNode = [...els.saveBtn.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
+      if (textNode) textNode.nodeValue = 'Dropboxへ保存';
+    }
+    if (els.workspaceBtn) {
+      els.workspaceBtn.setAttribute('aria-label', 'Cloudワークスペースを開く');
+      els.workspaceBtn.setAttribute('title', 'Cloudワークスペースを開く');
+    }
+    // Cloud本体ではローカルOpenAI APIへボイスデータを送らない。ブラウザ標準の
+    // SpeechRecognition が無い環境ではボイスモード自体を選択不可にする。
+    if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+      const voiceOption = els.modeSelect?.querySelector?.('option[value="voice"]');
+      if (voiceOption) {
+        voiceOption.disabled = true;
+        voiceOption.hidden = true;
+      }
+      if (state.currentMode === 'voice') switchMode('text');
+    }
     const banner = document.getElementById('cloudConnectBanner');
     if (!banner) return;
     const codeInput = document.getElementById('cloudConnectCode');
@@ -1214,6 +1343,7 @@
       if (!presets.length || presets.includes(DEFAULT_TAG_PRESET_NAME)) defaultPresetNames.push(name);
     });
     state.allTags = [...new Set(names)];
+    state.tagCatalog = { tags: [...tags], groups: [...groups] };
     state.commonTagColors = nextColors;
     state.tagIdsByName = nextIds;
     state.defaultPresetTagNames = [...new Set(defaultPresetNames)];
@@ -1255,37 +1385,41 @@
   }
 
   function _buildTagChip(tag) {
-    const chip = document.createElement('span');
     const isSelected = state.selectedTags.includes(tag);
     const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
     const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
-    chip.className = 'qm-tag-chip'
-      + (isSelected ? ' is-selected' : '')
-      + (isCommonTag ? ' qm-tag-chip-common' : '');
-    chip.setAttribute('role', 'button');
-    chip.setAttribute('tabindex', '0');
-    chip.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
-    chip.title = isCommonTag ? '統一タグ辞書' : '';
-    // 選択中のチェック印はCSSの::beforeで表示する（DOMへテキストノードを
-    // 足すと el.textContent がタグ名と一致しなくなり、E2Eの選択判定が壊れるため）。
-    const label = document.createElement('span');
-    label.className = 'qm-tag-chip-label';
-    label.textContent = tag;
-    if (commonColor) label.style.color = commonColor;
-    chip.appendChild(label);
-    chip.addEventListener('click', () => toggleTag(tag));
-    chip.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
+    const record = (state.tagCatalog?.tags || []).find(item => String(item?.name || '') === tag)
+      || { name: tag, color: commonColor || '' };
+    const groupsById = Object.fromEntries((state.tagCatalog?.groups || []).map(group => [group.id, group]));
+    const chip = window.MeldexGlobalTags?.createTagChip
+      ? window.MeldexGlobalTags.createTagChip(record, {
+          groupsById,
+          className: 'qm-tag-chip' + (isSelected ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : ''),
+          title: isCommonTag ? `${tag}（統一タグ辞書）` : tag,
+          ariaLabel: `${tag}${isSelected ? '、選択中' : '、未選択'}`,
+          onActivate: () => toggleTag(tag),
+        })
+      : document.createElement('span');
+    if (!chip.classList.contains('gb-tag-chip')) {
+      chip.className = 'gb-tag-chip qm-tag-chip' + (isSelected ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : '');
+      chip.textContent = tag;
+      chip.tabIndex = 0;
+      chip.setAttribute('role', 'button');
+      chip.addEventListener('click', () => toggleTag(tag));
+      chip.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         toggleTag(tag);
-      }
-    });
+      });
+    }
+    const activator = chip.querySelector?.('.gb-tag-chip__label') || chip;
+    activator.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     return chip;
   }
 
   function _buildTagRailMoreChip(hiddenCount, allNames) {
     const chip = document.createElement('span');
-    chip.className = 'qm-tag-chip qm-tag-chip-more';
+    chip.className = 'gb-tag-chip qm-tag-chip qm-tag-chip-more';
     chip.setAttribute('role', 'button');
     chip.setAttribute('tabindex', '0');
     chip.textContent = `+${hiddenCount}`;
@@ -1348,19 +1482,11 @@
   }
 
   async function addNewTag() {
-    const name = await showTagPicker();
-    if (!name) return;
-    const tag = name.trim();
     try {
-      if (!state.allTags.includes(tag)) await _createUnifiedTag(tag);
       await loadTags();
-      if (!state.selectedTags.includes(tag)) state.selectedTags.push(tag);
-      _recordRecentTagName(tag);
-      state.selectedTagIds = state.selectedTags.map(name => state.tagIdsByName[name]).filter(Boolean);
-      renderTagChips();
-      scheduleSave();
+      await showTagPicker();
     } catch (error) {
-      setStatus('タグを追加できませんでした: ' + (error?.message || error), true);
+      setStatus('タグを開けませんでした: ' + (error?.message || error), true);
     }
   }
 
@@ -1405,12 +1531,16 @@
     setStatus(instructions);
   }
 
-  // --- 音声モード ----------------------------------------------------------
+  // --- ボイスモード --------------------------------------------------------
 
   async function startVoiceRecording() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (Recognition) {
       startBrowserSpeech(Recognition);
+      return;
+    }
+    if (isCloudMode()) {
+      els.voiceStatus.textContent = 'このブラウザではボイス認識を利用できません';
       return;
     }
     try {
@@ -1455,7 +1585,7 @@
         els.voiceTranscript.textContent = accumulated;
       }
     };
-    rec.onerror = () => { els.voiceStatus.textContent = '音声認識エラー'; };
+    rec.onerror = () => { els.voiceStatus.textContent = 'ボイス認識エラー'; };
     rec.onend = () => {
       state.speech = null;
       if (state.voicePausing) {
@@ -1560,6 +1690,7 @@
   async function transcribeBlob(blob) {
     els.voiceStatus.textContent = '文字起こし中...';
     try {
+      if (isCloudMode()) throw new Error('cloud-local-transcription-disabled');
       const dataUrl = await blobToDataUrl(blob);
       const result = await postJson('/api/quick-memo/transcribe', {
         audio_base64: dataUrl,
@@ -1638,51 +1769,176 @@
       dialog.setAttribute('aria-labelledby', 'qm-tag-picker-title');
       const title = document.createElement('h2');
       title.id = 'qm-tag-picker-title';
-      title.textContent = 'タグを選択';
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = 'タグ名を入力または選択';
-      input.setAttribute('aria-label', 'タグ名');
-      input.setAttribute('list', 'qm-tag-picker-options');
-      const list = document.createElement('datalist');
-      list.id = 'qm-tag-picker-options';
-      state.allTags.forEach(name => {
-        const option = document.createElement('option');
-        option.value = name;
-        list.appendChild(option);
-      });
+      title.textContent = 'タグツリー';
+      const selectedCount = document.createElement('span');
+      selectedCount.className = 'qm-tag-picker-count';
+      selectedCount.setAttribute('aria-live', 'polite');
+      const heading = document.createElement('div');
+      heading.className = 'qm-tag-picker-heading';
+      heading.append(title, selectedCount);
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.placeholder = 'タグを検索';
+      search.setAttribute('aria-label', 'タグを検索');
+      const tree = document.createElement('div');
+      tree.className = 'qm-tag-picker-tree';
+      tree.setAttribute('role', 'tree');
+      tree.setAttribute('aria-label', 'タグの階層');
+      const createRow = document.createElement('div');
+      createRow.className = 'qm-tag-picker-create';
+      const createInput = document.createElement('input');
+      createInput.type = 'text';
+      createInput.placeholder = '新しいタグ名';
+      createInput.setAttribute('aria-label', '新しいタグ名');
+      const createButton = document.createElement('button');
+      createButton.type = 'button';
+      createButton.textContent = '追加';
+      createRow.append(createInput, createButton);
       const actions = document.createElement('div');
       actions.className = 'qm-tag-picker-actions';
       actions.setAttribute('data-dialog-actions', '1');
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = 'キャンセル';
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'qm-primary';
-      add.textContent = '追加';
-      actions.append(cancel, add);
-      dialog.append(title, input, list, actions);
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = '全解除';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'qm-primary';
+      close.textContent = '閉じる';
+      actions.append(clear, close);
+      dialog.append(heading, search, tree, createRow, actions);
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
       let finished = false;
-      const finish = value => {
+      const finish = () => {
         if (finished) return;
         finished = true;
         overlay.remove();
         document.removeEventListener('keydown', onKeydown, true);
         els.addTagBtn?.focus?.();
-        resolve(String(value || '').trim());
+        resolve();
+      };
+      const compare = (left, right) => Number(left?.sort_index || 0) - Number(right?.sort_index || 0)
+        || String(left?.name || '').localeCompare(String(right?.name || ''), 'ja');
+      const updateCount = () => {
+        selectedCount.textContent = `${state.selectedTags.length}件選択中`;
+      };
+      const tagRow = (tag, depth) => {
+        const name = String(tag?.name || '').trim();
+        const label = document.createElement('label');
+        label.className = 'qm-tag-picker-tag';
+        label.setAttribute('role', 'treeitem');
+        label.style.setProperty('--qm-tag-depth', String(depth));
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = state.selectedTags.includes(name);
+        checkbox.setAttribute('aria-label', `${name}を${checkbox.checked ? '解除' : '選択'}`);
+        const swatch = document.createElement('span');
+        swatch.className = 'qm-tag-picker-swatch';
+        swatch.style.background = state.commonTagColors[name] || 'var(--qm-accent)';
+        const text = document.createElement('span');
+        text.textContent = name;
+        checkbox.addEventListener('change', () => {
+          toggleTag(name);
+          checkbox.checked = state.selectedTags.includes(name);
+          checkbox.setAttribute('aria-label', `${name}を${checkbox.checked ? '解除' : '選択'}`);
+          updateCount();
+        });
+        label.append(checkbox, swatch, text);
+        return label;
+      };
+      const renderTree = () => {
+        tree.innerHTML = '';
+        const filter = search.value.trim().toLocaleLowerCase('ja');
+        const groups = [...(state.tagCatalog.groups || [])].sort(compare);
+        const tags = [...(state.tagCatalog.tags || [])].sort(compare);
+        const groupsByParent = new Map();
+        groups.forEach(group => {
+          const parentId = String(group?.parent_id || '');
+          if (!groupsByParent.has(parentId)) groupsByParent.set(parentId, []);
+          groupsByParent.get(parentId).push(group);
+        });
+        const tagsByGroup = new Map();
+        tags.forEach(tag => {
+          const groupId = String(tag?.group_id || '');
+          if (!tagsByGroup.has(groupId)) tagsByGroup.set(groupId, []);
+          tagsByGroup.get(groupId).push(tag);
+        });
+        const visited = new Set();
+        const buildGroup = (group, depth, ancestorMatched) => {
+          const id = String(group?.id || '');
+          if (!id || visited.has(id)) return null;
+          visited.add(id);
+          const ownMatched = !filter || String(group?.name || '').toLocaleLowerCase('ja').includes(filter);
+          const includeAll = ancestorMatched || ownMatched;
+          const childNodes = (groupsByParent.get(id) || [])
+            .map(child => buildGroup(child, depth + 1, includeAll))
+            .filter(Boolean);
+          const tagNodes = (tagsByGroup.get(id) || [])
+            .filter(tag => includeAll || String(tag?.name || '').toLocaleLowerCase('ja').includes(filter))
+            .map(tag => tagRow(tag, depth + 1));
+          if (filter && !ownMatched && !childNodes.length && !tagNodes.length) return null;
+          const details = document.createElement('details');
+          details.className = 'qm-tag-picker-group';
+          details.open = true;
+          details.setAttribute('role', 'group');
+          const summary = document.createElement('summary');
+          summary.textContent = String(group?.name || 'グループ');
+          summary.style.setProperty('--qm-tag-depth', String(depth));
+          details.append(summary, ...tagNodes, ...childNodes);
+          return details;
+        };
+        const rootIds = new Set(groups.map(group => String(group?.id || '')));
+        groups
+          .filter(group => !group?.parent_id || !rootIds.has(String(group.parent_id)))
+          .map(group => buildGroup(group, 0, false))
+          .filter(Boolean)
+          .forEach(node => tree.appendChild(node));
+        const ungrouped = (tagsByGroup.get('') || [])
+          .filter(tag => !filter || String(tag?.name || '').toLocaleLowerCase('ja').includes(filter));
+        if (ungrouped.length) {
+          const details = document.createElement('details');
+          details.className = 'qm-tag-picker-group';
+          details.open = true;
+          const summary = document.createElement('summary');
+          summary.textContent = '未分類';
+          details.append(summary, ...ungrouped.map(tag => tagRow(tag, 1)));
+          tree.appendChild(details);
+        }
+        if (!tree.children.length) {
+          const empty = document.createElement('div');
+          empty.className = 'qm-tag-picker-empty';
+          empty.textContent = '一致するタグがありません';
+          tree.appendChild(empty);
+        }
+        updateCount();
+      };
+      const createTag = async () => {
+        const name = createInput.value.trim();
+        if (!name) return;
+        createButton.disabled = true;
+        try {
+          if (!state.allTags.includes(name)) await _createUnifiedTag(name);
+          await loadTags();
+          if (!state.selectedTags.includes(name)) toggleTag(name);
+          _recordRecentTagName(name);
+          createInput.value = '';
+          search.value = name;
+          renderTree();
+        } catch (error) {
+          setStatus('タグを追加できませんでした: ' + (error?.message || error), true);
+        } finally {
+          createButton.disabled = false;
+        }
       };
       const onKeydown = event => {
         if (event.key === 'Escape') {
           event.preventDefault();
-          finish('');
-        } else if (event.key === 'Enter' && document.activeElement === input) {
+          finish();
+        } else if (event.key === 'Enter' && document.activeElement === createInput) {
           event.preventDefault();
-          finish(input.value);
+          createTag();
         } else if (event.key === 'Tab') {
-          const focusable = [input, cancel, add];
+          const focusable = Array.from(dialog.querySelectorAll('input, button, summary')).filter(item => !item.disabled);
           const first = focusable[0];
           const last = focusable[focusable.length - 1];
           if (event.shiftKey && document.activeElement === first) {
@@ -1694,13 +1950,23 @@
           }
         }
       };
-      cancel.addEventListener('click', () => finish(''));
-      add.addEventListener('click', () => finish(input.value));
+      search.addEventListener('input', renderTree);
+      createButton.addEventListener('click', createTag);
+      clear.addEventListener('click', () => {
+        if (!state.selectedTags.length) return;
+        state.selectedTags = [];
+        state.selectedTagIds = [];
+        renderTagChips();
+        scheduleSave();
+        renderTree();
+      });
+      close.addEventListener('click', finish);
       overlay.addEventListener('pointerdown', event => {
-        if (event.target === overlay) finish('');
+        if (event.target === overlay) finish();
       });
       document.addEventListener('keydown', onKeydown, true);
-      input.focus();
+      renderTree();
+      search.focus();
     });
   }
 
@@ -1726,7 +1992,13 @@
     const store = window.MeldexStandaloneLocalDrafts;
     if (!store?.getRaw) return;
     for (const key of [CURRENT_KEY, QUEUE_KEY]) {
-      const value = await store.getRaw(`quick-memo:${key}`, null).catch(() => null);
+      // IndexedDB の open/transaction がブラウザ側で応答しない場合でも、localStorage の
+      // 下書きで編集UIを起動できるようにする。未完了のPromiseは後から解決してもここでは
+      // 状態へ書き戻さないため、起動後の入力を古い値で上書きしない。
+      const value = await Promise.race([
+        store.getRaw(`quick-memo:${key}`, null).catch(() => null),
+        new Promise(resolve => setTimeout(() => resolve(null), 1500)),
+      ]);
       if (value != null) durableMemory.set(key, value);
     }
   }

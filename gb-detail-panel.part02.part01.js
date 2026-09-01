@@ -223,19 +223,25 @@ function _fsUseOsAccent(ctx, adapter) {
 }
 
 function _fsSetUseOsAccent(ctx, enabled) {
-  const adapter = _fsGetAdapter(ctx);
+  const getAdapter = typeof window !== 'undefined' && typeof window._fsGetAdapter === 'function'
+    ? window._fsGetAdapter
+    : _fsGetAdapter;
+  const adapter = getAdapter(ctx);
   if (!adapter) return false;
   adapter.set(_fsUseOsAccentField(), enabled ? '1' : '');
   return true;
 }
 
 function fileThemeToggleOsAccent(ctx) {
-  const adapter = _fsGetAdapter(ctx);
+  const getAdapter = typeof window !== 'undefined' && typeof window._fsGetAdapter === 'function'
+    ? window._fsGetAdapter
+    : _fsGetAdapter;
+  const adapter = getAdapter(ctx);
   const next = !_fsUseOsAccent(ctx, adapter);
   if (!_fsSetUseOsAccent(ctx, next)) return;
   const finish = () => {
     _fsApplyCurrentStyleRuntime(ctx);
-    renderFileStyleTab(ctx);
+    _fsRefreshThemePanels(ctx);
   };
   if (next && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.refreshOsAccentColor === 'function') {
     MeldexThemeManager.refreshOsAccentColor().finally(finish);
@@ -265,9 +271,79 @@ function _fsThemeOptionsHtml(currentId, ctx) {
   return inherit + localCustom + MeldexThemeManager.themeOptionsHtml(cur || '__file-theme-inherit__', { includeSystem: true });
 }
 
-function _fsThemeAction(iconName, fallback, label, action, ctx, danger) {
-  const icon = typeof lucide === 'function' ? lucide(iconName, 14) : fallback;
-  return `<button type="button" class="bd-detail-style-action${danger ? ' bd-detail-style-action--danger' : ''}" data-fs-theme-action="${esc(action)}" data-e2e-id="file-style-theme-action-${esc(ctx)}-${esc(action)}" title="${esc(label)}" aria-label="${esc(label)}">${icon}</button>`;
+function _fsThemeMenuButton(ctx) {
+  const icon = typeof lucide === 'function' ? lucide('moreHorizontal', 16) : '…';
+  return `<button type="button" class="bd-detail-style-action fs-theme-menu-button" data-fs-theme-menu data-e2e-id="file-style-theme-menu-${esc(ctx)}" title="テーマプリセットの操作" aria-label="テーマプリセットの操作" aria-haspopup="menu" aria-expanded="false">${icon}</button>`;
+}
+
+function _fsOpenThemeMenu(anchor, ctx) {
+  document.querySelectorAll('.fs-theme-preset-menu').forEach(menu => menu.remove());
+  if (!anchor) return;
+  const adapter = _fsGetAdapter(ctx);
+  const id = _fsCurrentThemeId(ctx, adapter);
+  const style = _fsGetStyleForContext(ctx) || {};
+  const custom = _fsIsLocalCustomThemeId(id)
+    || _fsIsLocalCustomThemeStyle(style)
+    || !!(id && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getCustomThemes().some(theme => theme.id === id));
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu fs-theme-preset-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'テーマプリセットの操作');
+  const actions = [
+    ['plus', '追加', 'create', false],
+    ['copy', '複製', 'duplicate', false],
+    ['pencil', 'リネーム', 'rename', !custom],
+    ['refreshCw', '更新', 'reset', false],
+    ['save', '保存', 'save', !custom],
+    ['trash2', '削除', 'delete', !custom],
+  ];
+  let dismiss = null;
+  const close = () => {
+    menu.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    if (dismiss) {
+      document.removeEventListener('pointerdown', dismiss, true);
+      document.removeEventListener('keydown', dismiss, true);
+    }
+  };
+  actions.forEach(([iconName, label, action, disabled]) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'gb-context-menu-item' + (action === 'delete' ? ' danger' : '');
+    item.dataset.fsThemeAction = action;
+    item.dataset.e2eId = `file-style-theme-action-${ctx}-${action === 'reset' ? 'update' : action}`;
+    item.setAttribute('role', 'menuitem');
+    item.disabled = !!disabled;
+    item.innerHTML = `${typeof lucide === 'function' ? lucide(iconName, 14) : ''}<span>${label}</span>`;
+    item.addEventListener('click', () => {
+      if (item.disabled) return;
+      close();
+      _fsRunThemeAction(ctx, action);
+    });
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  anchor.setAttribute('aria-expanded', 'true');
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, anchor.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.left = `${Math.max(4, rect.right - menu.offsetWidth)}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  }
+  dismiss = event => {
+    if (event.type === 'keydown' && event.key !== 'Escape') return;
+    if (event.type === 'pointerdown' && (menu.contains(event.target) || anchor.contains(event.target))) return;
+    if (event.type === 'keydown') event.preventDefault();
+    close();
+  };
+  setTimeout(() => {
+    if (!menu.isConnected) return;
+    document.addEventListener('pointerdown', dismiss, true);
+    document.addEventListener('keydown', dismiss, true);
+    menu.querySelector('button:not(:disabled)')?.focus();
+  }, 0);
 }
 
 function _fsRunThemeAction(ctx, action) {
@@ -603,14 +679,7 @@ function _fsRenderThemeControlSection(ctx, adapter) {
         <select class="gb-select fs-theme-select" data-fs-theme-select data-e2e-id="file-style-theme-select-${esc(ctx)}" aria-label="テーマ">
           ${_fsThemeOptionsHtml(current, ctx)}
         </select>
-        <span class="bd-detail-style-row fs-theme-actions">
-          ${_fsThemeAction('plus', '+', '新規カスタムテーマを作成', 'create', ctx)}
-          ${_fsThemeAction('copy', '複製', '選択中テーマを複製', 'duplicate', ctx)}
-          ${_fsThemeAction('pencil', '名前', 'テーマ名を変更', 'rename', ctx)}
-          ${_fsThemeAction('rotateCcw', '戻す', 'デフォルトに戻す', 'reset', ctx)}
-          ${_fsThemeAction('save', '保存', 'デフォルトとして保存', 'save', ctx)}
-          ${_fsThemeAction('trash2', '削除', 'カスタムテーマを削除', 'delete', ctx, true)}
-        </span>
+        ${_fsThemeMenuButton(ctx)}
       </div>
       ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor }) : ''}
     </section>`;
@@ -624,14 +693,12 @@ function _fsBindThemePanel(root, ctx) {
   if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
   const select = section.querySelector('[data-fs-theme-select]');
   select?.addEventListener('change', () => fileThemeSelect(ctx, select.value));
-  section.querySelectorAll('[data-fs-theme-action]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      _fsRunThemeAction(ctx, btn.dataset.fsThemeAction || '');
-    });
+  section.querySelector('[data-fs-theme-menu]')?.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    _fsOpenThemeMenu(event.currentTarget, ctx);
   });
   _fsBindThemeColorSetEditor(section, ctx);
-  _fsRefreshThemeActionStates(root, ctx);
   _fsEnsureThemePanelGlobalSync();
 }
 
@@ -650,6 +717,17 @@ function _fsEnsureThemePanelGlobalSync() {
   };
   window.addEventListener('meldex-theme-color-set-change', refresh);
   window.addEventListener('meldex-theme-change', refresh);
+}
+
+function _fsRefreshThemePanels(ctx) {
+  const hosts = typeof document === 'undefined' ? [] : Array.from(
+    document.querySelectorAll('[data-file-style-context]')
+  ).filter(host => host.dataset.fileStyleContext === ctx);
+  if (!hosts.length) {
+    renderFileStyleTab(ctx);
+    return;
+  }
+  hosts.forEach(host => renderFileStyleTab(ctx, host));
 }
 
 function _fsBindThemeColorSetEditor(root, ctx) {
@@ -675,7 +753,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
     next[_fsLocalCustomThemeNameKey()] = next[_fsLocalCustomThemeNameKey()] || 'カスタムテーマ';
     _fsPersistStyleViaAdapter(ctx, adapter, next, { label: 'テーマカラー変更' });
     _fsApplyCurrentStyleRuntime(ctx);
-    renderFileStyleTab(ctx);
+    _fsRefreshThemePanels(ctx);
   };
   root.querySelector('[data-theme-os-accent-toggle]')?.addEventListener('click', () => {
     fileThemeToggleOsAccent(ctx);
@@ -709,21 +787,6 @@ function _fsBindThemeColorSetEditor(root, ctx) {
   });
 }
 
-function _fsRefreshThemeActionStates(root, ctx) {
-  const targetRoot = (root && root.querySelector) ? root : document;
-  const section = targetRoot.matches?.('.fs-theme-management')
-    ? targetRoot
-    : (ctx ? targetRoot.querySelector?.(`.fs-theme-management[data-file-theme-panel="${ctx}"]`) : null) || targetRoot;
-  const adapter = _fsGetAdapter(ctx);
-  const id = _fsCurrentThemeId(ctx, adapter);
-  const isCustom = _fsIsLocalCustomThemeId(id) || !!(id && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
-  ['rename', 'save', 'delete'].forEach(action => {
-    section.querySelectorAll(`[data-fs-theme-action="${action}"]`).forEach(btn => {
-      btn.disabled = !isCustom;
-    });
-  });
-}
-
 function fileThemeSelect(ctx, id) {
   const adapter = _fsGetAdapter(ctx);
   if (!adapter) return;
@@ -732,13 +795,13 @@ function fileThemeSelect(ctx, id) {
     if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = '';
     _fsPersistStyleViaAdapter(ctx, adapter, null, { label: 'テーマ解除' });
     _fsApplyCurrentStyleRuntime(ctx);
-    renderFileStyleTab(ctx);
+    _fsRefreshThemePanels(ctx);
     return;
   }
   if (_fsIsLocalCustomThemeId(nextId)) return;
   _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, sourceId: nextId, name: 'カスタムテーマ' });
   _fsApplyCurrentStyleRuntime(ctx);
-  renderFileStyleTab(ctx);
+  _fsRefreshThemePanels(ctx);
 }
 
 async function fileThemeCreate(ctx) {
@@ -749,7 +812,7 @@ async function fileThemeCreate(ctx) {
   const adapter = _fsGetAdapter(ctx);
   _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, name: label });
   _fsApplyCurrentStyleRuntime(ctx);
-  renderFileStyleTab(ctx);
+  _fsRefreshThemePanels(ctx);
   showStatus('カスタムテーマを作成しました');
 }
 
@@ -761,7 +824,7 @@ async function fileThemeDuplicate(ctx) {
   if (name === null) return;
   _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, sourceId, name: String(name || '').trim() || 'カスタムテーマ' });
   _fsApplyCurrentStyleRuntime(ctx);
-  renderFileStyleTab(ctx);
+  _fsRefreshThemePanels(ctx);
   showStatus('カスタムテーマを複製しました');
 }
 
@@ -777,7 +840,7 @@ async function fileThemeRename(ctx) {
     const next = { ...(_fsGetStyleForContext(ctx) || {}) };
     next[_fsLocalCustomThemeNameKey()] = label;
     _fsPersistStyleViaAdapter(ctx, adapter, next, { label: 'テーマ名変更' });
-    renderFileStyleTab(ctx);
+    _fsRefreshThemePanels(ctx);
     return;
   }
   const theme = MeldexThemeManager.getCustomThemes().find(t => t.id === id);
@@ -786,7 +849,7 @@ async function fileThemeRename(ctx) {
   if (name === null) return;
   const renamed = MeldexThemeManager.renameCustomTheme(id, name);
   if (!renamed) { showStatus('テーマ名を入力してください', true); return; }
-  renderFileStyleTab(ctx);
+  _fsRefreshThemePanels(ctx);
 }
 
 function fileThemeReset(ctx) {
@@ -810,7 +873,7 @@ function fileThemeReset(ctx) {
     if (panelId && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel(panelId);
   }
   _fsApplyCurrentStyleRuntime(ctx);
-  renderFileStyleTab(ctx);
+  _fsRefreshThemePanels(ctx);
   showStatus('デフォルトに戻しました');
 }
 
@@ -881,11 +944,11 @@ async function fileThemeDelete(ctx) {
 }
 
 // ctx: 'folder' | 'page' | 'db' | 'scriptnote' | 'board' | 'calendar'
-function renderFileStyleTab(ctx) {
+function renderFileStyleTab(ctx, hostEl) {
   if (typeof renderFileStyleTabUnified === 'function') {
-    return renderFileStyleTabUnified(ctx);
+    return renderFileStyleTabUnified(ctx, hostEl);
   }
-  let el = document.getElementById('detail-tab-file-style');
+  let el = hostEl || document.getElementById('detail-tab-file-style');
   if (!el) {
     const rpDetail = document.getElementById('rp-detail');
     if (rpDetail) _ensureDetailTabShell(rpDetail);

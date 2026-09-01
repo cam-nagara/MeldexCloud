@@ -220,19 +220,24 @@
 
   function _workspaceRole(role, fallback) {
     const value = String(role || '').trim().toLowerCase();
-    return ['owner', 'admin', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
+    return ['owner', 'admin', 'schedule_manager', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
   }
 
   function _workspaceMember(member, fallbackName) {
+    const userType = String(member?.userType || member?.user_type || 'account').trim();
+    if (userType === 'virtual') return null;
     const name = String(member?.name || fallbackName || '').trim();
     if (!name) return null;
     const accountId = String(member?.accountId || member?.account_id || '').trim();
     const row = {
       name,
+      userType: 'account',
       role: _workspaceRole(member?.role, 'member'),
       avatar: String(member?.avatar || ''),
       updatedAt: String(member?.updatedAt || member?.updated_at || _nowIso()),
     };
+    const userId = String(member?.userId || member?.user_id || member?.id || member?.member_id || accountId || '').trim();
+    if (userId) row.userId = userId;
     if (accountId) row.accountId = accountId;
     return row;
   }
@@ -406,6 +411,29 @@
   }
 
   async function _cloudUpsertWorkspaceMember(id, name, body) {
+    if (String(body?.user_type || body?.userType || 'account').trim() === 'virtual') {
+      throw _httpError(400, '仮ユーザーはログイン権限を持たないため、ワークスペースのアクセスユーザーには追加できません');
+    }
+    const identities = new Set([
+      String(name || '').trim(),
+      String(body?.user_id || body?.userId || '').trim(),
+    ].filter(Boolean));
+    const listRegistryUsers = globalThis.MeldexUserRegistry?.listStaff;
+    if (typeof listRegistryUsers === 'function') {
+      let registryUsers;
+      try {
+        registryUsers = await listRegistryUsers.call(globalThis.MeldexUserRegistry, { force: true });
+      } catch {
+        throw _httpError(503, 'ユーザー管理シートを確認できないため、アクセスユーザーを追加できません');
+      }
+      const matchedVirtualUser = (Array.isArray(registryUsers) ? registryUsers : []).some(user => {
+        if (user?.user_type !== 'virtual') return false;
+        return [user.user_id, user.user, user.display].some(value => identities.has(String(value || '').trim()));
+      });
+      if (matchedVirtualUser) {
+        throw _httpError(400, '仮ユーザーはログイン権限を持たないため、ワークスペースのアクセスユーザーには追加できません');
+      }
+    }
     let workspace = null;
     await _updateCloudWorkspaceStore(store => {
       const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
@@ -420,6 +448,7 @@
         role: body?.role || existing?.role || 'member',
         avatar: Object.prototype.hasOwnProperty.call(body || {}, 'avatar') ? body.avatar : (existing?.avatar || ''),
         accountId,
+        userId: body?.user_id || body?.userId || existing?.userId || '',
         updatedAt: _nowIso(),
       }, targetName);
       if (!member) throw _httpError(400, 'メンバー名を指定してください');
@@ -469,7 +498,8 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy']);
+  const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
     const contract = window.MeldexSystemStorage;
@@ -525,6 +555,77 @@
     }
     const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
     return { available: true, ok: true, revision: record?.revision || null };
+  }
+
+  function _assertWorkspacePreferenceName(name) {
+    const doc = String(name || '').trim();
+    if (!WORKSPACE_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知のワークスペース設定です: ${name}`);
+    return doc;
+  }
+
+  function _workspacePreferenceRole(workspace) {
+    const user = String(typeof getUsername === 'function' ? getUsername() : '').trim().toLowerCase();
+    const member = (Array.isArray(workspace?.members) ? workspace.members : []).find(row =>
+      user && String(row?.name || '').trim().toLowerCase() === user);
+    return String(member?.role || '').trim().toLowerCase();
+  }
+
+  async function _workspacePreferenceContext(workspaceId, mode) {
+    const store = await _readCloudWorkspaceStore();
+    const workspace = store.workspaces.find(item => item?.id === String(workspaceId || '') && item.deleted !== true);
+    if (!workspace) throw _httpError(404, 'ワークスペースが見つかりません');
+    const role = _workspacePreferenceRole(workspace);
+    if (!role) throw _httpError(403, 'このワークスペース設定を表示できません');
+    if (mode === 'write' && !['owner', 'admin'].includes(role)) {
+      throw _httpError(403, '復元ポイント方針を変更できるのは所有者または管理者だけです');
+    }
+    const provider = await _requirePwaProvider(mode === 'write' ? 'readwrite' : 'read');
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const registry = window.MeldexSourceFolderRegistry;
+    if (!resolver?.resolveSharedWorkspaceTypedAdapter || !registry?.resolveDropboxPath) {
+      return { available: false, workspace, role, adapter: null };
+    }
+    let dropboxPath = '';
+    try { dropboxPath = registry.resolveDropboxPath(workspace.folder || ''); } catch {}
+    if (!dropboxPath) return { available: false, workspace, role, adapter: null };
+    try {
+      const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(
+        provider, _personalPreferenceKind(), {
+          workspaceDropboxPath: dropboxPath,
+          workspaceId: workspace.id,
+        },
+      );
+      return { available: true, workspace, role, adapter };
+    } catch {
+      return { available: false, workspace, role, adapter: null };
+    }
+  }
+
+  async function _readWorkspacePreference(workspaceId, name) {
+    const doc = _assertWorkspacePreferenceName(name);
+    const context = await _workspacePreferenceContext(workspaceId, 'read');
+    const base = { available: context.available, scope: 'workspace', workspaceId,
+      role: context.role, readOnly: !['owner', 'admin'].includes(context.role) };
+    if (!context.adapter) return { ...base, exists: false, payload: null, revision: null };
+    const record = await context.adapter.load(_personalPreferenceKind(), doc);
+    if (!record) return { ...base, exists: false, payload: null, revision: null };
+    return { ...base, exists: true, payload: record.payload, revision: record.revision };
+  }
+
+  async function _writeWorkspacePreference(workspaceId, name, body) {
+    const doc = _assertWorkspacePreferenceName(name);
+    const payload = body?.payload;
+    if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    const context = await _workspacePreferenceContext(workspaceId, 'write');
+    if (!context.adapter) return { available: false, ok: false, revision: null,
+      scope: 'workspace', workspaceId, role: context.role, readOnly: true };
+    const options = {};
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      options.expectedRevision = body.expectedRevision || null;
+    }
+    const record = await context.adapter.save(_personalPreferenceKind(), doc, payload, options);
+    return { available: true, ok: true, revision: record?.revision || null,
+      scope: 'workspace', workspaceId, role: context.role, readOnly: false };
   }
 
   // ---- クラウド直結（端末内保存／Dropboxの両バックエンド）の圧縮・解凍・ZIP閲覧 ----
@@ -877,8 +978,58 @@
     if (pathname === '/home-folder' && method === 'GET') return _pwaHomeFolder();
     if (pathname === '/ui-config' && method === 'GET') return _safeReadJson(PWA_UI_CONFIG_KEY, {});
     if (pathname === '/ui-config' && method === 'PUT') {
-      _safeWriteJson(PWA_UI_CONFIG_KEY, body || {});
-      return { ok: true };
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const desired = body && typeof body === 'object' ? body : {};
+      const currentRevision = await _pwaUiConfigRevision(current);
+      const desiredRevision = await _pwaUiConfigRevision(desired);
+      if (currentRevision === desiredRevision) return { ok: true, unchanged: true, revision: currentRevision };
+      const captured = await _pwaCaptureUiConfigVersion(current, '設定変更前');
+      try {
+        _requiredWriteJson(PWA_UI_CONFIG_KEY, desired);
+      } catch (error) {
+        if (captured.changed) _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, captured.previousRows);
+        throw error;
+      }
+      return { ok: true, revision: desiredRevision };
+    }
+    if (pathname === '/ui-config/history' && method === 'GET') {
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+      return {
+        currentRevision: await _pwaUiConfigRevision(current),
+        versions: (Array.isArray(history) ? history : []).map(({ snapshot, ...version }) => version),
+      };
+    }
+    const uiConfigHistoryMatch = pathname.match(/^\/ui-config\/history\/([^/]+)(\/restore)?$/);
+    if (uiConfigHistoryMatch && method === (uiConfigHistoryMatch[2] ? 'POST' : 'GET')) {
+      const versionId = decodeURIComponent(uiConfigHistoryMatch[1]);
+      const history = _requiredReadJson(PWA_UI_CONFIG_HISTORY_KEY, []);
+      const saved = (Array.isArray(history) ? history : []).find(row => row?.versionId === versionId);
+      if (!saved || !saved.snapshot || typeof saved.snapshot !== 'object') throw _httpError(404, '指定した設定の版がありません');
+      if (await _pwaUiConfigRevision(saved.snapshot) !== saved.sourceRevision) throw _httpError(409, '保存版の設定の整合性を確認できません');
+      const current = _safeReadJson(PWA_UI_CONFIG_KEY, {});
+      const currentRevision = await _pwaUiConfigRevision(current);
+      if (!uiConfigHistoryMatch[2]) {
+        const keys = [...new Set([...Object.keys(saved.snapshot), ...Object.keys(current)])].sort();
+        return {
+          versionId, currentRevision, version: saved.snapshot, current,
+          changes: keys.filter(key => _pwaStableJson(saved.snapshot[key]) !== _pwaStableJson(current[key])).map(key => ({
+            key, versionValue: saved.snapshot[key], currentValue: current[key],
+          })),
+        };
+      }
+      if (String(body?.expectedRevision || '') !== currentRevision) throw _httpError(409, '表示後に設定が変更されたため復元を中止しました');
+      const captured = await _pwaCaptureUiConfigVersion(current, '設定復元前');
+      try {
+        _requiredWriteJson(PWA_UI_CONFIG_KEY, saved.snapshot);
+      } catch (error) {
+        if (captured.changed) _requiredWriteJson(PWA_UI_CONFIG_HISTORY_KEY, captured.previousRows);
+        throw error;
+      }
+      return {
+        ok: true, config: saved.snapshot, revision: saved.sourceRevision,
+        reload: { scope: 'ui-config' },
+      };
     }
     if (pathname === '/beta/consent') {
       const consentKey = 'meldex-beta-consent-v1';
@@ -975,6 +1126,15 @@
       const name = pathname.slice('/personal-preferences/'.length);
       if (method === 'GET') return _readPersonalPreference(name);
       if (method === 'PUT') return _writePersonalPreference(name, body);
+    }
+    {
+      const workspacePreferenceMatch = pathname.match(/^\/workspace-preferences\/([^/]+)\/([^/]+)$/);
+      if (workspacePreferenceMatch) {
+        const workspaceId = decodeURIComponent(workspacePreferenceMatch[1]);
+        const name = decodeURIComponent(workspacePreferenceMatch[2]);
+        if (method === 'GET') return _readWorkspacePreference(workspaceId, name);
+        if (method === 'PUT') return _writeWorkspacePreference(workspaceId, name, body);
+      }
     }
     if (pathname.startsWith('/archive/')) {
       return _handleArchiveRoute(pathname, method, body, url);

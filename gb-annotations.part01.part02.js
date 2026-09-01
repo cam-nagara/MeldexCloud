@@ -126,10 +126,10 @@ async function _finishAnnotationStroke() {
     delete el.dataset.annPending;
     el.dataset.annId = res.id;
     _markAnnotationMutated(targetPath);
-    _pushAnnotationCreateHistory(res.id, '注釈: 描画追加', targetPath).catch(() => {});
+    _pushAnnotationCreateHistory(res.id, 'アノテート: 描画追加', targetPath).catch(() => {});
   } catch(e) {
     el.remove();
     _markAnnotationMutated(targetPath);
-    showStatus('注釈保存に失敗', true);
+    showStatus('アノテート保存に失敗', true);
   }
 }

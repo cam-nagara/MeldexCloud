@@ -156,7 +156,9 @@
       return;
     }
     if (entry.type === 'unsupported') {
-      _renderErrorState(entry, 'この形式はサブパネルに対応していません');
+      _renderErrorState(entry, entry.retired
+        ? 'タイマーは廃止されました。既存ファイルは変更せず、この画面では編集・保存しません。'
+        : 'この形式はサブパネルに対応していません');
       _current = entry;
       return;
     }

@@ -18,8 +18,6 @@ class PaneContext {
     this.pivotData = null;          // /pivot APIレスポンス
     this.filter = 'disabled';       // ステータスフィルタ
     this.viewMode = 'welcome';      // 現在のビューモード
-    this.smartDb = null;            // スマートDB定義
-    this.smartDbData = null;        // スマートDBデータ
     this.containerEl = null;        // このペインのDOMコンテナ
     this.tableId = null;            // ペイン固有のテーブルID
     this.destroyed = false;         // 破棄後の非同期応答を無効化
@@ -132,11 +130,11 @@ const GBSelectionFloatMenu = (() => {
     if (bar.parentElement !== host) host.appendChild(bar);
   }
 
-  function createDragHandle(label = 'ドラッグで移動') {
+  function createDragHandle(label = 'ドラッグで移動', e2eId = 'selection-float-drag') {
     const handle = document.createElement('button');
     handle.type = 'button';
     handle.className = DRAG_HANDLE_CLASS;
-    handle.dataset.e2eId = 'selection-float-drag';
+    handle.dataset.e2eId = e2eId;
     handle.title = label;
     handle.setAttribute('aria-label', label);
     const iconMarkup = typeof lucide === 'function'
@@ -281,8 +279,6 @@ const _paneStateBinding = Object.freeze({
   pivotData: 'pivotData',
   filter: 'filter',
   viewMode: 'view',
-  smartDb: 'currentSmartDb',
-  smartDbData: 'smartDbData',
 });
 
 const GBPaneState = {
@@ -290,7 +286,7 @@ const GBPaneState = {
   activePaneMirrorKeys: Object.freeze(Object.values(_paneStateBinding)),
   notes: Object.freeze({
     paneLocal:
-      'dbPath/entityPath/pagePath/boardPath/pivotData/filter/viewMode/smartDb/smartDbData は pane-local を正とし、必要時だけ active pane を global state へミラーする。',
+      'dbPath/entityPath/pagePath/boardPath/pivotData/filter/viewMode は pane-local を正とし、必要時だけ active pane を global state へミラーする。',
     global:
       '認証・テーマ・右パネル・最近使った項目・通知・ワークスペース全体設定は global state/DOM を正とする。',
   }),
@@ -342,10 +338,6 @@ function _globalPaneState() {
     },
     get viewMode() { return state.view; },
     set viewMode(v) { state.view = v; },
-    get smartDb() { return state.currentSmartDb; },
-    set smartDb(v) { state.currentSmartDb = v; },
-    get smartDbData() { return state.smartDbData; },
-    set smartDbData(v) { state.smartDbData = v; },
     get containerEl() { return null; }, // v5.0: ペインシステムのshowView()が直接管理
     get tableId() { return 'pivot-table'; },
     // D-5: 単一ペインモードの選択状態シングルトン Set

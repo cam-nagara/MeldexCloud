@@ -44,8 +44,18 @@
 .gb-pane-tabs-scroll::-webkit-scrollbar { display: none; }
 .gb-tab {
   display: flex; align-items: center; gap: 2px; padding: 0 5px;
-  cursor: pointer; font-size: 11px; color: var(--fg2); white-space: nowrap;
-  flex-shrink: 0; height: 30px; border-right: 1px solid var(--border);
+  cursor: pointer; white-space: nowrap;
+  color: var(--ui-pane-tab-fg, var(--fg2));
+  background: var(--ui-pane-tab-bg, transparent);
+  border: var(--ui-pane-tab-border-width, 0px) solid var(--ui-pane-tab-border, var(--border));
+  border-right: max(1px, var(--ui-pane-tab-border-width, 0px)) solid var(--ui-pane-tab-border, var(--border));
+  box-shadow: inset var(--ui-pane-tab-left-accent, 0px) 0 0 var(--ui-pane-tab-accent-color, var(--accent)), inset 0 calc(-1 * var(--ui-pane-tab-underline, 0px)) 0 var(--ui-pane-tab-accent-color, var(--accent));
+  font-family: var(--ui-pane-tab-font, inherit);
+  font-size: var(--ui-pane-tab-font-size, 11px);
+  line-height: var(--ui-pane-tab-line-height, 100%);
+  font-weight: var(--ui-pane-tab-font-weight, normal);
+  font-style: var(--ui-pane-tab-font-style, normal);
+  flex-shrink: 0; height: 30px;
   max-width: 160px; min-width: 0; user-select: none; position: relative;
   -webkit-touch-callout: none;
 }
@@ -66,8 +76,28 @@
   padding: 0 7px;
   gap: 0;
 }
-.gb-tab:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-.gb-tab.active { color: var(--fg); background: var(--ui-pane-tab-active-bg, var(--bg)); border-bottom: 2px solid var(--accent); }
+.gb-tab:hover {
+  color: var(--ui-pane-tab-hover-fg, var(--ui-hover-fg));
+  background: var(--ui-pane-tab-hover-bg, var(--ui-hover-bg));
+  border: var(--ui-pane-tab-hover-border-width, 0px) solid var(--ui-pane-tab-hover-border, var(--border));
+  box-shadow: inset var(--ui-pane-tab-hover-left-accent, 0px) 0 0 var(--ui-pane-tab-hover-accent-color, var(--accent)), inset 0 calc(-1 * var(--ui-pane-tab-hover-underline, 0px)) 0 var(--ui-pane-tab-hover-accent-color, var(--accent));
+  font-family: var(--ui-pane-tab-hover-font, inherit);
+  font-size: var(--ui-pane-tab-hover-font-size, 11px);
+  line-height: var(--ui-pane-tab-hover-line-height, 100%);
+  font-weight: var(--ui-pane-tab-hover-font-weight, normal);
+  font-style: var(--ui-pane-tab-hover-font-style, normal);
+}
+.gb-tab.active {
+  color: var(--ui-pane-tab-active-fg, var(--fg));
+  background: var(--ui-pane-tab-active-bg, var(--bg));
+  border: var(--ui-pane-tab-active-border-width, 0px) solid var(--ui-pane-tab-active-border, var(--border));
+  box-shadow: inset var(--ui-pane-tab-active-left-accent, 0px) 0 0 var(--ui-pane-tab-active-underline, var(--accent)), inset 0 calc(-1 * var(--ui-pane-tab-active-underline-width, 2px)) 0 var(--ui-pane-tab-active-underline, var(--accent));
+  font-family: var(--ui-pane-tab-active-font, inherit);
+  font-size: var(--ui-pane-tab-active-font-size, 11px);
+  line-height: var(--ui-pane-tab-active-line-height, 100%);
+  font-weight: var(--ui-pane-tab-active-font-weight, normal);
+  font-style: var(--ui-pane-tab-active-font-style, normal);
+}
 .gb-tab.dragging { opacity: 0.4; }
 .gb-tab-icon { flex-shrink: 0; display: flex; align-items: center; }
 .gb-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -139,6 +169,7 @@
   cursor: not-allowed;
   color: var(--fg2);
   background: transparent;
+  border-color: transparent;
 }
 .gb-pane-btn:disabled:hover,
 .gb-pane-btn[aria-disabled="true"]:hover {
@@ -860,21 +891,45 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--ui-bg-control);
-  border: none;
+  background: var(--ui-dock-button-bg, var(--ui-bg-control));
+  border: var(--ui-dock-button-border-width, 0px) solid var(--ui-dock-button-border, transparent);
   border-radius: var(--ui-radius-sm, 4px);
-  color: var(--ui-fg-default);
+  color: var(--ui-dock-button-fg, var(--ui-fg-default));
+  font-family: var(--ui-dock-button-font, inherit);
+  font-size: var(--ui-dock-button-font-size, var(--ui-font-13));
+  line-height: var(--ui-dock-button-line-height, 100%);
+  font-weight: var(--ui-dock-button-font-weight, var(--ui-weight-medium));
+  font-style: var(--ui-dock-button-font-style, normal);
+  box-shadow: inset 0 calc(-1 * var(--ui-dock-button-underline, 0px)) 0 var(--ui-dock-button-accent-color, var(--ui-accent));
   cursor: pointer;
   flex: 0 0 34px;
   padding: 0;
   position: relative;
 }
 .gb-dock-icon svg { width: 20px; height: 20px; }
-.gb-dock-icon:hover { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); }
-.gb-dock-icon.active {
-  background: var(--ui-accent);
-  color: var(--ui-fg-strong);
+.gb-dock-icon:hover {
+  background: var(--ui-dock-button-hover-bg, var(--ui-bg-control-hover));
+  color: var(--ui-dock-button-hover-fg, var(--ui-fg-default));
+  border: var(--ui-dock-button-hover-border-width, 0px) solid var(--ui-dock-button-hover-border, transparent);
+  box-shadow: inset 0 calc(-1 * var(--ui-dock-button-hover-underline, 0px)) 0 var(--ui-dock-button-hover-accent-color, var(--ui-accent));
+  font-family: var(--ui-dock-button-hover-font, inherit);
+  font-size: var(--ui-dock-button-hover-font-size, var(--ui-font-13));
+  line-height: var(--ui-dock-button-hover-line-height, 100%);
+  font-weight: var(--ui-dock-button-hover-font-weight, var(--ui-weight-medium));
+  font-style: var(--ui-dock-button-hover-font-style, normal);
 }
+.gb-dock-bar-fixed .gb-dock-icon.active {
+  background: var(--ui-dock-button-active-bg, color-mix(in srgb, var(--ui-accent) 94%, #000)) !important;
+  color: var(--ui-dock-button-active-fg, var(--ui-accent-fg, var(--ui-fg-strong))) !important;
+  border: var(--ui-dock-button-active-border-width, 0px) solid var(--ui-dock-button-active-border, transparent);
+  box-shadow: inset 0 calc(-1 * var(--ui-dock-button-active-underline, 0px)) 0 var(--ui-dock-button-active-accent-color, var(--ui-accent));
+  font-family: var(--ui-dock-button-active-font, inherit);
+  font-size: var(--ui-dock-button-active-font-size, var(--ui-font-13));
+  line-height: var(--ui-dock-button-active-line-height, 100%);
+  font-weight: var(--ui-dock-button-active-font-weight, var(--ui-weight-medium));
+  font-style: var(--ui-dock-button-active-font-style, normal);
+}
+.gb-dock-bar-fixed .gb-dock-icon.active svg { color: currentColor !important; stroke: currentColor !important; }
 .gb-dock-icon[data-theme-rail-palette-index="0"] { --gb-rail-icon-color: var(--theme-palette-0); }
 .gb-dock-icon[data-theme-rail-palette-index="1"] { --gb-rail-icon-color: var(--theme-palette-1); }
 .gb-dock-icon[data-theme-rail-palette-index="2"] { --gb-rail-icon-color: var(--theme-palette-2); }
@@ -885,22 +940,29 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 .gb-dock-icon[data-theme-rail-palette-index="7"] { --gb-rail-icon-color: var(--theme-palette-7); }
 .gb-dock-icon[data-theme-rail-palette-index="8"] { --gb-rail-icon-color: var(--theme-palette-8); }
 .gb-dock-icon[data-theme-rail-palette-index="9"] { --gb-rail-icon-color: var(--theme-palette-9); }
-html[data-meldex-theme-id="builtin-pastel"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"],
-html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"] {
+html[data-meldex-theme-id="builtin-pastel"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active),
+html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active) {
   color: var(--gb-rail-icon-color, var(--ui-fg-default));
 }
-/* アクティブ表示の縦バー。right を負値にするとアイコンの外側へ出るが、
-   レールの左右余白は 1.5px しかないため overflow-x:hidden で必ず切られる。
-   アイコン内の右端に収める。 */
-.gb-dock-icon.active::before {
+/* テーマ設定の「左アクセントバー」を通常・ホバー・選択の各状態へ反映する。 */
+.gb-dock-icon::before {
   content: '';
   position: absolute;
-  right: 0;
+  left: 0;
   top: 4px;
   bottom: 4px;
-  width: 2px;
-  background: var(--accent);
+  width: var(--ui-dock-button-left-accent, 0px);
+  background: var(--ui-dock-button-accent-color, var(--accent));
   border-radius: 1px;
+  pointer-events: none;
+}
+.gb-dock-icon:hover::before {
+  width: var(--ui-dock-button-hover-left-accent, 0px);
+  background: var(--ui-dock-button-hover-accent-color, var(--accent));
+}
+.gb-dock-icon.active::before {
+  width: var(--ui-dock-button-active-left-accent, 2px);
+  background: var(--ui-dock-button-active-accent-color, var(--accent));
 }
 
 /* ドロップインジケータ (ドックタブ挿入位置) */

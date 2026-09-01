@@ -2,7 +2,7 @@
  * Meldex Comment Badges (Phase 2e-ii)
  *
  * 各エディタ（ノート / シナリオ / ボード / シート）に
- * コメント件数バッジを描画し、クリックで注釈パネルに該当コメントをフィルタ表示する。
+ * コメント件数バッジを描画し、クリックでアノテートパネルに該当コメントをフィルタ表示する。
  *
  * 使い方:
  *   CommentBadges.refreshNote(filePath, containerEl);
@@ -137,7 +137,6 @@
     if (kind === 'sheet') {
       const candidates = [];
       try { candidates.push(typeof state !== 'undefined' ? state.currentDbPath || '' : ''); } catch {}
-      try { candidates.push(typeof state !== 'undefined' ? state.currentSmartDb?._filePath || '' : ''); } catch {}
       return !candidates.some(Boolean) || _matchesAnyCommentPath(filePath, candidates);
     }
     return true;
@@ -312,29 +311,65 @@
     return containerEl.querySelector(`span._nl-id[data-line-id="${_cssEscape(lineId)}"]`)?.parentElement || null;
   }
 
-  function _wrapFirstSnippetInBlock(block, snippet, commentId, filePath) {
-    const needle = String(snippet || '').trim();
+  function _wrapStableSnippetInBlock(block, ref, commentId, filePath) {
+    const needle = String(ref?.snippet || '').trim();
     if (!block || !needle) return false;
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
         if (!parent || parent.closest('mark.cmt-highlight,.cmt-badge,._nl-id')) return NodeFilter.FILTER_REJECT;
-        return node.nodeValue && node.nodeValue.includes(needle) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        return node.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
       },
     });
-    const node = walker.nextNode();
-    if (!node) return false;
-    const index = node.nodeValue.indexOf(needle);
+    const nodes = [];
+    let fullText = '';
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      nodes.push({ node, start: fullText.length, end: fullText.length + node.nodeValue.length });
+      fullText += node.nodeValue;
+    }
+    if (!nodes.length) return false;
+    let index = -1;
+    const stable = ref?.anchorSchema === 'meldex-text-anchor-v1';
+    const expectedStart = Number(ref?.startOffset);
+    const expectedEnd = Number(ref?.endOffset);
+    if (stable && Number.isInteger(expectedStart) && Number.isInteger(expectedEnd)
+      && expectedStart >= 0 && expectedEnd >= expectedStart
+      && fullText.slice(expectedStart, expectedEnd) === needle) {
+      index = expectedStart;
+    } else {
+      const candidates = [];
+      for (let cursor = fullText.indexOf(needle); cursor >= 0; cursor = fullText.indexOf(needle, cursor + Math.max(1, needle.length))) {
+        candidates.push(cursor);
+      }
+      if (!stable) index = candidates[0] ?? -1;
+      else if (candidates.length === 1) index = candidates[0];
+      else if (candidates.length > 1) {
+        const prefix = String(ref?.prefix || '');
+        const suffix = String(ref?.suffix || '');
+        const contextual = candidates.filter(pos =>
+          (!prefix || fullText.slice(Math.max(0, pos - prefix.length), pos) === prefix)
+          && (!suffix || fullText.slice(pos + needle.length, pos + needle.length + suffix.length) === suffix));
+        if (contextual.length === 1) index = contextual[0];
+        else if (contextual.length > 1 && Number.isInteger(Number(ref?.occurrence))) {
+          index = contextual[Number(ref.occurrence)] ?? -1;
+        }
+      }
+    }
     if (index < 0) return false;
-    const after = node.splitText(index + needle.length);
-    const matched = node.splitText(index);
+    const finish = index + needle.length;
+    const startPart = nodes.find(part => index >= part.start && index < part.end);
+    const endPart = nodes.find(part => finish > part.start && finish <= part.end);
+    if (!startPart || !endPart) return false;
+    const range = document.createRange();
+    range.setStart(startPart.node, index - startPart.start);
+    range.setEnd(endPart.node, finish - endPart.start);
     const mark = document.createElement('mark');
     mark.className = 'cmt-highlight';
     mark.dataset.cmtId = commentId || '';
     mark.dataset.cmtFile = filePath || '';
     mark.title = 'コメントあり';
-    matched.parentNode.insertBefore(mark, after);
-    mark.appendChild(matched);
+    mark.appendChild(range.extractContents());
+    range.insertNode(mark);
     return true;
   }
 
@@ -347,9 +382,9 @@
         block = _noteLineBlock(containerEl, ref.lineId);
       } else if (a.target_kind === 'text_range' && ref.container?.kind === 'note_line' && ref.container.id) {
         block = _noteLineBlock(containerEl, ref.container.id);
-        const snippet = ref.snippet || a.target_snapshot || '';
-        if (_wrapFirstSnippetInBlock(block, snippet, a.id, filePath)) return;
-        if (_wrapFirstSnippetInBlock(containerEl, snippet, a.id, filePath)) return;
+        const anchorRef = { ...ref, snippet: ref.snippet || a.target_snapshot || '' };
+        if (_wrapStableSnippetInBlock(block, anchorRef, a.id, filePath)) return;
+        if (!ref.anchorSchema && _wrapStableSnippetInBlock(containerEl, anchorRef, a.id, filePath)) return;
       }
       if (!block) return;
       block.classList.add('cmt-line-highlight');
@@ -624,7 +659,7 @@
     });
   }
 
-  // バッジクリック時: 注釈タブを開いて該当コメントを絞り込む
+  // バッジクリック時: アノテートタブを開いて該当コメントを絞り込む
   function _openPanelForTarget(filePath, targetKind, targetRef) {
     const panel = document.getElementById('right-panel');
     const activeTab = document.querySelector('.rp-tab.active')?.dataset.rpTab;
@@ -670,6 +705,59 @@
   //   省略時は window.getSelection() のアンカー or document.activeElement から推定する。
   // return: { targetKind, filePath, targetRef, snapshot }
   //   targetKind: 'note_line' | 'scriptnote_line' | 'text_range' | 'none'
+  function _stableTextAnchor(container, selection, snippet) {
+    if (!container || !selection?.rangeCount || selection.isCollapsed) return {};
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return {};
+    try {
+      const before = document.createRange();
+      before.selectNodeContents(container);
+      before.setEnd(range.startContainer, range.startOffset);
+      const selected = range.toString().replace(/\r\n?/g, '\n');
+      const fullText = (container.textContent || '').replace(/\r\n?/g, '\n');
+      const startOffset = before.toString().replace(/\r\n?/g, '\n').length;
+      const endOffset = startOffset + selected.length;
+      let occurrence = 0;
+      let cursor = 0;
+      const needle = String(snippet || selected);
+      while (needle && cursor < startOffset) {
+        const found = fullText.indexOf(needle, cursor);
+        if (found < 0 || found >= startOffset) break;
+        occurrence += 1;
+        cursor = found + Math.max(1, needle.length);
+      }
+      return {
+        anchorSchema: 'meldex-text-anchor-v1',
+        stableContainerId: container.dataset?.lineId || container.dataset?.rowId || container.dataset?.cardId || container.dataset?.eventId || '',
+        normalization: 'newline-v1',
+        startOffset,
+        endOffset,
+        occurrence,
+        prefix: fullText.slice(Math.max(0, startOffset - 48), startOffset),
+        suffix: fullText.slice(endOffset, endOffset + 48),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function _textRangeRef(filePath, containerRef, containerEl, selection, snippet) {
+    return {
+      file: filePath,
+      container: containerRef,
+      anchorKind: 'offset',
+      snippet: snippet.slice(0, 200),
+      ..._stableTextAnchor(containerEl, selection, snippet),
+    };
+  }
+
+  function _validCommentFilePath(value) {
+    const path = String(value || '').trim();
+    if (!path || /^(?:unknown|current|none|null|undefined)$/i.test(path)) return '';
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path) || /^(?:[a-z]:[\\/]|[\\/]{2})/i.test(path)) return '';
+    return path;
+  }
+
   function detectCommentContext(scanOverride) {
     const sel = window.getSelection && window.getSelection();
     const selText = (sel && !sel.isCollapsed) ? sel.toString().trim() : '';
@@ -687,12 +775,7 @@
         const containerInfo = _noteLineContainerInfo(block);
         return {
           targetKind: 'text_range', filePath,
-          targetRef: {
-            file: filePath,
-            container: containerInfo,
-            anchorKind: 'offset',
-            snippet: selText.slice(0, 200),
-          },
+          targetRef: _textRangeRef(filePath, containerInfo, block || pc, sel, selText),
           snapshot: selText.slice(0, 200),
         };
       }
@@ -714,7 +797,21 @@
       }
     }
 
-    // 2a) ボードカード: .bd-node 配下
+    // 2a) ボードライン
+    const bdLine = scan && scan.closest ? scan.closest('.bd-conn-hit[data-conn-id], .bd-conn-path[data-conn-id]') : null;
+    if (bdLine) {
+      const lineId = bdLine.dataset.connId || '';
+      const filePath = (typeof bd !== 'undefined' && bd?.path) || (typeof state !== 'undefined' ? state.currentBoardPath : '') || '';
+      if (lineId) {
+        return {
+          targetKind: 'board_line', filePath,
+          targetRef: { file: filePath, lineId },
+          snapshot: (bdLine.getAttribute?.('aria-label') || 'ボードライン').slice(0, 120),
+        };
+      }
+    }
+
+    // 2b) ボードカード: .bd-node 配下
     const bdCard = scan && scan.closest ? scan.closest('.bd-node') : null;
     if (bdCard && bdCard.id && bdCard.id.startsWith('bdn-')) {
       const cardId = bdCard.dataset.cardId || bdCard.id.slice(4);
@@ -722,12 +819,7 @@
       if (selText) {
         return {
           targetKind: 'text_range', filePath,
-          targetRef: {
-            file: filePath,
-            container: { kind: 'board_card', id: cardId },
-            anchorKind: 'offset',
-            snippet: selText.slice(0, 200),
-          },
+          targetRef: _textRangeRef(filePath, { kind: 'board_card', id: cardId }, bdCard, sel, selText),
           snapshot: selText.slice(0, 200),
         };
       }
@@ -738,7 +830,7 @@
       };
     }
 
-    // 2b) シートセル: td[data-prop-name] > tr[data-entity-name]
+    // 2c) シートセル: td[data-prop-name] > tr[data-entity-name]
     const cellTd = scan && scan.closest ? scan.closest('td[data-prop-name]') : null;
     const entryTr = cellTd && cellTd.closest('tr[data-entity-name]');
     if (cellTd && entryTr) {
@@ -748,12 +840,7 @@
       if (selText) {
         return {
           targetKind: 'text_range', filePath,
-          targetRef: {
-            file: filePath,
-            container: { kind: 'sheet_cell', entryId, colId },
-            anchorKind: 'offset',
-            snippet: selText.slice(0, 200),
-          },
+          targetRef: _textRangeRef(filePath, { kind: 'sheet_cell', entryId, colId }, cellTd, sel, selText),
           snapshot: selText.slice(0, 200),
         };
       }
@@ -764,7 +851,7 @@
       };
     }
 
-    // 2c) カレンダーイベント: .gb-cal-day-event / アナログ時計スライス
+    // 2d) カレンダーイベント: .gb-cal-day-event / アナログ時計スライス
     const calEv = scan && scan.closest ? scan.closest('.gb-cal-day-event[data-event-id], .gb-cal-clock-event-slice[data-event-id]') : null;
     if (calEv) {
       const eventId = calEv.dataset.eventId;
@@ -773,12 +860,7 @@
       if (selText) {
         return {
           targetKind: 'text_range', filePath: calendarId,
-          targetRef: {
-            file: calendarId,
-            container: { kind: 'calendar_event', id: eventId },
-            anchorKind: 'offset',
-            snippet: selText.slice(0, 200),
-          },
+          targetRef: _textRangeRef(calendarId, { kind: 'calendar_event', id: eventId }, calEv, sel, selText),
           snapshot: selText.slice(0, 200),
         };
       }
@@ -798,12 +880,7 @@
       if (selText) {
         return {
           targetKind: 'text_range', filePath,
-          targetRef: {
-            file: filePath,
-            container: { kind: 'scriptnote_line', id: rowId },
-            anchorKind: 'offset',
-            snippet: selText.slice(0, 200),
-          },
+          targetRef: _textRangeRef(filePath, { kind: 'scriptnote_line', id: rowId }, snRow.querySelector('.sn2-text') || snRow, sel, selText),
           snapshot: selText.slice(0, 200),
         };
       }
@@ -815,9 +892,7 @@
     }
 
     // 3) フォールバック: 未紐付
-    let curPath = (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '';
-    // 'unknown' 等のフォールバック文字列を弾く（/ を含むパスのみ有効）
-    if (curPath && !curPath.includes('/')) curPath = '';
+    const curPath = _validCommentFilePath((typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '');
     return { targetKind: 'none', filePath: curPath || '', targetRef: null, snapshot: '' };
   }
 

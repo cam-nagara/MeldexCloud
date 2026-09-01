@@ -8,8 +8,6 @@
     ['シート', 'database', 'db'],
     ['ボード', 'board', 'presentation'],
     ['カレンダー', 'calendar', 'calendar'],
-    ['スマートシート', 'smart-db', 'databaseSearch'],
-    ['タイマー', 'timer', 'timer'],
   ]);
 
   let _folderToolbarClipboard = null;

@@ -36,6 +36,33 @@
 
   let _dbPromise = null;
 
+  function _workspaceScope() {
+    let state = null;
+    try { state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
+    let activeId = '';
+    try { activeId = String(window.MeldexWorkspaces?.getActiveId?.() || '').trim(); } catch {}
+    if (!state && !activeId) return { id: 'local-device', allowLegacyClaim: true };
+    const id = String(
+      state.workspaceId || state.workspace_id || state.stableId
+      || activeId || ''
+    ).trim();
+    if (!id) throw new Error('安定したワークスペースIDを取得できません');
+    return { id, allowLegacyClaim: state?.oauthLegacyClaim === true };
+  }
+
+  function _scopedKey(key) {
+    const scope = _workspaceScope();
+    return { key: `${scope.id}:${String(key || '')}`, scope };
+  }
+
+  async function _readValue(db, key) {
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
+      req.onsuccess = () => resolve(req.result?.value || null);
+      req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+    });
+  }
+
   function _openDb() {
     if (_dbPromise) return _dbPromise;
     _dbPromise = new Promise((resolve, reject) => {
@@ -59,11 +86,18 @@
     if (!key) return null;
     try {
       const db = await _openDb();
-      return await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
-        req.onsuccess = () => resolve(req.result?.value || null);
-        req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+      const scoped = _scopedKey(key);
+      const value = await _readValue(db, scoped.key);
+      if (value || !scoped.scope.allowLegacyClaim) return value;
+      const legacy = await _readValue(db, key);
+      if (!legacy) return null;
+      await setSecrets(key, legacy);
+      await new Promise((resolve, reject) => {
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error || new Error('IndexedDB legacy delete failed'));
       });
+      return legacy;
     } catch {
       return null;
     }
@@ -71,10 +105,11 @@
 
   async function setSecrets(key, value) {
     if (!key) return { ok: false };
+    const scoped = _scopedKey(key);
     const db = await _openDb();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put({ key, value: value && typeof value === 'object' ? value : {}, updatedAt: new Date().toISOString() });
+      tx.objectStore(STORE_NAME).put({ key: scoped.key, workspaceId: scoped.scope.id, value: value && typeof value === 'object' ? value : {}, updatedAt: new Date().toISOString() });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
       tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
@@ -86,8 +121,9 @@
     if (!key) return { ok: true };
     try {
       const db = await _openDb();
+      const scoped = _scopedKey(key);
       await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key);
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(scoped.key);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
@@ -121,5 +157,6 @@
     extractSecretFields,
     stripSecretFields,
     hasAnySecretValue,
+    workspaceScope: _workspaceScope,
   };
 })();

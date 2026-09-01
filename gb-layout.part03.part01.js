@@ -53,7 +53,7 @@
     if (typeof showStatus === 'function') showStatus('最後のパネルは閉じられません', true);
   }
 
-  function removePane(paneId, options) {
+  async function removePane(paneId, options) {
     const opts = options || {};
     const target = findNode(_root, paneId);
     if (!target?.node || target.node.type !== 'pane') return;
@@ -69,6 +69,14 @@
     const parentInfo = findParent(_root, paneId);
     if (!parentInfo) return;
     const before = !opts.skipHistory ? (opts.historyBefore || captureLayoutSnapshot()) : null;
+    const removalIds = [..._collectTabIds(target.node, new Set())];
+    if (typeof flushComponentInstancesBeforeRemoval === 'function'
+      && !await flushComponentInstancesBeforeRemoval(removalIds)) return false;
+    for (const tabId of removalIds) {
+      if (typeof removeComponentInstance === 'function') {
+        removeComponentInstance(tabId, { skipFlush: true });
+      }
+    }
 
     // split/panelset どちらの親でも _detachNodeById が一括処理
     // （単一化した split を兄弟で置換、panelset なら groups から除去し
@@ -552,7 +560,6 @@
     'preview',
     'chat',
     'calendar',
-    'timer',
     'history',
     'annotation',
     'sticky',
@@ -888,7 +895,7 @@
       mi.addEventListener('click', () => { closeMenu(false); fn(); });
       menu.appendChild(mi);
     }
-    function closeTabsOnSide(side) {
+    async function closeTabsOnSide(side) {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
@@ -901,8 +908,12 @@
       const closedTabs = pane.tabs.filter(shouldClose);
       if (!closedTabs.length) return;
       const before = captureLayoutSnapshot();
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(closedTabs.map(item => item.id))) return false;
       closedTabs.forEach(item => {
-        if (typeof removeComponentInstance === 'function') removeComponentInstance(item.id);
+        if (typeof removeComponentInstance === 'function') {
+          removeComponentInstance(item.id, { skipFlush: true });
+        }
       });
       pane.tabs = pane.tabs.filter((item, index) => !shouldClose(item, index));
       const nextActiveId = activeWillClose ? tab.id : activeId;
@@ -941,7 +952,7 @@
       addItem('左のタブを閉じる', () => closeTabsOnSide('left'), 'panelLeftClose', tabIndex <= 0);
       addItem('右のタブを閉じる', () => closeTabsOnSide('right'), 'panelRightClose', tabIndex < 0 || tabIndex >= (pane?.tabs?.length || 0) - 1);
     }
-    if (!isFixedRail) addItem('他のタブをすべて閉じる', () => {
+    if (!isFixedRail) addItem('他のタブをすべて閉じる', async () => {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
@@ -949,9 +960,12 @@
       const keep = pane.tabs.find(t => t.id === tab.id);
       if (!keep) return;
       const before = captureLayoutSnapshot();
+      const removalIds = pane.tabs.filter(t => t.id !== tab.id).map(t => t.id);
+      if (typeof flushComponentInstancesBeforeRemoval === 'function'
+        && !await flushComponentInstancesBeforeRemoval(removalIds)) return false;
       pane.tabs.forEach(t => {
         if (t.id !== tab.id && typeof removeComponentInstance === 'function') {
-          removeComponentInstance(t.id);
+          removeComponentInstance(t.id, { skipFlush: true });
         }
       });
       pane.tabs = [keep];
@@ -997,10 +1011,12 @@
   }
 
   // === レイアウトリセット ===
-  function resetLayout(options) {
+  async function resetLayout(options) {
     const opts = options || {};
     const before = !opts.skipHistory ? captureLayoutSnapshot() : null;
-    _root = defaultLayout();
+    const nextRoot = defaultLayout();
+    if (!await _removeOrphanComponentInstances(_root, nextRoot)) return false;
+    _root = nextRoot;
     _activePane = null;
     render();
     saveLayout();
@@ -1068,13 +1084,18 @@
     }
   }
 
-  function _removeOrphanComponentInstances(prevRoot, nextRoot) {
-    if (typeof removeComponentInstance !== 'function') return;
+  async function _removeOrphanComponentInstances(prevRoot, nextRoot) {
+    if (typeof removeComponentInstance !== 'function') return true;
     const prevIds = _collectTabIds(prevRoot, new Set());
     const nextIds = _collectTabIds(nextRoot, new Set());
-    prevIds.forEach((tabId) => {
-      if (!nextIds.has(tabId)) removeComponentInstance(tabId);
-    });
+    const orphanIds = [...prevIds].filter(tabId => !nextIds.has(tabId));
+    if (typeof flushComponentInstancesBeforeRemoval === 'function'
+      && !await flushComponentInstancesBeforeRemoval(orphanIds)) return false;
+    for (const tabId of orphanIds) {
+      if (removeComponentInstance(tabId, { skipFlush: true }) === false) return false;
+    }
+    return true;
+    return true;
   }
 
   function exportLayout() {
@@ -1088,12 +1109,13 @@
     };
   }
 
-  function restoreLayoutSnapshot(snapshot) {
+  async function restoreLayoutSnapshot(snapshot) {
     if (!snapshot?.layout) return false;
-    applyLayoutTree(snapshot.layout, {
+    const applied = await applyLayoutTree(snapshot.layout, {
       activePaneId: snapshot.activePaneId || '',
       skipSave: true,
     });
+    if (applied == null) return false;
     saveLayout({ immediate: true });
     return true;
   }
@@ -1119,6 +1141,6 @@
     return true;
   }
 
-  function applyLayoutTree(layout, options) {
+  async function applyLayoutTree(layout, options) {
     const nextRoot = _cloneLayoutTree(layout);
     if (!nextRoot || (nextRoot.type !== 'pane' && nextRoot.type !== 'split' && nextRoot.type !== 'panelset')) return null;

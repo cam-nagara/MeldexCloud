@@ -233,6 +233,9 @@
   async function _pmCloudWriteNewEntry(provider, internals, logicalSheet, physicalSheet, name, props, journal, seed = '') {
     const schema = await _pmCloudEntrySchema(provider, internals, logicalSheet, physicalSheet);
     const fm = _pmCloudApplyEntryUpdates({ type: 'settings-entry', category: physicalSheet, properties: {} }, schema, props, logicalSheet);
+    if (['タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト'].includes(logicalSheet)) {
+      fm.production_template_child_name = String(name);
+    }
     const path = await _pmCloudUniqueEntryPath(provider, internals, physicalSheet, name, seed || `${name}|${Date.now()}|${Math.random()}`);
     fm.id = 'ent_' + _pmHash(path + '|' + seed + '|' + Math.random()).slice(0, 10);
     await _pmCloudJournalText(journal, path);
@@ -258,10 +261,12 @@
     const found = works.find(entry => entry.name === wanted || _pmCloudPropValue(entry.frontmatter, '作品タイトル_話数') === wanted);
     if (found) return found;
     if (onlyWhenEmpty && works.length) throw _pmCloudError(404, '指定した作品が見つかりません');
+    const defaultTemplate = await _pmCloudEnsureDefaultWorkTemplate(provider, internals);
     const props = onlyWhenEmpty ? {
       '階層数': '3', '階層ラベル': '中分類,小分類,詳細分類', 'プリセット種別': '汎用', '作業作成粒度': '階層単位', '状況': '進行中',
       '作業期間': `${_pmDateTimeText(new Date())}|${_pmDateTimeText(new Date(Date.now() + 30 * 86400000))}`,
-    } : {};
+      '使用する作業テンプレート': defaultTemplate.id,
+    } : { '使用する作業テンプレート': defaultTemplate.id };
     return _pmCloudWriteNewEntry(provider, internals, '作品リスト', '作品リスト', wanted, props, journal, `work:${wanted}`);
   }
   async function _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal) {
@@ -296,6 +301,16 @@
     const sheet = _pmCloudSheetAlias(body?.sheet);
     if (!PM_PROPERTY_TYPES[sheet]) throw _pmCloudError(400, '対象リストが不正です');
     const props = body?.properties && typeof body.properties === 'object' ? { ...body.properties } : {};
+    const defaultTemplate = await _pmCloudEnsureDefaultWorkTemplate(provider, internals);
+    if (PM_WORK_TEMPLATE_CHILD_SHEETS.includes(sheet)) {
+      const requested = String(body?.template_id || body?.templateId || props[PM_WORK_TEMPLATE_RELATION] || defaultTemplate.id);
+      const ids = new Set((await _pmCloudListEntries(provider, internals, PM_WORK_TEMPLATE_SHEET))
+        .map(entry => String(entry.frontmatter?.id || '')));
+      if (!ids.has(requested)) throw _pmCloudError(400, '指定された作業テンプレートが見つかりません');
+      props[PM_WORK_TEMPLATE_RELATION] = requested;
+    } else if (sheet === '作品リスト' && !String(props['使用する作業テンプレート'] || '').trim()) {
+      props['使用する作業テンプレート'] = defaultTemplate.id;
+    }
     const managed = window.MeldexProductionSchemaMigration?.MANAGED_NAME_COLUMNS?.[sheet];
     const retiredName = managed ? _pmCloudPlainValue(props[managed.legacy]) || (managed.historicalAliases || []).map(name => _pmCloudPlainValue(props[name])).find(Boolean) : '';
     const taskLegacyName = _pmCloudPlainValue(props[PM_TASK_LEGACY_NAME_PROP]);
@@ -309,7 +324,17 @@
         const work = await _pmCloudGetOrCreateWork(provider, internals, body?.work_title || props['作品タイトル'], journal);
         physicalSheet = (await _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal)).sheet;
       }
-      const entry = await _pmCloudWriteNewEntry(provider, internals, sheet, physicalSheet, title, props, journal);
+      let entry = await _pmCloudWriteNewEntry(provider, internals, sheet, physicalSheet, title, props, journal);
+      if (sheet === 'タスクリスト') {
+        await _pmCloudEnsureTaskTopic(provider, internals, entry);
+        const reparsed = await _pmCloudReadFrontmatter(provider, entry.path);
+        entry = {
+          ...entry,
+          frontmatter: reparsed.frontmatter || entry.frontmatter,
+          body: reparsed.body || entry.body,
+          transportRevision: await _pmCloudEntryTransportRevision(provider, entry.path, reparsed),
+        };
+      }
       return { ok: true, row: _pmCloudEntryRow(entry), cloud: true };
     } catch (error) { return _pmCloudRollbackMutation(journal, error); }
   }

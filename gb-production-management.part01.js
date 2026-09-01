@@ -33,8 +33,9 @@
   // 統合した。13→12シート契約変更（破壊的変更・メジャー境界リリース）。
   // 「自動シフト調整設定」は制作管理UX改善計画（2026-08-04）§5-2で管理対象から
   // 外した（実行エンジン未実装のため）。既存ワークスペースのフォルダは削除しない
-  // 非破壊変更。12→11シート契約変更。
-  const PM_SHEETS = ['作品リスト', 'タスクリスト', 'タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト', 'スケジュール', '勤怠情報', 'スケジュール アーカイブ', 'タスクリスト アーカイブ', 'データソース'];
+  // 非破壊変更。12→11シート契約変更。制作管理UX統合では、既存の
+  // タスクテンプレート等を子として束ねる「作業テンプレート」を追加した（11→12）。
+  const PM_SHEETS = ['作業テンプレート', '作品リスト', 'タスクリスト', 'タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト', 'スケジュール', '勤怠情報', 'スケジュール アーカイブ', 'タスクリスト アーカイブ', 'データソース'];
   const PM_REQUIRED_PAGES = { '制作進行マニュアル.md': '# 制作進行マニュアル\n\n制作管理の手順を記録します。\n', '設定.md': '# 設定\n\n制作管理の設定メモです。\n' };
   const PM_TASK_SHEET_PREFIX = 'タスクリスト_';
   const PM_MAX_GENERATED_TASKS = 5000;
@@ -304,13 +305,28 @@
     return String(shift?.date || '');
   }
 
-  async function _pmEnsureCloudCalendar(provider, internals, name, color, source, user) {
+  function _pmCloudMemberScope(user, source = {}) {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const workspace_id = String(source.workspace_id || window.MeldexWorkspaces?.getActiveId?.()
+      || state.workspaceId || state.workspace_id || '');
+    const members = state.members || state.workspace?.members || [];
+    const member = Array.isArray(members)
+      ? members.find(item => String(item?.name || item?.user || '') === String(user || '')) : null;
+    const member_id = String(source.member_id || member?.id || member?.member_id
+      || (workspace_id && user ? `${workspace_id}::${user}` : ''));
+    return { workspace_id, member_id };
+  }
+
+  async function _pmEnsureCloudCalendar(provider, internals, name, color, source, user, scopeSource = {}) {
     const rows = await _pmReadCalendarStore(provider, internals, 'calendars');
     const owner = user || 'system';
-    const found = rows.find(row => row.name === name && row.source === source && (row.user || 'system') === owner);
+    const scope = _pmCloudMemberScope(owner, scopeSource);
+    const found = rows.find(row => row.name === name && row.source === source && (row.user || 'system') === owner
+      && String(row.workspace_id || '') === scope.workspace_id && String(row.member_id || '') === scope.member_id);
     if (found?.id) return found.id;
     const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : 'cal_' + Date.now().toString(36);
-    rows.push({ id, name, color, user: owner, source, visible: 1, sort_order: 0, folder: 'シフトカレンダー', edit_role: 'owner', created: new Date().toISOString() });
+    rows.push({ id, name, color, user: owner, source, visible: 1, sort_order: 0, folder: 'シフトカレンダー',
+      edit_role: 'owner', workspace_id: scope.workspace_id, member_id: scope.member_id, created: new Date().toISOString() });
     await _pmWriteCalendarStore(provider, internals, 'calendars', rows);
     return id;
   }
@@ -321,7 +337,8 @@
     const date = String(shift?.date || '');
     if (!internals || !shiftId || !date) return;
     const username = String(shift.user || 'anonymous');
-    const calendarId = await _pmEnsureCloudCalendar(provider, internals, `シフト: ${username}`, '#d19a66', 'shift', username);
+    const scope = _pmCloudMemberScope(username, shift);
+    const calendarId = await _pmEnsureCloudCalendar(provider, internals, `シフト: ${username}`, '#d19a66', 'shift', username, shift);
     const startTime = String(shift.start_time || '');
     const endTime = String(shift.end_time || startTime);
     const allDay = startTime ? 0 : 1;
@@ -330,7 +347,10 @@
     const label = { work: '勤務', off: '休み', holiday: '祝日' }[shift.type] || shift.type || 'シフト';
     const eventId = `shift:${shiftId}`;
     const rows = (await _pmReadCalendarStore(provider, internals, 'events')).filter(row => String(row.id) !== eventId);
-    rows.push({ id: eventId, title: `シフト ${username}: ${label}`, start, end, all_day: allDay, color: '#d19a66', description: shift.note || '', location: '', url: '', recurrence: '', external_id: shiftId, calendar_source: 'shift', user: username, creator: username, calendar_id: calendarId, alert_minutes: -1, created: shift.created || new Date().toISOString(), modified: new Date().toISOString() });
+    rows.push({ id: eventId, title: `シフト ${username}: ${label}`, start, end, all_day: allDay, color: '#d19a66', color_override: null,
+      description: shift.note || '', location: '', url: '', recurrence: '', external_id: shiftId, calendar_source: 'shift',
+      user: username, creator: username, calendar_id: calendarId, workspace_id: scope.workspace_id, member_id: scope.member_id,
+      alert_minutes: -1, created: shift.created || new Date().toISOString(), modified: new Date().toISOString() });
     await _pmWriteCalendarStore(provider, internals, 'events', rows);
   }
 
@@ -518,6 +538,9 @@
         }
         return window.MeldexProductionExternalSyncCloud.syncGoogle(provider, internals, _pmRecalcEngineDeps(), body || {});
       }
+      if (pathname === '/production-management/topic-resources/create' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudCreateTopicResource(leasedProvider, internals, body || {}));
+      }
       if (pathname === '/production-management/daily-snapshots' && method === 'GET') {
         return _pmCloudGetDailySnapshots(provider, url);
       }
@@ -600,11 +623,11 @@
     });
     const current = await window.MeldexDataAccess.requestJson('/staff-registry/list');
     if (!current || !Array.isArray(current.staff)) {
-      throw new Error('スタッフ台帳を確認できないため、シフト取込を中止しました');
+      throw new Error('ユーザー管理シートを確認できないため、シフト取込を中止しました');
     }
     const existing = Array.isArray(current?.staff) ? current.staff : [];
     const registryRoot = _pmCloudNormalizePath(current.path || ensured?.path || '');
-    if (!registryRoot) throw new Error('スタッフ台帳の保存先を確認できないため、シフト取込を中止しました');
+    if (!registryRoot) throw new Error('ユーザー管理シートの保存先を確認できないため、シフト取込を中止しました');
     const existingPaths = new Set(
       (await _pmCloudDirectoryEntries(journal.provider, journal.internals, registryRoot))
         .filter(entry => entry?.handle?.kind === 'file')
@@ -622,14 +645,14 @@
       if (identities.has(name)) continue;
       const result = await window.MeldexDataAccess.requestJson('/staff-registry/upsert', {
         method: 'POST',
-        body: { user: '', display: name, fill_only: true },
+        body: { user: '', display: name, user_type: 'virtual', fill_only: true },
       });
       const resultPath = _pmCloudNormalizePath(result?.staff?.path);
-      if (!resultPath) throw new Error('登録したスタッフの保存先を確認できません');
+      if (!resultPath) throw new Error('登録した仮ユーザーの保存先を確認できません');
       if (!existingPaths.has(resultPath)) _pmCloudJournalCreatedPath(journal, resultPath);
       existingPaths.add(resultPath);
       identities.add(name);
-      warnings.push(`${name} はDropboxアカウント未連携のスタッフとして登録しました`);
+      warnings.push(`${name} はログイン不可の仮ユーザーとして登録しました`);
       added += 1;
     }
     return { added, warnings };

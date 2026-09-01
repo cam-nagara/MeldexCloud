@@ -17,6 +17,20 @@
     return null;
   }
 
+  function createHost(img, options) {
+    if (!img || String(img.tagName || '').toLowerCase() !== 'img') return null;
+    const existing = _hostFor(img, options);
+    if (existing) return existing;
+    const opts = options || {};
+    const host = document.createElement(opts.tagName || 'span');
+    host.className = ['meldex-content-image-host', String(opts.className || '').trim()].filter(Boolean).join(' ');
+    host.dataset.meldexImageHost = '1';
+    const parent = img.parentNode;
+    if (parent) parent.insertBefore(host, img);
+    host.appendChild(img);
+    return host;
+  }
+
   function track(img, options) {
     if (!img || String(img.tagName || '').toLowerCase() !== 'img') return null;
     const previous = tracked.get(img);
@@ -208,5 +222,5 @@
 
   function get(img) { return tracked.get(img) || null; }
 
-  window.MeldexImageLoading = { track: track, trackAll: trackAll, get: get };
+  window.MeldexImageLoading = { track: track, trackAll: trackAll, createHost: createHost, get: get };
 })();

@@ -237,12 +237,14 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 }
 .sidebar-header {
   padding: 4px 12px; font-family: var(--ui-header-font, var(--ui-font, inherit)); font-size: 11px; color: var(--outliner-section-fg);
+  line-height: var(--outliner-section-line-height, 115%);
   background: var(--outliner-section-bg);
   text-transform: uppercase; letter-spacing: 0.05em;
   user-select: none;
 }
 .sidebar-section-header {
   padding: 4px 8px; font-family: var(--ui-header-font, var(--ui-font, inherit)); font-size: 11px; color: var(--outliner-section-fg); background: var(--outliner-section-bg); cursor: pointer;
+  line-height: var(--outliner-section-line-height, 115%);
   display: flex; align-items: center; gap: 4px; user-select: none;
   text-transform: uppercase; letter-spacing: 0.03em;
 }
@@ -261,7 +263,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 .sidebar-section-body.collapsed { display: none; }
 .sidebar-section-body { padding-left: 1em; }
 .sidebar-section-body .fav-item {
-  padding: 2px 12px 2px 20px; min-height: 22px; box-sizing: border-box; font-size: 14px; line-height: 16px; cursor: pointer;
+  padding: 2px 12px 2px 20px; min-height: 22px; box-sizing: border-box; font-size: 14px; line-height: var(--outliner-item-line-height, 115%); cursor: pointer;
   color: var(--outliner-item-fg); background: var(--outliner-item-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   display: flex; align-items: center; gap: 4px;
 }
@@ -272,16 +274,8 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .sidebar-section-body .fav-item svg { flex-shrink: 0; }
-.sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
-.sidebar-section-body .fav-item.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); }
-#smart-db-table [data-e2e-id^="global-index-table-row-"]:focus-visible,
-#smart-db-table [data-e2e-id^="global-index-sort-"]:focus-visible,
-.smart-db-list-row:focus-visible,
-#smart-db-table .auto-link[role="button"]:focus-visible,
-.smart-db-list-prop .auto-link[role="button"]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
+.sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); line-height: var(--outliner-item-hover-line-height, var(--outliner-item-line-height, 115%)); }
+.sidebar-section-body .fav-item.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); line-height: var(--outliner-item-selected-line-height, var(--outliner-item-line-height, 115%)); }
 @media (pointer: coarse), (max-width: 640px) {
   .sidebar-section-body button.fav-item {
     min-height: 44px;
@@ -289,67 +283,30 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
     padding-bottom: 0;
   }
   .fav-more-btn { width: 24px; height: 24px; }
-  [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-root-label"],
-  [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-child-label"],
-  [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-toggle"] {
-    min-height: 44px !important;
-    display: inline-flex;
-    align-items: center;
-    box-sizing: border-box;
-  }
-  [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-toggle"] {
-    width: 44px !important;
-    min-width: 44px !important;
-    justify-content: center;
-  }
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-row,
   [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-row,
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row {
+  [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row {
     flex-wrap: wrap;
     align-items: stretch !important;
     gap: 8px !important;
   }
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > input,
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > select,
   [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > input,
   [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > select {
     flex: 1 1 calc(50% - 8px) !important;
     min-width: 120px;
     min-height: 44px !important;
   }
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row > input {
+  [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row > input {
     flex: 1 1 calc(100% - 52px) !important;
     min-width: 160px;
     min-height: 44px !important;
   }
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > button,
   [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-row > button,
-  [data-e2e-id="smart-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row > button {
+  [data-e2e-id="global-index-filter-dialog"].gb-mobile-dialog-sheet .sdf-src-row > button {
     flex: 0 0 44px !important;
     width: 44px !important;
     min-width: 44px !important;
     min-height: 44px !important;
     justify-content: center;
-  }
-  #smart-db-table [data-e2e-id^="global-index-table-row-"],
-  .smart-db-list-row,
-  #smart-db-table .auto-link[role="button"],
-  .smart-db-list-prop .auto-link[role="button"] {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0 8px;
-  }
-  #smart-db-table [data-e2e-id^="global-index-sort-"] {
-    height: 44px;
-  }
-  #smart-db-table [data-e2e-id^="global-index-table-row-"] > td,
-  .smart-db-list-row > td {
-    padding-top: 12px !important;
-    padding-bottom: 12px !important;
   }
 }
 .fav-more-btn {
@@ -363,6 +320,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 .fav-more-btn:hover { opacity: 1; background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
 .sidebar-item {
   padding: 4px 12px; cursor: pointer; font-size: 13px;
+  line-height: var(--outliner-item-line-height, 115%);
   color: var(--outliner-item-fg); background: var(--outliner-item-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sidebar-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
@@ -725,6 +683,19 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   border: 1px solid var(--border);
   cursor: zoom-in;
 }
+.chat-markdown .chat-md-image-host {
+  display: block;
+  width: fit-content;
+  min-width: 32px;
+  min-height: 32px;
+  max-width: 100%;
+  margin: 0.45em 0;
+}
+.chat-markdown .chat-md-image-host > .chat-md-image { margin: 0; }
+.chat-artifact-image-host,
+.chat-message-image-host,
+.chat-search-image-host { min-width: 18px; min-height: 18px; }
+.chat-attachment-image-host { min-width: 24px; min-height: 24px; }
 #rp-chat .chat-mode-tab.active {
   color: var(--chat-accent) !important;
   border-bottom-color: var(--chat-accent) !important;
@@ -1219,9 +1190,6 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #folder-toolbar .tb-icon-btn,
   #folder-toolbar button,
   #folder-toolbar select,
-  .smart-db-toolbar button,
-  .smart-db-toolbar select,
-  .smart-db-toolbar input,
   #ann-toolbar button,
   #ann-toolbar input,
   #ann-toolbar label,
@@ -1250,15 +1218,6 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #app-toolbar .db-toolbar-actions-right {
     min-width: 0 !important;
     flex-wrap: wrap !important;
-  }
-  .smart-db-toolbar,
-  .smart-db-view-tabs {
-    max-width: 100% !important;
-    min-width: 0 !important;
-    flex-wrap: wrap !important;
-  }
-  .smart-db-toolbar .tb-spacer {
-    display: none !important;
   }
   #app-toolbar .tb-icon-btn .ico,
   #page-rt-toolbar .tb-icon-btn .ico,
@@ -1583,6 +1542,71 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #gb-layout-root > .gb-pane { width: 100% !important; height: 100% !important; }
 }
 
+.gb-context-target-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--ui-border-subtle, var(--border));
+  background: var(--ui-bg-panel, var(--bg2));
+}
+.gb-context-target-header__caption {
+  flex: 0 0 auto;
+  color: var(--fg2);
+  font-size: 11px;
+}
+.gb-context-target-header__name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-context-target-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* チャットは右レールの狭幅でも、DOM/キーボード順を変えず二段に折り返す。 */
+.team-room-toolbar { min-width:0; flex-wrap:wrap; }
+.team-room-select { flex:1 1 120px; min-width:0 !important; }
+.team-room-toolbar-actions { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
+.team-room-toolbar-btn { font-size:12px; padding:2px 8px; background:var(--bg3); color:var(--fg2); border:1px solid var(--border); border-radius:3px; cursor:pointer; display:flex; align-items:center; gap:3px; white-space:nowrap; }
+@media (max-width: 380px) {
+  .team-room-toolbar { align-items:stretch !important; flex-wrap:wrap; }
+  .team-room-select { flex:1 1 100% !important; min-width:0 !important; }
+  .team-room-toolbar-actions { width:100%; justify-content:flex-end; }
+}
+@media (min-width: 769px) and (max-width: 1024px), (pointer: coarse) and (min-width: 769px) {
+  /* Tablet keeps its two-pane layout; only chat controls receive the coarse-pointer hit area. */
+  #rp-chat .chat-mode-tab,
+  #chat-history-view-saved,
+  #chat-history-view-cli,
+  #chat-voice-btn,
+  #chat-llm-panel .stamp-btn,
+  #team-composer .stamp-btn,
+  #chat-send-btn,
+  #team-send-btn,
+  .team-room-toolbar-btn,
+  .team-room-select,
+  .chat-composer-controls > button,
+  .chat-composer-controls > select {
+    min-height:44px !important;
+    min-width:44px;
+    box-sizing:border-box;
+  }
+  #rp-chat .chat-mode-tab,
+  .team-room-toolbar-btn,
+  .team-room-select,
+  .chat-composer-controls > button,
+  .chat-composer-controls > select { font-size:15px !important; }
+}
+
 /* ===== ノートエディタ本体のレイアウト =====
    旧実装では Meldex.html の style 属性に直接書かれていた。インラインstyleは外部CSSより
    常に優先されるため、gb-tools.part02.part02.css の縦書き用スタイル（余白・行間・
@@ -1612,6 +1636,18 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
 .chat-waiting-undo-toast { position: sticky; bottom: 6px; align-self: center; z-index: 10; display: flex; gap: 10px; align-items: center; padding: 7px 10px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 5px 18px rgba(0,0,0,.25); font-size: 12px; }
 .chat-waiting-undo-toast button { padding: 3px 7px; color: var(--accent); background: transparent; border: 0; cursor: pointer; font-weight: 700; }
 .gb-chat-copy-popup { min-width: 88px; white-space: nowrap; }
+.gb-chat-copy-popup .gb-fmt-btn {
+  width: auto;
+  min-width: 24px;
+  height: 24px;
+}
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-chat-copy-popup .gb-fmt-btn {
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}
 .chat-list-state-icons { margin-left: auto; color: var(--accent); font-size: 11px; white-space: nowrap; }
 
 #note-toc {

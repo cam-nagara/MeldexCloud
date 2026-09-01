@@ -476,8 +476,15 @@ function _bytesToManagedBase64(bytes) {
   return btoa(binary);
 }
 
-async function _conflictObject(provider, sourcePath) {
+async function _conflictObject(provider, sourcePath, snapshot = null) {
   const normalized = _normalizeFolderPath(sourcePath);
+  if (snapshot && _normalizeFolderPath(snapshot.path) === normalized) {
+    return {
+      type: 'file',
+      name: _basename(normalized),
+      bytes_base64: _bytesToManagedBase64(snapshot.bytes),
+    };
+  }
   const entry = await _resolveEntryHandle(provider, normalized);
   if (!entry) return null;
   if (entry.kind === 'file') {
@@ -495,7 +502,7 @@ async function _conflictObject(provider, sourcePath) {
   return { type: 'folder', name: _basename(normalized), children: children.filter(Boolean) };
 }
 
-async function _backupConflictSide(provider, kind, sourcePath, stamp) {
+async function _backupConflictSide(provider, kind, sourcePath, stamp, snapshot = null) {
   const normalized = _normalizeFolderPath(sourcePath);
   if (!normalized || !await _pathExists(provider, normalized)) return '';
   const adapter = await _managementAdapterForProvider(
@@ -508,9 +515,107 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
     kind,
     original_relative_path: normalized,
     created_at: stamp || _conflictBackupStamp(),
-    object: await _conflictObject(provider, normalized),
+    object: await _conflictObject(provider, normalized, snapshot),
   });
   return `${window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS}/${documentId}`;
+}
+
+async function _conflictSnapshotSha256(bytes) {
+  if (!globalThis.crypto?.subtle?.digest) {
+    const error = new Error('競合世代の安全なhash確認に対応していません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', view));
+  return Array.from(digest, value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function _readConflictSnapshot(provider, path) {
+  if (typeof provider?.readBytesFresh !== 'function' || typeof provider?.uploadBytesConditional !== 'function') {
+    const error = new Error('競合世代を固定する条件付き保存に対応していません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  const read = await provider.readBytesFresh(path);
+  const bytes = read?.bytes instanceof Uint8Array ? read.bytes.slice() : new Uint8Array(read?.bytes || []);
+  const revision = String(read?.revision || read?.rev || '').trim();
+  if (!revision) {
+    const error = new Error('競合ファイルの現在世代を確認できません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+  return { path, bytes, revision, sha256: await _conflictSnapshotSha256(bytes) };
+}
+
+function _resolvedConflictTombstone(bytes) {
+  try {
+    const payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    return payload?.meldex_resolved_conflict === 1 ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function _conflictSnapshotPreview(snapshot, maxChars) {
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(snapshot?.bytes || new Uint8Array()); }
+  catch { return { content: '', truncated: false, length: 0 }; }
+  const limit = Number(maxChars || 200000);
+  return {
+    content: text.length <= limit ? text : text.slice(0, limit),
+    truncated: text.length > limit,
+    length: text.length,
+  };
+}
+
+async function _retireResolvedConflict(provider, snapshot, action, backupPath) {
+  const markerBytes = new TextEncoder().encode(JSON.stringify({
+    meldex_resolved_conflict: 1,
+    resolved_at: new Date().toISOString(),
+    action: String(action || ''),
+    source_revision: snapshot.revision,
+    source_sha256: snapshot.sha256,
+    backup_path: String(backupPath || ''),
+  }));
+  const markerSha256 = await _conflictSnapshotSha256(markerBytes);
+  const marked = await provider.uploadBytesConditional(snapshot.path, markerBytes, snapshot.revision);
+  const markerRevision = String(marked?.revision || marked?.rev || '').trim();
+  if (!markerRevision) {
+    const error = new Error('競合コピー退役後の世代を確認できません');
+    error.status = 503;
+    error.code = 'strict_cas_unavailable';
+    throw error;
+  }
+
+  const hiddenName = `.${_safeNamePart(_basename(snapshot.path), 'conflict')}.meldex-resolved-${_randomId('r').replace(/[^a-z0-9]/gi, '')}.json`;
+  const hiddenPath = _joinPath(_dirname(snapshot.path), hiddenName);
+  try {
+    await provider.movePath(snapshot.path, hiddenPath);
+    const moved = await _readConflictSnapshot(provider, hiddenPath);
+    if (moved.sha256 !== markerSha256) {
+      let recoveryPath = hiddenPath;
+      try {
+        await provider.movePath(hiddenPath, snapshot.path);
+        recoveryPath = snapshot.path;
+      } catch {}
+      const error = new Error('競合コピーが解消処理中に更新されました。新しい世代は上書きしていません');
+      error.status = 409;
+      error.code = 'conflict_generation_changed';
+      error.recoveryPath = recoveryPath;
+      throw error;
+    }
+    await provider.deletePath(hiddenPath);
+    return { removed_path: snapshot.path, cleanup_pending: false };
+  } catch (error) {
+    if (error?.code === 'conflict_generation_changed') throw error;
+    // CAS済みmarkerは元内容を管理backupへ移したことを示す。cleanupに失敗しても
+    // markerを競合として再提示せず、利用者データを無条件deleteしない。
+    return { removed_path: snapshot.path, cleanup_pending: true };
+  }
 }
 /* gb-data-access-dropbox-fileops-annotations.js
  *
@@ -518,13 +623,13 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
  * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
  *
  * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
- * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * 決定」の③アノテートクラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
  * (gb-system-storage.js、種別 annotations)へ載せ替える。
  *
  * ## 保存先の変更
  *
  * 旧: `_events/annotations/<id>.json` への直接読み書き。
- * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ * 新: 共通ストレージ層(document_id = アノテートid)。個人領域は `/MeldexSettings/system/v1`、
  *     参加中の共有ワークスペースに接続している場合は `<ワークスペース>/MeldexShare/system/v1`
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
@@ -555,7 +660,7 @@ function _annotationTargetResolver() {
 async function _migrateAnnotationStoredRecord(provider, adapter, docId) {
   const contract = window.MeldexSystemStorage;
   const boundary = adapter?.describe?.().boundary;
-  if (!boundary) throw new Error('注釈のDropbox adapter boundaryを確認できません');
+  if (!boundary) throw new Error('アノテートのDropbox adapter boundaryを確認できません');
   return _annotationTargetResolver().migrateRecord({
     provider, adapter, boundary, kind: contract.SystemStorageKind.ANNOTATIONS,
     documentId: docId, operationId: `annotation-lazy-migrate:${docId}`,
@@ -647,8 +752,8 @@ function _mergeAnnotationRecord(existing, body, options) {
 // 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
 // できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
 // ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
-// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
-// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へアノテートを
+// 付けた場合、共有管理領域に保存されたそのアノテートを同じセッションで読めること)。
 
 async function _annotationScopes(provider) {
   const resolver = window.MeldexDropboxManagementRootResolver;
@@ -660,7 +765,7 @@ async function _annotationScopes(provider) {
 
 function _annotationUnavailable(error, operation) {
   if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
-  const wrapped = new Error(`注釈SystemStorageの${operation}に失敗しました`);
+  const wrapped = new Error(`アノテートSystemStorageの${operation}に失敗しました`);
   wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
   return wrapped;
 }
@@ -681,7 +786,7 @@ async function _findAnnotationRecordsById(provider, docId) {
     if (stored) matches.push({ scope, stored });
   }
   if (matches.length > 1) {
-    const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+    const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
     error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
   }
   return matches;
@@ -727,7 +832,7 @@ async function _writeAnnotationRecord(provider, record) {
 }
 
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
-// identity claimと同じ保留/復帰の対象へ注釈書込みを含められるようにする登録。
+// identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
 // 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
 // (aftercare側は実行時にこのレジストリを参照するため、このファイルが
 // aftercare側より先に読み込まれても後に読み込まれても問題ない)。
@@ -793,108 +898,3 @@ async function _listAnnotationRecords(provider, query) {
   const scopeOwnersById = new Map();
   let scopes;
   try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
-  for (const scope of scopes) {
-    let stored = [];
-    try {
-      const kind = contract.SystemStorageKind.ANNOTATIONS;
-      if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
-        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
-        if (!coverage.complete) {
-          const error = new Error('注釈metadata indexを構築中です。再試行してください');
-          error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
-        }
-        const ids = await _annotationTargetResolver().indexedIds(scope.adapter, kind, query);
-        for (const id of ids) {
-          const item = await scope.adapter.load(kind, id);
-          if (item) stored.push(item);
-        }
-      } else {
-        let cursor = '';
-        do {
-          if (typeof scope.adapter.listDocumentHeaders !== 'function') throw new Error('metadata header API unavailable');
-          const page = await scope.adapter.listDocumentHeaders(kind, { cursor, limit: 100 });
-          for (const header of page.entries || []) {
-            if (header.documentId === _annotationTargetResolver().INDEX_ID) continue;
-            const item = await scope.adapter.load(kind, header.documentId);
-            if (item) stored.push(item);
-          }
-          cursor = page.complete ? '' : page.cursor;
-          if (!page.complete && !cursor) throw new Error('metadata cursor missing');
-        } while (cursor);
-      }
-    } catch (error) { throw _annotationUnavailable(error, '一覧読込'); }
-    for (const id of await _annotationTargetResolver().indexedKnownIds(
-      scope.adapter, contract.SystemStorageKind.ANNOTATIONS,
-    )) {
-      const key = String(id);
-      const owners = scopeOwnersById.get(key) || new Set();
-      owners.add(String(scope.scopeKey || scope.adapter?.describe?.().boundary || 'unknown'));
-      scopeOwnersById.set(key, owners);
-      if (owners.size > 1) {
-        const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
-        error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
-      }
-      seenIds.add(key);
-    }
-    for (const item of stored) {
-      let payload = item?.payload;
-      if (_annotationDeleted(payload)) continue;
-      if (payload && typeof payload === 'object' && payload.id) {
-        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
-        payload = migrated.record?.payload || payload;
-      }
-      if (payload && typeof payload === 'object' && payload.id) {
-        const id = String(payload.id);
-        if (records.some(existing => String(existing.id) === id)) {
-          const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
-          error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
-        }
-        records.push(payload); seenIds.add(id);
-      }
-    }
-  }
-  // 旧パス(_events/annotations)は読取フォールバック専用。新ストレージに
-  // 既にある同一idは、新ストレージ側の内容を優先する(移行はPhase 5)。
-  let legacyEntries = [];
-  try {
-    legacyEntries = await _listDirectoryEntries(provider, ANNOTATION_DIR);
-  } catch {
-    legacyEntries = [];
-  }
-  for (const entry of legacyEntries) {
-    if (entry.handle.kind !== 'file' || !entry.name.endsWith('.json')) continue;
-    const id = entry.name.slice(0, -5);
-    if (seenIds.has(id)) continue;
-    const record = await _readJsonSafe(provider, _annotationPath(id), null);
-    if (record?.id) records.push(record);
-  }
-  return records;
-}
-
-function _annotationRef(record) {
-  const ref = _annotationJsonField(record?.target_ref, null);
-  return ref && typeof ref === 'object' ? ref : {};
-}
-
-function _annotationMatchesOrphan(record, body, cascade) {
-  if (!record || _annotationFlag(record.orphan)) return false;
-  const targetKind = String(body?.target_kind || '');
-  const itemId = String(body?.item_id || '');
-  const colId = String(body?.col_id || '');
-  const targetFile = _normalizeFolderPath(body?.target_file || '');
-  if (!targetKind || !itemId) return false;
-  const ref = _annotationRef(record);
-  if (targetFile && _normalizeFolderPath(ref.file || record.target_path || '') !== targetFile) return false;
-
-  const kind = String(record.target_kind || '');
-  const directKindOk = targetKind === 'sheet_col'
-    ? (kind === 'sheet_col' || kind === 'sheet_cell')
-    : kind === targetKind;
-  if (directKindOk) {
-    if ((targetKind === 'note_line' || targetKind === 'scriptnote_line') && String(ref.lineId || '') === itemId) return true;
-    if (targetKind === 'board_card' && String(ref.cardId || '') === itemId) return true;
-    if (targetKind === 'board_line' && String(ref.lineId || '') === itemId) return true;
-    if (targetKind === 'sheet_entry' && String(ref.entryId || '') === itemId) return true;
-    if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
-    if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
-    if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;

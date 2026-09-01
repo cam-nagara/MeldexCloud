@@ -32,7 +32,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet', '.smart-db.json',
+    '.mel-sheet',
     '.mel-timer', '.timer.json',
   ];
 
@@ -85,8 +85,8 @@ const GBLinkRouter = (() => {
     const extension = ext(lower);
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
-    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
-    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-sheet')) return 'database';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
     if (extension === 'pdf') return 'pdf';
     if (extension === 'csv') return 'csv';
@@ -142,12 +142,11 @@ const GBLinkRouter = (() => {
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
-    else if (explicitType === 'timer') entry = { type: 'timer', label: nextLabel, path: nextPath };
+    else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
     else if (explicitType === 'html') entry = { type: 'html', label: nextLabel, path: nextPath };
     else if (explicitType === 'entity') entry = { type: 'entity', label: nextLabel, path: nextPath };
     else if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) entry = { type: explicitType, label: nextLabel, path: nextPath };
-    else if (explicitType === 'smart-db') entry = { type: 'smart-db', label: nextLabel, path: nextPath };
     else if (explicitType === 'folder') entry = { type: 'folder', label: nextLabel, path: nextPath };
     else if (explicitType === 'calendar') entry = { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
     else if (explicitType === 'pdf' || (explicitType === 'document' && extension === 'pdf')) {
@@ -161,8 +160,8 @@ const GBLinkRouter = (() => {
     } else if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
-    else if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) entry = { type: 'smart-db', label: nextLabel, path: nextPath };
-    else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'timer', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
     else if (extension === 'html' || extension === 'htm') entry = { type: 'html', label: nextLabel, path: nextPath };
     else if (IMAGE_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };

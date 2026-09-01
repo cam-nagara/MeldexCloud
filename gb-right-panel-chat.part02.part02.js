@@ -166,27 +166,54 @@ async function chatExport(format = 'markdown') {
 
 function showChatExportMenu(event) {
   if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-  document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu chat-export-menu';
+  const restoreFocus = event?.currentTarget || null;
   const items = [
     { format: 'meldex-note', icon: 'fileText', label: 'Meldexノート形式' },
     { format: 'html', icon: 'globe', label: 'HTML形式' },
     { format: 'markdown', icon: 'fileText', label: 'Markdown形式' },
   ];
+  const anchor = restoreFocus?.getBoundingClientRect?.();
+  const zoom = (typeof _getZoom === 'function') ? _getZoom() : 1;
+  const x = anchor ? anchor.left : ((event?.clientX || window.innerWidth / 2) / zoom);
+  const y = anchor ? anchor.bottom : ((event?.clientY || 48) / zoom);
+  if (window.MeldexContextMenuUI?.openAt) {
+    return window.MeldexContextMenuUI.openAt({
+      x,
+      y,
+      ariaLabel: 'チャットのエクスポート形式',
+      restoreFocus,
+      items: items.map(item => ({
+        label: item.label,
+        action: () => chatExport(item.format),
+      })),
+    });
+  }
+  document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu chat-export-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'チャットのエクスポート形式');
   items.forEach(item => {
     const row = document.createElement('div');
     row.className = 'gb-context-menu-item';
+    row.setAttribute('role', 'menuitem');
+    row.tabIndex = -1;
     row.innerHTML = (typeof lucide === 'function' ? lucide(item.icon, 14) : '') + ' ' + item.label;
-    row.addEventListener('click', () => {
+    const activate = () => {
       menu.remove();
+      restoreFocus?.focus?.({ preventScroll: true });
       chatExport(item.format);
+    };
+    row.addEventListener('click', activate);
+    row.addEventListener('keydown', keyEvent => {
+      if (keyEvent.key === 'Enter' || keyEvent.key === ' ') {
+        keyEvent.preventDefault();
+        activate();
+      }
     });
     menu.appendChild(row);
   });
   document.body.appendChild(menu);
-  const zoom = (typeof _getZoom === 'function') ? _getZoom() : 1;
-  const anchor = event?.currentTarget?.getBoundingClientRect?.();
   if (anchor && typeof positionPopup === 'function') {
     positionPopup(menu, anchor);
   } else {
@@ -194,6 +221,24 @@ function showChatExportMenu(event) {
     menu.style.top = (((event?.clientY || 48) / zoom)) + 'px';
   }
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+  menuItems[0]?.focus?.({ preventScroll: true });
+  menu.addEventListener('keydown', keyEvent => {
+    const current = menuItems.indexOf(document.activeElement);
+    let next = current;
+    if (keyEvent.key === 'ArrowDown') next = (current + 1 + menuItems.length) % menuItems.length;
+    else if (keyEvent.key === 'ArrowUp') next = (current - 1 + menuItems.length) % menuItems.length;
+    else if (keyEvent.key === 'Home') next = 0;
+    else if (keyEvent.key === 'End') next = menuItems.length - 1;
+    else if (keyEvent.key === 'Escape') {
+      keyEvent.preventDefault();
+      menu.remove();
+      restoreFocus?.focus?.({ preventScroll: true });
+      return;
+    } else return;
+    keyEvent.preventDefault();
+    menuItems[next]?.focus?.({ preventScroll: true });
+  });
   setTimeout(() => {
     const closer = (ev) => {
       if (!menu.contains(ev.target)) {

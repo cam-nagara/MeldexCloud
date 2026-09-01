@@ -3,7 +3,9 @@
   'use strict';
 
   const ViewContract = global.MeldexTopicViewDocument;
+  const PropertyFamily = global.MeldexTopicPropertyFamily;
   if (!ViewContract) throw new Error('MeldexTopicViewDocument must be loaded first');
+  if (!PropertyFamily) throw new Error('MeldexTopicPropertyFamily must be loaded first');
 
   function clone(value) {
     if (Array.isArray(value)) return value.map(clone);
@@ -51,13 +53,42 @@
     });
   }
 
-  function legacySheetTopicRecord(row, topicRef) {
+  function familyIdFor(documentId, columnId) {
+    return PropertyFamily.legacyPropertyFamilyId(documentId, columnId);
+  }
+
+  function legacyPropertyValues(properties, sourceId, columns, documentId) {
+    const definitions = Array.isArray(columns) ? columns : [];
+    const values = {};
+    const order = [];
+    Object.keys(properties).forEach((name) => {
+      const column = definitions.find((item) => (item.id || item.columnId || item.name) === name) || {};
+      const columnId = String(column.id || column.columnId || name);
+      const propertyFamilyId = column.propertyFamilyId || familyIdFor(documentId || sourceId, columnId);
+      values[propertyFamilyId] = {
+        propertyFamilyId,
+        displayName: column.name || name,
+        columnType: String(column.columnType || column.type || 'unknown'),
+        typeConfig: clone(column.typeConfig || column.config || {}),
+        value: clone(properties[name]),
+        origins: [{ sourceId, columnId, columnName: column.name || name }],
+        revision: 0,
+      };
+      order.push(propertyFamilyId);
+    });
+    return { values, order };
+  }
+
+  function legacySheetTopicRecord(row, topicRef, columns, documentId) {
     const frontmatter = row.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
     const properties = row.properties ?? row.values ?? frontmatter.properties ?? {};
+    const migrated = legacyPropertyValues(properties, topicRef.sourceId, columns, documentId);
     return {
       topicId: topicRef.topicId,
       title: String(row.title ?? row.name ?? frontmatter.title ?? frontmatter.name ?? ''),
       properties: clone(properties && typeof properties === 'object' ? properties : {}),
+      propertyValuesByFamilyId: clone(row.propertyValuesByFamilyId || migrated.values),
+      propertyValueOrder: clone(row.propertyValueOrder || migrated.order),
       note: clone(row.note ?? row.body ?? null),
       resources: clone(Array.isArray(row.resources) ? row.resources
         : (frontmatter.resources || frontmatter.entry_attachments || [])),
@@ -76,12 +107,12 @@
     return state;
   }
 
-  function adaptLegacySheetRowToTopic(row, sourceId) {
+  function adaptLegacySheetRowToTopic(row, sourceId, options) {
     const source = object(row, 'legacy Sheet row');
     const topicRef = topicRefFromLegacySheetRow(source, sourceId);
     return {
       topicRef,
-      topicRecord: legacySheetTopicRecord(source, topicRef),
+      topicRecord: legacySheetTopicRecord(source, topicRef, options?.columns, options?.documentId),
       sheetRowState: legacySheetViewState(source),
       legacySheetRow: clone(source),
     };
@@ -97,6 +128,8 @@
       topicId: ref.topicId,
       title: topic.title,
       properties: clone(topic.properties || {}),
+      propertyValuesByFamilyId: clone(topic.propertyValuesByFamilyId || {}),
+      propertyValueOrder: clone(topic.propertyValueOrder || []),
       note: clone(topic.note ?? null),
       resources: clone(topic.resources || []),
       revision: topic.revision ?? 0,
@@ -136,17 +169,20 @@
     return resources;
   }
 
-  function legacyBoardTopicRecord(node, topicRef) {
+  function legacyBoardTopicRecord(node, topicRef, columns, documentId) {
     const text = String(node.text || '');
     const separator = text.indexOf('\n');
     const properties = clone(node.properties || {});
     if (Object.prototype.hasOwnProperty.call(node, 'status') && !('status' in properties)) {
       properties.status = clone(node.status);
     }
+    const migrated = legacyPropertyValues(properties, topicRef.sourceId, columns, documentId);
     return {
       topicId: topicRef.topicId,
       title: String(node.title ?? (separator < 0 ? text : text.slice(0, separator))),
       properties,
+      propertyValuesByFamilyId: clone(node.propertyValuesByFamilyId || migrated.values),
+      propertyValueOrder: clone(node.propertyValueOrder || migrated.order),
       note: clone(node.note ?? (separator < 0 ? '' : text.slice(separator + 1))),
       resources: legacyBoardResources(node),
       revision: node.revision ?? 0,
@@ -158,19 +194,20 @@
 
   function legacyBoardViewState(node) {
     const state = clone(node);
-    ['topicRef', 'topicId', 'title', 'text', 'properties', 'status', 'note', 'resources', 'revision',
+    ['topicRef', 'topicId', 'title', 'text', 'properties', 'propertyValuesByFamilyId',
+      'propertyValueOrder', 'status', 'note', 'resources', 'revision',
       'createdAt', 'updatedAt', 'updatedBy', 'parent', 'link', 'linkType', 'img']
       .forEach((key) => { delete state[key]; });
     state.legacyNodeId = String(node.id);
     return state;
   }
 
-  function adaptLegacyBoardNodeToTopic(node, sourceId, topicIdByLegacyNodeId) {
+  function adaptLegacyBoardNodeToTopic(node, sourceId, topicIdByLegacyNodeId, options) {
     const source = object(node, 'legacy Board node');
     const topicRef = topicRefFromLegacyBoardNode(source, sourceId, topicIdByLegacyNodeId);
     return {
       topicRef,
-      topicRecord: legacyBoardTopicRecord(source, topicRef),
+      topicRecord: legacyBoardTopicRecord(source, topicRef, options?.columns, options?.documentId),
       boardNodeState: legacyBoardViewState(source),
       parentLegacyNodeId: source.parent ? String(source.parent) : null,
       legacyBoardNode: clone(source),
@@ -184,48 +221,6 @@
     output.id = state.legacyNodeId || legacyBoardNode?.id || ref.topicId;
     delete output.legacyNodeId;
     return output;
-  }
-
-  function smartSheetViews(rawViews) {
-    if (Array.isArray(rawViews)) return clone(rawViews);
-    if (!rawViews || typeof rawViews !== 'object') return [];
-    return Object.keys(rawViews).filter((key) => rawViews[key] && typeof rawViews[key] === 'object')
-      .map((key) => ({ viewId: key, type: key, ...clone(rawViews[key]) }));
-  }
-
-  function convertLegacySmartSheetToTopicView(definition, options) {
-    const source = object(definition, 'legacy smart Sheet');
-    const settings = options || {};
-    const manualTopicRefs = ViewContract.uniqueTopicRefs(settings.manualTopicRefs || []);
-    const mode = settings.mode || (manualTopicRefs.length ? 'hybrid' : 'query');
-    const queryDefinition = clone(source.queryDefinition || {});
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sourceType')) {
-      queryDefinition.sourceType = source.sourceType || 'db-entities';
-    }
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sources')) {
-      queryDefinition.sources = clone(Array.isArray(source.sources) ? source.sources : []);
-    }
-    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'filters')) {
-      queryDefinition.filters = clone(Array.isArray(source.filters) ? source.filters : []);
-    }
-    if (Object.prototype.hasOwnProperty.call(source, 'query')
-        && !Object.prototype.hasOwnProperty.call(queryDefinition, 'query')) {
-      queryDefinition.query = clone(source.query);
-    }
-    const document = {
-      documentId: String(settings.documentId || source.documentId || source.id || ''),
-      schemaVersion: settings.schemaVersion || 1,
-      defaultSurface: 'sheet',
-      membership: { mode, manualTopicRefs, queryDefinition },
-      sheetViews: smartSheetViews(source.views),
-      boardViews: clone(settings.boardViews || []),
-      relationSets: clone(settings.relationSets || []),
-      topicLayouts: clone(source.topicLayouts || []),
-      lastCompleteSnapshot: clone(settings.lastCompleteSnapshot ?? null),
-      activeView: source.activeView || 'table',
-      legacySmartSheet: clone(source),
-    };
-    return ViewContract.normalizeDocument(document);
   }
 
   function normalizeLinkReference(value) {
@@ -315,7 +310,6 @@
     topicRefFromLegacyBoardNode,
     adaptLegacyBoardNodeToTopic,
     boardNodeForTopic,
-    convertLegacySmartSheetToTopicView,
     linkReferences,
     addLinkReference,
     reorderLinkReference,

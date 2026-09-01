@@ -613,7 +613,9 @@ function bdParseMd(raw) {
       const tcm = props.match(/textColor:\s*'((?:[^'\\]|\\.)*)'/); if (tcm) t.textColor = tcm[1].replace(/\\'/g, "'");
       const tscm = props.match(/textStrokeColor:\s*'((?:[^'\\]|\\.)*)'/); if (tscm) t.textStrokeColor = tscm[1].replace(/\\'/g, "'");
       const tswm = props.match(/textStrokeWidth:\s*(\d+)/); if (tswm) t.textStrokeWidth = +tswm[1];
+      const bgom = props.match(/bgOpacity:\s*([\d.]+)/); if (bgom) t.bgOpacity = Math.max(0, Math.min(1, +bgom[1]));
       const bcm = props.match(/borderColor:\s*'((?:[^'\\]|\\.)*)'/); if (bcm) t.borderColor = bcm[1].replace(/\\'/g, "'");
+      const bom = props.match(/borderOpacity:\s*([\d.]+)/); if (bom) t.borderOpacity = Math.max(0, Math.min(1, +bom[1]));
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
@@ -804,6 +806,7 @@ function bdParseMd(raw) {
         const lm = cl.match(/label:\s*"((?:[^"\\]|\\.)*)"/); if(lm) c.label = lm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
         const sm = cl.match(/style:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/); if(sm) c.style = String(parseConnScalar(sm[1]) ?? '');
         const cm = cl.match(/color:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/); if(cm && cm[1]!=='true'&&cm[1]!=='false') c.color = String(parseConnScalar(cm[1]) ?? '');
+        const com = cl.match(/colorOpacity:\s*([\d.]+)/); if(com) c.colorOpacity = Math.max(0, Math.min(1, +com[1]));
         const hm = cl.match(/hidden:\s*(\w+)/); if(hm) c.hidden = hm[1]==='true';
         const stm = cl.match(/straight:\s*(\w+)/); if(stm) c.straight = stm[1]==='true';
         const ptm = cl.match(/pathType:\s*([^\s,}]+)/); if(ptm) c.pathType = ptm[1];

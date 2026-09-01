@@ -470,9 +470,8 @@ function _dbAutoImageColumnWidth(propName, ptc) {
   return Math.max(96, Math.min(260, Math.max(labelWidth, cellSize + 52)));
 }
 
-// 列幅自動算出の本体。手動の「列幅自動調整」ボタンと、データが入った直後の一度だけの
-// 自動調整（_dbMaybeAutoFitColumnsOnce）の両方から共有で使う。保存は行わない（呼び出し側が
-// 返り値を colWidths へ反映して保存する）。
+// 列幅自動算出の本体。利用者が「列幅自動調整」を実行した時だけ呼び出す。
+// 保存は行わず、呼び出し側が返り値を colWidths へ反映して保存する。
 function _dbComputeAutoFitColumnWidths(params) {
   const { propTypes, visibleProps, entityNames, advFilters, data, dbPath, ctx } = params || {};
   const widths = {};
@@ -488,28 +487,6 @@ function _dbComputeAutoFitColumnWidths(params) {
     widths[propName] = _dbTextAutoWidthPxFromChars(_dbAutoWidthCharsForTexts(texts, propName));
   });
   return widths;
-}
-
-// データを持つテーブルビューで保存済み列幅が一つもなければ、初回描画前に一度だけ自動調整して
-// 保存する（renderPivot から呼ぶ）。既存の列幅が一つでもあれば利用者調整済みとして変更しない。
-// 空のビュー（エントリ0件）は何もせず、次回データが入った時の描画で再判定する
-// （columnAutoFitInitialized はまだ立てない）。一度実行したら次回以降は
-// columnAutoFitInitialized で必ずスキップする（列幅を全消去した後の再トリガーはしない）。
-function _dbMaybeAutoFitColumnsOnce(dbPath, ctx, params) {
-  if (!dbPath) return null;
-  const { entityNames, savedWidths } = params || {};
-  if (!Array.isArray(entityNames) || entityNames.length === 0) return null;
-  if (savedWidths && typeof savedWidths === 'object' && Object.keys(savedWidths).length > 0) return null;
-  const view = typeof getCurrentDbViewConfigEntry === 'function' ? getCurrentDbViewConfigEntry(dbPath, { ctx }) : null;
-  if (view?.columnAutoFitInitialized) return null;
-  const computed = _dbComputeAutoFitColumnWidths({ ...(params || {}), dbPath, ctx });
-  if (typeof _saveCurrentDbViewField === 'function') {
-    _saveCurrentDbViewField(dbPath, '', '', { ctx, skipHistory: true }, (v) => {
-      v.colWidths = computed;
-      v.columnAutoFitInitialized = true;
-    });
-  }
-  return computed;
 }
 
 function autoFitCurrentSheetColumns(event, ctxOverride, dbPathOverride) {
@@ -545,9 +522,6 @@ function autoFitCurrentSheetColumns(event, ctxOverride, dbPathOverride) {
   const computed = _dbComputeAutoFitColumnWidths({ propTypes, visibleProps, entityNames, advFilters, data, dbPath, ctx });
   _saveCurrentDbViewField(dbPath, '', '全列', { ctx, skipHistory: true }, (v) => {
     v.colWidths = computed;
-    // 手動で自動調整した場合も、以後は初回自動調整（データが入った直後の一度だけの調整）を
-    // 再トリガーしない（利用者が明示的に列幅を確定させた状態として扱う）。
-    v.columnAutoFitInitialized = true;
   });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: 列幅自動調整', before, captureDbViewConfigHistory(dbPath), '全列');

@@ -804,25 +804,23 @@
       menu.remove();
       anchorEl?.focus?.();
     };
-    setTimeout(() => {
-      const close = event => {
-        if (!menu.contains(event.target)) {
-          closeMenu();
-        }
-      };
-      const keyClose = event => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeMenu();
-        }
-      };
-      document.addEventListener('pointerdown', close, true);
-      document.addEventListener('keydown', keyClose, true);
-      cleanup = () => {
-        document.removeEventListener('pointerdown', close, true);
-        document.removeEventListener('keydown', keyClose, true);
-      };
-    }, 0);
+    const close = event => {
+      if (!menu.contains(event.target)) {
+        closeMenu();
+      }
+    };
+    const keyClose = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu();
+      }
+    };
+    document.addEventListener('pointerdown', close, true);
+    window.addEventListener('keydown', keyClose, true);
+    cleanup = () => {
+      document.removeEventListener('pointerdown', close, true);
+      window.removeEventListener('keydown', keyClose, true);
+    };
   };
 
   CalendarComponent.prototype._applyShiftTemplateToDate = async function(template, dateStr) {
@@ -837,6 +835,8 @@
     }
     const cal = this._selectedCalendar?.();
     const user = cal?.user || this._getUser();
+    const workspaceId = String(cal?.workspace_id || entry.workspaceId || '');
+    const memberId = String(cal?.member_id || (workspaceId && user ? `${workspaceId}::${user}` : ''));
     const breaks = _stNormalizeBreaks(entry.breaks);
     const noteLines = [
       `テンプレート: ${template.name || '無題'}`,
@@ -853,6 +853,8 @@
       end_time: entry.workEnd,
       type: 'work',
       note: noteLines.join('\n'),
+      workspace_id: workspaceId,
+      member_id: memberId,
       breaks,
       _optimistic: true,
     };
@@ -870,6 +872,8 @@
         end_time: entry.workEnd,
         type: 'work',
         note: shift.note,
+        workspace_id: workspaceId,
+        member_id: memberId,
       });
       acknowledged = true;
       const savedId = res?.id || shiftId;

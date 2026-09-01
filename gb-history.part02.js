@@ -27,6 +27,9 @@ async function _flushPendingEditorVersionTarget(path, folderPath) {
 async function _flushOpenAppVersionTarget(path, folderPath) {
   let count = await _flushPendingEditorVersionTarget(path, folderPath);
   const matches = p => folderPath ? _historyPathUnderFolder(p, folderPath) : _sameVersionTargetPath(p, path);
+  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+    if (!folderPath && typeof adapter?.flushVersionTarget === 'function' && await adapter.flushVersionTarget(path)) count++;
+  }
   if (typeof bd !== 'undefined' && bd?.path && matches(bd.path) && typeof bdSave === 'function') {
     if (window._bdTimer) { clearTimeout(window._bdTimer); window._bdTimer = null; }
     const ok = await Promise.resolve(bdSave());
@@ -36,14 +39,6 @@ async function _flushOpenAppVersionTarget(path, folderPath) {
   if (typeof _csvPath !== 'undefined' && _csvPath && matches(_csvPath) && typeof saveCsv === 'function') {
     const ok = await Promise.resolve(saveCsv());
     if (ok === false) throw new Error('CSVの未保存内容を保存できませんでした');
-    count++;
-  }
-  const smartPath = typeof state !== 'undefined' ? state.currentSmartDb?._filePath : '';
-  if (smartPath && matches(smartPath) && typeof saveSmartDbDef === 'function') {
-    await Promise.resolve(saveSmartDbDef(state.currentSmartDb));
-    if (typeof _runSmartDbBasePostCommitEffects === 'function') {
-      _runSmartDbBasePostCommitEffects(state.currentSmartDb);
-    }
     count++;
   }
   return count;
@@ -348,12 +343,11 @@ async function historyUndo(scope) {
     renderHistoryPanel();
     return;
   }
-  // スナップショット型スコープ（scriptnote:/board: 等）: undo 前の状態を毎回キャプチャして
-  // redo に差し替える。過去の _redoCaptured フラグは undo/redo 往復で state が乖離する
-  // 原因になったため廃止。registerされたプロバイダのcapture/restoreは対象スコープの
-  // 「絶対状態」を扱う前提のため、何度再キャプチャしても安全（フェーズ3で一般化）。
+  // スナップショット型スコープ（scriptnote:/board: 等）では、呼出元が用意していない
+  // redoだけを補う。明示的なredo（例: board:スコープに置く共通localStorage設定履歴）を
+  // boardスナップショットで上書きすると、その設定だけRedoできなくなるため保持する。
   const undoProvider = _findHistorySnapshotProvider(actualScope);
-  if (undoProvider) {
+  if (undoProvider && !entry.redo) {
     const redoState = await Promise.resolve(undoProvider.capture(actualScope));
     entry.redo = () => Promise.resolve(undoProvider.restore(redoState, actualScope));
   }
@@ -384,9 +378,9 @@ async function historyRedo(scope) {
     renderHistoryPanel();
     return;
   }
-  // スナップショット型スコープ: redo 前の状態を毎回キャプチャして undo に差し替える
+  // 呼出元が用意していないundoだけをプロバイダで補い、明示的な復元処理は保持する。
   const redoProvider = _findHistorySnapshotProvider(actualScope);
-  if (redoProvider) {
+  if (redoProvider && !entry.undo) {
     const undoState = await Promise.resolve(redoProvider.capture(actualScope));
     entry.undo = () => Promise.resolve(redoProvider.restore(undoState, actualScope));
   }
@@ -602,13 +596,6 @@ function _meldexDbTabHistoryScope(tab) {
   if (!path) return '';
   return typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(path) : ('db:' + path);
 }
-function _meldexSmartDbTabHistoryScope(tab) {
-  const path = tab?.path || '';
-  if (!path) return '';
-  // selectSmartDb() は def._filePath があれば生パスを、無ければ 'smart-db:'+id を
-  // 既に前置した値を tab.path に格納する（gb-db-smart.js）。二重前置を避ける。
-  return path.startsWith('smart-db:') ? path : ('smart-db:' + path);
-}
 function _meldexCsvTabHistoryScope(tab) {
   const path = tab?.path || '';
   return path ? ('csv:' + path) : '';
@@ -627,11 +614,15 @@ function _meldexScheduleTabHistoryScope(tab) {
   const comp = getComponentInstance(tab?.id);
   return comp ? _schedHistoryScope(comp) : '';
 }
-// 共通履歴（スコープなし）を使うタブ種別。openPage()等が開いた時点で historySetScope('')
-// を呼ぶのと同じ規約に合わせる。
+function _meldexPageTabHistoryScope(tab) {
+  const path = String(tab?.path || tab?.state?.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return path ? `page:${path}` : '';
+}
+
+// 共通履歴（スコープなし）を使うタブ種別。
 function _meldexCommonHistoryTabScope() { return ''; }
 
-// タブ種別 → スコープ解決関数。ここに無い種別（フォルダツリー/チャット/注釈/検索/
+// タブ種別 → スコープ解決関数。ここに無い種別（フォルダツリー/チャット/アノテート/検索/
 // タイマー/ヒストリーパネル等の道具パネル）は「スコープ変更なし」を意味し、
 // _meldexResolveActiveTabHistoryScope() は null を返す。
 const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
@@ -643,12 +634,11 @@ const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
   chart: _meldexDbTabHistoryScope,
   graph: _meldexDbTabHistoryScope,
   form: _meldexDbTabHistoryScope,
-  'smart-db': _meldexSmartDbTabHistoryScope,
   csv: _meldexCsvTabHistoryScope,
   board: _meldexBoardTabHistoryScope,
   scriptnote: _meldexScriptNoteTabHistoryScope,
   calendar: _meldexScheduleTabHistoryScope,
-  page: _meldexCommonHistoryTabScope,
+  page: _meldexPageTabHistoryScope,
   entity: _meldexCommonHistoryTabScope,
   media: _meldexCommonHistoryTabScope,
   html: _meldexCommonHistoryTabScope,
@@ -715,12 +705,12 @@ function _meldexHasPaneLayout() {
 // board:/csv: スコープの復元は、宛先の識別子を持たない「いま読み込まれている
 // ものが対象」という前提の実装になっている（_bdApplySnapshot は bd.nodes 等を
 // 無条件に上書き、_csvRestoreSnapshot は _csvData を無条件に上書き。どちらも
-// scriptnote:/schedule:/smart-db: のようにスナップショット自体から対象を
+// scriptnote:/schedule: のようにスナップショット自体から対象を
 // 逆引きしない）。そのため、タブ切替直後・対象の非同期再読み込み
 // （bdOpenBoard()/openCsvFile() の await apiFetch 区間）が終わる前に取り消しを
 // 適用すると、対象のシート/ボードの内容が「まだ読み込み中の別のボード/CSV」
 // へ書き込まれてしまう（v0.7.056、_meldexPrepareHistoryScopeTarget 追加に伴い
-// 新たに顕在化したため同時に対処）。sheet系（db:/smart-db:）は値編集がAPI経由の
+// 新たに顕在化したため同時に対処）。sheet系（db:）は値編集がAPI経由の
 // 対象パス指定書き込みのため対象外（無関係な対象を汚染しない）。
 const _MELDEX_LIVE_SCOPE_GETTERS = Object.freeze({
   'board:': () => (typeof bd !== 'undefined' && typeof _bdHistoryScope === 'function') ? _bdHistoryScope(bd.path) : null,
@@ -851,7 +841,7 @@ function _meldexScheduleActiveComponent() {
 // ため直接参照できない）。シート（データベース）が実際に画面表示されている時に
 // state.view が取り得る値の全集合。showView() を経由しない他ツールへの切替では
 // state.view はこの集合外の値（'csv'/'page'/'entity'/'board'/'folder' 等）になる。
-const _MELDEX_DB_VIEW_MODES = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'];
+const _MELDEX_DB_VIEW_MODES = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'];
 
 // isCalendarDb()（系統(B)判定）は `state.pivotData.calendar_db` の残留値だけを見るため、
 // カレンダー表示モードのシートを閉じて別ツールへ切り替えた後も真のままになり得る

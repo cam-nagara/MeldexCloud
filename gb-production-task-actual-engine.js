@@ -3,7 +3,7 @@
  *
  * 目的:
  *   - ステータス変更と実績区間の自動開始・終了接続（着手中、保留、確認待ち、完了）
- *   - 応援参加（help-join）、担当解除（help-leave）、タスク切替（task-switch）
+ *   - 同じタスクの複数担当者を個別区間で記録し、タスク切替時の二重計上を防止
  *   - 出退勤（勤務区間）・離席区間との半開区間積集合・差集合計算:
  *       Actual(t, u) = (TaskSessions(t, u) ∩ WorkShifts(u)) - BreakIntervals(u)
  *   - 日跨ぎ、重複打刻、不完全打刻（退勤なし/離席復帰なし/セッション継続中）、訂正時再計算
@@ -25,12 +25,10 @@
   const QUALITY_UNMEASURED = Store ? Store.QUALITY_UNMEASURED : 'unmeasured';
 
   const START_REASON_STATUS_CHANGE = 'status-change';
-  const START_REASON_HELP_JOIN = 'help-join';
   const START_REASON_TASK_SWITCH = 'task-switch';
   const START_REASON_MANUAL_START = 'manual-start';
 
   const END_REASON_STATUS_CHANGE = 'status-change';
-  const END_REASON_HELP_LEAVE = 'help-leave';
   const END_REASON_TASK_SWITCH = 'task-switch';
   const END_REASON_MANUAL_STOP = 'manual-stop';
 
@@ -215,13 +213,10 @@
 
       const targetList = targets.map(u => String(u || '').trim()).filter(Boolean);
 
-      // Close open sessions for assignees no longer in targets (if explicit targetUserIds was provided, keeping helper sessions)
+      // Close open sessions for everyone no longer assigned when targets are explicit.
       if (targetUserIds !== null) {
         for (const sess of [...sessions]) {
           if (!sess.ended_at && !sess.deleted_at) {
-            if (sess.start_reason === START_REASON_HELP_JOIN) {
-              continue;
-            }
             if (!targetList.includes(sess.participant_user_id)) {
               const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
               const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
@@ -297,12 +292,9 @@
     const sessions = updated.sessions || [];
     const modified = [];
 
-    // 1. Close open sessions for assignees no longer in targets (keeping helper sessions)
+    // 1. Close open sessions for assignees no longer in targets.
     for (const sess of [...sessions]) {
       if (!sess.ended_at && !sess.deleted_at) {
-        if (sess.start_reason === START_REASON_HELP_JOIN) {
-          continue;
-        }
         if (!targets.includes(sess.participant_user_id)) {
           const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
           const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
@@ -336,66 +328,6 @@
     }
 
     return { records: updated, modifiedSessions: modified };
-  }
-
-  function handleParticipantJoin(
-    records,
-    participantUserId,
-    participantDisplayName,
-    actorUserId,
-    joinTimeIso = null,
-    isAdmin = false
-  ) {
-    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
-    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
-    const ts = joinTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
-    const pId = String(participantUserId || '').trim();
-    const sessions = updated.sessions || [];
-
-    const existingOpen = sessions.find(
-      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
-    );
-    if (existingOpen) {
-      return { records: updated, session: existingOpen };
-    }
-
-    const newSess = {
-      session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
-      task_id: updated.task_id || '',
-      participant_user_id: pId,
-      participant_display_name: String(participantDisplayName || pId).trim(),
-      started_at: ts,
-      ended_at: null,
-      start_reason: START_REASON_HELP_JOIN,
-      actor_user_id: actorUserId,
-    };
-    const res = store.appendOrUpdateSession(updated, newSess, actorUserId, isAdmin, null, true);
-    return { records: res.records, session: res.session };
-  }
-
-  function handleParticipantLeave(
-    records,
-    participantUserId,
-    actorUserId,
-    leaveTimeIso = null,
-    isAdmin = false
-  ) {
-    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
-    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
-    const ts = leaveTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
-    const pId = String(participantUserId || '').trim();
-    const sessions = updated.sessions || [];
-
-    const openSess = sessions.find(
-      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
-    );
-    if (!openSess) {
-      return { records: updated, session: null };
-    }
-
-    const updateSess = { ...openSess, ended_at: ts, end_reason: END_REASON_HELP_LEAVE };
-    const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
-    return { records: res.records, session: res.session };
   }
 
   function handleTaskSwitch(
@@ -650,8 +582,6 @@
     computeUserTaskActualIntersection,
     handleTaskStatusTransition,
     handleAssigneeChange,
-    handleParticipantJoin,
-    handleParticipantLeave,
     handleTaskSwitch,
     recalculateTaskSummaries,
   });

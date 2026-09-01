@@ -27,7 +27,7 @@
  * _syncOutlinerResolvedItemType, _captureBrowseItemPaneSnapshot, _browseItemPaneSnapshotIsCurrent,
  * _scheduleBrowseItemTypeResolution, _chatSetCurrentTargetPath, NATIVE_TYPES,
  * selectDatabase, selectEntity, openPage, openScenarioInScriptNote, openBoard, openCalendarFile,
- * openMedia, openHtmlFile, openCsvFile, openSmartDbFile, openFolder, openNative, isScriptNotePath,
+ * openMedia, openHtmlFile, openCsvFile, openFolder, openNative, isScriptNotePath,
  * _openStoredOutlinerItem, window.MeldexRuntimeAdapter
  */
 (function () {
@@ -221,8 +221,6 @@
       } else if (item.type === 'csv') {
         if (typeof openCsvFile === 'function') openCsvFile(item.name, item.path, _expOpts);
         else if (typeof openPage === 'function') openPage(item.name, item.path, _expOpts);
-      } else if (item.type === 'smart-db') {
-        if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts);
       } else if (currentIsFolder) {
         let folderVisiblePromise = null;
         const mobileExplorer = window.MeldexCloudMobileExplorer;

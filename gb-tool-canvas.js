@@ -121,7 +121,8 @@ class CanvasComponent extends ToolComponent {
     if (this._bdDump) {
       if (typeof bdLoadState === 'function') bdLoadState(this._bdDump);
       this._bdDump = null;
-    } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
+    } else if (!this._boardLoadPending && !this._activatingForReload
+        && this.state.boardPath && bd.path !== this.state.boardPath) {
       this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
     }
     if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
@@ -140,6 +141,12 @@ class CanvasComponent extends ToolComponent {
     if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
     if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
+    const ownTab = this._ownTab();
+    const boardPath = this.state.boardPath || ownTab?.path
+      || ((typeof bd !== 'undefined' && bd?.path) ? bd.path : '');
+    if (boardPath) {
+      window.GBOptionTargetContext?.set({ path: boardPath, kind: 'board' }, 'board-open');
+    }
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   }
 

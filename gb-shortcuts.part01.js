@@ -14,7 +14,7 @@ const GB_SHORTCUTS = {
   'global.redo2':         { key: 'ctrl+shift+z', label: 'やり直し（代替）',           scope: 'global' },
   'global.search':        { key: 'ctrl+f',       label: '現在のパネルを検索と置換',   scope: 'global' },
   'global.vaultSearch':   { key: 'ctrl+shift+f', label: 'ソースフォルダ全体検索',     scope: 'global' },
-  'global.annotation':    { key: 'alt+a',        label: '注釈ツールバーの切替',       scope: 'global' },
+  'global.annotation':    { key: 'alt+a',        label: 'アノテートツールバーの切替',       scope: 'global' },
   'global.maxPane':       { key: 'ctrl+shift+m', label: 'パネル最大化/復元',         scope: 'global' },
   'global.closeTab':      { key: 'ctrl+w',       label: 'タブを閉じる',              scope: 'global' },
   'global.nextTab':       { key: 'ctrl+tab',     label: '次のタブ',                  scope: 'global' },
@@ -29,10 +29,10 @@ const GB_SHORTCUTS = {
   'global.fullscreen':    { key: 'f11',          label: 'フルスクリーン',             scope: 'global' },
   'global.reload':        { key: 'ctrl+shift+r', label: 'リロード',                  scope: 'global' },
   'global.reload2':       { key: 'f5',           label: 'リロード（F5）',             scope: 'global' },
-  'global.addComment':    { key: 'alt+shift+c',  label: '注釈コメントを追加',        scope: 'global' },
+  'global.addComment':    { key: 'alt+shift+c',  label: 'アノテートコメントを追加',        scope: 'global' },
 
   // --- 横断アクションID契約（各画面は同じIDをMeldexShortcutRegistryへ登録する） ---
-  // 注釈・コメントはどの画面でも使うため、上の global.annotation / global.addComment が正本。
+  // アノテート・コメントはどの画面でも使うため、上の global.annotation / global.addComment が正本。
   'chat.focusInput':      { key: 'ctrl+shift+j', label: 'チャット入力欄へ移動',       scope: 'global' },
   'chat.send':            { key: 'enter',        label: 'チャットを送信',             scope: 'chat' },
 
@@ -56,7 +56,7 @@ const GB_SHORTCUTS = {
   'viewer.fitHeight':    { key: '2',                label: '高さに合わせる', scope: 'viewer' },
   'viewer.fitWidth':     { key: '3',                label: '幅に合わせる', scope: 'viewer' },
   'viewer.fitNone':      { key: '4',                label: 'フィットしない', scope: 'viewer' },
-  'viewer.annotation':   { key: 'a',                label: '注釈の切替', scope: 'viewer' },
+  'viewer.annotation':   { key: 'a',                label: 'アノテートの切替', scope: 'viewer' },
 
   // 常駐アプリはこの5 IDをPersonal Preferencesから取得し、OS登録へ反映する。
   'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
@@ -154,6 +154,7 @@ const GB_SHORTCUTS = {
   'board.addChild':       { key: 'ctrl+enter',   label: 'サブトピックを追加',        scope: 'board' },
   'board.addChildTab':    { key: 'tab',          label: 'サブトピックを追加 (Tab)',  scope: 'board' },
   'board.addSibling':     { key: 'enter',        label: '同階層トピックを追加',      scope: 'board' },
+  'board.group':          { key: 'ctrl+g',       label: '選択トピックをグループ化',  scope: 'board' },
   'board.ctrlArrowUp':    { key: 'ctrl+arrowup',    label: '↑: 兄弟入替 / 子階層展開・折りたたみ', scope: 'board' },
   'board.ctrlArrowDown':  { key: 'ctrl+arrowdown',  label: '↓: 兄弟入替 / 子階層展開・折りたたみ', scope: 'board' },
   'board.ctrlArrowLeft':  { key: 'ctrl+arrowleft',  label: '←: 兄弟入替 / 子階層展開・折りたたみ', scope: 'board' },
@@ -232,7 +233,7 @@ const GB_SHORTCUTS = {
 
   'viewer.dragPan':        { key: '', display: 'ドラッグ',               label: '表示位置を移動',                  scope: 'viewer', readonly: true },
 
-  'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: '注釈を描く',                      scope: 'annotation', readonly: true },
+  'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: 'アノテートを描く',                      scope: 'annotation', readonly: true },
   'annotation.dragTail':   { key: '', display: 'Alt+Shift+ドラッグ',     label: 'フキダシのしっぽを追加',           scope: 'annotation', readonly: true },
 
   // --- パネルセット ---
@@ -264,13 +265,12 @@ function _viewToScope(view) {
   const map = {
     'page': 'note', 'entity': 'note',
     'pivot': 'database', 'tree': 'database', 'gallery': 'database', 'kanban': 'database',
-    'timeline': 'database', 'chart': 'database', 'graph': 'database',
+    'timeline': 'database', 'gantt': 'database', 'chart': 'database', 'graph': 'database',
     'board': 'board',
     'calendar': 'calendar',
     'scriptnote': 'scenario',
     'csv': 'csv',
     'folder': 'folder',
-    'smart-db': 'database',
   };
   return map[view] || 'global';
 }
@@ -482,7 +482,7 @@ function getDatabaseShortcutStatusText() {
 function updateDatabaseShortcutStatusbar(targetEl) {
   const sc = targetEl || document.getElementById('sb-shortcuts');
   if (!sc) return;
-  const databaseViews = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
+  const databaseViews = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'];
   if (!targetEl && typeof state !== 'undefined' && !databaseViews.includes(state.view)) return;
   sc.textContent = getDatabaseShortcutStatusText();
 }
@@ -519,7 +519,7 @@ function getMediaViewerShortcutStatusText() {
     _shortcutStatusItem('viewer.rotate', '回転'),
     _shortcutStatusItem('viewer.fullscreen', '全画面'),
     _shortcutStatusItem('viewer.toggleHud', '情報'),
-    _shortcutStatusItem('viewer.annotation', '注釈'),
+    _shortcutStatusItem('viewer.annotation', 'アノテート'),
   ].filter(Boolean).join(' | ');
 }
 
@@ -548,8 +548,8 @@ function _currentMainPanelSearchTool() {
     folder: 'folder',
     board: 'board',
     database: 'database', db: 'database', sheet: 'database', pivot: 'database',
-    tree: 'database', gallery: 'database', kanban: 'database', timeline: 'database',
-    chart: 'database', graph: 'database', 'smart-db': 'database',
+    tree: 'database', gallery: 'database', kanban: 'database', timeline: 'database', gantt: 'database',
+    chart: 'database', graph: 'database',
     scriptnote: 'scenario', scenario: 'scenario',
   };
   try {
@@ -797,6 +797,12 @@ const _shortcutHandlers = {
   'global.navBackBrowser': (e) => _shortcutHandlers['global.navBack'](e),
   'global.navForwardBrowser': (e) => _shortcutHandlers['global.navForward'](e),
   'global.search': () => {
+    if (typeof isFolderTreeSearchContext === 'function'
+        && isFolderTreeSearchContext()
+        && typeof focusFolderTreeSearch === 'function') {
+      focusFolderTreeSearch();
+      return;
+    }
     const tool = _currentMainPanelSearchTool();
     if (tool && typeof openCurrentToolbarSearchReplace === 'function') {
       openCurrentToolbarSearchReplace(tool, { trigger: document.activeElement });

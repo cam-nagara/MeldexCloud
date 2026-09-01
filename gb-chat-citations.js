@@ -222,8 +222,8 @@
       await openFolder(label, path, opts);
     } else if (type === 'database' && typeof selectDatabase === 'function') {
       await selectDatabase(path, null, opts);
-    } else if ((type === 'smart-db' || lower.endsWith('.smart-db.json') || lower.endsWith('.mel-sheet')) && typeof openSmartDbFile === 'function') {
-      await openSmartDbFile(label, path, opts);
+    } else if (lower.endsWith('.mel-sheet') && typeof selectDatabase === 'function') {
+      await selectDatabase(path, null, opts);
     } else if ((type === 'calendar') && typeof openCalendarFile === 'function') {
       await openCalendarFile(label, path, opts);
     } else if ((type === 'chat') && typeof openSavedChat === 'function') {

@@ -442,7 +442,10 @@
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
-    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    const requestHeaders = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+    const useNativeE2eHarness = new URLSearchParams(location.search).get('smoke') === '1'
+      && requestHeaders.get('X-Meldex-E2E-Native-Fetch') === 'screenshot';
+    if (!isSameOrigin || !isApiPath || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 

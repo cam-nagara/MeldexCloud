@@ -27,7 +27,7 @@
   // Shift+数字キーの記号→数字マッピング（US配列基準）
   const SHIFT_DIGIT_MAP = { '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
 
-  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo', 'timer', 'panelset'];
+  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo', 'panelset'];
   const SCOPE_LABELS = {
     global: '全体',
     note: 'ノート',
@@ -39,11 +39,10 @@
     folder: 'フォルダ',
     viewer: 'ビューワー',
     chat: 'チャット',
-    annotation: '注釈',
+    annotation: 'アノテート',
     comment: 'コメント',
     tray: '常駐アプリ',
     quickmemo: 'クイックメモ',
-    timer: 'タイマー',
     panelset: 'パネルセット',
   };
 
@@ -60,9 +59,9 @@
     gallery: 'database',
     kanban: 'database',
     timeline: 'database',
+    gantt: 'database',
     chart: 'database',
     graph: 'database',
-    'smart-db': 'database',
     scriptnote: 'scenario',
     scenario: 'scenario',
     board: 'board',
@@ -77,7 +76,6 @@
     chat: 'chat',
     'quick-memo': 'quickmemo',
     quickmemo: 'quickmemo',
-    timer: 'timer',
   };
 
   const definitions = {};
@@ -542,12 +540,18 @@
       const matchesSearch = !query || (row.dataset.search || '').includes(query);
       row.hidden = !(matchesScope && matchesSearch);
     });
+    let visibleGroupCount = 0;
     container.querySelectorAll('.shortcut-group').forEach(group => {
       const visibleCount = Array.from(group.querySelectorAll('.shortcut-row')).filter(row => !row.hidden).length;
       group.hidden = visibleCount === 0;
+      if (visibleCount > 0) visibleGroupCount += 1;
       const count = group.querySelector('.shortcut-group-count');
       if (count) count.textContent = visibleCount + '件';
     });
+    container.querySelector('.shortcut-settings-wrap')?.classList.toggle(
+      'is-multi-scope',
+      selectedScope === 'all' && !query && visibleGroupCount > 1,
+    );
     const empty = container.querySelector('[data-shortcut-empty]');
     if (empty) empty.hidden = !!container.querySelector('.shortcut-group:not([hidden])');
   }

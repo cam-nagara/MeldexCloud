@@ -5,14 +5,38 @@
  */
 
 .shortcut-settings-wrap {
-  max-height: 500px;
-  overflow-y: auto;
+  /* 一覧だけを500pxの内側スクロールにすると、「すべて」でも先頭の
+     「全体」グループしかないように見える。設定ダイアログ本体の
+     スクロールへ統一し、後続のアプリ別グループまで連続して表示する。 */
+  max-height: none;
+  overflow-y: visible;
 }
 
 /* オプションパネル内では枠を付けず、パネルの高さいっぱいまで使う */
 .shortcut-settings-wrap.gb-section--detail {
   max-height: none;
   overflow-y: visible;
+}
+
+.shortcut-sync-toggle {
+  font-size: 12px;
+}
+
+/* 「すべて」では複数の分類が表示されていることを最初の画面内でも
+   判別できるよう、設定ダイアログだけを2列にする。検索中と分類指定時は
+   従来どおり1列で、狭幅時も1列へ戻す。 */
+.shortcut-settings-wrap.gb-section--boxed.is-multi-scope {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+  align-items: start;
+}
+
+.shortcut-settings-wrap.gb-section--boxed.is-multi-scope > .gb-section-title,
+.shortcut-settings-wrap.gb-section--boxed.is-multi-scope > .shortcut-sync-toggle,
+.shortcut-settings-wrap.gb-section--boxed.is-multi-scope > .shortcut-settings-filter,
+.shortcut-settings-wrap.gb-section--boxed.is-multi-scope > [data-shortcut-empty] {
+  grid-column: 1 / -1;
 }
 
 /* 検索・絞り込み・リセットの行。オプションパネルは幅が狭い（既定360px）ので、
@@ -136,6 +160,10 @@
 
 /* 行が狭いときは、キー欄を優先して残しつつ操作名を縮める */
 @media (max-width: 480px) {
+  .shortcut-settings-wrap.gb-section--boxed.is-multi-scope {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .shortcut-key {
     min-width: 96px;
   }

@@ -12,6 +12,7 @@ const MeldexDnD = (() => {
     node: 'application/x-meldex-node',
     text: 'application/x-meldex-text',
     'board-nodes': 'application/x-meldex-board-nodes',
+    topic: 'application/x-meldex-topic-transfer-id',
   });
   const receivedOffers = new Map();
   const sourceOffers = new Map();
@@ -49,7 +50,7 @@ const MeldexDnD = (() => {
       const encoded = JSON.stringify(payload);
       if (!encoded || encoded.length > OFFER_MAX_CHARS) return false;
     } catch { return false; }
-    const arrays = [payload.items, payload.nodes].filter(Array.isArray);
+    const arrays = [payload.items, payload.nodes, payload.sources].filter(Array.isArray);
     if (!arrays.every(rows => rows.length <= OFFER_MAX_ITEMS)) return false;
     if (kind === 'node') {
       const rows = Array.isArray(payload.items) ? payload.items : [payload];
@@ -61,11 +62,45 @@ const MeldexDnD = (() => {
       return Array.isArray(payload.nodes) && payload.nodes.length > 0
         && payload.nodes.every(node => node && typeof node === 'object');
     }
+    if (kind === 'topic') {
+      return Array.isArray(payload.sources) && payload.sources.length > 0
+        && payload.sources.every(source => source && typeof source === 'object'
+          && typeof source.topicRef?.sourceId === 'string'
+          && source.topicRef.sourceId.trim().length > 0
+          && typeof source.topicRef?.topicId === 'string'
+          && source.topicRef.topicId.trim().length > 0
+          && typeof source.documentId === 'string'
+          && source.documentId.trim().length > 0
+          && typeof source.placementId === 'string'
+          && source.placementId.trim().length > 0);
+    }
     return true;
   }
 
+  /**
+   * Resolve the product meaning of a drop target before any receiver claims the
+   * transfer.  More specific editing/link targets always win over placement
+   * surfaces; callers may only stop propagation after this returns their route.
+   */
+  function resolveTargetRoute(eventOrElement) {
+    const element = eventOrElement?.target || eventOrElement;
+    if (!element?.closest) return Object.freeze({ kind: 'unsupported', reason: 'target-missing' });
+    const explicit = element.closest('[data-meldex-drop-route]')?.dataset?.meldexDropRoute;
+    if (explicit === 'node-link') return Object.freeze({ kind: 'node-link', reason: 'explicit-link-target' });
+    if (element.closest('[contenteditable="true"],textarea[data-meldex-editable],input[data-meldex-editable]')) {
+      return Object.freeze({ kind: 'node-link', reason: 'editable-content' });
+    }
+    if (element.closest('.gb-tabbar,.gb-tabbar-add,.gb-subpanel-titlebar,.gb-rail,.gb-dockbar')) {
+      return Object.freeze({ kind: 'panel', reason: 'panel-chrome' });
+    }
+    if (element.closest('.tree-node,.gb-pane,.gb-subpanel')) {
+      return Object.freeze({ kind: 'topic-placement', reason: 'placement-surface' });
+    }
+    return Object.freeze({ kind: 'unsupported', reason: 'unsupported-target' });
+  }
+
   function _validOffer(offer, senderWindowId) {
-    return !!offer
+    if (!(!!offer
       && offer.schema === 1
       && _validNonce(offer.nonce)
       && Object.hasOwn(KIND_MIME, offer.kind)
@@ -75,7 +110,19 @@ const MeldexDnD = (() => {
       && Number.isFinite(offer.createdAt)
       && _now() - offer.createdAt >= -1000
       && _now() - offer.createdAt <= OFFER_TTL_MS
-      && _validPayload(offer.payload, offer.kind);
+      && _validPayload(offer.payload, offer.kind))) return false;
+    if (offer.payloads == null) return true;
+    if (!offer.payloads || typeof offer.payloads !== 'object' || Array.isArray(offer.payloads)) return false;
+    const entries = Object.entries(offer.payloads);
+    return entries.length > 0 && entries.length <= Object.keys(KIND_MIME).length
+      && entries.every(([kind, payload]) => Object.hasOwn(KIND_MIME, kind)
+        && _validPayload(payload, kind));
+  }
+
+  function _offerPayload(offer, kind) {
+    if (!_validOffer(offer) || !Object.hasOwn(KIND_MIME, kind)) return null;
+    if (offer.payloads && Object.hasOwn(offer.payloads, kind)) return offer.payloads[kind];
+    return offer.kind === kind ? offer.payload : null;
   }
 
   function _receiveOffer(message) {
@@ -244,19 +291,41 @@ const MeldexDnD = (() => {
         || !Object.hasOwn(KIND_MIME, kind) || !_validPayload(payload, kind)) return '';
     _purgeExpired();
     const transport = _transport();
-    const nonce = globalThis.crypto?.randomUUID?.()
-      || `${_now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    const offer = {
+    const copiedPayload = typeof structuredClone === 'function'
+      ? structuredClone(payload) : JSON.parse(JSON.stringify(payload));
+    const existingNonce = _nonceFromTransfer(dataTransfer);
+    const existingOffer = sourceOffers.get(existingNonce);
+    const canExtend = _validOffer(existingOffer)
+      && existingOffer.origin === location.origin
+      && existingOffer.sourceWindowId === (transport?.windowId || 'local-window');
+    const nonce = canExtend ? existingNonce : (globalThis.crypto?.randomUUID?.()
+      || `${_now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`);
+    const payloads = canExtend
+      ? { ...(existingOffer.payloads || { [existingOffer.kind]: existingOffer.payload }) }
+      : {};
+    payloads[kind] = copiedPayload;
+    const offer = canExtend ? {
+      ...existingOffer,
+      payload: existingOffer.kind === kind ? copiedPayload : existingOffer.payload,
+      payloads,
+    } : {
       schema: 1,
       nonce,
       kind,
-      payload: typeof structuredClone === 'function' ? structuredClone(payload) : JSON.parse(JSON.stringify(payload)),
+      payload: copiedPayload,
+      payloads,
       origin: location.origin,
       sourceWindowId: transport?.windowId || 'local-window',
       createdAt: _now(),
     };
     sourceOffers.set(nonce, offer);
     _scheduleExpiry(nonce);
+    const mime = KIND_MIME[kind];
+    try {
+      if (!Array.from(dataTransfer.types || []).includes(mime)) {
+        dataTransfer.setData(mime, JSON.stringify(payload));
+      }
+    } catch {}
     _uriWithNonce(dataTransfer, nonce);
     if (transport) (transport.sendDndOffer || ((value) => transport.send('dnd-offer', value)))({ offer });
     return nonce;
@@ -273,7 +342,7 @@ const MeldexDnD = (() => {
     if (!nonce || consumedOffers.has(nonce)) return false;
     _purgeExpired();
     const knownOffer = receivedOffers.get(nonce) || sourceOffers.get(nonce);
-    return knownOffer ? _validOffer(knownOffer) && knownOffer.kind === kind : true;
+    return knownOffer ? !!_offerPayload(knownOffer, kind) : true;
   }
 
   function _parsePayload(raw, kind) {
@@ -343,12 +412,13 @@ const MeldexDnD = (() => {
       await new Promise(resolve => setTimeout(resolve, 80));
       offer = receivedOffers.get(nonce);
     }
-    if (!_validOffer(offer) || offer.kind !== kind) return null;
+    const bridgedPayload = _offerPayload(offer, kind);
+    if (!bridgedPayload) return null;
     const claim = await _claimOffer(nonce);
     if (!claim) return null;
     receivedOffers.delete(nonce); // replay は同一ウィンドウでも一回だけ
     consumedOffers.set(nonce, _now());
-    return { kind, payload: offer.payload, nonce, source: 'bridge', sourceWindowId: claim.sourceWindowId };
+    return { kind, payload: bridgedPayload, nonce, source: 'bridge', sourceWindowId: claim.sourceWindowId };
   }
 
   function completeDrop(resolved) {
@@ -503,11 +573,17 @@ const MeldexDnD = (() => {
     root.addEventListener('drop', async e => {
       const resolved = await resolveDropData(e, 'node');
       const parsed = resolved?.payload || null;
-      if (!parsed?.path) return;
+      if (!parsed) return;
       e.preventDefault();
       e.stopPropagation();
+      const items = Array.isArray(parsed.items) && parsed.items.length ? parsed.items : [parsed];
+      if (items.length !== 1 || !items[0]?.path) {
+        failDrop(resolved);
+        globalThis.showStatus?.('複数選択はこの表示先へ一括反映できないため、全件を変更しませんでした', true);
+        return;
+      }
       try {
-        const outcome = await Promise.resolve(onNodeDrop(parsed, e));
+        const outcome = await Promise.resolve(onNodeDrop(items[0], e));
         if (outcome !== false) completeDrop(resolved);
         else failDrop(resolved);
       } catch (error) {
@@ -682,6 +758,7 @@ const MeldexDnD = (() => {
     beginCrossWindowDrag,
     hasDropKind,
     resolveDropData,
+    resolveTargetRoute,
     completeDrop,
     failDrop,
     dataTransferWithResolved,

@@ -1,5 +1,12 @@
 /* gb-canvas-engine.part02.js */
 
+const BD_LINE_WIDTH_MAX = 200;
+function _bdNormalizeLineWidth(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.max(0, Math.min(BD_LINE_WIDTH_MAX, Number(fallback) || 0));
+  return Math.max(0, Math.min(BD_LINE_WIDTH_MAX, number));
+}
+
 // --- フレーム描画 ---
 function bdDrawFrames() {
   document.querySelectorAll('.bd-frame').forEach(f=>f.remove());
@@ -21,17 +28,24 @@ function bdDrawFrames() {
     frame.dataset.groupId = g.groupId || g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
     g.x = x0 - 12; g.y = y0 - 22; g.w = x1 - x0 + 24; g.h = y1 - y0 + 34;
-    const groupStyle = g.styleOverrides || g.style || {};
-    if (groupStyle.background) frame.style.background = groupStyle.background;
-    if (groupStyle.borderColor) frame.style.borderColor = groupStyle.borderColor;
+    const groupStyle = globalThis.MeldexBoardGroups?.resolveGroupStyle
+      ? globalThis.MeldexBoardGroups.resolveGroupStyle(bd.topicViewDocument || {}, g)
+      : (g.styleOverrides || g.style || {});
+    if (groupStyle.background) frame.style.background = _bdColorWithOpacity(groupStyle.background, groupStyle.backgroundOpacity);
+    if (groupStyle.borderColor) frame.style.borderColor = _bdColorWithOpacity(groupStyle.borderColor, groupStyle.borderOpacity);
     if (Number.isFinite(+groupStyle.borderWidth)) frame.style.borderWidth = Math.max(0, +groupStyle.borderWidth) + 'px';
     if (groupStyle.borderStyle) frame.style.borderStyle = groupStyle.borderStyle;
     if (Number.isFinite(+groupStyle.borderRadius)) frame.style.borderRadius = Math.max(0, +groupStyle.borderRadius) + 'px';
     if (Number.isFinite(+groupStyle.opacity)) frame.style.opacity = Math.max(0, Math.min(1, +groupStyle.opacity));
     if (groupStyle.shadow) frame.style.boxShadow = groupStyle.shadow;
+    if (Number.isFinite(+groupStyle.padding)) frame.style.padding = Math.max(0, +groupStyle.padding) + 'px';
     frame.classList.toggle('bd-group-locked', !!g.locked);
     frame.classList.toggle('bd-group-collapsed', !!g.collapsed);
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
+    if (groupStyle.labelColor) label.style.color = groupStyle.labelColor;
+    if (Number.isFinite(+groupStyle.labelFontSize)) label.style.fontSize = Math.max(8, +groupStyle.labelFontSize) + 'px';
+    if (groupStyle.labelFontFamily) label.style.fontFamily = groupStyle.labelFontFamily;
+    if (groupStyle.labelBold) label.style.fontWeight = '700';
     label.style.cursor = 'move';
     label.ondblclick = (ev) => {
       ev.stopPropagation();
@@ -490,6 +504,7 @@ function _bdRenderFreeBezierEditOverlay(svg, conn, pathData, fn, tn, fe, te, fp,
     if (typeof bdPushUndo === 'function') bdPushUndo();
     const side = (conn.from === conn.to && ev.shiftKey) ? 'to' : defaultSide;
     const key = side === 'from' ? 'fromAnchor' : 'toAnchor';
+    delete conn[side === 'from' ? 'fromEndpoint' : 'toEndpoint'];
     conn[key] = anchorName;
     // 両端同一アンカーになる縮退を回避 — 自己ループ時のみ適用 (別カードなら同じ名前でも
     // 座標が異なるため縮退しない。非自己ループで強制補正するとユーザー意図に反する)
@@ -596,6 +611,75 @@ function _bdFindNearestAnchor(cardEl, node, pos, target) {
   return best;
 }
 
+function _bdProjectCardOutlineEndpoint(cardEl, node, pos, target, previousPosition, options) {
+  const api = typeof MeldexBoardOutlineEndpoints !== 'undefined'
+    ? MeldexBoardOutlineEndpoints : null;
+  if (!api?.projectPointToOutline || !node || !pos || !target) return null;
+  const width = cardEl?.offsetWidth ?? node.w ?? 160;
+  const height = cardEl?.offsetHeight ?? node.h ?? 60;
+  const shape = cardEl?.dataset?.shape || node.shape || 'rect';
+  return api.projectPointToOutline(
+    shape,
+    { ...node, x: pos.x, y: pos.y, w: width, h: height },
+    target,
+    {
+      ...node,
+      previousSegment: previousPosition?.segment,
+      snapDistance: options?.snapDistance,
+      towardPoint: options?.towardPoint,
+    },
+  );
+}
+
+function _bdCardOutlineEndpointPoint(cardEl, node, pos, endpoint) {
+  const api = typeof MeldexBoardOutlineEndpoints !== 'undefined'
+    ? MeldexBoardOutlineEndpoints : null;
+  if (!api?.pointAtPathT || !endpoint?.outlinePosition || !node || !pos) return null;
+  const width = cardEl?.offsetWidth ?? node.w ?? 160;
+  const height = cardEl?.offsetHeight ?? node.h ?? 60;
+  const shape = cardEl?.dataset?.shape || node.shape || 'rect';
+  return api.pointAtPathT(
+    shape,
+    { ...node, x: pos.x, y: pos.y, w: width, h: height },
+    endpoint.outlinePosition.pathT,
+    node,
+  );
+}
+
+function _bdOutlinePathDistance(first, second) {
+  const a = ((Number(first?.pathT) || 0) % 1 + 1) % 1;
+  const b = ((Number(second?.pathT) || 0) % 1 + 1) % 1;
+  const direct = Math.abs(a - b);
+  return Math.min(direct, 1 - direct);
+}
+
+function _bdConnectionTopicTargetRef(node, cardId) {
+  if (node?.topicRef?.sourceId && node?.topicRef?.topicId) {
+    return { sourceId: String(node.topicRef.sourceId), topicId: String(node.topicRef.topicId) };
+  }
+  return cardId;
+}
+
+function _bdSetConnectionOutlineEndpoint(conn, side, cardId, node, projected) {
+  if (!conn || !projected?.outlinePosition) return false;
+  const endpointKey = side === 'from' ? 'fromEndpoint' : 'toEndpoint';
+  if (side === 'from') {
+    conn.from = cardId;
+    delete conn.fromPoint;
+    delete conn.fromAnchor;
+  } else {
+    conn.to = cardId;
+    delete conn.toPoint;
+    delete conn.toAnchor;
+  }
+  conn[endpointKey] = {
+    targetKind: 'topic',
+    targetRef: _bdConnectionTopicTargetRef(node, cardId),
+    outlinePosition: { ...projected.outlinePosition, mode: 'outline' },
+  };
+  return true;
+}
+
 // Phase 3: 接続線の端点ハンドルドラッグで from/to カードまたは固定座標を変更する。
 // カード上にドロップすると接続先更新 + 最近接アンカーに自動設定。空白へのドロップは自由端として固定する。
 // 座標変換は bdScreenToWorld を使い、pan/回転/アプリ zoom に追従。undo はカード変更確定時のみ push する。
@@ -614,6 +698,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
     const otherSide = side === 'from' ? 'to' : 'from';
     const otherCardId = otherSide === 'from' ? conn.from : conn.to;
     const otherAnchorName = otherSide === 'from' ? conn.fromAnchor : conn.toAnchor;
+    const otherOutlineEndpoint = otherSide === 'from' ? conn.fromEndpoint : conn.toEndpoint;
     const otherFreePoint = bdNormalizeConnectionPoint(otherSide === 'from' ? conn.fromPoint : conn.toPoint);
     const previousEndpointPair = typeof bdConnectionEndpointKey === 'function'
       ? {
@@ -630,7 +715,12 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
         : { x: otherNode.x, y: otherNode.y };
       const ow = otherEl?.offsetWidth ?? otherNode.w ?? 160;
       const oh = otherEl?.offsetHeight ?? otherNode.h ?? 60;
-      if (otherAnchorName && typeof _bdGetCardAnchorPoint === 'function') {
+      const exactOtherPoint = _bdCardOutlineEndpointPoint(
+        otherEl, otherNode, otherPos, otherOutlineEndpoint,
+      );
+      if (exactOtherPoint) {
+        otherPt = exactOtherPoint;
+      } else if (otherAnchorName && typeof _bdGetCardAnchorPoint === 'function') {
         otherPt = _bdGetCardAnchorPoint(otherNode, otherEl, otherPos, otherAnchorName);
       } else {
         otherPt = { x: otherPos.x + ow / 2, y: otherPos.y + oh / 2 };
@@ -691,39 +781,36 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
           const pos = typeof bdNodeCanvasPosition === 'function'
             ? bdNodeCanvasPosition(newNode)
             : { x: newNode.x, y: newNode.y };
-          // 2026-04-18: ドロップ先がアンカー HUD の場合、最近接計算ではなくその HUD の
-          // 示すアンカー名を直接採用する。楕円形状などで HUD 位置と最近接アンカーが
-          // 食い違うケースに対応するため。
-          const hitHud = target?.closest?.('.bd-anchor-hud');
-          const hudPos = hitHud
-            ? ['top','bottom','left','right'].find(p => hitHud.classList.contains(p))
-            : null;
-          const newAnchor = (hudPos && typeof _bdHudPosToAnchorName === 'function')
-            ? _bdHudPosToAnchorName(hudPos)
-            : _bdFindNearestAnchor(cardEl, newNode, pos, dropW);
-          // 同じカード・同じアンカーへ戻す場合は変更不要 (undo を積まない)
+          const endpointKey = side === 'from' ? 'fromEndpoint' : 'toEndpoint';
+          const previousPosition = (side === 'from' ? conn.fromEndpoint : conn.toEndpoint)?.outlinePosition;
+          const snapDistance = (up.pointerType === 'touch' ? 12 : 6) / Math.max(0.05, Number(bd.zoom) || 1);
+          const projected = _bdProjectCardOutlineEndpoint(
+            cardEl, newNode, pos, dropW, previousPosition, { snapDistance },
+          );
+          if (!projected) {
+            if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'endpoint-drop-cancel' });
+            return;
+          }
+          const otherEndpoint = side === 'from' ? conn.toEndpoint : conn.fromEndpoint;
+          const otherCard = side === 'from' ? conn.to : conn.from;
+          if (newCardId === otherCard && otherEndpoint?.outlinePosition
+              && _bdOutlinePathDistance(projected.outlinePosition, otherEndpoint.outlinePosition) < 0.001
+              && typeof MeldexBoardOutlineEndpoints !== 'undefined') {
+            projected.outlinePosition = MeldexBoardOutlineEndpoints.nudgeOutlinePosition(
+              projected.outlinePosition, 'forward', { step: 0.25 },
+            );
+          }
+          // 同じカード・同じ輪郭位置へ戻す場合は変更不要 (undo を積まない)
           const oldCardId = side === 'from' ? conn.from : conn.to;
-          const oldAnchor = side === 'from' ? conn.fromAnchor : conn.toAnchor;
-          if (oldCardId === newCardId && oldAnchor === newAnchor) {
+          const oldPosition = conn[endpointKey]?.outlinePosition;
+          if (oldCardId === newCardId && oldPosition
+              && _bdOutlinePathDistance(oldPosition, projected.outlinePosition) < 0.0001) {
             if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'endpoint-drop-unchanged' });
             return;
           }
           // 実際に変更するのでここで undo push
           if (typeof bdPushUndo === 'function') bdPushUndo();
-          if (side === 'from') {
-            conn.from = newCardId;
-            conn.fromAnchor = newAnchor;
-            delete conn.fromPoint;
-          } else {
-            conn.to = newCardId;
-            conn.toAnchor = newAnchor;
-            delete conn.toPoint;
-          }
-          // 自己ループ同一アンカー縮退防止
-          if (conn.from === conn.to && conn.fromAnchor && conn.fromAnchor === conn.toAnchor) {
-            const otherKey = side === 'from' ? 'toAnchor' : 'fromAnchor';
-            conn[otherKey] = _bdOppositeAnchor(newAnchor);
-          }
+          _bdSetConnectionOutlineEndpoint(conn, side, newCardId, newNode, projected);
           if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], previousEndpointPair, reason: 'endpoint-drop' });
           if (typeof bdDirty === 'function') bdDirty();
           return;
@@ -741,10 +828,12 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
             conn.from = '';
             conn.fromPoint = { x: dropW.x, y: dropW.y };
             delete conn.fromAnchor;
+            delete conn.fromEndpoint;
           } else {
             conn.to = '';
             conn.toPoint = { x: dropW.x, y: dropW.y };
             delete conn.toAnchor;
+            delete conn.toEndpoint;
           }
           if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], previousEndpointPair, reason: 'endpoint-drop-free' });
           if (typeof bdDirty === 'function') bdDirty();
@@ -907,26 +996,27 @@ function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint)
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
 }
 
-// 太さから矢印マーカーの寸法 (markerWidth/Height と refX) を算出する共通式。
-// _bdEnsureArrowMarker (矢印そのものの描画) と bdDrawConns (端点の後退量 GAP の逆算) の
-// 両方から使う。太さ上限20 (スタイル管理のスライダー max) まで比例して大きくなる (2026-08-14
-// 上限16px撤廃。旧上限では太さ5.4以上で矢印が頭打ちになり、線の太さが矢印を上回っていた)。
+// 矢印は線方向の長さを固定し、線に直交する幅だけを線幅へ追従させる。
+// ライブ描画、端点後退量、スタイルプレビューでこの2軸ジオメトリを共有する。
 function _bdArrowMarkerGeometry(strokeWidth) {
-  const size = Math.max(8, strokeWidth * 2.6 + 2);
-  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
-  return { size, refX };
+  const width = _bdNormalizeLineWidth(strokeWidth, 1);
+  const axisLength = 14;
+  const crossSpan = Math.max(8, width + 8);
+  const refX = 3;
+  const refY = crossSpan / 2;
+  return { axisLength, crossSpan, refX, refY };
 }
 
-function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId) {
+function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId, colorOpacity = 1) {
   if (!defs || !markerId) return '';
   const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  const { size, refX } = _bdArrowMarkerGeometry(strokeWidth);
+  const { axisLength, crossSpan, refX, refY } = _bdArrowMarkerGeometry(strokeWidth);
   marker.setAttribute('id', markerId);
   if (connId) marker.dataset.connId = connId;
-  marker.setAttribute('markerWidth', size);
-  marker.setAttribute('markerHeight', size);
+  marker.setAttribute('markerWidth', axisLength);
+  marker.setAttribute('markerHeight', crossSpan);
   marker.setAttribute('refX', refX);
-  marker.setAttribute('refY', size / 2);
+  marker.setAttribute('refY', refY);
   // orientDeg が数値なら固定角度、未指定なら path の接線方向に自動 (start/end で逆転)
   if (Number.isFinite(+orientDeg)) {
     marker.setAttribute('orient', String(+orientDeg));
@@ -935,8 +1025,9 @@ function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, con
   }
   marker.setAttribute('markerUnits', 'userSpaceOnUse');
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', `M0,0 L${size - 1},${size / 2} L0,${size} Z`);
+  path.setAttribute('d', `M0,0 L${axisLength - 1},${refY} L0,${crossSpan} Z`);
   path.setAttribute('fill', color);
+  path.setAttribute('fill-opacity', String(_bdNormalizeStyleOpacity(colorOpacity, 1)));
   marker.appendChild(path);
   defs.appendChild(marker);
   return `url(#${markerId})`;

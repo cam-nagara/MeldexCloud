@@ -21,8 +21,14 @@
     if (typeof bdAddSiblingToSelected !== 'function') return false;
     const created = bdAddSiblingToSelected();
     if (!created && typeof showStatus === 'function') {
-      showStatus('ルートカードは同階層に追加できません');
+      showStatus('ルートトピックは同階層に追加できません');
     }
+  },
+  'board.group': () => {
+    if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
+    if (!(bd.selected instanceof Set) || bd.selected.size < 2) return false;
+    if (typeof bdGroupSelectedNodes !== 'function') return false;
+    bdGroupSelectedNodes();
   },
   // Ctrl+矢印: ツリーの展開方向に応じて、兄弟入替 / 子階層の折りたたみ・展開を切り替える
   'board.ctrlArrowUp': () => {
@@ -300,8 +306,8 @@ const GB_TOOLTIPS = {
   'left-chrome-settings': { label: '設定', desc: '設定ダイアログを開く', shortcutId: 'global.settings' },
   'left-chrome-floating-settings': { label: '設定', desc: '設定ダイアログを開く', shortcutId: 'global.settings' },
   'btn-sidebar-toggle': { label: 'フォルダツリー', desc: 'フォルダツリーの表示/非表示' },
-  'btn-tb-annotation':  { label: '注釈ツール', desc: '手描き注釈ツールバーの表示/非表示', shortcutId: 'global.annotation' },
-  'btn-overlay-toggle': { label: 'オーバーレイ', desc: '注釈の表示/非表示を切替' },
+  'btn-tb-annotation':  { label: 'アノテートツール', desc: '手描きアノテートツールバーの表示/非表示', shortcutId: 'global.annotation' },
+  'btn-overlay-toggle': { label: 'オーバーレイ', desc: 'アノテートの表示/非表示を切替' },
   'btn-filter':         { label: 'フィルタ', desc: 'フィルタ条件を設定', shortcutId: 'db.filter' },
   'btn-split-toggle':   { label: 'スプリットビュー', desc: '画面を分割して比較表示' },
   'btn-toc-toggle':     { label: '目次', desc: 'ノートの目次を表示/非表示' },
@@ -312,7 +318,7 @@ const GB_TOOLTIPS = {
   'rab-calendar':       { label: 'スケジュール', desc: 'スケジュールパネルを開く' },
   'rab-chat':           { label: 'チャット', desc: 'チャットパネルを開く' },
   'rab-tags':           { label: 'タグ', desc: 'タグ管理パネルを開く' },
-  'rab-annotation':     { label: '注釈', desc: '注釈パネルを開く' },
+  'rab-annotation':     { label: 'アノテート', desc: 'アノテートパネルを開く' },
   'rab-history':        { label: '履歴', desc: '操作履歴パネルを開く' },
 
   // --- サイドバー ---

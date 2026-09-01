@@ -24,11 +24,13 @@ function updateNoteToc() {
   // これを省くとテーマ側のホバー色だけが失効する。
   try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
   toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
-    item.addEventListener('click', () => {
+    const activate = () => {
       const index = Number(item.dataset.noteTocIndex);
-      const target = document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[index];
+      const target = headings[index];
       target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    };
+    item._meldexActivateNoteToc = activate;
+    item.addEventListener('click', activate);
   });
 }
 
@@ -281,7 +283,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
   const allProps = Object.keys(data.properties || {});
   const layout = typeof getPropertyLayout === 'function'
-    ? getPropertyLayout(parentDb, allProps)
+    ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx })
     : { order: getEntryPropOrder(parentDb) || [...allProps].sort(), hidden: [], groups: [] };
   const groupedProps = typeof applyPropertyLayout === 'function'
     ? applyPropertyLayout(allProps, layout)
@@ -422,9 +424,9 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       hideBtn.innerHTML = typeof lucide === 'function' ? lucide('eyeOff', 12) : '非表示';
       hideBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const next = typeof getPropertyLayout === 'function' ? getPropertyLayout(parentDb, allProps) : layout;
+        const next = typeof getPropertyLayout === 'function' ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx }) : layout;
         next.hidden = Array.from(new Set([...(next.hidden || []), propName]));
-        if (!await savePropertyLayout(parentDb, next)) return;
+        if (!await savePropertyLayout(parentDb, next, { ctx: opts.ctx })) return;
         renderEntityPropsGridInto(grid, data, entityPath, options);
       });
       valuesEl.appendChild(hideBtn);
@@ -506,10 +508,13 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       const insertIdx = idx >= 0 ? idx + (isLeft ? 0 : 1) : arr.length;
       arr.splice(insertIdx, 0, fromName);
       if (parentDb) {
-        const next = typeof getPropertyLayout === 'function' ? getPropertyLayout(parentDb, allProps) : { order: arr, hidden: [], groups: [] };
+        const next = typeof getPropertyLayout === 'function' ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx }) : { order: arr, hidden: [], groups: [] };
         next.order = arr;
-        if (typeof savePropertyLayout === 'function' && !await savePropertyLayout(parentDb, next)) return;
-        else setEntryPropOrder(parentDb, arr);
+        if (typeof savePropertyLayout === 'function') {
+          if (!await savePropertyLayout(parentDb, next, { ctx: opts.ctx })) return;
+        } else {
+          setEntryPropOrder(parentDb, arr);
+        }
       }
       // 同じ container を再描画 (entity-view からも詳細パネルからも呼べる)
       renderEntityPropsGridInto(grid, data, entityPath, options);
@@ -1277,10 +1282,8 @@ function _dispatchCalloutInput(iconEl) {
 }
 
 // コールアウトアイコンクリックで変更（Lucide + Noto Emoji + 色選択）
-document.addEventListener('click', (e) => {
-  const iconEl = e.target.closest('.callout-icon');
-  if (!iconEl) return;
-  e.preventDefault();
+function _openCalloutIconPicker(iconEl) {
+  if (!iconEl) return false;
   if (typeof GBIconAssets === 'undefined') return;
 
   function applyIcon(spec, color) {
@@ -1324,6 +1327,14 @@ document.addEventListener('click', (e) => {
       return colorWrap;
     },
   });
+  return true;
+}
+
+document.addEventListener('click', (e) => {
+  const iconEl = e.target.closest('.callout-icon');
+  if (!iconEl) return;
+  e.preventDefault();
+  _openCalloutIconPicker(iconEl);
 });
 
 // エントリ用リッチテキストツールバーを初期化（メインと同じボタン構成）

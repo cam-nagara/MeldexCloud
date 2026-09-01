@@ -33,6 +33,206 @@ CalendarComponent.prototype._deleteTask = async function(id) {
   }
 };
 
+// スケジュールの予定・ToDo・制作タスク投影を同じ行モデルへ変換するガント表示。
+CalendarComponent.prototype._ganttWindow = function() {
+  const spanDays = this._ganttScale === 'month' ? 366 : this._ganttScale === 'week' ? 84 : 28;
+  const start = new Date(this._date);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - Math.floor(spanDays / 4));
+  const end = new Date(start);
+  end.setDate(end.getDate() + spanDays);
+  return { start, end, spanDays };
+};
+
+CalendarComponent.prototype._ganttEventEditReason = function(ev) {
+  if (ev?._recurrence_instance) return '繰り返し予定は元の予定から編集してください';
+  if (ev?.read_only || ev?.readonly) return '読み取り専用の予定です';
+  if (['shift', 'shift-break', 'attendance'].includes(String(ev?.calendar_source || ''))) return '投影された予定は元データから編集してください';
+  return '';
+};
+
+CalendarComponent.prototype._ganttDateValue = function(date, original, isEnd) {
+  const value = new Date(date);
+  if (_calIsDateOnlyValue(original)) {
+    if (isEnd) value.setDate(value.getDate() - 1);
+    return _calDateOnlyString(value);
+  }
+  return this._localDateTimeStr(value);
+};
+
+CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range, win) {
+  const reason = this._ganttEventEditReason(ev);
+  if (reason) {
+    bar.classList.add('is-readonly');
+    bar.title = `${ev.title || ''}\n${reason}`;
+    return;
+  }
+  const handles = bar.querySelectorAll('[data-gantt-resize]');
+  const begin = (pointerEvent, mode) => {
+    if (pointerEvent.button !== 0) return;
+    pointerEvent.preventDefault();
+    pointerEvent.stopPropagation();
+    bar.setPointerCapture?.(pointerEvent.pointerId);
+    const startX = pointerEvent.clientX;
+    const originalStart = new Date(range.start);
+    const originalEnd = new Date(range.end);
+    const windowMs = win.end - win.start;
+    const trackWidth = Math.max(1, track.getBoundingClientRect().width);
+    let deltaDays = 0;
+    const onMove = moveEvent => {
+      deltaDays = Math.round(((moveEvent.clientX - startX) / trackWidth) * windowMs / 86400000);
+      const deltaMs = deltaDays * 86400000;
+      let nextStart = mode === 'end' ? originalStart : new Date(originalStart.getTime() + deltaMs);
+      let nextEnd = mode === 'start' ? originalEnd : new Date(originalEnd.getTime() + deltaMs);
+      if (nextEnd <= nextStart) {
+        if (mode === 'start') nextStart = new Date(nextEnd.getTime() - 86400000);
+        else nextEnd = new Date(nextStart.getTime() + 86400000);
+      }
+      const left = Math.max(0, Math.min(100, ((nextStart - win.start) / windowMs) * 100));
+      const right = Math.max(left + 0.3, Math.min(100, ((nextEnd - win.start) / windowMs) * 100));
+      bar.style.left = `${left}%`;
+      bar.style.width = `${Math.max(0.6, right - left)}%`;
+    };
+    const onUp = async upEvent => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+      bar.releasePointerCapture?.(upEvent?.pointerId ?? pointerEvent.pointerId);
+      if (!deltaDays) return;
+      const deltaMs = deltaDays * 86400000;
+      let nextStart = mode === 'end' ? originalStart : new Date(originalStart.getTime() + deltaMs);
+      let nextEnd = mode === 'start' ? originalEnd : new Date(originalEnd.getTime() + deltaMs);
+      if (nextEnd <= nextStart) {
+        if (mode === 'start') nextStart = new Date(nextEnd.getTime() - 86400000);
+        else nextEnd = new Date(nextStart.getTime() + 86400000);
+      }
+      const patch = {
+        start: this._ganttDateValue(nextStart, ev.start, false),
+        end: this._ganttDateValue(nextEnd, ev.end || ev.start, true),
+      };
+      if (this._eventIsUndoable(ev)) this._pushUndo(mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
+      try {
+        await _calApplyEventTimePatch(this, ev, patch);
+        await this._loadEvents();
+        this._render();
+      } catch (error) {
+        this._showStatus?.('ガントの更新に失敗しました: ' + (error?.message || error), true);
+        await this._loadEvents();
+        this._render();
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  };
+  bar.addEventListener('pointerdown', event => {
+    if (event.target.closest('[data-gantt-resize]')) return;
+    begin(event, 'move');
+  });
+  handles.forEach(handle => handle.addEventListener('pointerdown', event => begin(event, handle.dataset.ganttResize)));
+};
+
+CalendarComponent.prototype._renderGantt = function() {
+  const host = this._contentEl;
+  const win = this._ganttWindow();
+  const rangeMs = win.end - win.start;
+  const calendarNames = new Map((this._calendars || []).map(calendar => [String(calendar.id), calendar.name || 'カレンダー']));
+  const events = (this._events || []).filter(event => this._isCalVisible(event));
+  const items = [];
+  const unscheduled = [];
+  events.forEach(event => {
+    const range = _calEventRange(event);
+    if (!range) { unscheduled.push({ kind: 'event', title: event.title || '無題', source: event }); return; }
+    items.push({ kind: 'event', title: event.title || '無題', start: range.start, end: range.end, source: event,
+      groupCalendar: calendarNames.get(String(event.calendar_id)) || 'カレンダー',
+      groupSource: event.calendar_source === 'production-task'
+        ? '制作タスク'
+        : (event.calendar_source && event.calendar_source !== 'local' ? '外部・投影' : '予定') });
+  });
+  (this._tasks || []).forEach(task => {
+    const due = task.due_date ? _calParseDateValue(task.due_date) : null;
+    if (!due) { unscheduled.push({ kind: 'task', title: task.title || '無題ToDo', source: task }); return; }
+    due.setHours(12, 0, 0, 0);
+    items.push({ kind: 'task', title: task.title || '無題ToDo', start: due, end: due, source: task, groupCalendar: 'ToDo', groupSource: 'ToDo' });
+  });
+  const groupKey = item => this._ganttGroup === 'calendar' ? item.groupCalendar : this._ganttGroup === 'source' ? item.groupSource : '';
+  items.sort((a, b) => groupKey(a).localeCompare(groupKey(b), 'ja') || a.start - b.start || a.title.localeCompare(b.title, 'ja'));
+
+  host.innerHTML = `<div class="gb-cal-gantt-settings" data-e2e-id="schedule-gantt-settings">
+    <span class="gb-cal-gantt-kind">${lucide('ganttChart', 14)} ガント</span>
+    <label>目盛 <select class="gb-select gb-select-sm" data-gantt-setting="scale"><option value="day">日</option><option value="week">週</option><option value="month">月</option></select></label>
+    <label>グループ <select class="gb-select gb-select-sm" data-gantt-setting="group"><option value="none">なし</option><option value="calendar">カレンダー</option><option value="source">種類</option></select></label>
+    <span class="gb-cal-gantt-range">${esc(this._localDateStr(win.start))} – ${esc(this._localDateStr(new Date(win.end.getTime() - 86400000)))}</span>
+  </div>`;
+  const scaleSelect = host.querySelector('[data-gantt-setting="scale"]');
+  const groupSelect = host.querySelector('[data-gantt-setting="group"]');
+  scaleSelect.value = this._ganttScale;
+  groupSelect.value = this._ganttGroup;
+  scaleSelect.addEventListener('change', () => { this._ganttScale = scaleSelect.value; localStorage.setItem('gb:cal-gantt-scale', this._ganttScale); this._persistViewToTabState(this._view); this._render(); });
+  groupSelect.addEventListener('change', () => { this._ganttGroup = groupSelect.value; localStorage.setItem('gb:cal-gantt-group', this._ganttGroup); this._persistViewToTabState(this._view); this._render(); });
+
+  const chart = document.createElement('div');
+  chart.className = 'gb-cal-gantt';
+  chart.dataset.e2eId = 'schedule-gantt';
+  // 日表示でも全日付をそのまま出すと、右サイドバーを開いた狭い作業幅で
+  // ラベル同士が重なる。表示期間を最大10目盛ほどへ間引き、バーの座標と
+  // 日単位の操作精度は変えずに見出しだけを読みやすく保つ。
+  const tickDays = this._ganttScale === 'month'
+    ? 30
+    : this._ganttScale === 'week'
+      ? 7
+      : Math.max(1, Math.ceil(win.spanDays / 10));
+  const header = document.createElement('div');
+  header.className = 'gb-cal-gantt-row gb-cal-gantt-header';
+  const headerLeft = document.createElement('div'); headerLeft.className = 'gb-cal-gantt-left'; headerLeft.textContent = '項目';
+  const headerTrack = document.createElement('div'); headerTrack.className = 'gb-cal-gantt-track';
+  for (let day = 0; day <= win.spanDays; day += tickDays) {
+    const tickDate = new Date(win.start); tickDate.setDate(tickDate.getDate() + day);
+    const tick = document.createElement('span'); tick.className = 'gb-cal-gantt-tick'; tick.style.left = `${(day / win.spanDays) * 100}%`;
+    tick.textContent = this._ganttScale === 'month' ? `${tickDate.getFullYear()}/${tickDate.getMonth() + 1}` : `${tickDate.getMonth() + 1}/${tickDate.getDate()}`;
+    headerTrack.appendChild(tick);
+  }
+  header.append(headerLeft, headerTrack); chart.appendChild(header);
+
+  let previousGroup = null;
+  items.forEach(item => {
+    const group = groupKey(item);
+    if (group && group !== previousGroup) {
+      const groupRow = document.createElement('div'); groupRow.className = 'gb-cal-gantt-group'; groupRow.textContent = group; chart.appendChild(groupRow); previousGroup = group;
+    }
+    const row = document.createElement('div'); row.className = 'gb-cal-gantt-row';
+    const left = document.createElement('button'); left.type = 'button'; left.className = 'gb-cal-gantt-left gb-cal-gantt-item-title'; left.textContent = item.title;
+    left.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id));
+    const track = document.createElement('div'); track.className = 'gb-cal-gantt-track';
+    const todayPos = ((new Date().setHours(0,0,0,0) - win.start) / rangeMs) * 100;
+    if (todayPos >= 0 && todayPos <= 100) { const todayLine = document.createElement('span'); todayLine.className = 'gb-cal-gantt-today'; todayLine.style.left = `${todayPos}%`; track.appendChild(todayLine); }
+    const leftPct = Math.max(0, Math.min(100, ((item.start - win.start) / rangeMs) * 100));
+    const endPct = Math.max(0, Math.min(100, ((item.end - win.start) / rangeMs) * 100));
+    if (endPct >= 0 && leftPct <= 100 && item.end >= win.start && item.start <= win.end) {
+      const bar = document.createElement('div');
+      bar.className = item.kind === 'task' ? 'gb-cal-gantt-milestone' : 'gb-cal-gantt-bar';
+      bar.style.left = `${leftPct}%`;
+      if (item.kind === 'event') bar.style.width = `${Math.max(0.6, endPct - leftPct)}%`;
+      bar.style.setProperty('--gantt-color', item.kind === 'task' ? 'var(--green)' : this._sanitizeEventColor(item.source.color));
+      bar.title = `${item.title}\n${this._localDateStr(item.start)} – ${this._localDateStr(item.end)}`;
+      if (item.kind === 'event') {
+        bar.innerHTML = '<span data-gantt-resize="start" aria-hidden="true"></span><b></b><span data-gantt-resize="end" aria-hidden="true"></span>';
+        this._bindGanttEventDrag(bar, track, item.source, { start: item.start, end: item.end }, win);
+      }
+      track.appendChild(bar);
+    }
+    row.append(left, track); chart.appendChild(row);
+  });
+  if (!items.length) { const empty = document.createElement('div'); empty.className = 'gb-cal-gantt-empty'; empty.textContent = '表示期間内の予定はありません'; chart.appendChild(empty); }
+  host.appendChild(chart);
+  if (unscheduled.length) {
+    const section = document.createElement('div'); section.className = 'gb-cal-gantt-unscheduled';
+    section.innerHTML = `<strong>未スケジュール (${unscheduled.length})</strong>`;
+    unscheduled.forEach(item => { const button = document.createElement('button'); button.type = 'button'; button.textContent = item.title; button.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id)); section.appendChild(button); });
+    host.appendChild(section);
+  }
+};
+
 function _gbCalTransitionDialog(modalApi, reason, openNext) {
   if (!modalApi?.close?.(reason)) return false;
   const continueAfterRemoval = () => {
@@ -67,13 +267,17 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.id = 'sh-save'; saveButton.className = 'sh-save gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.textContent = '保存';
   const deleteButton = existing ? document.createElement('button') : null;
+  const historyButton = existing ? document.createElement('button') : null;
   if (deleteButton) {
     deleteButton.type = 'button'; deleteButton.id = 'sh-delete'; deleteButton.className = 'sh-delete gb-btn gb-btn-sm gb-btn-danger danger'; deleteButton.textContent = '削除';
+  }
+  if (historyButton) {
+    historyButton.type = 'button'; historyButton.id = 'sh-history'; historyButton.className = 'sh-history gb-btn gb-btn-sm'; historyButton.textContent = '版を見る';
   }
   let busy = false, deleteConfirmPending = false;
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-shift', title: existing ? 'シフト編集' : '新規シフト', body: [...content.childNodes],
-    footer: [deleteButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
+    footer: [deleteButton, historyButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
     minWidth: '0', initialFocus: '#sh-user', closeLabel: 'シフト編集を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: () => !busy,
   });
@@ -82,7 +286,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   panel.classList.add('gb-cal-modal'); panel.dataset.e2eId = 'calendar-tool-shift-dialog'; panel.style.cssText = _gbCalModalSizeStyle(350, 'overflow:hidden;');
   const setBusy = (next) => {
     busy = next; panel.setAttribute('aria-busy', next ? 'true' : 'false');
-    [saveButton, deleteButton].filter(Boolean).forEach(button => { button.disabled = next; });
+    [saveButton, deleteButton, historyButton].filter(Boolean).forEach(button => { button.disabled = next; });
   };
   modalApi.open();
   this._fillShiftUserCandidates?.(panel);
@@ -122,6 +326,20 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     if (modalApi.isOpen()) setBusy(false);
   });
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  historyButton?.addEventListener('click', event => {
+    window.MeldexCalendarItemHistory?.open('shift', existing.id, {
+      returnFocus: event.currentTarget,
+      onRestored: async () => {
+        await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
+        this._renderCalendarList?.();
+        this._render();
+        modalApi.close('restored');
+        this._showStatus('シフトを復元しました');
+      },
+    }).catch(error => {
+      status.textContent = error?.message || 'シフトの版を開けませんでした。';
+    });
+  });
   deleteButton?.addEventListener('click', async () => {
     if (busy || deleteConfirmPending) return;
     deleteConfirmPending = true;

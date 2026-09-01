@@ -3,7 +3,7 @@
   'use strict';
 
   const DENIED_CODE = 'standalone_path_denied';
-  const SPECIALIZED_EXTENSIONS = ['.board.md', '.scriptnote.json', '.smart-db.json', '.timer.json'];
+  const SPECIALIZED_EXTENSIONS = ['.board.md', '.scriptnote.json', '.timer.json'];
 
   class StandaloneCloudPathError extends Error {
     constructor(message, detail) {
@@ -50,7 +50,7 @@
 
   function splitName(name) {
     const value = String(name || '');
-    const known = ['.scriptnote.json', '.smart-db.json', '.timer.json', '.mel-scenario', '.mel-board', '.mel-sheet', '.mel-timer'];
+    const known = ['.scriptnote.json', '.timer.json', '.mel-scenario', '.mel-board', '.mel-sheet', '.mel-timer'];
     const suffix = known.find((extension) => value.toLowerCase().endsWith(extension));
     if (suffix) return { stem: value.slice(0, -suffix.length), extension: value.slice(-suffix.length) };
     const index = value.lastIndexOf('.');

@@ -479,7 +479,7 @@ function _mapRenamedPath(path, oldPath, newPath) {
 }
 
 const APP_PATH_REF_KEYS = [
-  'path', 'dbPath', 'smartDbPath', 'scenarioPath', 'scriptnotePath', 'boardPath',
+  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath',
   'pagePath', 'entityPath', 'folderPath', 'mediaPath', 'csvPath', 'versionPath',
   'calendarFile',
 ];
@@ -509,7 +509,7 @@ function _entryMatchesDeletedPaths(entry, deletedPaths) {
   return _appPathRefs(entry).some(path => _matchesDeletedPaths(path, deletedPaths));
 }
 
-const DELETED_PATH_FALLBACK_AVOID_TAB_TYPES = new Set(['outliner', 'preview', 'detail', 'chat', 'annotation', 'history', 'search', 'timer', 'version']);
+const DELETED_PATH_FALLBACK_AVOID_TAB_TYPES = new Set(['outliner', 'preview', 'detail', 'chat', 'annotation', 'history', 'search', 'version']);
 
 function _deletedPathTabTarget(tab) {
   return _appPathRefs(tab)[0] || _appPathRefs(tab?.state)[0] || '';
@@ -683,7 +683,7 @@ function _purgePublishStorageForDeletedPaths(deletedPaths) {
 
 function _refreshRenamedCurrentDatabase(previousDbPath, nextDbPath) {
   if (!previousDbPath || previousDbPath === nextDbPath || typeof selectDatabase !== 'function') return;
-  const dbViews = new Set(['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+  const dbViews = new Set(['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
   if (!dbViews.has(state.view)) return;
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
   Promise.resolve(selectDatabase(nextDbPath, ctx, {
@@ -693,20 +693,6 @@ function _refreshRenamedCurrentDatabase(previousDbPath, nextDbPath) {
     skipSaveLastView: true,
     skipAutoVersion: true,
   })).catch(() => {});
-}
-
-function _mapRenamedSmartDbId(id, oldPath, newPath) {
-  const current = String(id || '');
-  if (!current) return current;
-  if (current.startsWith('file:')) {
-    return 'file:' + _mapRenamedPath(current.slice('file:'.length), oldPath, newPath);
-  }
-  return _mapRenamedPath(current, oldPath, newPath);
-}
-
-function _smartDbIdPath(id) {
-  const current = String(id || '');
-  return current.startsWith('file:') ? current.slice('file:'.length) : current;
 }
 
 function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
@@ -719,31 +705,6 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
   if (typeof bd !== 'undefined' && bd) {
     if (bd.path) bd.path = _mapRenamedPath(bd.path, oldPath, newPath);
     if (bd._loadedBoardPath) bd._loadedBoardPath = _mapRenamedPath(bd._loadedBoardPath, oldPath, newPath);
-  }
-  if (state.currentSmartDb) {
-    if (state.currentSmartDb._filePath) {
-      const mappedSmartDbPath = _mapRenamedPath(state.currentSmartDb._filePath, oldPath, newPath);
-      // mappedSmartDbPath === newPath は「このスマートシート自体がリネームされた」
-      // 場合のみ真になる（親フォルダの移動/リネームでパスだけが変わった場合は除外）。
-      const isExactSmartDbRename = mappedSmartDbPath !== state.currentSmartDb._filePath && mappedSmartDbPath === newPath;
-      state.currentSmartDb._filePath = mappedSmartDbPath;
-      // ファイル名とファイルタイトルの一致（2026-07-21）: 内部 name フィールドの
-      // リネームAPI側の書換は済んでいるが、開いたままのクライアント状態
-      // （state.currentSmartDb.name）は追従していなかった。放置すると、次回
-      // フィルタ変更等で保存した際に stale な name で上書き保存してしまう。
-      if (isExactSmartDbRename && exactLabel != null && state.currentSmartDb.name !== exactLabel) {
-        state.currentSmartDb.name = exactLabel;
-        if (state.view === 'smart-db') {
-          const currentTitleEl = document.getElementById('current-title');
-          if (currentTitleEl) currentTitleEl.textContent = exactLabel;
-          const sbCategoryEl = document.getElementById('sb-category');
-          if (sbCategoryEl) sbCategoryEl.textContent = 'スマートシート: ' + exactLabel;
-        }
-      }
-    }
-    if (state.currentSmartDb.id) {
-      state.currentSmartDb.id = _mapRenamedSmartDbId(state.currentSmartDb.id, oldPath, newPath);
-    }
   }
 }
 
@@ -1030,12 +991,6 @@ function purgeAppPathReferences(paths) {
       if (key === activePathKey) clearedCurrentView = true;
     }
   });
-  const smartDbRuntimePath = state.currentSmartDb?._filePath || _smartDbIdPath(state.currentSmartDb?.id);
-  if (smartDbRuntimePath && _matchesDeletedPaths(smartDbRuntimePath, deletedPaths)) {
-    state.currentSmartDb = null;
-    state.smartDbData = null;
-    if (state.view === 'smart-db') clearedCurrentView = true;
-  }
   if (!state.currentDbPath) {
     state.pivotData = null;
     state.dbMetadata = null;

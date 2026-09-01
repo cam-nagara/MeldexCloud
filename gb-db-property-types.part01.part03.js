@@ -129,15 +129,14 @@ function onPropertyTypeChange(root) {
     const opts = _ptMergedSelectOptions(current, existing, type);
     const optionColorHelp = fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます。セル編集時の選択肢ドロップダウンからも設定できます')
       .replace('<span ', '<span data-e2e-id="pt-select-option-color-help" ');
-    optDiv.innerHTML = `<div class="field"><label>選択肢（1行1項目）</label>
-      <textarea id="pt-select-options" rows="5">${esc(opts.join('\n'))}</textarea>
-    </div>
-    <div class="field"><label>選択肢の色 ${optionColorHelp}</label>
-      <div id="pt-select-option-colors" class="pt-option-color-list"></div>
+    optDiv.innerHTML = `<div class="field"><label>選択肢 ${optionColorHelp}</label>
+      <textarea id="pt-select-options" hidden aria-hidden="true">${esc(opts.join('\n'))}</textarea>
+      <div id="pt-select-option-rows" class="pt-select-option-list" data-e2e-id="pt-select-option-list"></div>
+      <button type="button" id="pt-select-option-add" class="gb-btn gb-btn-sm pt-select-option-add" data-e2e-id="pt-select-option-add">＋ 選択肢</button>
     </div>`;
     scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
-    if (typeof renderDbOptionColorEditor === 'function') {
-      renderDbOptionColorEditor(_ptGet('pt-select-option-colors', scope), scope);
+    if (typeof renderDbSelectOptionRows === 'function') {
+      renderDbSelectOptionRows(_ptGet('pt-select-option-rows', scope), scope);
     }
   } else if (type === 'relation' || type === 'multi-relation') {
     // 現在のDBのリレーション型プロパティ一覧（カスケード元の候補）

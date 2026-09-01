@@ -375,6 +375,16 @@
   width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px;
   background: var(--bg4); border: 1px solid var(--border); cursor: zoom-in;
 }
+.db-card-image-host {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+}
+.db-card-image-host > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 .db-card-media-placeholder {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px; color: var(--fg2); font-size: 11px;
@@ -385,6 +395,7 @@
 .gallery-card-image-preview img {
   aspect-ratio: 16 / 10;
 }
+.gallery-card-image-preview .db-card-image-host { aspect-ratio: 16 / 10; }
 .kanban-card-image-preview {
   margin-bottom: 6px;
 }

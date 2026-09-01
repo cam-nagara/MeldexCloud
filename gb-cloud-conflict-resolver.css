@@ -235,7 +235,7 @@
   cursor: not-allowed;
   color: var(--fg2, #969696);
   background: var(--bg2, #252525);
-  border-color: var(--border, #333);
+  border-color: transparent;
 }
 
 .cloud-conflict-btn.primary {

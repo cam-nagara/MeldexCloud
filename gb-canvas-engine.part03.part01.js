@@ -1,11 +1,11 @@
 /* gb-canvas-engine.part03.js */
 function _bdConnectionStrokeWidth(conn, connStyle, defaultWidth) {
-  const fallback = Number.isFinite(+defaultWidth) ? Math.max(0, +defaultWidth) : 1;
+  const fallback = _bdNormalizeLineWidth(defaultWidth, 1);
   if (conn && Object.prototype.hasOwnProperty.call(conn, 'width') && Number.isFinite(+conn.width)) {
-    return Math.max(0, +conn.width);
+    return _bdNormalizeLineWidth(conn.width, fallback);
   }
   if (connStyle && Number.isFinite(+connStyle.width) && +connStyle.width !== 0) {
-    return Math.max(0, +connStyle.width);
+    return _bdNormalizeLineWidth(connStyle.width, fallback);
   }
   return fallback;
 }
@@ -167,7 +167,7 @@ function bdDrawConns(options) {
     const arrowOnToSide = arrow === 'end' || arrow === 'both';
     const NO_ARROW_GAP = 2;
     const arrowEndpointGap = (arrowOnFromSide || arrowOnToSide)
-      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.size - g.refX; })()
+      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.axisLength - g.refX; })()
       : 0;
     const GAP_FROM = arrowOnFromSide ? arrowEndpointGap : NO_ARROW_GAP;
     const GAP_TO = arrowOnToSide ? arrowEndpointGap : NO_ARROW_GAP;
@@ -217,7 +217,9 @@ function bdDrawConns(options) {
     hasUserAnchor = !!(fromA || toA);
     // v0.5.330: 連続角度ベースの自動ルート (矢印が斜め含む 8 方向に自然追従するため)。
     // 量子化アンカー名は使わず、実際のカード間ベクトルに沿って端点と外向き方向を直接算出。
-    if (selfLoop && !fromA && !toA) {
+    const hasExactFrom = !!c.fromEndpoint?.outlinePosition;
+    const hasExactTo = !!c.toEndpoint?.outlinePosition;
+    if (selfLoop && !fromA && !toA && !hasExactFrom && !hasExactTo) {
       const def = _bdDefaultSelfLoopAnchors(pathType);
       fromA = def.from; toA = def.to;
     }
@@ -380,21 +382,34 @@ function bdDrawConns(options) {
     }
     }
 
-    const outlineEndpointPoint = (endpoint, node, pos, width, height, gap) => {
+    const outlineEndpointPoint = (endpoint, node, element, pos, width, height, gap) => {
       if (!endpoint?.outlinePosition || !node || typeof MeldexBoardOutlineEndpoints === 'undefined') return null;
       const point = MeldexBoardOutlineEndpoints.pointAtPathT(
-        node.shape || 'rect', { ...node, x: pos.x, y: pos.y, w: width, h: height },
+        element?.dataset?.shape || node.shape || 'rect',
+        { ...node, x: pos.x, y: pos.y, w: width, h: height },
         endpoint.outlinePosition.pathT, node,
       );
       const cx = pos.x + width / 2; const cy = pos.y + height / 2;
       const length = Math.hypot(point.x - cx, point.y - cy) || 1;
-      return { x: point.x + ((point.x - cx) / length) * gap,
-        y: point.y + ((point.y - cy) / length) * gap };
+      const out = { x: (point.x - cx) / length, y: (point.y - cy) / length };
+      return { x: point.x + out.x * gap, y: point.y + out.y * gap, out };
     };
-    const exactFrom = outlineEndpointPoint(c.fromEndpoint, fn, fp, fw, fh, GAP_FROM);
-    const exactTo = outlineEndpointPoint(c.toEndpoint, tn, tp, tw, th, GAP_TO);
-    if (exactFrom) { x1 = exactFrom.x; y1 = exactFrom.y; hasUserAnchor = true; }
-    if (exactTo) { x2 = exactTo.x; y2 = exactTo.y; hasUserAnchor = true; }
+    // 輪郭位置を明示した端点は、矢印がない側では輪郭そのものをパス端点にする。
+    // 矢印側の gap はマーカー先端を輪郭へ合わせるためにだけ残す。
+    const exactFrom = outlineEndpointPoint(
+      c.fromEndpoint, fn, fe, fp, fw, fh, arrowOnFromSide ? GAP_FROM : 0,
+    );
+    const exactTo = outlineEndpointPoint(
+      c.toEndpoint, tn, te, tp, tw, th, arrowOnToSide ? GAP_TO : 0,
+    );
+    if (exactFrom) {
+      x1 = exactFrom.x; y1 = exactFrom.y; autoFromOut = exactFrom.out;
+      hasUserAnchor = true; effectiveStructure = '';
+    }
+    if (exactTo) {
+      x2 = exactTo.x; y2 = exactTo.y; autoToOut = exactTo.out;
+      hasUserAnchor = true; effectiveStructure = '';
+    }
 
     // v0.5.250: 同じカードペア間に複数ラインがある場合、各ラインを区別するためのオフセット。
     // - 曲線 (curve): 端点はカード側で固定し、制御点 c1/c2 を垂直にシフトして曲線を上下 (または左右) に膨らませる。
@@ -458,6 +473,7 @@ function bdDrawConns(options) {
     p.style.strokeWidth = strokeWidth + 'px';
     if (connStyle.style === 'dashed') p.style.strokeDasharray = '6 3';
     if (connStyle.color) p.style.stroke = connStyle.color;
+    p.style.strokeOpacity = String(_bdNormalizeStyleOpacity(connStyle.colorOpacity, 1));
     if (c.hidden) {
       p.classList.add('bd-conn-hidden');
       p.style.opacity = '0.18';
@@ -470,7 +486,7 @@ function bdDrawConns(options) {
       // 揃えていたが、これが原因でハンドル調整や斜め配置時に矢印向きがラインと乖離していた。
       // auto-start-reverse に統一することで、曲線のベジェ接線・直角線の終端 segment 方向・
       // 直線の方向すべてに矢印がなめらかに追従する (= 8 方向含む任意方向に対応)。
-      const markerRef = _bdEnsureArrowMarker(defs, `bd-arrow-${c.id}`, arrowColor, strokeWidth, undefined, c.id);
+      const markerRef = _bdEnsureArrowMarker(defs, `bd-arrow-${c.id}`, arrowColor, strokeWidth, undefined, c.id, connStyle.colorOpacity);
       if (arrow === 'start' || arrow === 'both') p.setAttribute('marker-start', markerRef);
       if (arrow === 'end' || arrow === 'both') p.setAttribute('marker-end', markerRef);
     }
@@ -771,9 +787,6 @@ function bdDrawConns(options) {
     const id = (typeof el.id === 'string' && el.id.startsWith('bdn-')) ? el.id.slice(4) : '';
     el.classList.toggle('bd-line-endpoint', !!id && _endpointNodeIds.has(id));
   });
-  // ライン選択中はアンカー内の「+」を隠す (アンカークリック = カード追加 ではなく元の接続モードに戻す)
-  const _bdCanvasEl = document.getElementById('bd-canvas');
-  if (_bdCanvasEl) _bdCanvasEl.classList.toggle('bd-has-conn-selection', _selConnIds.size > 0);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDrawConns', _bdDrawPerf, drawMeta);
 }
 

@@ -50,6 +50,10 @@
     if (!startInput || !endInput) return;
     const startRaw = startInput.value || startInput.dataset.calRawValue || '';
     const endRaw = endInput.value || endInput.dataset.calRawValue || startRaw;
+    // Chromium は datetime-local の値を保持したまま type=date へ切り替えると
+    // 不正値の警告を出して value を消す。先に退避・クリアしてから型を変える。
+    startInput.value = '';
+    endInput.value = '';
     if (allDay) {
       startInput.type = 'date';
       endInput.type = 'date';

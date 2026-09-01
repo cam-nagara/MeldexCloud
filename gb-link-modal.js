@@ -17,8 +17,8 @@ const MeldexLinkModal = (() => {
   function _inferTypeFromPath(path) {
     const lower = String(path || '').toLowerCase();
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json') || lower.endsWith('.smart.json')) return 'smart-db';
-    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-sheet')) return 'database';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
     if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/.test(lower)) return 'image';
     if (/\.(mp4|webm|mov|mkv)$/.test(lower)) return 'video';

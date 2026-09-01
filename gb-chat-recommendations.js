@@ -129,7 +129,7 @@
     const lowerPath = safeText(path).toLowerCase();
     if (lowerType === 'scriptnote' || lowerPath.endsWith('.scriptnote.json')) return 'scriptnote';
     if (lowerType === 'board' || lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md')) return 'board';
-    if (['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form', 'smart-db'].includes(lowerType)) return 'sheet';
+    if (['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form'].includes(lowerType)) return 'sheet';
     if (lowerType === 'calendar') return 'calendar';
     if (lowerType === 'folder' || kind === 'folder') return 'folder';
     if (lowerType === 'media' || lowerType === 'html' || /\.(png|jpe?g|gif|webp|svg|pdf|html?)$/i.test(lowerPath)) return 'media';

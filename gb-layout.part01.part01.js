@@ -144,12 +144,13 @@ const GBLayout = (() => {
   }
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
-  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'version', 'subpanel']);
-  const FIXED_RAIL_RIGHT_DEFAULTS = [
-    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'], ['バージョン管理', 'version'],
-    ['チャット', 'chat'], ['タイマー', 'timer'],
-    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'],
+  const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
+    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+    ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
+    ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
   ];
+  const FIXED_RAIL_RIGHT_TYPES = window.GBRailContract?.types?.()
+    || new Set(FIXED_RAIL_RIGHT_DEFAULTS.map(([, type]) => type));
 
   function _fixedRailGeneratedId(prefix) {
     return `${prefix}-fixed-${Date.now().toString(36)}-${(++_paneIdCounter).toString(36)}`;
@@ -211,7 +212,8 @@ const GBLayout = (() => {
     rightDock.groups.forEach(group => {
       _collectFixedRailPanes(group?.root).forEach(pane => {
         if (!Array.isArray(pane.tabs)) return;
-        pane.tabs = pane.tabs.filter(tab => !['calendar', 'search'].includes(tab?.type));
+        const retiredTypes = new Set(window.GBRailContract?.retiredTypes?.() || ['timer']);
+        pane.tabs = pane.tabs.filter(tab => !['calendar', 'search'].includes(tab?.type) && !retiredTypes.has(tab?.type));
         if (pane.activeTabIndex >= pane.tabs.length) pane.activeTabIndex = pane.tabs.length ? 0 : -1;
       });
     });
@@ -237,6 +239,29 @@ const GBLayout = (() => {
       if (!rightDock.activeGroupId) rightDock.activeGroupId = group.id;
       seen.add(type);
     });
+    // 既存レイアウトは一度だけ正規順序へ移す。幅・開閉・activeGroupIdと、
+    // 未知のカスタムグループのスロットはそのまま保持する。
+    const railVersion = Number(window.GBRailContract?.version || 2);
+    if (Number(rightDock.meldexRailOrderVersion || 0) < railVersion) {
+      const ordered = rightDock.groups
+        .filter(group => {
+          const type = _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '';
+          return FIXED_RAIL_RIGHT_TYPES.has(type);
+        })
+        .sort((a, b) => {
+          const aType = _collectFixedRailPanes(a?.root)[0]?.tabs?.[0]?.type || '';
+          const bType = _collectFixedRailPanes(b?.root)[0]?.tabs?.[0]?.type || '';
+          const aOrder = window.GBRailContract?.order?.(aType) ?? FIXED_RAIL_RIGHT_DEFAULTS.findIndex(([, type]) => type === aType);
+          const bOrder = window.GBRailContract?.order?.(bType) ?? FIXED_RAIL_RIGHT_DEFAULTS.findIndex(([, type]) => type === bType);
+          return aOrder - bOrder;
+        });
+      let orderedIndex = 0;
+      rightDock.groups = rightDock.groups.map((group) => {
+        const type = _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '';
+        return FIXED_RAIL_RIGHT_TYPES.has(type) ? ordered[orderedIndex++] : group;
+      });
+      rightDock.meldexRailOrderVersion = railVersion;
+    }
     return node;
   }
 
@@ -265,9 +290,20 @@ const GBLayout = (() => {
   function ensureFixedRailDefaults() {
     if (!_root || window._gbSingleWindow) return false;
     if (!_hasFixedRailRoles(_root)) return false;
-    const before = _countFixedRailTabs(_root);
+    const rightDock = _findFixedRailPanelset(_root, 'right-sidebar');
+    const before = JSON.stringify({
+      tabs: _countFixedRailTabs(_root),
+      orderVersion: rightDock?.meldexRailOrderVersion || 0,
+      groups: rightDock?.groups?.map(group => _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '') || [],
+    });
     _ensureFixedRightRailDefaults(_root);
-    return _countFixedRailTabs(_root) !== before;
+    const afterDock = _findFixedRailPanelset(_root, 'right-sidebar');
+    const after = JSON.stringify({
+      tabs: _countFixedRailTabs(_root),
+      orderVersion: afterDock?.meldexRailOrderVersion || 0,
+      groups: afterDock?.groups?.map(group => _collectFixedRailPanes(group?.root)[0]?.tabs?.[0]?.type || '') || [],
+    });
+    return after !== before;
   }
 
   function _fixedRailPanelset(roots, role, activeIndex, popupWidth) {
@@ -569,6 +605,14 @@ const GBLayout = (() => {
         }
         if (tab.type === 'subpanel' && (!tab.icon || tab.icon === 'panelRight')) {
           tab.icon = 'panelRightDashed';
+        }
+        // 旧レイアウトに空／汎用アイコンが保存されていても、右サイドバーの
+        // 主要パネルは現行の種別アイコンへ揃える。
+        if (['information', 'backlinks', 'file-theme'].includes(tab.type)) {
+          const fallbackIcons = { information: 'info', backlinks: 'fileSymlink', 'file-theme': 'palette' };
+          const canonicalIcon = (typeof uiTypeIconName === 'function' ? uiTypeIconName(tab.type) : '')
+            || fallbackIcons[tab.type];
+          if (canonicalIcon) tab.icon = canonicalIcon;
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
@@ -1027,6 +1071,7 @@ const GBLayout = (() => {
     backBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'back');
     });
     const forwardBtn = document.createElement('button');
@@ -1042,6 +1087,7 @@ const GBLayout = (() => {
     forwardBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'forward');
     });
     navCtrls.appendChild(backBtn);
@@ -1406,6 +1452,13 @@ const GBLayout = (() => {
       const items = Array.isArray(payload?.items) && payload.items.length
         ? payload.items
         : [{ name: payload?.name, path: payload?.path, type: payload?.type }];
+      if (items.length !== 1) {
+        if (resolved) MeldexDnD.failDrop(resolved);
+        if (typeof showStatus === 'function') {
+          showStatus('複数選択はタブ列へ一括追加できないため、全件を変更しませんでした', true);
+        }
+        return;
+      }
       let insertIndex = _resolveInsertIndex();
       let openedFromDrop = 0;
       items.forEach((it) => {

@@ -12,10 +12,10 @@
     return document.documentElement.getAttribute('data-standalone-cloud') === 'viewer';
   }
 
-  const CLOUD_ANNOTATION_REASON = 'Cloud版ビューワーでは注釈を利用できません';
+  const CLOUD_ANNOTATION_REASON = 'Cloud版ビューワーではアノテートを利用できません';
 
   // Cloud の単独Viewerは、ローカルファイルを Blob URL で一時表示するだけであり、
-  // 注釈を安全に保存する対象パスを持たない。ファイル選択後ではなく起動直後から
+  // アノテートを安全に保存する対象パスを持たない。ファイル選択後ではなく起動直後から
   // capability を明示して、メニューやショートカットが一瞬だけ現れることも防ぐ。
   function annotationCapability() {
     return isCloudViewer()
@@ -101,7 +101,7 @@
   global.MeldexViewerCloudFileOpen = Object.freeze({
     accepted, openFiles, isCloudViewer, annotationCapability, applyAnnotationCapability,
   });
-  // controls/context-menu より先に分類値を固定する。注釈controllerは後から読み込まれるため、
+  // controls/context-menu より先に分類値を固定する。アノテートcontrollerは後から読み込まれるため、
   // microtask と DOMContentLoaded の両方で availability を渡す。
   applyAnnotationCapability();
   queueMicrotask(applyAnnotationCapability);

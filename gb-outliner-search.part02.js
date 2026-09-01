@@ -19,7 +19,6 @@
     ['ノート', 'page', 'page'],
     ['シート', 'db', 'database'],
     ['ボード', 'presentation', 'board'],
-    ['スマートシート', 'databaseSearch', 'smart-db'],
   ].forEach(([label, icon, type]) => {
     const si = document.createElement('div');
     si.className = 'ab-dropdown-item';
@@ -113,7 +112,6 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
     { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
-    { label: 'スマートシート', icon: 'databaseSearch', type: 'smart-db', open: (paneId) => _openPanelMenuItem('smart-db', paneId) },
   ],
 }];
 
@@ -520,6 +518,45 @@ function clearTreeNameSearch() {
   doTreeNameSearch();
 }
 
+function _setSidebarSearchMode(mode) {
+  const sidebar = document.getElementById('sidebar');
+  const treeInput = document.getElementById('sidebar-search-input');
+  const clearButton = document.getElementById('btn-tree-search-clear');
+  const fullTextButton = document.getElementById('btn-vault-search');
+  const fullText = mode === 'full-text';
+  if (sidebar) sidebar.dataset.searchMode = fullText ? 'full-text' : 'tree-filter';
+  if (treeInput) {
+    treeInput.hidden = fullText;
+    treeInput.setAttribute('aria-hidden', fullText ? 'true' : 'false');
+  }
+  if (clearButton) clearButton.hidden = fullText;
+  if (fullTextButton) fullTextButton.setAttribute('aria-expanded', fullText ? 'true' : 'false');
+}
+
+function focusFolderTreeSearch() {
+  const input = document.getElementById('sidebar-search-input');
+  if (!input) return false;
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar?.style.display === 'none' && typeof toggleSidebar === 'function') toggleSidebar();
+  const panel = document.getElementById('search-panel');
+  if (panel?.classList.contains('open')) closeSearchPanel({ restoreFocus: false });
+  _setSidebarSearchMode('tree-filter');
+  input.removeAttribute('readonly');
+  try { input.focus({ preventScroll: true }); }
+  catch (_) { input.focus(); }
+  if (typeof input.select === 'function') input.select();
+  return true;
+}
+
+function isFolderTreeSearchContext() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return false;
+  const active = document.activeElement;
+  if (active && sidebar.contains(active)) return true;
+  try { return sidebar.matches(':hover'); }
+  catch (_) { return false; }
+}
+
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
   const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
@@ -737,12 +774,14 @@ function openSearchPanel(options = {}) {
   if (!panel) return;
   _rememberVaultSearchPanelHome(panel);
   if (options.surface === 'main' && options.anchor) {
+    _setSidebarSearchMode('tree-filter');
     _openMainVaultSearchPanel(panel, options);
   } else {
     _restoreVaultSearchPanelHome(panel);
     const sidebar = document.getElementById('sidebar');
     if (sidebar?.style.display === 'none') toggleSidebar();
     delete panel.dataset.searchPath;
+    _setSidebarSearchMode('full-text');
     panel.classList.add('open');
   }
   _focusVaultSearchQuery();
@@ -751,10 +790,12 @@ function openSearchPanel(options = {}) {
 function closeSearchPanel(options = {}) {
   const panel = document.getElementById('search-panel');
   if (!panel) return;
-  const trigger = panel.dataset.searchSurface === 'main' ? _vaultSearchPanelUi.trigger : null;
+  const wasMainSurface = panel.dataset.searchSurface === 'main';
+  const trigger = wasMainSurface ? _vaultSearchPanelUi.trigger : document.getElementById('btn-vault-search');
   panel.classList.remove('open');
   delete panel.dataset.searchPath;
   _restoreVaultSearchPanelHome(panel);
+  if (!wasMainSurface) _setSidebarSearchMode('tree-filter');
   if (options.restoreFocus !== false && trigger?.isConnected && !trigger.disabled) trigger.focus();
 }
 
@@ -872,7 +913,8 @@ function renderSearchResults(data, query, caseSensitive, useRegex) {
       const text = m.text || '';
       const highlighted = highlightMatch(text, query, caseSensitive, useRegex);
       const lineInfo = m.field ? `${m.field}:${m.line}` : `L${m.line}`;
-      html += `<div class="sp-match" ${resultAttrs}><span class="sp-line">${lineInfo}</span>${highlighted}</div>`;
+      const location = encodeURIComponent(JSON.stringify({ line: m.line || 0, field: m.field || '', col: m.col || 0, text }));
+      html += `<button type="button" class="sp-match" ${resultAttrs} data-search-result-location="${esc(location)}"><span class="sp-line">${lineInfo}</span>${highlighted}</button>`;
     });
     if (file.matches.length > 20) {
       html += `<div class="sp-match" style="color:var(--fg2);font-style:italic;">...他 ${file.matches.length - 20}件</div>`;
@@ -890,7 +932,9 @@ function _bindVaultSearchResultClicks(container) {
     const target = e.target.closest?.('[data-search-result-path]');
     if (!target || !container.contains(target)) return;
     e.preventDefault();
-    openSearchResult(target.dataset.searchResultPath || '', target.dataset.searchResultType || '');
+    let location = null;
+    try { location = JSON.parse(decodeURIComponent(target.dataset.searchResultLocation || '')); } catch {}
+    openSearchResult(target.dataset.searchResultPath || '', target.dataset.searchResultType || '', location);
   });
 }
 
@@ -930,7 +974,6 @@ function _searchResultLabel(path) {
     .replace(/\.mel-board$/i, '')
     .replace(/\.mel-scenario$/i, '')
     .replace(/\.mel-timer$/i, '')
-    .replace(/\.smart-db\.json$/i, '')
     .replace(/\.scriptnote\.json$/i, '')
     .replace(/\.timer\.json$/i, '')
     .replace(/\.scenario\.json$/i, '')
@@ -940,16 +983,16 @@ function _searchResultLabel(path) {
 
 function _searchResultKind(path, type) {
   const lower = String(path || '').toLowerCase();
-  if (type === 'smart-db' || lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (type === 'database' || lower.endsWith('.mel-sheet')) return 'database';
   if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
-  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (type === 'csv' || lower.endsWith('.csv')) return 'csv';
   if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
   if (type === 'database') return 'database';
   return type || 'page';
 }
 
-function openSearchResult(path, type) {
+function openSearchResult(path, type, location = null) {
   const _expOpts = { fromExplorer: true };
   const kind = _searchResultKind(path, type);
   const label = _searchResultLabel(path);
@@ -961,16 +1004,115 @@ function openSearchResult(path, type) {
   else if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
   else if (kind === 'board') openBoard(label, path, _expOpts);
   else if (kind === 'csv' && typeof openCsvFile === 'function') openCsvFile(label, path, _expOpts);
-  else if (kind === 'smart-db' && typeof openSmartDbFile === 'function') openSmartDbFile(label, path, _expOpts);
   else if (kind === 'database' && typeof selectDatabase === 'function') selectDatabase(path, null, _expOpts);
   else openPage(label, path, _expOpts);
+  const detail = { path, type: kind, query: document.getElementById('sp-query')?.value || '', match: location };
+  [0, 180, 600].forEach(delay => setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('meldex:search-result-open', { detail }));
+  }, delay));
+}
+
+let _lastRevealedSearchResult = { signature: '', at: 0 };
+
+function _searchResultSignature(detail) {
+  const match = detail?.match || {};
+  return [detail?.path || '', detail?.type || '', detail?.query || '', match.field || '', match.line || 0, match.col || 0].join('\n');
+}
+
+function _searchResultText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function _revealPageSearchResult(detail) {
+  if (typeof openFileSearch !== 'function' || typeof doFileSearch !== 'function') return false;
+  const query = String(detail?.query || '');
+  const input = document.getElementById('fsb-query');
+  if (!query || !input) return false;
+  openFileSearch('find');
+  input.value = query;
+  doFileSearch(1);
+  const editable = typeof _currentFileSearchEditable === 'function' ? _currentFileSearchEditable() : null;
+  const marks = Array.from(editable?.querySelectorAll?.('mark.file-search-highlight') || []);
+  if (!marks.length) return false;
+
+  const snippet = _searchResultText(detail?.match?.text);
+  let index = snippet
+    ? marks.findIndex(mark => _searchResultText(mark.closest('p,li,div,h1,h2,h3,h4,h5,h6,blockquote,pre')?.textContent).includes(snippet))
+    : -1;
+  if (index < 0) index = 0;
+  marks.forEach(mark => { mark.style.outline = ''; });
+  marks[index].style.outline = '2px solid var(--accent)';
+  marks[index].scrollIntoView({ block: 'center', inline: 'nearest' });
+  if (typeof _fileSearchIdx !== 'undefined') _fileSearchIdx = index;
+  const count = document.getElementById('fsb-count');
+  if (count) count.textContent = `${index + 1}/${marks.length}`;
+  return true;
+}
+
+function _revealScenarioSearchResult(detail) {
+  const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+  const query = String(detail?.query || '');
+  if (!editor?.doc || !query || typeof editor._refreshSearchState !== 'function') return false;
+  const field = String(detail?.match?.field || '');
+  const rowIndex = field.startsWith('row:') ? Number(field.slice(4)) : Math.max(0, Number(detail?.match?.line || 1) - 1);
+  const start = Math.max(0, Number(detail?.match?.col || 0));
+  editor._searchState = { query, replace: editor._searchState?.replace || '', matches: [], index: -1 };
+  const state = editor._refreshSearchState({ rowIndex, start });
+  if (!state?.matches?.length) return false;
+  const exactIndex = state.matches.findIndex(match => match.rowIndex === rowIndex && match.start >= start);
+  if (exactIndex >= 0) state.index = exactIndex;
+  const searchButton = editor.host?.closest?.('.gb-se-root')?.querySelector?.('[data-sn-action="search"]') || null;
+  editor._showSearchReplacePopup?.(searchButton);
+  editor._activateSearchMatch?.(state.matches[state.index]);
+  return true;
+}
+
+function _revealDatabaseSearchResult(detail) {
+  if (typeof openDbFindReplace !== 'function' || typeof _dbFindRun !== 'function') return false;
+  const query = String(detail?.query || '');
+  if (!query || !openDbFindReplace('find')) return false;
+  const input = document.querySelector('.db-find-bar [data-db-find-query]');
+  if (!input) return false;
+  input.value = query;
+  _dbFindRun(1);
+  return true;
+}
+
+function _revealBoardSearchResult(detail) {
+  if (typeof bdOpenFindBar !== 'function' || typeof _bdFindUpdateMatches !== 'function') return false;
+  const query = String(detail?.query || '');
+  if (!query) return false;
+  bdOpenFindBar('find');
+  const input = document.getElementById('bd-find-q');
+  if (!input) return false;
+  input.value = query;
+  _bdFindUpdateMatches(query);
+  if (typeof _bdFindShowCurrent === 'function') _bdFindShowCurrent();
+  return true;
+}
+
+function revealSearchResultLocation(detail) {
+  const signature = _searchResultSignature(detail);
+  if (signature && signature === _lastRevealedSearchResult.signature && Date.now() - _lastRevealedSearchResult.at < 2000) return true;
+  const kind = _searchResultKind(detail?.path || '', detail?.type || '');
+  let revealed = false;
+  if (kind === 'scriptnote') revealed = _revealScenarioSearchResult(detail);
+  else if (kind === 'database' || kind === 'csv') revealed = _revealDatabaseSearchResult(detail);
+  else if (kind === 'board') revealed = _revealBoardSearchResult(detail);
+  else if (kind === 'page') revealed = _revealPageSearchResult(detail);
+  if (revealed) _lastRevealedSearchResult = { signature, at: Date.now() };
+  return revealed;
+}
+
+if (typeof window !== 'undefined' && !window.__meldexSearchResultRevealBound) {
+  window.__meldexSearchResultRevealBound = true;
+  window.addEventListener('meldex:search-result-open', event => revealSearchResultLocation(event.detail || {}));
 }
 
 async function doVaultReplace(all) {
   const q = document.getElementById('sp-query').value;
   const r = document.getElementById('sp-replace').value;
   if (!q) return;
-  if (!await cfConfirm(`${all ? '全ファイルの全一致箇所' : '各ファイルの最初の一致箇所'}を置換しますか？\n\n「${q}」→「${r}」`)) return;
 
   const caseSensitive = document.getElementById('sp-case').checked;
   const useRegex = document.getElementById('sp-regex').checked;
@@ -986,22 +1128,35 @@ async function doVaultReplace(all) {
     showStatus(data.error, true);
     return;
   }
-  let totalCount = 0;
-  const failures = [];
+  const targets = (data.results || []).map(file => ({ path: file.path, etag: file.etag || '' }));
+  if (!targets.length) {
+    const statusText = '置換対象はありません';
+    showStatus(statusText);
+    document.getElementById('sp-status').textContent = statusText;
+    return;
+  }
+  if (targets.some(target => !target.etag)) {
+    const statusText = '置換対象の更新情報を確認できないため中止しました。もう一度検索してください';
+    showStatus(statusText, true);
+    document.getElementById('sp-status').textContent = statusText;
+    return;
+  }
+  if (!await cfConfirm(`${targets.length}ファイルの${all ? '全一致箇所' : '各ファイルの最初の一致箇所'}を一括置換しますか？\n途中で失敗した場合は全ファイルを元に戻します。\n\n「${q}」→「${r}」`)) return;
 
-  for (const file of (data.results || [])) {
-    try {
-      const res = await apiPut('/replace', { path: file.path, search: q, replace: r, case: caseSensitive, regex: useRegex, all });
-      totalCount += res.count || 0;
-    } catch (e) {
-      failures.push({ path: file.path, message: e.message || String(e) });
-    }
+  let result;
+  try {
+    result = await apiPut('/replace-batch', {
+      targets, search: q, replace: r, case: caseSensitive, regex: useRegex, all,
+    });
+  } catch (error) {
+    const statusText = error?.message || '一括置換に失敗しました';
+    showStatus(statusText, true);
+    document.getElementById('sp-status').textContent = statusText;
+    return;
   }
 
-  const statusText = failures.length
-    ? `${totalCount}箇所を置換しました。${failures.length}ファイルで失敗しました: ${failures.slice(0, 3).map(f => f.path).join(', ')}`
-    : `${totalCount}箇所を置換しました`;
-  showStatus(statusText, failures.length > 0);
+  const statusText = `${result?.count || 0}箇所（${result?.file_count || 0}ファイル）を置換しました`;
+  showStatus(statusText, false);
   document.getElementById('sp-status').textContent = statusText;
   await doVaultSearch(); // 結果を更新
   document.getElementById('sp-status').textContent = statusText;

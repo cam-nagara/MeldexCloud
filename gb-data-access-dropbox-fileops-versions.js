@@ -54,7 +54,8 @@ function _actorMetadata(actor, prefix) {
 
 function _snapshotActorMetadata(previous, creator, reason, eventId, nextEditor, sourceRevision) {
   return {
-    metadata_schema_version: 1,
+    metadata_schema_version: 2,
+    restore_point_kind: _restorePointKind(reason, true),
     snapshot_reason: String(reason || ''),
     source_revision: String(sourceRevision || ''),
     event_id: String(eventId || ''),
@@ -62,6 +63,50 @@ function _snapshotActorMetadata(previous, creator, reason, eventId, nextEditor, 
     ..._actorMetadata(creator, 'snapshot_created_by'),
     ...(nextEditor ? _actorMetadata(nextEditor, 'next_editor') : {}),
   };
+}
+
+function _restorePointKind(labelOrReason, auto, metadata) {
+  const explicit = String(metadata?.restore_point_kind || '');
+  const allowed = new Set([
+    'manual', 'periodic', 'before_restore', 'before_llm', 'before_editor_transition',
+    'before_migration', 'before_bulk_operation', 'before_external_sync',
+    'before_permanent_delete', 'before_conflict_resolution', 'disaster_recovery', 'legacy',
+  ]);
+  if (allowed.has(explicit)) return explicit;
+  const text = `${labelOrReason || ''} ${metadata?.snapshot_reason || ''}`.toLowerCase();
+  const rules = [
+    ['before_editor_transition', ['before_editor_transition', '編集者交代']],
+    ['before_restore', ['before_restore', 'pre_restore', '復元前', '復元直前']],
+    ['before_llm', ['before_llm', 'llm', 'ai編集']],
+    ['before_migration', ['before_migration', '移行前', '変換前', '取り込み前']],
+    ['before_bulk_operation', ['before_bulk', '一括', 'bulk', 'replace']],
+    ['before_external_sync', ['before_external_sync', '同期前', '取得前']],
+    ['before_permanent_delete', ['before_permanent_delete', '完全削除前', '空にする前']],
+    ['before_conflict_resolution', ['before_conflict', '競合解決前']],
+    ['disaster_recovery', ['disaster_recovery', '災害復旧', '安全網']],
+    ['periodic', ['periodic', '周期復元', '定期復元']],
+  ];
+  for (const [kind, tokens] of rules) {
+    if (tokens.some(token => text.includes(token))) return kind;
+  }
+  return auto ? 'legacy' : 'manual';
+}
+
+function _restorePointMetadata(label, auto, metadata) {
+  return {
+    ...(metadata || {}),
+    metadata_schema_version: Math.max(2, Number(metadata?.metadata_schema_version || 0)),
+    restore_point_kind: _restorePointKind(label, auto, metadata),
+  };
+}
+
+function _shouldCreateRestorePoint(label, auto, metadata) {
+  if (!auto) return true;
+  if (_restorePointKind(label, auto, metadata) !== 'legacy') return true;
+  const text = String(label || '').toLowerCase();
+  if (!text) return true;
+  return text !== 'file write before' && text !== 'file write create before'
+    && !text.endsWith('更新前') && !text.endsWith('作成前') && !text.endsWith('通常保存前');
 }
 
 function _stableHistoryContent(content) {
@@ -88,12 +133,10 @@ function _historyFileKind(path, content) {
   const text = String(content || '').slice(0, 4000).toLowerCase();
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
-  if (name.endsWith('.mel-sheet') || name.endsWith('.smart.json')) return 'smartsheet';
-  if (name.endsWith('.dashboard.json')) return 'dashboard';
+  if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
     if (text.includes('type: calendar-event')) return 'calendar-event';
-    if (text.includes('type: smart-db')) return 'smartsheet';
     if (text.includes('type: board')) return 'board';
     return 'note';
   }
@@ -288,9 +331,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
       if (transition) await _saveFolderVersion(provider, snapshotPath, {
         auto: true, label: '編集者交代前', metadata,
       });
-    } else if (exists) {
+    } else if (exists && transition) {
       await _saveFileVersion(provider, snapshotPath, {
-        auto: true, label: transition ? '編集者交代前' : 'file write before', max_auto: 30,
+        auto: true, label: '編集者交代前', max_auto: 30,
         expectedRevision: sourceRevision, metadata,
       });
     }
@@ -391,11 +434,11 @@ function _folderVersionDir(path) {
 
 async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
-  const metaToken = meta.rev || meta.content_hash || meta.etag || '';
+  const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
-  const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
+  const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
   if (statToken) return String(statToken);
   const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
   const stats = handle ? await _fileStats(handle).catch(() => null) : null;
@@ -490,12 +533,15 @@ async function _listEntriesSafe(provider, dir) {
 
 async function _saveFileVersion(provider, path, options) {
   const normalized = _normalizeFolderPath(path);
+  const pointMetadata = _restorePointMetadata(options?.label || '', !!options?.auto, options?.metadata);
+  if (!_shouldCreateRestorePoint(options?.label || '', !!options?.auto, options?.metadata)) {
+    return { ok: true, skipped: true, reason: 'ordinary_write' };
+  }
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
   const versionName = _fileVersionName(normalized, options || {});
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
   const expectedRevision = String(options?.expectedRevision || '');
   const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
   const before = expectedRevision ? await provider.getMetadata(normalized) : null;
@@ -504,7 +550,7 @@ async function _saveFileVersion(provider, path, options) {
   if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
     throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
   }
-  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
+  const payload = {
     object_type: 'text-file',
     original_relative_path: normalized,
     version_name: versionName,
@@ -514,18 +560,33 @@ async function _saveFileVersion(provider, path, options) {
     file_kind: _historyFileKind(normalized, content),
     created_at: _nowIso(),
     deleted_at: '',
-    ...(options?.metadata || {}),
-  }, { expectedRevision: null });
-
-  const maxAuto = Number(options?.max_auto || 0);
-  if (options?.auto && maxAuto > 0) {
+    ...pointMetadata,
+  };
+  let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  if (pointMetadata.restore_point_kind === 'periodic') {
+    payload.content_hash = payload.content_hash || _contentHistoryHash(content);
     const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-    const autoFiles = rows.filter(row => row.payload?.original_relative_path === normalized && row.payload?.auto)
-      .sort((a, b) => String(a.payload?.created_at || '').localeCompare(String(b.payload?.created_at || '')));
-    while (autoFiles.length > maxAuto) {
-      const old = autoFiles.shift();
-      await adapter.delete(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, old.documentId).catch(() => {});
+    const existing = rows.find(row => {
+      const value = row.payload || {};
+      if (value.object_type !== 'text-file' || value.original_relative_path !== normalized || value.deleted_at) return false;
+      const sameBucket = value.schedule_id === payload.schedule_id
+        && value.schedule_bucket_id === payload.schedule_bucket_id;
+      return sameBucket || value.content_hash === payload.content_hash;
+    });
+    if (existing) {
+      return { ok: true, skipped: true, reason: 'unchanged_or_duplicate', version: existing.payload?.version_name || '' };
     }
+    if (payload.schedule_id && payload.schedule_bucket_id) {
+      documentId = `file-${_fnvFileId(normalized)}-periodic-${_fnvFileId(`${payload.schedule_id}:${payload.schedule_bucket_id}`)}`;
+    }
+  }
+  try {
+    await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, payload, { expectedRevision: null });
+  } catch (error) {
+    if (pointMetadata.restore_point_kind === 'periodic' && (error?.status === 409 || error?.code === 'revision_conflict')) {
+      return { ok: true, skipped: true, reason: 'duplicate_schedule_bucket' };
+    }
+    throw error;
   }
   return { ok: true, version: versionName };
 }
@@ -551,7 +612,10 @@ async function _listFileVersions(provider, path) {
       size: new TextEncoder().encode(payload.content || '').length,
       _modifiedMs: Date.parse(payload.created_at || '') || 0,
       ...Object.fromEntries(Object.entries(payload).filter(([key]) =>
-        key === 'event_id' || key === 'snapshot_reason' || key.startsWith('content_last_editor_')
+        key === 'event_id' || key === 'snapshot_reason' || key === 'restore_point_kind'
+        || key === 'content_hash' || key === 'stable_document_id' || key === 'schedule_id'
+        || key === 'schedule_bucket_id' || key === 'transaction_id' || key === 'created_by'
+        || key.startsWith('content_last_editor_')
         || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
     });
   }

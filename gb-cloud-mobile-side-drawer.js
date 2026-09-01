@@ -811,6 +811,12 @@
     if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
     const body = document.getElementById(BODY_ID);
     _syncEntityAccessNotice(body, access);
+    if (
+      typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
+      && body.__MeldexAttachmentsRenderedReadOnly !== access.readOnly
+    ) {
+      body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+    }
     const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
     if (grid) {
       if (access.readOnly) {
@@ -927,6 +933,28 @@
         grid.textContent = '列を表示できません';
       }
       body.appendChild(props);
+
+      if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
+        const renderAttachmentsForAccess = (readOnly) => {
+          body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]')?.remove();
+          window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
+            readOnly,
+            surface: 'mobile-drawer',
+            onReload: async () => {
+              await _flushActiveEditor();
+              if (_currentTarget?.kind !== 'entity' || _currentTarget.entityPath !== entityPath || !isOpen()) return;
+              const reloadSeq = ++_renderSeq;
+              await _renderEntity(body, entityPath, name, reloadSeq);
+            },
+          });
+          const attachments = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
+          const page = body.querySelector(':scope > .cloud-mobile-side-drawer-page');
+          if (attachments && page) body.insertBefore(attachments, page);
+          body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
+        };
+        body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
+        renderAttachmentsForAccess(access.readOnly);
+      }
 
       const page = document.createElement('section');
       page.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-page';

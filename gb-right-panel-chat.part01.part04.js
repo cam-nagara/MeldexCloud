@@ -346,7 +346,10 @@ async function chatSend(options = {}) {
       const div = document.createElement('div');
       div.style.cssText = 'padding:8px;background:var(--bg3);border-radius:8px;max-width:95%;';
       div.innerHTML = html;
-      window.MeldexImageLoading?.trackAll?.(div);
+      div.querySelectorAll('img').forEach((img) => {
+        const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'chat-search-image-host' });
+        window.MeldexImageLoading?.track?.(img, { host: imageHost });
+      });
       container.appendChild(div);
       _chatScrollToBottom(container);
     }

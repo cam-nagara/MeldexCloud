@@ -58,6 +58,26 @@
     return foldedPath === foldedRoot || foldedPath.startsWith(foldedRoot + '/');
   }
 
+  async function resolveDefaultRootRelativePath(rawPath, roots) {
+    const relativePath = safeRelative(rawPath);
+    if (!relativePath || typeof global.apiFetch !== 'function') return null;
+    let vault;
+    try {
+      vault = await global.apiFetch('/vault', { silentError: true });
+    } catch (_) {
+      // 既定ソースの補完解決だけを諦め、明示的な登録パスの処理は継続させる。
+      return null;
+    }
+    const vaultPath = normalizePath(vault?.path);
+    if (!vaultPath) return null;
+    const matches = roots.map((root) => ({
+      sourceId: sourceIdOf(root), path: rootLocalPath(root),
+    })).filter((entry) => entry.sourceId && entry.path
+      && entry.path.toLocaleLowerCase() === vaultPath.toLocaleLowerCase());
+    if (matches.length !== 1) return null;
+    return { sourceId: matches[0].sourceId, relativePath, dbPath: rawPath };
+  }
+
   async function resolveRegisteredPath(dbPath, options) {
     const rawPath = normalizePath(dbPath);
     if (!rawPath) return null;
@@ -74,6 +94,9 @@
       const registered = roots.some((root) => sourceIdOf(root) === sourceId);
       const relativePath = safeRelative(parsed.relativePath);
       return registered && relativePath ? { sourceId, relativePath, dbPath: rawPath } : null;
+    }
+    if (!/^[a-z]:\//i.test(rawPath) && !rawPath.startsWith('//') && !rawPath.startsWith('/')) {
+      return resolveDefaultRootRelativePath(rawPath, roots);
     }
     const matches = roots.map((root) => ({ root, sourceId: sourceIdOf(root), path: rootLocalPath(root) }))
       .filter((entry) => entry.sourceId && entry.path && isBelow(rawPath, entry.path))
@@ -114,9 +137,24 @@
     const previewOnly = options?.readOnly === true || options?.previewOnly === true;
     try {
       const response = await requestMigration(target, previewOnly);
-      return { ok: true, mode: previewOnly ? 'preview' : 'commit', response, target };
+      let archive = null;
+      const archiveRelativePath = response?.migration?.archiveRelativePath;
+      if (!previewOnly && archiveRelativePath) {
+        archive = await global.apiPost('/topic-views/migration/open', {
+          sourceId: target.sourceId,
+          relativePath: archiveRelativePath,
+          legacyPath: target.relativePath,
+        }, { silentError: true });
+        if (archive?.documentId && typeof global.apiFetch === 'function') {
+          archive = await global.apiFetch(
+            `/topic-views/${encodeURIComponent(archive.documentId)}/snapshot`,
+            { silentError: true },
+          );
+        }
+      }
+      return { ok: true, mode: previewOnly ? 'preview' : 'commit', response, archive, target };
     } catch (error) {
-      if (!previewOnly && statusOf(error) === 403) {
+      if (!previewOnly && [403, 409].includes(statusOf(error))) {
         try {
           const response = await requestMigration(target, true);
           return { ok: true, mode: 'preview', response, target };
@@ -130,6 +168,11 @@
 
   function recordsFrom(result) {
     const response = result?.response || {};
+    if (Array.isArray(result?.archive?.topics)) {
+      return result.archive.topics.map(item => item?.record && ({
+        ...item.record, topicRef: item.topicRef,
+      })).filter(Boolean);
+    }
     if (Array.isArray(response?.preview?.topicRecords)) return response.preview.topicRecords;
     const states = response?.migration?.topicStates;
     return states && typeof states === 'object'
@@ -138,7 +181,8 @@
   }
 
   function viewDocumentFrom(result) {
-    return result?.response?.preview?.viewDocument || result?.response?.migration?.viewDocument || null;
+    return result?.archive?.viewDocument || result?.response?.preview?.viewDocument
+      || result?.response?.migration?.viewDocument || null;
   }
 
   function publish(result, reason) {
@@ -156,6 +200,8 @@
       reason: reason || 'open',
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
+      checkpoint: result?.archive?.checkpoint || null,
+      archiveRelativePath: result?.response?.migration?.archiveRelativePath || '',
       legacyNodeTopicIds,
     };
     if (typeof global.dispatchEvent === 'function') {

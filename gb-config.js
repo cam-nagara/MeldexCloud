@@ -21,6 +21,10 @@
       feedbackSheetName: 'feedback',
       feedbackFormUrl: '',
     },
+    debuggerReporting: {
+      baseUrl: '',
+      projectSlug: '',
+    },
     updateCheck: {
       url: '',
       pageUrl: '',
@@ -29,6 +33,8 @@
 
   releaseConfig.betaFeedback.googleWebAppUrl = _runtimeString(['betaFeedback', 'googleWebAppUrl'], releaseConfig.betaFeedback.googleWebAppUrl);
   releaseConfig.betaFeedback.feedbackFormUrl = _runtimeString(['betaFeedback', 'feedbackFormUrl'], releaseConfig.betaFeedback.feedbackFormUrl);
+  releaseConfig.debuggerReporting.baseUrl = _runtimeString(['debuggerReporting', 'baseUrl'], releaseConfig.debuggerReporting.baseUrl);
+  releaseConfig.debuggerReporting.projectSlug = _runtimeString(['debuggerReporting', 'projectSlug'], releaseConfig.debuggerReporting.projectSlug);
   releaseConfig.updateCheck.url = _runtimeString(['updateCheck', 'url'], releaseConfig.updateCheck.url);
   releaseConfig.updateCheck.pageUrl = _runtimeString(['updateCheck', 'pageUrl'], releaseConfig.updateCheck.pageUrl);
 
@@ -43,10 +49,9 @@
       'カレンダー',
       'Google/Microsoftカレンダー連携',
       'iPhone向けICS購読',
-      'スマートシート',
       'クラウド版フルチャット',
       '暗号化APIキーCloud保存',
-      '注釈',
+      'アノテート',
       'バージョン管理',
       'フィードバック送信',
       'Dropbox競合検知/解決',
@@ -62,6 +67,7 @@
   window.MeldexReleaseConfig = Object.freeze({
     ...releaseConfig,
     betaFeedback: Object.freeze(releaseConfig.betaFeedback),
+    debuggerReporting: Object.freeze(releaseConfig.debuggerReporting),
     updateCheck: Object.freeze(releaseConfig.updateCheck),
   });
 

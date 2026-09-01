@@ -221,6 +221,200 @@ class DetailComponent extends ToolComponent {
   }
 }
 
+function _railContextSnapshot() {
+  const ctx = window.GBOptionTargetContext?.get?.() || { targets: [], selectionRevision: 0, origin: '' };
+  return {
+    ...ctx,
+    targets: Array.isArray(ctx.targets) ? ctx.targets.map(target => ({ ...target })) : [],
+  };
+}
+
+function _railTargetStyleContext(target) {
+  const kind = String(target?.kind || '').toLowerCase();
+  if (kind === 'database' || kind === 'entity' || kind === 'db') return 'db';
+  if (kind === 'folder') return 'folder';
+  if (kind === 'board') return 'board';
+  if (kind === 'scriptnote' || kind === 'scenario') return 'scriptnote';
+  if (kind === 'calendar') return 'calendar';
+  if (kind === 'page' || kind === 'note') return 'page';
+  const path = String(target?.contextPath || target?.path || '').toLowerCase();
+  if (path.endsWith('.board') || path.endsWith('.board.json')) return 'board';
+  if (path.endsWith('.scenario') || path.endsWith('.scenario.json')) return 'scriptnote';
+  return null;
+}
+
+function _railNormalizeTargetPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').toLocaleLowerCase();
+}
+
+function _railActiveStylePath(ctx) {
+  const appState = typeof state !== 'undefined' ? state : null;
+  if (ctx === 'page') return appState?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
+  if (ctx === 'folder') return typeof _folderPath !== 'undefined' ? _folderPath : '';
+  if (ctx === 'board') return (typeof bd !== 'undefined' && bd?.path) || appState?.currentBoardPath || '';
+  if (ctx === 'scriptnote') return typeof _getScriptNoteEditorForFileStyle === 'function'
+    ? (_getScriptNoteEditorForFileStyle()?._path || '') : '';
+  return '';
+}
+
+function _railStyleIsReadOnly(ctx) {
+  if (ctx === 'board' && typeof bd !== 'undefined') return bd?.readOnly === true;
+  if (ctx === 'scriptnote' && typeof _getScriptNoteEditorForFileStyle === 'function') {
+    return _getScriptNoteEditorForFileStyle()?.readOnly === true;
+  }
+  return false;
+}
+
+function _railTargetHeaderHtml(path, scopeLabel) {
+  const descriptor = window.GBOptionTargetContext?.describe?.(
+    path ? { targets: [{ path }], selectionRevision: 0, origin: 'version-tab' } : { targets: [] },
+    scopeLabel ? { scopeLabel } : undefined,
+  ) || {
+    label: scopeLabel || (String(path || '').replace(/\\/g, '/').split('/').pop() || 'ファイルが選択されていません'),
+    title: scopeLabel || path || 'ファイルが選択されていません',
+    kind: scopeLabel ? 'scope' : (path ? 'file' : 'empty'),
+  };
+  return `<div class="gb-context-target-header" data-context-target-header="1" data-target-kind="${esc(descriptor.kind || 'file')}" title="${esc(descriptor.title || descriptor.label || '')}" aria-label="現在の対象: ${esc(descriptor.label || '')}"><span class="gb-context-target-header__caption">現在の対象</span><span class="gb-context-target-header__name">${esc(descriptor.label || '')}</span></div>`;
+}
+
+class ContextRailComponent extends ToolComponent {
+  create() {
+    this.el = document.createElement('div');
+    this.el.className = `gb-tool-context-rail gb-tool-${this.constructor.toolType || 'context'}`;
+    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
+    this.targetHeaderEl = document.createElement('div');
+    this.targetHeaderEl.className = 'gb-context-target-header';
+    this.targetHeaderEl.dataset.contextTargetHeader = '1';
+    this.bodyEl = document.createElement('div');
+    this.bodyEl.className = 'gb-context-target-body';
+    this.el.append(this.targetHeaderEl, this.bodyEl);
+    this._onTargetChanged = () => this.renderTarget();
+    document.addEventListener('meldex:option-target-changed', this._onTargetChanged);
+    return this.el;
+  }
+
+  _targetHeaderHtml(path, scopeLabel) {
+    return _railTargetHeaderHtml(path, scopeLabel);
+  }
+
+  activate() {
+    super.activate();
+    this.renderTarget();
+  }
+
+  destroy() {
+    document.removeEventListener('meldex:option-target-changed', this._onTargetChanged);
+    this._onTargetChanged = null;
+    super.destroy();
+  }
+
+  _renderTargetHeader(ctx, options) {
+    if (!this.targetHeaderEl) return;
+    if (this.constructor.hideTargetHeader) {
+      this.targetHeaderEl.hidden = true;
+      return;
+    }
+    const descriptor = window.GBOptionTargetContext?.describe?.(ctx, options) || {
+      label: 'ファイルが選択されていません',
+      title: 'ファイルが選択されていません',
+      kind: 'empty',
+      count: 0,
+      path: '',
+    };
+    this.targetHeaderEl.hidden = false;
+    this.targetHeaderEl.dataset.targetKind = descriptor.kind || 'file';
+    this.targetHeaderEl.dataset.targetCount = String(descriptor.count || 0);
+    this.targetHeaderEl.dataset.targetPath = descriptor.path || '';
+    this.targetHeaderEl.title = descriptor.title || descriptor.label || '';
+    this.targetHeaderEl.setAttribute('aria-label', `現在の対象: ${descriptor.label || ''}`);
+    this.targetHeaderEl.innerHTML = `<span class="gb-context-target-header__caption">現在の対象</span><span class="gb-context-target-header__name">${esc(descriptor.label || '')}</span>`;
+  }
+
+  _empty(message) {
+    if (this.bodyEl) this.bodyEl.innerHTML = `<div class="gb-empty-placeholder">${esc(message)}</div>`;
+  }
+}
+
+class InformationComponent extends ContextRailComponent {
+  static toolType = 'information';
+  static hideTargetHeader = true;
+
+  renderTarget() {
+    if (!this.el) return;
+    const ctx = _railContextSnapshot();
+    this._renderTargetHeader(ctx);
+    const target = ctx.targets[0];
+    if (!target) return this._empty('ファイルまたはフォルダを選択してください');
+    const path = target.contextPath || target.path;
+    if (!window.MeldexFileInfoPanel?.renderInto) return this._empty('プロパティパネルを読み込めませんでした');
+    void window.MeldexFileInfoPanel.renderInto(this.bodyEl, path, {
+      kind: target.kind || 'file',
+      type: target.kind || 'file',
+      isCurrent: () => window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) !== false,
+    });
+  }
+}
+
+class BacklinksComponent extends ContextRailComponent {
+  static toolType = 'backlinks';
+
+  renderTarget() {
+    if (!this.el) return;
+    const ctx = _railContextSnapshot();
+    this._renderTargetHeader(ctx);
+    if (ctx.targets[0]?.kind === 'folder') return this._empty('フォルダそのものはバックリンクの対象外です');
+    if (!window.GbBacklinks?.render) return this._empty('バックリンクを読み込めませんでした');
+    void window.GbBacklinks.render(ctx, this.bodyEl);
+  }
+}
+
+class FileThemeComponent extends ContextRailComponent {
+  static toolType = 'file-theme';
+
+  renderTarget() {
+    if (!this.el) return;
+    const snapshot = _railContextSnapshot();
+    this._renderTargetHeader(snapshot);
+    const target = snapshot.targets[0];
+    this.el.dataset.fileThemeState = 'empty';
+    this.el.dataset.fileThemeTargetPath = target?.contextPath || target?.path || '';
+    this.el.dataset.fileThemeTargetKind = target?.kind || '';
+    if (snapshot.targets.length > 1) return this._empty('テーマを編集する対象を1件だけ選択してください');
+    if (!target) return this._empty('テーマを設定するファイルまたはフォルダを選択してください');
+    const ctx = _railTargetStyleContext(target);
+    if (!ctx) return this._empty('この種類はファイル別テーマに対応していません。対応するノート、シート、ボード、シナリオ、カレンダー、フォルダを開いてください');
+    const targetPath = target.path || target.contextPath || '';
+    const activePath = _railActiveStylePath(ctx);
+    if (activePath && targetPath && _railNormalizeTargetPath(activePath) !== _railNormalizeTargetPath(targetPath)) {
+      this.el.dataset.fileThemeState = 'target-mismatch';
+      return this._empty('選択対象が現在の編集画面と一致しません。対象を開いてからテーマを編集してください');
+    }
+    if (typeof window.renderFileStyleTab !== 'function') return this._empty('テーマ設定を読み込めませんでした。画面を再読み込みしてください');
+    try {
+      window.renderFileStyleTab(ctx, this.bodyEl);
+      if (!snapshot.targets.length || window.GBOptionTargetContext?.isCurrentRevision?.(snapshot.selectionRevision) === false) return;
+      const hasThemePanel = !!this.bodyEl.querySelector('[data-file-theme-panel]');
+      const hasStyleFields = !!this.bodyEl.querySelector('.gb-section--detail, [data-fs-theme-select]');
+      if (!hasThemePanel && !hasStyleFields) {
+        this.el.dataset.fileThemeState = 'unavailable';
+        return this._empty('現在の対象のテーマ設定を読み込めませんでした。対象を開き直すか、画面を再読み込みしてください');
+      }
+      if (_railStyleIsReadOnly(ctx)) {
+        const notice = document.createElement('div'); notice.className = 'gb-section-desc';
+        notice.dataset.fileThemeReadOnly = '1'; notice.textContent = '読み取り専用のため、テーマ設定は表示のみです';
+        this.bodyEl.firstElementChild?.prepend?.(notice);
+        this.bodyEl.querySelectorAll('button, input, select, textarea').forEach(control => { control.disabled = true; });
+        this.el.dataset.fileThemeState = 'read-only';
+      } else {
+        this.el.dataset.fileThemeState = 'ready';
+      }
+    } catch (error) {
+      this.el.dataset.fileThemeState = 'error';
+      this._empty(`テーマ設定を表示できませんでした: ${error?.message || '不明なエラー'}`);
+    }
+  }
+}
+
 // === FolderComponent ===
 class FolderComponent extends ToolComponent {
   create() {
@@ -337,14 +531,14 @@ class VersionComponent extends ToolComponent {
     if (!this.el) return;
     if ((this.state.timelineKind || '') === PRODUCTION_DAILY_KIND) {
       this._timelineEntries = [];
-      this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+      this.el.innerHTML = `${_railTargetHeaderHtml('', '制作進行の日次記録')}<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
         ${this._buildTimelineHtml('', 'file', [])}
       </div>`;
       this._bindVersionActions();
       this._mountProductionDailyRecords();
       return;
     }
-    this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+    this.el.innerHTML = `${_railTargetHeaderHtml('')}<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
         ${this._buildKindFilterHtml(this.state.timelineKind || 'named,auto,edit')}
@@ -384,7 +578,22 @@ class VersionComponent extends ToolComponent {
     this.state.versionPath = path;
     this.state.versionType = vType;
     if (!this.el || this._destroyed) return;
-    this.el.innerHTML = '<div class="gb-history-loading" style="padding:16px;color:var(--fg2);">読み込み中...</div>';
+    this.el.innerHTML = `${_railTargetHeaderHtml(path)}<div class="gb-history-loading" style="padding:16px;color:var(--fg2);">読み込み中...</div>`;
+    if (vType === 'annotations') {
+      let versions = [];
+      try {
+        versions = await apiFetch('/annotations/versions?target=' + encodeURIComponent(path));
+      } catch (error) {
+        if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
+        this.el.innerHTML = `${_railTargetHeaderHtml(path)}<div class="gb-section-desc" role="alert" style="padding:16px;">${esc(error?.message || 'アノテートバージョンを読み込めませんでした')}</div>`;
+        return;
+      }
+      if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
+      this._timelineEntries = [];
+      this.el.innerHTML = _railTargetHeaderHtml(path) + this._buildAnnotationVersionsHtml(path, versions);
+      this._bindVersionActions();
+      return;
+    }
     const isFolder = vType === 'folder';
     const isDb = vType === 'db';
     const timelineKind = this.state.timelineKind || 'named,auto,edit';
@@ -413,7 +622,8 @@ class VersionComponent extends ToolComponent {
     }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
-    this.el.innerHTML = this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
+    this.el.innerHTML = _railTargetHeaderHtml(path, timelineKind === PRODUCTION_DAILY_KIND ? '制作進行の日次記録' : '')
+      + this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();
     if (timelineKind === PRODUCTION_DAILY_KIND) this._mountProductionDailyRecords();
   }
@@ -440,6 +650,11 @@ class VersionComponent extends ToolComponent {
       timelineDelete: () => deleteVersion(path, versionName, vType),
       save: () => saveManualVersion(path, vType),
       refresh: () => this._loadVersions(this.state.versionPath || path, this.state.versionType || vType),
+      annotationSave: () => this._saveAnnotationVersion(path),
+      annotationPreview: () => this._showAnnotationVersion(path, versionName, false),
+      annotationCompare: () => this._showAnnotationVersion(path, versionName, true),
+      annotationRestore: () => this._restoreAnnotationVersion(path, versionName),
+      annotationDelete: () => this._deleteAnnotationVersion(path, versionName),
     };
     const fn = calls[action];
     if (!fn) return;
@@ -448,6 +663,7 @@ class VersionComponent extends ToolComponent {
     const reloadActions = new Set([
       'save', 'saveCurrent', 'restore', 'delete', 'saveFolder', 'restoreFolder', 'deleteFolder', 'promoteFolder',
       'timelineRestore', 'timelineDelete', 'timelineRestoreFolder', 'timelineDeleteFolder', 'timelinePromoteFolder',
+      'annotationSave', 'annotationRestore', 'annotationDelete',
     ]);
     if (reloadActions.has(action)) {
       const reloadPath = this.state.versionPath || path;
@@ -456,12 +672,56 @@ class VersionComponent extends ToolComponent {
     }
   }
 
+  async _saveAnnotationVersion(path) {
+    const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+    const label = await cfPrompt('アノテートバージョン名:', defaultLabel);
+    if (label === null || !String(label).trim()) return;
+    await apiPost('/annotations/versions/save', { target: path, label: String(label).trim() });
+    if (typeof showStatus === 'function') showStatus('アノテートバージョンを保存しました');
+  }
+
+  async _readAnnotationVersion(path, versionName) {
+    return apiFetch('/annotations/versions/read?target=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
+  }
+
+  async _showAnnotationVersion(path, versionName, compare) {
+    const data = await this._readAnnotationVersion(path, versionName);
+    const saved = Array.isArray(data?.savedAnnotations) ? data.savedAnnotations : [];
+    const current = Array.isArray(data?.currentAnnotations) ? data.currentAnnotations : [];
+    const savedText = JSON.stringify(saved, null, 2);
+    const label = data?.version?.label || '保存版';
+    if (typeof showDiffModal === 'function') {
+      if (compare) showDiffModal(savedText, JSON.stringify(current, null, 2), label, '現在のアノテート');
+      else showDiffModal('', savedText, '', `${label}（${saved.length}件）`);
+      return;
+    }
+    if (typeof cfAlert === 'function') await cfAlert(`${label}\n\n${savedText}`);
+  }
+
+  async _restoreAnnotationVersion(path, versionName) {
+    const current = await this._readAnnotationVersion(path, versionName);
+    if (!await cfConfirm('このアノテートバージョンに復元しますか？\n（現在のアノテートは自動保存されます）')) return;
+    const result = await apiPost('/annotations/versions/restore', {
+      target: path,
+      version: versionName,
+      expectedRevision: current?.annotationWriteRevision || '',
+    });
+    if (typeof loadAnnotations === 'function') await loadAnnotations();
+    if (typeof showStatus === 'function') showStatus(`${Number(result?.count || 0)}件のアノテートを復元しました`);
+  }
+
+  async _deleteAnnotationVersion(path, versionName) {
+    if (!await cfConfirm('この手動保存バージョンを削除しますか？')) return;
+    await apiDelete('/annotations/versions/' + encodeURIComponent(versionName) + '?target=' + encodeURIComponent(path));
+    if (typeof showStatus === 'function') showStatus('アノテートバージョンを削除しました');
+  }
+
   async _promoteFolderVersion(path, versionName) {
     const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
-    const label = await cfPrompt('スナップショット名:', defaultLabel);
+    const label = await cfPrompt('手動復元ポイント名:', defaultLabel);
     if (label === null) return;
     await apiPost('/version/promote', { path, version: versionName, type: 'folder', label });
-    showStatus('スナップショットにしました');
+    showStatus('手動復元ポイントとして保存しました');
   }
 
   _previewEditEntry(entry) {
@@ -582,7 +842,7 @@ class VersionComponent extends ToolComponent {
   }
 
   _timelineLabel(entry) {
-    if (entry.type === 'named') return entry.label ? `スナップショット「${entry.label}」` : 'スナップショット';
+    if (entry.type === 'named') return entry.label ? `復元ポイント「${entry.label}」` : '復元ポイント';
     if (entry.type === 'auto') return entry.label && entry.label !== '自動復元ポイント' ? `自動復元ポイント: ${entry.label}` : '自動復元ポイント';
     return entry.label || entry.body_diff_summary || entry.action || '変更レコード';
   }
@@ -612,7 +872,7 @@ class VersionComponent extends ToolComponent {
     const type = entry.version_type || entry.snapshot_kind || this.state.versionType || 'file';
     if (type === 'folder') {
       return `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelineShowFolderFiles', path, version, 'folder')} title="一覧">${typeof lucide === 'function' ? lucide('eye', 12) : '一覧'}</button>
-        ${entry.type === 'auto' ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelinePromoteFolder', path, version, 'folder')} title="スナップショットにする">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '保存'}</button>` : ''}
+        ${entry.type === 'auto' ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('timelinePromoteFolder', path, version, 'folder')} title="手動復元ポイントとして保存">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '保存'}</button>` : ''}
         <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('timelineRestoreFolder', path, version, 'folder')} title="復元">${typeof lucide === 'function' ? lucide('rotateCcw', 12) : '復元'}</button>
         ${entry.type === 'named' ? `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('timelineDeleteFolder', path, version, 'folder')} title="削除">${typeof lucide === 'function' ? lucide('trash2', 12) : '削除'}</button>` : ''}`;
     }
@@ -633,7 +893,7 @@ class VersionComponent extends ToolComponent {
         ? `<span class="gb-badge gb-badge-auto">${typeof lucide === 'function' ? lucide('bot', 11) : ''}${esc(entry.actor_model || 'LLM')}</span>`
         : entry.actor_kind ? `<span class="gb-badge gb-badge-manual">${esc(entry.user || entry.actor_kind)}</span>` : '';
       const typeBadge = entry.type === 'named'
-        ? '<span class="gb-badge gb-badge-manual">スナップショット</span>'
+        ? '<span class="gb-badge gb-badge-manual">手動復元ポイント</span>'
         : entry.type === 'auto'
           ? '<span class="gb-badge gb-badge-auto">自動</span>'
           : '<span class="gb-badge gb-badge-manual">変更</span>';
@@ -652,7 +912,7 @@ class VersionComponent extends ToolComponent {
 
     return `<section class="gb-version-timeline" style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
-        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 現バージョンを保存</button>
+        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 復元ポイントを作成</button>
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
         ${this._buildKindFilterHtml(kind)}
         <select data-e2e-id="version-timeline-actor-filter" data-version-filter="actor" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
@@ -669,7 +929,7 @@ class VersionComponent extends ToolComponent {
   _buildKindFilterHtml(kind) {
     return `<select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
       ${this._versionSelectOption('named,auto,edit', '全て', kind)}
-      ${this._versionSelectOption('named', 'スナップショット', kind)}
+      ${this._versionSelectOption('named', '手動復元ポイント', kind)}
       ${this._versionSelectOption('auto', '復元ポイント', kind)}
       ${this._versionSelectOption('edit', '変更ログ', kind)}
       ${this._versionSelectOption(PRODUCTION_DAILY_KIND, '制作進行の日次記録', kind)}
@@ -732,7 +992,7 @@ class VersionComponent extends ToolComponent {
             <span class="gb-history-size">${fileCount}ファイル${totalSize ? ', ' + totalSize : ''}</span>
             <div class="gb-history-actions">
               <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('showFolderFiles', folderPath, v.name, 'folder')} title="一覧">一覧</button>
-              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="スナップショットにする">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
+              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="手動復元ポイントとして保存">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
               <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('restoreFolder', folderPath, v.name, 'folder')} title="復元">復元</button>
               ${v.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('deleteFolder', folderPath, v.name, 'folder')} title="削除">${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
             </div>
@@ -790,6 +1050,38 @@ class VersionComponent extends ToolComponent {
     </div>`;
   }
 
+  _buildAnnotationVersionsHtml(path, versions) {
+    const rows = Array.isArray(versions) && versions.length
+      ? versions.map(version => {
+          const badge = version.auto
+            ? '<span class="gb-badge gb-badge-auto">自動</span>'
+            : '<span class="gb-badge gb-badge-manual">手動</span>';
+          const label = version.label ? ` — ${esc(version.label)}` : '';
+          return `<div class="gb-history-row gb-history-row-compact">
+            ${badge}
+            <span class="gb-history-label">${esc(this._formatVersionDate(version))}${label}</span>
+            <span class="gb-history-size">${Number(version.annotationCount || 0)}件</span>
+            <div class="gb-history-actions">
+              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationPreview', path, version.name, 'annotations')}>表示</button>
+              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationCompare', path, version.name, 'annotations')}>比較</button>
+              <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('annotationRestore', path, version.name, 'annotations')}>復元</button>
+              ${version.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('annotationDelete', path, version.name, 'annotations')}>${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="gb-section-desc" style="padding:8px 0;">アノテートバージョンがありません</div>';
+    return `<div class="gb-version-panel" style="overflow:auto;flex:1;padding:8px;">
+      <div class="gb-version-panel-header" style="display:flex;align-items:center;gap:6px;padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:8px;">
+        ${typeof lucide === 'function' ? lucide('gitBranch', 16) : ''}
+        <span style="font-weight:bold;font-size:13px;">アノテートのバージョン管理</span>
+        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('annotationSave', path, '', 'annotations')}>+ 復元ポイントを作成</button>
+        <button class="gb-btn gb-btn-xs gb-btn-quiet" ${this._versionButtonAttrs('refresh', path, '', 'annotations')} title="更新">${typeof lucide === 'function' ? lucide('refreshCw', 12) : '↻'}</button>
+      </div>
+      <div class="gb-section-desc" style="padding-bottom:8px;">${esc(path)}</div>
+      <div class="gb-history-list">${rows}</div>
+    </div>`;
+  }
+
   getState() {
     return {
       versionPath: this.state.versionPath || '',
@@ -824,9 +1116,12 @@ registerToolComponent('page',       { cls: EditorComponent, icon: 'page', label:
 // CanvasComponent は gb-tool-canvas.js で登録済み (Phase C)。計画書 §8.2 より requiresViewLock=false。
 // CalendarComponent は gb-tool-calendar.js で登録済み (Phase C)。requiresViewLock=true。
 registerToolComponent('chat',       { cls: ChatComponent, icon: 'messagesSquare', label: 'チャット', multi: false });
-registerToolComponent('annotation', { cls: AnnotationComponent, icon: 'stickyNote', label: '注釈', multi: false });
+registerToolComponent('annotation', { cls: AnnotationComponent, icon: 'squarePen', label: 'アノテート', multi: false });
 registerToolComponent('history',    { cls: HistoryComponent, icon: 'history', label: 'ヒストリー', multi: false });
 registerToolComponent('detail',     { cls: DetailComponent, icon: 'slidersHorizontal', label: 'オプション', multi: false });
+registerToolComponent('information',{ cls: InformationComponent, icon: 'info', label: 'プロパティ', multi: false });
+registerToolComponent('backlinks',  { cls: BacklinksComponent, icon: 'fileSymlink', label: 'バックリンク', multi: false });
+registerToolComponent('file-theme', { cls: FileThemeComponent, icon: 'palette', label: 'テーマ', multi: false });
 registerToolComponent('folder',     { cls: FolderComponent, icon: 'folder', label: 'フォルダビュー', multi: true, requiresViewLock: true });
 registerToolComponent('media',      { cls: MediaComponent, icon: 'galleryThumbnails', label: 'メディア', multi: true, requiresViewLock: true });
 registerToolComponent('compare',    { cls: CompareComponent, icon: 'columns', label: '比較', multi: true, requiresViewLock: true });

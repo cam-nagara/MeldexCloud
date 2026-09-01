@@ -63,9 +63,14 @@
   };
 
   CalendarComponent.prototype._toggleEventSelection = function(id) {
+    this._setEventSelectionState(id, !this._eventSelection().has(id));
+  };
+
+  CalendarComponent.prototype._setEventSelectionState = function(id, selected) {
+    if (!id) return;
     const sel = this._eventSelection();
-    if (sel.has(id)) sel.delete(id);
-    else sel.add(id);
+    if (selected) sel.add(id);
+    else sel.delete(id);
     this._lastSelectedEventId = id;
     this._syncEventSelectionDom();
   };
@@ -97,7 +102,10 @@
         check.setAttribute('aria-label', '選択');
         card.insertBefore(check, card.firstChild);
       }
-      check.checked = selectedIds.has(id);
+      const selected = selectedIds.has(id);
+      check.checked = selected;
+      check.setAttribute('aria-checked', selected ? 'true' : 'false');
+      check.classList.toggle('is-selected', selected);
     });
     this._syncAnalogClockSelectionDom?.();
     this._syncEventSelectionBar?.(records);
@@ -419,11 +427,10 @@
       if (event.target.closest?.('[data-cal-event-more]')) return;
       const check = event.target.closest?.('.gb-cal-event-select-check');
       if (check) {
-        const card = check.closest('[data-event-id]');
-        if (!card) return;
-        event.preventDefault();
+        // checkbox自身の既定切替を残し、直後のchangeだけを選択状態の正本にする。
+        // click時にpreventDefaultしてJSでも反転すると、ブラウザが既定処理を巻き戻す際に
+        // checkedだけが元へ戻り、Set・複製カード・bulk barと不整合になる。
         event.stopImmediatePropagation();
-        this._toggleEventSelection(card.dataset.eventId || '');
         return;
       }
       const card = event.target.closest?.('[data-event-id]');
@@ -441,6 +448,14 @@
       } else {
         this._setSelectedEvents([id], id);
       }
+    }, true);
+    this._contentEl.addEventListener('change', (event) => {
+      const check = event.target.closest?.('.gb-cal-event-select-check');
+      if (!check) return;
+      const card = check.closest('[data-event-id]');
+      if (!card) return;
+      event.stopImmediatePropagation();
+      this._setEventSelectionState(card.dataset.eventId || '', !!check.checked);
     }, true);
   };
 
