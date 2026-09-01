@@ -17,13 +17,20 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.355"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.365"
   },
   "desktop": {
-    "currentVersion": "0.7.355",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/Meldex-v0.7.355.zip",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.355",
+    "currentVersion": "0.7.365",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.365/Meldex-v0.7.365.zip",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.365",
     "versions": [
+      {
+        "publishedAt": "2026-09-01",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.365",
+        "assetName": "Meldex-v0.7.365.zip",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.365/Meldex-v0.7.365.zip",
+        "version": "0.7.365"
+      },
       {
         "publishedAt": "2026-08-23",
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.355",
@@ -109,12 +116,12 @@
     "viewer": {
       "cloudUrl": "apps/viewer/",
       "windowsAsset": "MeldexViewer.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexViewer.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.365/MeldexViewer.zip"
     },
     "quick-memo": {
       "cloudUrl": "apps/quick-memo/",
       "windowsAsset": "MeldexQuickMemo.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexQuickMemo.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.365/MeldexQuickMemo.zip"
     }
   },
   "dropbox": {
