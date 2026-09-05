@@ -221,12 +221,16 @@ function renderOutlinerRootsSettings() {
 }
 
 async function _changeHomeFolder() {
-  // フォルダ選択ダイアログ（tkinter失敗時はパス手入力）
+  // ホーム専用のタイトルと現在位置でOSフォルダ選択を開く。ソースフォルダ追加APIを
+  // 流用すると用途名・開始位置・失敗契約が食い違うため、共通pick-folderを直接使う。
   let path = null;
   try {
-    const res = await apiFetch('/add-outliner-root', { method: 'POST' });
-    if (res.ok && res.path) path = res.path;
-    else if (res.needManualInput) path = await _promptFolderPath();
+    const query = new URLSearchParams({
+      title: 'ホームフォルダを選択',
+      initialdir: _homeFolderPath || '',
+    });
+    const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
+    if (res?.path) path = res.path;
   } catch { path = await _promptFolderPath(); }
   if (path) {
     try {

@@ -621,7 +621,7 @@ class CalendarComponent extends ToolComponent {
     // 自動生成イベント（シフト・実績・制作タスク由来）は元データ側が正本のため undo 対象にしない
     // （対象にすると undo がミラーだけを通常イベントとして再作成し、実データと乖離した幽霊行が残る）
     return ev && !ev._recurrence_instance
-      && !['shift', 'shift-break', 'attendance', 'production-task'].includes(String(ev.calendar_source || ''));
+      && !['shift', 'shift-break', 'attendance', 'production-task', 'renderlist'].includes(String(ev.calendar_source || ''));
   }
 
   _snapshotEventsForUndo() {

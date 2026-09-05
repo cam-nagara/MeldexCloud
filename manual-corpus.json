@@ -1,17 +1,17 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.365",
+  "manual_version": "0.7.366",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "82dcb645b0822484e0f85e646013a8fb7f4fc0db45f40579a5364fe3003af9f5",
+  "source_digest": "7393e5e0a8cf0465228e1a4b96843ee5cf3d5ac5a774343d255e972c09db0e11",
   "document_count": 207,
-  "chunk_count": 1916,
+  "chunk_count": 1920,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
       "title": "Meldex マニュアル",
       "category": "基本ガイド",
-      "source_sha256": "d430782fa648c62b8374dc362ff2e2aa9debde564c248eb8e8df824d894a646f",
+      "source_sha256": "1855aa2e9ef38de71b1a9ada3b31be9dc788df9f0a33de4be04261d25392b6e7",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=Meldex%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -242,7 +242,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "2aef63257d1d5c758b083befa38ef7b11d7bd7e29db4f214e5ddfaf077304ae1",
+      "source_sha256": "bcd46a0915e44bffee186d2d06c4bdb6bd89150a289cda245236db6f9c40d44e",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -284,7 +284,7 @@
       "path": "03_設定と連携/LLMプライバシーガイド.md",
       "title": "LLMプライバシーガイド",
       "category": "チャット・AI",
-      "source_sha256": "d6e00e29c2ac65c9215707637fd12345089a5ad7ee0b30fc295093e6fdc25dbf",
+      "source_sha256": "7c4fd519f3c5124923e81b7602219bf0d08c2f6cb734a53db4c2b0f5d17542a5",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%82%AC%E3%82%A4%E3%83%89.md"
     },
     {
@@ -480,7 +480,7 @@
       "path": "04_サポート/コミュニティに参加する.md",
       "title": "不具合・要望を送る",
       "category": "サポート",
-      "source_sha256": "404945fe2a0d13819210fb31a96742791c4c7fdd71c0b67bcb0e4ab718639109",
+      "source_sha256": "92e5d8b90091b084059372880a8352c8b41624a232d28cf5e5c0957aa0a62d0e",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B3%E3%83%9F%E3%83%A5%E3%83%8B%E3%83%86%E3%82%A3%E3%81%AB%E5%8F%82%E5%8A%A0%E3%81%99%E3%82%8B.md"
     },
     {
@@ -1465,7 +1465,7 @@
       "category": "基本ガイド",
       "heading": "Meldex マニュアル",
       "anchor": "meldex",
-      "text": "Meldex（メルデックス）全体の使い方をまとめた総合マニュアルです。\n「どこに何があるか」「何をすると何が起きるか」を、画面全体から各エディタと機能まで順に説明します。\nこのマニュアル群は、2026年8月29日時点の開発版（v0.7.365）を基準にしています。\n注意: このマニュアル群は、AIを利用して作成・更新しています。開発者がすべてのページと記述を個別に確認できていない場合があります。そのため、記載内容が実際のMeldexの画面や動作と異なる場合があります。あらかじめご了承ください。重要な操作や費用・外部サービス設定を行う際は、実際の画面に表示される内容を確認してください。",
+      "text": "Meldex（メルデックス）全体の使い方をまとめた総合マニュアルです。\n「どこに何があるか」「何をすると何が起きるか」を、画面全体から各エディタと機能まで順に説明します。\nこのマニュアル群は、2026年9月4日時点の開発版（v0.7.366）を基準にしています。\n注意: このマニュアル群は、AIを利用して作成・更新しています。開発者がすべてのページと記述を個別に確認できていない場合があります。そのため、記載内容が実際のMeldexの画面や動作と異なる場合があります。あらかじめご了承ください。重要な操作や費用・外部サービス設定を行う際は、実際の画面に表示される内容を確認してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=Meldex%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=meldex"
     },
     {
@@ -9489,7 +9489,47 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_2"
     },
     {
-      "id": "manual-chunk-f7a5fe653e80551b",
+      "id": "manual-chunk-07768e9f8f2a4462",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "ワークスペースのユーザーへ管理者PCのCLI返答を許可する",
+      "anchor": "pccli",
+      "text": "ワークスペースのチャットでは、管理者PCで待機している Codex CLI / Claude Code に質問を渡し、その返答を同じルームで受け取れる場合があります。これは、各ユーザーのPCでCLIを起動する通常のCLIチャットとは別の 返答用AI 機能です。\n注意：管理者PCのCLI返答は、信頼できるユーザーだけに許可してください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=pccli"
+    },
+    {
+      "id": "manual-chunk-464ac94240f81953",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "なぜ相手を限定する必要があるか",
+      "anchor": "_3",
+      "text": "チャット本文は外部から届く入力です。悪意のある依頼や、正規の質問に見せかけた指示によって、CLI、CLIが利用するモデル、OS、依存ライブラリの未知の不具合を突かれる可能性を、原理上完全には排除できません。Meldexは次の対策を重ねていますが、管理者PCへの影響が100%起きないことを保証するものではありません。\n返答用AIでは、管理者本人の依頼を含めて回答専用の安全設定を使う\nshell、Meldex MCP、任意コマンド、任意スクリプト、ユーザー設定の危険な引き継ぎを外部依頼から使わせない\n管理者PCの通常フォルダではなく、依頼専用の隔離一時フォルダでCLIを起動する\n依頼端末、管理者PC、ワークスペース、ユーザー、期限を署名で結び付け、改ざん・再送・失効済み端末を拒否する\nユーザー別の許可を、共有設定と所有者署名済み端末台帳の両方で確認する\n実行時間、同時実行数、出力量を制限し、絶対パスや秘密情報に見える出力を伏せる\nCLI失敗時に、Meldexへ登録した従量課金APIキーへ自動で切り替えない\nこれらは既知の経路を狭める対策です。CLIやOSの将来の脆弱性、モデルの予期しない応答、同期・認証実装の未知の欠陥まで含めた完全な安全を証明するものではありません。管理者PCに保存している情報と、相手を現実に信頼できるかを基準に判断してください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_3"
+    },
+    {
+      "id": "manual-chunk-9b497e1044d2d79d",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "ユーザーごとに許可する",
+      "anchor": "_4",
+      "text": "新しく追加したアカウントユーザーは、既定では管理者PCのCLI返答を利用できません。ワークスペース作成者は作成時に許可されますが、同じ画面で拒否へ変更できます。\n左クロームの 設定 を開く\nユーザー・共同作業 → ワークスペース を開く\n対象ワークスペースの ユーザーとアクセス権限 を表示する\n信頼できるユーザーだけ、管理者PCのCLI返答を許可 をオンにする\n警告を読み、許可する場合だけ確認する\nそのユーザーの端末登録申請が届いたら、管理者が利用者名と端末を確認して承認する\n許可には、ユーザー別のトグルと端末承認の両方が必要です。チャット画面や共有フォルダ内の依頼ファイルを書き換えるだけでは許可されません。旧版から引き継いだユーザーで許可情報が無い場合も、不許可として扱われます。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_4"
+    },
+    {
+      "id": "manual-chunk-4109cb55f9851ab1",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "許可を取り消す",
+      "anchor": "_5",
+      "text": "設定 → ユーザー・共同作業 → ワークスペース を開く\n対象ユーザーの 管理者PCのCLI返答を許可 をオフにする\n取消後は、共有設定と所有者署名済み端末台帳の両方が拒否へ更新されます。新しい依頼と、まだ管理者PCで実行を開始していない待機中の依頼は、受付時または実行直前の確認で拒否されます。すでにCLIが返答を作成中の場合は、ワークスペースチャットの依頼カードから 取り消す も実行してください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_5"
+    },
+    {
+      "id": "manual-chunk-0cc4fdedbaf10b3b",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9499,17 +9539,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=llmcli"
     },
     {
-      "id": "manual-chunk-464ac94240f81953",
+      "id": "manual-chunk-2cba4dc3879d7fca",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "必要なもの",
-      "anchor": "_3",
+      "anchor": "_6",
       "text": "Meldex デスクトップ版\nPowerShell\nNode.js と npm\n使いたいCLI本体\nまず PowerShell を開き、Node.js と npm が入っているか確認します。\nnode --version\nnpm --version\n数字が出れば次へ進めます。\n見つからない場合は、Node.js のLTS版をインストールしてからPowerShellを開き直します。\nNode.js 公式サイト: https://nodejs.org/",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_3"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_6"
     },
     {
-      "id": "manual-chunk-098f95ac5206c667",
+      "id": "manual-chunk-be244cab5ae9aa78",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9519,7 +9559,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli_1"
     },
     {
-      "id": "manual-chunk-d6ce80137d0abe1d",
+      "id": "manual-chunk-1c4b7deaaac523f6",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9529,7 +9569,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=codex-cli"
     },
     {
-      "id": "manual-chunk-f3be9b21bdce7b09",
+      "id": "manual-chunk-76aaf35ea3ddc679",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9539,7 +9579,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=claude-code"
     },
     {
-      "id": "manual-chunk-c033551eabb1c4bf",
+      "id": "manual-chunk-49b78d3e9ff346d2",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9549,7 +9589,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli"
     },
     {
-      "id": "manual-chunk-710ac01be6544867",
+      "id": "manual-chunk-83b26cc5bf31bc90",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9559,7 +9599,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=powershell"
     },
     {
-      "id": "manual-chunk-0bcc9132164bad87",
+      "id": "manual-chunk-ff9e68aa279047a5",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9569,37 +9609,37 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=meldexcli"
     },
     {
-      "id": "manual-chunk-6c2565a7dcf02e76",
+      "id": "manual-chunk-6adbe04b1db8cca1",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "モデルを選ぶ",
-      "anchor": "_4",
+      "anchor": "_7",
       "text": "チャット下部でCodex CLI / Claude Code / Antigravity CLIのいずれかを選ぶと、モデル欄の一覧から候補を選べます。\nプロバイダ\n主な候補\nClaude Code\nCLI既定（推奨）/ Fable 5 / Opus 5 / Opus 4.8 / Sonnet 5 / Haiku 4.5\nCodex CLI\nCLI既定（推奨）/ GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna\nAntigravity CLI\nCLI既定（推奨）/ Gemini 3.6 Flash / Gemini 3.5 Flash / Gemini 3.1 Pro / Claude Sonnet 4.6 / Claude Opus 4.6 / GPT-OSS 120B\n一覧の一番上にある CLI既定（推奨） を選ぶと、Meldexは特定のモデルを指定せず、CLI自身が選ぶ既定モデルで動作します。\n迷ったときや、CLI側が新しいモデルへ切り替わったことをそのまま使いたいときは、CLI既定を選んでおくのがおすすめです。\n設定ダイアログの 設定 → AI → CLI でも、プロバイダごとに使うモデルを選べます。ここで選んだ値は、チャット側のモデル一覧にも反映され、初回はその値が自動的に選ばれた状態になります。「CLI既定（推奨）」のままにすると、CLI側の既定モデルが使われます。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_4"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_7"
     },
     {
-      "id": "manual-chunk-a4bb650ca90115af",
+      "id": "manual-chunk-fa58d3894db80fe4",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "思考の深さ",
-      "anchor": "_5",
+      "anchor": "_8",
       "text": "Claude Code・Codex CLI・Antigravity CLI は、LLM設定ポップアップ（チャット画面の歯車アイコン）の 思考の深さ（オフ〜最大の6段階）に対応しています。深さを上げるほど、応答までの時間は長くなりますが、込み入った調査や複数手順の作業での精度が上がる傾向があります。\nClaude Codeを選んでいる間だけ、最上位の選択肢として Ultracode が追加で表示されます。「最大」よりもさらに時間をかけてでも精度を優先したいときに選んでください。\nAntigravity CLI が受け付けるのは「低・中・高」の3段階です。「最高」「最大」「Ultracode」を選んだ場合は、いちばん深い「高」として実行されます。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_5"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_8"
     },
     {
-      "id": "manual-chunk-508a6e916773feba",
+      "id": "manual-chunk-f2def79cbfacf2d2",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "モデル・思考の深さの制限事項",
-      "anchor": "_6",
+      "anchor": "_9",
       "text": "モデル一覧はこのバージョン時点の代表的な候補です。 各CLIのモデルは今後も世代交代します。一覧に無いモデルを使いたくなった場合は、Meldexの更新をお待ちください。\n指定したモデル名が古くなってCLI側で使えなくなると、送信がエラーになります。その場合はモデルを CLI既定（推奨） に戻してください。\n「速度」を直接指定する設定はありません。 応答の速さは、モデルの選択と 思考の深さ の組み合わせで調整します。利用できるモデルと特性はCLI側の更新やアカウントによって変わるため、迷う場合は CLI既定（推奨） から始めてください。\nUltracode は Claude Code を選択中だけ表示されます。 実際の処理内容、応答時間、利用枠はClaude Code側の仕様と契約に従います。\nCodex CLI で「最大」を選んだ場合は、Codexが対応する最高段階として実行されます（Claude Codeの「最大」と完全に同じ段階ではありません）。\nAntigravity CLI の思考の深さは3段階です。 「最高」以上を選んでも「高」として実行されます。\nモデルと思考の深さは会話の途中でも変更でき、変更後の送信から反映されます。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_6"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_9"
     },
     {
-      "id": "manual-chunk-2450db0780f9838f",
+      "id": "manual-chunk-f5f69a383a880427",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9609,7 +9649,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli_2"
     },
     {
-      "id": "manual-chunk-5052e1a34c1a1bfe",
+      "id": "manual-chunk-8af515c892589e35",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9619,7 +9659,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli_3"
     },
     {
-      "id": "manual-chunk-594e41ed93b79cc7",
+      "id": "manual-chunk-dfb064ea8e791de5",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9629,27 +9669,27 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=api"
     },
     {
-      "id": "manual-chunk-99a04e1fa56aa3db",
+      "id": "manual-chunk-439870061d066652",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "送信される情報",
-      "anchor": "_7",
+      "anchor": "_10",
       "text": "CLIチャットでも、AIが返答するためにチャット本文やMeldex内の情報をCLI側へ渡すことがあります。\nCLI側が外部サービスへ送信する範囲は、選んだCLIとログイン先の規約・設定に従います。\n送られる可能性があるもの:\nチャット入力欄に書いた文章\n直近の会話履歴\n古い会話の要約や抜粋\n現在開いているファイル名や内容\n参照コンテキストとして渡したノート、シート、ナレッジ\nCLIがMeldex MCP/APIで読み取った内容\nCLIは送信のたびにPC上で起動されます。\nCLIの会話を継続 が使えるCLIでは、同じチャット内のCLI会話IDも一緒に使います。\nそれ以外のCLIでも、Meldexは現在の依頼を理解するための直近履歴を一緒に渡します。\n長くなった古い履歴や過去の長い出力は、そのまま丸ごとではなく、要約や抜粋として小さくしてから渡します。\n機密情報を扱う場合は、送信前に内容を確認してください。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_7"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_10"
     },
     {
-      "id": "manual-chunk-adc026fd7ac6d1fc",
+      "id": "manual-chunk-d0a7357f66fce2a5",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "よくあるトラブル",
-      "anchor": "_8",
+      "anchor": "_11",
       "text": "",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_8"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_11"
     },
     {
-      "id": "manual-chunk-5df35956b0d7626d",
+      "id": "manual-chunk-8cf57caaadb6c7a0",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9659,7 +9699,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=oauth-access-token-has-expired"
     },
     {
-      "id": "manual-chunk-41261718e5516007",
+      "id": "manual-chunk-6175dd6752fe1638",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9669,7 +9709,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=codex-claude-agy"
     },
     {
-      "id": "manual-chunk-49088c45d244ff24",
+      "id": "manual-chunk-5d4bb6cd5b34cee4",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9679,7 +9719,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=powershellmeldex"
     },
     {
-      "id": "manual-chunk-8501e0aaac5099fc",
+      "id": "manual-chunk-d2f20e2109bba8f0",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9689,7 +9729,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli_1"
     },
     {
-      "id": "manual-chunk-de1bd2c9e286b75f",
+      "id": "manual-chunk-d978853c4afc2f4f",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9699,27 +9739,27 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli-agy"
     },
     {
-      "id": "manual-chunk-7059e63d15d588e7",
+      "id": "manual-chunk-64a43c184971ae4f",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "長い会話でも送れる？",
-      "anchor": "_9",
+      "anchor": "_12",
       "text": "送れます。Antigravity CLIは依頼文をコマンドの引数として受け取る仕様のため長さの上限がありますが、\n上限を超える場合はMeldexが自動で別の渡し方（一時ファイル経由）に切り替えます。内容は省略されません。\nこの切り替えが起きたときだけ、ファイルを読むための自動承認がCLIへ渡されます。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_9"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_12"
     },
     {
-      "id": "manual-chunk-1cbd2e081b203316",
+      "id": "manual-chunk-be63720c0dc4d353",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "フォルダを信頼するか聞かれる",
-      "anchor": "_10",
+      "anchor": "_13",
       "text": "CLIが、そのフォルダ内の設定を読んでよいか確認しています。\n自分の作業フォルダなら Trust folder を選びます。\n知らないフォルダ、共有元が不明なフォルダでは信頼しないでください。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_10"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_13"
     },
     {
-      "id": "manual-chunk-76a0d4a4219963e4",
+      "id": "manual-chunk-1b2cc34a9dbcb192",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9729,14 +9769,14 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=codex-cli_1"
     },
     {
-      "id": "manual-chunk-6ce6228d0a95df72",
+      "id": "manual-chunk-ff8a3ffe690311da",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
       "heading": "関連ページ",
-      "anchor": "_11",
+      "anchor": "_14",
       "text": "チャットLLM ツールガイド\nCLI MCP連携\nAIキーとLLM設定\nAI使用量と予算管理\nLLMプライバシーガイド",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_11"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_14"
     },
     {
       "id": "manual-chunk-08889844c7617a3c",
@@ -10569,14 +10609,14 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%82%AC%E3%82%A4%E3%83%89.md&section=_2"
     },
     {
-      "id": "manual-chunk-85123217ec093375",
+      "id": "manual-chunk-db21dbddd5606be7",
       "path": "03_設定と連携/LLMプライバシーガイド.md",
       "title": "LLMプライバシーガイド",
       "category": "チャット・AI",
-      "heading": "デフォルト状態の早見表（v0.7.365）",
-      "anchor": "v07365",
+      "heading": "デフォルト状態の早見表（v0.7.366）",
+      "anchor": "v07366",
       "text": "各設定の出荷時の状態です。Web検索を許可 は既定オンなので、外部検索に出したくない内容を扱う前に、チャットの歯車アイコンから開く LLM設定 でオフへ切り替えてください。\n設定項目\n既定\n効果\n切替先\n対象（開いているファイルや選択した項目）\n開いている対象に追従\n対象を解除 すると、対象なしでAIチャットを利用できる\nチャット入力欄上部の 対象\n長い会話を自動要約\nOFF\nOFF では自動要約しない。会話が長いほど送信量は増えやすい\nチャットの LLM設定\nコード実行を許可\nOFF\nOFF ではモデル側のコード実行機能を許可しない\nチャットの LLM設定\nWeb検索を許可\nON\nON では対応モデルがWeb検索を使う場合がある\nチャットの LLM設定\n関連する記憶の活用\n常時ON\n関連する決定・好み・ルールを次の相談や提案に活用する\n設定 → AI → 記憶・指示\nAIで詳しく抽出する\nOFF\nONのときだけ、記憶候補の抽出用にチャット内容を選択したAIへ追加送信する\n設定 → AI → 記憶・指示\n同一プロバイダ内のモデルフォールバック\nON\n選択モデルが利用できない場合に、同じプロバイダ内の安定モデルへ切替\n自動",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%82%AC%E3%82%A4%E3%83%89.md&section=v07365"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%82%AC%E3%82%A4%E3%83%89.md&section=v07366"
     },
     {
       "id": "manual-chunk-ffae516b6948262f",
@@ -16645,7 +16685,7 @@
       "category": "サポート",
       "heading": "分かりやすい報告の書き方",
       "anchor": "_6",
-      "text": "次の情報を短く分けて書くと、原因を特定しやすくなります。\n何をしようとしたか\n実際に何が起きたか\n本来どうなると考えたか\n同じ結果になる手順\nMeldexのバージョン、OS、デスクトップ版／Cloud版\n例:\nボードでトピックをドラッグしても移動しません。\nMeldex: v0.7.365 / Windows 11 / デスクトップ版\n手順: ボードを開く → トピックを選ぶ → トピック本体をドラッグ\n期待: トピックが移動する\n実際: 選択範囲だけが広がる",
+      "text": "次の情報を短く分けて書くと、原因を特定しやすくなります。\n何をしようとしたか\n実際に何が起きたか\n本来どうなると考えたか\n同じ結果になる手順\nMeldexのバージョン、OS、デスクトップ版／Cloud版\n例:\nボードでトピックをドラッグしても移動しません。\nMeldex: v0.7.366 / Windows 11 / デスクトップ版\n手順: ボードを開く → トピックを選ぶ → トピック本体をドラッグ\n期待: トピックが移動する\n実際: 選択範囲だけが広がる",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B3%E3%83%9F%E3%83%A5%E3%83%8B%E3%83%86%E3%82%A3%E3%81%AB%E5%8F%82%E5%8A%A0%E3%81%99%E3%82%8B.md&section=_6"
     },
     {

@@ -3,6 +3,35 @@
 
 [過去の履歴（v0.7.348〜v0.5.58）](CHANGELOG-archive-v0.5.58-v0.7.348.md)
 
+## Unreleased
+
+## v0.7.366 (2026-09-04)
+
+### RenderListを共有フォルダ経由で直接連携できるようにしました
+
+- ownerだけが設定できるRenderList connectorを追加しました。pairing secretはprofile単位のOS資格情報保管へ保存し、平文設定やLAN待受portを作らず、選択したSMB/NAS上のbridgeとAnalytics Libraryだけを使います
+- RenderListのPCを仮想スタッフ、render taskをタスクと固定時間の予定へ冪等投影します。予定の移動はoptimistic revision付きcommandとしてRenderListへ返し、予定時間のresize、source-managed予定の通常編集、Undoによる複製を禁止します
+- Analytics Libraryのhash・size・path・展開量・record identityを検証し、月別分析sheetへ増分投影します。Meldexのメモとタグはworkspace別overlayとしてrevision管理し、RenderListの正本recordを変更しません
+- HMAC署名、message IDとfile名の一致、共通entity revision、receipt、期限、stale lock回収、quarantineを実装しました。署名済みでも意味的に不正なpayloadは投影せず、rejected receiptを返します
+
+検証: RenderList connector／staff／calendar／履歴の対象40件中39件に合格し、現行HEADと矛盾する旧Timer期待1件だけを明示除外しました。版情報2件、Python分割bundleと対象JavaScriptの構文も確認しました。実SMB/NAS複数PC、実Windows資格情報保管、配布版、Cloud公開は実施していません。
+
+### Windowsのフォルダ／ファイル選択を操作中に打ち切らないようにしました
+
+- ホームフォルダの「変更」でWindowsのフォルダ選択を開き、15秒以上かけて移動してから選択すると、成功した選択結果より先に画面側が通信を打ち切り、手入力ダイアログへ移ってしまう問題を修正しました
+- フォルダ選択はサーバー側の120秒待機より長い135秒、ファイル選択は300秒待機より長い315秒まで画面側も待つ共通契約へ揃えました。ホームフォルダ変更はソースフォルダ追加APIを流用せず、現在のホームを初期位置にした専用フォルダ選択APIを使います
+- OSダイアログ自体が規定時間を超えた場合は、キャンセルと誤認せず504のタイムアウトとして扱います。対象の全フォルダ／ファイル選択入口と、ホームフォルダの保存までを回帰テストで固定しました
+
+検証: ネイティブダイアログ契約6件、関連API／画面回帰52件、Chromeでホームフォルダ選択・保存を通すmicro E2E 1件に合格しました。実Windowsダイアログで15秒以上操作する確認はDebuggerの実機テストへ登録します。実運用フォルダ、実Dropbox、Windows配布版は変更していません。
+
+### 管理者PCのCLI返答をユーザー単位で制御できるようにしました
+
+- 共有ワークスペースの各ユーザーに「管理者PCのCLI返答を許可」を追加しました。所有者だけが変更でき、新規メンバーと旧データで値が無い場合は拒否として扱います
+- 許可状態を共有メタデータと所有者署名済み端末台帳の両方で検証し、登録、依頼受付、キュー処理、CLI起動直前の各段階で再確認します。途中で権限を取り消した場合もCLIを起動しません
+- 許可の保存に失敗した場合は有効化せず、拒否時は署名台帳を先に閉じるfail-closedの更新順序にしました。設定画面とマニュアルには、信頼できるユーザーだけを許可する注意を追加しました
+
+検証: 共有ワークスペース、署名済み登録／依頼、relay、使用量集計、設定画面の変更済み5スイート154件に合格しました。実アカウント、実Dropbox共有、管理者PCでの実CLI起動は行っていません。
+
 ## v0.7.365 (2026-08-29)
 
 ### 公開検証を致命的安全ゲートと任意台数分散へ再構成しました

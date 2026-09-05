@@ -18937,10 +18937,11 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '導入・アプリ連携',
-    desc: 'ホーム画面追加、ファイル関連付け',
+    desc: 'ホーム画面追加、ファイル関連付け、RenderList',
     icon: 'download',
     pages: [
       { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'renderlist', label: 'RenderList', panels: ['全般'], view: 'renderlist', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -21554,12 +21555,16 @@ function renderOutlinerRootsSettings() {
 }
 
 async function _changeHomeFolder() {
-  // フォルダ選択ダイアログ（tkinter失敗時はパス手入力）
+  // ホーム専用のタイトルと現在位置でOSフォルダ選択を開く。ソースフォルダ追加APIを
+  // 流用すると用途名・開始位置・失敗契約が食い違うため、共通pick-folderを直接使う。
   let path = null;
   try {
-    const res = await apiFetch('/add-outliner-root', { method: 'POST' });
-    if (res.ok && res.path) path = res.path;
-    else if (res.needManualInput) path = await _promptFolderPath();
+    const query = new URLSearchParams({
+      title: 'ホームフォルダを選択',
+      initialdir: _homeFolderPath || '',
+    });
+    const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
+    if (res?.path) path = res.path;
   } catch { path = await _promptFolderPath(); }
   if (path) {
     try {
@@ -64863,7 +64868,7 @@ function hideBoardNoteTab() {
   CalendarComponent.prototype._saveEventOptions = async function(editId, body) {
     const evRef = (this._events || []).find(x => x.id === editId);
     const source = String(evRef?.calendar_source || '');
-    if (['production-task', 'attendance', 'shift', 'shift-break'].includes(source)) {
+    if (['production-task', 'renderlist', 'attendance', 'shift', 'shift-break'].includes(source)) {
       this._showStatus('自動生成された予定は元データから編集してください', true);
       return;
     }
@@ -182301,6 +182306,21 @@ const _apiFetchInFlightGets = new Map();
 const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
 const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+const GB_APP_API_FETCH_MAX_TIMEOUT_MS = 330000;
+// OSのフォルダ／ファイル選択は利用者の操作を待つため、通常APIの15秒上限を使わない。
+// サーバー側の待機上限（フォルダ120秒、ファイル300秒）より少し長くして、正常な
+// 選択結果をフロント側が先に破棄しない。パスだけを入力する検証POSTも同じendpointを
+// 使うが、長い上限は実際の処理時間を延ばさず、応答が止まった場合だけ作用する。
+const GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
+  ['/pick-folder', 135000],
+  ['/add-outliner-root', 135000],
+  ['/dropbox-link/pick-workspace-folder', 135000],
+  ['/workspaces/pick-folder', 135000],
+  ['/standalone/pick-folder', 135000],
+  ['/save-file-dialog', 315000],
+  ['/open-file-dialog', 315000],
+  ['/settings-transfer/export', 315000],
+]);
 // シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
 // 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
 // だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
@@ -182312,6 +182332,8 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 function _gbAppApiFetchDefaultTimeout(path) {
   const pathname = String(path || '').split('?')[0];
+  const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
+  if (nativeDialogTimeout) return nativeDialogTimeout;
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
     ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
     : GB_APP_API_FETCH_TIMEOUT_MS;
@@ -182473,7 +182495,7 @@ async function apiFetch(path, opts) {
       while (true) {
         const requestedTimeout = Number(requestOpts?.timeoutMs);
         const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-          ? Math.min(requestedTimeout, 300000)
+          ? Math.min(requestedTimeout, GB_APP_API_FETCH_MAX_TIMEOUT_MS)
           : _gbAppApiFetchDefaultTimeout(path);
         const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
         if (perfInfo) {

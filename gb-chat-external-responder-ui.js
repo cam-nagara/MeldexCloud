@@ -87,6 +87,11 @@
   function readinessView(snapshot, error) {
     if (!currentWorkspaceId()) return { state: 'setup_required', label: '対象ワークスペースを選択', action: '選択後に再確認できます' };
     if (error) return { state: 'error', label: '返答用AIでエラー', action: text(error.message || error) };
+    if (snapshot?.request_allowed === false) return {
+      state: 'permission_required',
+      label: '管理者の許可が必要',
+      action: '所有者がユーザー別に許可した場合だけ管理者PCのCLIへ依頼できます',
+    };
     const node = verifiedReadyNode(snapshot);
     if (node) {
       const queue = Math.max(0, Number(node.queue_count || 0));

@@ -1,3 +1,20 @@
+    if (!openOpts.skipNavPush && !navPushedBeforeLoad) {
+      const _navEntry = {type:'board', label, path};
+      navPush(_navEntry);
+    }
+    if (!openOpts.skipRecent) addRecent(label, path, 'board');
+    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
+    return true;
+  } catch (err) {
+    restorePreviousView();
+    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
+    return false;
+  } finally {
+    if (showOpenLoading) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('ボードを読み込み中...');
       }
     }
   }

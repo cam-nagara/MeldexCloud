@@ -273,6 +273,7 @@
     const device = entries.find(item => item?.key_id === request.key_id && item?.kind === 'device' && !item?.revoked_at);
     if (!device || device.user_id !== request.user_id || device.device_id !== request.device_id
       || !await _verifySignedValue(request, device.public_key)) throw new Error('未登録・失効・改ざんされた端末依頼です');
+    if (device.admin_cli_chat_allowed !== true) throw new Error('このユーザーには管理者PCのCLI返答が許可されていません');
     const node = entries.find(item => item?.kind === 'node' && item?.node_id === request.target_node_id && !item?.revoked_at);
     if (!node) throw new Error('未登録または失効済みの管理者PCです');
     const issued = Date.parse(request.issued_at || '');
@@ -361,12 +362,19 @@
     const ledgerPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/key-ledger.json');
     const ownerPin = await _readJsonSafe(provider, pinPath, null);
     const ledger = await _readJsonSafe(provider, ledgerPath, null);
+    const workspaceMeta = await _readJsonSafe(provider, _joinPath(sourceFolder, '_Meldex_workspace.json'), null);
     const storageKey = 'meldex-workspace-cli-owner-pin:' + workspaceId;
     const pinnedOwnerKeyId = String(localStorage.getItem(storageKey) || '');
     if (!pinnedOwnerKeyId) throw new Error('このワークスペースの所有者公開鍵を確認していません');
     await _validateSignedRequestV2(request, ledger, ownerPin, workspaceId, pinnedOwnerKeyId);
     const user = _currentUser(url, {});
     if (user !== request.user_id) throw new Error('ログイン利用者と署名端末の利用者が一致しません');
+    const member = Array.isArray(workspaceMeta?.members)
+      ? workspaceMeta.members.find(item => item && String(item.name || item.user || '').trim() === user)
+      : null;
+    if (workspaceMeta?.id !== workspaceId || member?.adminCliChatAllowed !== true) {
+      throw new Error('このユーザーには管理者PCのCLI返答が許可されていません');
+    }
     const roomPath = await _assertRoomAccess(provider, request.room, user, sourceFolder);
     if (roomPath !== request.room) throw new Error('署名依頼のルームが一致しません');
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(request.id)) throw new Error('署名依頼IDが不正です');

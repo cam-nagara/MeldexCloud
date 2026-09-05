@@ -709,11 +709,12 @@
 
   CalendarComponent.prototype._commitAnalogClockEventChange = function(eventId, patch, label) {
     const before = this._snapshotEventLocal?.(eventId);
+    const sourceEvent = (this._events || []).find(item => item.id === eventId);
     this._pushUndo?.(label);
     this._applyEventLocal?.(eventId, patch);
     this._setSelectedEvents?.([eventId], eventId);
     this._render();
-    apiPut('/cal/events/' + eventId, patch)
+    (typeof _calApplyEventTimePatch === 'function' && sourceEvent ? _calApplyEventTimePatch(this, sourceEvent, patch) : apiPut('/cal/events/' + eventId, patch))
       .then(() => this._loadEvents())
       .then(() => this._render())
       .catch(() => {

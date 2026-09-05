@@ -14,6 +14,23 @@
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+const API_FETCH_MAX_TIMEOUT_MS = 330000;
+// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの15秒で中断すると、
+// 選択済みのパスを受け取れず再入力を要求するため、サーバー待機上限より長く保つ。
+const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
+  ['/pick-folder', 135000],
+  ['/add-outliner-root', 135000],
+  ['/dropbox-link/pick-workspace-folder', 135000],
+  ['/workspaces/pick-folder', 135000],
+  ['/standalone/pick-folder', 135000],
+  ['/save-file-dialog', 315000],
+  ['/open-file-dialog', 315000],
+  ['/settings-transfer/export', 315000],
+]);
+function _apiFetchDefaultTimeout(path) {
+  const pathname = String(path || '').split('?')[0];
+  return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
+}
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
 let _apiFetchBrowseCacheGeneration = 0;
@@ -76,8 +93,8 @@ async function apiFetch(path, opts) {
   const controller = new AbortController();
   const requestedTimeout = Number(opts?.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-    ? Math.min(requestedTimeout, 300000)
-    : API_FETCH_TIMEOUT_MS;
+    ? Math.min(requestedTimeout, API_FETCH_MAX_TIMEOUT_MS)
+    : _apiFetchDefaultTimeout(path);
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     requestPromise = (async () => {

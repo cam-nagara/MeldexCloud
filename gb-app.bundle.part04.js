@@ -1,3 +1,20 @@
+      }
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
+      }
+      resolve(fallbackValue);
+    }, timeout);
+    Promise.resolve(promise).then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
+      resolve(value);
+    }).catch((error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       if (typeof _logPerfEvent === 'function') {
         _logPerfEvent('startup.error.' + label, startedAt, {
@@ -881,20 +898,3 @@ async function captureScreenshot(mode) {
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
     }
   } catch (e) {
-    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
-  } finally {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
-  }
-}
-
-// モバイル: スワイプでサイドバー開閉
-(function() {
-  let touchStartX = 0, touchStartY = 0;
-  document.addEventListener('touchstart', (e) => {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', (e) => {
-    if (window.innerWidth > 768) return;
-    const dx = e.changedTouches[0].clientX - touchStartX;

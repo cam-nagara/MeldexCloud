@@ -1,3 +1,20 @@
+  tb.appendChild(closeBtn);
+  parentEl.appendChild(tb);
+  return tb;
+}
+
+// === ポップアップ位置制御（共通ヘルパー） ===
+// pywebview/WebView2環境ではwindow.innerWidth/Heightが不正確な場合があるため
+// document.documentElement.clientWidth/Heightを使用する
+function _popupCssRect(rect, z) {
+  if (!rect) return null;
+  const left = Number(rect.left);
+  const right = Number(rect.right);
+  const top = Number(rect.top);
+  const bottom = Number(rect.bottom);
+  if (![left, right, top, bottom].every(Number.isFinite)) return null;
+  return { left: left / z, right: right / z, top: top / z, bottom: bottom / z };
+}
 
 function _popupClampValue(value, min, max) {
   if (max < min) return min;

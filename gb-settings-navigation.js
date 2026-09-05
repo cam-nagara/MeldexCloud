@@ -87,10 +87,11 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '導入・アプリ連携',
-    desc: 'ホーム画面追加、ファイル関連付け',
+    desc: 'ホーム画面追加、ファイル関連付け、RenderList',
     icon: 'download',
     pages: [
       { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'renderlist', label: 'RenderList', panels: ['全般'], view: 'renderlist', commitMode: 'immediate-safe' },
     ],
   },
   {

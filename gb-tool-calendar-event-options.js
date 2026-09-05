@@ -229,7 +229,7 @@
   CalendarComponent.prototype._saveEventOptions = async function(editId, body) {
     const evRef = (this._events || []).find(x => x.id === editId);
     const source = String(evRef?.calendar_source || '');
-    if (['production-task', 'attendance', 'shift', 'shift-break'].includes(source)) {
+    if (['production-task', 'renderlist', 'attendance', 'shift', 'shift-break'].includes(source)) {
       this._showStatus('自動生成された予定は元データから編集してください', true);
       return;
     }

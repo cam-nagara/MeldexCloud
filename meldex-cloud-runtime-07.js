@@ -20796,7 +20796,7 @@ class CalendarComponent extends ToolComponent {
     // 自動生成イベント（シフト・実績・制作タスク由来）は元データ側が正本のため undo 対象にしない
     // （対象にすると undo がミラーだけを通常イベントとして再作成し、実データと乖離した幽霊行が残る）
     return ev && !ev._recurrence_instance
-      && !['shift', 'shift-break', 'attendance', 'production-task'].includes(String(ev.calendar_source || ''));
+      && !['shift', 'shift-break', 'attendance', 'production-task', 'renderlist'].includes(String(ev.calendar_source || ''));
   }
 
   _snapshotEventsForUndo() {
@@ -21602,10 +21602,36 @@ function _calIsProductionTaskEvent(ev) {
   return String(ev?.calendar_source || '') === 'production-task';
 }
 
+function _calIsRenderListEvent(ev) {
+  return String(ev?.calendar_source || '') === 'renderlist';
+}
+
+function _calIsManagedScheduleEvent(ev) {
+  return _calIsProductionTaskEvent(ev) || _calIsRenderListEvent(ev);
+}
+
 async function _calApplyEventTimePatch(component, ev, patch) {
-  if (!_calIsProductionTaskEvent(ev)) return apiPut('/cal/events/' + ev.id, patch);
+  if (!_calIsManagedScheduleEvent(ev)) return apiPut('/cal/events/' + ev.id, patch);
   const start = patch?.start || ev?.start || '';
   const end = patch?.end || ev?.end || '';
+  if (_calIsRenderListEvent(ev)) {
+    let metadata = {};
+    try { metadata = JSON.parse(String(ev?.description || '{}')) || {}; } catch {}
+    const external = String(ev?.external_id || '');
+    const separator = external.indexOf(':');
+    const taskId = separator >= 0 ? external.slice(separator + 1) : '';
+    const parsedStart = new Date(start);
+    if (!taskId || Number.isNaN(parsedStart.getTime())) throw new Error('RenderList予定の識別情報が不正です');
+    const result = await apiPost('/renderlist-connector/schedule', {
+      taskId,
+      operation: 'set_planned_start',
+      expectedScheduleRevision: Number(metadata.scheduleRevision || 0),
+      plannedStartAt: parsedStart.toISOString(),
+    });
+    if (result?.ok === false) throw new Error(result?.message || 'RenderList予定を更新できませんでした');
+    component?._showStatus?.('RenderListへ予定開始の変更を送信しました。予定時間は固定のままです');
+    return result;
+  }
   const result = await apiPost('/production-management/task-schedule/update', {
     event_id: String(ev?.id || ''), start, end,
   });
@@ -21946,7 +21972,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
       if (_calRecurringInteractionBlocked(this, ev)) return;
       const dateStr = cell.dataset.date;
       const dayDelta = _calDateDayDelta(ev.start, dateStr);
-      if (_calIsProductionTaskEvent(ev)) {
+      if (_calIsManagedScheduleEvent(ev)) {
         // タスク予定には終日という概念が無い（作業予定時間は時刻付きの区間で正本管理する）ため、
         // 終日帯へのドロップは全日化せず、月表示ドロップと同じ「時刻を保ったまま日付だけ移動」
         // として扱い、タスクへの書き戻し経路（_calApplyEventTimePatch）を経由する
@@ -24511,11 +24537,12 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
 
   CalendarComponent.prototype._commitAnalogClockEventChange = function(eventId, patch, label) {
     const before = this._snapshotEventLocal?.(eventId);
+    const sourceEvent = (this._events || []).find(item => item.id === eventId);
     this._pushUndo?.(label);
     this._applyEventLocal?.(eventId, patch);
     this._setSelectedEvents?.([eventId], eventId);
     this._render();
-    apiPut('/cal/events/' + eventId, patch)
+    (typeof _calApplyEventTimePatch === 'function' && sourceEvent ? _calApplyEventTimePatch(this, sourceEvent, patch) : apiPut('/cal/events/' + eventId, patch))
       .then(() => this._loadEvents())
       .then(() => this._render())
       .catch(() => {

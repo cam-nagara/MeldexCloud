@@ -1,3 +1,20 @@
+    note.style.background = next;
+    note.style.setProperty('--ann-note-color', next);
+    note.style.setProperty('--ann-note-scroll-thumb', `color-mix(in srgb, ${next} 72%, var(--bg) 28%)`);
+    note.style.setProperty('--ann-note-scroll-track', `color-mix(in srgb, ${next} 22%, transparent)`);
+  }
+
+  function _userIconHtml(username) {
+    if (typeof getUserAvatarHtml === 'function') return getUserAvatarHtml(username || 'anonymous', 16);
+    return typeof lucide === 'function' ? lucide('userRound', 12) : esc((username || '?').charAt(0).toUpperCase());
+  }
+
+  function _syncNoteInteractivity() {
+    notesLayer.style.pointerEvents = 'none';
+    notesLayer.querySelectorAll('.ann-note').forEach(note => {
+      note.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    });
+  }
 
   function _confirmEmbeddedNoteDelete(onOk) {
     const message = 'この付箋を削除しますか？';
@@ -881,20 +898,3 @@
     if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
     const finish = () => { entry.detaching = false; };
     if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
-    finish();
-  }
-
-  function _refreshAnchoredAnnotations() {
-    _anchoredRefreshHandle = 0;
-    _anchoredAnnotationEntries.forEach(entry => {
-      if (!entry.el?.isConnected) {
-        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
-        _anchoredAnnotationEntries.delete(entry);
-        return;
-      }
-      const anchor = entry.data?.anchor;
-      if (!anchor) {
-        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
-        _anchoredAnnotationEntries.delete(entry);
-        return;
-      }

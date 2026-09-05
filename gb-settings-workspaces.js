@@ -62,6 +62,10 @@
         ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'ユーザー',viewer:'閲覧のみ'}[role]}</option>`).join('')}
       </select>
       <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="アクセスユーザーから削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
+      <label class="gb-check" style="grid-column:1 / 3;min-width:0;" title="完全な安全は保証できません。信頼できるユーザーだけ許可してください。">
+        <input type="checkbox" data-workspace-member-cli-chat="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-cli-chat-${_escape(member.name || '')}" ${member.adminCliChatAllowed === true ? 'checked' : ''}>
+        <span>管理者PCのCLI返答を許可</span>
+      </label>
     </div>`).join('');
     const virtualHtml = virtualUsers.map(user => `<div class="settings-workspace-member" data-workspace-virtual-user style="display:grid;grid-template-columns:minmax(0,1fr) 140px 44px;gap:6px;align-items:center;margin:4px 0;">
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(user.display || user.user || '')} <small style="color:var(--fg2);">仮ユーザー</small></span>
@@ -95,6 +99,7 @@
       </div>
       <div class="gb-section-title" style="margin-top:12px;">${_icon('usersRound', 14)} ユーザーとアクセス権限</div>
       <div class="gb-section-desc">アカウントユーザーには共有アクセス権限を、仮ユーザーには制作管理上の所属だけを設定します。</div>
+      <div class="gb-section-desc" style="color:var(--red, #e53935);">注意：信頼できるユーザーだけに管理者PCのCLI返答を許可してください。 ${fieldHelp('完全な安全は保証できません。信頼できるユーザーだけ許可してください。', { e2eId: `workspace-cli-user-permission-help-${String(workspace.id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}` })}</div>
       <div class="settings-workspace-members">${_memberListHtml(workspace, users)}</div>
       <div class="gb-field-row" style="justify-content:flex-start;">
         <label class="gb-field" style="margin:0;max-width:240px;"><span class="gb-label">追加するユーザー</span><input class="gb-input" data-workspace-new-user data-workspace-new-member data-e2e-id="settings-workspace-new-user-${_escape(workspace.id)}" list="${_escape(listId)}" autocomplete="off"></label>
@@ -255,6 +260,34 @@
           await apiFetch('/workspaces/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(memberName), { method: 'DELETE' });
           await window.MeldexWorkspaces.load({ force: true });
           await settingsInitWorkspaces(document);
+        });
+      });
+      card.querySelectorAll('[data-workspace-member-cli-chat]').forEach(checkbox => {
+        checkbox.addEventListener('change', async () => {
+          const memberName = checkbox.dataset.workspaceMemberCliChat || '';
+          const allowed = checkbox.checked;
+          if (allowed) {
+            const warning = 'このユーザーを信頼し、管理者PCのCLI返答を許可しますか？\n安全対策を講じても、管理者PCへの影響を完全には排除できません。';
+            const confirmed = typeof cfConfirm === 'function'
+              ? await cfConfirm(warning)
+              : window.confirm(warning);
+            if (!confirmed) { checkbox.checked = false; return; }
+          }
+          checkbox.disabled = true;
+          try {
+            await apiFetch('/workspace-cli/phase4a/user-permission', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspace_id: id, user: memberName, allowed }),
+            });
+            await window.MeldexWorkspaces?.load?.({ force: true });
+            await settingsInitWorkspaces(document);
+            _status(allowed ? '管理者PCのCLI返答を許可しました' : '管理者PCのCLI返答を拒否しました');
+          } catch (error) {
+            checkbox.checked = !allowed;
+            checkbox.disabled = false;
+            _status('CLI返答権限を変更できませんでした: ' + (error?.message || error), true);
+          }
         });
       });
       card.querySelectorAll('[data-workspace-virtual-remove]').forEach(button => {

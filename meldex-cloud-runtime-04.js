@@ -19534,6 +19534,7 @@
     const device = entries.find(item => item?.key_id === request.key_id && item?.kind === 'device' && !item?.revoked_at);
     if (!device || device.user_id !== request.user_id || device.device_id !== request.device_id
       || !await _verifySignedValue(request, device.public_key)) throw new Error('未登録・失効・改ざんされた端末依頼です');
+    if (device.admin_cli_chat_allowed !== true) throw new Error('このユーザーには管理者PCのCLI返答が許可されていません');
     const node = entries.find(item => item?.kind === 'node' && item?.node_id === request.target_node_id && !item?.revoked_at);
     if (!node) throw new Error('未登録または失効済みの管理者PCです');
     const issued = Date.parse(request.issued_at || '');
@@ -19622,12 +19623,19 @@
     const ledgerPath = _joinPath(sourceFolder, '_chat/workspace-cli/security/key-ledger.json');
     const ownerPin = await _readJsonSafe(provider, pinPath, null);
     const ledger = await _readJsonSafe(provider, ledgerPath, null);
+    const workspaceMeta = await _readJsonSafe(provider, _joinPath(sourceFolder, '_Meldex_workspace.json'), null);
     const storageKey = 'meldex-workspace-cli-owner-pin:' + workspaceId;
     const pinnedOwnerKeyId = String(localStorage.getItem(storageKey) || '');
     if (!pinnedOwnerKeyId) throw new Error('このワークスペースの所有者公開鍵を確認していません');
     await _validateSignedRequestV2(request, ledger, ownerPin, workspaceId, pinnedOwnerKeyId);
     const user = _currentUser(url, {});
     if (user !== request.user_id) throw new Error('ログイン利用者と署名端末の利用者が一致しません');
+    const member = Array.isArray(workspaceMeta?.members)
+      ? workspaceMeta.members.find(item => item && String(item.name || item.user || '').trim() === user)
+      : null;
+    if (workspaceMeta?.id !== workspaceId || member?.adminCliChatAllowed !== true) {
+      throw new Error('このユーザーには管理者PCのCLI返答が許可されていません');
+    }
     const roomPath = await _assertRoomAccess(provider, request.room, user, sourceFolder);
     if (roomPath !== request.room) throw new Error('署名依頼のルームが一致しません');
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(request.id)) throw new Error('署名依頼IDが不正です');
@@ -20350,6 +20358,11 @@
   function readinessView(snapshot, error) {
     if (!currentWorkspaceId()) return { state: 'setup_required', label: '対象ワークスペースを選択', action: '選択後に再確認できます' };
     if (error) return { state: 'error', label: '返答用AIでエラー', action: text(error.message || error) };
+    if (snapshot?.request_allowed === false) return {
+      state: 'permission_required',
+      label: '管理者の許可が必要',
+      action: '所有者がユーザー別に許可した場合だけ管理者PCのCLIへ依頼できます',
+    };
     const node = verifiedReadyNode(snapshot);
     if (node) {
       const queue = Math.max(0, Number(node.queue_count || 0));
@@ -44799,6 +44812,23 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+const API_FETCH_MAX_TIMEOUT_MS = 330000;
+// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの15秒で中断すると、
+// 選択済みのパスを受け取れず再入力を要求するため、サーバー待機上限より長く保つ。
+const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
+  ['/pick-folder', 135000],
+  ['/add-outliner-root', 135000],
+  ['/dropbox-link/pick-workspace-folder', 135000],
+  ['/workspaces/pick-folder', 135000],
+  ['/standalone/pick-folder', 135000],
+  ['/save-file-dialog', 315000],
+  ['/open-file-dialog', 315000],
+  ['/settings-transfer/export', 315000],
+]);
+function _apiFetchDefaultTimeout(path) {
+  const pathname = String(path || '').split('?')[0];
+  return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
+}
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
 let _apiFetchBrowseCacheGeneration = 0;
@@ -44861,8 +44891,8 @@ async function apiFetch(path, opts) {
   const controller = new AbortController();
   const requestedTimeout = Number(opts?.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-    ? Math.min(requestedTimeout, 300000)
-    : API_FETCH_TIMEOUT_MS;
+    ? Math.min(requestedTimeout, API_FETCH_MAX_TIMEOUT_MS)
+    : _apiFetchDefaultTimeout(path);
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     requestPromise = (async () => {

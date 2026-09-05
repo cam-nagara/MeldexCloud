@@ -1,3 +1,20 @@
+    finish();
+  }
+
+  function _refreshAnchoredAnnotations() {
+    _anchoredRefreshHandle = 0;
+    _anchoredAnnotationEntries.forEach(entry => {
+      if (!entry.el?.isConnected) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const anchor = entry.data?.anchor;
+      if (!anchor) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
       const nodeEl = _boardAnnotationNode(anchor);
       if (!nodeEl) {
         if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
@@ -881,20 +898,3 @@ function createMarkupToolbar(markup, parentEl) {
   closeBtn.className = 'sa-markup-close-btn';
   closeBtn.innerHTML = lucide('x', 14); closeBtn.title = '閉じる'; closeBtn.setAttribute('aria-label', '閉じる');
   closeBtn.onclick = () => { closePalette(); markup.toggle(false); tb.style.display = 'none'; const trigger = document.getElementById('btn-markup'); trigger?.classList.remove('active'); trigger?.setAttribute?.('aria-pressed', 'false'); };
-  tb.appendChild(closeBtn);
-  parentEl.appendChild(tb);
-  return tb;
-}
-
-// === ポップアップ位置制御（共通ヘルパー） ===
-// pywebview/WebView2環境ではwindow.innerWidth/Heightが不正確な場合があるため
-// document.documentElement.clientWidth/Heightを使用する
-function _popupCssRect(rect, z) {
-  if (!rect) return null;
-  const left = Number(rect.left);
-  const right = Number(rect.right);
-  const top = Number(rect.top);
-  const bottom = Number(rect.bottom);
-  if (![left, right, top, bottom].every(Number.isFinite)) return null;
-  return { left: left / z, right: right / z, top: top / z, bottom: bottom / z };
-}

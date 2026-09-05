@@ -1,3 +1,20 @@
+    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
+  }
+}
+
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
     const dy = e.changedTouches[0].clientY - touchStartY;
     if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
     const sidebar = document.getElementById('sidebar');
@@ -881,20 +898,3 @@ async function openBoard(label, path, opts) {
       return false;
     }
     if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
-    if (!openOpts.skipNavPush && !navPushedBeforeLoad) {
-      const _navEntry = {type:'board', label, path};
-      navPush(_navEntry);
-    }
-    if (!openOpts.skipRecent) addRecent(label, path, 'board');
-    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-    return true;
-  } catch (err) {
-    restorePreviousView();
-    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-    return false;
-  } finally {
-    if (showOpenLoading) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ボードを読み込み中...');
