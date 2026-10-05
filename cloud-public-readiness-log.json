@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-10-05T17:02:16.897812+00:00",
+  "generatedAt": "2026-10-05T17:22:03.537173+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
@@ -215,5 +215,16 @@
     "realDropboxDataUsed": false,
     "sourceCommit": "31733ea7efab4efa4c0c89d50eef38933c4ae6ca",
     "isolatedArtifactBrowserPassed": true
+  },
+  "staffDuplicateVerification": {
+    "unitTestsPassed": 27,
+    "automaticRegistrations": 3,
+    "userRecordsPreserved": true,
+    "duplicateWarningPreserved": true,
+    "manualConflict": 409,
+    "permissionDenied": true,
+    "isolatedArtifactBrowserPassed": true,
+    "realDropboxDataUsed": false,
+    "sourceCommit": "14a1707b9146a3750227a5f9cab1e7fdb6212128"
   }
 }

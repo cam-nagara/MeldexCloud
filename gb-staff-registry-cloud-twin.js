@@ -351,6 +351,7 @@
       if (_srtPropValue(parsed.frontmatter, schema.USER_KEY_PROPERTY) === identity) {
         const error = new Error(`ユーザー「${identity}」は「${file.stem}」に設定済みです`);
         error.status = 409;
+        error.code = 'staff_registry_duplicate_user';
         throw error;
       }
     }
@@ -430,7 +431,15 @@
           throw error;
         }
       }
-      await _srtEnsureUniqueUser(provider, root, lookupUser, existingPath);
+      try {
+        await _srtEnsureUniqueUser(provider, root, lookupUser, existingPath);
+      } catch (error) {
+        // 起動時の空欄補完では、重複した既存行から更新対象を選ばない。
+        // 既存データを保全し、重複は一覧の警告と手動編集時の拒否で扱う。
+        if (!fillOnly || !existingPath || error.code !== 'staff_registry_duplicate_user') throw error;
+        const parsed = await _srtReadFrontmatter(provider, existingPath);
+        return { ..._srtRowFromFrontmatter(_basename(existingPath).replace(/\.md$/i, ''), parsed.frontmatter), path: existingPath };
+      }
     }
     if (!existingPath && prospectiveType === 'virtual') {
       existingPath = await _srtFindUnlinkedEntryByDisplay(provider, root, rawDisplay);
