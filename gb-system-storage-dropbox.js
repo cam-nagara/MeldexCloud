@@ -162,10 +162,22 @@
   async function _ensureFolder(dropboxPath, namespaceKind) {
     const normalized = _normalizeDropboxPath(dropboxPath);
     if (!normalized || normalized === '/') return true;
+    // Existing management folders are the normal case. Do not create them on
+    // every save: Dropbox reports an HTTP 409 even though nothing is wrong.
+    try {
+      const meta = await _rpc('files/get_metadata', {
+        path: normalized, include_deleted: false, include_has_explicit_shared_members: false,
+      }, namespaceKind);
+      if (meta?.['.tag'] === 'folder') return true;
+      throw new (_contract().SystemStorageError)(`${normalized} はDropbox上でフォルダではありません`);
+    } catch (err) {
+      if (!_isNotFoundError(err)) throw err;
+    }
     try {
       await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
       return true;
     } catch (err) {
+      if (!_isConflictError(err)) throw err;
       let meta = null;
       try {
         meta = await _rpc('files/get_metadata', {

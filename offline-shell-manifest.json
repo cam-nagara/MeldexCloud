@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-0419886fb1a1f28c7f47",
+  "version": "0.7.368-68fd9e393d280b68e06a",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -1477,7 +1477,7 @@
     },
     {
       "path": "gb-dropbox-auth.js",
-      "sha256": "d05f6168c86945726c043b5fcaddba5d637a6dc5dff45fd2e7497cf6992c4726"
+      "sha256": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760"
     },
     {
       "path": "gb-dropbox-external-tag-catalog.js",
@@ -2237,7 +2237,7 @@
     },
     {
       "path": "gb-portable-knowledge-runtime.js",
-      "sha256": "30ca2a37b32209b156a00867493c3cd1a47362de376a68045eddf5bf8ac69174"
+      "sha256": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90"
     },
     {
       "path": "gb-portable-knowledge-store.js",
@@ -3013,7 +3013,7 @@
     },
     {
       "path": "gb-system-storage-dropbox.js",
-      "sha256": "4ec9b34466eaadef5a334ea91849b060ab4d451b10df4e5c0df9ac9b018b0acc"
+      "sha256": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21"
     },
     {
       "path": "gb-system-storage.js",
@@ -3601,7 +3601,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "4d251b7514f82c14960a4b8909df4262e3eac86733009e4d615ea6fdd3e09785"
+      "sha256": "cc4ecb3ee33c8618bd05b2670499b5eb4ed571aeced864608055a368e93bbdf1"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3621,7 +3621,7 @@
     },
     {
       "path": "meldex-cloud-runtime-09.js",
-      "sha256": "5fb28f1dcb8c3e17d91214bdd4d4276c0fdaaa25537baf6160c8390f33137136"
+      "sha256": "fcf9aa42ba5811ea4dd5d8b3f260a29cdfaed7a22c6c3ded06def6cc476745ad"
     },
     {
       "path": "meldex-core.bundle.js",
@@ -3673,7 +3673,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "a1cc77fe504a9330dfa02cf4fcb83bc16b37e2149b5fa81860146be2f82e195b"
+      "sha256": "6ba5b88fcdcf3b65c6e38ee3dc3939cae1694d5f9fed641d0467da3019a57915"
     },
     {
       "path": "Meldex.ico",

@@ -15223,6 +15223,7 @@
   let initializing = null;
   let activeSync = null;
   let scheduledTimer = 0;
+  let backgroundRetryAt = 0;
   let worker = null;
   let workerSequence = 0;
   const workerRequests = new Map();
@@ -15528,7 +15529,9 @@
       }
       if (artifact && portableEligible) {
         const artifactDocId = _artifactDocId(artifact);
-        manifest.documents[docId] = _recordForArtifact(artifact, artifactDocId);
+        const previousRecord = ownRemote?.documents?.[docId];
+        manifest.documents[docId] = previousRecord && !previousRecord.deleted && previousRecord.revision === artifact.revision
+          ? previousRecord : _recordForArtifact(artifact, artifactDocId);
         if (_runtimeMode() === 'dropbox' && (!ownRemote?.documents?.[docId] || ownRemote.documents[docId].revision !== artifact.revision)) {
           publishArtifacts.push({ artifact, docId: artifactDocId });
         }
@@ -15582,9 +15585,10 @@
     const deviceDocId = _deviceDocId();
     const MAX_ATTEMPTS = 5;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-      const current = await adapter.load(kinds.PORTABLE_KNOWLEDGE_DEVICES, deviceDocId).catch(() => null);
+      const current = await adapter.load(kinds.PORTABLE_KNOWLEDGE_DEVICES, deviceDocId);
       const next = _newManifest(current?.payload);
       Object.assign(next.documents, scanManifest.documents);
+      if (current && JSON.stringify(current.payload.documents || {}) === JSON.stringify(next.documents)) return;
       next.updated_at = _now();
       try {
         await adapter.save(kinds.PORTABLE_KNOWLEDGE_DEVICES, deviceDocId, next, { expectedRevision: current ? current.revision : null });
@@ -15634,11 +15638,13 @@
         readonly: published.readonly,
         warnings: scan?.warnings || [],
       };
+      backgroundRetryAt = scan && !scan.complete ? Date.now() + SYNC_INTERVAL_MS : 0;
       await store().setMeta('last_sync', { at: _now(), mode: _runtimeMode(), ...result });
       await _setJob('completed', { artifacts: { failed: result.warnings.length }, ...result });
       global.dispatchEvent?.(new CustomEvent('meldex:portable-knowledge-updated', { detail: result }));
       return result;
     })().catch(async error => {
+      backgroundRetryAt = Date.now() + SYNC_INTERVAL_MS;
       await _setJob('failed', { error: error?.message || String(error) }).catch(() => {});
       throw error;
     }).finally(() => { activeSync = null; });
@@ -15650,6 +15656,9 @@
     clearTimeout(scheduledTimer);
     scheduledTimer = setTimeout(() => {
       if (document.visibilityState === 'hidden') return schedule('visible-wait', 60 * 1000);
+      // Focus/visibility/chat events must not immediately repeat a failed
+      // background scan. Explicit syncNow/rebuild can still retry at once.
+      if (Date.now() < backgroundRetryAt) return schedule('retry', backgroundRetryAt - Date.now());
       const run = () => syncNow({ reason }).catch(error => console.warn('[MeldexPortableKnowledge]', error));
       if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 5000 });
       else run();

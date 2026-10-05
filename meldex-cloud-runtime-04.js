@@ -809,14 +809,19 @@
     if (_normalizeNamespaceKind(namespaceKind) !== 'team_root') return '';
     const rootInfo = account?.root_info || null;
     const rootNamespaceId = rootInfo?.root_namespace_id || '';
-    if (!rootNamespaceId || rootInfo?.['.tag'] !== 'team') return '';
+    // Dropbox also returns tag=user for accounts with distinct root/home
+    // namespaces. An explicit root request must use its namespace ID in both
+    // models, rather than silently falling back to the member home.
+    if (!rootNamespaceId) return '';
     return JSON.stringify({ '.tag': 'root', root: rootNamespaceId });
   }
 
   async function getNamespaceContext(refresh) {
     const account = await getCurrentAccount(!!refresh);
     const rootInfo = account?.root_info || null;
-    const isTeam = rootInfo?.['.tag'] === 'team';
+    const isTeam = rootInfo?.['.tag'] === 'team'
+      || (!!rootInfo?.root_namespace_id && !!rootInfo?.home_namespace_id
+        && rootInfo.root_namespace_id !== rootInfo.home_namespace_id);
     return {
       accountId: String(account?.account_id || ''),
       isTeam,
@@ -10465,10 +10470,22 @@
   async function _ensureFolder(dropboxPath, namespaceKind) {
     const normalized = _normalizeDropboxPath(dropboxPath);
     if (!normalized || normalized === '/') return true;
+    // Existing management folders are the normal case. Do not create them on
+    // every save: Dropbox reports an HTTP 409 even though nothing is wrong.
+    try {
+      const meta = await _rpc('files/get_metadata', {
+        path: normalized, include_deleted: false, include_has_explicit_shared_members: false,
+      }, namespaceKind);
+      if (meta?.['.tag'] === 'folder') return true;
+      throw new (_contract().SystemStorageError)(`${normalized} はDropbox上でフォルダではありません`);
+    } catch (err) {
+      if (!_isNotFoundError(err)) throw err;
+    }
     try {
       await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
       return true;
     } catch (err) {
+      if (!_isConflictError(err)) throw err;
       let meta = null;
       try {
         meta = await _rpc('files/get_metadata', {

@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-10-05T14:09:38.214557+00:00",
+  "generatedAt": "2026-10-05T14:27:27.191361+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
   "sourceSha": "79997f2202801d5b80241d08cba13363a8d79ab9",
@@ -37,22 +37,22 @@
     "manual-corpus.json": "9770658086b62a1f02cfb9b484f3969edcbca1985a83a78dd671477ce094bb29",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "a1cc77fe504a9330dfa02cf4fcb83bc16b37e2149b5fa81860146be2f82e195b",
+    "Meldex.html": "6ba5b88fcdcf3b65c6e38ee3dc3939cae1694d5f9fed641d0467da3019a57915",
     "manifest.json": "90213367b9dcd7801921a770556392e2ecd750da37d77e639d88a10cb0f46c0a",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "180f60b132a6d0e1b562237bb8919963e5105045672ff0039b2987e511aece3f",
+    "offline-shell-manifest.json": "f72d2ee134f57aeb455e2b3ffb117de9128aa2ea2dfa43b63f2b8f3c2df04505",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "ce89d04bd2b3297f3233ae45eaf3476edfa4ebcc9d3fcfcf0ed1f33d90f353de",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",
     "meldex-cloud-runtime-02.js": "aa03cb1e62028fe45e5ea7eb7f549babf44bdec770ddd64c9a9cc4e83b4df583",
     "meldex-cloud-runtime-03.js": "56a731cf417afa15b1db6a2402679b9cb227efaaf901a3e27d766c1d8877efd2",
-    "meldex-cloud-runtime-04.js": "4d251b7514f82c14960a4b8909df4262e3eac86733009e4d615ea6fdd3e09785",
+    "meldex-cloud-runtime-04.js": "cc4ecb3ee33c8618bd05b2670499b5eb4ed571aeced864608055a368e93bbdf1",
     "meldex-cloud-runtime-05.js": "0be7ee1355b445c830a8d7cd7f6041a4864917af07a0e1577b026bb0c2a79bb1",
     "meldex-cloud-runtime-06.js": "c1e14f4542352b8a69417ad5f2f64b236ec88fa8383528ccfa98484c87cc3468",
     "meldex-cloud-runtime-07.js": "c1828cd2a4a1d189ed0cf244dfdf4f9b0380205321d1a0516fcf7dd06c2d98b9",
     "meldex-cloud-runtime-08.js": "0c2edb768a6b72310a83cd336d44129bfd42eec66956099d930727895073fa9c",
-    "meldex-cloud-runtime-09.js": "5fb28f1dcb8c3e17d91214bdd4d4276c0fdaaa25537baf6160c8390f33137136",
+    "meldex-cloud-runtime-09.js": "fcf9aa42ba5811ea4dd5d8b3f260a29cdfaed7a22c6c3ded06def6cc476745ad",
     "apps/viewer/index.html": "02e4e1acc98d351a66c9f64687764808d2b23b19209c2564c3a846fe2daf20e7",
     "apps/quick-memo/index.html": "043c99f7d5723cf036d98137ce12f2d0a76d550a568ceae35a7a6e6042b59c25",
     "offline-bundles/gb-color-palette.js": "7cd0b90bf0acc5237b6ad577d2203fd5c3f781c329f40db7ab658f96981c112f",
@@ -65,7 +65,10 @@
     "gb-source-folder-registry.js": "1885246d5f48a19b2ca8eadf786042934774a16bf50fba8897b3c2bb3b8b4367",
     "gb-storage-adapter.part01.js": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047",
     "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b",
-    "gb-outliner.bundle.part05.js": "a4baebb3e37da28d29fa8098b5c61d5266a7427c05180de917590869c3a3a028"
+    "gb-outliner.bundle.part05.js": "a4baebb3e37da28d29fa8098b5c61d5266a7427c05180de917590869c3a3a028",
+    "gb-dropbox-auth.js": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760",
+    "gb-system-storage-dropbox.js": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21",
+    "gb-portable-knowledge-runtime.js": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90"
   },
   "sourcePatch": {
     "description": "Reload a missing Dropbox source root from the remote registry and invalidate stale location caches",
@@ -81,6 +84,15 @@
       "basePublicRepoCommit": "34d856d381326718463ef8bd9cdc02f75710c08b",
       "files": {
         "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b"
+      }
+    },
+    {
+      "description": "Support distinct root/home namespaces with user tag and prevent redundant folder creation, unchanged manifest saves and immediate background retries",
+      "basePublicRepoCommit": "26578ffc89084fa8b41eb1553f37cee4e702a387",
+      "files": {
+        "gb-dropbox-auth.js": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760",
+        "gb-system-storage-dropbox.js": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21",
+        "gb-portable-knowledge-runtime.js": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90"
       }
     }
   ]

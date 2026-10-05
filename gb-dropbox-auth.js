@@ -588,14 +588,19 @@
     if (_normalizeNamespaceKind(namespaceKind) !== 'team_root') return '';
     const rootInfo = account?.root_info || null;
     const rootNamespaceId = rootInfo?.root_namespace_id || '';
-    if (!rootNamespaceId || rootInfo?.['.tag'] !== 'team') return '';
+    // Dropbox also returns tag=user for accounts with distinct root/home
+    // namespaces. An explicit root request must use its namespace ID in both
+    // models, rather than silently falling back to the member home.
+    if (!rootNamespaceId) return '';
     return JSON.stringify({ '.tag': 'root', root: rootNamespaceId });
   }
 
   async function getNamespaceContext(refresh) {
     const account = await getCurrentAccount(!!refresh);
     const rootInfo = account?.root_info || null;
-    const isTeam = rootInfo?.['.tag'] === 'team';
+    const isTeam = rootInfo?.['.tag'] === 'team'
+      || (!!rootInfo?.root_namespace_id && !!rootInfo?.home_namespace_id
+        && rootInfo.root_namespace_id !== rootInfo.home_namespace_id);
     return {
       accountId: String(account?.account_id || ''),
       isTeam,
