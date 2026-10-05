@@ -1507,6 +1507,15 @@
     }).filter(Boolean);
   }
 
+  async function refreshRegistry() {
+    // Recovery reads must not seed/migrate a missing registry or silently reuse
+    // a stale cache when Dropbox is unavailable.
+    const remote = await _readRemoteRegistry();
+    _lastRegistry = remote;
+    _writeJson(CACHE_KEY, remote);
+    return remote;
+  }
+
   async function loadRegistry(options) {
     try {
       const remote = await _readRemoteRegistry();
@@ -1788,6 +1797,7 @@
     normalizeRegistryPayload,
     ensureRegistryFolders,
     loadRegistry,
+    refreshRegistry,
     writeRegistry,
     ensureDefaultRoots,
     loadOutlinerRoots,
@@ -3778,9 +3788,30 @@
     }
 
     async assertDirectory(relativePath) {
-      const stat = await this.statPath(relativePath);
+      let stat = await this.statPath(relativePath);
+      if (!stat && await this._reloadSourceRootLocation(relativePath)) {
+        stat = await this.statPath(relativePath);
+      }
       if (!stat || stat.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${relativePath}`);
       return stat;
+    }
+
+    async _reloadSourceRootLocation(relativePath) {
+      const registry = _sourceRegistry();
+      const parsed = registry?.parseSourcePath?.(relativePath);
+      if (!parsed || parsed.relativePath || !registry?.refreshRegistry) return false;
+      const before = this._dropboxLocation(relativePath);
+      // Desktop can update the shared registration while this tab still holds
+      // an old namespace/path and a cached not_found. Reload without creating
+      // or rewriting a registration, then retry this source root once.
+      await registry.refreshRegistry();
+      const after = this._dropboxLocation(relativePath);
+      if (before.path !== after.path || before.namespaceKind !== after.namespaceKind) {
+        this._forgetMeta(relativePath);
+      } else {
+        this._forgetMetaSelf(relativePath);
+      }
+      return true;
     }
 
     async assertFile(relativePath) {

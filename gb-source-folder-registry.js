@@ -408,6 +408,15 @@
     }).filter(Boolean);
   }
 
+  async function refreshRegistry() {
+    // Recovery reads must not seed/migrate a missing registry or silently reuse
+    // a stale cache when Dropbox is unavailable.
+    const remote = await _readRemoteRegistry();
+    _lastRegistry = remote;
+    _writeJson(CACHE_KEY, remote);
+    return remote;
+  }
+
   async function loadRegistry(options) {
     try {
       const remote = await _readRemoteRegistry();
@@ -689,6 +698,7 @@
     normalizeRegistryPayload,
     ensureRegistryFolders,
     loadRegistry,
+    refreshRegistry,
     writeRegistry,
     ensureDefaultRoots,
     loadOutlinerRoots,
