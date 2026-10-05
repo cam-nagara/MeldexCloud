@@ -20176,6 +20176,7 @@ async function showSettingsModal(opts) {
         <div class="gb-section-title">設定のバージョン ${fieldHelp('設定を保存する前の状態を自動で残し、変更内容の確認と復元ができます', { e2eId: 'settings-version-history-help' })}</div>
         <div class="gb-field-row">
           <button id="btn-open-settings-versions" class="gb-btn gb-btn-sm" data-action="openUiConfigVersionDialog()">設定の版を表示</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-open-unsaved-changes" data-action="MeldexDraftRecovery.showRecoveryDialog()">未保存の変更を確認</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">

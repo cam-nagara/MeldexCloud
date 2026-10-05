@@ -55348,7 +55348,8 @@ if (typeof window !== 'undefined') {
   // ロックされる前に一度でも保存へ失敗していると、本体保存が必ず弾かれる＝同期済みに
   // ならず、起動のたびに「未保存の編集があります」が出続けていた。
   async function _pruneLockedDrafts(drafts) {
-    const locked = (drafts || []).filter(item => _isPathLocked(item.path));
+    // 起動途中は保存方式が未確定でも、旧マニュアルの保全データを消さない。
+    const locked = (drafts || []).filter(item => _isPathLocked(item.path) && !_isRetiredQuickStartPath(item.path));
     for (const item of locked) await clearDraft(item.path, item.storageKey);
     return (drafts || []).filter(item => !locked.includes(item));
   }
@@ -55384,10 +55385,17 @@ if (typeof window !== 'undefined') {
     }
   }
 
+  function _isRetiredQuickStartPath(value) {
+    const path = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    return path === 'MeldexHome/マニュアル/01_はじめに/クイックスタート.md';
+  }
+
   async function showRecoveryDialog(options = {}) {
     const available = await _pruneLockedDrafts(await listDrafts());
     const drafts = options.startup
-      ? available.filter(item => !sessionDraftKeys.has(item.storageKey))
+      // 旧同梱マニュアルは保存方式の初期化順序に関係なく自動案内から外す。
+      // 本文は保持し、設定から開く明示的な一覧には引き続き含める。
+      ? available.filter(item => !sessionDraftKeys.has(item.storageKey) && !_isRetiredQuickStartPath(item.path))
       : available;
     if (!drafts.length) {
       startupPromptSettled = true;

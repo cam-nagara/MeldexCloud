@@ -3,7 +3,7 @@
   "schema_version": 1,
   "manual_version": "0.7.368",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "b2b0b33e98b5721a5360d86adc3b20d72eeccfae8c6ed438119fe18a7f563da0",
+  "source_digest": "3d6132f15e4e4bfab888529d4f0ab94c4814247353f33385a3db32c74a43b66f",
   "document_count": 207,
   "chunk_count": 1902,
   "documents": [
@@ -32,7 +32,7 @@
       "path": "01_はじめに/クイックスタート.md",
       "title": "Meldex クイックスタート",
       "category": "基本ガイド",
-      "source_sha256": "64c07bcdc24b133a7cab270476fd49c98b742f9a63c4b6b5adc4cf9947f9d9b7",
+      "source_sha256": "2525b4205d9271681bc186d7e2272c2dac31552e4d94561eda70023dea7c8453",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E3%82%AF%E3%82%A4%E3%83%83%E3%82%AF%E3%82%B9%E3%82%BF%E3%83%BC%E3%83%88.md"
     },
     {
@@ -2665,7 +2665,7 @@
       "category": "基本ガイド",
       "heading": "クラウド版の起動時の表示",
       "anchor": "_1",
-      "text": "クラウド版を通常の入口から開くと、ホームフォルダをフォルダパネルで表示します。特定のファイルを指定したリンクから開いた場合は、そのファイルを表示します。\n前回のタブや未保存の編集は保持されます。「未保存の変更」が表示された場合は、内容を残すなら「別名保存」を選んでください。「閉じる」だけでは未保存の変更は削除されないため、次回の起動でも案内が表示されます。",
+      "text": "クラウド版を通常の入口から開くと、ホームフォルダをフォルダパネルで表示します。特定のファイルを指定したリンクから開いた場合は、そのファイルを表示します。\n前回のタブや未保存の編集は保持されます。HTMLマニュアルへの移行前の「クイックスタート.md」に残った未保存の編集は、クラウド版の起動時には自動で案内しません。内容は保全され、設定の「履歴・引き継ぎ」→「履歴・復元」→「未保存の変更を確認」から確認できます。内容を残すなら「別名保存」を選んでください。「閉じる」だけでは未保存の変更は削除されません。その他のノートに未保存の編集がある場合は、引き続き起動時に案内します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E3%82%AF%E3%82%A4%E3%83%83%E3%82%AF%E3%82%B9%E3%82%BF%E3%83%BC%E3%83%88.md&section=_1"
     },
     {

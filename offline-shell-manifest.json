@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-3f3f54b1a96d999ace6a",
+  "version": "0.7.368-e5cfb834f3f3ffd21cca",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -1461,7 +1461,7 @@
     },
     {
       "path": "gb-draft-recovery.js",
-      "sha256": "905010364b262331d27f905f5fa864f73881299c74057738758d7f7f10e41ebf"
+      "sha256": "6592a046488bca28befdd126b496b4f1480a9a014dab9304b9ead74e88400ade"
     },
     {
       "path": "gb-dropbox-asset-identity.js",
@@ -2809,7 +2809,7 @@
     },
     {
       "path": "gb-settings.part01.part01.js",
-      "sha256": "a3bb0b4bd09a374fcb4db8a30a2065e94ea0386c553eeacd2e5fa35defa279c6"
+      "sha256": "9cec259b20b8181fbe6dfe2f31f896d913bcc69fd60be30271b103d0953ad81f"
     },
     {
       "path": "gb-settings.part01.part02.js",
@@ -3573,7 +3573,7 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "d235e04be01b5f4f4212cd52ea302c6b641a0d0fa8ad5d43dead4c8ba318cce6"
+      "sha256": "9770658086b62a1f02cfb9b484f3969edcbca1985a83a78dd671477ce094bb29"
     },
     {
       "path": "manual-versions.json",
@@ -3581,7 +3581,7 @@
     },
     {
       "path": "manual.html",
-      "sha256": "cc89b2d2ed8ba08492827913a43ed833415ec8bf727cddb0b50f8d288489cc15"
+      "sha256": "096f6fb6102e1368e0d19ec491ff9ba9ae40da720c4737ca8f79717d8df09cf5"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3601,7 +3601,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "da727f8244c896f6bbe2308957dd42a0e4a8b42774420e1f53078f12bd023871"
+      "sha256": "1fe7ca16be3aa1cae841fa91b73c993d31aa0de7d1a55719a0d7b8c019f6582b"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3617,7 +3617,7 @@
     },
     {
       "path": "meldex-cloud-runtime-08.js",
-      "sha256": "5c8481dec52dfbe7fe67831bfeb5f291fe4a4ed4db6e493c36bc2f6d12d75712"
+      "sha256": "a013c0d3635501d39710bdc85a9e15d72dc99766026cbd9f9cc174f247f58198"
     },
     {
       "path": "meldex-cloud-runtime-09.js",
@@ -3673,7 +3673,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "cf410d85eb199b84016d39efa6d019a5b021606d988d4ec1c740028594646702"
+      "sha256": "809342d02fc4a608eea1d083604f2980e990af0015760fe19dad059d92be063d"
     },
     {
       "path": "Meldex.ico",
