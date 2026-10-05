@@ -981,6 +981,9 @@
         } else {
           current = _joinPath(current, segment);
         }
+        const meta = await this.refreshMetadata(current);
+        if (meta?.['.tag'] === 'folder') continue;
+        if (meta) throw new Error(`フォルダと同じパスにファイルがあります: ${current}`);
         try {
           const location = this._dropboxLocation(current);
           await this._rpc('files/create_folder_v2', {
@@ -1101,6 +1104,9 @@
         path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
       }, { ...location, freshMissingCheck: true });
       const before = await metadata();
+      if (before?.['.tag'] === 'folder') {
+        throw Object.assign(new Error('Dropboxの対象はフォルダです'), { status: 409, code: 'target_is_directory' });
+      }
       const response = await this._content('files/download', { path: location.path }, undefined, location);
       const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
       const bytes = new Uint8Array(await response.arrayBuffer());

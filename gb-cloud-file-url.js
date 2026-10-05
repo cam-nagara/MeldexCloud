@@ -300,7 +300,11 @@
     const prop = propName || 'src';
     if (!target) return Promise.resolve({ path: '', url: '' });
     const current = displayUrl(pathLike);
-    if (current) _setElementUrlIfChanged(target, prop, current);
+    // A browser has no native /api/file-raw endpoint. Wait for the provider
+    // URL instead of starting a doomed HTTP request before the blob is ready.
+    if (current && (!_runtime()?.isBrowserDataMode?.() || /^(blob:|data:)/i.test(current))) {
+      _setElementUrlIfChanged(target, prop, current);
+    }
     return ensureDisplayUrl(pathLike).then((info) => {
       if (target.isConnected && info?.url) _setElementUrlIfChanged(target, prop, info.url);
       return info;

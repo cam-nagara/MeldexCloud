@@ -3993,6 +3993,9 @@
         } else {
           current = _joinPath(current, segment);
         }
+        const meta = await this.refreshMetadata(current);
+        if (meta?.['.tag'] === 'folder') continue;
+        if (meta) throw new Error(`フォルダと同じパスにファイルがあります: ${current}`);
         try {
           const location = this._dropboxLocation(current);
           await this._rpc('files/create_folder_v2', {
@@ -4113,6 +4116,9 @@
         path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
       }, { ...location, freshMissingCheck: true });
       const before = await metadata();
+      if (before?.['.tag'] === 'folder') {
+        throw Object.assign(new Error('Dropboxの対象はフォルダです'), { status: 409, code: 'target_is_directory' });
+      }
       const response = await this._content('files/download', { path: location.path }, undefined, location);
       const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
       const bytes = new Uint8Array(await response.arrayBuffer());
@@ -42014,7 +42020,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const prop = propName || 'src';
     if (!target) return Promise.resolve({ path: '', url: '' });
     const current = displayUrl(pathLike);
-    if (current) _setElementUrlIfChanged(target, prop, current);
+    // A browser has no native /api/file-raw endpoint. Wait for the provider
+    // URL instead of starting a doomed HTTP request before the blob is ready.
+    if (current && (!_runtime()?.isBrowserDataMode?.() || /^(blob:|data:)/i.test(current))) {
+      _setElementUrlIfChanged(target, prop, current);
+    }
     return ensureDisplayUrl(pathLike).then((info) => {
       if (target.isConnected && info?.url) _setElementUrlIfChanged(target, prop, info.url);
       return info;
@@ -73355,6 +73365,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // Folder/sheet annotations have no file bytes or document header to
+      // migrate. Preserve their legacy reference without probing a download.
+      if (error?.code === 'target_is_directory') return null;
       // A legacy annotation may outlive its file. Keep its record unchanged;
       // missing identity is not a transport outage or permission failure.
       if (error?.status === 404 || /path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) {

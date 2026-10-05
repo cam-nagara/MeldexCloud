@@ -30948,6 +30948,9 @@ async function showMeldexChangelogDialog(returnFocus) {
   let _startupWarningShown = false;
 
   async function _fetchStatus() {
+    // Desktop inheritance is served by Python; Cloud checks its home through
+    // checkCloudHomeFolderSharing instead of these desktop-only endpoints.
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
     try {
       return await apiFetch('/home-folder-sharing/status', { silentError: true });
     } catch (err) {
@@ -30957,6 +30960,7 @@ async function showMeldexChangelogDialog(returnFocus) {
   }
 
   async function _fetchCandidate() {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
     try {
       return await apiFetch('/home-folder-sharing/inherit-candidate', { silentError: true });
     } catch (err) {
@@ -101843,9 +101847,15 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    img.src = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
+    const browserFiles = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      && window.MeldexPwaFileUrl?.applyToElement;
+    if (!browserFiles) img.src = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
     img.alt = v;
     img.onerror = () => {
+      if (browserFiles) {
+        img.replaceWith(document.createTextNode(v));
+        return;
+      }
       if (img.dataset.rawFallback !== '1') {
         img.dataset.rawFallback = '1';
         img.src = rawSrc;
@@ -101858,6 +101868,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       className: 'cell-thumbnail-host' + (thumbSize === 'large' ? ' large' : ''),
     });
     row.appendChild(imageHost || img);
+    if (browserFiles) window.MeldexPwaFileUrl.applyToElement(img, rawSrc);
     window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像セルを読み込んでいます', errorMode: 'silent' });
     return row;
   }

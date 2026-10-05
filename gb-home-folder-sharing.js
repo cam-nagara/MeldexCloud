@@ -24,6 +24,9 @@
   let _startupWarningShown = false;
 
   async function _fetchStatus() {
+    // Desktop inheritance is served by Python; Cloud checks its home through
+    // checkCloudHomeFolderSharing instead of these desktop-only endpoints.
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
     try {
       return await apiFetch('/home-folder-sharing/status', { silentError: true });
     } catch (err) {
@@ -33,6 +36,7 @@
   }
 
   async function _fetchCandidate() {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
     try {
       return await apiFetch('/home-folder-sharing/inherit-candidate', { silentError: true });
     } catch (err) {

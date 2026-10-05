@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-10-05T15:45:17.674038+00:00",
+  "generatedAt": "2026-10-05T16:36:26.462904+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
@@ -190,5 +190,18 @@
     "gb-data-access-dropbox-fileops.part02.js": "04fce53fd47900b6abfda01f67c3bc3017bed669ecdfac361b434889c6ad366d",
     "gb-data-access.part01.js": "2eaa5035db384a0238499cddca6727574778118723ca58088008e368c305e951",
     "gb-cloud-annotation-target-resolver.js": "8166d5a8c6fd1b58fe6049732a6c1cf15d5a427fb71bf0f89b3e897918a98e6f"
+  },
+  "dropboxFileOpenVerification": {
+    "sourceCommit": "f87b866c7d586cf7a269afbc94a91d42af02d1c0",
+    "unitTestsPassed": 108,
+    "isolatedCloudBrowser": {
+      "noteOpen": true,
+      "folderAnnotationListing": true,
+      "legacyRecordPreserved": true,
+      "imageCell": true,
+      "saveReadback": true,
+      "pageErrors": []
+    },
+    "realDropboxDataUsed": false
   }
 }

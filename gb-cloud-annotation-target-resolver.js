@@ -87,6 +87,9 @@
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // Folder/sheet annotations have no file bytes or document header to
+      // migrate. Preserve their legacy reference without probing a download.
+      if (error?.code === 'target_is_directory') return null;
       // A legacy annotation may outlive its file. Keep its record unchanged;
       // missing identity is not a transport outage or permission failure.
       if (error?.status === 404 || /path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) {
