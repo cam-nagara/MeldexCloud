@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-88408eb3393862237e51",
+  "version": "0.7.368-987cffe8da5c1c57bcd2",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -973,7 +973,7 @@
     },
     {
       "path": "gb-data-access-dropbox-fileops.part02.js",
-      "sha256": "d85f26dba05dab1898fea38d0b5514f35be33ea2e90428362a430eab0acf792a"
+      "sha256": "04fce53fd47900b6abfda01f67c3bc3017bed669ecdfac361b434889c6ad366d"
     },
     {
       "path": "gb-data-access-dropbox-folder-links.js",
@@ -1009,7 +1009,7 @@
     },
     {
       "path": "gb-data-access.part01.js",
-      "sha256": "7ba93843c6a40cdc3db6de777701d294367e821e13da453b1bc8b98638c9b3fc"
+      "sha256": "2eaa5035db384a0238499cddca6727574778118723ca58088008e368c305e951"
     },
     {
       "path": "gb-data-access.part02.js",
@@ -3013,7 +3013,7 @@
     },
     {
       "path": "gb-system-storage-dropbox.js",
-      "sha256": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21"
+      "sha256": "828e5f04c481218d3410d825262ab3b15121cda0727e44638e7ba6e2b6b84869"
     },
     {
       "path": "gb-system-storage.js",
@@ -3601,7 +3601,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "3c5c5e6fa888cd00bde148e4f9f54971cfd3cec5061d09bc69f7dd6e528dbda1"
+      "sha256": "08100920cad08ab5645410b953d5fbbb8bf3cc4ae99f151554de7ebd68bf1583"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3673,7 +3673,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "f3761f0eaf1d00843cb3768a422d07517154e6c6165f0867def5b083af972f52"
+      "sha256": "2c5c019ccb8a0e0d2f11000d7588b5873cb57b12af4fa5e89b42fc8abb1a4c9f"
     },
     {
       "path": "Meldex.ico",
@@ -3797,11 +3797,11 @@
     },
     {
       "path": "offline-bundles/gb-data-access-dropbox-fileops.js",
-      "sha256": "850526168f14c0055efcc20281b5702a3e3d4a68d48ea045593bb0047a060e05"
+      "sha256": "dfdb5b75e10dc5a4840acac59929464d99a2b6036937945b076c1750b7dacdd9"
     },
     {
       "path": "offline-bundles/gb-data-access.js",
-      "sha256": "1320fb45ee7b0998c08bbcea764e4c7c69cce29696a4e8265caa24391c97185d"
+      "sha256": "427e7e52921393a11860d3526ebdd2fb2795871ca6f47b6e125d7a049ff0f629"
     },
     {
       "path": "offline-bundles/gb-storage-adapter.js",

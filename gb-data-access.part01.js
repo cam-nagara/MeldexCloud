@@ -897,19 +897,19 @@
   async function _classifyDirectoryType(provider, relativePath) {
     const normalized = _normalizeFolderPath(relativePath);
     const folderName = _basename(normalized);
-    if (folderName) {
+    const entries = await _listDirectoryEntries(provider, normalized);
+    if (folderName && entries.some(entry => entry.handle.kind === 'file' && entry.name === folderName + '.md')) {
       const folderNote = _joinPath(normalized, folderName + '.md');
       const folderType = _extractFrontmatterType(await _readTextSafe(provider, folderNote, ''));
       if (folderType === 'calendar-db') return _phase1SurfaceType('calendar', 'directory');
       if (folderType === 'settings-db') return _phase1SurfaceType('database', 'directory');
     }
-    const entries = await _listDirectoryEntries(provider, normalized);
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (entry.name.startsWith('.') || entry.name.startsWith('_') || entry.name === folderName + '.md') continue;
-      const entryPath = _joinPath(normalized, entry.name);
-      const entryType = _extractFrontmatterType(await _readTextSafe(provider, entryPath, ''));
-      if (entryType === 'settings-entry') return _phase1SurfaceType('database', 'directory');
+    const markdown = entries.filter(entry => entry.handle.kind === 'file' && entry.name.endsWith('.md')
+      && !entry.name.startsWith('.') && !entry.name.startsWith('_') && entry.name !== folderName + '.md');
+    for (let offset = 0; offset < markdown.length; offset += 6) {
+      const types = await Promise.all(markdown.slice(offset, offset + 6).map(async entry =>
+        _extractFrontmatterType(await _readTextSafe(provider, _joinPath(normalized, entry.name), ''))));
+      if (types.includes('settings-entry')) return _phase1SurfaceType('database', 'directory');
     }
     return 'folder';
   }
@@ -979,7 +979,11 @@
       item.name = name;
     }
     if (safeOptions.detail) {
-      const stats = await _fileStats(handle);
+      // Dropbox list_folder already supplied size and timestamps. Do not
+      // download an entire image, spreadsheet or archive just to show them.
+      const stats = typeof provider.statPath === 'function'
+        ? await provider.statPath(relativePath)
+        : await _fileStats(handle);
       item.size = stats.size;
       item.created = stats.created || stats.modified;
       item.modified = stats.modified;

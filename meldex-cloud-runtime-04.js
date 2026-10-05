@@ -8045,19 +8045,19 @@
   async function _classifyDirectoryType(provider, relativePath) {
     const normalized = _normalizeFolderPath(relativePath);
     const folderName = _basename(normalized);
-    if (folderName) {
+    const entries = await _listDirectoryEntries(provider, normalized);
+    if (folderName && entries.some(entry => entry.handle.kind === 'file' && entry.name === folderName + '.md')) {
       const folderNote = _joinPath(normalized, folderName + '.md');
       const folderType = _extractFrontmatterType(await _readTextSafe(provider, folderNote, ''));
       if (folderType === 'calendar-db') return _phase1SurfaceType('calendar', 'directory');
       if (folderType === 'settings-db') return _phase1SurfaceType('database', 'directory');
     }
-    const entries = await _listDirectoryEntries(provider, normalized);
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (entry.name.startsWith('.') || entry.name.startsWith('_') || entry.name === folderName + '.md') continue;
-      const entryPath = _joinPath(normalized, entry.name);
-      const entryType = _extractFrontmatterType(await _readTextSafe(provider, entryPath, ''));
-      if (entryType === 'settings-entry') return _phase1SurfaceType('database', 'directory');
+    const markdown = entries.filter(entry => entry.handle.kind === 'file' && entry.name.endsWith('.md')
+      && !entry.name.startsWith('.') && !entry.name.startsWith('_') && entry.name !== folderName + '.md');
+    for (let offset = 0; offset < markdown.length; offset += 6) {
+      const types = await Promise.all(markdown.slice(offset, offset + 6).map(async entry =>
+        _extractFrontmatterType(await _readTextSafe(provider, _joinPath(normalized, entry.name), ''))));
+      if (types.includes('settings-entry')) return _phase1SurfaceType('database', 'directory');
     }
     return 'folder';
   }
@@ -8127,7 +8127,11 @@
       item.name = name;
     }
     if (safeOptions.detail) {
-      const stats = await _fileStats(handle);
+      // Dropbox list_folder already supplied size and timestamps. Do not
+      // download an entire image, spreadsheet or archive just to show them.
+      const stats = typeof provider.statPath === 'function'
+        ? await provider.statPath(relativePath)
+        : await _fileStats(handle);
       item.size = stats.size;
       item.created = stats.created || stats.modified;
       item.modified = stats.modified;
@@ -10486,12 +10490,22 @@
 
   // --- Dropbox API呼び出し(既存の gb-dropbox-auth.js をそのまま使う) -----------
 
-  async function _rpc(route, body, namespaceKind) {
+  async function _resolveApiLocation(path, namespaceKind) {
+    const auth = window.MeldexDropboxAuth;
+    if (path && typeof auth?.resolveFileLocation === 'function') {
+      await auth.getCurrentAccount(false);
+      return auth.resolveFileLocation(path, _normalizeNamespaceKind(namespaceKind));
+    }
+    return { path, namespaceKind: _normalizeNamespaceKind(namespaceKind) };
+  }
+
+  async function _rpc(route, body, namespaceKind, contextPath) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiRpc !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
-    return auth.apiRpc(route, body, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+    const location = await _resolveApiLocation(body?.path || contextPath, namespaceKind);
+    return auth.apiRpc(route, body?.path ? { ...body, path: location.path } : body, { namespaceKind: location.namespaceKind });
   }
 
   async function _content(route, arg, init, namespaceKind) {
@@ -10499,7 +10513,8 @@
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
-    return auth.apiContent(route, arg, init, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+    const location = await _resolveApiLocation(arg?.path, namespaceKind);
+    return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, { namespaceKind: location.namespaceKind });
   }
 
   // gb-storage-adapter.part01.js / gb-workspace-ledger-io.js と同じ正規表現による分類
@@ -10731,7 +10746,7 @@
       }
       entries.push(...(payload.entries || []));
       while (payload.has_more) {
-        payload = await _rpc('files/list_folder/continue', { cursor: payload.cursor }, this._namespaceKind);
+        payload = await _rpc('files/list_folder/continue', { cursor: payload.cursor }, this._namespaceKind, folderPath);
         entries.push(...(payload.entries || []));
       }
       return entries;
@@ -10767,7 +10782,7 @@
       const limit = Math.max(1, Math.min(200, Number(opts.limit || 50)));
       let payload;
       if (opts.cursor) {
-        payload = await _rpc('files/list_folder/continue', { cursor: String(opts.cursor) }, this._namespaceKind);
+        payload = await _rpc('files/list_folder/continue', { cursor: String(opts.cursor) }, this._namespaceKind, this._folderFor(kind));
       } else {
         payload = await _rpc('files/list_folder', {
           path: this._folderFor(kind), recursive: false, limit,
@@ -33294,12 +33309,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const entries = await _listDirectoryEntries(provider, browsePath);
       const folders = [];
       const files = [];
-      for (const entry of entries) {
-        const itemPath = entry.path || _joinPath(browsePath, entry.name);
-        const item = await _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
-        if (!item) continue;
-        if (_isBrowseContainerItem(item)) folders.push(item);
-        else if (!foldersOnly) files.push(item);
+      // Bound remote reads while avoiding one network round trip per item in
+      // series. Keep input order so sorting and folder/file grouping are stable.
+      for (let offset = 0; offset < entries.length; offset += 6) {
+        const batch = await Promise.all(entries.slice(offset, offset + 6).map(entry => {
+          const itemPath = entry.path || _joinPath(browsePath, entry.name);
+          return _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+        }));
+        for (const item of batch) {
+          if (!item) continue;
+          if (_isBrowseContainerItem(item)) folders.push(item);
+          else if (!foldersOnly) files.push(item);
+        }
       }
       const items = _sortBrowseItems(folders, sort, order).concat(_sortBrowseItems(files, sort, order));
       const existing = new Set(items.map((item) => item.path));

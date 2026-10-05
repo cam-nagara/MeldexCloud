@@ -126,12 +126,22 @@
 
   // --- Dropbox API呼び出し(既存の gb-dropbox-auth.js をそのまま使う) -----------
 
-  async function _rpc(route, body, namespaceKind) {
+  async function _resolveApiLocation(path, namespaceKind) {
+    const auth = window.MeldexDropboxAuth;
+    if (path && typeof auth?.resolveFileLocation === 'function') {
+      await auth.getCurrentAccount(false);
+      return auth.resolveFileLocation(path, _normalizeNamespaceKind(namespaceKind));
+    }
+    return { path, namespaceKind: _normalizeNamespaceKind(namespaceKind) };
+  }
+
+  async function _rpc(route, body, namespaceKind, contextPath) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiRpc !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
-    return auth.apiRpc(route, body, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+    const location = await _resolveApiLocation(body?.path || contextPath, namespaceKind);
+    return auth.apiRpc(route, body?.path ? { ...body, path: location.path } : body, { namespaceKind: location.namespaceKind });
   }
 
   async function _content(route, arg, init, namespaceKind) {
@@ -139,7 +149,8 @@
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
-    return auth.apiContent(route, arg, init, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+    const location = await _resolveApiLocation(arg?.path, namespaceKind);
+    return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, { namespaceKind: location.namespaceKind });
   }
 
   // gb-storage-adapter.part01.js / gb-workspace-ledger-io.js と同じ正規表現による分類
@@ -371,7 +382,7 @@
       }
       entries.push(...(payload.entries || []));
       while (payload.has_more) {
-        payload = await _rpc('files/list_folder/continue', { cursor: payload.cursor }, this._namespaceKind);
+        payload = await _rpc('files/list_folder/continue', { cursor: payload.cursor }, this._namespaceKind, folderPath);
         entries.push(...(payload.entries || []));
       }
       return entries;
@@ -407,7 +418,7 @@
       const limit = Math.max(1, Math.min(200, Number(opts.limit || 50)));
       let payload;
       if (opts.cursor) {
-        payload = await _rpc('files/list_folder/continue', { cursor: String(opts.cursor) }, this._namespaceKind);
+        payload = await _rpc('files/list_folder/continue', { cursor: String(opts.cursor) }, this._namespaceKind, this._folderFor(kind));
       } else {
         payload = await _rpc('files/list_folder', {
           path: this._folderFor(kind), recursive: false, limit,
