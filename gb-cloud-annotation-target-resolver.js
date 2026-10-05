@@ -7,6 +7,8 @@
   const INDEX_SCHEMA = 2;
   const MAX_RETRIES = 5;
   const MAX_ALIASES = 32;
+  const missingLegacyTargets = new WeakMap();
+  const MISSING_TARGET_RECHECK_MS = 30000;
 
   class AnnotationTargetError extends Error {
     constructor(message, status = 409, code = 'annotation_target_conflict') {
@@ -78,13 +80,25 @@
     if (direct) return direct;
     const targetPath = path(record?.target_path);
     if (!targetPath) return null;
+    const missing = missingLegacyTargets.get(provider);
+    if (Number(missing?.get(targetPath) || 0) > Date.now()) return null;
     if (typeof provider?.readBytesFresh !== 'function') {
       throw new AnnotationTargetError('fresh Dropbox bytes契約を利用できません', 503, 'fresh_bytes_unavailable');
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // A legacy annotation may outlive its file. Keep its record unchanged;
+      // missing identity is not a transport outage or permission failure.
+      if (error?.status === 404 || /path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) {
+        const cache = missing || new Map();
+        cache.set(targetPath, Date.now() + MISSING_TARGET_RECHECK_MS);
+        if (cache.size > 256) cache.delete(cache.keys().next().value);
+        missingLegacyTargets.set(provider, cache);
+        return null;
+      }
       throw new AnnotationTargetError(`fresh Dropbox bytesを取得できません: ${error?.message || error}`, 503, 'fresh_bytes_unavailable');
     }
+    missing?.delete(targetPath);
     const bytes = read?.bytes;
     if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) {
       throw new AnnotationTargetError('fresh Dropbox bytesが欠損しています', 503, 'fresh_bytes_unavailable');

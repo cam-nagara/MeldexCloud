@@ -665,6 +665,8 @@
     }
 
     async clearWorkspace() {
+      this._missingVaultMetadata = null;
+      this._vaultMetadataInFlight = null;
       this.rootHandle = null;
       this._metaCache.clear();
       this._fileCache.clear();
@@ -724,16 +726,33 @@
     }
 
     async readVaultMetadata() {
-      const managed = await this._workspaceMetadataRecord('vault-metadata');
-      const meta = managed.record?.payload || await this.readJson('_meldex/vault.json', null);
-      return meta && typeof meta === 'object' ? meta : null;
+      const key = JSON.stringify([this.getVaultPath(), _auth()?.getVaultNamespaceKind?.()]);
+      if (this._missingVaultMetadata?.key === key && this._missingVaultMetadata.until > Date.now()) return null;
+      if (this._vaultMetadataInFlight?.key === key) return this._vaultMetadataInFlight.promise;
+      const pending = { key, promise: null };
+      pending.promise = (async () => {
+        const managed = await this._workspaceMetadataRecord('vault-metadata');
+        let meta = managed.record?.payload;
+        if (!meta && await this.refreshMetadata('_meldex/vault.json')) {
+          meta = JSON.parse(await this.readText('_meldex/vault.json'));
+        }
+        if (!meta) this._missingVaultMetadata = { key, until: Date.now() + 30000 };
+        return meta && typeof meta === 'object' ? meta : null;
+      })();
+      this._vaultMetadataInFlight = pending;
+      try { return await pending.promise; }
+      finally { if (this._vaultMetadataInFlight === pending) this._vaultMetadataInFlight = null; }
     }
 
     async writeVaultMetadata(metadata) {
+      this._missingVaultMetadata = null;
       const managed = await this._workspaceMetadataRecord('vault-metadata');
-      return managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
+      const saved = await managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
         expectedRevision: managed.record?.revision ?? null,
       });
+      this._missingVaultMetadata = null;
+      this._vaultMetadataInFlight = null;
+      return saved;
     }
 
     async assertOwnerWrite(relativePath) {

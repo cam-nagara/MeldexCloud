@@ -3601,6 +3601,8 @@
     }
 
     async clearWorkspace() {
+      this._missingVaultMetadata = null;
+      this._vaultMetadataInFlight = null;
       this.rootHandle = null;
       this._metaCache.clear();
       this._fileCache.clear();
@@ -3660,16 +3662,33 @@
     }
 
     async readVaultMetadata() {
-      const managed = await this._workspaceMetadataRecord('vault-metadata');
-      const meta = managed.record?.payload || await this.readJson('_meldex/vault.json', null);
-      return meta && typeof meta === 'object' ? meta : null;
+      const key = JSON.stringify([this.getVaultPath(), _auth()?.getVaultNamespaceKind?.()]);
+      if (this._missingVaultMetadata?.key === key && this._missingVaultMetadata.until > Date.now()) return null;
+      if (this._vaultMetadataInFlight?.key === key) return this._vaultMetadataInFlight.promise;
+      const pending = { key, promise: null };
+      pending.promise = (async () => {
+        const managed = await this._workspaceMetadataRecord('vault-metadata');
+        let meta = managed.record?.payload;
+        if (!meta && await this.refreshMetadata('_meldex/vault.json')) {
+          meta = JSON.parse(await this.readText('_meldex/vault.json'));
+        }
+        if (!meta) this._missingVaultMetadata = { key, until: Date.now() + 30000 };
+        return meta && typeof meta === 'object' ? meta : null;
+      })();
+      this._vaultMetadataInFlight = pending;
+      try { return await pending.promise; }
+      finally { if (this._vaultMetadataInFlight === pending) this._vaultMetadataInFlight = null; }
     }
 
     async writeVaultMetadata(metadata) {
+      this._missingVaultMetadata = null;
       const managed = await this._workspaceMetadataRecord('vault-metadata');
-      return managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
+      const saved = await managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
         expectedRevision: managed.record?.revision ?? null,
       });
+      this._missingVaultMetadata = null;
+      this._vaultMetadataInFlight = null;
+      return saved;
     }
 
     async assertOwnerWrite(relativePath) {
@@ -73171,6 +73190,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const INDEX_SCHEMA = 2;
   const MAX_RETRIES = 5;
   const MAX_ALIASES = 32;
+  const missingLegacyTargets = new WeakMap();
+  const MISSING_TARGET_RECHECK_MS = 30000;
 
   class AnnotationTargetError extends Error {
     constructor(message, status = 409, code = 'annotation_target_conflict') {
@@ -73242,13 +73263,25 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (direct) return direct;
     const targetPath = path(record?.target_path);
     if (!targetPath) return null;
+    const missing = missingLegacyTargets.get(provider);
+    if (Number(missing?.get(targetPath) || 0) > Date.now()) return null;
     if (typeof provider?.readBytesFresh !== 'function') {
       throw new AnnotationTargetError('fresh Dropbox bytes契約を利用できません', 503, 'fresh_bytes_unavailable');
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // A legacy annotation may outlive its file. Keep its record unchanged;
+      // missing identity is not a transport outage or permission failure.
+      if (error?.status === 404 || /path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) {
+        const cache = missing || new Map();
+        cache.set(targetPath, Date.now() + MISSING_TARGET_RECHECK_MS);
+        if (cache.size > 256) cache.delete(cache.keys().next().value);
+        missingLegacyTargets.set(provider, cache);
+        return null;
+      }
       throw new AnnotationTargetError(`fresh Dropbox bytesを取得できません: ${error?.message || error}`, 503, 'fresh_bytes_unavailable');
     }
+    missing?.delete(targetPath);
     const bytes = read?.bytes;
     if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) {
       throw new AnnotationTargetError('fresh Dropbox bytesが欠損しています', 503, 'fresh_bytes_unavailable');
