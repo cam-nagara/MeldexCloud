@@ -298,7 +298,7 @@
         const auth = _auth();
         if (!auth?.apiContent) throw new Error('Dropbox API is unavailable');
         try {
-          const response = await auth.apiContent('files/download', { path: storePath });
+          const response = await auth.apiContent('files/download', { path: storePath }, undefined, { checkMissing: true });
           const meta = _safeJsonParse(response.headers?.get?.('dropbox-api-result') || '{}', {}) || {};
           const text = await response.text();
           const parsed = _safeJsonParse(text, null);
@@ -386,7 +386,7 @@
         'files/download',
         { path: _profileStorePath() },
         undefined,
-        { namespaceKind: 'team_root' },
+        { namespaceKind: 'team_root', checkMissing: true },
       );
       const parsed = _safeJsonParse(await response.text(), null);
       return parsed && typeof parsed === 'object' ? _normalizeStore(parsed) : null;

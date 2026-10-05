@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-cd5e9d7785cd720ec2f4",
+  "version": "0.7.368-b9977e3bf5e4e06c0d21",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -689,7 +689,7 @@
     },
     {
       "path": "gb-cloud-bootstrap-inherit.js",
-      "sha256": "35049e68a968306fff64b31cb809dab6106183c2b1dd28f399b0e5cf5e5190f4"
+      "sha256": "b06ed281f9ee5bb827cbeac6f00915c432a144b64c4f88095c7edda4543bc0d1"
     },
     {
       "path": "gb-cloud-bootstrap.js",
@@ -897,7 +897,7 @@
     },
     {
       "path": "gb-data-access-dropbox-expanded.part02.js",
-      "sha256": "55da407054c4c2e49e195ff8f1de204c7d254a01ba7c0c85622ef5eef4d7a305"
+      "sha256": "afc376fa1e23954e451dd7e6592f2a1ff0140854514f4c03e2f8e258c3499f21"
     },
     {
       "path": "gb-data-access-dropbox-fileops-annotations.js",
@@ -1477,7 +1477,7 @@
     },
     {
       "path": "gb-dropbox-auth.js",
-      "sha256": "3970589a0c27964d2d476f983882e1b2117a57d35e2e1fb6c5d6c47d582d856c"
+      "sha256": "2c91c6ca6e5fabf19e6e21d3a153bf3736f53d8625a9ceb8186001b9ea05e192"
     },
     {
       "path": "gb-dropbox-external-tag-catalog.js",
@@ -1493,7 +1493,7 @@
     },
     {
       "path": "gb-dropbox-profile-sync.js",
-      "sha256": "49b991c95c7ac72d915c5cc01734cadfdbf1553f372343d5032bf744f301ea4e"
+      "sha256": "2c17eabd1ece2ef0b62451c888e267ddfc651bc33610b51296e1dff592232836"
     },
     {
       "path": "gb-dropbox-tag-catalog-normalizer.js",
@@ -2405,7 +2405,7 @@
     },
     {
       "path": "gb-profile-store-transport.js",
-      "sha256": "6d12a22b1d56ebc1b110fafb2ae142acf3ae1cf78c359abe24c4923f91c024dc"
+      "sha256": "0c483d2c47b5bc81a38a76cda8379ac3e4eb37ff82732732bafda9cda1b93fa3"
     },
     {
       "path": "gb-public-runtime.js",
@@ -2917,7 +2917,7 @@
     },
     {
       "path": "gb-source-folder-registry.js",
-      "sha256": "47021e58492a1fddb2907736924cc9e1daf87f5fe4cba7461dabcb1fcccab857"
+      "sha256": "0afd7f0af01489cc69f4e5921c72319d8d3d860b466ce5a6f8edcb4be36a1ef0"
     },
     {
       "path": "gb-split-loader.js",
@@ -2977,7 +2977,7 @@
     },
     {
       "path": "gb-storage-adapter.part01.js",
-      "sha256": "61a9bf9a3de3316abbf2807abfdd7e3376896e458358e446e600f8ae163dcad2"
+      "sha256": "fd77720fb4c181c19da2533c241e40441a0f9c8ed65d09c2cc922d2affa77e38"
     },
     {
       "path": "gb-storage-adapter.part02.js",
@@ -3013,7 +3013,7 @@
     },
     {
       "path": "gb-system-storage-dropbox.js",
-      "sha256": "828e5f04c481218d3410d825262ab3b15121cda0727e44638e7ba6e2b6b84869"
+      "sha256": "1190257bd68db310e13777d707a7dbb2047bd693a9801bd1b8c5a63a1d16f977"
     },
     {
       "path": "gb-system-storage.js",
@@ -3537,11 +3537,11 @@
     },
     {
       "path": "gb-workspace-folder-detect.js",
-      "sha256": "f493abc5d3d799ee5ab13c20c767eb0ac8cad210e370c409f45e42c75f66aebd"
+      "sha256": "477407be448a0501fb29b4a8a498a814151c06ec4a34e62696a812b525ea9b33"
     },
     {
       "path": "gb-workspace-ledger-io.js",
-      "sha256": "7737d17af7e3cfe07f3de0ae30b1cf63d2be8effb545a4b5e98b31cb06434360"
+      "sha256": "2652e772940b4ee37338c991410ab03c2fe75bb214652958ecbe8085ce904bbb"
     },
     {
       "path": "gb-workspace-registry.js",
@@ -3601,7 +3601,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "4c8a8eb9c545206bf0c5aec200d429b980dd975dba21bb0fcf2a5e4132b33c3c"
+      "sha256": "c10e177b5a04320a4081d5fc32c7b433252e9130fae7982528d31a6787e1a72a"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3673,7 +3673,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "bc8bc28763502d1cc56cba598a377f7993870fe804b2f7cdc60eceaa292e9375"
+      "sha256": "985319d677039bbe52bd9c7e1e50f07e53d8d5d243060d877938301140b194c5"
     },
     {
       "path": "Meldex.ico",
@@ -3793,7 +3793,7 @@
     },
     {
       "path": "offline-bundles/gb-data-access-dropbox-expanded.js",
-      "sha256": "6624bd0bda2a1bd29086966852fd7b2e3bc7c978e20b4a8818713f0a3237d552"
+      "sha256": "a0c7c0294ba26376c75a19de9a9a576cdbb1c7a28bfc0cc0ea458546f4494abd"
     },
     {
       "path": "offline-bundles/gb-data-access-dropbox-fileops.js",
@@ -3805,7 +3805,7 @@
     },
     {
       "path": "offline-bundles/gb-storage-adapter.js",
-      "sha256": "1a4e5a3c7e00b1060b36d74f82919d2e769a1d2f795c0404b054a8f45bd14d14"
+      "sha256": "6fca8375e5563657fa8f4c925698caaa8d099e98bb8733f3ec510c00521eabb3"
     },
     {
       "path": "offline-bundles/gb-tooltip.js",

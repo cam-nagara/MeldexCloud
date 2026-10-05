@@ -1718,7 +1718,7 @@
         'files/download',
         { path: SECRET_FILE },
         undefined,
-        { namespaceKind: 'home' },
+        { namespaceKind: 'home', checkMissing: true },
       );
       return JSON.parse(await response.text());
     } catch (error) {

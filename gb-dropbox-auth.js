@@ -23,9 +23,21 @@
   let _memoryPending = null;
   let _authChannel = null;
   let _accountRootInfo = null;
+  const _readFolderCache = new Map();
+  const _readFolderPending = new Map();
+  let _readFolderGeneration = 0;
+  let _rateLimitUntil = 0;
+
+  function _invalidateReadFolders() {
+    _readFolderGeneration += 1;
+    _readFolderCache.clear();
+    _readFolderPending.clear();
+  }
 
   function _dispatchSessionChanged(detail) {
     _accountRootInfo = null;
+    _invalidateReadFolders();
+    _rateLimitUntil = 0;
     try {
       window.dispatchEvent(new CustomEvent('meldex:dropbox-auth-session-changed', {
         detail: { ...(detail || {}) },
@@ -739,7 +751,7 @@
 
   function _retryAfterMs(response, attempt) {
     const retryAfter = Number(response?.headers?.get?.('retry-after') || 0);
-    if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 8000);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
     return Math.min(500 * (2 ** attempt), 4000);
   }
 
@@ -747,7 +759,9 @@
     let lastError = null;
     for (let attempt = 0; attempt <= DROPBOX_API_MAX_RETRIES; attempt += 1) {
       try {
+        while (_rateLimitUntil > Date.now()) await _sleep(Math.min(_rateLimitUntil - Date.now(), 60000));
         const response = await fetcher();
+        if (response.status === 429) _rateLimitUntil = Math.max(_rateLimitUntil, Date.now() + _retryAfterMs(response, attempt));
         if (!response.ok && DROPBOX_RETRY_STATUSES.has(response.status) && attempt < DROPBOX_API_MAX_RETRIES) {
           await _sleep(_retryAfterMs(response, attempt));
           continue;
@@ -788,7 +802,59 @@
     }
   }
 
+  // Optional sidecars and management records are often absent. Check their
+  // parent listing instead of using a failing download/get_metadata as an
+  // existence probe. Share listings across adapters and concurrent callers.
+  async function _readFolderEntries(path, options) {
+    const namespaceKind = _normalizeNamespaceKind(options?.namespaceKind);
+    const account = await getCurrentAccount(false);
+    const namespaceId = account?.root_info?.[namespaceKind === 'team_root' ? 'root_namespace_id' : 'home_namespace_id'] || '';
+    const key = JSON.stringify([account?.account_id || '', namespaceKind, namespaceId, path.toLowerCase()]);
+    const cached = _readFolderCache.get(key);
+    if (!options?.freshMissingCheck && cached?.until > Date.now()) return cached.entries;
+    const pending = _readFolderPending.get(key);
+    if (pending) return pending;
+    const generation = _readFolderGeneration;
+    const promise = (async () => {
+      if (path && await _isMissingReadPath(path, options)) return new Map();
+      let payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      const entries = new Map();
+      for (;;) {
+        for (const entry of payload.entries || []) {
+          if (entry['.tag'] !== 'deleted') entries.set(String(entry.name || '').toLowerCase(), entry);
+        }
+        if (!payload.has_more) break;
+        if (!payload.cursor) throw new Error('Dropboxのフォルダ一覧に継続カーソルがありません');
+        payload = await apiRpc('files/list_folder/continue', { cursor: payload.cursor }, { namespaceKind });
+      }
+      if (generation === _readFolderGeneration && entries.size <= 4096) {
+        if (_readFolderCache.size >= 128) _readFolderCache.delete(_readFolderCache.keys().next().value);
+        _readFolderCache.set(key, { entries, until: Date.now() + 30000 });
+      }
+      return entries;
+    })();
+    _readFolderPending.set(key, promise);
+    try { return await promise; }
+    finally { if (_readFolderPending.get(key) === promise) _readFolderPending.delete(key); }
+  }
+
+  async function _isMissingReadPath(path, options) {
+    // ID and namespace-relative paths cannot be checked through a parent.
+    if (typeof path !== 'string' || !path.startsWith('/') || path === '/') return false;
+    const normalized = path.replace(/\/+$/, '');
+    const split = normalized.lastIndexOf('/');
+    const entries = await _readFolderEntries(normalized.slice(0, split), options);
+    return !entries.has(normalized.slice(split + 1).toLowerCase());
+  }
+
+  async function _guardMissingRead(path, options) {
+    if (options?.checkMissing && await _isMissingReadPath(path, options)) {
+      throw Object.assign(new Error('path/not_found/'), { status: 409, code: 'path_not_found' });
+    }
+  }
+
   async function apiRpc(route, body, options) {
+    if (route === 'files/get_metadata' || route === 'files/list_folder') await _guardMissingRead(body?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await getValidAccessToken();
       if (!token) throw new Error('Dropboxへもう一度接続してください');
@@ -801,6 +867,7 @@
         body: body == null ? 'null' : JSON.stringify(body),
       }));
       if (response.ok) {
+        if (/^files\/(?:create_folder|delete|move|copy|restore)/.test(route)) _invalidateReadFolders();
         let payload = null;
         try {
           payload = await response.json();
@@ -812,12 +879,14 @@
       }
       const detail = await _readDropboxError(response);
       if (response.status === 401) await clearSession();
+      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders();
       throw new Error(String(detail));
     }
     throw new Error('Dropboxへもう一度接続してください');
   }
 
   async function apiContent(route, arg, init, options) {
+    if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await getValidAccessToken();
       if (!token) throw new Error('Dropboxへもう一度接続してください');
@@ -829,12 +898,16 @@
         ...(requestInit.headers || {}),
       }, options);
       const response = await _fetchDropboxWithRetry(route, async () => fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit));
-      if (response.ok) return response;
+      if (response.ok) {
+        if (/^files\/(?:upload|upload_session\/finish)/.test(route)) _invalidateReadFolders();
+        return response;
+      }
       if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) {
         continue;
       }
       const detail = await _readDropboxError(response);
       if (response.status === 401) await clearSession();
+      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders();
       throw new Error(String(detail));
     }
     throw new Error('Dropboxへもう一度接続してください');

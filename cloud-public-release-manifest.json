@@ -37,17 +37,17 @@
     "manual-corpus.json": "9770658086b62a1f02cfb9b484f3969edcbca1985a83a78dd671477ce094bb29",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "bc8bc28763502d1cc56cba598a377f7993870fe804b2f7cdc60eceaa292e9375",
+    "Meldex.html": "985319d677039bbe52bd9c7e1e50f07e53d8d5d243060d877938301140b194c5",
     "manifest.json": "90213367b9dcd7801921a770556392e2ecd750da37d77e639d88a10cb0f46c0a",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "a8f483a22c6149641413c293ac92855c102069fc10e76079e48fa63db989bf18",
+    "offline-shell-manifest.json": "8ab40492f9f6d89f0de376550d2e2178d94a4f4d330703bde2aa785bace07040",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "ce89d04bd2b3297f3233ae45eaf3476edfa4ebcc9d3fcfcf0ed1f33d90f353de",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",
     "meldex-cloud-runtime-02.js": "aa03cb1e62028fe45e5ea7eb7f549babf44bdec770ddd64c9a9cc4e83b4df583",
     "meldex-cloud-runtime-03.js": "56a731cf417afa15b1db6a2402679b9cb227efaaf901a3e27d766c1d8877efd2",
-    "meldex-cloud-runtime-04.js": "4c8a8eb9c545206bf0c5aec200d429b980dd975dba21bb0fcf2a5e4132b33c3c",
+    "meldex-cloud-runtime-04.js": "c10e177b5a04320a4081d5fc32c7b433252e9130fae7982528d31a6787e1a72a",
     "meldex-cloud-runtime-05.js": "0be7ee1355b445c830a8d7cd7f6041a4864917af07a0e1577b026bb0c2a79bb1",
     "meldex-cloud-runtime-06.js": "c1e14f4542352b8a69417ad5f2f64b236ec88fa8383528ccfa98484c87cc3468",
     "meldex-cloud-runtime-07.js": "c1828cd2a4a1d189ed0cf244dfdf4f9b0380205321d1a0516fcf7dd06c2d98b9",
@@ -56,18 +56,18 @@
     "apps/viewer/index.html": "02e4e1acc98d351a66c9f64687764808d2b23b19209c2564c3a846fe2daf20e7",
     "apps/quick-memo/index.html": "043c99f7d5723cf036d98137ce12f2d0a76d550a568ceae35a7a6e6042b59c25",
     "offline-bundles/gb-color-palette.js": "7cd0b90bf0acc5237b6ad577d2203fd5c3f781c329f40db7ab658f96981c112f",
-    "offline-bundles/gb-data-access-dropbox-expanded.js": "6624bd0bda2a1bd29086966852fd7b2e3bc7c978e20b4a8818713f0a3237d552",
+    "offline-bundles/gb-data-access-dropbox-expanded.js": "a0c7c0294ba26376c75a19de9a9a576cdbb1c7a28bfc0cc0ea458546f4494abd",
     "offline-bundles/gb-data-access-dropbox-fileops.js": "dfdb5b75e10dc5a4840acac59929464d99a2b6036937945b076c1750b7dacdd9",
     "offline-bundles/gb-data-access.js": "427e7e52921393a11860d3526ebdd2fb2795871ca6f47b6e125d7a049ff0f629",
-    "offline-bundles/gb-storage-adapter.js": "1a4e5a3c7e00b1060b36d74f82919d2e769a1d2f795c0404b054a8f45bd14d14",
+    "offline-bundles/gb-storage-adapter.js": "6fca8375e5563657fa8f4c925698caaa8d099e98bb8733f3ec510c00521eabb3",
     "offline-bundles/gb-tooltip.js": "c05518f733e2e5610e2a56c3de30f115d7bbd3d0fdf4996644b5ce172d987d5e",
     "offline-bundles/meldex-core.js": "8c0bd96c0f99b9cf0f3f7d5ae42c507019b309aa0df48eb7d841cbb434b744c9",
-    "gb-source-folder-registry.js": "47021e58492a1fddb2907736924cc9e1daf87f5fe4cba7461dabcb1fcccab857",
-    "gb-storage-adapter.part01.js": "61a9bf9a3de3316abbf2807abfdd7e3376896e458358e446e600f8ae163dcad2",
+    "gb-source-folder-registry.js": "0afd7f0af01489cc69f4e5921c72319d8d3d860b466ce5a6f8edcb4be36a1ef0",
+    "gb-storage-adapter.part01.js": "fd77720fb4c181c19da2533c241e40441a0f9c8ed65d09c2cc922d2affa77e38",
     "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b",
     "gb-outliner.bundle.part05.js": "a4baebb3e37da28d29fa8098b5c61d5266a7427c05180de917590869c3a3a028",
-    "gb-dropbox-auth.js": "3970589a0c27964d2d476f983882e1b2117a57d35e2e1fb6c5d6c47d582d856c",
-    "gb-system-storage-dropbox.js": "828e5f04c481218d3410d825262ab3b15121cda0727e44638e7ba6e2b6b84869",
+    "gb-dropbox-auth.js": "2c91c6ca6e5fabf19e6e21d3a153bf3736f53d8625a9ceb8186001b9ea05e192",
+    "gb-system-storage-dropbox.js": "1190257bd68db310e13777d707a7dbb2047bd693a9801bd1b8c5a63a1d16f977",
     "gb-portable-knowledge-runtime.js": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90",
     "gb-data-access-dropbox-fileops.part02.js": "04fce53fd47900b6abfda01f67c3bc3017bed669ecdfac361b434889c6ad366d",
     "gb-data-access.part01.js": "2eaa5035db384a0238499cddca6727574778118723ca58088008e368c305e951",
@@ -122,6 +122,29 @@
       "files": {
         "gb-storage-adapter.part01.js": "61a9bf9a3de3316abbf2807abfdd7e3376896e458358e446e600f8ae163dcad2",
         "gb-cloud-annotation-target-resolver.js": "8166d5a8c6fd1b58fe6049732a6c1cf15d5a427fb71bf0f89b3e897918a98e6f"
+      }
+    },
+    {
+      "description": "Prevent missing optional Dropbox read probes and honor shared rate limits",
+      "files": {
+        "gb-dropbox-auth.js": "2c91c6ca6e5fabf19e6e21d3a153bf3736f53d8625a9ceb8186001b9ea05e192",
+        "gb-storage-adapter.part01.js": "fd77720fb4c181c19da2533c241e40441a0f9c8ed65d09c2cc922d2affa77e38",
+        "gb-system-storage-dropbox.js": "1190257bd68db310e13777d707a7dbb2047bd693a9801bd1b8c5a63a1d16f977"
+      }
+    },
+    {
+      "description": "Prevent missing optional Dropbox read probes and honor shared rate limits",
+      "files": {
+        "gb-profile-store-transport.js": "0c483d2c47b5bc81a38a76cda8379ac3e4eb37ff82732732bafda9cda1b93fa3",
+        "gb-dropbox-profile-sync.js": "2c17eabd1ece2ef0b62451c888e267ddfc651bc33610b51296e1dff592232836",
+        "gb-workspace-folder-detect.js": "477407be448a0501fb29b4a8a498a814151c06ec4a34e62696a812b525ea9b33",
+        "gb-cloud-bootstrap-inherit.js": "b06ed281f9ee5bb827cbeac6f00915c432a144b64c4f88095c7edda4543bc0d1",
+        "gb-workspace-ledger-io.js": "2652e772940b4ee37338c991410ab03c2fe75bb214652958ecbe8085ce904bbb",
+        "gb-source-folder-registry.js": "0afd7f0af01489cc69f4e5921c72319d8d3d860b466ce5a6f8edcb4be36a1ef0",
+        "gb-data-access-dropbox-expanded.part02.js": "afc376fa1e23954e451dd7e6592f2a1ff0140854514f4c03e2f8e258c3499f21",
+        "gb-dropbox-auth.js": "2c91c6ca6e5fabf19e6e21d3a153bf3736f53d8625a9ceb8186001b9ea05e192",
+        "gb-storage-adapter.part01.js": "fd77720fb4c181c19da2533c241e40441a0f9c8ed65d09c2cc922d2affa77e38",
+        "gb-system-storage-dropbox.js": "1190257bd68db310e13777d707a7dbb2047bd693a9801bd1b8c5a63a1d16f977"
       }
     }
   ]

@@ -100,7 +100,9 @@
   async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
-    return auth.apiContent(route, arg, init, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
+    return auth.apiContent(route, arg, init, {
+      namespaceKind: normalizeNamespaceKind(namespaceKind), checkMissing: route === 'files/download',
+    });
   }
 
   function _isWorkspaceLedgerNotFoundError(err) {

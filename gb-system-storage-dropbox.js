@@ -141,16 +141,21 @@
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
     const location = await _resolveApiLocation(body?.path || contextPath, namespaceKind);
-    return auth.apiRpc(route, body?.path ? { ...body, path: location.path } : body, { namespaceKind: location.namespaceKind });
+    return auth.apiRpc(route, body?.path ? { ...body, path: location.path } : body, {
+      namespaceKind: location.namespaceKind,
+      checkMissing: route === 'files/get_metadata' || route === 'files/list_folder',
+    });
   }
 
-  async function _content(route, arg, init, namespaceKind) {
+  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
     const location = await _resolveApiLocation(arg?.path, namespaceKind);
-    return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, { namespaceKind: location.namespaceKind });
+    return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, {
+      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck,
+    });
   }
 
   // gb-storage-adapter.part01.js / gb-workspace-ledger-io.js と同じ正規表現による分類
@@ -201,10 +206,10 @@
     }
   }
 
-  async function _downloadEnvelope(fullPath, namespaceKind) {
+  async function _downloadEnvelope(fullPath, namespaceKind, freshMissingCheck = false) {
     let response;
     try {
-      response = await _content('files/download', { path: fullPath }, undefined, namespaceKind);
+      response = await _content('files/download', { path: fullPath }, undefined, namespaceKind, freshMissingCheck);
     } catch (err) {
       if (_isNotFoundError(err)) return null;
       throw err;
@@ -351,9 +356,9 @@
       });
     }
 
-    async _readExisting(kind, documentId) {
+    async _readExisting(kind, documentId, freshMissingCheck = false) {
       const path = this._pathFor(kind, documentId);
-      const result = await _downloadEnvelope(path, this._namespaceKind);
+      const result = await _downloadEnvelope(path, this._namespaceKind, freshMissingCheck);
       if (!result) return null;
       const contract = _contract();
       try {
@@ -501,7 +506,7 @@
       const path = this._pathFor(kind, docId);
       await this._assertCompatibilityWriteAllowed(kind);
 
-      const existing = await this._readExisting(kind, docId);
+      const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
 
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
@@ -553,7 +558,7 @@
       } catch (error) {
         if (_isConflictError(error)) {
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
-          const refreshed = await _downloadEnvelope(path, this._namespaceKind).catch(() => null);
+          const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
           const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
           const refreshedRevision = refreshed ? refreshed.rev : currentRevision;
           this._audit('warning', 'save_conflict', kind, docId, {

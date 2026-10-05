@@ -57,7 +57,7 @@
     let lastError = null;
     for (const marker of MARKERS) {
       try {
-        await auth.apiRpc('files/get_metadata', { path: _joinPath(target, marker) }, { namespaceKind: kind });
+        await auth.apiRpc('files/get_metadata', { path: _joinPath(target, marker) }, { namespaceKind: kind, checkMissing: true });
         return { workspace: true, checked: true, error: null };
       } catch (err) {
         // 目印が無いだけなら次の形式を試す。それ以外は確認できなかったものとして扱う。

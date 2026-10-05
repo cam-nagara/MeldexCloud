@@ -454,6 +454,7 @@
     }
 
     async _rpc(route, body, location) {
+      const freshMissingCheck = !!location?.freshMissingCheck;
       if (location && _auth()?.resolveFileLocation) {
         await _auth().getCurrentAccount(false);
         const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
@@ -469,6 +470,8 @@
       }
       return _auth().apiRpc(route, body, {
         namespaceKind: location?.namespaceKind || 'home',
+        checkMissing: route === 'files/get_metadata' || route === 'files/list_folder',
+        freshMissingCheck,
       });
     }
 
@@ -481,6 +484,7 @@
       }
       return _auth().apiContent(route, arg, init, {
         namespaceKind: location?.namespaceKind || 'home',
+        checkMissing: route === 'files/download',
       });
     }
 
@@ -1095,7 +1099,7 @@
       const location = this._dropboxLocation(normalized);
       const metadata = () => this._rpc('files/get_metadata', {
         path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
-      }, location);
+      }, { ...location, freshMissingCheck: true });
       const before = await metadata();
       const response = await this._content('files/download', { path: location.path }, undefined, location);
       const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};

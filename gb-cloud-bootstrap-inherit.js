@@ -64,7 +64,7 @@
             include_deleted: false,
             include_has_explicit_shared_members: false,
           },
-          candidate.namespaceKind ? { namespaceKind: candidate.namespaceKind } : undefined,
+          { namespaceKind: candidate.namespaceKind || 'home', checkMissing: true },
         );
         return true;
       } catch {

@@ -244,6 +244,7 @@
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
     return auth.apiContent(route, arg, init, {
+      checkMissing: route === 'files/download',
       namespaceKind: normalizeNamespaceKind(namespaceKind),
     });
   }
