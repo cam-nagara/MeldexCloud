@@ -22,8 +22,10 @@
   const AUTH_CHANNEL_NAME = 'meldex-dropbox-auth-session-v1';
   let _memoryPending = null;
   let _authChannel = null;
+  let _accountRootInfo = null;
 
   function _dispatchSessionChanged(detail) {
+    _accountRootInfo = null;
     try {
       window.dispatchEvent(new CustomEvent('meldex:dropbox-auth-session-changed', {
         detail: { ...(detail || {}) },
@@ -539,6 +541,7 @@
   }
 
   async function clearSession() {
+    _accountRootInfo = null;
     const current = await getSession().catch(() => null);
     await _idbDelete(SESSION_KEY);
     _notifySessionChanged(current, false);
@@ -582,6 +585,21 @@
 
   function _normalizeNamespaceKind(value) {
     return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  function resolveFileLocation(path, namespaceKind) {
+    const location = { path, namespaceKind: _normalizeNamespaceKind(namespaceKind) };
+    const info = _accountRootInfo;
+    const home = String(info?.home_path || '').replace(/\/+$/, '');
+    // In the distinct-user-root model the desktop member folder is a mount
+    // prefix, not a directory under the API root. Use the account's explicit
+    // home mapping; never guess a prefix from a name or probe another folder.
+    if (location.namespaceKind !== 'team_root' || info?.['.tag'] !== 'user'
+      || !home || home === '/' || !info.root_namespace_id || !info.home_namespace_id
+      || info.root_namespace_id === info.home_namespace_id) return location;
+    const text = String(path || '');
+    if (text.toLowerCase() !== home.toLowerCase() && !text.toLowerCase().startsWith(home.toLowerCase() + '/')) return location;
+    return { path: text.slice(home.length) || '/', namespaceKind: 'home' };
   }
 
   function _pathRootHeaderFromAccount(account, namespaceKind) {
@@ -824,8 +842,12 @@
 
   async function getCurrentAccount(refresh) {
     const session = await getSession();
-    if (!refresh && session?.account) return session.account;
+    if (!refresh && session?.account) {
+      _accountRootInfo = session.account.root_info || null;
+      return session.account;
+    }
     const account = await apiRpc('users/get_current_account', null);
+    _accountRootInfo = account?.root_info || null;
     const latestSession = (await getSession()) || session;
     if (latestSession) {
       await _idbPut(SESSION_KEY, { ...latestSession, account });
@@ -869,6 +891,7 @@
     refreshSession,
     getNamespaceContext,
     getPathRootHeader,
+    resolveFileLocation,
     apiRpc,
     apiContent,
     getCurrentAccount,

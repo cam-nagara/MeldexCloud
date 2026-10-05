@@ -667,12 +667,15 @@
     const candidates = (sourceId ? roots.filter((root) => root.id === sourceId) : roots)
       .sort((left, right) => normalizeDropboxPath(right.dropboxPath).length - normalizeDropboxPath(left.dropboxPath).length);
     for (const root of candidates) {
-      const base = normalizeDropboxPath(root.dropboxPath);
       const lower = normalized.toLowerCase();
-      const baseLower = base.toLowerCase();
-      if (lower === baseLower) return sourcePath(root.id, '');
-      if (base === '/') return sourcePath(root.id, normalized.replace(/^\/+/, ''));
-      if (lower.startsWith(baseLower + '/')) return sourcePath(root.id, normalized.slice(base.length + 1));
+      const bases = [root.dropboxPath, _auth()?.resolveFileLocation?.(root.dropboxPath, root.namespaceKind)?.path];
+      for (const candidate of bases.filter(Boolean)) {
+        const base = normalizeDropboxPath(candidate);
+        const baseLower = base.toLowerCase();
+        if (lower === baseLower) return sourcePath(root.id, '');
+        if (base === '/') return sourcePath(root.id, normalized.replace(/^\/+/, ''));
+        if (lower.startsWith(baseLower + '/')) return sourcePath(root.id, normalized.slice(base.length + 1));
+      }
     }
     return normalizeRelativePath(normalized);
   }

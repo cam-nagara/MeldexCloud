@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-68fd9e393d280b68e06a",
+  "version": "0.7.368-88408eb3393862237e51",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -1477,7 +1477,7 @@
     },
     {
       "path": "gb-dropbox-auth.js",
-      "sha256": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760"
+      "sha256": "3970589a0c27964d2d476f983882e1b2117a57d35e2e1fb6c5d6c47d582d856c"
     },
     {
       "path": "gb-dropbox-external-tag-catalog.js",
@@ -2917,7 +2917,7 @@
     },
     {
       "path": "gb-source-folder-registry.js",
-      "sha256": "1885246d5f48a19b2ca8eadf786042934774a16bf50fba8897b3c2bb3b8b4367"
+      "sha256": "47021e58492a1fddb2907736924cc9e1daf87f5fe4cba7461dabcb1fcccab857"
     },
     {
       "path": "gb-split-loader.js",
@@ -2977,7 +2977,7 @@
     },
     {
       "path": "gb-storage-adapter.part01.js",
-      "sha256": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047"
+      "sha256": "c0cc5a3c7fd5cb41f36003bdff00f0b884dc4ba9146694b314b296c2462cabcd"
     },
     {
       "path": "gb-storage-adapter.part02.js",
@@ -3601,7 +3601,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "cc4ecb3ee33c8618bd05b2670499b5eb4ed571aeced864608055a368e93bbdf1"
+      "sha256": "3c5c5e6fa888cd00bde148e4f9f54971cfd3cec5061d09bc69f7dd6e528dbda1"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3673,7 +3673,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "6ba5b88fcdcf3b65c6e38ee3dc3939cae1694d5f9fed641d0467da3019a57915"
+      "sha256": "f3761f0eaf1d00843cb3768a422d07517154e6c6165f0867def5b083af972f52"
     },
     {
       "path": "Meldex.ico",
@@ -3805,7 +3805,7 @@
     },
     {
       "path": "offline-bundles/gb-storage-adapter.js",
-      "sha256": "26ef4f8bd442ce373135d25f9f7dba9dfeb20e2df779db49bcec4ae38c228ce0"
+      "sha256": "e1c0b6f748977a75eb53364010095b4f35ca8302a3940a24445a871c3cca62c0"
     },
     {
       "path": "offline-bundles/gb-tooltip.js",

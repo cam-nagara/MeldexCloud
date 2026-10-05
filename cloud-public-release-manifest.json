@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-10-05T14:27:27.191361+00:00",
+  "generatedAt": "2026-10-05T14:50:31.927516+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
   "sourceSha": "79997f2202801d5b80241d08cba13363a8d79ab9",
@@ -37,17 +37,17 @@
     "manual-corpus.json": "9770658086b62a1f02cfb9b484f3969edcbca1985a83a78dd671477ce094bb29",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "6ba5b88fcdcf3b65c6e38ee3dc3939cae1694d5f9fed641d0467da3019a57915",
+    "Meldex.html": "f3761f0eaf1d00843cb3768a422d07517154e6c6165f0867def5b083af972f52",
     "manifest.json": "90213367b9dcd7801921a770556392e2ecd750da37d77e639d88a10cb0f46c0a",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "f72d2ee134f57aeb455e2b3ffb117de9128aa2ea2dfa43b63f2b8f3c2df04505",
+    "offline-shell-manifest.json": "61c450dca083b9ccd1ba561ec77bd4cc528b683eb89e6401c4db8ac6bb105807",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "ce89d04bd2b3297f3233ae45eaf3476edfa4ebcc9d3fcfcf0ed1f33d90f353de",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",
     "meldex-cloud-runtime-02.js": "aa03cb1e62028fe45e5ea7eb7f549babf44bdec770ddd64c9a9cc4e83b4df583",
     "meldex-cloud-runtime-03.js": "56a731cf417afa15b1db6a2402679b9cb227efaaf901a3e27d766c1d8877efd2",
-    "meldex-cloud-runtime-04.js": "cc4ecb3ee33c8618bd05b2670499b5eb4ed571aeced864608055a368e93bbdf1",
+    "meldex-cloud-runtime-04.js": "3c5c5e6fa888cd00bde148e4f9f54971cfd3cec5061d09bc69f7dd6e528dbda1",
     "meldex-cloud-runtime-05.js": "0be7ee1355b445c830a8d7cd7f6041a4864917af07a0e1577b026bb0c2a79bb1",
     "meldex-cloud-runtime-06.js": "c1e14f4542352b8a69417ad5f2f64b236ec88fa8383528ccfa98484c87cc3468",
     "meldex-cloud-runtime-07.js": "c1828cd2a4a1d189ed0cf244dfdf4f9b0380205321d1a0516fcf7dd06c2d98b9",
@@ -59,14 +59,14 @@
     "offline-bundles/gb-data-access-dropbox-expanded.js": "6624bd0bda2a1bd29086966852fd7b2e3bc7c978e20b4a8818713f0a3237d552",
     "offline-bundles/gb-data-access-dropbox-fileops.js": "850526168f14c0055efcc20281b5702a3e3d4a68d48ea045593bb0047a060e05",
     "offline-bundles/gb-data-access.js": "1320fb45ee7b0998c08bbcea764e4c7c69cce29696a4e8265caa24391c97185d",
-    "offline-bundles/gb-storage-adapter.js": "26ef4f8bd442ce373135d25f9f7dba9dfeb20e2df779db49bcec4ae38c228ce0",
+    "offline-bundles/gb-storage-adapter.js": "e1c0b6f748977a75eb53364010095b4f35ca8302a3940a24445a871c3cca62c0",
     "offline-bundles/gb-tooltip.js": "c05518f733e2e5610e2a56c3de30f115d7bbd3d0fdf4996644b5ce172d987d5e",
     "offline-bundles/meldex-core.js": "8c0bd96c0f99b9cf0f3f7d5ae42c507019b309aa0df48eb7d841cbb434b744c9",
-    "gb-source-folder-registry.js": "1885246d5f48a19b2ca8eadf786042934774a16bf50fba8897b3c2bb3b8b4367",
-    "gb-storage-adapter.part01.js": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047",
+    "gb-source-folder-registry.js": "47021e58492a1fddb2907736924cc9e1daf87f5fe4cba7461dabcb1fcccab857",
+    "gb-storage-adapter.part01.js": "c0cc5a3c7fd5cb41f36003bdff00f0b884dc4ba9146694b314b296c2462cabcd",
     "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b",
     "gb-outliner.bundle.part05.js": "a4baebb3e37da28d29fa8098b5c61d5266a7427c05180de917590869c3a3a028",
-    "gb-dropbox-auth.js": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760",
+    "gb-dropbox-auth.js": "3970589a0c27964d2d476f983882e1b2117a57d35e2e1fb6c5d6c47d582d856c",
     "gb-system-storage-dropbox.js": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21",
     "gb-portable-knowledge-runtime.js": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90"
   },
@@ -93,6 +93,15 @@
         "gb-dropbox-auth.js": "a610cb3e4d27faeb6fe74988740a9c560485499b4483a6ff2d67155d14182760",
         "gb-system-storage-dropbox.js": "8eb356ae4df903cbf4585d9567f571cc8a1fb5125c0d22535788629356d75f21",
         "gb-portable-knowledge-runtime.js": "ed20396ddd088061e135dba31c1c968166453e0445c3203c64db7b4791bacd90"
+      }
+    },
+    {
+      "description": "Resolve distinct-user-root member mount paths through the account home, preserving source identity and relative home paths",
+      "basePublicRepoCommit": "e12d36176e36e7c81a560e743d26ba8b46be5e22",
+      "files": {
+        "gb-dropbox-auth.js": "3970589a0c27964d2d476f983882e1b2117a57d35e2e1fb6c5d6c47d582d856c",
+        "gb-source-folder-registry.js": "47021e58492a1fddb2907736924cc9e1daf87f5fe4cba7461dabcb1fcccab857",
+        "gb-storage-adapter.part01.js": "c0cc5a3c7fd5cb41f36003bdff00f0b884dc4ba9146694b314b296c2462cabcd"
       }
     }
   ]

@@ -414,7 +414,8 @@
     _dropboxLocation(relativePath) {
       const registry = _sourceRegistry();
       if (registry?.resolveDropboxLocation) {
-        return registry.resolveDropboxLocation(relativePath, this.getVaultPath());
+        const location = registry.resolveDropboxLocation(relativePath, this.getVaultPath());
+        return _auth()?.resolveFileLocation?.(location.path, location.namespaceKind) || location;
       }
       if (registry?.resolveDropboxPath) {
         return {
@@ -437,6 +438,12 @@
 
     _relativeFromDropboxPath(pathDisplay, sourceId) {
       const registry = _sourceRegistry();
+      if (!sourceId && this.getVaultPath()) {
+        const base = this._dropboxLocation('').path.replace(/\/+$/, '');
+        const raw = String(pathDisplay || '').replace(/\\/g, '/');
+        if (raw.toLowerCase() === base.toLowerCase()) return '';
+        if (raw.toLowerCase().startsWith(base.toLowerCase() + '/')) return raw.slice(base.length + 1);
+      }
       if (registry?.virtualPathFromDropboxPath) return registry.virtualPathFromDropboxPath(pathDisplay, sourceId);
       const vaultPath = this.getVaultPath().toLowerCase();
       const raw = String(pathDisplay || '').replace(/\\/g, '/');
@@ -447,12 +454,31 @@
     }
 
     async _rpc(route, body, location) {
+      if (location && _auth()?.resolveFileLocation) {
+        await _auth().getCurrentAccount(false);
+        const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
+        const paths = {};
+        for (const key of ['path', 'from_path', 'to_path']) {
+          if (typeof body?.[key] !== 'string') continue;
+          const mapped = _auth().resolveFileLocation(body[key], location.namespaceKind);
+          if (mapped.namespaceKind !== resolved.namespaceKind) throw new Error('異なるDropbox領域間のファイル操作には対応していません');
+          paths[key] = mapped.path;
+        }
+        body = body ? { ...body, ...paths } : body;
+        location = resolved;
+      }
       return _auth().apiRpc(route, body, {
         namespaceKind: location?.namespaceKind || 'home',
       });
     }
 
     async _content(route, arg, init, location) {
+      if (location && _auth()?.resolveFileLocation) {
+        await _auth().getCurrentAccount(false);
+        const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
+        if (arg?.path === location.path) arg = { ...arg, path: resolved.path };
+        location = resolved;
+      }
       return _auth().apiContent(route, arg, init, {
         namespaceKind: location?.namespaceKind || 'home',
       });
