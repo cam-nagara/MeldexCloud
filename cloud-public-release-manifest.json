@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-10-05T13:42:19.029408+00:00",
+  "generatedAt": "2026-10-05T14:09:38.214557+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
   "sourceSha": "79997f2202801d5b80241d08cba13363a8d79ab9",
@@ -37,11 +37,11 @@
     "manual-corpus.json": "9770658086b62a1f02cfb9b484f3969edcbca1985a83a78dd671477ce094bb29",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "0db98b29bc6685c41a7c7daf333ce87c9ded560cbd6f03f71bd0c70befa33062",
+    "Meldex.html": "a1cc77fe504a9330dfa02cf4fcb83bc16b37e2149b5fa81860146be2f82e195b",
     "manifest.json": "90213367b9dcd7801921a770556392e2ecd750da37d77e639d88a10cb0f46c0a",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "f3ed468b24bbc9f695950e503cfd35e5f013cee506b69deee9482c1b743cf3ad",
+    "offline-shell-manifest.json": "180f60b132a6d0e1b562237bb8919963e5105045672ff0039b2987e511aece3f",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "ce89d04bd2b3297f3233ae45eaf3476edfa4ebcc9d3fcfcf0ed1f33d90f353de",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",
@@ -51,7 +51,7 @@
     "meldex-cloud-runtime-05.js": "0be7ee1355b445c830a8d7cd7f6041a4864917af07a0e1577b026bb0c2a79bb1",
     "meldex-cloud-runtime-06.js": "c1e14f4542352b8a69417ad5f2f64b236ec88fa8383528ccfa98484c87cc3468",
     "meldex-cloud-runtime-07.js": "c1828cd2a4a1d189ed0cf244dfdf4f9b0380205321d1a0516fcf7dd06c2d98b9",
-    "meldex-cloud-runtime-08.js": "a013c0d3635501d39710bdc85a9e15d72dc99766026cbd9f9cc174f247f58198",
+    "meldex-cloud-runtime-08.js": "0c2edb768a6b72310a83cd336d44129bfd42eec66956099d930727895073fa9c",
     "meldex-cloud-runtime-09.js": "5fb28f1dcb8c3e17d91214bdd4d4276c0fdaaa25537baf6160c8390f33137136",
     "apps/viewer/index.html": "02e4e1acc98d351a66c9f64687764808d2b23b19209c2564c3a846fe2daf20e7",
     "apps/quick-memo/index.html": "043c99f7d5723cf036d98137ce12f2d0a76d550a568ceae35a7a6e6042b59c25",
@@ -63,7 +63,9 @@
     "offline-bundles/gb-tooltip.js": "c05518f733e2e5610e2a56c3de30f115d7bbd3d0fdf4996644b5ce172d987d5e",
     "offline-bundles/meldex-core.js": "8c0bd96c0f99b9cf0f3f7d5ae42c507019b309aa0df48eb7d841cbb434b744c9",
     "gb-source-folder-registry.js": "1885246d5f48a19b2ca8eadf786042934774a16bf50fba8897b3c2bb3b8b4367",
-    "gb-storage-adapter.part01.js": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047"
+    "gb-storage-adapter.part01.js": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047",
+    "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b",
+    "gb-outliner.bundle.part05.js": "a4baebb3e37da28d29fa8098b5c61d5266a7427c05180de917590869c3a3a028"
   },
   "sourcePatch": {
     "description": "Reload a missing Dropbox source root from the remote registry and invalidate stale location caches",
@@ -72,5 +74,14 @@
       "gb-source-folder-registry.js": "1885246d5f48a19b2ca8eadf786042934774a16bf50fba8897b3c2bb3b8b4367",
       "gb-storage-adapter.part01.js": "bf311d736dca4699b8ef4d7e30ba037e8c7ec0312687669d319689ff2aa9e047"
     }
-  }
+  },
+  "sourcePatches": [
+    {
+      "description": "Use the Dropbox picker when changing a source folder location, preserving its identity and invalidating old caches",
+      "basePublicRepoCommit": "34d856d381326718463ef8bd9cdc02f75710c08b",
+      "files": {
+        "gb-outliner.part02.part01.js": "5b04e11e41c5c250a0ebd769bed6e0d03dcc1be2d603c74158cb40778a90076b"
+      }
+    }
+  ]
 }

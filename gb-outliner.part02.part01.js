@@ -1228,16 +1228,34 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       closeTreeContextMenu();
       showStatus('フォルダ選択ダイアログを開いています...');
       try {
-        const res = await apiFetch('/pick-folder');
-        if (!res.path) { showStatus('キャンセルされました'); return; }
+        const isDropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.();
+        const res = isDropbox
+          ? await window.MeldexDropboxFolderPicker.pickFolder({ title: 'ソースフォルダの参照先を選択' })
+          : await apiFetch('/pick-folder');
+        if (!res?.path) { showStatus('キャンセルされました'); return; }
         // outliner_rootsを更新
         const roots = await apiFetch('/outliner-roots');
         const baseRoots = _cloneOutlinerRootsForBase(roots);
         const root = roots.find(r => r.path === nodeData.path);
         if (root) {
-          root.path = res.path;
-          root.name = res.path.split(/[/\\]/).pop();
+          if (isDropbox) {
+            const registry = window.MeldexSourceFolderRegistry;
+            const sourceId = root.sourceId || root.id || registry.parseSourcePath(root.path)?.sourceId;
+            if (!sourceId) throw new Error('ソースフォルダの登録IDを確認できません');
+            root.provider = 'dropbox';
+            root.id = root.sourceId = sourceId;
+            root.dropboxPath = registry.normalizeDropboxPath(res.path);
+            root.namespaceKind = registry.normalizeNamespaceKind(res.namespaceKind);
+            root.path = registry.sourcePath(sourceId);
+            root.name = res.name || res.path.split('/').filter(Boolean).pop();
+          } else {
+            root.path = res.path;
+            root.name = res.path.split(/[/\\]/).pop();
+          }
           await _putOutlinerRootsWithBase(roots, baseRoots);
+          // The virtual ID remains the same, but cached files/revisions belong
+          // to the former physical location and must not follow the new path.
+          if (isDropbox) window.MeldexStorageAdapter?.getProvider?.()?._forgetMeta?.(root.path);
           await loadOutliner();
           showStatus('パスを変更しました: ' + res.path);
         }
