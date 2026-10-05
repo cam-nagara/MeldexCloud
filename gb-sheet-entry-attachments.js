@@ -1109,7 +1109,12 @@
 
   if (typeof window !== 'undefined') {
     window.__MeldexPwaDataAccessExtensions = window.__MeldexPwaDataAccessExtensions || [];
-    window.__MeldexPwaDataAccessExtensions.push(_handleSheetEntryCloudRequest);
+    window.__MeldexPwaDataAccessExtensions.push(async ctx => {
+      const result = await _handleSheetEntryCloudRequest(ctx);
+      // このモジュールの未対応値(undefined)を共通ルーターの契約へ変換する。
+      // 空の成功応答にすると、後続の担当ハンドラまで到達できない。
+      return result === undefined ? window.__MeldexPwaDataAccessInternals.NOT_HANDLED : result;
+    });
   }
 
   global.MeldexSheetEntryAttachments = {
