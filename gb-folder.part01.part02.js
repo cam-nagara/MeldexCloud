@@ -921,7 +921,8 @@ document.addEventListener('keydown', function(e) {
 
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
-    const grid = document.getElementById('folder-grid');
+    const grid = _folderGridEl();
+    if (!grid) return;
     const items = Array.from(grid.querySelectorAll('.fv-item'));
     if (items.length === 0) return;
     const curIdx = _folderSelected ? items.findIndex(el => el.classList.contains('selected')) : -1;
@@ -947,6 +948,10 @@ document.addEventListener('keydown', function(e) {
     if (item) { _folderSelected = item; _folderSelectedItems = [item]; }
     _syncFolderCheckboxes();
     _updateFolderBulkBar();
+    if (item) {
+      const cfg = _getFvPanelCfg();
+      if ((cfg.previewVisible ?? true) || (cfg.detailVisible ?? true)) showFolderPreview(item);
+    }
     showStatus(item ? item.name : '');
   }
 });
@@ -1004,8 +1009,13 @@ let _lassoJustCompleted = false;
     if (!_lassoActive) return;
     _lassoActive = false;
     if (_lassoRect) { _lassoRect.remove(); _lassoRect = null; }
+    _folderSelected = _folderSelectedItems[0] || null;
     _syncFolderCheckboxes();
     _updateFolderBulkBar();
+    if (_folderSelected) {
+      const cfg = _getFvPanelCfg();
+      if ((cfg.previewVisible ?? true) || (cfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
+    }
     // 直後に発火する click イベントで「空域クリック → 選択解除」が走るのを抑止するため、
     // ラッソでドラッグが発生した場合はフラグを立てて 1 ティック保持する。
     if (_lassoMoved) {

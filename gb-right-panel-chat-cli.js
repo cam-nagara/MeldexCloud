@@ -331,6 +331,7 @@
     return {
       enabled: true,
       sessionId: state?.cli_session_id || '',
+      resumeRequested: state?.established === true,
       scopeKey: cliChatSessionScopeKey(scope),
     };
   }
@@ -339,7 +340,7 @@
     const sessionId = String(cliSessionId || '').trim();
     if (!sessionId || !cliChatSessionContinuityEnabled(scope.provider)) return;
     const state = readCliChatSessionState(scope) || { created_at: new Date().toISOString() };
-    writeCliChatSessionState(scope, { ...state, cli_session_id: sessionId });
+    writeCliChatSessionState(scope, { ...state, cli_session_id: sessionId, established: true });
   }
 
   function resetSessionContinuityForCurrentChat(options = {}) {
@@ -1266,6 +1267,7 @@
           work_folder: streamWorkFolder,
           cli_session_continuity: !!cliSessionContinuity.enabled,
           cli_session_id: cliSessionContinuity.sessionId || '',
+          cli_resume_requested: !!cliSessionContinuity.resumeRequested,
           cli_session_scope: cliSessionContinuity.scopeKey || '',
           active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
@@ -1335,6 +1337,8 @@
             }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
+          } else if (data.type === 'cli_session_reset') {
+            resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
           } else if (data.type === 'cli_session_update') {
             if (String(data.provider || provider) === provider && data.cli_session_id) {
               rememberCliChatSessionContinuity(cliSessionScope, data.cli_session_id);

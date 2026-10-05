@@ -172,6 +172,10 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 .gb-toolbar-cal > .sep { background: var(--cal-grid-line, var(--ui-border)); }
 .gb-toolbar-cal .tb-icon-btn,
 .gb-toolbar-cal .tb-text-btn,
+.gb-toolbar-cal .tb-select,
+.gb-toolbar-cal .tb-input { min-width: 24px; min-height: 24px; }
+.gb-toolbar-cal .tb-icon-btn,
+.gb-toolbar-cal .tb-text-btn,
 .gb-toolbar-cal .tb-title { color: var(--cal-toolbar-fg, var(--ui-toolbar-fg)); }
 .gb-toolbar-cal .tb-icon-btn:hover,
 .gb-toolbar-cal .tb-text-btn:hover { background: var(--cal-cell-hover-bg, var(--ui-hover-bg)); color: var(--cal-cell-hover-fg, var(--ui-hover-fg)); border-color: var(--cal-control-border, var(--ui-border)); }

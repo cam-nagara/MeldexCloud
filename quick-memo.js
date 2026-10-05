@@ -29,6 +29,7 @@
     voiceStartTime: 0,
     voicePausing: false,
     voiceFinalizePromise: null,
+    pendingVoice: null,
     localSaveFailed: false,
     installPrompt: null,
     textHistory: { canUndo: false, canRedo: false },
@@ -37,6 +38,9 @@
     // 新規メモ（未保存）のときは空文字のまま。
     currentPath: '',
     currentVersionTarget: { path: '', type: 'file' },
+    memoEpoch: 0,
+    voiceStarting: false,
+    lastSaveError: '',
   };
   if (typeof window !== 'undefined') {
     window.MeldexQuickMemo = window.MeldexQuickMemo || {};
@@ -47,6 +51,7 @@
     // Meldex本体のフロートパネル（gb-quick-memo-panel.js）が、閉じる前に
     // 書きかけを保存させるために呼ぶ。単独アプリでも同じ経路を使える。
     window.MeldexQuickMemo.flush = () => saveNow({ manual: true });
+    window.MeldexQuickMemo.prepareClose = () => finalizeVoiceForClose();
   }
 
   // Meldex本体のフロートパネル等へ埋め込まれている状態。埋め込み時は
@@ -71,6 +76,7 @@
   let libraryController = null;
   let tagLoadPromise = null;
   const durableMemory = new Map();
+  const failedLocalWrites = new Set();
 
   document.addEventListener('DOMContentLoaded', () => {
     init().catch(error => {
@@ -85,7 +91,7 @@
     const controllerErrors = setupControllers();
     await hydrateDurableRecords();
     restoreDraft();
-    applyIncomingShare();
+    const shareAccepted = await applyIncomingShare();
     bindEvents();
     registerCloseContract();
     switchMode(state.currentMode);
@@ -94,7 +100,7 @@
     loadTags();
     listenInstallPrompt();
     registerServiceWorker();
-    setStatus(controllerErrors.length
+    if (shareAccepted !== false) setStatus(controllerErrors.length
       ? '一部の補助機能を読み込めませんでした。基本操作は利用できます'
       : '入力できます');
     await openRequestedMemo();
@@ -204,6 +210,7 @@
         readQueue: () => readJson(QUEUE_KEY, []),
         isCloudMode,
         cloudConnected,
+        cloudFolderPath,
         onStatus: setStatus,
         beforeNavigate: preserveCurrentForNavigation,
         onOpen: openExistingMemo,
@@ -284,7 +291,15 @@
     on(els.titleInput, 'input', scheduleSave);
     on(els.saveBtn, 'click', () => { closeMenu({ restoreFocus: true }); saveNow({ manual: true }); });
     on(els.newMemoBtn, 'click', () => { closeMenu({ restoreFocus: true }); startNewMemo(); });
-    on(els.modeSelect, 'change', () => switchMode(els.modeSelect.value));
+    on(els.modeSelect, 'change', async () => {
+      const next = els.modeSelect.value;
+      if (state.currentMode === 'voice' && next !== 'voice' && !await finalizeVoiceForClose()) {
+        els.modeSelect.value = state.currentMode;
+        setStatus('音声を確定できませんでした。文字起こしを再試行してください', true);
+        return;
+      }
+      switchMode(next);
+    });
     on(els.undoBtn, 'click', () => runHistory('undo'));
     on(els.redoBtn, 'click', () => runHistory('redo'));
     on(els.addTagBtn, 'click', addNewTag);
@@ -429,9 +444,16 @@
     window.__MELDEX_QUICK_MEMO_TEST__.mergeMemoDraft = mergeMemoDraft;
   }
 
-  function startNewMemo() {
+  async function startNewMemo() {
+    if (!await finalizeVoiceForClose()) return false;
+    await drawingController.flush?.();
     const current = collectMemo();
-    if (draftHasContent(current)) enqueueMemo(current);
+    if (draftHasContent(current) && (!persistDraft(current) || !enqueueMemo(current))) {
+      setStatus('メモを端末内へ保存できませんでした', true);
+      return false;
+    }
+    if (!await ensureDurableRecords()) return false;
+    state.memoEpoch += 1;
     clearTimeout(state.saveTimer);
     _stopVoiceCapture();
     state.share = null;
@@ -462,18 +484,26 @@
     drawingController.reset('');
   }
 
-  function preserveCurrentForNavigation() {
+  async function preserveCurrentForNavigation() {
+    if (!await finalizeVoiceForClose()) throw new Error('音声入力を確定できませんでした');
+    await drawingController.flush?.();
     const current = collectMemo();
     if (!state.dirty && !draftHasContent(current)) return true;
     const stored = persistDraft(current);
     const queued = enqueueMemo(current);
     if (!stored || !queued) throw new Error('メモを端末内へ保存できませんでした');
+    if (!await ensureDurableRecords()) throw new Error('メモを端末内へ保存できませんでした');
     state.flushRequested = true;
     drainQueue({ manual: false, pending: true });
     return true;
   }
 
-  async function openExistingMemo(memo) {
+  async function openExistingMemo(memo, requestedEpoch, isCurrent) {
+    const epoch = requestedEpoch ?? ++state.memoEpoch;
+    await loadTags();
+    if (epoch !== state.memoEpoch || (isCurrent && !isCurrent())) return false;
+    clearTimeout(state.saveTimer);
+    state.saveTimer = 0;
     _stopVoiceCapture();
     state.currentPath = String(memo.server_path || memo.path || '');
     state.currentVersionTarget = {
@@ -489,7 +519,6 @@
     state.selectedTags = Array.isArray(memo.tags) ? [...memo.tags] : parseTags(memo.tags || '');
     state.selectedTagIds = Array.isArray(memo.tag_ids) ? [...memo.tag_ids] : [];
     renderTagChips();
-    await loadTags();
     editorController.reset(sanitizeHtml(memo.html || escHtml(memo.text || '').replace(/\n/g, '<br>')));
     drawingController.reset(memo.drawing_png || '');
     writeJson(CURRENT_KEY, {
@@ -502,15 +531,19 @@
     libraryController.hide();
     switchMode('text');
     setStatus('過去のメモを開きました');
+    loadTags();
+    return true;
   }
 
   async function openMemoPath(path) {
+    const epoch = ++state.memoEpoch;
     const targetPath = String(path || '').trim();
     if (!targetPath) throw new Error('クイックメモの保存先を確認できません');
     let memo;
     if (isCloudMode()) {
       const result = await window.MeldexStandaloneCloud.readText(targetPath);
-      memo = libraryController.parseMemoText(result?.content ?? result, targetPath);
+      memo = libraryController.parseMemoText(result?.content ?? result, targetPath, result?.etag);
+      if (!memo.quick_memo) throw new Error('対象はクイックメモではありません');
     } else {
       const query = new URLSearchParams({ path: targetPath });
       const response = await fetch(`${API_BASE}/api/quick-memo/item?${query}`);
@@ -518,7 +551,8 @@
       if (!response.ok) throw new Error(payload.error || payload.detail || 'クイックメモを読み込めませんでした');
       memo = payload.memo || payload;
     }
-    await openExistingMemo(memo);
+    if (epoch !== state.memoEpoch) return false;
+    return openExistingMemo(memo, epoch);
   }
 
   async function openRequestedMemo() {
@@ -536,14 +570,18 @@
   async function reloadCurrentVersion() {
     const path = String(state.currentPath || '').trim();
     if (!path) throw new Error('復元したメモの保存先を確認できません');
-    await openMemoPath(path);
+    if (!(await openMemoPath(path))) throw new Error('対象が切り替わったため、再読み込みを中止しました');
     setStatus('バージョンを復元しました');
   }
 
-  function applyIncomingShare() {
+  async function applyIncomingShare() {
     const shared = incomingSharePayload();
     if (!shared) return;
     preserveCurrentDraftBeforeShare();
+    if (!await ensureDurableRecords()) return false;
+    state.memoEpoch += 1;
+    state.currentPath = '';
+    state.currentVersionTarget = { path: '', type: 'file' };
     state.share = {
       source_url: shared.url,
       share_title: shared.title,
@@ -628,6 +666,9 @@
     state.dirty = true;
     const memo = collectMemo();
     persistDraft(memo);
+    // 送信中の入力も同じキューへ載せ、先行応答で保存済みにしない。
+    enqueueMemo(memo);
+    if (state.saving) state.flushRequested = true;
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => saveNow({ manual: false }), 900);
     setStatus('保存待ち');
@@ -637,6 +678,7 @@
     clearTimeout(state.saveTimer);
     state.saveTimer = 0;
     const memo = collectMemo();
+    if (!memo.server_path && !draftHasContent(memo)) return flushPendingQueue();
     const storedDraft = persistDraft(memo);
     const queued = enqueueMemo(memo);
     if (!storedDraft || !queued) {
@@ -644,6 +686,14 @@
       setStatus('保存領域がいっぱいです', true);
       return false;
     }
+    await drawingController.flush?.();
+    // フレームが直ちに閉じても、上の同期保存で送信待ちを残す。
+    const renderedMemo = collectMemo();
+    if (renderedMemo.memo_id === memo.memo_id) {
+      persistDraft(renderedMemo);
+      enqueueMemo(renderedMemo);
+    }
+    if (!await ensureDurableRecords()) return false;
     state.flushRequested = true;
     return drainQueue(opts);
   }
@@ -655,7 +705,7 @@
       appId: 'quick-memo',
       hasFinalDestination: () => true,
       getCloseState() {
-        const capturing = !!state.recording || !!state.speech || !!state.voiceFinalizePromise;
+        const capturing = state.voiceStarting || !!state.pendingVoice || !!state.recording || !!state.speech || !!state.voiceFinalizePromise;
         const pendingLocal = !!state.saveTimer || state.localSaveFailed;
         return {
           appId: 'quick-memo',
@@ -691,7 +741,7 @@
         clearTimeout(state.saveTimer);
         state.saveTimer = 0;
         const memo = collectMemo();
-        if (!persistDraft(memo) || !enqueueMemo(memo)) {
+        if (!persistDraft(memo) || ((memo.server_path || draftHasContent(memo)) && !enqueueMemo(memo))) {
           state.localSaveFailed = true;
           return false;
         }
@@ -725,9 +775,11 @@
   }
 
   async function finalizeVoiceForClose() {
+    // 許可ダイアログ中の遅いgetUserMedia結果は、このメモで開始させない。
+    if (state.voiceStarting) state.memoEpoch += 1;
     const recorder = state.recording;
     const speech = state.speech;
-    if (!recorder && !speech && !state.voiceFinalizePromise) return true;
+    if (!recorder && !speech && !state.voiceFinalizePromise) return !state.pendingVoice;
     const stopped = new Promise(resolve => {
       let pending = Number(!!recorder) + Number(!!speech);
       if (!pending) return resolve();
@@ -742,7 +794,7 @@
     stopVoiceRecording();
     await stopped;
     if (state.voiceFinalizePromise) await state.voiceFinalizePromise;
-    return !state.recording && !state.speech;
+    return !state.recording && !state.speech && !state.pendingVoice;
   }
 
   async function flushPendingQueue() {
@@ -770,7 +822,8 @@
         } while (state.flushRequested);
         state.dirty = !ok;
         const pendingMessage = isCloudMode() ? 'Dropbox接続後に自動送信' : 'Meldex起動後に自動送信';
-        setStatus(ok ? (isCloudMode() ? 'Dropboxに保存済み' : 'Meldexに保存済み') : pendingMessage);
+        setStatus(ok ? (isCloudMode() ? 'Dropboxに保存済み' : 'Meldexに保存済み')
+          : state.lastSaveError ? `保存できませんでした: ${state.lastSaveError}。入力を保持しています` : pendingMessage, !ok && !!state.lastSaveError);
         return ok;
       } finally {
         state.saving = false;
@@ -781,18 +834,26 @@
   }
 
   async function flushQueue() {
+    if (navigator.locks?.request) return navigator.locks.request('meldex:quick-memo:sync', flushQueueUnlocked);
+    return flushQueueUnlocked();
+  }
+
+  async function flushQueueUnlocked() {
+    state.lastSaveError = '';
     const snapshot = readJson(QUEUE_KEY, []);
     if (!Array.isArray(snapshot) || !snapshot.length) return true;
     const cloud = isCloudMode();
     if (cloud && !cloudConnected()) return false;
     const sent = new Set();
     const failed = new Set();
+    const results = new Map();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
     for (const item of snapshot) {
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
         sent.add(item.memo_id);
+        results.set(item.memo_id, result);
         const current = readJson(CURRENT_KEY, {});
         if (current.memo_id === item.memo_id) {
           current.server_path = result.path || current.server_path || '';
@@ -804,6 +865,8 @@
             type: current.version_type,
           };
           current.target_sheet = result.target_sheet || current.target_sheet || item.target_sheet || '';
+          if (result.memo_revision) current.memo_revision = result.memo_revision;
+          if (result.cloud_etag) current.cloud_etag = result.cloud_etag;
           // 保存中にタグを付け外しした場合、古い要求の戻り値で現在の選択を
           // 巻き戻さない。updated_at が同じ要求に限ってサーバー正規化を反映する。
           if (Array.isArray(result.tags) && current.updated_at === item.updated_at) {
@@ -813,7 +876,8 @@
           }
           writeJson(CURRENT_KEY, current);
         }
-      } catch {
+      } catch (error) {
+        state.lastSaveError = String(error?.message || error);
         failed.add(item.memo_id);
       }
     }
@@ -822,6 +886,14 @@
       if (!sent.has(item.memo_id) && !failed.has(item.memo_id)) return true;
       if (failed.has(item.memo_id)) return true;
       return queueItemSignature(item) !== signatures.get(item.memo_id);
+    });
+    remaining.forEach(item => {
+      const result = results.get(item.memo_id);
+      if (result) {
+        item.server_path = result.path || item.server_path || '';
+        if (result.memo_revision) item.memo_revision = result.memo_revision;
+        if (result.cloud_etag) item.cloud_etag = result.cloud_etag;
+      }
     });
     if (!writeJson(QUEUE_KEY, remaining)) return false;
     return remaining.length === 0;
@@ -868,6 +940,12 @@
   function cloudConnected() {
     return window.MeldexStandaloneCloud && window.MeldexStandaloneCloud.getStatus
       && window.MeldexStandaloneCloud.getStatus().connected === true;
+  }
+
+  function cloudFolderPath() {
+    const root = String(window.MeldexStandaloneCloud?.getStatus?.().activeRoot?.path || '').replace(/\/$/, '');
+    if (!/^__dropbox_root__\/[^/]+$/.test(root)) throw new Error('Dropboxの登録済み保存先を確認できません');
+    return root + '/' + CLOUD_SHEET_NAME;
   }
 
   function cloudCandidate(value) {
@@ -975,7 +1053,7 @@
     const id = String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
     const firstLine = (item.text || '').trim().split(/\r?\n/)[0] || '';
     const title = String(item.title || firstLine || 'メモ').trim().slice(0, 40).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') || 'メモ';
-    return `${CLOUD_SHEET_NAME}/${stamp}_${title}_${id}.md`;
+    return `${cloudFolderPath()}/${stamp}_${title}_${id}.md`;
   }
 
   function cloudMemoTags(item) {
@@ -1046,18 +1124,22 @@
     window.__MELDEX_QUICK_MEMO_TEST__.cloudFrontmatterText = cloudFrontmatterText;
     window.__MELDEX_QUICK_MEMO_TEST__.cloudPatchPropertiesBlock = cloudPatchPropertiesBlock;
     window.__MELDEX_QUICK_MEMO_TEST__.parseCloudMemoFile = parseCloudMemoFile;
+    window.__MELDEX_QUICK_MEMO_TEST__.saveMemoCloud = saveMemoCloud;
   }
 
-  async function ensureCloudSheet() {
+  async function ensureCloudSheet(folder) {
+    const name = folder.split('/').pop();
     // 既存メモの更新時も含め毎回呼ぶ（gb-quick-memo-sync.jsのensureMemoWorkspace()と
     // 同じ方針）。シートが外部操作で削除されていた場合でも次の保存で自己修復できるように、
     // 「新規作成時だけ」に絞り込まない。
     try {
-      await window.apiFetch('/file?path=' + encodeURIComponent(CLOUD_SHEET_NAME + '/' + CLOUD_SHEET_NAME + '.md'));
-    } catch {
-      await window.apiPost('/outliner/add', { type: 'database', label: CLOUD_SHEET_NAME, parent: '' }).catch(() => {});
+      await window.apiFetch('/file?path=' + encodeURIComponent(folder + '/' + name + '.md'));
+    } catch (error) {
+      if (!cloudNotFound(error)) throw error;
+      await window.apiPost('/outliner/add', { type: 'database', label: name, parent: folder.split('/').slice(0, -1).join('/') });
     }
-    await window.apiPut('/db-metadata?path=' + encodeURIComponent(CLOUD_SHEET_NAME), {
+    const existing = await window.apiFetch('/db-metadata?path=' + encodeURIComponent(folder));
+    await window.apiPut('/db-metadata?path=' + encodeURIComponent(folder), {
       type: 'settings-db',
       property_types: {
         種別: { type: 'select', options: ['メモ'] },
@@ -1068,19 +1150,27 @@
         URL: { type: 'url' },
         共有タイトル: { type: 'text' },
         共有元: { type: 'text' },
+        ...(existing?.property_types || existing?.propertyTypes || {}),
       },
-    }).catch(() => {});
+    });
   }
 
   // /file の上書きは、対象パスの事前GETで得たetagが無いと拒否される
   // （standalone-cloud-runtime.jsのrequestJson()側の仕様）。ファイルが存在しなければ
   // create_only指定で新規作成として書く。既存メモの更新にも、フォールバック書き込みにも使う。
+  function cloudNotFound(error) {
+    const status = Number(error?.status || error?.status_code || 0);
+    if (status) return status === 404;
+    return /^(not_found|path\/not_found)$/.test(String(error?.code || error?.error_summary || ''))
+      || /^(not_found|path\/not_found)$/.test(String(error?.message || ''));
+  }
+
   async function cloudWriteFile(path, content, existingData) {
     let current = existingData || null;
     try {
       if (!current) current = await window.apiFetch('/file?path=' + encodeURIComponent(path));
     } catch (error) {
-      if (Number(error?.status || 0) !== 404 && !/not found|見つかりません/i.test(String(error?.message || error))) {
+      if (!cloudNotFound(error)) {
         throw error;
       }
       current = null;
@@ -1091,48 +1181,39 @@
     const body = current
       ? { content, if_match_etag: String(current.etag || '') }
       : { content, create_only: true };
-    await window.apiPost('/file?path=' + encodeURIComponent(path), body);
+    return window.apiPost('/file?path=' + encodeURIComponent(path), body);
   }
 
   async function saveMemoCloud(item) {
-    await ensureCloudSheet();
+    await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
     const path = cloudMemoPath(item);
+    const folder = path.split('/').slice(0, -1).join('/');
+    await ensureCloudSheet(folder);
     const tags = cloudMemoTags(item);
-    if (!item.server_path) {
-      const frontmatter = cloudMemoFrontmatter(item, path, tags, null);
-      try {
-        const created = await window.apiPost('/entity/create', {
-          parent_path: CLOUD_SHEET_NAME,
-          name: path.split('/').pop().replace(/\.md$/i, ''),
-          properties: frontmatter.properties,
-          source: 'quick-memo',
-          reviewed: true,
-        });
-        const createdPath = (created && created.path) || path;
-        await window.apiPut('/value?path=' + encodeURIComponent(createdPath), { new_body: cloudMemoBody(item) });
-        return { ok: true, path: createdPath, target_sheet: CLOUD_SHEET_NAME, tags };
-      } catch {
-        // /entity/create または続く/valueが失敗した場合（前回の再試行で実体が
-        // 既に作成済みの可能性を含む）は、決定的なパスへの直接書き込みにフォールバックする。
-        // これにより再試行のたびに重複エントリが増えるのを防ぐ。
-      }
-    }
+    // 本文とクイックメモ識別子を一度の条件付き書込で保存する。
+    // 空のエントリを先に作ると、本文の失敗・再試行で重複が残る。
     let existingData = null;
     try {
       existingData = await window.apiFetch('/file?path=' + encodeURIComponent(path));
     } catch (error) {
-      if (Number(error?.status || 0) !== 404 && !/not found|見つかりません/i.test(String(error?.message || error))) {
+      if (!cloudNotFound(error)) {
         throw error;
       }
     }
     const existing = parseCloudMemoFile(existingData);
+    if (existingData && (existing.frontmatter.quick_memo !== true || existing.frontmatter.quick_memo_id !== item.memo_id)) {
+      throw new Error('保存先は別のメモです。入力を保持しています');
+    }
+    if (item.cloud_etag && item.cloud_etag !== existing.etag) {
+      throw new Error('クイックメモが別の画面で変更されています。入力を保持して再読み込みしてください');
+    }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
-    await cloudWriteFile(
+    const written = await cloudWriteFile(
       path,
       cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter),
       existingData,
     );
-    return { ok: true, path, target_sheet: CLOUD_SHEET_NAME, tags };
+    return { ok: true, path, target_sheet: folder, tags, cloud_etag: written?.etag || '' };
   }
 
   function initCloudMode() {
@@ -1279,7 +1360,7 @@
 
   // 選出基準に沿って候補の並び順を作る（重複なし・存在するタグのみ）。
   function _tagRailCandidateOrder() {
-    const known = new Set(state.allTags);
+    const known = new Set([...state.allTags, ...state.selectedTags]);
     const seen = new Set();
     const ordered = [];
     const push = (name) => {
@@ -1534,6 +1615,14 @@
   // --- ボイスモード --------------------------------------------------------
 
   async function startVoiceRecording() {
+    if (state.voiceStarting || state.speech || state.recording || state.voiceFinalizePromise) return;
+    if (state.pendingVoice) {
+      const pending = state.pendingVoice;
+      state.voiceFinalizePromise = transcribeBlob(pending.blob, pending.epoch)
+        .finally(() => { state.voiceFinalizePromise = null; });
+      return state.voiceFinalizePromise;
+    }
+    const epoch = state.memoEpoch;
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (Recognition) {
       startBrowserSpeech(Recognition);
@@ -1543,8 +1632,14 @@
       els.voiceStatus.textContent = 'このブラウザではボイス認識を利用できません';
       return;
     }
+    state.voiceStarting = true;
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (epoch !== state.memoEpoch || state.currentMode !== 'voice') {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       const recorder = new MediaRecorder(stream);
       state.recordChunks = [];
       recorder.ondataavailable = (event) => {
@@ -1552,11 +1647,12 @@
       };
       recorder.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
-        state.recording = null;
+        if (state.recording === recorder) state.recording = null;
         updateVoiceUI('stopped');
         if (recorder._meldexCancelled) return;
         const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
-        state.voiceFinalizePromise = transcribeBlob(blob)
+        state.pendingVoice = { blob, epoch };
+        state.voiceFinalizePromise = transcribeBlob(blob, epoch)
           .finally(() => { state.voiceFinalizePromise = null; });
       };
       state.recording = recorder;
@@ -1565,17 +1661,23 @@
       startVoiceTimer();
       updateVoiceUI('recording');
     } catch {
+      stream?.getTracks().forEach(track => track.stop());
+      state.recording = null;
       els.voiceStatus.textContent = 'マイクを利用できません';
+    } finally {
+      state.voiceStarting = false;
     }
   }
 
   function startBrowserSpeech(Recognition) {
+    if (state.speech) return;
     const rec = new Recognition();
     rec.lang = 'ja-JP';
     rec.continuous = true;
     rec.interimResults = true;
     let accumulated = els.voiceTranscript.textContent || '';
     rec.onresult = (event) => {
+      if (state.speech !== rec) return;
       let finalText = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
@@ -1583,10 +1685,13 @@
       if (finalText) {
         accumulated += finalText + ' ';
         els.voiceTranscript.textContent = accumulated;
+        insertText(finalText);
+        scheduleSave();
       }
     };
     rec.onerror = () => { els.voiceStatus.textContent = 'ボイス認識エラー'; };
     rec.onend = () => {
+      if (state.speech !== rec) return;
       state.speech = null;
       if (state.voicePausing) {
         // 一時停止のための停止。UIは pauseVoiceRecording 側が既に更新済み
@@ -1597,7 +1702,11 @@
       stopVoiceTimer();
     };
     state.speech = rec;
-    rec.start();
+    try { rec.start(); } catch {
+      state.speech = null;
+      els.voiceStatus.textContent = 'マイクを利用できません';
+      return;
+    }
     state.voiceStartTime = Date.now();
     startVoiceTimer();
     updateVoiceUI('recording');
@@ -1635,14 +1744,8 @@
     if (state.speech) {
       state.voicePausing = false;
       state.speech.stop();
-      state.speech = null;
     }
     updateVoiceUI('stopped');
-    const text = els.voiceTranscript.textContent.trim();
-    if (text) {
-      insertText(text);
-      scheduleSave();
-    }
   }
 
   function _stopVoiceCapture() {
@@ -1687,7 +1790,7 @@
     }
   }
 
-  async function transcribeBlob(blob) {
+  async function transcribeBlob(blob, epoch = state.memoEpoch) {
     els.voiceStatus.textContent = '文字起こし中...';
     try {
       if (isCloudMode()) throw new Error('cloud-local-transcription-disabled');
@@ -1696,21 +1799,30 @@
         audio_base64: dataUrl,
         mime_type: blob.type || 'audio/webm',
       });
+      if (epoch !== state.memoEpoch) return;
       if (result.text) {
         els.voiceTranscript.textContent = (els.voiceTranscript.textContent + ' ' + result.text).trim();
         insertText(result.text);
         scheduleSave();
       }
+      state.pendingVoice = null;
+      els.voiceRecordBtn.setAttribute('aria-label', '録音開始');
+      els.voiceRecordBtn.setAttribute('title', '録音開始');
       els.voiceStatus.textContent = '文字起こし完了';
-    } catch {
-      els.voiceStatus.textContent = 'OpenAI文字起こしを利用できません';
+    } catch (error) {
+      els.voiceStatus.textContent = '文字起こしに失敗しました。録音を保持しています。マイクボタンで再試行できます: ' + (error?.message || error);
+      els.voiceRecordBtn.setAttribute('aria-label', '文字起こしを再試行');
+      els.voiceRecordBtn.setAttribute('title', '文字起こしを再試行');
     }
   }
 
   function insertText(text) {
     editorController.mutate(() => {
+      const before = els.editor.innerHTML;
       els.editor.focus();
       document.execCommand('insertText', false, text + ' ');
+      // ボイスモードでは本文欄が非表示で、execCommandは挿入できない。
+      if (els.editor.innerHTML === before) els.editor.appendChild(document.createTextNode(text + ' '));
     });
   }
 
@@ -1747,15 +1859,16 @@
   }
 
   function readJson(key, fallback) {
-    if (durableMemory.has(key)) return structuredClone(durableMemory.get(key));
+    if (failedLocalWrites.has(key) && durableMemory.has(key)) return structuredClone(durableMemory.get(key));
     try {
       const raw = localStorage.getItem(key);
-      const value = raw ? JSON.parse(raw) : fallback;
-      if (raw) durableMemory.set(key, value);
-      return value;
-    } catch {
-      return fallback;
-    }
+      if (raw) {
+        const value = JSON.parse(raw);
+        durableMemory.set(key, value);
+        return value;
+      }
+    } catch {}
+    return durableMemory.has(key) ? structuredClone(durableMemory.get(key)) : fallback;
   }
 
   function showTagPicker() {
@@ -1972,7 +2085,20 @@
 
   function writeJson(key, value) {
     durableMemory.set(key, structuredClone(value));
-    const durable = window.MeldexStandaloneLocalDrafts?.putRaw?.(`quick-memo:${key}`, value);
+    let localOk = false;
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      failedLocalWrites.delete(key);
+      localOk = true;
+    } catch {
+      failedLocalWrites.add(key);
+    }
+    const store = window.MeldexStandaloneLocalDrafts;
+    const recovery = localOk ? null : { value, previousLocal: (() => { try { return localStorage.getItem(key); } catch { return null; } })() };
+    const durable = store?.putRaw ? Promise.all([
+      store.putRaw(`quick-memo:${key}`, value),
+      store.putRaw(`quick-memo:recovery:${key}`, recovery),
+    ]) : null;
     durable?.then?.(
       () => { state.localSaveFailed = false; },
       error => {
@@ -1980,11 +2106,27 @@
         setStatus('端末への保存に失敗: ' + (error?.message || error), true);
       },
     );
+    return localOk || !!durable;
+  }
+
+  async function ensureDurableRecords() {
+    if (!failedLocalWrites.size) return true;
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      const store = window.MeldexStandaloneLocalDrafts;
+      if (!store?.putRaw) throw new Error('端末下書きの保存機能を利用できません');
+      for (const key of failedLocalWrites) {
+        const value = readJson(key, null);
+        let previousLocal = null;
+        try { previousLocal = localStorage.getItem(key); } catch {}
+        await store.putRaw(`quick-memo:${key}`, value);
+        await store.putRaw(`quick-memo:recovery:${key}`, { value, previousLocal });
+      }
+      state.localSaveFailed = false;
       return true;
-    } catch {
-      return !!durable;
+    } catch (error) {
+      state.localSaveFailed = true;
+      setStatus('端末への保存に失敗: ' + (error?.message || error), true);
+      return false;
     }
   }
 
@@ -1995,11 +2137,20 @@
       // IndexedDB の open/transaction がブラウザ側で応答しない場合でも、localStorage の
       // 下書きで編集UIを起動できるようにする。未完了のPromiseは後から解決してもここでは
       // 状態へ書き戻さないため、起動後の入力を古い値で上書きしない。
-      const value = await Promise.race([
-        store.getRaw(`quick-memo:${key}`, null).catch(() => null),
+      const records = await Promise.race([
+        Promise.all([store.getRaw(`quick-memo:${key}`, null), store.getRaw(`quick-memo:recovery:${key}`, null)]).catch(() => null),
         new Promise(resolve => setTimeout(() => resolve(null), 1500)),
       ]);
+      if (!records) continue;
+      const [value, recovery] = records;
       if (value != null) durableMemory.set(key, value);
+      let local = null;
+      try { local = localStorage.getItem(key); } catch {}
+      if (recovery && recovery.previousLocal === local) {
+        durableMemory.set(key, recovery.value);
+        try { localStorage.setItem(key, JSON.stringify(recovery.value)); }
+        catch { failedLocalWrites.add(key); }
+      }
     }
   }
 

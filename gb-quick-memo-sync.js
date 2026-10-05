@@ -15,7 +15,41 @@
   }
 
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+  }
+
+  function signature(item) { return JSON.stringify(item); }
+
+  function notFound(error) {
+    const status = Number(error?.status || error?.status_code || 0);
+    if (status) return status === 404;
+    return /^(not_found|path\/not_found)$/.test(String(error?.code || error?.message || ''));
+  }
+
+  // 更新対象以外のYAMLブロックをそのまま保ち、未知の列や将来フィールドを落とさない。
+  function patchMapping(raw, updates, indent = 0) {
+    const lines = String(raw).split(/(?<=\n)/);
+    const pattern = new RegExp('^' + ' '.repeat(indent) + '([^\\s:#][^:]*):');
+    const starts = [];
+    lines.forEach((line, index) => { const match = line.match(pattern); if (match) starts.push({ index, key: match[1].trim() }); });
+    let output = lines.slice(0, starts[0]?.index ?? lines.length).join('');
+    const seen = new Set();
+    starts.forEach((start, index) => {
+      const block = lines.slice(start.index, starts[index + 1]?.index ?? lines.length).join('');
+      if (!Object.hasOwn(updates, start.key)) { output += block; return; }
+      seen.add(start.key);
+      if (start.key === 'properties' && /^properties:\s*(?:\r?\n|$)/.test(block)) {
+        const tail = block.slice(block.indexOf('\n') + 1);
+        const childIndent = tail.match(/^( +)\S[^:]*:/m)?.[1]?.length || 2;
+        output += 'properties:\n' + patchMapping(tail, updates.properties, childIndent);
+      } else output += ' '.repeat(indent) + start.key + ': ' + jsonValue(updates[start.key]) + '\n';
+    });
+    Object.entries(updates).forEach(([key, value]) => {
+      if (seen.has(key)) return;
+      if (output && !output.endsWith('\n')) output += '\n';
+      output += ' '.repeat(indent) + key + ': ' + jsonValue(value) + '\n';
+    });
+    return output;
   }
 
   function jsonFetch(path, opts) {
@@ -69,7 +103,11 @@
       .map(part => safeFileStem(part, '').trim())
       .filter(Boolean)
       .join('/');
-    return clean || 'クイックメモ';
+    const path = clean || 'クイックメモ';
+    if (path.startsWith('__dropbox_root__/')) return path;
+    const savedRoot = String(item?.server_path || '').match(/^__dropbox_root__\/[^/]+/)?.[0];
+    const root = savedRoot || window.MeldexStandaloneCloud?.getStatus?.().activeRoot?.path;
+    return root ? String(root).replace(/\/$/, '') + '/' + path : path;
   }
 
   function targetSheetName(item) {
@@ -182,12 +220,13 @@
     const parent = sheetPath.includes('/') ? sheetPath.split('/').slice(0, -1).join('/') : '';
     try {
       await apiFetch('/file?path=' + encodeURIComponent(`${sheetPath}/${sheetName}.md`), { silentError: true });
-    } catch {
+    } catch (error) {
+      if (!notFound(error)) throw error;
       await jsonFetch('/outliner/add', {
         method: 'POST',
         silentError: true,
         body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
-      }).catch(() => undefined);
+      });
     }
     const defaults = {
       種別: { type: 'select', options: ['メモ'] }, タグ: { type: 'multi-select', options: [] },
@@ -195,7 +234,7 @@
       保存先: { type: 'text' }, メモID: { type: 'text' }, URL: { type: 'url' },
       共有タイトル: { type: 'text' }, 共有元: { type: 'text' },
     };
-    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true }).catch(() => ({}));
+    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true });
     const existingTypes = existing?.property_types || existing?.propertyTypes || {};
     await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
       method: 'PUT',
@@ -214,37 +253,33 @@
     await ensureMemoWorkspace(item);
     const path = memoPath(item);
     const frontmatter = memoFrontmatter(item, path);
-    if (!item.server_path && !item.path) {
-      try {
-        const created = await jsonFetch('/entity/create', {
-          method: 'POST',
-          silentError: true,
-          body: JSON.stringify({
-            parent_path: targetSheetPath(item),
-            name: path.split('/').pop().replace(/\.md$/i, ''),
-            properties: frontmatter.properties,
-            source: 'quick-memo',
-            reviewed: true,
-          }),
-        });
-        const createdPath = created?.path || path;
-        await jsonFetch('/value?path=' + encodeURIComponent(createdPath), {
-          method: 'PUT',
-          silentError: true,
-          body: JSON.stringify({ new_body: memoBody(item) }),
-        });
-        item.server_path = createdPath;
-        return { ok: true, path: createdPath, target_sheet: targetSheetPath(item) };
-      } catch {}
+    let existing = null;
+    try { existing = await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true }); }
+    catch (error) { if (!notFound(error)) throw error; }
+    let content = frontmatterText(frontmatter, memoBody(item));
+    if (existing) {
+      if (!existing.etag) throw new Error('既存メモの更新情報を確認できません');
+      if (item.cloud_etag && item.cloud_etag !== existing.etag) throw new Error('クイックメモが別の画面で変更されています');
+      const match = String(existing.content || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      const parser = window.MeldexCloudFrontmatterLite?.yamlLite;
+      if (!match || !parser) throw new Error('既存メモの追加情報を安全に読み取れません');
+      const previous = parser(match[1]);
+      if (previous.quick_memo !== true || previous.quick_memo_id !== item.memo_id) throw new Error('保存先は別のメモです');
+      delete frontmatter.id;
+      delete frontmatter.created;
+      delete frontmatter.relations;
+      const properties = frontmatter.properties;
+      // Inline辞書は未知の列を含め、ブロック辞書は更新列だけを置換する。
+      if (/^properties:\s*\S/m.test(match[1])) frontmatter.properties = { ...(previous.properties || {}), ...properties };
+      content = '---\n' + patchMapping(match[1], frontmatter) + '---\n\n' + memoBody(item);
     }
-    const content = frontmatterText(frontmatter, memoBody(item));
-    await jsonFetch('/file?path=' + encodeURIComponent(path), {
+    const written = await jsonFetch('/file?path=' + encodeURIComponent(path), {
       method: 'POST',
       silentError: true,
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(existing ? { if_match_etag: existing.etag } : { create_only: true }) }),
     });
     item.server_path = path;
-    return { ok: true, path, target_sheet: targetSheetPath(item) };
+    return { ok: true, path, target_sheet: targetSheetPath(item), cloud_etag: written?.etag || '' };
   }
 
   async function saveItem(item) {
@@ -255,35 +290,59 @@
         body: JSON.stringify(item),
       });
       if (result?.ok) return result;
-    } catch {}
+      throw new Error('クイックメモの保存を確認できませんでした');
+    } catch (error) {
+      // 権限、ロック、競合、通信失敗を別の書込APIで迂回しない。
+      if (![404, 405, 501].includes(Number(error?.status || error?.status_code || 0))) throw error;
+    }
     return saveViaExistingApis(item);
   }
 
   async function syncQueue() {
+    if (navigator.locks?.request) return navigator.locks.request('meldex:quick-memo:sync', syncQueueUnlocked);
+    return syncQueueUnlocked();
+  }
+
+  async function syncQueueUnlocked() {
     if (syncing || typeof apiFetch !== 'function') return false;
     const queue = readJson(QUEUE_KEY, []);
     if (!Array.isArray(queue) || !queue.length) return true;
     syncing = true;
-    const remaining = [];
+    const sent = new Map();
     try {
       for (const raw of queue) {
         const item = raw && typeof raw === 'object' ? { ...raw } : null;
         if (!item) continue;
         try {
           const result = await saveItem(item);
+          sent.set(item.memo_id, { signature: signature(raw), result });
           const current = readJson(CURRENT_KEY, {});
           if (current?.memo_id === item.memo_id) {
             current.server_path = result.path || item.server_path || current.server_path || '';
-            if (Array.isArray(result.tags)) current.tags = result.tags;
+            if (Array.isArray(result.tags) && current.updated_at === item.updated_at) current.tags = result.tags;
+            current.version_path = result.version_path || current.version_path || current.server_path;
+            current.version_type = result.version_type || current.version_type || 'file';
+            if (result.memo_revision) current.memo_revision = result.memo_revision;
+            if (result.cloud_etag) current.cloud_etag = result.cloud_etag;
             delete current.auto_tag;
             writeJson(CURRENT_KEY, current);
           }
-        } catch {
-          remaining.push(raw);
-        }
+        } catch {}
       }
-      writeJson(QUEUE_KEY, remaining);
-      return remaining.length === 0;
+      const latest = readJson(QUEUE_KEY, []);
+      const remaining = (Array.isArray(latest) ? latest : []).filter(item => {
+        const saved = sent.get(item?.memo_id);
+        return !saved || signature(item) !== saved.signature;
+      });
+      remaining.forEach(item => {
+        const saved = sent.get(item.memo_id);
+        if (saved) {
+          item.server_path = saved.result.path || item.server_path || '';
+          if (saved.result.memo_revision) item.memo_revision = saved.result.memo_revision;
+          if (saved.result.cloud_etag) item.cloud_etag = saved.result.cloud_etag;
+        }
+      });
+      return writeJson(QUEUE_KEY, remaining) && remaining.length === 0;
     } finally {
       syncing = false;
     }

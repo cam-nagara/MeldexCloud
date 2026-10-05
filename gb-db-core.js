@@ -538,6 +538,17 @@ function _dbPropagateEntryRevision(entityPath, revision) {
 }
 
 async function _apiPutValue(valObj, updates) {
+  // 楽観描画された新規値を直後に編集しても、作成結果の候補番号を待って更新する。
+  // 編集UIが保存前に複製した参照にも、同じ作成Promiseを引き継ぐ。
+  if (valObj?._pendingCreate) {
+    const created = await valObj._pendingCreate;
+    if (valObj.candidate_index == null && created?.candidate_index != null) {
+      valObj.candidate_index = created.candidate_index;
+      valObj.file = created.path || created.file || valObj.file;
+      valObj.entry_path = created.new_path || created.path || valObj.entry_path;
+    }
+    delete valObj._pendingCreate;
+  }
   if (valObj?._topicCanonicalOnly && valObj?.topicRef) {
     const saved = await window.MeldexTopicPlacementUI.updateProjectedValue(valObj, updates);
     if (updates?._delete) valObj.value = '';

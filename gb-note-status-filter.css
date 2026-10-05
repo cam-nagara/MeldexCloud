@@ -1,0 +1,19 @@
+.note-status-filter-popup{position:fixed;z-index:100050;min-width:220px;max-height:min(70vh,520px);overflow:auto;padding:6px}
+.note-status-filter-popup-title,.note-status-filter-section-title{padding:6px 9px;font-size:11px;font-weight:700;color:var(--fg2);letter-spacing:.04em}
+.note-status-filter-row{display:flex;width:100%;align-items:center;gap:9px;padding:7px 9px;border:0;border-radius:5px;background:transparent;color:var(--fg);text-align:left;cursor:pointer}
+.note-status-filter-row:hover,.note-status-filter-row[aria-checked="true"]{background:var(--bg4)}
+.note-status-filter-check{display:flex;align-items:center;gap:8px;padding:6px 9px;cursor:pointer;color:var(--fg);font-size:12px}
+.note-status-dot{width:9px;height:9px;border-radius:50%;background:var(--fg3)}
+.note-status-dot[data-status="todo"],[data-note-status="todo"]::after{--note-status-color:#7b8794}
+.note-status-dot[data-status="doing"],[data-note-status="doing"]::after{--note-status-color:#2f80ed}
+.note-status-dot[data-status="done"],[data-note-status="done"]::after{--note-status-color:#27ae60}
+.note-status-dot[data-status="hold"],[data-note-status="hold"]::after{--note-status-color:#f2994a}
+.note-status-dot:not([data-status="unset"]){background:var(--note-status-color)}
+#page-content .note-status-block{position:relative}
+#page-content .note-status-block::after{content:attr(data-note-status-label);float:right;margin-inline-start:8px;padding:1px 6px;border:1px solid var(--note-status-color,var(--border));border-radius:999px;color:var(--note-status-color,var(--fg2));font-size:10px;line-height:1.5;pointer-events:none}
+#page-content [data-note-status="todo"]::after{content:"未着手"}
+#page-content [data-note-status="doing"]::after{content:"進行中"}
+#page-content [data-note-status="done"]::after{content:"完了"}
+#page-content [data-note-status="hold"]::after{content:"保留"}
+#page-content .note-filter-hidden{display:none!important}
+#page-note-filter-btn.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent)}

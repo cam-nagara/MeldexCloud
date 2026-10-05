@@ -358,7 +358,7 @@
 
   function _ensureRootInDocument() {
     const root = _ensureRoot();
-    if (root.parentNode || !document.body?.appendChild) return root;
+    if ((root.parentNode && root.isConnected !== false) || !document.body?.appendChild) return root;
     let storage = typeof document.getElementById === 'function' ? document.getElementById('legacy-views') : null;
     if (!storage) {
       storage = document.createElement('div');

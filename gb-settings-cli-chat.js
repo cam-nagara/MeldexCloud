@@ -9,20 +9,23 @@ function _settingsCliIcon(name, size) {
 
 const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
   codex: [
+    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
   ],
   claude_code: [
-    { id: 'claude-fable-5', name: 'Fable 5' },
-    { id: 'claude-opus-5', name: 'Opus 5' },
-    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
-    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
-    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+    { id: 'opus', name: 'Opus（最新版）' },
+    { id: 'sonnet', name: 'Sonnet（最新版）' },
+    { id: 'haiku', name: 'Haiku（最新版）' },
+    { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+    { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
     { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
     { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
     { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
@@ -96,7 +99,17 @@ function _renderCliChatSettingsContainer(container, config) {
     <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
     <div id="settings-workspace-cli-relay-container"></div>`;
   container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
-  container.querySelector('#settings-cli-chat-save')?.addEventListener('click', () => saveCliChatSettingsFromSettingsDialog(container.closest('.modal-overlay') || document));
+  container.querySelector('#settings-cli-chat-save')?.addEventListener('click', async () => {
+    const overlay = container.closest('.modal-overlay');
+    const status = container.querySelector('#settings-cli-chat-status');
+    await _runSettingsMaintenanceAction(overlay || container, status, async () => {
+      const saved = await saveCliChatSettingsFromSettingsDialog(overlay || document, { skipReload: true });
+      if (saved && overlay?.__settingsDirtyControlIds instanceof Set) {
+        [...overlay.__settingsDirtyControlIds].filter(id => id.startsWith('settings-cli-chat-')
+          || id.startsWith('settings-workspace-cli-')).forEach(id => overlay.__settingsDirtyControlIds.delete(id));
+      }
+    });
+  });
   if (typeof renderWorkspaceCliRelaySettingsForSettings === 'function') renderWorkspaceCliRelaySettingsForSettings(container.closest('.modal-overlay') || document);
   if (typeof replaceIcons === 'function') replaceIcons(container);
 }
@@ -107,7 +120,9 @@ async function renderCliChatSettingsForSettings(root) {
   if (!container) return;
   container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
   try {
-    _renderCliChatSettingsContainer(container, await apiFetch('/cli-chat/config'));
+    const config = await apiFetch('/cli-chat/config');
+    if (!container.isConnected) return;
+    _renderCliChatSettingsContainer(container, config);
   } catch (e) {
     container.innerHTML = `<div class="gb-section-desc" style="color:var(--red);">CLIチャット設定を読み込めませんでした: ${_settingsCliEsc(e?.message || e)}</div>`;
   }

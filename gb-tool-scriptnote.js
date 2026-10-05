@@ -172,6 +172,13 @@ class ScriptNoteComponent extends ToolComponent {
     this._toolbarBound = false;
     this._fileLockChangeHandler = () => this._syncReadOnlyFromFileLock();
     window.addEventListener?.('meldex:file-locks-updated', this._fileLockChangeHandler);
+    this._historyRestoredHandler = event => {
+      if (event.detail?.editor !== this._editor) return;
+      const titleInput = this.el?.querySelector('#title-input');
+      if (titleInput) titleInput.value = this._editor.doc.title || '';
+      this._syncEditorToggleButtons();
+    };
+    window.addEventListener?.('meldex:scriptnote-history-restored', this._historyRestoredHandler);
   }
 
   create() {
@@ -237,7 +244,7 @@ class ScriptNoteComponent extends ToolComponent {
     }
     const isPaneActive = this.paneId === (typeof GBLayout !== 'undefined' ? GBLayout.activePane : this.paneId);
     // ヒストリースコープ設定
-    if (this._editor?._path && typeof historySetScope === 'function') {
+    if (this._editor?.doc && typeof historySetScope === 'function') {
       historySetScope(this._editor._historyScope());
     }
     if (this.state.scenarioPath) {
@@ -281,6 +288,7 @@ class ScriptNoteComponent extends ToolComponent {
     }
     if (this._editor) { this._editor.destroy(); this._editor = null; }
     window.removeEventListener?.('meldex:file-locks-updated', this._fileLockChangeHandler);
+    window.removeEventListener?.('meldex:scriptnote-history-restored', this._historyRestoredHandler);
     this._restoreDetailPanel();
     // SEP WebSocket の参照カウントを減らす（最後のコンポーネント破棄で WS を閉じる）
     if (typeof _sn2SepRelease === 'function') _sn2SepRelease();

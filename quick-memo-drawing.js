@@ -144,6 +144,8 @@
     let activeStroke = null;
     let baseDataUrl = '';
     let renderEpoch = 0;
+    let renderPromise = Promise.resolve();
+    let rendering = false;
     let logicalWidth = 1;
     let logicalHeight = 1;
 
@@ -212,7 +214,8 @@
 
     async function renderAll() {
       const epoch = ++renderEpoch;
-      const baseImage = await loadImage(baseDataUrl);
+      rendering = !!baseDataUrl;
+      const baseImage = baseDataUrl ? await loadImage(baseDataUrl) : null;
       if (epoch !== renderEpoch) return;
       resetContext();
       if (baseImage) context.drawImage(baseImage, 0, 0, logicalWidth, logicalHeight);
@@ -222,10 +225,12 @@
         if (command.type === 'fill') floodFill(context, canvas, command, false);
         if (command.type === 'clear') resetContext();
       }
+      rendering = false;
     }
 
     function resize() {
       const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       const nextWidth = Math.max(1, Math.round(rect.width));
       const nextHeight = Math.max(1, Math.round(rect.height));
       const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -235,7 +240,7 @@
       canvas.width = Math.round(nextWidth * dpr);
       canvas.height = Math.round(nextHeight * dpr);
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
-      renderAll();
+      renderPromise = renderAll();
     }
 
     function pushCommand(command) {
@@ -260,6 +265,7 @@
     }
 
     function beginStroke(event) {
+      if (rendering || activeStroke || (event.button != null && event.button !== 0)) return;
       const point = pointFromEvent(canvas, event);
       if (tool === 'fill') {
         const command = {
@@ -337,18 +343,18 @@
     function undo() {
       if (cursor <= 0) return false;
       cursor -= 1;
-      renderAll();
+      renderPromise = renderAll();
       notifyHistory();
-      options.onChanged?.();
+      renderPromise.then(() => options.onChanged?.());
       return true;
     }
 
     function redo() {
       if (cursor >= commands.length) return false;
       cursor += 1;
-      renderAll();
+      renderPromise = renderAll();
       notifyHistory();
-      options.onChanged?.();
+      renderPromise.then(() => options.onChanged?.());
       return true;
     }
 
@@ -356,8 +362,10 @@
       baseDataUrl = dataUrl || '';
       commands.length = 0;
       cursor = 0;
-      renderAll();
+      activeStroke = null;
+      renderPromise = renderAll();
       notifyHistory();
+      return renderPromise;
     }
 
     function toggleColorPopover() {
@@ -442,8 +450,9 @@
       redo,
       reset,
       resize,
+      flush: () => renderPromise,
       hasDrawing: () => !isBlank(),
-      toDataURL: () => isBlank() ? '' : canvas.toDataURL('image/png'),
+      toDataURL: () => isBlank() ? '' : baseDataUrl && cursor === 0 ? baseDataUrl : canvas.toDataURL('image/png'),
       state: () => ({ canUndo: cursor > 0, canRedo: cursor < commands.length }),
       setActive(value) {
         if (value) window.requestAnimationFrame(resize);

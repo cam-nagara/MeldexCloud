@@ -3,6 +3,7 @@
   'use strict';
 
   const renderRevisions = new WeakMap();
+  let detailRevision = 0;
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico']);
   const VIDEO_EXTS = new Set(['mp4', 'mov', 'avi', 'webm']);
   const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac']);
@@ -39,7 +40,7 @@
   }
 
   function contextForPath(filePath, options) {
-    const normalized = String(filePath || '').replace(/\\/g, '/');
+    const normalized = String(filePath || '').replace(/\\/g, '/').replace(/\/+$/, '');
     const fileName = normalized.split('/').pop() || normalized;
     const dotIndex = fileName.lastIndexOf('.');
     const ext = dotIndex >= 0 ? fileName.slice(dotIndex + 1).toLowerCase() : '';
@@ -52,7 +53,7 @@
       ? 'フォルダ'
       : type === 'database' || lowerName.endsWith('.mel-sheet') || /(?:\.sheet|\.database)\.json$/.test(lowerName)
         ? 'シート'
-        : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json')
+        : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.mel-scenario')
             ? 'シナリオ'
             : type === 'calendar'
               ? 'カレンダー'
@@ -243,12 +244,16 @@
   async function renderInto(container, filePath, options) {
     if (!container) return false;
     const normalizedPath = String(filePath || '').trim();
+    const revision = (renderRevisions.get(container) || 0) + 1;
+    renderRevisions.set(container, revision);
+    if (global.MeldexEmbeddedMetadata?.hasPendingMemos?.()) {
+      if (await global.MeldexEmbeddedMetadata.flushPendingMemos() === false) return false;
+      if (renderRevisions.get(container) !== revision || options?.isCurrent?.() === false) return false;
+    }
     if (!normalizedPath) {
       container.innerHTML = '<div class="gb-empty-placeholder">ファイルが選択されていません</div>';
       return false;
     }
-    const revision = (renderRevisions.get(container) || 0) + 1;
-    renderRevisions.set(container, revision);
     const metadataPromise = loadMetadata(normalizedPath, options?.preloadedMeta);
     container.innerHTML = panelHtml(normalizedPath, options?.preloadedMeta, options);
     hydrateTags(container, options);
@@ -258,22 +263,24 @@
   }
 
   async function showInDetailPanel(filePath, options) {
+    const revision = ++detailRevision;
     const normalizedPath = String(filePath || '').trim();
     if (!normalizedPath || typeof global.showDetailPanel !== 'function') return false;
     const metadataPromise = loadMetadata(normalizedPath, options?.preloadedMeta);
     if (typeof global._dpSavePending === 'function' && !await global._dpSavePending()) return false;
-    if (options?.isCurrent?.() === false) return false;
-    await global.showDetailPanel(panelHtml(normalizedPath, options?.preloadedMeta, options));
-    if (options?.isCurrent?.() === false) return false;
+    if (revision !== detailRevision || options?.isCurrent?.() === false) return false;
+    if (await global.showDetailPanel(panelHtml(normalizedPath, options?.preloadedMeta, options)) === false) return false;
+    if (revision !== detailRevision || options?.isCurrent?.() === false) return false;
     const detailRoot = global.document.getElementById('rp-detail') || global.document;
     hydrateTags(detailRoot, options);
     const meta = await metadataPromise;
-    if (options?.isCurrent?.() === false) return false;
+    if (revision !== detailRevision || options?.isCurrent?.() === false) return false;
     return applyMetadata(detailRoot, normalizedPath, meta, options);
   }
 
   function renderEmbedded(container, target) {
     if (!container) return false;
+    cancel(container);
     const title = String(target?.label || target?.name || '埋め込みファイル');
     const type = String(target?.typeLabel || target?.type || '埋め込みデータ');
     const source = String(target?.source || target?.path || '');

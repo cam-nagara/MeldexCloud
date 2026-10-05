@@ -635,6 +635,9 @@
   }
 
   async function _writeCloudCrashReport(payload) {
+    if (_isPerformanceLogPayload(payload)) {
+      return { ok: true, skipped: true, reason: 'performance-log' };
+    }
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     return _appendCloudDiagnostic(provider, 'crash-reports', payload);

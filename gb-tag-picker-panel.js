@@ -47,6 +47,8 @@
   let _selected = new Set();
   let _catalog = { tags: [], groups: [] };
   let _loadRevision = 0;
+  let _catalogLoading = false;
+  let _catalogError = '';
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -139,9 +141,12 @@
       applyChipState(chip, tag);
       row.appendChild(chip);
     } else {
-      const label = document.createElement('span');
+      const label = document.createElement('button');
+      label.type = 'button';
       label.className = 'gb-tag-tree-label';
       label.textContent = tag?.name || '';
+      label.setAttribute('aria-pressed', String(_selected.has(String(tag?.id || ''))));
+      label.addEventListener('click', () => { toggleTag(tag); _renderList(); });
       row.appendChild(label);
     }
     return row;
@@ -195,8 +200,17 @@
       const empty = document.createElement('div');
       empty.className = 'gb-section-desc';
       empty.style.cssText = 'padding:12px;text-align:center;';
-      empty.textContent = _loadRevision ? '（タグがありません）' : '読み込み中…';
+      empty.textContent = _catalogLoading ? '読み込み中…' : (_catalogError || '（タグがありません）');
       _listEl.appendChild(empty);
+      if (_catalogError) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'gb-btn gb-btn-sm';
+        retry.dataset.e2eId = 'tag-picker-retry';
+        retry.textContent = '再試行';
+        retry.addEventListener('click', () => { tagsApi()?.invalidateTagsCatalogCache?.(_ctx.sourceFolder); void _loadCatalog(); });
+        _listEl.appendChild(retry);
+      }
       return;
     }
     if (uncategorized.length) _listEl.appendChild(renderGroupSection({ name: '未分類', tags: uncategorized, children: [] }, groupsById, 0));
@@ -206,15 +220,22 @@
   async function _loadCatalog() {
     const revision = ++_loadRevision;
     const api = tagsApi();
-    if (!api?.loadTagsCached) return;
+    _catalogLoading = true;
+    _catalogError = '';
+    _renderList();
     try {
+      if (!api?.loadTagsCached) throw new Error('タグ辞書を読み込めませんでした');
       const data = await api.loadTagsCached(_ctx.sourceFolder);
       if (revision !== _loadRevision) return;
       _catalog = { tags: Array.isArray(data?.tags) ? data.tags : [], groups: Array.isArray(data?.groups) ? data.groups : [] };
-      _renderList();
-    } catch (_) {
+    } catch (error) {
       if (revision !== _loadRevision) return;
-      _renderList();
+      _catalogError = error?.userMessage || error?.message || 'タグ辞書を読み込めませんでした';
+    } finally {
+      if (revision === _loadRevision) {
+        _catalogLoading = false;
+        _renderList();
+      }
     }
   }
 
@@ -319,6 +340,7 @@
       buildHeader: _buildHeader,
       buildBody: _buildBody,
       onClose: () => {
+        _loadRevision += 1;
         _ctx.ownerKey = '';
         _listEl = null;
         _toolbarEl = null;
@@ -351,6 +373,8 @@
     }
     _renderStatus();
     _catalog = { tags: [], groups: [] };
+    _catalogError = '';
+    _catalogLoading = true;
     _loadRevision += 1;
     _renderList();
     _loadCatalog();

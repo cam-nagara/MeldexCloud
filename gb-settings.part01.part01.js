@@ -57,7 +57,6 @@ if (typeof window !== 'undefined') window.closeSettingsModalWithReason = closeSe
 function closeSettingsModalRestoringTheme() {
   const overlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
   if (!overlay) return;
-  if (typeof restoreThemeSnapshot === 'function') restoreThemeSnapshot(window._settingsThemeSnapshot);
   closeSettingsModalWithReason('cancel', overlay);
 }
 
@@ -506,7 +505,7 @@ async function showSettingsModal(opts) {
           <input type="checkbox" id="modal-autostart">
           <span>OS起動時にMeldex常駐アプリを開始する</span>
         </label>
-        <div id="modal-autostart-status" class="gb-field-help" role="status" aria-live="polite">自動起動の状態を確認しています</div>
+        <div id="modal-autostart-status" class="gb-section-desc" role="status" aria-live="polite" style="margin-top:6px;line-height:1.5;">自動起動の状態を確認しています</div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">設定のバージョン ${fieldHelp('設定を保存する前の状態を自動で残し、変更内容の確認と復元ができます', { e2eId: 'settings-version-history-help' })}</div>
@@ -550,7 +549,7 @@ async function showSettingsModal(opts) {
           <fieldset id="restore-point-weekdays-row" style="border:0;padding:0;margin:8px 0;">
             <legend class="gb-label">曜日</legend>
             <div class="gb-field-row" style="flex-wrap:wrap;">
-              ${['日','月','火','水','木','金','土'].map((label,index) => `<label class="gb-check"><input type="checkbox" data-restore-point-weekday="${index}" ${(Array.isArray(_restorePointCadence.weekdays) && _restorePointCadence.weekdays.includes(index)) ? 'checked' : ''}><span>${label}</span></label>`).join('')}
+              ${['日','月','火','水','木','金','土'].map((label,index) => `<label class="gb-check"><input type="checkbox" id="modal-restore-point-weekday-${index}" data-restore-point-weekday="${index}" ${(Array.isArray(_restorePointCadence.weekdays) && _restorePointCadence.weekdays.includes(index)) ? 'checked' : ''}><span>${label}</span></label>`).join('')}
             </div>
           </fieldset>
           <label id="restore-point-month-day-row" class="gb-field-row">
@@ -919,7 +918,7 @@ async function showSettingsModal(opts) {
       : dialog.modal.querySelector('.settings-tab.gb-inner-tab-active:not([disabled]), .settings-tab:not([disabled])'),
     returnFocus: () => suppressSettingsReturnFocus ? suppressedReturnFocusTarget : opener,
     onBeforeClose: reason => {
-      if (settingsSaveBusy && reason !== 'complete') return false;
+      if ((settingsSaveBusy || o?.__settingsMaintenanceBusy) && reason !== 'complete') return false;
       if (reason !== 'complete' && typeof restoreThemeSnapshot === 'function') {
         restoreThemeSnapshot(window._settingsThemeSnapshot);
       }
@@ -937,7 +936,7 @@ async function showSettingsModal(opts) {
   o.dataset.e2eId = 'settings-dialog-overlay';
   o.__settingsDirtyControlIds = new Set();
   const markSettingsControlDirty = event => {
-    const id = String(event?.target?.id || '');
+    const id = String(event?.target?.id || event?.target?.dataset?.e2eId || '');
     if (id) o.__settingsDirtyControlIds.add(id);
     event?.target?.removeAttribute?.('aria-invalid');
   };
@@ -982,9 +981,20 @@ async function showSettingsModal(opts) {
     if (cancelSettingsButton) cancelSettingsButton.disabled = true;
     if (commonClose) commonClose.disabled = true;
     let result = { ok: false };
+    const savedDisabledStates = new Map();
     try {
-      result = await submitSettings() || { ok: false };
+      // preflight は入力へフォーカスできる状態で実行し、非同期保存中は
+      // 同じダイアログの編集・即時操作・ページ切替を止める。
+      const pendingSave = submitSettings();
+      o.querySelectorAll('input, select, textarea, button').forEach(control => {
+        savedDisabledStates.set(control, control.disabled);
+        control.disabled = true;
+      });
+      result = await pendingSave || { ok: false };
+    } catch (error) {
+      showStatus('設定の保存に失敗: ' + (error?.message || error), true);
     } finally {
+      savedDisabledStates.forEach((disabled, control) => { control.disabled = disabled; });
       settingsSaveBusy = false;
       o.setAttribute('aria-busy', 'false');
     }
@@ -1661,20 +1671,23 @@ async function _loadAutostartStateForSettings() {
 }
 
 async function _loadLlmConfigForSettings() {
+  const overlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
+  if (!overlay) return;
   try {
     const serverCfg = await apiFetch('/chat/config').catch(() => null);
     const cfg = window.MeldexLlmKeys?.configShape
       ? await window.MeldexLlmKeys.configShape(serverCfg)
       : serverCfg;
+    if (!overlay.isConnected) return;
     ['gemini', 'anthropic', 'openai'].forEach(p => {
-      const input = document.getElementById('modal-' + (p === 'anthropic' ? 'anthropic' : p === 'openai' ? 'openai' : 'gemini') + '-key');
+      const input = overlay.querySelector('#modal-' + p + '-key');
       const info = cfg?.providers?.[p];
       if (!input || !info?.configured) return;
       input.placeholder = info.localConfigured ? '●●●●●（この端末に保存済み）' : '●●●●●（旧ローカル設定あり）';
     });
   } catch {}
-  if (typeof renderCliChatSettingsForSettings === 'function') {
-    renderCliChatSettingsForSettings(document.querySelector('.modal-overlay[data-settings-modal="1"]') || document);
+  if (overlay.isConnected && typeof renderCliChatSettingsForSettings === 'function') {
+    renderCliChatSettingsForSettings(overlay);
   }
 }
 

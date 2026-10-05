@@ -199,6 +199,15 @@
         state.settings = { ...state.settings, ...(result?.settings || {}) };
         const currentSaveState = host?.querySelector?.('[data-at-save-state]');
         if (currentSaveState) currentSaveState.textContent = '保存しました';
+        const dirty = host?.closest?.('.modal-overlay')?.__settingsDirtyControlIds;
+        if (dirty instanceof Set) {
+          host.querySelectorAll('[data-at-setting], [data-at-preset]').forEach(input => {
+            const key = input.hasAttribute('data-at-preset') ? 'preset_names' : input.dataset.atSetting;
+            if (Object.prototype.hasOwnProperty.call(updates || {}, key)) {
+              dirty.delete(input.id || input.dataset.e2eId);
+            }
+          });
+        }
       }
       invalidateAutoTagBundleCache();
       if (!options?.silent) atStatus('自動タグ付け設定を保存しました');

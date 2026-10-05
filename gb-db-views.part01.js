@@ -797,6 +797,10 @@ async function _showDbConfigModal(dbPath, ctx) {
     }
     _setDbCalendarMappingFallbackOnViews(c, calendarMapping);
     try {
+      // Older debounced writes must finish before this dialog's complete settings commit.
+      if (typeof flushPendingDbViewConfigBackendSave === 'function') {
+        await flushPendingDbViewConfigBackendSave(dbPath);
+      }
       if (globalThis.GbDbSchemaMutation) {
         await globalThis.GbDbSchemaMutation.saveMetadata(dbPath, {
           calendar_mapping: calendarMapping,

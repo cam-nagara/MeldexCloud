@@ -187,10 +187,9 @@ async function _commitFileSearchReplacement(editable) {
       editable.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
       editable.dataset.lastSavedEtag = (res && res.etag) || editable.dataset.lastSavedEtag || '';
     }
-    // 応答待ち中に別ノートへ切り替わっていても、成功済みの旧pathのドラフトは
-    // 同期済みにする。dataset更新だけを現表示pathでガードし、旧ノートを次回
-    // 起動時に未保存候補として誤復元しない。
-    await window.MeldexDraftRecovery?.markSynced?.(path);
+    // 応答待ち中の追加入力・別表示面の編集をドラフトから消さない。
+    // 切替済みの旧文書は、次の読込でサーバー本文と照合する。
+    await _syncNoteDraftAfterSave(editable, path, res?.savedMd ?? md);
     if (!res?.joined) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(previousMd, md)

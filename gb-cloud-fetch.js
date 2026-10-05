@@ -10,6 +10,26 @@
     });
   }
 
+  function isSystemStorageConflict(err) {
+    return err?.name === 'SystemStorageConflictError' || err?.code === 'system_storage_conflict';
+  }
+
+  function cloudErrorDetail(err) {
+    return {
+      message: err?.message || String(err),
+      code: err?.code || err?.meldexCode || (isSystemStorageConflict(err) ? 'system_storage_conflict' : ''),
+      route: err?.route || '',
+      lock_entry: err?.lock_entry || null,
+      unlock_hint: err?.unlock_hint || '',
+    };
+  }
+
+  function cloudErrorStatus(err) {
+    const explicit = Number(err?.status || err?.status_code || 0);
+    if (explicit) return Math.max(400, Math.min(599, explicit));
+    return isSystemStorageConflict(err) ? 409 : 501;
+  }
+
   async function readRequestBody(input, init) {
     if (init?.body != null) return init.body;
     if (input instanceof Request) {
@@ -493,14 +513,8 @@
       // （実機の診断情報で "HTTP 501: 操作が中断されました" として確認）。
       // 本物の fetch と同じく reject させ、中断は中断として扱わせる。
       if (err?.name === 'AbortError' || err?.code === 20) throw err;
-      const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 501) || 501));
-      const detail = {
-        message: err?.message || String(err),
-        code: err?.code || '',
-        route: err?.route || '',
-        lock_entry: err?.lock_entry || null,
-        unlock_hint: err?.unlock_hint || '',
-      };
+      const status = cloudErrorStatus(err);
+      const detail = cloudErrorDetail(err);
       return jsonResponse({ error: detail.message, detail }, status);
     }
   };

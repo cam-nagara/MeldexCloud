@@ -82,6 +82,18 @@ function _readLastViewFromStorage() {
   }
 }
 
+async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
+  // Explicit links keep their target; Desktop keeps its saved workspace.
+  if (_isDesktopStartupLaunch() || isUrlOpen || onboardingShown || !homeRes?.exists || !homeRes.path) return false;
+  const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
+  await openFolder(label, homeRes.path, {
+    fromExplorer: true,
+    skipAutoAppLayout: true,
+    skipSaveLastView: true,
+  });
+  return true;
+}
+
 function _repairStartupDatabaseViewTabs() {
   try {
     if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
@@ -261,6 +273,7 @@ async function init() {
 
     // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
     let restored = onboardingShown;
+    let openedCloudStartupHome = false;
     const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
     const urlParams = new URLSearchParams(window.location.search);
     const openType = urlParams.get('open');
@@ -313,6 +326,13 @@ async function init() {
       } finally {
         window._skipLastViewSave = previousSkipLastView;
       }
+    }
+
+    // Cloud starts at Home even when an older document/layout is remembered.
+    // Keep saved tabs and unsaved drafts available for explicit recovery.
+    if (!restored) {
+      openedCloudStartupHome = await _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown);
+      restored = openedCloudStartupHome;
     }
 
     // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
@@ -377,7 +397,8 @@ async function init() {
     _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
       initGlobalFilterBar();
       _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
-        _highlightLastOutlinerNodeAfterStartup();
+        if (openedCloudStartupHome) highlightOutlinerNode(homeRes.path);
+        else _highlightLastOutlinerNodeAfterStartup();
         showStatus('準備完了');
       });
     });
@@ -877,24 +898,3 @@ async function captureScreenshot(mode) {
     let outputCanvas = canvas;
     if (_screenshotModeIsRegion(mode)) {
       const region = await _selectScreenshotRegionFromCanvas(canvas);
-      if (!region) return;
-      outputCanvas = _cropScreenshotCanvas(canvas, region);
-    }
-    const b64 = outputCanvas.toDataURL('image/png');
-    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
-    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
-    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
-    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
-    const res = await apiPost('/annotation/screenshot', {
-      data: b64,
-      target_path: screenshotFolder,
-      source_target: currentTarget,
-      mode: mode,
-      width: outputCanvas.width,
-      height: outputCanvas.height,
-    });
-    if (res.path) {
-      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
-      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-    }
-  } catch (e) {

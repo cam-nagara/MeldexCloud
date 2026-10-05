@@ -83,6 +83,7 @@
     button.className = className || 'gb-btn gb-btn-sm';
     button.textContent = label;
     button.style.minHeight = '44px';
+    button.style.minWidth = '44px';
     return button;
   }
 

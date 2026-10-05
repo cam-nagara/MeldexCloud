@@ -14,6 +14,7 @@
   let _folderToolbarMenuCleanup = null;
   let _folderToolbarUpdateRaf = 0;
   let _folderToolbarWrappedBulkBar = false;
+  let _folderToolbarSortCleanup = null;
 
   function _folderToolbarIcon(name, size = 16) {
     return typeof lucide === 'function' ? lucide(name, size) : '';
@@ -479,6 +480,8 @@
   }
 
   function _folderToolbarCloseExtraMenu() {
+    _folderToolbarSortCleanup?.();
+    _folderToolbarSortCleanup = null;
     document.querySelectorAll('.folder-toolbar-sort-menu').forEach(menu => menu.remove());
   }
 
@@ -503,6 +506,7 @@
     event.preventDefault();
     event.stopPropagation();
     _folderToolbarCloseExtraMenu();
+    const trigger = event.currentTarget;
     const folderPath = _folderToolbarCurrentPath();
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu folder-toolbar-sort-menu';
@@ -533,17 +537,41 @@
       }, active);
     });
     document.body.appendChild(menu);
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = trigger.getBoundingClientRect();
     if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below', gap: 4 });
     else {
       menu.style.left = rect.left + 'px';
       menu.style.top = rect.bottom + 4 + 'px';
     }
-    setTimeout(() => document.addEventListener('pointerdown', function closer(pointerEvent) {
-      if (menu.contains(pointerEvent.target) || event.currentTarget.contains(pointerEvent.target)) return;
+    const closer = pointerEvent => {
+      if (menu.contains(pointerEvent.target) || trigger.contains(pointerEvent.target)) return;
+      _folderToolbarCloseExtraMenu();
+    };
+    const keyboard = keyEvent => {
+      if (menu.contains(document.activeElement) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(keyEvent.key)) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        const items = Array.from(menu.querySelectorAll('button:not(:disabled)'));
+        const index = items.indexOf(document.activeElement);
+        const next = keyEvent.key === 'Home' ? 0 : keyEvent.key === 'End' ? items.length - 1
+          : (index + (keyEvent.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[next]?.focus();
+        return;
+      }
+      if (keyEvent.key !== 'Escape') return;
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      _folderToolbarCloseExtraMenu();
+      trigger.focus?.();
+    };
+    const timer = setTimeout(() => document.addEventListener('pointerdown', closer, true), 0);
+    document.addEventListener('keydown', keyboard, true);
+    menu.querySelector('[aria-checked="true"]')?.focus();
+    _folderToolbarSortCleanup = () => {
+      clearTimeout(timer);
       document.removeEventListener('pointerdown', closer, true);
-      menu.remove();
-    }, true), 0);
+      document.removeEventListener('keydown', keyboard, true);
+    };
   }
 
   async function toggleFolderSubfolderContents() {

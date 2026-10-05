@@ -18,6 +18,10 @@
     const headerText = modal.querySelector('#settings-header-text');
 
     function setHeader(text) { if (headerText) headerText.textContent = String(text || '設定'); }
+    function resetScroll() {
+      const body = modal.querySelector('.gb-modal-body, .gb-modal-shell-body');
+      if (body) body.scrollTop = 0;
+    }
     function syncCurrentPage(target) {
       modal.dataset.settingsActiveTabId = target?.tabId || '';
       modal.dataset.settingsActivePageId = target?.pageId || '';
@@ -43,6 +47,7 @@
       modal.querySelectorAll('.settings-panel').forEach(panel => { panel.hidden = true; });
       setHidden(categoryList, false); setHidden(pageList, true); setHidden(backButton, true); setHidden(footer, true);
       setHeader('設定'); options.syncOverlay?.('');
+      resetScroll();
     }
     function showPages(target) {
       Object.assign(state, { level: 'pages', tabId: target.tabId, pageId: '' });
@@ -63,12 +68,14 @@
         });
       }
       options.replaceIcons?.(modal);
+      resetScroll();
     }
     function showPage(target) {
       Object.assign(state, { level: 'page', tabId: target.tabId, pageId: target.pageId });
       setHidden(categoryList, true); setHidden(pageList, true); setHidden(backButton, !mobile);
       options.showTarget(target); setHeader(options.displayName?.(target) || target.pageLabel || target.tabId);
       syncCurrentPage(target); syncFooter(target);
+      resetScroll();
     }
     function open(name, openOptions = {}) {
       const target = options.resolveTarget(name, openOptions);

@@ -1136,7 +1136,9 @@
       const contract = window.MeldexSystemStorage;
       const kind = contract?.SystemStorageKind?.CONFLICT_BACKUPS;
       if (!resolver?.resolveTypedAdapterForProvider || !kind) {
-        throw new Error('競合した編集内容の安全な保存先を判定できません');
+        throw Object.assign(new Error('競合した編集内容の安全な保存先を判定できません'), {
+          status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable',
+        });
       }
       const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
       const now = new Date().toISOString();
@@ -1184,7 +1186,9 @@
           if (!collision || attempt >= 4) throw error;
         }
       }
-      throw new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした');
+      throw Object.assign(new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした'), {
+        status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable',
+      });
     }
 
     // 計画書§5工程2-D項目7「競合コピー作成前に正規化内容hashを比較し、同一なら
@@ -1246,16 +1250,26 @@
           return converged;
         }
         const currentMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
-        const conflict = await this._writeConflictCopy(normalized, bytes, {
-          expectedRevision: cachedMeta?.rev || '',
-          currentRevision: currentMeta?.rev || '',
-        });
+        let conflict;
+        try {
+          conflict = await this._writeConflictCopy(normalized, bytes, {
+            expectedRevision: cachedMeta?.rev || '',
+            currentRevision: currentMeta?.rev || '',
+          });
+        } catch (backupError) {
+          if (backupError?.status) throw backupError;
+          throw Object.assign(
+            backupError instanceof Error ? backupError : new Error(String(backupError)),
+            { status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable' },
+          );
+        }
         // 計画書§5工程2-D項目3「CAS失敗時に.status/.codeを付与し、ノート側の
         // 409判定と接続する」。gb-save-safety.enrichError と同じフィールド名
         // （status/meldexCode）を使い、HTTP応答を経由しない直接Dropbox書込
         // エラーでも既存の`error?.status===409`判定を通す。
         const conflictError = new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせずMeldexの管理領域へ編集内容を保存しました: ${conflict.path}`);
         conflictError.status = 409;
+        conflictError.code = 'etag_conflict';
         conflictError.meldexCode = 'etag_conflict';
         conflictError.conflictPath = conflict.path;
         conflictError.conflictBackupDocumentId = conflict.documentId;
@@ -1273,7 +1287,12 @@
       } catch (error) {
         if (!_isDropboxConflictError(error)) throw error;
         this._forgetMeta(normalized);
-        throw Object.assign(new Error('Dropbox上で同時に更新されました'), { status: 409, meldexCode: 'etag_conflict' });
+        throw Object.assign(new Error('Dropbox 上で更新競合が発生したため保存を中止しました。元ファイルは上書きしていません'), {
+          status: 409,
+          code: 'etag_conflict',
+          meldexCode: 'etag_conflict',
+          detail: { code: 'etag_conflict', expected_transport_revision: String(expectedRevision ?? '') },
+        });
       }
     }
 

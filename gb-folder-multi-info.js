@@ -1,6 +1,6 @@
 /* 複数ファイル選択時の、共通値だけを表示する読み取り専用プロパティパネル。 */
 (() => {
-  let renderToken = 0;
+  const renderTokens = new WeakMap();
 
   function text(value) {
     return value == null ? '' : String(value);
@@ -44,7 +44,9 @@
   }
 
   function metadataValues(item, meta) {
-    const context = fileContext(item.path);
+    const context = window.MeldexFileInfoPanel?.contextForPath?.(item.path, {
+      kind: item.type === 'folder' ? 'folder' : 'file', type: item.type,
+    }) || fileContext(item.path);
     const embeddedMeta = embedded(meta);
     const webclip = meta?.webclip && typeof meta.webclip === 'object'
       ? meta.webclip
@@ -138,6 +140,7 @@
       link.type = 'button';
       link.className = 'auto-link folder-multi-info-link';
       link.dataset.path = entry.path;
+      link.dataset.e2eId = 'folder-multi-info-link-' + encodeURIComponent(entry.label + ':' + entry.path);
       link.dataset.nativeFolder = 'true';
       link.textContent = entry.display;
       value.appendChild(link);
@@ -191,6 +194,7 @@
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.className = 'gb-btn gb-btn-sm';
+      retry.dataset.e2eId = 'folder-multi-info-retry';
       retry.textContent = '再試行';
       retry.addEventListener('click', () => onRetry?.());
       warning.append(warningText, retry);
@@ -224,12 +228,13 @@
   }
 
   async function renderInto(host, items, options = {}) {
-    const targets = (Array.isArray(items) ? items : []).filter(item => item?.path && item.type !== 'folder');
+    const targets = (Array.isArray(items) ? items : []).filter(item => item?.path && (options.includeFolders || item.type !== 'folder'));
     if (!host || targets.length < 2) return false;
-    const token = ++renderToken;
+    const token = (renderTokens.get(host) || 0) + 1;
+    renderTokens.set(host, token);
     host.innerHTML = '<div class="folder-multi-info-loading">共通情報を読み込んでいます...</div>';
     const results = await Promise.all(targets.map(loadMetadata));
-    if (token !== renderToken || options.isCurrent?.() === false || !host.isConnected) return true;
+    if (token !== renderTokens.get(host) || options.isCurrent?.() === false || !host.isConnected) return false;
     renderContent(
       host,
       targets,
@@ -243,7 +248,7 @@
   async function render(items, options = {}) {
     const targets = (Array.isArray(items) ? items : []).filter(item => item?.path && item.type !== 'folder');
     if (targets.length < 2 || typeof showDetailPanel !== 'function') return false;
-    await showDetailPanel('<div data-folder-multi-info-host></div>');
+    if (await showDetailPanel('<div data-folder-multi-info-host></div>') === false) return false;
     if (options.isCurrent?.() === false) return true;
     const detailRoot = document.getElementById('rp-detail') || document;
     const host = detailRoot.querySelector('[data-folder-multi-info-host]');

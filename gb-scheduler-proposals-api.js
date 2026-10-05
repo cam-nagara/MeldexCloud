@@ -7,6 +7,11 @@
   let proposals = [];
   let selectedId = '';
   let loading = null;
+  let contextKey = '';
+  let contextGeneration = 0;
+  let listIncludesArchived = false;
+  let loadingIncludesArchived = false;
+  let listLoaded = false;
 
   function user() {
     return String((typeof getUsername === 'function' ? getUsername() : '') || 'anonymous').trim();
@@ -17,11 +22,38 @@
   }
 
   function selectedKey() {
+    syncContext();
     const workspaceId = String(capabilities?.workspaceId || rootPath() || 'default');
     return `meldex:scheduler:selected:${workspaceId}:${user()}`;
   }
 
+  function syncContext() {
+    const runtime = window.MeldexRuntimeAdapter;
+    const workspace = runtime?.getWorkspaceState?.() || {};
+    const key = JSON.stringify([rootPath(), user(),
+      typeof state !== 'undefined' ? String(state.vaultPath || '') : '',
+      runtime?.getMode?.() || '',
+      window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+    if (key !== contextKey) {
+      contextKey = key;
+      contextGeneration++;
+      capabilities = null; proposals = []; selectedId = ''; loading = null;
+      listIncludesArchived = false; listLoaded = false; CACHE.clear();
+    }
+    return contextGeneration;
+  }
+
+  function assertContext(generation) {
+    if (syncContext() !== generation) {
+      const error = new Error('スケジュールの対象が切り替わりました。現在の対象で再読み込みしてください');
+      error.code = 'scheduler_context_changed';
+      throw error;
+    }
+  }
+
   function request(path, options = {}) {
+    const generation = syncContext();
     if (!window.MeldexDataAccess?.requestJson) return Promise.reject(new Error('スケジューラーを初期化できませんでした'));
     const method = String(options.method || 'GET').toUpperCase();
     const body = method === 'GET' ? undefined : {
@@ -29,6 +61,9 @@
     };
     return window.MeldexDataAccess.requestJson(path, {
       method, body, timeoutMs: options.timeoutMs || 120000,
+    }).then(result => {
+      assertContext(generation);
+      return result;
     }).catch(error => {
       if (Number(error?.status || 0) === 409) {
         error.userMessage = '別の環境で案が更新されています。再読み込みしてください';
@@ -66,6 +101,7 @@
   }
 
   async function loadCapabilities(force = false) {
+    syncContext();
     if (capabilities && !force) return capabilities;
     capabilities = await request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`);
     return capabilities;
@@ -122,11 +158,21 @@
   }
 
   async function list(force = false, includeArchived = false) {
-    if (!force && proposals.length) return proposals.slice();
-    if (loading) return loading;
-    loading = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
+    const generation = syncContext();
+    if (!force && listLoaded && listIncludesArchived === includeArchived) return proposals.slice();
+    if (loading) {
+      const sameFilter = loadingIncludesArchived === includeArchived;
+      const result = await loading;
+      assertContext(generation);
+      if (sameFilter) return result.slice();
+      return list(force, includeArchived);
+    }
+    const pending = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
       .then(result => {
+        CACHE.clear();
         proposals = Array.isArray(result?.proposals) ? result.proposals.slice() : [];
+        listIncludesArchived = includeArchived;
+        listLoaded = true;
         proposals.forEach(remember);
         const saved = localStorage.getItem(selectedKey()) || '';
         if (!proposals.some(item => item.id === selectedId)) {
@@ -134,11 +180,14 @@
         }
         emit('list');
         return proposals.slice();
-      }).finally(() => { loading = null; });
-    return loading;
+      }).finally(() => { if (loading === pending) loading = null; });
+    loading = pending;
+    loadingIncludesArchived = includeArchived;
+    return pending;
   }
 
   async function get(id, force = false) {
+    syncContext();
     const proposalId = String(id || '');
     if (!force && CACHE.has(proposalId)) return CACHE.get(proposalId);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(proposalId)}${query({ current_user: user(), root_path: rootPath() })}`);
@@ -146,8 +195,10 @@
   }
 
   async function select(id) {
+    const generation = syncContext();
     const proposalId = String(id || '');
     const proposal = proposalId ? await get(proposalId) : null;
+    assertContext(generation);
     selectedId = proposal?.id || '';
     if (selectedId) localStorage.setItem(selectedKey(), selectedId);
     else localStorage.removeItem(selectedKey());
@@ -170,7 +221,9 @@
   }
 
   async function patch(id, values) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
       method: 'PATCH', body: { patch: values, expectedRevision: current.storageRevision },
     });
@@ -180,7 +233,9 @@
   }
 
   async function archive(id) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}${query({
       current_user: user(), root_path: rootPath(), expected_revision: current.storageRevision,
     })}`, { method: 'DELETE' });
@@ -218,7 +273,9 @@
   }
 
   async function setPlacementFixed(id, placementKey, fixed) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const key = String(placementKey || '').trim();
     if (!key) throw new Error('固定する配置を特定できませんでした');
     const fixedPlacements = { ...(current.fixedPlacements || {}) };
@@ -263,11 +320,12 @@
     list, get, select, createAllocation, patch, archive,
     branch, recalculate, compare, setPlacementFixed, listBaselines, compareBaseline,
     adoptionPreview, adopt, cancel,
-    current: () => CACHE.get(selectedId) || null,
-    selectedId: () => selectedId,
-    cachedList: () => proposals.slice(),
+    current: () => { syncContext(); return CACHE.get(selectedId) || null; },
+    selectedId: () => { syncContext(); return selectedId; },
+    cachedList: () => { syncContext(); return proposals.slice(); },
     errorMessage: error => error?.userMessage || error?.message || String(error),
     _resetForTests() {
+      contextKey = ''; contextGeneration++; listIncludesArchived = false; listLoaded = false;
       capabilities = null; proposals = []; selectedId = ''; loading = null; CACHE.clear();
     },
   });

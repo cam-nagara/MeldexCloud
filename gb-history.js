@@ -3,6 +3,6 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
 __loadSplitScript('gb-history.js', [
   'gb-restore-point-policy.js',
   'gb-history.part01.js',
-  'gb-restore-point-policy-sync.js',
   'gb-history.part02.js',
+  'gb-restore-point-policy-sync.js',
 ]);

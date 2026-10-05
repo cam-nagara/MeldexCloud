@@ -33,6 +33,7 @@
     sqlite_locked: 'ロック中',
     sqlite_database_error: 'DBエラー',
     etag_conflict: '競合',
+    conflict_backup_unavailable: '競合退避不可',
     file_exists: '同名あり',
     invalid_base64: '形式エラー',
     unknown_write_error: '不明',

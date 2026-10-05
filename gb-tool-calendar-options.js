@@ -33,6 +33,10 @@
 
   function _calLocalInputValue(component, value, fallbackDate) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value) + 'T00:00';
+    if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value || ''))) {
+      const date = new Date(value);
+      if (Number.isFinite(date.getTime())) return component._localDateTimeStr(date).substring(0, 16);
+    }
     if (value) return String(value).substring(0, 16);
     const d = fallbackDate || new Date();
     return component._localDateTimeStr(d).substring(0, 16);
@@ -41,6 +45,10 @@
   function _calLocalDateInputValue(component, value, fallbackDate) {
     const raw = String(value || '');
     if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+      const date = new Date(raw);
+      if (Number.isFinite(date.getTime())) return component._localDateStr(date);
+    }
     if (raw) return raw.substring(0, 10);
     const d = fallbackDate || new Date();
     return component._localDateStr(d);

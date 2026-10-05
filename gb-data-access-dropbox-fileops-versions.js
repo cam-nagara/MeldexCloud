@@ -772,10 +772,12 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
 async function _readFileVersion(provider, path, version) {
   const { record, name } = await _findFileVersionRecord(provider, path, version, false);
   if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
-  return { content: String(record.payload?.content || ''), name };
+  const current = await _readConflictSnapshot(provider, _normalizeFolderPath(path));
+  return { content: String(record.payload?.content || ''), name,
+    etag: current.revision, transport_revision: { transport: 'provider-revision', token: current.revision } };
 }
 
-async function _restoreFileVersion(provider, path, version) {
+async function _restoreFileVersion(provider, path, version, options = {}) {
   const normalized = _normalizeFolderPath(path);
   if (_isProductionFolderNotePath(normalized)) {
     throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
@@ -783,10 +785,20 @@ async function _restoreFileVersion(provider, path, version) {
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   const data = await _readFileVersion(provider, normalized, version);
+  const transport = options.transport_revision;
+  if (transport && transport.transport !== 'provider-revision') {
+    throw Object.assign(new Error('復元のrevision transportが一致しません'), { status: 409 });
+  }
+  if (options.if_match_etag && transport?.token && options.if_match_etag !== transport.token) {
+    throw Object.assign(new Error('復元のrevision指定が一致しません'), { status: 400 });
+  }
+  const expected = String(options.if_match_etag || options.transport_revision?.token || '').trim();
+  if (!expected || expected !== data.etag) throw Object.assign(new Error('復元対象が更新されました。再確認してください'), { status: 409 });
   _rejectProductionLegacyEntryContent(normalized, data.content || '');
   await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-  await provider.writeText(normalized, data.content || '');
-  return { ok: true };
+  const saved = await provider.uploadBytesConditional(normalized, new TextEncoder().encode(data.content || ''), expected);
+  const token = String(saved?.rev || saved?.revision || '');
+  return { ok: true, etag: token, transport_revision: { transport: 'provider-revision', token } };
 }
 
 async function _deleteFileVersion(provider, path, version) {

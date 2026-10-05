@@ -7,6 +7,9 @@
   let _container = null;
   let _dragRows = [];
   let _fetchRevision = 0;
+  let _scopeRevision = 0;
+  let _searchRevision = 0;
+  const _groupCollapseSaves = new Map();
   let _groupOrderSaving = false;
   let _catalogRefreshTimer = 0;
   let _state = {
@@ -36,6 +39,13 @@
     sourceFolder: '',
   };
   function api() { return window.MeldexGlobalTags || null; }
+  function mutationContext() {
+    return { sourceFolder: _state.sourceFolder, revision: _scopeRevision, api: api() };
+  }
+  function isMutationCurrent(context) {
+    return !!context.api && context.revision === _scopeRevision
+      && context.sourceFolder === _state.sourceFolder && !_state.mutationBlocked;
+  }
   function sourceFolderForPath(path) {
     return String(path && window.MeldexAutoTagSourceFolder?.(path) || '').trim();
   }
@@ -238,15 +248,17 @@
 
   async function resolveDictionaryConflict(strategy, label) {
     if (!api()?.resolveTagDictionaryConflict) return;
+    const context = mutationContext();
+    const conflictId = _state.conflictId;
     const confirmed = await confirmAsync(
       `${label}のタグ辞書を採用しますか？\n両方の内容は競合バックアップへ保存してから統一します。`,
     );
-    if (!confirmed) return;
+    if (!confirmed || context.revision !== _scopeRevision || conflictId !== _state.conflictId) return;
     try {
       const result = await api().resolveTagDictionaryConflict(
         strategy,
-        _state.conflictId,
-        _state.sourceFolder,
+        conflictId,
+        context.sourceFolder,
       );
       if (typeof showStatus === 'function') {
         showStatus(`タグ辞書を${label}の内容へ統一しました（競合バックアップ: ${result?.backup_path || '保存済み'}）`);
@@ -285,6 +297,10 @@
     }
     if (_state.error) {
       body.insertAdjacentHTML('beforeend', '<div class="gb-section-desc" style="padding:12px;color:var(--danger);">タグを読み込めませんでした: ' + esc(_state.error) + '</div>');
+      body.appendChild(textButton('再試行', 'refresh-cw', () => {
+        api()?.invalidateTagsCatalogCache?.(_state.sourceFolder);
+        void refresh();
+      }, 'tag-management-retry'));
       if (_state.error && !_state.tags.length && !_state.groups.length) return;
     }
     if (_state.syncWarning) {
@@ -518,6 +534,8 @@
       resetButton.disabled = _state.mutationBlocked || !first.path;
     }
     if (sourceChanged) {
+      _scopeRevision += 1;
+      _searchRevision += 1;
       resetTreeRenderLimit();
       _fetchRevision += 1;
       _state.tags = [];
@@ -1244,21 +1262,41 @@
   }
 
   async function toggleGroupCollapsed(group) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const current = _state.groups.find(item => String(item?.id) === String(group?.id));
     const previous = !!(current || group)?.collapsed;
     const next = !previous;
     if (current) current.collapsed = next;
     group.collapsed = next;
     refreshTreeContent();
-    try {
-      const saved = await api().updateGroup(group.id, { collapsed: next }, _state.sourceFolder);
-      if (saved && current) Object.assign(current, saved);
-    } catch (err) {
-      if (current) current.collapsed = previous;
-      group.collapsed = previous;
-      refreshTreeContent();
-      reportError(err, 'グループを更新できませんでした');
-    }
+    const key = `${context.revision}:${group.id}`;
+    const entry = _groupCollapseSaves.get(key) || { tail: Promise.resolve(), savedCollapsed: previous };
+    _groupCollapseSaves.set(key, entry);
+    const request = entry.tail.then(async () => {
+      if (!isMutationCurrent(context)) return;
+      try {
+        const saved = await context.api.updateGroup(group.id, { collapsed: next }, context.sourceFolder);
+        entry.savedCollapsed = saved?.collapsed == null ? next : !!saved.collapsed;
+        if (!isMutationCurrent(context) || entry.tail !== request) return;
+        const target = _state.groups.find(item => String(item?.id) === String(group.id)) || group;
+        if (saved) Object.assign(target, saved);
+        target.collapsed = entry.savedCollapsed;
+        refreshTreeContent();
+      } catch (err) {
+        if (!isMutationCurrent(context)) return;
+        if (entry.tail === request) {
+          const target = _state.groups.find(item => String(item?.id) === String(group.id)) || group;
+          target.collapsed = entry.savedCollapsed;
+          refreshTreeContent();
+        }
+        reportError(err, 'グループを更新できませんでした');
+      }
+    }).finally(() => {
+      if (entry.tail === request) _groupCollapseSaves.delete(key);
+    });
+    entry.tail = request;
+    await request;
   }
 
   function groupPath(groupId) {
@@ -1325,20 +1363,22 @@
   }
 
   async function onAddGroup(parentId) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     try {
       const choice = await addChoice(
         'group',
         uniqueName('新しいグループ', _state.groups.filter(g => (g.parent_id || null) === (parentId || null)).map(g => g.name)),
       );
-      if (!choice) return;
+      if (!choice || !isMutationCurrent(context)) return;
       if (choice.action === 'existing') {
         focusExistingChoice(choice);
         return;
       }
       if (choice.action === 'external') {
-        await api().materializeExternalSuggestion(choice.item, _state.sourceFolder);
+        await context.api.materializeExternalSuggestion(choice.item, context.sourceFolder);
       } else {
-        await api().createGroup({ name: choice.value, parent_id: parentId || null }, _state.sourceFolder);
+        await context.api.createGroup({ name: choice.value, parent_id: parentId || null }, context.sourceFolder);
       }
       await refresh(false);
     } catch (err) {
@@ -1347,20 +1387,22 @@
   }
 
   async function onAddTag(groupId) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     try {
       const choice = await addChoice(
         'tag',
         uniqueName('新しいタグ', _state.tags.map(t => t.name)),
       );
-      if (!choice) return;
+      if (!choice || !isMutationCurrent(context)) return;
       if (choice.action === 'existing') {
         focusExistingChoice(choice);
         return;
       }
       if (choice.action === 'external') {
-        await api().materializeExternalSuggestion(choice.item, _state.sourceFolder);
+        await context.api.materializeExternalSuggestion(choice.item, context.sourceFolder);
       } else {
-        await api().createTag({ name: choice.value, group_id: groupId || null }, _state.sourceFolder);
+        await context.api.createTag({ name: choice.value, group_id: groupId || null }, context.sourceFolder);
       }
       await refresh(false);
     } catch (err) {
@@ -1380,34 +1422,42 @@
   }
 
   async function promptRenameGroup(group) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const next = await promptAsync('グループ名', group.name || '');
     const trimmed = String(next || '').trim();
-    if (!trimmed || trimmed === group.name) return;
-    try { await api().updateGroup(group.id, { name: trimmed }, _state.sourceFolder); await refresh(false); }
+    if (!trimmed || trimmed === group.name || !isMutationCurrent(context)) return;
+    try { await context.api.updateGroup(group.id, { name: trimmed }, context.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'グループ名を変更できませんでした'); }
   }
 
   async function promptColorGroup(group) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const next = await promptAsync('グループの色 (#RRGGBB / 空欄で解除)', String(group.color || '').trim() || '#00b894');
-    if (next == null) return;
-    try { await api().updateGroup(group.id, { color: String(next || '').trim() }, _state.sourceFolder); await refresh(false); }
+    if (next == null || !isMutationCurrent(context)) return;
+    try { await context.api.updateGroup(group.id, { color: String(next || '').trim() }, context.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, '色を変更できませんでした'); }
   }
 
   async function promptRenameTag(tag) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const next = await promptAsync('タグ名', tag.name || '');
     const trimmed = String(next || '').trim();
-    if (!trimmed || trimmed === tag.name) return;
-    try { await api().updateTag(tag.id, { name: trimmed }, _state.sourceFolder); await refresh(false); }
+    if (!trimmed || trimmed === tag.name || !isMutationCurrent(context)) return;
+    try { await context.api.updateTag(tag.id, { name: trimmed }, context.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'タグ名を変更できませんでした'); }
   }
 
   async function promptAliasesTag(tag) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const current = Array.isArray(tag.aliases) ? tag.aliases.join(', ') : '';
     const next = await promptAsync('別名（カンマまたは改行で区切ります）', current);
-    if (next == null) return;
+    if (next == null || !isMutationCurrent(context)) return;
     try {
-      await api().updateTag(tag.id, { aliases: String(next || '') }, _state.sourceFolder);
+      await context.api.updateTag(tag.id, { aliases: String(next || '') }, context.sourceFolder);
       await refresh(false);
     } catch (err) {
       reportError(err, '別名を更新できませんでした');
@@ -1415,8 +1465,10 @@
   }
 
   async function toggleAutoAssignTag(tag) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     try {
-      await api().updateTag(tag.id, { auto_assign: !tag.auto_assign }, _state.sourceFolder);
+      await context.api.updateTag(tag.id, { auto_assign: !tag.auto_assign }, context.sourceFolder);
       await refresh(false);
       if (typeof showStatus === 'function') {
         showStatus(tag.auto_assign ? '自動付与の許可を外しました' : '自動付与を許可しました');
@@ -1427,32 +1479,45 @@
   }
 
   async function onDeleteGroup(group) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     if (!await confirmAsync('グループ「' + group.name + '」を削除しますか？\n直下のタグは未分類に戻ります。')) return;
-    try { await api().deleteGroup(group.id, _state.sourceFolder); await refresh(false); }
+    if (!isMutationCurrent(context)) return;
+    try { await context.api.deleteGroup(group.id, context.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'グループを削除できませんでした'); }
   }
 
   async function onDeleteTag(tag) {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const duplicateMessage = tag?._dictionary_scope === 'duplicate'
       ? '\n自分の分だけ削除します。管理者タグとしては残るため、表示は残ります。'
       : '\nこのタグを付けたファイルからもタグが外れます。';
     if (!await confirmAsync('タグ「' + tag.name + '」を削除しますか？' + duplicateMessage)) return;
-    try { await api().deleteTag(tag.id, _state.sourceFolder); await refresh(false); }
+    if (!isMutationCurrent(context)) return;
+    try { await context.api.deleteTag(tag.id, context.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'タグを削除できませんでした'); }
   }
 
   async function onDeleteSelected() {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const rows = selectedRows();
     if (!rows.length) return;
     if (!await confirmAsync(rows.length + '件のタグ/グループを削除しますか？')) return;
+    if (!isMutationCurrent(context)) return;
     let failed = 0;
+    const failedKeys = [];
     for (const row of rows.filter(item => item.kind === 'tag')) {
-      try { await api().deleteTag(row.id, _state.sourceFolder); } catch (_) { failed += 1; }
+      try { await context.api.deleteTag(row.id, context.sourceFolder); }
+      catch (_) { failed += 1; failedKeys.push(rowKey(row.kind, row.id)); }
     }
     for (const row of rows.filter(item => item.kind === 'group')) {
-      try { await api().deleteGroup(row.id, _state.sourceFolder); } catch (_) { failed += 1; }
+      try { await context.api.deleteGroup(row.id, context.sourceFolder); }
+      catch (_) { failed += 1; failedKeys.push(rowKey(row.kind, row.id)); }
     }
-    _state.selectedKeys = [];
+    if (!isMutationCurrent(context)) return;
+    _state.selectedKeys = failedKeys;
     await refresh(false);
     if (typeof showStatus === 'function') showStatus(rows.length - failed + '件を削除しました' + (failed ? '（' + failed + '件失敗）' : ''), failed > 0);
   }
@@ -1509,6 +1574,7 @@
 
   async function showSearchForTag(tag) {
     if (!api()) return;
+    const revision = ++_searchRevision;
     const sourceFolder = _state.sourceFolder;
     try {
       _state.searchTag = tag;
@@ -1516,12 +1582,12 @@
       render();
       window.MeldexTagManagementOverlays.scrollSearchResultsIntoView(_container);
       const data = await api().searchByTag(tag, sourceFolder);
-      if (sourceFolder !== _state.sourceFolder) return;
+      if (revision !== _searchRevision || sourceFolder !== _state.sourceFolder || _state.searchTag !== tag) return;
       _state.searchResults = Array.isArray(data?.results) ? data.results : [];
       render();
       window.MeldexTagManagementOverlays.scrollSearchResultsIntoView(_container);
     } catch (err) {
-      if (sourceFolder !== _state.sourceFolder) return;
+      if (revision !== _searchRevision || sourceFolder !== _state.sourceFolder || _state.searchTag !== tag) return;
       _state.searchResults = [];
       reportError(err, 'タグ検索に失敗しました');
       render();
@@ -1574,6 +1640,8 @@
   }
 
   async function resetCurrentTargetTags() {
+    const context = mutationContext();
+    if (!isMutationCurrent(context)) return;
     const target = currentAutoTagTarget();
     if (!target.path || !target.targets.length) {
       if (typeof showStatus === 'function') showStatus('ファイルまたはフォルダを選択してください', true);
@@ -1586,14 +1654,14 @@
     const confirmed = typeof cfConfirm === 'function'
       ? await cfConfirm(message, { danger: true, okLabel: 'すべて外す' })
       : window.confirm(message);
-    if (!confirmed) return;
+    if (!confirmed || !isMutationCurrent(context)) return;
     const targetPayload = target.targets.length > 1
       ? { targets: target.targets, label }
       : { path: target.path, recursive: target.recursive, label };
     try {
       await window.MeldexAutoTagJobs.startReset({
         ...targetPayload,
-        source_folder: _state.sourceFolder || sourceFolderForPath(target.path),
+        source_folder: context.sourceFolder || sourceFolderForPath(target.path),
         reset_mode: 'all',
       }, { label });
     } catch (error) {

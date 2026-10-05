@@ -207,6 +207,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     let cascadeClears = [];
     let bidirectionalOp = null;
     let backendCommitted = false;
+    let resolvePendingCreate, rejectPendingCreate;
     const writeStatus = isPickerReplacementType || !getStatusEnabled(dbPath) ? '採用' : '案';
     try {
       closeInlineEditorShell();
@@ -218,11 +219,19 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           status: writeStatus,
           note: '',
         }, ctx);
+        if (optimisticValue) {
+          optimisticValue._pendingCreate = new Promise((resolve, reject) => {
+            resolvePendingCreate = resolve;
+            rejectPendingCreate = reject;
+          });
+          optimisticValue._pendingCreate.catch(() => {});
+        }
         refreshCellDisplayNow([], value);
         _restoreCellPos(pos, moveTo);
         restoredOptimistic = true;
       }
       const result = await _apiPostValue(entityPath, propName, value, writeStatus, '');
+      resolvePendingCreate?.(result);
       const filePath = result?.path || '';
       createdValueRef = {
         file: result?.path || result?.file || '',
@@ -360,6 +369,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (!restoredOptimistic) _restoreCellPos(pos, moveTo);
       return true;
     } catch(e) {
+      rejectPendingCreate?.(e);
       if (!backendCommitted) {
         if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
           try {
@@ -393,6 +403,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       cancel();
       return false;
+    } finally {
+      if (optimisticValue) delete optimisticValue._pendingCreate;
     }
   };
   const saveSelectAndRestore = async (value, moveTo) => {

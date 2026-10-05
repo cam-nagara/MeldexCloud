@@ -1,3 +1,24 @@
+      if (!region) return;
+      outputCanvas = _cropScreenshotCanvas(canvas, region);
+    }
+    const b64 = outputCanvas.toDataURL('image/png');
+    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
+    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
+    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
+    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
+    const res = await apiPost('/annotation/screenshot', {
+      data: b64,
+      target_path: screenshotFolder,
+      source_target: currentTarget,
+      mode: mode,
+      width: outputCanvas.width,
+      height: outputCanvas.height,
+    });
+    if (res.path) {
+      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
+      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
+    }
+  } catch (e) {
     if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
   } finally {
     if (stream) stream.getTracks().forEach(t => t.stop());
@@ -586,12 +607,12 @@ async function _viewerFolderNavEnsureAncestorsExpanded(node) {
   }
 }
 
-async function _viewerFolderNavRevealCurrentFolder(folderPath) {
+async function _viewerFolderNavRevealCurrentFolder(folderPath, options = {}) {
   if (!folderPath) return;
   if (typeof _autoExpandToPath === 'function') {
     try { await _autoExpandToPath(folderPath, true); } catch {}
   }
-  if (typeof highlightOutlinerNode === 'function') {
+  if (!options.skipHighlight && typeof highlightOutlinerNode === 'function') {
     try { highlightOutlinerNode(folderPath, { noScroll: true }); } catch {}
   }
   await _viewerFolderNavDelay(50);
@@ -621,18 +642,28 @@ async function _viewerFolderNavDisplayableInFolder(folderPath) {
   return result;
 }
 
-function _viewerFolderNavOpenTarget(folderPath, result) {
+function _viewerFolderNavOpenTarget(folderPath, result, targetIframe = null) {
+  const url = result?.hasImage
+    ? '/viewer?folder=' + encodeURIComponent(folderPath)
+    : (result?.firstPdf?.path ? '/viewer?pdf=' + encodeURIComponent(result.firstPdf.path) : '');
+  if (!url) return;
+  if (targetIframe) {
+    // サブパネルのビューワーからの移動は、そのビューワーだけを切り替える。メインのビューワー・
+    // フォルダツリーの選択・プロパティは動かさない（2つ目の表示面がメインを奪わないようにする）。
+    const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(url) || url;
+    const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
+      ? _gbPrepareUntrustedIframe(targetIframe, resolvedUrl)
+      : targetIframe;
+    _gbOpenViewerIframe(preparedIframe || targetIframe, url, resolvedUrl, { skipGlobalUi: true, skipHighlight: true });
+    return;
+  }
   const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
   if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
-  if (result?.hasImage) {
-    openViewer('/viewer?folder=' + encodeURIComponent(folderPath));
-  } else if (result?.firstPdf?.path) {
-    openViewer('/viewer?pdf=' + encodeURIComponent(result.firstPdf.path));
-  }
+  openViewer(url);
 }
 
-async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
-  await _viewerFolderNavRevealCurrentFolder(currentFolderPath);
+async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe = null) {
+  await _viewerFolderNavRevealCurrentFolder(currentFolderPath, { skipHighlight: !!targetIframe });
   let cursorPath = currentFolderPath;
   for (let guard = 0; guard < 400; guard++) {
     const nodes = _viewerFolderNavFolderNodes();
@@ -649,7 +680,7 @@ async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
     }
     const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
     if (result.has) {
-      _viewerFolderNavOpenTarget(candidatePath, result);
+      _viewerFolderNavOpenTarget(candidatePath, result, targetIframe);
       return true;
     }
     const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
@@ -659,10 +690,10 @@ async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
   return false;
 }
 
-function _handleViewerFolderNavRequest(msg) {
+function _handleViewerFolderNavRequest(msg, targetIframe = null) {
   const direction = Number(msg?.direction) < 0 ? -1 : 1;
   const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
-  _navigateViewerFolderByTreeOrder(direction, currentFolderPath).then(moved => {
+  _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe).then(moved => {
     if (!moved && typeof showStatus === 'function') {
       showStatus('画像またはPDFがあるフォルダがありません', true);
     }
@@ -672,10 +703,18 @@ function _handleViewerFolderNavRequest(msg) {
 }
 
 window.addEventListener('message', (e) => {
-  if (!_isTrustedEmbeddedMessage(e)) return;
+  const sourceIframe = _getTrustedEmbeddedMessageIframe(e);
+  if (!sourceIframe) return;
   const msg = e.data;
   if (!msg || !msg.type) return;
-  if (msg.type === 'viewer-current-file-changed') { _syncViewerCurrentFileFromMessage(msg); return; }
+  // サブパネルのビューワー（2つ目の表示面）は、メインの「現在のファイル」（state.currentPagePath）・
+  // フォルダツリーの選択・プロパティを書き換えない。書き換えると、メインで開いているノートのタブ状態や
+  // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
+  const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
+  if (msg.type === 'viewer-current-file-changed') {
+    if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
+    return;
+  }
   if (msg.type === 'viewer-sheet-context-request' && window.MeldexViewerSheetContext) {
     window.MeldexViewerSheetContext.handleRequest(msg, e.source);
     return;
@@ -684,7 +723,10 @@ window.addEventListener('message', (e) => {
     window.MeldexViewerSheetContext.handleRowNavigation(msg, e.source);
     return;
   }
-  if (msg.type === 'viewer-folder-nav-request') { _handleViewerFolderNavRequest(msg); return; }
+  if (msg.type === 'viewer-folder-nav-request') {
+    _handleViewerFolderNavRequest(msg, fromSubpanelViewer ? sourceIframe : null);
+    return;
+  }
   const reloadEmbeddedAnnotations = () => {
     const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
     if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
@@ -856,45 +898,3 @@ async function openBoard(label, path, opts) {
     if (!boardCanvas
       && !openOpts.skipNavPush
       && typeof navPush === 'function'
-      && typeof GBPaneBridge !== 'undefined'
-      && GBPaneBridge?.initialized) {
-      requestedPaneId = openOpts.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
-      const paneInfo = requestedPaneId
-        && typeof GBLayout !== 'undefined'
-        && typeof GBLayout.findNode === 'function'
-        ? GBLayout.findNode(GBLayout.root, requestedPaneId)
-        : null;
-      requestedPane = paneInfo?.node || null;
-      requestedTabIndex = requestedPane?.activeTabIndex ?? -1;
-      requestedTab = requestedPane?.tabs?.[requestedTabIndex] || null;
-      if (requestedTab) {
-        requestedTabSnapshot = {
-          fields: {
-            type: requestedTab.type,
-            label: requestedTab.label,
-            path: requestedTab.path,
-            state: requestedTab.state,
-            icon: requestedTab.icon,
-          },
-          navHistory: Array.isArray(requestedTab.navHistory) ? [...requestedTab.navHistory] : requestedTab.navHistory,
-          navIndex: requestedTab.navIndex,
-        };
-      }
-      await navPush({ type: 'board', label, path }, requestedPaneId);
-      navPushedBeforeLoad = true;
-      if (requestedPane && typeof getComponentInstance === 'function') {
-        const tab = requestedPane.tabs?.[requestedPane.activeTabIndex] || null;
-        const component = tab ? getComponentInstance(tab.id) : null;
-        mountedBoardLoad = component?._boardLoadPending || null;
-      }
-    }
-    if (!openOpts.skipShowView) showView('board');
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-    const opened = mountedBoardLoad
-      ? await mountedBoardLoad
-      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true);
-    if (opened === false) {
-      restorePreviousView();
-      return false;
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});

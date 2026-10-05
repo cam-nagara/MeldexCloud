@@ -344,7 +344,10 @@ async function _refreshOpenScriptNoteVersionTarget(path) {
   }
 
   if (!tasks.length) return 0;
-  await Promise.allSettled(tasks);
+  const results = await Promise.allSettled(tasks);
+  if (results.some(result => result.status === 'rejected' || result.value === false)) {
+    throw new Error('復元後のシナリオを再読込できませんでした');
+  }
   return tasks.length;
 }
 
@@ -405,7 +408,7 @@ async function _refreshRestoredVersionTarget(path, type) {
   }
 
   if (targetType === 'db') {
-    if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(path));
+    if (_sameVersionTargetPath(state.currentDbPath, path) && typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(path));
     return;
   }
 
@@ -424,6 +427,8 @@ async function _refreshRestoredVersionTarget(path, type) {
     await Promise.resolve(selectEntity(state.currentEntityPath));
   } else if ((state.view === 'pivot' || state.view === 'tree' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath && typeof selectDatabase === 'function') {
     await Promise.resolve(selectDatabase(state.currentDbPath));
+  } else if (state.view === 'csv' && typeof _csvPath !== 'undefined' && _sameVersionTargetPath(_csvPath, path) && typeof openCsvFile === 'function') {
+    await Promise.resolve(openCsvFile(path.split('/').pop() || '', path));
   }
 }
 
@@ -494,7 +499,7 @@ async function showVersionsModal(path, type) {
 
 async function saveManualVersion(path, type) {
   const label = await cfPrompt('バージョンラベル（任意）:', '');
-  if (label === null) return;
+  if (label === null) return false;
   showLoading('バージョンを保存中...');
   try {
     const isDb = type === 'db';
@@ -503,12 +508,13 @@ async function saveManualVersion(path, type) {
     showStatus('バージョンを保存しました');
     _refreshVersionViews(path, type);
   } catch (err) {
-    showStatus('バージョン保存に失敗しました', true);
+    showStatus('バージョン保存に失敗しました: ' + (err.message || ''), true);
+    return false;
   } finally { hideLoading(); }
 }
 
 async function deleteVersion(path, versionName, type) {
-  if (!await cfConfirm('このバージョンを削除しますか？')) return;
+  if (!await cfConfirm('このバージョンを削除しますか？')) return false;
   let currentName = versionName;
   let deletedToken = '';
   const versionType = type || 'file';
@@ -575,12 +581,15 @@ function _refreshVersionViews(path, type) {
 }
 
 async function restoreVersion(path, versionName, type) {
-  if (!await cfConfirm('このバージョンに復元しますか？\n（現在のバージョンは自動保存されます）')) return;
+  if (!await cfConfirm('このバージョンに復元しますか？\n（現在のバージョンは自動保存されます）')) return false;
   showLoading('復元中...');
+  let restored = false;
   try {
     await _flushOpenVersionTarget(path, type || 'file');
     if (type === 'db') {
-      await apiPost('/version/restore-db', { path, version: versionName });
+      const revisionState = await apiFetch('/version/read-db?path=' + encodeURIComponent(path)
+        + '&version=' + encodeURIComponent(versionName));
+      await apiPost('/version/restore-db', { path, version: versionName, restore_revision: revisionState?.restore_revision || '' });
     } else {
       const revisionState = await apiFetch('/version/read?path=' + encodeURIComponent(path)
         + '&version=' + encodeURIComponent(versionName));
@@ -596,7 +605,7 @@ async function restoreVersion(path, versionName, type) {
         transport_revision: transportRevision,
       });
     }
-    showStatus('復元しました');
+    restored = true;
     const versionModal = [...document.querySelectorAll('.modal-overlay[data-history-version-modal="1"]')]
       .find(modal => (modal.dataset.versionType || 'file') === (type || 'file')
         && _sameVersionTargetPath(modal.dataset.versionPath || '', path));
@@ -604,8 +613,10 @@ async function restoreVersion(path, versionName, type) {
     else versionModal?.remove();
     await _refreshRestoredVersionTarget(path, type || 'file');
     _refreshVersionViews(path, type || 'file');
+    showStatus('復元しました');
   } catch (err) {
-    showStatus('復元に失敗しました: ' + (err.message || ''), true);
+    showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : '復元に失敗しました: ') + (err.message || ''), true);
+    return false;
   } finally { hideLoading(); }
 }
 
@@ -617,7 +628,7 @@ async function previewVersion(path, versionName, type) {
     return;
   }
   const data = await apiFetch('/version/read?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
-  showTextPreview(data.content, versionName);
+  showTextPreview(data.binary ? 'バイナリファイルの保存版\n\nサイズ: ' + formatFileSize(data.size) + '\nSHA-256: ' + data.sha256 : data.content, versionName);
 }
 
 function showTextPreview(content, title) {
@@ -699,6 +710,7 @@ function showDbSnapshotPreview(data, title) {
 let _diffMode = localStorage.getItem('diff-mode') || 'side'; // 'side' | 'inline'
 
 async function compareVersion(path, versionName, type) {
+  await _flushOpenVersionTarget(path, type || 'file');
   if (type === 'db') {
     // DB diff: 現在のpivotデータとスナップショットを比較
     const snapshot = await apiFetch('/version/read-db?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
@@ -709,6 +721,10 @@ async function compareVersion(path, versionName, type) {
     return;
   }
   const verData = await apiFetch('/version/read?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
+  if (verData.binary) {
+    showDiffModal('SHA-256: ' + verData.sha256, 'SHA-256: ' + verData.current_sha256, versionName, '現在');
+    return;
+  }
   const curData = await apiFetch('/file?path=' + encodeURIComponent(path));
   const oldText = verData.content || '';
   const newText = curData.content || '';
@@ -1113,7 +1129,7 @@ function showDbDiff(snapshot, title, currentData = null) {
 
 async function saveFolderVersion(folderPath) {
   const label = await cfPrompt('フォルダバージョンのラベル（任意）:', '');
-  if (label === null) return;
+  if (label === null) return false;
   showLoading('フォルダバージョンを保存中...');
   try {
     await _flushOpenFolderVersionTargets(folderPath);
@@ -1121,7 +1137,8 @@ async function saveFolderVersion(folderPath) {
     showStatus(`フォルダバージョンを保存しました（${result.file_count}ファイル）`);
     _refreshVersionViews(folderPath, 'folder');
   } catch (err) {
-    showStatus('フォルダバージョン保存に失敗しました', true);
+    showStatus('フォルダバージョン保存に失敗しました: ' + (err.message || ''), true);
+    return false;
   } finally { hideLoading(); }
 }
 
@@ -1186,11 +1203,12 @@ async function restoreFolderVersion(folderPath, versionName) {
   showLoading('復元内容を確認中...');
   let meta;
   try {
+    await _flushOpenFolderVersionTargets(folderPath);
     meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
   } catch (err) {
     hideLoading();
     showStatus('バージョン情報の取得に失敗しました', true);
-    return;
+    return false;
   }
   hideLoading();
 
@@ -1199,22 +1217,25 @@ async function restoreFolderVersion(folderPath, versionName) {
   const msg = `${label} を復元しますか？\n\n` +
     `${files.length}ファイルが上書きされます。\n` +
     `⚠ 復元前に現在の状態が自動保存されます。`;
-  if (!await cfConfirm(msg)) return;
+  if (!await cfConfirm(msg)) return false;
 
   showLoading('フォルダバージョンを復元中...');
+  let restored = false;
   try {
     await _flushOpenFolderVersionTargets(folderPath);
-    const result = await apiPost('/version/restore-folder', { path: folderPath, version: versionName });
-    showStatus(`復元しました（${result.restored_count}ファイル）`);
+    const result = await apiPost('/version/restore-folder', { path: folderPath, version: versionName, restore_revision: meta.restore_revision || '' });
+    restored = true;
     await _refreshRestoredFolderVersionTargets(folderPath, result?.restored_files || files.map(f => f.rel_path).filter(Boolean));
     _refreshVersionViews(folderPath, 'folder');
+    showStatus(`復元しました（${result.restored_count}ファイル）`);
   } catch (err) {
-    showStatus('フォルダバージョン復元に失敗しました', true);
+    showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : 'フォルダバージョン復元に失敗しました: ') + (err.message || ''), true);
+    return false;
   } finally { hideLoading(); }
 }
 
 async function deleteFolderVersion(folderPath, versionName) {
-  if (!await cfConfirm('このフォルダバージョンを削除しますか？')) return;
+  if (!await cfConfirm('このフォルダバージョンを削除しますか？')) return false;
   showLoading('削除中...');
   try {
     let currentName = versionName;
@@ -1243,7 +1264,8 @@ async function deleteFolderVersion(folderPath, versionName) {
     showStatus(deletedToken ? 'フォルダバージョンを削除しました（Undoで戻せます）' : 'フォルダバージョンを削除しました');
     _refreshVersionViews(folderPath, 'folder');
   } catch (err) {
-    showStatus('フォルダバージョン削除に失敗しました', true);
+    showStatus('フォルダバージョン削除に失敗しました: ' + (err.message || ''), true);
+    return false;
   } finally { hideLoading(); }
 }
 

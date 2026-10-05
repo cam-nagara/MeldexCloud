@@ -595,11 +595,20 @@ class CalendarComponent extends ToolComponent {
   }
 
   async _loadTasks() {
+    const seq = (this._loadTasksSeq = (this._loadTasksSeq || 0) + 1);
+    const user = this._getUser();
+    const stale = () => this._destroyed || seq !== this._loadTasksSeq || user !== this._getUser();
     try {
-      this._tasks = await apiFetch('/cal/tasks?user=' + encodeURIComponent(this._getUser()));
-    } catch {
+      const tasks = await apiFetch('/cal/tasks?user=' + encodeURIComponent(user));
+      if (stale()) return { ok: true, stale: true };
+      if (!Array.isArray(tasks)) throw new Error('Invalid ToDo response');
+      this._tasks = tasks;
+      return { ok: true, stale: false };
+    } catch (error) {
+      if (stale()) return { ok: true, stale: true };
       if (!Array.isArray(this._tasks)) this._tasks = [];
       this._showStatus('ToDoリストの読み込みに失敗', true);
+      return { ok: false, stale: false, error };
     }
   }
 

@@ -7,7 +7,11 @@
   const MAX_DRAFTS = 100;
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
+  // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
+  // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
+  const sessionDraftKeys = new Set();
   let recoveryRetryTimer = 0;
+  let recoveryRetryOptions = null;
   let activeRecoveryModal = null;
   // 編集ロック一覧（マニュアル等のシステム保護）がまだ読み込まれていない間は、
   // ロック済みパスの残留ドラフトを掃除できない。起動1.8秒時点ではホームフォルダの
@@ -30,11 +34,15 @@
     return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay');
   }
 
-  function _scheduleRecoveryRetry() {
+  function _scheduleRecoveryRetry(options) {
+    // 明示的な一覧要求は、起動時だけの絞り込みより優先する。
+    if (!recoveryRetryOptions || !options?.startup) recoveryRetryOptions = options || {};
     if (recoveryRetryTimer) return;
     recoveryRetryTimer = setTimeout(() => {
+      const pendingOptions = recoveryRetryOptions || {};
+      recoveryRetryOptions = null;
       recoveryRetryTimer = 0;
-      showRecoveryDialog().catch(() => {});
+      showRecoveryDialog(pendingOptions).catch(() => {});
     }, 700);
   }
 
@@ -148,6 +156,9 @@
       store.put({ path: key, filePath: safePath, scope, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
       _prune(store, scope).catch(() => {});
       return { ok: true, path: safePath, savedAt };
+    }).then(result => {
+      if (result?.ok) sessionDraftKeys.add(key);
+      return result;
     }).catch(() => ({ ok: false }));
   }
 
@@ -283,14 +294,17 @@
     const remaining = await _pruneLockedDrafts(await listDrafts());
     const overlay = document.querySelector('[data-draft-recovery-dialog="1"]');
     if (!overlay) {
+      const pendingManualRequest = recoveryRetryOptions && !recoveryRetryOptions.startup;
       if (recoveryRetryTimer) {
         clearTimeout(recoveryRetryTimer);
         recoveryRetryTimer = 0;
+        recoveryRetryOptions = null;
       }
       // 一度出した（あるいは出す必要が無いと判断した）あとは出し直さない。
       // setSystemLockedItems は設定画面やツリー更新でも呼ばれるため、ここで無条件に
       // 開くと、ユーザーが閉じたダイアログが操作のたびに復活してしまう。
-      if (remaining.length && !startupPromptSettled) showRecoveryDialog().catch(() => {});
+      if (pendingManualRequest) showRecoveryDialog().catch(() => {});
+      else if (remaining.length && !startupPromptSettled) showRecoveryDialog({ startup: true }).catch(() => {});
       return;
     }
     const alive = new Set(remaining.map(item => String(item.path || '')));
@@ -304,8 +318,11 @@
     }
   }
 
-  async function showRecoveryDialog() {
-    const drafts = await _pruneLockedDrafts(await listDrafts());
+  async function showRecoveryDialog(options = {}) {
+    const available = await _pruneLockedDrafts(await listDrafts());
+    const drafts = options.startup
+      ? available.filter(item => !sessionDraftKeys.has(item.storageKey))
+      : available;
     if (!drafts.length) {
       startupPromptSettled = true;
       return;
@@ -314,11 +331,11 @@
     if (_systemLocksPending()) {
       // ロック一覧が来る前に出すと、閲覧専用ファイルの残骸まで一緒に出てしまう
       lockWaitAttempts += 1;
-      _scheduleRecoveryRetry();
+      _scheduleRecoveryRetry(options);
       return;
     }
     if (_hasBlockingStartupDialog()) {
-      _scheduleRecoveryRetry();
+      _scheduleRecoveryRetry(options);
       return;
     }
     window.GBTooltip?.hide?.({ suppressUntilLeave: true });
@@ -438,7 +455,7 @@
   }
 
   function scheduleStartupCheck() {
-    setTimeout(() => showRecoveryDialog().catch(() => {}), 1800);
+    setTimeout(() => showRecoveryDialog({ startup: true }).catch(() => {}), 1800);
   }
 
   window.MeldexDraftRecovery = {

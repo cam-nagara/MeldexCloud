@@ -381,6 +381,9 @@
   }
 
   async function _executeImport(entries) {
+    const targetPath = bd.path;
+    const openSeq = bd._openSeq;
+    const targetNodes = bd.nodes;
     const canvas = document.getElementById('bd-canvas');
     const rect = canvas?.getBoundingClientRect();
     const paneW = (rect && rect.width) || 800;
@@ -417,6 +420,9 @@
 
     // 画像プロパティは並行取得 (最大 6 本)。
     const imgMap = await _fetchImagesParallel(entries.map(e => e.path), 6);
+    if (bd.path !== targetPath || bd._openSeq !== openSeq || bd.nodes !== targetNodes) {
+      throw new Error('取込中にボードが切り替わったため、追加を中止しました');
+    }
 
     const createdNodes = [];
     const createdIds = [];

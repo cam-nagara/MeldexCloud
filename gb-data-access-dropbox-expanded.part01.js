@@ -397,7 +397,7 @@
       && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
     if (valid) return data;
     if (typeof provider?.statPath === 'function') {
-      const stat = await provider.statPath(_sheetManifestPath(dbPath)).catch(() => undefined);
+      const stat = await provider.statPath(_sheetManifestPath(dbPath));
       if (stat) {
         throw new Error('シートの保管ファイル（マニフェスト）を読み取れませんでした。時間をおいてもう一度お試しください');
       }
@@ -429,7 +429,7 @@
       const shard = await _readSheetShard(provider, dbPath, shardFileName);
       if (!shard) {
         if (typeof provider?.statPath === 'function') {
-          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName)).catch(() => undefined);
+          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName));
           if (stat) {
             throw new Error(`シートの保管ファイル（シャード ${shardFileName}）を読み取れませんでした。時間をおいてもう一度お試しください`);
           }
@@ -538,9 +538,17 @@
       return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
     }
     const storePath = _sheetStorePath(dbPath);
-    const entry = await _resolveEntryHandle(provider, storePath).catch(() => null);
-    if (!entry || entry.kind !== 'file') return null;
-    return _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), dbPath);
+    const raw = await _readJsonSafe(provider, storePath, null);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return _normalizeSheetStore(raw, dbPath);
+    const unreadable = new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
+    if (typeof provider?.statPath === 'function') {
+      const stat = await provider.statPath(storePath);
+      if (stat) throw unreadable;
+      return null;
+    }
+    const entry = await _resolveEntryHandle(provider, storePath);
+    if (entry && entry.kind === 'file') throw unreadable;
+    return null;
   }
 
   // 「保管ファイルが本当に無い」ことを確かめる。_readSheetStoreMaybe() は

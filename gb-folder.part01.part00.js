@@ -11,6 +11,7 @@ const FOLDER_PANEL_RENDER_CHUNK_SIZE = 80;
 const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 let _folderPath = '';
 let _folderItems = [];
+let _folderBrowseIncomplete = null;
 let _folderUnifiedSearchPaths = new Set();
 let _folderUnifiedSearchSeq = 0;
 let _folderUnifiedSearchTimer = 0;
@@ -22,6 +23,7 @@ function _folderSearchHintEl() {
 function _refreshFolderUnifiedSearch(query) {
   const text = String(query || '').trim();
   const seq = ++_folderUnifiedSearchSeq;
+  const folderPath = _folderPath;
   _folderUnifiedSearchPaths = new Set();
   const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
@@ -30,9 +32,9 @@ function _refreshFolderUnifiedSearch(query) {
   if ((!text && !hasTagCondition) || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
   const scopes = window.MeldexUnifiedSearch.active();
   if (!hasTagCondition && !scopes.some(scope => scope !== 'name')) return Promise.resolve();
-  return window.MeldexUnifiedSearch.search(text, { path: _folderPath || '', limit: 100 })
+  return window.MeldexUnifiedSearch.search(text, { path: folderPath || '', limit: 100 })
     .then(data => {
-      if (seq !== _folderUnifiedSearchSeq) return;
+      if (seq !== _folderUnifiedSearchSeq || folderPath !== _folderPath) return;
       _folderUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
       if (typeof renderFolderGrid === 'function') renderFolderGrid();
       window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), data, text);
@@ -901,20 +903,24 @@ function setFolderSubfolderContentsEnabled(enabled) {
   if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
 }
 
-async function _folderFetchBrowseItems(path) {
+async function _folderFetchBrowseItems(path, options = {}) {
   const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+  if (options.isCurrent?.() === false) return [];
   if (!isFolderSubfolderContentsEnabled()) return direct;
   const result = [...direct];
   const seenItems = new Set(direct.map(item => _normalizeFolderPathForCompare(item?.path)).filter(Boolean));
   const queue = direct.filter(item => item?.type === 'folder' && item.path).map(item => item.path);
   const visited = new Set([_normalizeFolderPathForCompare(path)]);
+  let failedCount = 0;
   while (queue.length && visited.size < 5000) {
+    if (options.isCurrent?.() === false) return [];
     const folderPath = queue.shift();
     const key = _normalizeFolderPathForCompare(folderPath);
     if (!key || visited.has(key)) continue;
     visited.add(key);
     try {
       const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      if (options.isCurrent?.() === false) return [];
       children.forEach(child => {
         if (child?.type === 'folder' && child.path) queue.push(child.path);
         else if (child?.path) {
@@ -926,8 +932,11 @@ async function _folderFetchBrowseItems(path) {
         }
       });
     } catch (error) {
+      failedCount += 1;
       console.warn('サブフォルダの読み込みに失敗しました', folderPath, error);
     }
   }
+  result._folderBrowseIncomplete = (failedCount || queue.length)
+    ? { failedCount, truncated: queue.length > 0 } : null;
   return result;
 }

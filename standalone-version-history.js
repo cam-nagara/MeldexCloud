@@ -229,7 +229,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    bindButton('btn-annotation-versions', openViewerAnnotations);
+    // ビューワーのアノテートのバージョン管理は右クリックメニュー（viewer-context-menu.js）から開く。
     bindButton('quickMemoVersionBtn', openQuickMemo);
   });
 

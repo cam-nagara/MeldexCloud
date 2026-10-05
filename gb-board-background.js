@@ -347,17 +347,23 @@ async function bdSetBoardBackgroundImageFromFile(file) {
     if (typeof showStatus === 'function') showStatus('ボードを保存してから背景画像を設定してください', true);
     return false;
   }
+  const targetPath = bd.path;
+  const openSeq = bd._openSeq;
+  const isCurrentBoard = () => bd.path === targetPath && bd._openSeq === openSeq;
   try {
     const data = await _bdReadFileAsDataUrl(file);
+    if (!isCurrentBoard()) return false;
     // 2026-08-01: proprietary-format-sidecar-cleanup-plan-2026-07-31.md §5.1 により、
     // 背景画像は既定で .mel-board 本体へ埋め込む（アップロードによる隣接ファイル作成はしない）。
     // サイズが大きい場合だけ、埋め込み/リンクをユーザーに確認する。
     const choice = typeof bdResolveImageEmbedChoice === 'function'
       ? await bdResolveImageEmbedChoice(file.size, file.name)
       : 'embed';
+    if (!isCurrentBoard()) return false;
     const imageUrl = choice === 'link'
       ? await _bdUploadBoardBackgroundImage(data, file)
       : data;
+    if (!isCurrentBoard()) return false;
     bdSetBoardBackgroundImage(imageUrl, bd._bgImageFit || 'contain');
     if (typeof showStatus === 'function') showStatus('背景画像を設定しました');
     return true;

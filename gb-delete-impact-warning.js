@@ -244,9 +244,9 @@
       return cfConfirm(message, opts);
     }
     const { impact, failed } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
-    if (failed || !impact || impact.complete === false) {
+    if (failed || !impact || (operation === 'permanent' && impact.complete === false)) {
       if (typeof cfAlert === 'function') {
-        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、削除を中止しました。');
+        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、完全削除を中止しました。');
       }
       return false;
     }

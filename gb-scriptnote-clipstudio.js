@@ -72,9 +72,9 @@ function _sn2SepConnect() {
       _sn2SepWs.onerror = () => { _sn2SepConnected = false; _sn2SepConnecting = false; };
       _sn2SepWs.onmessage = (e) => {
         try {
-          const msg = JSON.parse(e.data);
+          const msg = _sn2SepResultMessage(JSON.parse(e.data));
           const w = document.getElementById('sb-warn') || document.getElementById('sb-msg');
-          const colorMap = { countdown: 'var(--orange)', progress: 'var(--accent2)', done: 'var(--green)', status: 'var(--fg2)', error: 'var(--red)' };
+          const colorMap = { countdown: 'var(--orange)', progress: 'var(--accent2)', done: 'var(--orange)', status: 'var(--fg2)', error: 'var(--red)' };
           if (w) {
             if (msg.type === 'countdown') w.textContent = `CLIP STUDIO PAINTへ送信: ${msg.seconds}秒後にペースト開始...`;
             else w.textContent = msg.message || '';
@@ -90,7 +90,7 @@ function _sn2SepConnect() {
               delete w.dataset.statusKind;
               if (w.id === 'sb-msg') w.removeAttribute('aria-label');
             }
-            if (msg.type === 'done') setTimeout(() => {
+            if (msg.type === 'done' && msg.applicationVerified === true) setTimeout(() => {
               w.textContent = '';
               w.style.color = '';
               delete w.dataset.statusKind;
@@ -150,10 +150,10 @@ function _captureScriptnoteState(scope) {
 }
 
 function _restoreScriptnoteState(snapshot, scope) {
-  if (!snapshot) return;
+  if (!snapshot) return false;
   const editor = _sn2EditorByScope(scope);
-  if (!editor?.doc) return;
-  editor._applySnapshot(snapshot);
+  if (!editor?.doc) return false;
+  return editor._applySnapshot(snapshot);
 }
 
 async function _sn2ConfirmIncludeAffix() {
@@ -236,6 +236,7 @@ function sn2CopyForClipStudio() {
 }
 
 function _sn2ShowSepDialog(editor) {
+  if (document.getElementById('sn2-sep-running-overlay')) return;
   const existing = document.querySelector('[data-e2e-id="scriptnote-clipstudio-send-dialog"]');
   if (existing) {
     existing.querySelector('input, button')?.focus?.();
@@ -426,6 +427,12 @@ function _sn2StartSep() {
       }
     }
   }
+  if (!rows.length) {
+    if (typeof showStatus === 'function') {
+      showStatus('送信できる行がありません。範囲と「空白行を出力しない」の設定を確認してください', true);
+    }
+    return;
+  }
   if (!_sn2SepWs || _sn2SepWs.readyState !== WebSocket.OPEN) {
     if (typeof showStatus === 'function') showStatus('CLIP STUDIO PAINT連携が切断されています。再接続してから送信してください', true);
     _sn2SepConnect();
@@ -478,7 +485,7 @@ function _sn2EnterRunningMode(dialogOverlay) {
   stopBtn.type = 'button';
   stopBtn.className = 'sn2-sep-running-stop';
   stopBtn.textContent = '中断';
-  stopBtn.addEventListener('click', () => { _sn2StopSep(); });
+  stopBtn.onclick = () => { _sn2StopSep(); };
   btnRow.appendChild(stopBtn);
   box.appendChild(btnRow);
   ov.appendChild(box);
@@ -487,7 +494,15 @@ function _sn2EnterRunningMode(dialogOverlay) {
   return ov;
 }
 
+function _sn2SepResultMessage(msg) {
+  // OSへの入力送信だけでは受信アプリ内の反映を証明できない。
+  if (msg?.type !== 'done') return msg;
+  return { ...msg, applicationVerified: false,
+    message: '入力送信終了。CLIP STUDIO PAINTへの反映は未確認です。ストーリーエディタで内容を確認してください。' };
+}
+
 function _sn2UpdateRunningDialog(msg) {
+  msg = _sn2SepResultMessage(msg);
   const ov = document.getElementById('sn2-sep-running-overlay');
   if (!ov) return;
   const statusEl = ov.querySelector('#sn2-sep-running-status');
@@ -499,12 +514,23 @@ function _sn2UpdateRunningDialog(msg) {
     else if (msg.type === 'error') statusEl.textContent = `エラー: ${msg.message || ''}`;
   }
   const isAborted = msg && msg.type === 'status' && typeof msg.message === 'string' && /中断されました/.test(msg.message);
+  if (msg?.type === 'done') {
+    ov.dataset.sn2Finished = '1';
+    ov.querySelector('#sn2-sep-running-title').textContent = 'CLIP STUDIO PAINTへの反映を確認';
+    ov.querySelector('.sn2-sep-running-warning').textContent = '送信先の内容を確認してから閉じてください。';
+    const close = ov.querySelector('.sn2-sep-running-stop');
+    close.textContent = '閉じる';
+    close.onclick = () => ov.remove();
+    close.focus();
+    return;
+  }
   if (msg && (msg.type === 'done' || msg.type === 'error' || isAborted)) {
     setTimeout(() => { ov.remove(); }, 1500);
   }
 }
 
 function _sn2StopSep() {
+  if (document.getElementById('sn2-sep-running-overlay')?.dataset.sn2Finished === '1') return;
   if (_sn2SepWs && _sn2SepWs.readyState === WebSocket.OPEN) {
     _sn2SepWs.send(JSON.stringify({ command: 'stop' }));
   }

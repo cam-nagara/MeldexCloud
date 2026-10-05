@@ -445,9 +445,13 @@
     const node = state?.nodes?.find(item => item && item.id === nodeId);
     if (!node || !node.img) return false;
     const originalPath = nodeLinkPath(node);
+    const token = boardRequestToken();
     const picked = source == null ? await promptRelocateImageSource(node) : source;
     if (!picked) return false;
-    const token = boardRequestToken();
+    if (!isSameBoardToken(token)) {
+      if (typeof global.showStatus === 'function') global.showStatus('別のボードに切り替わったため、画像の再指定を中止しました', true);
+      return false;
+    }
     let next;
     try {
       next = await buildRelocatedImageChange(node, picked);

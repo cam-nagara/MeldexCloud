@@ -1620,6 +1620,19 @@ function settingsThemeSelect(id) {
   _refreshSettingsThemePanel(id, { activeStyleTab });
 }
 
+async function _persistSettingsThemeImmediately() {
+  if (typeof saveColorSettings === 'function' && saveColorSettings() === false) return false;
+  if (typeof _saveUiConfigToServer === 'function') {
+    try { await _saveUiConfigToServer(); }
+    catch (error) {
+      console.warn('テーマの永続保存に失敗:', error);
+      if (typeof showStatus === 'function') showStatus('テーマを保存先へ書き込めませんでした', true);
+      return false;
+    }
+  }
+  return true;
+}
+
 async function settingsThemeCreate(options = {}) {
   if (typeof MeldexThemeManager === 'undefined') return false;
   const opts = options && typeof options === 'object' ? options : {};
@@ -1629,6 +1642,7 @@ async function settingsThemeCreate(options = {}) {
   if (theme === undefined) return false;
   if (!theme) { showStatus('テーマ名を入力してください', true); return false; }
   MeldexThemeManager.applyDefaultTheme(theme.id, { silent: true, resetThemeColorSet: false });
+  if (!opts.deferPersistence && !await _persistSettingsThemeImmediately()) return false;
   if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(false);
   if (!opts.skipRefresh) _refreshSettingsThemePanel(theme.id);
   if (!opts.silent) showStatus('カスタムテーマを作成しました');
@@ -1678,7 +1692,7 @@ function settingsThemeReset() {
   showStatus('デフォルトに戻しました');
 }
 
-function settingsThemeSave(options = {}) {
+async function settingsThemeSave(options = {}) {
   if (typeof MeldexThemeManager === 'undefined') return false;
   const opts = options && typeof options === 'object' ? options : {};
   const id = _settingsThemeCurrentId();
@@ -1690,6 +1704,7 @@ function settingsThemeSave(options = {}) {
   if (saved === undefined) return false;
   if (!saved) { showStatus('デフォルトとして保存できませんでした', true); return false; }
   try { localStorage.removeItem(MeldexThemeManager.THEME_COLOR_SET_KEY); } catch {}
+  if (!opts.deferPersistence && !await _persistSettingsThemeImmediately()) return false;
   if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(false);
   if (!opts.skipRefresh) _refreshSettingsThemePanel(saved.id);
   if (!opts.silent) showStatus('デフォルトとして保存しました', false, { showSaveDialog: true });
@@ -1700,11 +1715,12 @@ async function settingsThemeSaveFromSettingsDialog(options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   if (typeof _settingsThemeIsDirty === 'function' && !_settingsThemeIsDirty()) return true;
   if (typeof MeldexThemeManager === 'undefined') return true;
-  if (_settingsThemeIsCustom()) return settingsThemeSave({ silent: true, skipRefresh: !!opts.skipRefresh });
+  if (_settingsThemeIsCustom()) return settingsThemeSave({ silent: true, skipRefresh: !!opts.skipRefresh, deferPersistence: !!opts.deferPersistence });
   const current = _settingsThemeCurrent();
   const created = await settingsThemeCreate({
     silent: true,
     skipRefresh: !!opts.skipRefresh,
+    deferPersistence: !!opts.deferPersistence,
     defaultName: `${current?.name || 'テーマ'} カスタム`,
   });
   return !!created;

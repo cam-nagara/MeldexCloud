@@ -2,6 +2,24 @@
   md = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   // フロントマター（YAML）を除去
   md = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  // 段落ステータスは可読なHTMLコメントとしてMarkdownへ保存する。未知の
+  // Markdown処理系ではコメントとして無視され、Meldexでは直後の論理ブロックへ戻す。
+  md = md.replace(/^<!--meldex-status:([a-z][a-z0-9-]*)-->\r?\n([^\n]*)/gm, (_m, status, nextLine) => {
+    const sentinel = '\x02NSTATUS:' + status + '\x02';
+    // リスト項目の直前コメントを独立段落にするとリストが分断されるため、
+    // Markdown 記号の直後へ埋め込み、DOM化後にその論理ブロックへ移す。
+    const checklist = nextLine.match(/^(\s*[*\-+]\s+\[[ xX]\]\s+)(.*)$/);
+    if (checklist) return checklist[1] + sentinel + checklist[2];
+    const list = nextLine.match(/^(\s*(?:[*\-+]|\d+\.)\s+)(.*)$/);
+    if (list) return list[1] + sentinel + list[2];
+    const heading = nextLine.match(/^(#{1,6}\s+)(.*)$/);
+    if (heading) return heading[1] + sentinel + heading[2];
+    // Keep the callout's [!icon] prefix intact so it remains a callout.
+    if (/^>\s*\[!/.test(nextLine)) return sentinel + '\n' + nextLine;
+    const quote = nextLine.match(/^(>\s*)(.*)$/);
+    if (quote) return quote[1] + sentinel + quote[2];
+    return sentinel + '\n' + nextLine;
+  });
   // アノテート用 line-id マーカーをセンチネル化。リスト/見出し/引用の場合はマーカー記号の直後へ、
   // その他は単独行としてブロック前に残し、末尾で span 化 → 隣接ブロックへ移送する。
   md = md.replace(/^<!--nl:([A-Za-z0-9_-]+)-->\r?\n([^\n]*)/gm, (m, id, nextLine) => {
@@ -14,6 +32,7 @@
     if (listM) return listM[1] + sen + listM[2];
     const hM = nextLine.match(/^(#{1,6}\s+)(.*)$/);
     if (hM) return hM[1] + sen + hM[2];
+    if (/^>\s*\[!/.test(nextLine)) return sen + '\n' + nextLine;
     const qM = nextLine.match(/^(>\s*)(.*)$/);
     if (qM) return qM[1] + sen + qM[2];
     return sen + '\n' + nextLine;

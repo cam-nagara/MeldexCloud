@@ -155,6 +155,7 @@
   }
 
   function start() {
+    if (typeof global.addEventListener !== 'function') return;
     global.addEventListener('meldex:restore-point-policy-change', schedulePush);
     global.addEventListener('meldex:workspaces-changed', () => { syncNow().catch(() => null); });
     global.addEventListener('focus', () => { syncNow().catch(() => null); });

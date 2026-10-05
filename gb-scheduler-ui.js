@@ -95,9 +95,11 @@
   async function fillSelector(select, force = false) {
     const api = Api();
     if (!api) return;
+    const sequence = select._schedulerLoadSequence = (select._schedulerLoadSequence || 0) + 1;
     const previous = api.selectedId();
     try {
       const proposals = await api.list(force);
+      if (sequence !== select._schedulerLoadSequence) return;
       select.replaceChildren();
       const confirmed = document.createElement('option');
       confirmed.value = '';
@@ -106,7 +108,12 @@
       proposals.forEach(proposal => select.appendChild(proposalOption(proposal)));
       select.value = proposals.some(item => item.id === previous) ? previous : '';
       select.disabled = false;
+      select.title = '';
     } catch (error) {
+      if (sequence !== select._schedulerLoadSequence) return;
+      const unavailable = document.createElement('option');
+      unavailable.textContent = '案を読み込めませんでした（再読み込みで再試行）';
+      select.replaceChildren(unavailable);
       select.disabled = true;
       select.title = api.errorMessage(error);
     }
@@ -148,7 +155,7 @@
   function today(offsetDays = 0) {
     const value = new Date();
     value.setDate(value.getDate() + offsetDays);
-    return value.toISOString().slice(0, 10);
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
   }
 
   function selectedScope(paths) {
@@ -626,7 +633,7 @@
   window.MeldexSchedulerUi = Object.freeze({
     openAutoAllocation, createProposalSelector, renderAllocation, renderProject,
     renderTaskSettings, renderCalendar, syncAllSelectors,
-    _internal: { allocationRequest, selectedScope, noSelectionScope },
+    _internal: { allocationRequest, selectedScope, noSelectionScope, today },
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
   else install();

@@ -48,6 +48,7 @@
     const body = _calOptionContainer('ToDo設定');
     if (!body) return;
     body._calComponent = this;
+    this._taskOptionBody = body;
     const statuses = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
     const priorities = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
     body.innerHTML = `
@@ -102,6 +103,11 @@
   };
 
   CalendarComponent.prototype._saveTaskOptions = async function(editId, body) {
+    if (!this._savingTaskIds) this._savingTaskIds = new Set();
+    if (this._savingTaskIds.has(editId)) {
+      this._showStatus('保存中です。少し待ってからもう一度お試しください');
+      return false;
+    }
     this._pushUndo('ToDo編集');
     const data = {
       title: body.querySelector('[data-cal-task-title]')?.value || '無題',
@@ -114,21 +120,29 @@
       description: body.querySelector('[data-cal-task-desc]')?.value || '',
       user: this._getUser(),
     };
+    this._savingTaskIds.add(editId);
     try {
       await apiPut('/cal/tasks/' + editId, data);
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
       this._showStatus('ToDoを保存しました');
+      return true;
     } catch {
       this._showStatus('保存に失敗', true);
+      return false;
+    } finally {
+      this._savingTaskIds.delete(editId);
     }
   };
 
   CalendarComponent.prototype._deleteTaskFromOptions = async function(id) {
+    const body = this._taskOptionBody;
     if (await this._deleteTask(id)) {
-      const body = _calOptionContainer('カレンダー');
-      if (body) body.innerHTML = '<div class="cal-option-empty">ToDoを削除しました</div>';
+      // 他の予定・ToDoへ切り替えた後に、完了した削除でその編集面を消さない。
+      if (body?.isConnected && this._taskOptionBody === body) {
+        body.innerHTML = '<div class="cal-option-empty">ToDoを削除しました</div>';
+      }
     }
   };
 })();

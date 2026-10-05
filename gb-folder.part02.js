@@ -178,7 +178,10 @@ function _renderDetailContent(item) {
   return frag;
 }
 
+let _folderPreviewSeq = 0;
+
 function showFolderPreview(item) {
+  const previewSeq = ++_folderPreviewSeq;
   if (!item) return;
   // プレビュー/詳細タブ（#gb-preview-pane・#rp-detail）はメイン画面専用UI。独立した
   // 描画先（サブパネル等）が有効な間は、サブパネルにこれらのタブが無いため触らない
@@ -204,13 +207,16 @@ function showFolderPreview(item) {
       const newSrc = isPdf
         ? '/viewer?pdf=' + encodeURIComponent(item.path) + '&embed=1'
         : _folderItemViewerUrl(item, true);
+      const applyPreviewSwitch = ok => {
+        if (previewSeq !== _folderPreviewSeq || !existingIframe.isConnected
+          || previewPane.querySelector('iframe') !== existingIframe) return;
+        existingIframe.dataset.gbViewerCurrentUrl = newSrc;
+        if (!ok) existingIframe.src = newSrc;
+      };
       if (typeof _gbTryFastViewerSwitch === 'function') {
-        _gbTryFastViewerSwitch(existingIframe, newSrc).then((ok) => {
-          if (ok) existingIframe.dataset.gbViewerCurrentUrl = newSrc;
-          else { existingIframe.dataset.gbViewerCurrentUrl = newSrc; existingIframe.src = newSrc; }
-        });
+        _gbTryFastViewerSwitch(existingIframe, newSrc).then(applyPreviewSwitch, () => applyPreviewSwitch(false));
       } else {
-        existingIframe.src = newSrc;
+        applyPreviewSwitch(false);
       }
     } else {
       previewPane.innerHTML = '';
@@ -811,15 +817,15 @@ function _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts) {
 // 高速パス成功時はローディング表示を出さない。
 function _gbOpenViewerIframe(iframe, url, resolvedUrl, openOpts) {
   if (!iframe) return;
-  _gbBindViewerFastPathListeners(iframe);
+  const frameState = _gbBindViewerFastPathListeners(iframe);
+  const openSeq = frameState.openSeq = (frameState.openSeq || 0) + 1;
+  const finishSwitch = ok => {
+    if (frameState.openSeq !== openSeq || !iframe.isConnected) return;
+    if (ok) iframe.dataset.gbViewerCurrentUrl = url;
+    else _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts);
+  };
   if (_gbViewerFrameLive(iframe) && _gbIsViewerRouteUrl(resolvedUrl)) {
-    _gbTryFastViewerSwitch(iframe, resolvedUrl).then((ok) => {
-      if (ok) {
-        iframe.dataset.gbViewerCurrentUrl = url;
-      } else {
-        _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts);
-      }
-    });
+    _gbTryFastViewerSwitch(iframe, resolvedUrl).then(finishSwitch, () => finishSwitch(false));
     return;
   }
   _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts);

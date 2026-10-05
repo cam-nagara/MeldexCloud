@@ -1363,6 +1363,7 @@
       closeLabel: 'タスク一括作成を閉じる',
       closeOnOverlay: false,
       closeOnEsc: false,
+      returnFocus: source,
       extraClass: 'gb-production-modal',
       onClose: () => {
         if (closed) return;
@@ -9064,6 +9065,11 @@
   let proposals = [];
   let selectedId = '';
   let loading = null;
+  let contextKey = '';
+  let contextGeneration = 0;
+  let listIncludesArchived = false;
+  let loadingIncludesArchived = false;
+  let listLoaded = false;
 
   function user() {
     return String((typeof getUsername === 'function' ? getUsername() : '') || 'anonymous').trim();
@@ -9074,11 +9080,38 @@
   }
 
   function selectedKey() {
+    syncContext();
     const workspaceId = String(capabilities?.workspaceId || rootPath() || 'default');
     return `meldex:scheduler:selected:${workspaceId}:${user()}`;
   }
 
+  function syncContext() {
+    const runtime = window.MeldexRuntimeAdapter;
+    const workspace = runtime?.getWorkspaceState?.() || {};
+    const key = JSON.stringify([rootPath(), user(),
+      typeof state !== 'undefined' ? String(state.vaultPath || '') : '',
+      runtime?.getMode?.() || '',
+      window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+    if (key !== contextKey) {
+      contextKey = key;
+      contextGeneration++;
+      capabilities = null; proposals = []; selectedId = ''; loading = null;
+      listIncludesArchived = false; listLoaded = false; CACHE.clear();
+    }
+    return contextGeneration;
+  }
+
+  function assertContext(generation) {
+    if (syncContext() !== generation) {
+      const error = new Error('スケジュールの対象が切り替わりました。現在の対象で再読み込みしてください');
+      error.code = 'scheduler_context_changed';
+      throw error;
+    }
+  }
+
   function request(path, options = {}) {
+    const generation = syncContext();
     if (!window.MeldexDataAccess?.requestJson) return Promise.reject(new Error('スケジューラーを初期化できませんでした'));
     const method = String(options.method || 'GET').toUpperCase();
     const body = method === 'GET' ? undefined : {
@@ -9086,6 +9119,9 @@
     };
     return window.MeldexDataAccess.requestJson(path, {
       method, body, timeoutMs: options.timeoutMs || 120000,
+    }).then(result => {
+      assertContext(generation);
+      return result;
     }).catch(error => {
       if (Number(error?.status || 0) === 409) {
         error.userMessage = '別の環境で案が更新されています。再読み込みしてください';
@@ -9123,6 +9159,7 @@
   }
 
   async function loadCapabilities(force = false) {
+    syncContext();
     if (capabilities && !force) return capabilities;
     capabilities = await request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`);
     return capabilities;
@@ -9179,11 +9216,21 @@
   }
 
   async function list(force = false, includeArchived = false) {
-    if (!force && proposals.length) return proposals.slice();
-    if (loading) return loading;
-    loading = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
+    const generation = syncContext();
+    if (!force && listLoaded && listIncludesArchived === includeArchived) return proposals.slice();
+    if (loading) {
+      const sameFilter = loadingIncludesArchived === includeArchived;
+      const result = await loading;
+      assertContext(generation);
+      if (sameFilter) return result.slice();
+      return list(force, includeArchived);
+    }
+    const pending = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
       .then(result => {
+        CACHE.clear();
         proposals = Array.isArray(result?.proposals) ? result.proposals.slice() : [];
+        listIncludesArchived = includeArchived;
+        listLoaded = true;
         proposals.forEach(remember);
         const saved = localStorage.getItem(selectedKey()) || '';
         if (!proposals.some(item => item.id === selectedId)) {
@@ -9191,11 +9238,14 @@
         }
         emit('list');
         return proposals.slice();
-      }).finally(() => { loading = null; });
-    return loading;
+      }).finally(() => { if (loading === pending) loading = null; });
+    loading = pending;
+    loadingIncludesArchived = includeArchived;
+    return pending;
   }
 
   async function get(id, force = false) {
+    syncContext();
     const proposalId = String(id || '');
     if (!force && CACHE.has(proposalId)) return CACHE.get(proposalId);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(proposalId)}${query({ current_user: user(), root_path: rootPath() })}`);
@@ -9203,8 +9253,10 @@
   }
 
   async function select(id) {
+    const generation = syncContext();
     const proposalId = String(id || '');
     const proposal = proposalId ? await get(proposalId) : null;
+    assertContext(generation);
     selectedId = proposal?.id || '';
     if (selectedId) localStorage.setItem(selectedKey(), selectedId);
     else localStorage.removeItem(selectedKey());
@@ -9227,7 +9279,9 @@
   }
 
   async function patch(id, values) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
       method: 'PATCH', body: { patch: values, expectedRevision: current.storageRevision },
     });
@@ -9237,7 +9291,9 @@
   }
 
   async function archive(id) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}${query({
       current_user: user(), root_path: rootPath(), expected_revision: current.storageRevision,
     })}`, { method: 'DELETE' });
@@ -9275,7 +9331,9 @@
   }
 
   async function setPlacementFixed(id, placementKey, fixed) {
+    const generation = syncContext();
     const current = await get(id);
+    assertContext(generation);
     const key = String(placementKey || '').trim();
     if (!key) throw new Error('固定する配置を特定できませんでした');
     const fixedPlacements = { ...(current.fixedPlacements || {}) };
@@ -9320,11 +9378,12 @@
     list, get, select, createAllocation, patch, archive,
     branch, recalculate, compare, setPlacementFixed, listBaselines, compareBaseline,
     adoptionPreview, adopt, cancel,
-    current: () => CACHE.get(selectedId) || null,
-    selectedId: () => selectedId,
-    cachedList: () => proposals.slice(),
+    current: () => { syncContext(); return CACHE.get(selectedId) || null; },
+    selectedId: () => { syncContext(); return selectedId; },
+    cachedList: () => { syncContext(); return proposals.slice(); },
     errorMessage: error => error?.userMessage || error?.message || String(error),
     _resetForTests() {
+      contextKey = ''; contextGeneration++; listIncludesArchived = false; listLoaded = false;
       capabilities = null; proposals = []; selectedId = ''; loading = null; CACHE.clear();
     },
   });
@@ -10171,9 +10230,11 @@
   async function fillSelector(select, force = false) {
     const api = Api();
     if (!api) return;
+    const sequence = select._schedulerLoadSequence = (select._schedulerLoadSequence || 0) + 1;
     const previous = api.selectedId();
     try {
       const proposals = await api.list(force);
+      if (sequence !== select._schedulerLoadSequence) return;
       select.replaceChildren();
       const confirmed = document.createElement('option');
       confirmed.value = '';
@@ -10182,7 +10243,12 @@
       proposals.forEach(proposal => select.appendChild(proposalOption(proposal)));
       select.value = proposals.some(item => item.id === previous) ? previous : '';
       select.disabled = false;
+      select.title = '';
     } catch (error) {
+      if (sequence !== select._schedulerLoadSequence) return;
+      const unavailable = document.createElement('option');
+      unavailable.textContent = '案を読み込めませんでした（再読み込みで再試行）';
+      select.replaceChildren(unavailable);
       select.disabled = true;
       select.title = api.errorMessage(error);
     }
@@ -10224,7 +10290,7 @@
   function today(offsetDays = 0) {
     const value = new Date();
     value.setDate(value.getDate() + offsetDays);
-    return value.toISOString().slice(0, 10);
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
   }
 
   function selectedScope(paths) {
@@ -10702,7 +10768,7 @@
   window.MeldexSchedulerUi = Object.freeze({
     openAutoAllocation, createProposalSelector, renderAllocation, renderProject,
     renderTaskSettings, renderCalendar, syncAllSelectors,
-    _internal: { allocationRequest, selectedScope, noSelectionScope },
+    _internal: { allocationRequest, selectedScope, noSelectionScope, today },
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
   else install();
@@ -16244,6 +16310,261 @@
   }
 
   global.MeldexUnifiedKnowledgeStatus = Object.freeze({ mount, refresh });
+})(window);
+
+;
+
+/* === gb-note-status-filter.js === */
+;
+/* 段落ごとのステータスと、ノート要素/ステータス表示フィルター。 */
+(function (global) {
+  'use strict';
+
+  const STATUSES = [
+    { id: '', label: '未設定' },
+    { id: 'todo', label: '未着手' },
+    { id: 'doing', label: '進行中' },
+    { id: 'done', label: '完了' },
+    { id: 'hold', label: '保留' },
+  ];
+  const CATEGORY = [
+    { id: 'heading', label: '見出し', selector: 'h1,h2,h3,h4,h5,h6' },
+    { id: 'callout', label: 'コールアウト', selector: '.callout-block' },
+    { id: 'paragraph', label: '本文', selector: ':scope > div:not(.callout-block)' },
+    { id: 'list', label: 'リスト', selector: 'ul,ol' },
+    { id: 'quote', label: '引用', selector: 'blockquote' },
+    { id: 'code', label: 'コード', selector: 'pre' },
+    { id: 'table', label: 'テーブル', selector: 'table' },
+  ];
+  const STORAGE_KEY = 'meldex-note-display-filter-v1';
+  let lastBlock = null;
+  let popup = null;
+
+  function editor() { return document.getElementById('page-content'); }
+  function readFilter() {
+    const initial = { categories: {}, statuses: {} };
+    CATEGORY.forEach(item => { initial.categories[item.id] = true; });
+    STATUSES.forEach(item => { initial.statuses[item.id || 'unset'] = true; });
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      if (saved?.categories) Object.assign(initial.categories, saved.categories);
+      if (saved?.statuses) Object.assign(initial.statuses, saved.statuses);
+    } catch {}
+    return initial;
+  }
+  let filter = readFilter();
+
+  function currentBlock() {
+    const host = editor();
+    const sel = global.getSelection?.();
+    const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+    if (host && range && host.contains(range.startContainer) && global.MeldexNoteBlockTypes?.resolveCurrentBlock) {
+      return global.MeldexNoteBlockTypes.resolveCurrentBlock(host, range)?.block || null;
+    }
+    return lastBlock && host?.contains(lastBlock) ? lastBlock : null;
+  }
+
+  function rememberSelection() {
+    const block = currentBlock();
+    if (block) lastBlock = block;
+    syncStatusButton();
+  }
+
+  function statusLabel(id) {
+    return STATUSES.find(item => item.id === id)?.label || '未設定';
+  }
+
+  function syncStatusButton() {
+    const button = document.getElementById('page-note-status-btn');
+    if (!button) return;
+    const status = currentBlock()?.dataset?.noteStatus || '';
+    button.title = `段落ステータス: ${statusLabel(status)}`;
+    button.setAttribute('aria-label', button.title);
+    button.dataset.noteStatus = status || 'unset';
+  }
+
+  function closePopup() {
+    popup?.remove();
+    popup = null;
+    document.removeEventListener('pointerdown', outsidePopup, true);
+  }
+  function outsidePopup(event) {
+    if (popup?.contains(event.target)) return;
+    if (event.target?.closest?.('#page-note-status-btn,#page-note-filter-btn')) return;
+    closePopup();
+  }
+  function openPopup(anchor, title) {
+    closePopup();
+    popup = document.createElement('div');
+    popup.className = 'note-status-filter-popup gb-context-menu';
+    popup.setAttribute('role', 'menu');
+    const heading = document.createElement('div');
+    heading.className = 'note-status-filter-popup-title';
+    heading.textContent = title;
+    popup.appendChild(heading);
+    document.body.appendChild(popup);
+    const rect = anchor.getBoundingClientRect();
+    popup.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 300))}px`;
+    popup.style.top = `${Math.min(rect.bottom + 6, innerHeight - 420)}px`;
+    setTimeout(() => document.addEventListener('pointerdown', outsidePopup, true), 0);
+    return popup;
+  }
+
+  function emitChange(block) {
+    try {
+      block.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'formatBlock' }));
+    } catch {
+      block.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  function showStatusMenu(anchor) {
+    const host = editor();
+    if (!host?.isContentEditable || (typeof isItemLocked === 'function' && isItemLocked(host.dataset?.path))) {
+      if (typeof showStatus === 'function') showStatus('読取専用のノートは変更できません', true);
+      return;
+    }
+    const block = currentBlock();
+    if (!block) {
+      if (typeof showStatus === 'function') showStatus('ステータスを設定する段落を選択してください', true);
+      return;
+    }
+    lastBlock = block;
+    const menu = openPopup(anchor, '段落ステータス');
+    STATUSES.forEach(item => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'note-status-filter-row';
+      row.setAttribute('role', 'menuitemradio');
+      row.setAttribute('aria-checked', (block.dataset.noteStatus || '') === item.id ? 'true' : 'false');
+      row.innerHTML = `<span class="note-status-dot" data-status="${item.id || 'unset'}"></span><span></span>`;
+      row.lastElementChild.textContent = item.label;
+      row.addEventListener('click', () => {
+        if (!host.isContentEditable || !host.contains(block)
+            || (typeof isItemLocked === 'function' && isItemLocked(host.dataset?.path))) {
+          closePopup();
+          return;
+        }
+        if (item.id) {
+          block.dataset.noteStatus = item.id;
+          block.classList.add('note-status-block');
+        } else {
+          delete block.dataset.noteStatus;
+          block.classList.remove('note-status-block');
+        }
+        block.dataset.noteStatusLabel = item.label;
+        emitChange(block);
+        applyFilter();
+        syncStatusButton();
+        closePopup();
+      });
+      menu.appendChild(row);
+    });
+  }
+
+  function checkboxRow(label, checked, onChange) {
+    const row = document.createElement('label');
+    row.className = 'note-status-filter-check';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = checked;
+    input.addEventListener('change', () => onChange(input.checked));
+    row.append(input, document.createTextNode(label));
+    return row;
+  }
+
+  function saveAndApply() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filter));
+    applyFilter();
+  }
+
+  function showFilterMenu(anchor) {
+    const menu = openPopup(anchor, '表示する要素');
+    CATEGORY.forEach(item => menu.appendChild(checkboxRow(item.label, filter.categories[item.id] !== false, value => {
+      filter.categories[item.id] = value;
+      saveAndApply();
+    })));
+    const divider = document.createElement('div');
+    divider.className = 'gb-context-menu-sep';
+    menu.appendChild(divider);
+    const statusTitle = document.createElement('div');
+    statusTitle.className = 'note-status-filter-section-title';
+    statusTitle.textContent = 'ステータス';
+    menu.appendChild(statusTitle);
+    STATUSES.forEach(item => {
+      const key = item.id || 'unset';
+      menu.appendChild(checkboxRow(item.label, filter.statuses[key] !== false, value => {
+        filter.statuses[key] = value;
+        saveAndApply();
+      }));
+    });
+  }
+
+  function categoryFor(block) {
+    if (/^H[1-6]$/.test(block.tagName)) return 'heading';
+    if (block.classList.contains('callout-block')) return 'callout';
+    if (block.matches('ul,ol')) return 'list';
+    if (block.matches('blockquote')) return 'quote';
+    if (block.matches('pre')) return 'code';
+    if (block.matches('table')) return 'table';
+    return 'paragraph';
+  }
+
+  function applyFilter() {
+    const host = editor();
+    if (!host) return;
+    function filterChildren(container) { [...container.children].forEach(block => {
+      if (block.matches('section.heading-section')) {
+        block.classList.remove('note-filter-hidden');
+        filterChildren(block);
+        return;
+      }
+      if (block.classList.contains('note-status-marker')) return;
+      const categoryVisible = filter.categories[categoryFor(block)] !== false;
+      // リストの状態は UL/OL 全体ではなく各 LI に付く。要素種別の表示は
+      // コンテナ、ステータスの表示は項目ごとに判定して両方を合成する。
+      const isList = block.matches('ul,ol');
+      const statusVisible = isList || filter.statuses[block.dataset.noteStatus || 'unset'] !== false;
+      block.classList.toggle('note-filter-hidden', !(categoryVisible && statusVisible));
+      if (isList) {
+        block.querySelectorAll('li').forEach(item => {
+          const itemVisible = filter.statuses[item.dataset.noteStatus || 'unset'] !== false;
+          item.classList.toggle('note-filter-hidden', !itemVisible);
+        });
+      }
+    }); }
+    filterChildren(host);
+    const active = !!host.querySelector('.note-filter-hidden');
+    document.getElementById('page-note-filter-btn')?.classList.toggle('active', active);
+  }
+
+  function init() {
+    const statusButton = document.getElementById('page-note-status-btn');
+    const filterButton = document.getElementById('page-note-filter-btn');
+    // tb-icon-btn の ico-* 疑似アイコン一覧へ依存させず、既存の Lucide
+    // ヘルパーから直接描画する。Cloud 静的版でも同じボタンが空にならない。
+    if (typeof global.lucide === 'function') {
+      if (statusButton) statusButton.innerHTML = global.lucide('circleDot', 16);
+      if (filterButton) filterButton.innerHTML = global.lucide('listFilter', 16);
+    }
+    statusButton?.addEventListener('pointerdown', rememberSelection);
+    statusButton?.addEventListener('click', event => showStatusMenu(event.currentTarget));
+    filterButton?.addEventListener('click', event => showFilterMenu(event.currentTarget));
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closePopup();
+    });
+    document.addEventListener('selectionchange', rememberSelection);
+    const host = editor();
+    if (host && typeof MutationObserver !== 'undefined') {
+      new MutationObserver(() => applyFilter()).observe(host, { childList: true, subtree: true });
+    }
+    applyFilter();
+    syncStatusButton();
+  }
+
+  global.MeldexNoteStatusFilter = { init, applyFilter, showStatusMenu, showFilterMenu, STATUSES };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
+  else init();
 })(window);
 
 ;

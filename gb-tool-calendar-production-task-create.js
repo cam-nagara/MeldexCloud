@@ -493,6 +493,7 @@
       closeLabel: 'タスク一括作成を閉じる',
       closeOnOverlay: false,
       closeOnEsc: false,
+      returnFocus: source,
       extraClass: 'gb-production-modal',
       onClose: () => {
         if (closed) return;

@@ -37,6 +37,9 @@
   document.getElementById('seek-bar').addEventListener('input', function() { Scene.pause(); Scene.goToIndex(parseInt(this.value, 10)); });
   document.getElementById('btn-prev-folder').onclick = Scene.prevFolder;
   document.getElementById('btn-next-folder').onclick = Scene.nextFolder;
+  // skipBack / skipForward は共通のアイコン置換表（replaceIcons）に無い形のため、ここで直接描画する。
+  document.getElementById('btn-prev-folder').innerHTML = Scene.icon('skipBack');
+  document.getElementById('btn-next-folder').innerHTML = Scene.icon('skipForward');
 
   // キーボード（Eagle互換）
   // キーは共通のショートカットレジストリ（gb-shortcut-registry.js）へ登録し、
@@ -97,9 +100,25 @@
     VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false];
   }
 
-  document.addEventListener('keydown', e => {
+  // 文字入力・選択欄、右サイドバー・メニュー・ダイアログ内のキーはそれぞれの部品に任せる。
+  // 下端ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
+  // ビューワー操作は効かせ、Space/Enter だけはボタン自身の押下に任せる。シークバーでは
+  // 矢印キー等をスライダー操作に任せる（値の変更がそのまま前後移動になる）。
+  const RANGE_NATIVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+  function shouldLeaveKeyToFocusedControl(e) {
     const target = e.target;
-    if (target && (target.closest('input, textarea, select, button') || target.isContentEditable)) return;
+    if (!target || typeof target.closest !== 'function') return false;
+    if (target.isContentEditable) return true;
+    if (target.closest('.sa-secondary-panel, .gb-context-menu, [role="menu"], [role="dialog"], .sa-version-overlay')) return true;
+    if (target.closest('textarea, select')) return true;
+    const input = target.closest('input');
+    if (input) return String(input.type || '').toLowerCase() !== 'range' || RANGE_NATIVE_KEYS.has(e.key);
+    if (target.closest('button')) return !target.closest('#controls') || e.key === ' ' || e.key === 'Enter';
+    return false;
+  }
+
+  document.addEventListener('keydown', e => {
+    if (shouldLeaveKeyToFocusedControl(e)) return;
     if (e.key === 'Escape') {
       // Esc は「閉じる」の共通操作なので変更対象にしない
       if (window.MeldexViewerAnnotations?.isActive?.()) window.MeldexViewerAnnotations.toggle();

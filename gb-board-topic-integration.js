@@ -95,6 +95,48 @@
     });
   }
 
+  function resolveTopicRef(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const source = value.topicRef && typeof value.topicRef === 'object' && !Array.isArray(value.topicRef)
+      ? value.topicRef : value;
+    if (typeof source.sourceId !== 'string' || !source.sourceId.trim()) return null;
+    if (typeof source.topicId !== 'string' || !source.topicId.trim()) return null;
+    return clone(source);
+  }
+
+  function keepTopicRefs(values) {
+    return (Array.isArray(values) ? values : []).map(resolveTopicRef).filter(Boolean);
+  }
+
+  function keepEdges(values) {
+    return (Array.isArray(values) ? values : []).map((edge) => {
+      if (!edge || typeof edge !== 'object' || Array.isArray(edge)) return null;
+      const parentTopicRef = resolveTopicRef(edge.parentTopicRef);
+      const childTopicRef = resolveTopicRef(edge.childTopicRef);
+      if (!parentTopicRef || !childTopicRef) return null;
+      return Object.assign(clone(edge), { parentTopicRef, childTopicRef });
+    }).filter(Boolean);
+  }
+
+  function keepRelationSets(values) {
+    return (Array.isArray(values) ? values : [])
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item)
+        && typeof item.relationSetId === 'string' && !!item.relationSetId.trim())
+      .map((item) => Object.assign(clone(item), { edges: keepEdges(item.edges) }));
+  }
+
+  function keepPlacements(values) {
+    const normalize = global.MeldexTopicContract?.normalizeTopicPlacement;
+    return (Array.isArray(values) ? values : []).map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const topicRef = resolveTopicRef(item.topicRef);
+      if (!topicRef) return null;
+      const placement = Object.assign(clone(item), { topicRef });
+      if (!normalize) return placement;
+      try { normalize(placement); return placement; } catch (_) { return null; }
+    }).filter(Boolean);
+  }
+
   function normalizeTopicDocument(document, board, path) {
     const refs = (board?.nodes || [])
       .map((node) => clone(node.topicRef))
@@ -107,11 +149,7 @@
     // 旧ボードや保存途中の文書には、削除済みカードに対応するnull/空TopicRefが
     // membershipへ残ることがある。厳格な共通契約へ渡す前に、安定IDが揃う参照だけへ
     // 収斂させる（タイトル等から別Topicを捏造しない）。
-    membership.manualTopicRefs = clone(membershipRefs.filter(
-      (ref) => ref && typeof ref === 'object'
-        && typeof ref.sourceId === 'string' && ref.sourceId.trim()
-        && typeof ref.topicId === 'string' && ref.topicId.trim(),
-    ));
+    membership.manualTopicRefs = keepTopicRefs(membershipRefs);
     membership.mode = ['manual', 'query', 'hybrid'].includes(membership.mode)
       ? membership.mode : 'manual';
     if (membership.mode === 'manual' && !Object.prototype.hasOwnProperty.call(membership, 'queryDefinition')) {
@@ -125,7 +163,8 @@
       membership,
       sheetViews: Array.isArray(source.sheetViews) ? source.sheetViews : [],
       boardViews: Array.isArray(source.boardViews) ? source.boardViews : [],
-      relationSets: Array.isArray(source.relationSets) ? source.relationSets : [],
+      relationSets: keepRelationSets(source.relationSets),
+      placements: keepPlacements(source.placements),
       topicLayouts: Array.isArray(source.topicLayouts) ? source.topicLayouts : [],
       lastCompleteSnapshot: Object.prototype.hasOwnProperty.call(source, 'lastCompleteSnapshot')
         ? source.lastCompleteSnapshot : null,

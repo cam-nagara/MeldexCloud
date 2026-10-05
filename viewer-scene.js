@@ -21,6 +21,8 @@
     else singleFile = archiveDisplayPath;
   }
   let multiFilePaths = Utils.parseFilesParam(); // 複数ファイル
+  // Windows版Meldex Viewerの作業範囲（開いているフォルダの絶対パス）。前後のフォルダ移動で切り替わる。
+  let nativeRoot = '';
   let isPdf = false;
   let isSingle = false;
   let isMulti = false;
@@ -59,7 +61,13 @@
         refreshViewerModeFlags();
         return;
       }
-      const picked = await fetch(API + '/standalone/open-file', { method: 'POST' });
+      // 単独版の変更系APIはJSON形式の送信だけを受け付ける（本文なしのPOSTは415で拒否され、
+      // ファイルを指定せずに起動した時の「開く」ダイアログが出なかった）。
+      const picked = await fetch(API + '/standalone/open-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
       if (!picked.ok) return;
       const selected = await picked.json();
       applyInitialOpenPath(selected?.initialPath || selected?.path || '');
@@ -359,7 +367,7 @@
       return;
     }
     if (loadToken !== collectionLoadToken || !Array.isArray(data) || data.length === 0) return;
-    const folderItems = data.map(it => makeImageItem(it.path, it.name));
+    const folderItems = Utils.sortEntriesByName(data).map(it => makeImageItem(it.path, it.name));
     const startIdx = Utils.findImageItemIndex(folderItems, filePath, fileName);
     if (startIdx < 0) return;
     items = folderItems;
@@ -368,6 +376,16 @@
     updateViewerPositionControls();
     updateHud();
     notifyParentCurrentViewerFile();
+  }
+
+  // 単一ファイル表示で同じフォルダのファイル一覧を読み込めるか。Windows版Meldex Viewerは開いた
+  // ファイルのフォルダを作業範囲にするため、対象が「01.png」のようにフォルダ部分を持たない
+  // （＝作業範囲の直下）。以前はこの場合に一覧を読み込まず、←/→ キーとスライドショーが
+  // 開いた1枚から動かなかった（2026-09-15）。
+  function canListSingleFileSiblings(filePath, parentFolder) {
+    if (!filePath || filePath === archiveDisplayPath) return false;
+    if (parentFolder) return true;
+    return !/^[a-z][a-z0-9+.-]*:/i.test(filePath);
   }
 
   function scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, filePath, loadToken) {
@@ -402,6 +420,8 @@
         pdfDoc = openedPdf;
         items = [];
         for (let i = 1; i <= pdfDoc.numPages; i++) items.push({type: 'pdf-page', pageNum: i, url: '', w: 0, h: 0, path: pdfPath});
+        // 新しく開いたPDFは先頭ページから表示する（直前に見ていたフォルダの画像番号を引き継がない）
+        idx = 0;
         const size0 = await PdfRenderer.getPageNaturalSize(pdfDoc, 1);
         if (generation !== targetGeneration) return false;
         items[0].w = size0.width; items[0].h = size0.height;
@@ -428,7 +448,7 @@
       idx = 0;
       // singleFile === archiveDisplayPath の時だけ zip内エントリ表示（兄弟一覧の概念がない）。
       // 開き直し要求(項目7)はarchiveパラメータ非対応のため、この等価判定で正しく再有効化される。
-      if (parentFolder && singleFile !== archiveDisplayPath) scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, singleFile, loadToken);
+      if (canListSingleFileSiblings(singleFile, parentFolder)) scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, singleFile, loadToken);
     } else if (folderPath) {
       showViewerLoading('ファイル一覧を読み込み中...');
       const loadToken = ++collectionLoadToken;
@@ -442,7 +462,7 @@
         return false;
       }
       if (loadToken !== collectionLoadToken) return false;
-      items = data.map(it => makeImageItem(it.path, it.name));
+      items = Utils.sortEntriesByName(data).map(it => makeImageItem(it.path, it.name));
       if (items.length === 0) {
         showViewerStableState('empty', 'このフォルダに表示できるファイルはありません', () => retryTarget(generation));
         document.getElementById('hud-info').textContent = '画像がありません';
@@ -630,7 +650,7 @@
     const seekBar = document.getElementById('seek-bar');
     seekBar.max = Math.max(0, items.length - 1);
     seekBar.value = idx;
-    document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
+    updateZoomLabel();
   }
 
   async function renderPdfPage(pageNum) {
@@ -687,6 +707,7 @@
     const target = activeLayer === 'A' ? 'B' : 'A';
     const layer = document.getElementById('layer' + target);
     layer.innerHTML = '';
+    incomingLayer = target;
 
     if (group.length === 1) {
       if (isPdf) {
@@ -762,6 +783,8 @@
       document.getElementById('layer' + activeLayer).classList.remove('show');
       layer.classList.add('show');
       activeLayer = target;
+      incomingLayer = '';
+      updateZoomLabel();
       hideViewerLoading(loadingToken);
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
       window.MeldexViewerAnnotations?.onSceneChanged?.();
@@ -877,38 +900,85 @@
   // 画像要素にフィットモード+ズームを適用（width/heightで直接サイズ指定）
   // img/video 両対応（動画対応: ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」）。
   // ズーム(item 2)のインプレース更新にも再利用する（DOM再構築なしでサイズだけ再計算）。
-  function applyImageFitStyle(mediaEl, isSpread) {
+  // 表示倍率（ツールバーの%表示）は「原寸=100%」で表す（2026-09-15。以前はフィットした状態を
+  // 100%と表示していた）。zoom はフィット方式が決める基準サイズに対する倍率のまま持ち、
+  // 画面上の倍率＝基準倍率×zoom に換算して、表示・拡大縮小の上限下限・段階ズームに使う。
+  // PDFは zoom 自体がページ原寸に対する倍率なので基準倍率を1とする。
+  const DISPLAY_SCALE_MAX = 16;          // 原寸比の上限（1600%）
+  const DISPLAY_EDGE_MAX_PX = 200000;    // 巨大画像を拡大しすぎて描画が破綻しないための長辺の上限
+  let incomingLayer = '';                // showGroup() が組み立て中で、まだ表示を切り替えていないレイヤー
+
+  function mediaNaturalSize(mediaEl) {
+    if (!mediaEl) return null;
+    const isVideo = mediaEl.tagName === 'VIDEO';
+    const w = isVideo ? (mediaEl.videoWidth || 0) : (mediaEl.naturalWidth || mediaEl.width || 0);
+    const h = isVideo ? (mediaEl.videoHeight || 0) : (mediaEl.naturalHeight || mediaEl.height || 0);
+    return w && h ? { w, h } : null;
+  }
+
+  // フィット方式が決める基準倍率（原寸に対する倍率）。
+  function fitBaseScale(nw, nh, isSpread) {
     const d = document.getElementById('display');
     const vw = isSpread ? (d.clientWidth - 24) / 2 : d.clientWidth;
     const vh = d.clientHeight;
+    if (fitMode === 'original_contain') return Math.min(vw / nw, vh / nh, 1);
+    if (fitMode === 'contain') return Math.min(vw / nw, vh / nh); // 長い方の辺をパネルにフィット
+    if (fitMode === 'width') return vw / nw;
+    if (fitMode === 'height') return vh / nh;
+    return 1; // none（原寸）
+  }
+
+  function primaryMediaElement() {
+    const layer = document.getElementById('layer' + (incomingLayer || activeLayer));
+    return layer ? layer.querySelector('img, video') : null;
+  }
+
+  // 表示中の主メディア（見開きは先頭）の基準倍率。寸法がまだ分からない時は 0。
+  function currentFitBaseScale() {
+    if (isPdf) return 1;
+    const mediaEl = primaryMediaElement();
+    const size = mediaNaturalSize(mediaEl);
+    return size ? fitBaseScale(size.w, size.h, !!mediaEl.closest('.spread')) : 0;
+  }
+
+  function getDisplayScale() {
+    const base = currentFitBaseScale();
+    return (base > 0 ? base : 1) * zoom;
+  }
+
+  function updateZoomLabel() {
+    const label = document.getElementById('zoom-label');
+    if (label) label.textContent = Math.round(getDisplayScale() * 100) + '%';
+  }
+
+  // 要求された zoom を、画面上の倍率の上限・下限に収めて返す。以前はフィット時の20%〜500%に
+  // 固定していたため、縦長画像などフィット倍率が小さい画像は原寸まで拡大できず、小さな画像を
+  // 幅フィット等で引き伸ばしている時は原寸まで縮小できなかった。
+  // 下限: フィット時の20%（ただし原寸より大きくはしない）。
+  // 上限: 原寸の1600%（フィット時の5倍の方が大きい小さな画像はそちら）。
+  function clampZoomMultiplier(requested) {
+    const value = Number(requested) || 1;
+    if (isPdf) return Math.max(0.2, Math.min(5, value));
+    const mediaEl = primaryMediaElement();
+    const size = mediaNaturalSize(mediaEl);
+    const base = size ? fitBaseScale(size.w, size.h, !!mediaEl.closest('.spread')) : 0;
+    if (!(base > 0)) return Math.max(0.2, Math.min(5, value));
+    const minScale = Math.min(base * 0.2, 1);
+    const maxScale = Math.max(base * 5, Math.min(DISPLAY_SCALE_MAX, DISPLAY_EDGE_MAX_PX / Math.max(size.w, size.h)));
+    return Math.max(minScale, Math.min(maxScale, value * base)) / base;
+  }
+
+  function applyImageFitStyle(mediaEl, isSpread) {
     const isVideo = mediaEl.tagName === 'VIDEO';
-
     const apply = () => {
-      const nw = isVideo ? (mediaEl.videoWidth || 0) : (mediaEl.naturalWidth || mediaEl.width);
-      const nh = isVideo ? (mediaEl.videoHeight || 0) : (mediaEl.naturalHeight || mediaEl.height);
-      if (!nw || !nh) return;
-
-      let w, h;
-      if (fitMode === 'original_contain') {
-        const scale = Math.min(vw / nw, vh / nh, 1);
-        w = nw * scale; h = nh * scale;
-      } else if (fitMode === 'contain') {
-        const scale = Math.min(vw / nw, vh / nh); // 長い方の辺をパネルにフィット
-        w = nw * scale; h = nh * scale;
-      } else if (fitMode === 'width') {
-        w = vw; h = nh * (vw / nw);
-      } else if (fitMode === 'height') {
-        h = vh; w = nw * (vh / nh);
-      } else {
-        // none（原寸）
-        w = nw; h = nh;
-      }
-      // ズーム倍率を適用
-      w *= zoom; h *= zoom;
-      mediaEl.style.width = w + 'px';
-      mediaEl.style.height = h + 'px';
+      const size = mediaNaturalSize(mediaEl);
+      if (!size) return;
+      const scale = fitBaseScale(size.w, size.h, isSpread) * zoom;
+      mediaEl.style.width = (size.w * scale) + 'px';
+      mediaEl.style.height = (size.h * scale) + 'px';
       mediaEl.style.maxWidth = 'none';
       mediaEl.style.maxHeight = 'none';
+      updateZoomLabel();
     };
 
     if (isVideo) {
@@ -1059,7 +1129,7 @@
   function setZoomAt(clientX, clientY, requestedZoom) {
     if (items.length === 0) return;
     const oldZoom = zoom;
-    const targetZoom = Math.max(0.2, Math.min(5, Number(requestedZoom) || 1));
+    const targetZoom = clampZoomMultiplier(requestedZoom);
     if (Math.abs(targetZoom - oldZoom) < 0.0005) return;
     const display = document.getElementById('display');
     const point = viewerLogicalPoint(display, clientX, clientY);
@@ -1079,8 +1149,18 @@
     updateViewerPositionControls();
     updateHud();
   }
+  // ボタン・キー・ホイールの段階ズーム。画面上の倍率で1.2倍ずつ変え、原寸（100%）をまたぐ時は
+  // 一度100%で止める。
   function zoomAt(clientX, clientY, dir) {
-    setZoomAt(clientX, clientY, dir === 'out' ? zoom / 1.2 : zoom * 1.2);
+    const base = currentFitBaseScale();
+    if (!(base > 0)) {
+      setZoomAt(clientX, clientY, dir === 'out' ? zoom / 1.2 : zoom * 1.2);
+      return;
+    }
+    const current = base * zoom;
+    let next = dir === 'out' ? current / 1.2 : current * 1.2;
+    if ((current < 0.999 && next > 1.001) || (current > 1.001 && next < 0.999)) next = 1;
+    setZoomAt(clientX, clientY, next / base);
   }
   function zoomIn() { zoomAt(null, null, 'in'); }
   function zoomOut() { zoomAt(null, null, 'out'); }
@@ -1196,38 +1276,50 @@
     return Utils.logicalPointFromScreenDelta(dx, dy, flipH, flipV, rotateDeg);
   }
 
-  // パンの可動範囲（はみ出し量）を現在の表示コンテンツの実寸から計算する。
-  // 実メディア要素（img/video/canvas）の矩形の合成（見開きは2枚の合算）を使うこと。
-  // ラッパー（.viewer-ann-scene-wrap / .spread）は max-width/height:100% でコンテナ寸法に
-  // 頭打ちされるため、ズームで中身がはみ出しても矩形が大きくならず、はみ出し量が常に0
-  // →クランプでパンが固定される（v0.7.139検証で実測）。
-  // rectは#displayの回転(90/270度)transformを含んだ画面上の実寸なので、回転時も自動的に正しく動く。
-  function getPanOverflow() {
+  // パンの可動範囲を、回転・反転を戻した表示面の座標（panX/panY と同じ座標系）で求める。
+  // 実メディア要素（img/video/canvas。見開きは2枚の合算）のレイアウト上の位置と大きさ
+  // （offsetLeft/Top の累積。パン用の transform を含まない）を使う。ラッパー
+  // （.viewer-ann-scene-wrap / .spread）の矩形は使わない（コンテナ寸法に頭打ちされ、はみ出し量が
+  // 常に0になることを v0.7.139 検証で実測）。以前は画面上の矩形のはみ出し量を中央配置前提で
+  // 上下左右へ対称に振り分けていたため、上端に寄った縦長画像は下端まで届かず、90度回転時は
+  // 縦横の取り違えで長辺方向へパンできなかった（2026-09-15）。見える範囲は #display の大きさを
+  // 現在の回転角で表示面の座標へ戻した範囲とする。
+  function getPanLimits() {
     const display = document.getElementById('display');
     const layer = document.getElementById('layer' + activeLayer);
-    if (!display || !layer) return { overflowX: 0, overflowY: 0 };
-    const media = [...layer.querySelectorAll('img, video, canvas')];
-    if (!media.length) return { overflowX: 0, overflowY: 0 };
+    if (!display || !layer) return null;
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-    media.forEach(el => {
-      const r = el.getBoundingClientRect();
-      if (!r.width && !r.height) return;
-      left = Math.min(left, r.left); top = Math.min(top, r.top);
-      right = Math.max(right, r.right); bottom = Math.max(bottom, r.bottom);
+    layer.querySelectorAll('img, video, canvas').forEach(el => {
+      const width = el.offsetWidth, height = el.offsetHeight;
+      if (!width || !height) return;
+      let x = 0, y = 0, node = el;
+      while (node && node !== layer) { x += node.offsetLeft; y += node.offsetTop; node = node.offsetParent; }
+      if (node !== layer) return;
+      left = Math.min(left, x); top = Math.min(top, y);
+      right = Math.max(right, x + width); bottom = Math.max(bottom, y + height);
     });
-    if (right <= left || bottom <= top) return { overflowX: 0, overflowY: 0 };
-    const dispRect = display.getBoundingClientRect();
+    if (!(right > left && bottom > top)) return null;
+    const rad = rotateDeg * Math.PI / 180;
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    const halfWidth = (display.clientWidth * cos + display.clientHeight * sin) / 2;
+    const halfHeight = (display.clientWidth * sin + display.clientHeight * cos) / 2;
     return {
-      overflowX: Math.max(0, ((right - left) - dispRect.width) / 2),
-      overflowY: Math.max(0, ((bottom - top) - dispRect.height) / 2),
+      x: panAxisLimit(left, right, layer.clientWidth / 2, halfWidth),
+      y: panAxisLimit(top, bottom, layer.clientHeight / 2, halfHeight),
     };
   }
 
-  // パン移動時・ズーム変更後に適用する。コンテンツがコンテナ内に収まる軸はpan=0に固定する。
+  // 1軸分の可動範囲。見える範囲に収まる軸は null（中央のまま動かさない）。
+  function panAxisLimit(start, end, center, half) {
+    if (end - start <= half * 2 + 1) return null;
+    return { min: center + half - end, max: center - half - start };
+  }
+
+  // パン移動時・ズーム変更後に適用する。コンテンツが見える範囲に収まる軸はpan=0に固定する。
   function clampPan() {
-    const { overflowX, overflowY } = getPanOverflow();
-    panX = overflowX > 0 ? Math.max(-overflowX, Math.min(overflowX, panX)) : 0;
-    panY = overflowY > 0 ? Math.max(-overflowY, Math.min(overflowY, panY)) : 0;
+    const limits = getPanLimits();
+    panX = limits?.x ? Math.max(limits.x.min, Math.min(limits.x.max, panX)) : 0;
+    panY = limits?.y ? Math.max(limits.y.min, Math.min(limits.y.max, panY)) : 0;
   }
 
   (function installPointerPan() {
@@ -1286,6 +1378,24 @@
   let _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
   let _siblingFolders = [];
   let _siblingIdx = -1;
+  // Windows版Meldex Viewer（native=1）は開いたファイルのフォルダだけを作業範囲にするため、
+  // 兄弟フォルダの一覧と移動は単独版サーバー（/api/standalone/viewer-folders・
+  // /api/standalone/viewer-folder-navigate）が受け持つ。以前はブラウザ側から作業範囲の外にある
+  // 兄弟フォルダを参照できず、前後のフォルダへ移動できなかった（2026-09-15）。
+  let _nativeFolderState = null;
+  let _nativeFolderStateSeq = 0;
+  let _nativeFolderNavigating = false;
+
+  function isNativeStandaloneViewer() {
+    return params.get('native') === '1' && !Utils.isEmbeddedMeldexViewer();
+  }
+
+  // プロパティの評価・メモを画像ファイルへ書き込む時に、編集欄を作った時点の作業範囲を添える
+  // （gb-file-metadata.js が編集欄の作成時に呼ぶ）。フォルダ移動の後に古い編集欄から保存が
+  // 遅れて届いても、サーバーが別フォルダの同名ファイルへ書き込まずに拒否できる。
+  window.MeldexEmbeddedMetadataWriteContext = () => (
+    isNativeStandaloneViewer() && nativeRoot ? { expected_root: nativeRoot } : null
+  );
 
   function currentViewerPathForFolderNavigation() {
     const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
@@ -1326,6 +1436,10 @@
       updateFolderNavButtons();
       return;
     }
+    if (isNativeStandaloneViewer()) {
+      await loadNativeFolderState();
+      return;
+    }
     if (!_currentFolderPath) {
       // singleFileからフォルダパスを推定
       if (singleFile) {
@@ -1335,8 +1449,9 @@
       }
     }
     if (!_currentFolderPath) {
-      document.getElementById('btn-prev-folder').disabled = true;
-      document.getElementById('btn-next-folder').disabled = true;
+      _siblingFolders = [];
+      _siblingIdx = -1;
+      updateFolderNavButtons();
       return;
     }
     // 親フォルダを取得
@@ -1354,19 +1469,135 @@
       }
       updateFolderNavButtons();
     } catch(e) {
-      document.getElementById('btn-prev-folder').disabled = true;
-      document.getElementById('btn-next-folder').disabled = true;
+      _siblingFolders = [];
+      _siblingIdx = -1;
+      updateFolderNavButtons();
     }
   }
 
+  // 下端ツールバーの「前のフォルダ」「次のフォルダ」ボタンの有効・無効と表示名。
+  // 本体のパネル内では移動先の判定を本体（フォルダツリーの並び）へ任せるため常に有効にする。
   function updateFolderNavButtons() {
+    const prevButton = document.getElementById('btn-prev-folder');
+    const nextButton = document.getElementById('btn-next-folder');
+    if (!prevButton || !nextButton) return;
+    let prevEnabled = false, nextEnabled = false, prevName = '', nextName = '';
     if (Utils.isEmbeddedMeldexViewer()) {
-      document.getElementById('btn-prev-folder').disabled = false;
-      document.getElementById('btn-next-folder').disabled = false;
+      prevEnabled = true;
+      nextEnabled = true;
+    } else if (isNativeStandaloneViewer()) {
+      prevName = String(_nativeFolderState?.prev?.name || '');
+      nextName = String(_nativeFolderState?.next?.name || '');
+      prevEnabled = !!prevName && !_nativeFolderNavigating;
+      nextEnabled = !!nextName && !_nativeFolderNavigating;
+    } else {
+      prevEnabled = _siblingIdx > 0;
+      nextEnabled = _siblingIdx >= 0 && _siblingIdx < _siblingFolders.length - 1;
+      prevName = prevEnabled ? String(_siblingFolders[_siblingIdx - 1] || '').split('/').pop() : '';
+      nextName = nextEnabled ? String(_siblingFolders[_siblingIdx + 1] || '').split('/').pop() : '';
+    }
+    const rowNavigation = !!sheetContextId;
+    setFolderNavButton(prevButton, rowNavigation ? '前の画像行' : '前のフォルダ', '↑', prevEnabled, prevName);
+    setFolderNavButton(nextButton, rowNavigation ? '次の画像行' : '次のフォルダ', '↓', nextEnabled, nextName);
+  }
+
+  function setFolderNavButton(button, label, keyLabel, enabled, targetName) {
+    button.disabled = !enabled;
+    const title = label + ' (' + keyLabel + ')' + (targetName ? ': ' + targetName : '');
+    button.title = title;
+    // 共通ツールチップはホバー中に title を退避するため、退避先も同じ内容へ更新する
+    if (button.hasAttribute('data-gb-native-title')) button.setAttribute('data-gb-native-title', title);
+    button.setAttribute('aria-label', targetName ? label + ': ' + targetName : label);
+  }
+
+  async function loadNativeFolderState() {
+    const seq = ++_nativeFolderStateSeq;
+    let nextState = null;
+    try {
+      const response = await fetch(API + '/standalone/viewer-folders', { cache: 'no-store' });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload && typeof payload === 'object') nextState = payload;
+    } catch {}
+    if (seq !== _nativeFolderStateSeq) return;
+    _nativeFolderState = nextState;
+    if (nextState?.root) nativeRoot = String(nextState.root);
+    updateFolderNavButtons();
+  }
+
+  // 単独版サーバーに作業範囲を前後の兄弟フォルダへ切り替えてもらい、そのフォルダを開き直す。
+  async function navigateNativeFolder(direction) {
+    if (_nativeFolderNavigating) return;
+    const neighbor = direction < 0 ? _nativeFolderState?.prev : _nativeFolderState?.next;
+    if (!neighbor) {
+      flashStatus(direction < 0 ? '前のフォルダはありません' : '次のフォルダはありません');
       return;
     }
-    document.getElementById('btn-prev-folder').disabled = _siblingIdx <= 0;
-    document.getElementById('btn-next-folder').disabled = _siblingIdx < 0 || _siblingIdx >= _siblingFolders.length - 1;
+    // 作業範囲を切り替えるとアノテート・評価・メモの保存先の基準も変わるため、編集中・保存中・
+    // 保存失敗が残っている間は移動しない（移動後に別フォルダの同名ファイルへ書き込まないようにする）。
+    // アノテートの付箋は入力が止まってから保存するため、アノテートを開いている間は移動しない。
+    if (window.MeldexViewerAnnotations?.isActive?.() || window.MeldexViewerAnnotations?.isDrawing?.()) {
+      flashStatus('アノテートを閉じてからフォルダを移動してください');
+      return;
+    }
+    if (window.MeldexViewerAnnotationNotes?.hasUnsaved?.()) {
+      flashStatus('保存できていないアノテートがあるため、フォルダを移動できません');
+      return;
+    }
+    _nativeFolderNavigating = true;
+    updateFolderNavButtons();
+    // 移動中は右サイドバー（プロパティの評価・メモ・タグ）を操作できないようにし、入力中のメモは
+    // 先に保存し終える（入力欄からフォーカスが外れた時点でも保存が始まる）。
+    const sidePanels = [...document.querySelectorAll('.sa-secondary-panel')];
+    sidePanels.forEach(panel => { panel.inert = true; });
+    try {
+      await window.MeldexEmbeddedMetadata?.flushPendingMemos?.();
+      if (window.MeldexEmbeddedMetadata?.hasPendingMemos?.()) {
+        flashStatus('保存できていないメモがあるため、フォルダを移動できません');
+        return;
+      }
+      if (await window.MeldexStandaloneSaveQueue?.flush?.() === false) {
+        flashStatus('保存が完了していないため、フォルダを移動できません');
+        return;
+      }
+      const response = await fetch(API + '/standalone/viewer-folder-navigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction: direction < 0 ? -1 : 1, expectedRoot: _nativeFolderState?.root || '' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        flashStatus(payload?.detail || 'フォルダを移動できませんでした');
+        return;
+      }
+      await openNativeFolderTarget(payload);
+    } catch (error) {
+      flashStatus('フォルダを移動できませんでした: ' + (error?.message || error));
+    } finally {
+      sidePanels.forEach(panel => { panel.inert = false; });
+      _nativeFolderNavigating = false;
+      await loadNativeFolderState();
+    }
+  }
+
+  async function openNativeFolderTarget(payload) {
+    pause();
+    showGroupToken++;
+    collectionLoadToken++;
+    window.MeldexViewerAnnotations?.resetPointerPath?.();
+    if (payload?.root) nativeRoot = String(payload.root);
+    folderPath = '';
+    pdfPath = '';
+    singleFile = '';
+    multiFilePaths = [];
+    // 画像・動画のあるフォルダはフォルダごと、PDFだけのフォルダは先頭のPDFを開く
+    if (!applyInitialOpenPath(payload?.initialPath || '')) {
+      folderPath = '.';
+      refreshViewerModeFlags();
+    }
+    _currentFolderPath = '';
+    if (payload?.rootName) flashStatus('フォルダ: ' + payload.rootName);
+    const generation = ++targetGeneration;
+    await loadResolvedTarget(generation);
   }
 
   async function goToFolder(nextFolderPath) {
@@ -1381,7 +1612,7 @@
     try {
       const data = await Utils.fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(nextFolderPath) + '&include_videos=1');
       if (loadToken !== collectionLoadToken || generation !== targetGeneration) return;
-      items = data.map(it => makeImageItem(it.path, it.name));
+      items = Utils.sortEntriesByName(data).map(it => makeImageItem(it.path, it.name));
       if (items.length === 0) {
         showViewerStableState('empty', 'このフォルダに表示できるファイルはありません', () => goToFolder(nextFolderPath));
         return;
@@ -1400,18 +1631,34 @@
 
   function prevFolder() {
     if (requestParentFolderNavigation(-1)) return;
+    if (isNativeStandaloneViewer()) { navigateNativeFolder(-1); return; }
     if (_siblingIdx > 0) goToFolder(_siblingFolders[_siblingIdx - 1]);
   }
   function nextFolder() {
     if (requestParentFolderNavigation(1)) return;
+    if (isNativeStandaloneViewer()) { navigateNativeFolder(1); return; }
     if (_siblingIdx >= 0 && _siblingIdx < _siblingFolders.length - 1) goToFolder(_siblingFolders[_siblingIdx + 1]);
   }
 
   // btn-prev-folder/btn-next-folder のクリック配線は viewer-controls.js が委譲する
   loadSiblingFolders(); // 初期化時に兄弟フォルダも読み込み
 
+  // 拡大縮小した後にウィンドウや右サイドバーで表示領域の大きさが変わっても、画面上の倍率
+  // （原寸比）を保つ。フィットのまま（zoom=1）の時は従来どおり新しい大きさへ合わせ直す。
+  function preserveDisplayScaleAcrossResize() {
+    if (isPdf || Math.abs(zoom - 1) < 0.0005) return;
+    const mediaEl = primaryMediaElement();
+    const naturalWidth = mediaEl?.tagName === 'VIDEO' ? mediaEl.videoWidth : mediaEl?.naturalWidth;
+    const renderedWidth = parseFloat(mediaEl?.style.width || '');
+    if (!(naturalWidth > 0) || !(renderedWidth > 0)) return;
+    const size = mediaNaturalSize(mediaEl);
+    const base = size ? fitBaseScale(size.w, size.h, !!mediaEl.closest('.spread')) : 0;
+    if (base > 0) zoom = (renderedWidth / naturalWidth) / base;
+  }
+
   // リサイズ後の表示状態復元・PDF再フィット（寸法変更通知の受け口）
   function notifyResize() {
+    preserveDisplayScaleAcrossResize();
     document.querySelectorAll('#layerA img, #layerA video, #layerB img, #layerB video').forEach(el => {
       applyImageFitStyle(el, !!el.closest('.spread'));
     });
@@ -1436,7 +1683,7 @@
     currentPath: currentViewerPathForFolderNavigation,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
-    getFitMode: () => fitMode, getZoom: () => zoom, getPanX: () => panX, getPanY: () => panY,
+    getFitMode: () => fitMode, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
     getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,
     getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing,

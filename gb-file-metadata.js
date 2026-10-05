@@ -1,6 +1,7 @@
 /* 画像・文書の埋め込み情報表示と、画像の評価・メモ編集 */
 (() => {
   const cache = new Map();
+  const editorRevisions = new WeakMap();
   let folderTagCatalogRefreshTimer = null;
 
   function embeddedOf(meta) {
@@ -51,11 +52,11 @@
     if (!options.force && cache.has(key)) return cache.get(key);
     const pending = apiFetch('/file-meta?path=' + encodeURIComponent(key), { silentError: true })
       .then(meta => {
-        cache.set(key, meta);
+        if (cache.get(key) === pending) cache.set(key, meta);
         return meta;
       })
       .catch(error => {
-        cache.delete(key);
+        if (cache.get(key) === pending) cache.delete(key);
         return {
           _metadataLoadError: error?.userMessage || error?.message || String(error),
         };
@@ -66,8 +67,19 @@
     return resolved;
   }
 
-  async function update(path, patch) {
-    const meta = await apiPost('/file-meta', { path, ...patch }, { silentError: true });
+  // 書き込み先の文脈（Windows版Meldex Viewerの作業範囲など）。表示面が用意した値を、評価・メモの
+  // 編集欄を作った時点で固定して保存要求へ添える。本体では用意されないため何も足さない。
+  function metadataWriteContext() {
+    try {
+      const context = window.MeldexEmbeddedMetadataWriteContext?.();
+      return context && typeof context === 'object' ? { ...context } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function update(path, patch, writeContext = null) {
+    const meta = await apiPost('/file-meta', { ...(writeContext || {}), ...patch, path }, { silentError: true });
     cache.set(String(path), meta);
     refreshRatingControls(path, meta);
     return meta;
@@ -94,6 +106,7 @@
     group.setAttribute('role', 'group');
     group.setAttribute('aria-label', '評価');
     const editable = embedded.editable === true;
+    const writeContext = editable ? metadataWriteContext() : null;
     for (let value = 1; value <= 5; value++) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -111,7 +124,7 @@
         group.dataset.saving = '1';
         setRatingButtons(group, next);
         try {
-          await update(path, { rating: next });
+          await update(path, { rating: next }, writeContext);
           if (typeof showStatus === 'function') showStatus(next ? `評価を${next}つ星にしました` : '評価を解除しました');
         } catch (error) {
           setRatingButtons(group, previous);
@@ -160,16 +173,30 @@
     el.classList.toggle('file-embedded-memo-status--error', !!isError);
   }
 
-  async function _flushMemo(textarea) {
+  function _flushMemo(textarea) {
     const state = pendingMemos.get(textarea);
-    if (!state) return;
+    if (!state) return Promise.resolve(true);
     if (state.timer) { clearTimeout(state.timer); state.timer = null; }
-    if (state.inflight) { try { await state.inflight; } catch { /* 直前の失敗はこの後で作り直す */ } }
+    if (state.composing) return Promise.resolve(false);
+    if (state.drain) return state.drain;
+    state.drain = _drainMemo(textarea, state).finally(() => {
+      state.drain = null;
+      if (!state.composing && textarea.value === state.savedValue && state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      if (!textarea.isConnected && textarea.value === state.savedValue) pendingMemos.delete(textarea);
+    });
+    return state.drain;
+  }
+
+  async function _drainMemo(textarea, state) {
     // 保存中に追記された分も書き切る。失敗したらそこで打ち切り、無限に再送しない。
     while (textarea.value !== state.savedValue) {
+      if (state.composing) return false;
       const value = textarea.value;
       _memoStatus(state.statusEl, '保存中...');
-      state.inflight = update(state.path, { note: value });
+      state.inflight = update(state.path, { note: value }, state.writeContext);
       try {
         await state.inflight;
         state.savedValue = value;
@@ -177,18 +204,26 @@
       } catch (error) {
         _memoStatus(state.statusEl, '保存できませんでした', true);
         if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
-        return;
+        return false;
       } finally {
         state.inflight = null;
       }
-      if (!textarea.isConnected) return;
     }
+    return true;
   }
 
   // パネル切り替え・ウィンドウを閉じる直前に呼ぶ。未確定のメモを全部書き出す。
   async function flushPendingMemos() {
-    await Promise.all([...pendingMemos.keys()].map(textarea => _flushMemo(textarea)));
-    return true;
+    const results = await Promise.all([...pendingMemos.keys()].map(textarea => _flushMemo(textarea)));
+    return results.every(result => result !== false) && !hasPendingMemos();
+  }
+
+  // 未確定（入力待ち・保存中・保存失敗）のメモがあるか。表示中のフォルダを切り替える前の確認に使う。
+  function hasPendingMemos() {
+    for (const [textarea, state] of pendingMemos) {
+      if (state.composing || state.timer || state.drain || state.inflight || textarea.value !== state.savedValue) return true;
+    }
+    return false;
   }
 
   // パネルが作り直されると入力欄ごと差し替わる。取り残された未保存分は
@@ -197,8 +232,9 @@
     for (const textarea of [...pendingMemos.keys()]) {
       if (textarea.isConnected) continue;
       const state = pendingMemos.get(textarea);
-      if (state && textarea.value !== state.savedValue) _flushMemo(textarea);
-      pendingMemos.delete(textarea);
+      if (state && (state.drain || textarea.value !== state.savedValue)) {
+        if (!state.drain) void _flushMemo(textarea);
+      } else pendingMemos.delete(textarea);
     }
   }
 
@@ -210,17 +246,34 @@
       savedValue: initialValue,
       timer: null,
       inflight: null,
+      drain: null,
+      composing: false,
+      writeContext: metadataWriteContext(),
     });
-    textarea.addEventListener('input', () => {
+    const scheduleSave = event => {
       const state = pendingMemos.get(textarea);
       if (!state) return;
       if (state.timer) clearTimeout(state.timer);
       _memoStatus(state.statusEl, textarea.value === state.savedValue ? '' : '未保存');
+      if (state.composing || event?.isComposing) return;
       state.timer = setTimeout(() => { _flushMemo(textarea); }, MEMO_AUTOSAVE_DELAY_MS);
+    };
+    textarea.addEventListener('input', scheduleSave);
+    textarea.addEventListener('compositionstart', () => {
+      const state = pendingMemos.get(textarea);
+      if (!state) return;
+      state.composing = true;
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    });
+    textarea.addEventListener('compositionend', () => {
+      const state = pendingMemos.get(textarea);
+      if (!state) return;
+      state.composing = false;
+      scheduleSave();
     });
     textarea.addEventListener('blur', () => { _flushMemo(textarea); });
     textarea.addEventListener('keydown', event => {
-      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      if (!event.isComposing && !pendingMemos.get(textarea)?.composing && (event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         _flushMemo(textarea);
       }
@@ -258,6 +311,8 @@
 
   function renderEditor(primaryHost, groupsHost, path, meta) {
     if (!primaryHost) return;
+    const revision = (editorRevisions.get(primaryHost) || 0) + 1;
+    editorRevisions.set(primaryHost, revision);
     _pruneDetachedMemos();
     primaryHost.replaceChildren();
     if (groupsHost) groupsHost.replaceChildren();
@@ -275,6 +330,7 @@
       retry.addEventListener('click', async () => {
         retry.disabled = true;
         const refreshed = await load(path, null, { force: true });
+        if (editorRevisions.get(primaryHost) !== revision || !primaryHost.isConnected) return;
         renderEditor(primaryHost, groupsHost, path, refreshed);
       });
       error.append(message, retry);
@@ -492,6 +548,7 @@
     attachFolderTags,
     dimensionText,
     flushPendingMemos,
+    hasPendingMemos,
     load,
     refreshFolderTags,
     renderEditor,

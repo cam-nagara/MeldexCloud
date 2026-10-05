@@ -845,17 +845,23 @@ function _normalizeAnnotationHistoryRows(rows) {
     .filter(row => row?.id);
 }
 
-async function _applyAnnotationHistoryRows(targetRows, previousRows) {
+async function _applyAnnotationHistoryRows(targetRows, previousRows, completed = new Set()) {
   const target = _normalizeAnnotationHistoryRows(targetRows);
   const previous = _normalizeAnnotationHistoryRows(previousRows);
   const targetIds = new Set(target.map(row => String(row.id)));
   const previousById = new Map(previous.map(row => [String(row.id), row]));
   for (const row of target) {
+    const key = 'restore:' + row.id;
+    if (completed.has(key)) continue;
     await _restoreAnnotationHistoryRow(row, previousById.get(String(row.id)) || null);
+    completed.add(key);
   }
   for (const row of previous) {
     if (targetIds.has(String(row.id))) continue;
+    const key = 'delete:' + row.id;
+    if (completed.has(key)) continue;
     await _deleteAnnotationHistoryRow(row, row);
+    completed.add(key);
   }
   _refreshAnnotationHistoryTarget(target[0] || previous[0] || null);
   return true;
@@ -874,10 +880,18 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
   } catch {}
   if (beforeKey && beforeKey === afterKey) return false;
   const scope = (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
+  const undoCompleted = new Set();
+  const redoCompleted = new Set();
+  const replay = async (target, previous, completed) => {
+    await _applyAnnotationHistoryRows(target, previous, completed);
+    undoCompleted.clear();
+    redoCompleted.clear();
+    return true;
+  };
   historyPush(
     label || 'アノテート: 一括更新',
-    () => _applyAnnotationHistoryRows(before, after),
-    () => _applyAnnotationHistoryRows(after, before),
+    () => replay(before, after, undoCompleted),
+    () => replay(after, before, redoCompleted),
     scope,
     detail || _annotationHistoryDetail(after[0] || before[0], '')
   );

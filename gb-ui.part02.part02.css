@@ -381,6 +381,16 @@
 .gb-hp-entry:hover { background: var(--gb-history-hover-bg, var(--ui-bg-control-hover)); }
 .gb-hp-entry-redo { opacity: 0.4; }
 .gb-hp-entry-clickable { cursor: pointer; }
+button.gb-hp-entry {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--gb-history-border, var(--ui-border));
+  border-radius: 0;
+  text-align: left;
+  font-family: inherit;
+}
+button.gb-hp-entry:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
+button.gb-hp-entry:disabled { opacity: 0.5; cursor: wait; }
 .gb-hp-entry-clickable:hover { background: var(--ui-bg-control-hover); }
 .gb-hp-entry-disabled { opacity: 0.5; }
 .gb-hp-label {

@@ -112,20 +112,42 @@
   if (inTable) html += '</table>';
   // センチネルを隠し span に復元
   html = html.replace(/\x02NLID:([A-Za-z0-9_-]+)\x02/g, '<span class="_nl-id" data-line-id="$1" contenteditable="false" style="display:none;"></span>');
+  html = html.replace(/\x02NSTATUS:([a-z][a-z0-9-]*)\x02/g, '<span class="note-status-marker" data-note-status="$1" contenteditable="false" style="display:none;"></span>');
   // アノテート用 line-id span を、その直後のブロック先頭に移送する（<span._nl-id> を内包する空 <div> を潰す）
   try {
     const _tmp = document.createElement('div');
     _tmp.innerHTML = html;
     const _holders = [..._tmp.children].filter(el =>
-      el.tagName === 'DIV' && el.children.length === 1 && el.firstElementChild?.classList?.contains('_nl-id') && el.textContent.trim() === ''
+      el.tagName === 'DIV' && el.children.length > 0 && el.textContent.trim() === ''
+        && [...el.children].every(child => child.matches('._nl-id,.note-status-marker'))
     );
     _holders.forEach(holder => {
-      const span = holder.firstElementChild;
       const next = holder.nextElementSibling;
       if (next) {
-        next.insertBefore(span, next.firstChild);
+        const target = next.matches('ul,ol') ? next.querySelector(':scope > li') : next;
+        if (!target) return;
+        const markers = document.createDocumentFragment();
+        while (holder.firstChild) markers.appendChild(holder.firstChild);
+        target.insertBefore(markers, target.firstChild);
         holder.remove();
       }
+    });
+    [..._tmp.querySelectorAll('.note-status-marker')].forEach(marker => {
+      const status = marker.dataset?.noteStatus || '';
+      const holder = marker.parentElement;
+      const standalone = holder?.parentElement === _tmp
+        && holder.tagName === 'DIV' && holder.children.length === 1 && holder.textContent.trim() === '';
+      const next = standalone ? holder.nextElementSibling : null;
+      const target = standalone
+        ? (next?.matches?.('ul,ol') ? next.querySelector(':scope > li') : next)
+        : marker.closest('li,h1,h2,h3,h4,h5,h6,.callout-block,blockquote,pre,table')
+          || (holder?.parentElement === _tmp && holder.matches?.('div,p') ? holder : null);
+      if (target && status) {
+        target.dataset.noteStatus = status;
+        target.classList.add('note-status-block');
+      }
+      marker.remove();
+      if (standalone) holder.remove();
     });
     html = _tmp.innerHTML;
   } catch (_) {}
@@ -220,6 +242,7 @@ function getOrAssignStableHeadingAnchorId(headingEl) {
 function _noteHeadingPlainText(value) {
   return String(value || '')
     .replace(/\x02NLID:[A-Za-z0-9_-]+\x02/g, '')
+    .replace(/\x02NSTATUS:[a-z][a-z0-9-]*\x02/g, '')
     .replace(/^:([a-zA-Z][a-zA-Z0-9-]*):\s*/, '')
     .replace(/!\[((?:[^\]\\]|\\.)*)\]\(((?:[^)\\]|\\.)*)\)/g, '$1')
     .replace(/\[((?:[^\]\\]|\\.)+)\]\(((?:[^)\\]|\\.)*)\)/g, '$1')
@@ -492,6 +515,11 @@ function htmlToMd(html) {
     return '';
   }
 
+  function _noteStatusMarker(node) {
+    const status = String(node?.dataset?.noteStatus || '').trim().toLowerCase();
+    return /^[a-z][a-z0-9-]*$/.test(status) ? '<!--meldex-status:' + status + '-->\n' : '';
+  }
+
   function walk(node) {
     if (node.nodeType === 3) return node.textContent;
     if (node.nodeType !== 1) return '';
@@ -530,7 +558,7 @@ function htmlToMd(html) {
           text += walk(child);
         }
         const titleMarker = (node.classList?.contains('note-title') || node.dataset?.noteTitle === '1') ? '<!--title-->\n' : '';
-        return titleMarker + _nlIdMarker(node) + '#'.repeat(level) + ' ' + text.trim() + '\n';
+        return titleMarker + _noteStatusMarker(node) + _nlIdMarker(node) + '#'.repeat(level) + ' ' + text.trim() + '\n';
       }
       case 'B': case 'STRONG': return '**' + children + '**';
       case 'I': case 'EM': return '*' + children + '*';
@@ -542,10 +570,10 @@ function htmlToMd(html) {
       case 'PRE': {
         const lang = node.dataset?.lang || '';
         const codeText = children.endsWith('\n') ? children.slice(0, -1) : children;
-        return _nlIdMarker(node) + '```' + lang + '\n' + codeText + '\n```\n';
+        return _noteStatusMarker(node) + _nlIdMarker(node) + '```' + lang + '\n' + codeText + '\n```\n';
       }
       case 'BLOCKQUOTE': {
-        const _nlMk = _nlIdMarker(node);
+        const _nlMk = _noteStatusMarker(node) + _nlIdMarker(node);
         // quote-body/quote-cite構造がある場合（出典付き引用）
         const qBody = node.querySelector('.quote-body');
         const qCite = node.querySelector('.quote-cite');
@@ -599,7 +627,7 @@ function htmlToMd(html) {
         }
         // BR由来の改行を空白区切りに変換（Markdown LI内では改行=行分離になるため）
         const text = textParts.join(' ').replace(/ ?\n ?/g, ' ');
-        const _liMk = _nlIdMarker(node);
+        const _liMk = _noteStatusMarker(node) + _nlIdMarker(node);
         if (node.classList?.contains('note-checklist-item')) {
           const checked = node.dataset?.checked === 'true' || !!node.querySelector('input.note-checklist-check')?.checked;
           return _liMk + indent + '- [' + (checked ? 'x' : ' ') + '] ' + text + '\n' + nestedList;
@@ -617,7 +645,7 @@ function htmlToMd(html) {
       case 'TABLE': {
         const rows = node.querySelectorAll('tr');
         if (rows.length === 0) return children;
-        let md = tableLayoutForMarkdown(node);
+        let md = _noteStatusMarker(node) + tableLayoutForMarkdown(node);
         rows.forEach((tr, ri) => {
           const cells = [...tr.querySelectorAll('th, td')].map(c => tableCellMarkdown(walk(c).trim()));
           md += '| ' + cells.join(' | ') + ' |\n';
@@ -632,7 +660,7 @@ function htmlToMd(html) {
           // 行種変換（gb-note-block-types.js）で他行種からコールアウトへ変換した場合、
           // 保持対象の _nl-id マーカーは callout-block 自身の先頭子要素として置かれる
           // （callout-icon より前）。既存の素のコールアウトには無いため空文字のまま。
-          const _calloutMk = _nlIdMarker(node);
+          const _calloutMk = _noteStatusMarker(node) + _nlIdMarker(node);
           const iconEl = node.querySelector('.callout-icon');
           // data-icon属性があればLucide名、なければtextContent（旧emoji互換）
           const icon = iconEl?.dataset?.icon || iconEl?.textContent || 'lightbulb';
@@ -649,7 +677,7 @@ function htmlToMd(html) {
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
         if (!trimmed || trimmed === '\n') return BLANK;
-        return _nlIdMarker(node) + trimmed + '\n';
+        return _noteStatusMarker(node) + _nlIdMarker(node) + trimmed + '\n';
       }
       case 'SPAN':
         // アノテート用 line-id span は MD に直接出力しない（ブロック先頭なら _nlIdMarker 経由で親側から emit される）

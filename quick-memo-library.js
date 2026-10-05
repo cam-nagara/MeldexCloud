@@ -9,10 +9,14 @@
   }
 
   function splitFrontmatter(rawText) {
-    const text = String(rawText || '').replace(/\r\n?/g, '\n');
+    const text = String(rawText || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
     if (!text.startsWith('---\n')) return { frontmatter: {}, body: text };
     const end = text.indexOf('\n---\n', 4);
     if (end < 0) return { frontmatter: {}, body: text };
+    const parser = window.MeldexCloudFrontmatterLite?.yamlLite;
+    if (typeof parser === 'function') {
+      return { frontmatter: parser(text.slice(4, end)), body: text.slice(end + 5) };
+    }
     const frontmatter = {};
     text.slice(4, end).split('\n').forEach((line) => {
       const colon = line.indexOf(':');
@@ -56,7 +60,7 @@
     return (match?.[1] || fallback || '無題のメモ').trim();
   }
 
-  function parseMemoText(rawText, path) {
+  function parseMemoText(rawText, path, etag = '') {
     const parsed = splitFrontmatter(rawText);
     const html = bodyHtml(parsed.body);
     const drawing = parsed.body.match(/<img[^>]+src=["'](data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+)["']/i);
@@ -76,6 +80,7 @@
       server_path: String(path || ''),
       path: String(path || ''),
       quick_memo: parsed.frontmatter.quick_memo === true,
+      cloud_etag: String(etag || ''),
     };
   }
 
@@ -94,7 +99,9 @@
     return {
       ...item,
       title: String(item.title || '').trim() || '無題のメモ',
-      preview: String(item.preview || item.text || '').replace(/\s+/g, ' ').slice(0, 160),
+      preview: String(item.preview || item.text_preview || item.text || '').replace(/\s+/g, ' ').slice(0, 160),
+      created_at: item.created_at || item.created || '',
+      updated_at: item.updated_at || item.modified || '',
       pending: false,
       tags: Array.isArray(item.tags) ? item.tags : [],
     };
@@ -116,6 +123,9 @@
       nextOffset: null,
       loading: false,
       cloudFiles: [],
+      openEpoch: 0,
+      failedFiles: [],
+      loadFailed: false,
     };
 
     function pendingItems() {
@@ -190,7 +200,8 @@
       } else {
         state.filtered.forEach((item) => options.content.appendChild(createListItem(item)));
       }
-      options.moreButton.hidden = state.nextOffset == null;
+      options.moreButton.hidden = state.nextOffset == null && !state.failedFiles.length && !state.loadFailed;
+      options.moreButton.textContent = state.failedFiles.length || state.loadFailed ? '読み込みを再試行' : 'さらに読み込む';
       options.moreButton.disabled = state.loading;
     }
 
@@ -198,21 +209,18 @@
       const query = options.search.value.trim().toLocaleLowerCase('ja');
       const tag = options.tagFilter.value;
       state.filtered = state.merged.filter((item) => {
-        const searchable = `${item.title} ${item.preview} ${(item.tags || []).join(' ')}`.toLocaleLowerCase('ja');
+        const searchable = `${item.title} ${item.search_text || item.text || item.preview} ${(item.tags || []).join(' ')}`.toLocaleLowerCase('ja');
         return (!query || searchable.includes(query)) && (!tag || (item.tags || []).includes(tag));
       });
       render();
     }
 
     async function localPage(reset) {
-      if (reset) {
-        state.saved = [];
-        state.offset = 0;
-      }
-      const query = new URLSearchParams({ offset: String(state.offset), limit: String(PAGE_SIZE) });
+      const query = new URLSearchParams({ offset: String(reset ? 0 : state.offset), limit: String(PAGE_SIZE) });
       const response = await fetch(`${options.apiBase}/api/quick-memo/list?${query}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'メモ一覧を読み込めませんでした');
+      if (reset) state.saved = [];
       state.saved.push(...(Array.isArray(payload.memos) ? payload.memos : []));
       state.nextOffset = Number.isFinite(payload.next_offset) ? payload.next_offset : null;
       state.offset = state.nextOffset == null ? state.offset : state.nextOffset;
@@ -220,29 +228,34 @@
 
     async function cloudPage(reset) {
       if (reset) {
-        const entries = await window.MeldexStandaloneCloud.browse(CLOUD_FOLDER, { detail: false });
+        const entries = await window.MeldexStandaloneCloud.browse(options.cloudFolderPath?.() || CLOUD_FOLDER, { detail: false });
         state.cloudFiles = (Array.isArray(entries) ? entries : [])
           .filter((item) => /\.md$/i.test(item.name || item.path || ''));
         state.saved = [];
         state.offset = 0;
+        state.failedFiles = [];
       }
       const start = state.offset;
-      const files = state.cloudFiles.slice(start, start + PAGE_SIZE);
+      const retrying = state.failedFiles.length > 0;
+      const files = retrying ? state.failedFiles : state.cloudFiles.slice(start, start + PAGE_SIZE);
+      state.failedFiles = [];
       const memos = [];
       for (let offset = 0; offset < files.length; offset += 6) {
         const batch = files.slice(offset, offset + 6);
         const results = await Promise.all(batch.map(async (item) => {
           try {
             const result = await window.MeldexStandaloneCloud.readText(item.path);
-            return parseMemoText(result?.content ?? result, item.path);
+            const memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
+            return memo.quick_memo ? memo : null;
           } catch (_) {
+            state.failedFiles.push(item);
             return null;
           }
         }));
         memos.push(...results.filter(Boolean));
       }
       state.saved.push(...memos);
-      const end = start + files.length;
+      const end = retrying ? start : start + files.length;
       state.nextOffset = end < state.cloudFiles.length ? end : null;
       state.offset = state.nextOffset == null ? end : state.nextOffset;
     }
@@ -250,27 +263,31 @@
     async function load(reset) {
       if (state.loading) return;
       state.loading = true;
+      state.loadFailed = false;
       render();
       try {
         if (options.isCloudMode() && options.cloudConnected()) await cloudPage(reset);
         else if (!options.isCloudMode()) await localPage(reset);
         state.loading = false;
         mergeItems();
+        if (state.failedFiles.length) options.onStatus?.(`${state.failedFiles.length}件のメモを読み込めませんでした。再試行してください`, true);
       } catch (error) {
         state.loading = false;
+        state.loadFailed = true;
         mergeItems();
         options.onStatus?.(String(error?.message || error), true);
       }
     }
 
     async function openItem(item, button) {
+      const epoch = ++state.openEpoch;
       button.disabled = true;
       try {
         await options.beforeNavigate?.();
         let memo = item;
         if (!item.pending && options.isCloudMode()) {
           const result = await window.MeldexStandaloneCloud.readText(item.path);
-          memo = parseMemoText(result?.content ?? result, item.path);
+          memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
         } else if (!item.pending) {
           const query = new URLSearchParams({ path: item.path || '', memo_id: item.memo_id || '' });
           const response = await fetch(`${options.apiBase}/api/quick-memo/item?${query}`);
@@ -278,10 +295,12 @@
           if (!response.ok) throw new Error(payload.error || 'メモを開けませんでした');
           memo = payload.memo || payload;
         }
-        await options.onOpen?.(memo);
+        if (epoch !== state.openEpoch) return;
+        await options.onOpen?.(memo, undefined, () => epoch === state.openEpoch);
       } catch (error) {
+        if (epoch === state.openEpoch) options.onStatus?.(String(error?.message || error), true);
+      } finally {
         button.disabled = false;
-        options.onStatus?.(String(error?.message || error), true);
       }
     }
 
@@ -294,13 +313,14 @@
     }
 
     function hide() {
+      state.openEpoch += 1;
       options.listView.style.display = 'none';
       options.editorView.style.display = '';
     }
 
     options.search.addEventListener('input', filter);
     options.tagFilter.addEventListener('change', filter);
-    options.moreButton.addEventListener('click', () => load(false));
+    options.moreButton.addEventListener('click', () => load(state.loadFailed));
     options.backButton.addEventListener('click', hide);
     return { show, hide, refresh: () => load(true), parseMemoText };
   }

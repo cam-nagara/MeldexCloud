@@ -153,15 +153,22 @@ async function renderChatCostSettings(root) {
       </section>`;
     const statusEl = container.querySelector('#chat-budget-status');
     container.querySelector('#workspace-cli-ai-usage-open-sheet')?.addEventListener('click', () => _openWorkspaceCliAiUsageSheet(workspaceCliConfig?.ai_usage_sheet_name));
-    container.querySelector('#chat-budget-save')?.addEventListener('click', () => saveChatCostSettingsFromSettingsDialog(container, { silent: false }));
-    container.querySelector('#chat-budget-reset')?.addEventListener('click', async () => {
+    container.querySelector('#chat-budget-save')?.addEventListener('click', () => _runSettingsMaintenanceAction(container.closest('.modal-overlay') || container, statusEl, async () => {
+      const saved = await saveChatCostSettingsFromSettingsDialog(container, { silent: false });
+      const dirty = container.closest('.modal-overlay')?.__settingsDirtyControlIds;
+      if (saved && dirty instanceof Set) {
+        [...dirty].filter(id => id.startsWith('chat-budget-') || id.startsWith('modal-chat-budget-'))
+          .forEach(id => dirty.delete(id));
+      }
+    }));
+    container.querySelector('#chat-budget-reset')?.addEventListener('click', () => _runSettingsMaintenanceAction(container.closest('.modal-overlay') || container, statusEl, async () => {
       const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？', { danger: true, okLabel: 'リセット' }) : confirm('LLM使用量履歴をリセットしますか？');
       if (!ok) return;
       await apiPost('/chat/usage/reset', {});
       statusEl.textContent = '使用量履歴をリセットしました';
       if (typeof renderChatCostSettings === 'function') renderChatCostSettings(root);
       if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
-    });
+    }));
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} AI使用量</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
   }

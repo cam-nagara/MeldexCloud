@@ -556,6 +556,11 @@ function _customInstructionRelayErrorMessage(result) {
 }
 
 async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) {
+  if (form._dbFormSubmitting) return;
+  form._dbFormSubmitting = true;
+  const submitButton = form.querySelector('button[type="submit"]');
+  const wasDisabled = submitButton?.disabled;
+  if (submitButton) submitButton.disabled = true;
   const msg = form.querySelector('.gb-form-submit-message');
   try {
     const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
@@ -618,5 +623,8 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
   } catch (err) {
     if (msg) msg.textContent = err?.message || '送信に失敗しました';
     showStatus(err?.message || 'フォーム送信に失敗しました', true);
+  } finally {
+    form._dbFormSubmitting = false;
+    if (submitButton) submitButton.disabled = !!wasDisabled;
   }
 }

@@ -339,12 +339,22 @@ class InformationComponent extends ContextRailComponent {
   static toolType = 'information';
   static hideTargetHeader = true;
 
-  renderTarget() {
+  async renderTarget() {
     if (!this.el) return;
     const ctx = _railContextSnapshot();
+    if (window.MeldexEmbeddedMetadata?.hasPendingMemos?.()) {
+      if (await window.MeldexEmbeddedMetadata.flushPendingMemos() === false) return false;
+      if (!this.el || window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) === false) return false;
+    }
     this._renderTargetHeader(ctx);
+    window.MeldexFileInfoPanel?.cancel?.(this.bodyEl);
     const target = ctx.targets[0];
     if (!target) return this._empty('ファイルまたはフォルダを選択してください');
+    if (ctx.targets.length > 1 && window.MeldexFolderMultiInfo?.renderInto) {
+      return window.MeldexFolderMultiInfo.renderInto(this.bodyEl, ctx.targets.map(item => ({
+        ...item, path: item.contextPath || item.path, type: item.kind || 'file',
+      })), { includeFolders: true, isCurrent: () => window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) !== false });
+    }
     const path = target.contextPath || target.path;
     if (!window.MeldexFileInfoPanel?.renderInto) return this._empty('プロパティパネルを読み込めませんでした');
     void window.MeldexFileInfoPanel.renderInto(this.bodyEl, path, {
@@ -529,6 +539,9 @@ class VersionComponent extends ToolComponent {
   // その絞り込みを選んでいる間は対象未指定でも一覧を出す。
   _renderNoTargetView() {
     if (!this.el) return;
+    this._loadSeq = (this._loadSeq || 0) + 1;
+    this._timelineEntries = [];
+    this._timelineTotal = 0;
     if ((this.state.timelineKind || '') === PRODUCTION_DAILY_KIND) {
       this._timelineEntries = [];
       this.el.innerHTML = `${_railTargetHeaderHtml('', '制作進行の日次記録')}<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
@@ -575,6 +588,7 @@ class VersionComponent extends ToolComponent {
   async _loadVersions(path, vType) {
     const loadSeq = (this._loadSeq || 0) + 1;
     this._loadSeq = loadSeq;
+    if (this.state.versionPath !== path || this.state.versionType !== vType) this._timelineOffset = 0;
     this.state.versionPath = path;
     this.state.versionType = vType;
     if (!this.el || this._destroyed) return;
@@ -585,7 +599,8 @@ class VersionComponent extends ToolComponent {
         versions = await apiFetch('/annotations/versions?target=' + encodeURIComponent(path));
       } catch (error) {
         if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
-        this.el.innerHTML = `${_railTargetHeaderHtml(path)}<div class="gb-section-desc" role="alert" style="padding:16px;">${esc(error?.message || 'アノテートバージョンを読み込めませんでした')}</div>`;
+        this.el.innerHTML = _railTargetHeaderHtml(path) + this._loadErrorHtml(path, vType, ['アノテートバージョン: ' + (error?.message || '取得失敗')]);
+        this._bindVersionActions();
         return;
       }
       if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
@@ -602,33 +617,51 @@ class VersionComponent extends ToolComponent {
     let versions = [];
     let folderVersions = [];
     let timeline = { entries: [] };
+    const errors = [];
     const folderPath = isFolder ? path : '';
-    if (isFolder) {
+    if (timelineKind === PRODUCTION_DAILY_KIND) {
+      // 日次記録はファイル版の取得失敗や待ち時間に依存させない。
+    } else if (isFolder) {
       try {
         folderVersions = await apiFetch('/version/list-folder?path=' + encodeURIComponent(path));
-      } catch {}
+      } catch (error) { errors.push('フォルダバージョン: ' + (error?.message || '取得失敗')); }
     } else {
       try {
         versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
-      } catch {}
+      } catch (error) { errors.push('ファイルバージョン: ' + (error?.message || '取得失敗')); }
     }
+    if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     // 制作進行の日次記録は対象ファイルに紐づかないため、タイムラインAPIは呼ばない
     if (timelineKind !== PRODUCTION_DAILY_KIND) {
       try {
-        const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200' });
+        const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200', offset: String(this._timelineOffset || 0) });
         if (timelineActorKind) params.set('actor_kind', timelineActorKind);
         timeline = await apiFetch('/version-panel/timeline?' + params.toString());
-      } catch {}
+      } catch (error) { errors.push('タイムライン: ' + (error?.message || '取得失敗')); }
     }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
+    this._timelineTotal = Number(timeline?.total || this._timelineEntries.length);
     this.el.innerHTML = _railTargetHeaderHtml(path, timelineKind === PRODUCTION_DAILY_KIND ? '制作進行の日次記録' : '')
+      + (errors.length ? this._loadErrorHtml(path, vType, errors) : '')
       + this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();
     if (timelineKind === PRODUCTION_DAILY_KIND) this._mountProductionDailyRecords();
   }
 
+  _loadErrorHtml(path, vType, errors) {
+    return `<div role="alert" class="gb-version-load-error" style="padding:8px;">一覧の一部を読み込めませんでした。<br>${errors.map(esc).join('<br>')}
+      <button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('refresh', path, '', vType)}>再読み込み</button></div>`;
+  }
+
+  _syncVersionBusy() {
+    if (!this.el) return;
+    this.el.setAttribute('aria-busy', String(!!this._actionBusy));
+    this.el.querySelectorAll('[data-version-action]').forEach(button => { button.disabled = !!this._actionBusy; });
+  }
+
   async _runVersionAction(action, path, versionName, vType) {
+    if (this._actionBusy || this._destroyed) return;
     const calls = {
       showFolderFiles: () => showFolderVersionFiles(path, versionName),
       restoreFolder: () => restoreFolderVersion(path, versionName),
@@ -639,7 +672,7 @@ class VersionComponent extends ToolComponent {
       timelineDeleteFolder: () => deleteFolderVersion(path, versionName),
       timelinePromoteFolder: () => this._promoteFolderVersion(path, versionName),
       saveFolder: () => saveFolderVersion(path),
-      saveCurrent: () => (this.state.versionType === 'folder' ? saveFolderVersion(path) : saveManualVersion(path, vType)),
+      saveCurrent: () => (vType === 'folder' ? saveFolderVersion(path) : saveManualVersion(path, vType)),
       preview: () => previewVersion(path, versionName, vType),
       compare: () => compareVersion(path, versionName, vType),
       restore: () => restoreVersion(path, versionName, vType),
@@ -650,6 +683,8 @@ class VersionComponent extends ToolComponent {
       timelineDelete: () => deleteVersion(path, versionName, vType),
       save: () => saveManualVersion(path, vType),
       refresh: () => this._loadVersions(this.state.versionPath || path, this.state.versionType || vType),
+      timelinePrevious: () => { this._timelineOffset = Math.max(0, (this._timelineOffset || 0) - 200); return this._loadVersions(path, vType); },
+      timelineNext: () => { this._timelineOffset = (this._timelineOffset || 0) + 200; return this._loadVersions(path, vType); },
       annotationSave: () => this._saveAnnotationVersion(path),
       annotationPreview: () => this._showAnnotationVersion(path, versionName, false),
       annotationCompare: () => this._showAnnotationVersion(path, versionName, true),
@@ -658,24 +693,32 @@ class VersionComponent extends ToolComponent {
     };
     const fn = calls[action];
     if (!fn) return;
-    const result = fn();
-    if (result && typeof result.then === 'function') await result;
-    const reloadActions = new Set([
-      'save', 'saveCurrent', 'restore', 'delete', 'saveFolder', 'restoreFolder', 'deleteFolder', 'promoteFolder',
-      'timelineRestore', 'timelineDelete', 'timelineRestoreFolder', 'timelineDeleteFolder', 'timelinePromoteFolder',
-      'annotationSave', 'annotationRestore', 'annotationDelete',
-    ]);
-    if (reloadActions.has(action)) {
-      const reloadPath = this.state.versionPath || path;
-      const reloadType = this.state.versionType || vType || 'file';
-      if (reloadPath) await this._loadVersions(reloadPath, reloadType);
+    this._actionBusy = true;
+    this._syncVersionBusy();
+    try {
+      const result = await fn();
+      const reloadActions = new Set([
+        'save', 'saveCurrent', 'restore', 'delete', 'saveFolder', 'restoreFolder', 'deleteFolder', 'promoteFolder',
+        'timelineRestore', 'timelineDelete', 'timelineRestoreFolder', 'timelineDeleteFolder', 'timelinePromoteFolder',
+        'annotationSave', 'annotationRestore', 'annotationDelete',
+      ]);
+      if (reloadActions.has(action) && result !== false && !this._destroyed) {
+        const reloadPath = this.state.versionPath || path;
+        const reloadType = this.state.versionType || vType || 'file';
+        if (reloadPath) await this._loadVersions(reloadPath, reloadType);
+      }
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus('バージョン操作に失敗しました: ' + (error?.message || ''), true);
+    } finally {
+      this._actionBusy = false;
+      this._syncVersionBusy();
     }
   }
 
   async _saveAnnotationVersion(path) {
     const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     const label = await cfPrompt('アノテートバージョン名:', defaultLabel);
-    if (label === null || !String(label).trim()) return;
+    if (label === null || !String(label).trim()) return false;
     await apiPost('/annotations/versions/save', { target: path, label: String(label).trim() });
     if (typeof showStatus === 'function') showStatus('アノテートバージョンを保存しました');
   }
@@ -700,7 +743,7 @@ class VersionComponent extends ToolComponent {
 
   async _restoreAnnotationVersion(path, versionName) {
     const current = await this._readAnnotationVersion(path, versionName);
-    if (!await cfConfirm('このアノテートバージョンに復元しますか？\n（現在のアノテートは自動保存されます）')) return;
+    if (!await cfConfirm('このアノテートバージョンに復元しますか？\n（現在のアノテートは自動保存されます）')) return false;
     const result = await apiPost('/annotations/versions/restore', {
       target: path,
       version: versionName,
@@ -711,7 +754,7 @@ class VersionComponent extends ToolComponent {
   }
 
   async _deleteAnnotationVersion(path, versionName) {
-    if (!await cfConfirm('この手動保存バージョンを削除しますか？')) return;
+    if (!await cfConfirm('この手動保存バージョンを削除しますか？')) return false;
     await apiDelete('/annotations/versions/' + encodeURIComponent(versionName) + '?target=' + encodeURIComponent(path));
     if (typeof showStatus === 'function') showStatus('アノテートバージョンを削除しました');
   }
@@ -719,7 +762,7 @@ class VersionComponent extends ToolComponent {
   async _promoteFolderVersion(path, versionName) {
     const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     const label = await cfPrompt('手動復元ポイント名:', defaultLabel);
-    if (label === null) return;
+    if (label === null) return false;
     await apiPost('/version/promote', { path, version: versionName, type: 'folder', label });
     showStatus('手動復元ポイントとして保存しました');
   }
@@ -787,7 +830,8 @@ class VersionComponent extends ToolComponent {
         const { versionAction, versionPath, versionName, versionType } = btn.dataset;
         if (versionAction === 'previewEdit') {
           const index = parseInt(btn.dataset.versionEntryIndex || '-1', 10);
-          this._previewEditEntry(this._timelineEntries?.[index]);
+          try { this._previewEditEntry(this._timelineEntries?.[index]); }
+          catch (error) { showStatus(error?.message || '変更レコードを表示できませんでした', true); }
           return;
         }
         this._runVersionAction(versionAction, versionPath || '', versionName || '', versionType || this.state.versionType || 'file');
@@ -797,11 +841,13 @@ class VersionComponent extends ToolComponent {
       input.addEventListener('change', () => {
         if (input.dataset.versionFilter === 'kind') this.state.timelineKind = input.value || 'named,auto,edit';
         if (input.dataset.versionFilter === 'actor') this.state.timelineActorKind = input.value || '';
+        this._timelineOffset = 0;
         const reloadPath = this.state.versionPath || this._getTabPath() || '';
         if (reloadPath) this._loadVersions(reloadPath, this.state.versionType || 'file');
         else this._renderNoTargetView();
       });
     });
+    this._syncVersionBusy();
     this.el.querySelectorAll('[data-version-integrity-recovery]').forEach(button => {
       button.addEventListener('click', () => {
         window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.({
@@ -922,6 +968,11 @@ class VersionComponent extends ToolComponent {
         </select>
       </div>
       <div class="gb-history-list">${rows}</div>
+      ${this._timelineTotal > 200 || this._timelineOffset ? `<div class="gb-version-pagination" style="display:flex;gap:8px;align-items:center;">
+        ${(this._timelineOffset || 0) > 0 ? `<button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('timelinePrevious', path, '', vType)}>前の200件</button>` : ''}
+        <span>${(this._timelineOffset || 0) + 1}～${(this._timelineOffset || 0) + entries.length} / ${this._timelineTotal}件</span>
+        ${(this._timelineOffset || 0) + entries.length < this._timelineTotal ? `<button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('timelineNext', path, '', vType)}>次の200件</button>` : ''}
+      </div>` : ''}
     </section>`;
   }
 

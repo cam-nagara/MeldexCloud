@@ -511,21 +511,28 @@ async function _bdReviewConflict(path, documentKey) {
     }
     if (keepLocal) {
       const markdown = bdToMd();
+      const savedNodeIds = new Set((bd.nodes || []).map(node => node.id));
       const result = await apiPut('/file?path=' + encodeURIComponent(path), {
         content: markdown,
         force_overwrite: true,
       });
+      if (result?.queued || result?.missing || result?.skipped) throw new Error('ボードの上書き保存が完了していません');
       const resolved = coordinator?.resolveConflict?.(documentKey, generation);
       if (coordinator && !resolved) {
         throw new Error('ボードの競合状態が更新されたため、上書き結果を確定できません');
       }
       if (bd.path === path) {
         bd.lastSavedEtag = result?.etag || bd.lastSavedEtag || '';
-        bd.dirty = false;
-        bd._lastSavedNodeIds = new Set((bd.nodes || []).map(node => node.id));
+        bd.lastSavedTransportRevision = coordinator
+          ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), result?.transport_revision || result?.etag || '')
+          : (result?.transport_revision || result?.etag || '');
+        coordinator?.bindDocumentIdentity?.(path, result);
+        bd.dirty = bdToMd() !== markdown;
+        bd._lastSavedNodeIds = savedNodeIds;
+        if (bd.dirty) window.MeldexDraftRecovery?.queueDraft?.(path, bdToMd(), bd.lastSavedEtag);
+        else await window.MeldexDraftRecovery?.markSynced?.(path);
       }
       if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
-      await window.MeldexDraftRecovery?.markSynced?.(path);
       showStatus('自分の編集でボードを上書き保存しました');
       return;
     }
@@ -547,6 +554,7 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
   // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
   if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
@@ -592,6 +600,10 @@ async function bdSave() {
     }
     if (saveResult?.skipped || saveResult?.missing) {
       showStatus('ボード保存を中止しました: ファイルが見つかりません', true);
+      return false;
+    }
+    if (saveResult?.queued) {
+      showStatus('ボードは未保存です。接続後に再試行します', true);
       return false;
     }
     if (bd.path !== savePath) return true;
@@ -651,7 +663,7 @@ function bdCopy() {
   if (bd.selected.size===0) return;
   _bdClipboard = [...bd.selected].map(id => {
     const n = bd.nodes.find(v=>v.id===id); if (!n) return null;
-    const copy = {...n}; // シャローコピー
+    const copy = JSON.parse(JSON.stringify(n));
     if (n.contained) {
       const pos = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(n) : null;
       if (pos) {
@@ -664,7 +676,7 @@ function bdCopy() {
   const selIds = new Set(_bdClipboard.map(n => n.id));
   _bdClipboardConnections = bd.connections
     .filter(c => selIds.has(c.from) && selIds.has(c.to))
-    .map(c => ({ ...c }));
+    .map(c => JSON.parse(JSON.stringify(c)));
   window.MeldexBoardTransfer?.captureBoardCopy?.(_bdClipboard);
   showStatus(_bdClipboard.length + '\u4ef6\u306e\u30ab\u30fc\u30c9\u3092\u30b3\u30d4\u30fc\u3057\u307e\u3057\u305f');
 }
@@ -672,7 +684,7 @@ function bdCloneNodesWithOffset(sourceNodes, offset) {
   const idMap = {};
   const sourceIdSet = new Set((sourceNodes || []).map(n => n?.id).filter(Boolean));
   const newNodes = (sourceNodes || []).map(n => {
-    const {id: _id, x: _x, y: _y, tags: _tags, _bdCopyAbsX, _bdCopyAbsY, ...rest} = n;
+    const {id: _id, x: _x, y: _y, tags: _tags, _bdCopyAbsX, _bdCopyAbsY, ...rest} = JSON.parse(JSON.stringify(n));
     const parentCopied = !!(n.contained && n.parent && sourceIdSet.has(n.parent));
     const copyAbsX = Number.isFinite(+_bdCopyAbsX) ? +_bdCopyAbsX : null;
     const copyAbsY = Number.isFinite(+_bdCopyAbsY) ? +_bdCopyAbsY : null;

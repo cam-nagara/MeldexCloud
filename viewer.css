@@ -65,8 +65,13 @@ body[data-viewer-file-drop="ready"]::after {
    transform:translate() のJS制御方式で、ネイティブスクロールに依存しない）。 */
 .layer { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; overflow: visible; }
 .layer.show { opacity: 1; pointer-events: auto; }
-.img-single { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; margin: auto; }
-.spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; margin: auto; }
+/* 画像・見開きには margin:auto を付けない。flexの自動余白は、ズームで要素が .layer をはみ出すと
+   0 になり（はみ出し時は開始側へ寄る仕様）、縦長画像が上端に張り付いて下端までパンできなくなる
+   （2026-09-15 実測: 400×6000px を拡大すると上端 0・下端 3072px のまま中央配置されなかった）。
+   中央配置は .layer の justify-content/align-items に任せ、はみ出しても上下左右へ均等に広げる。
+   flex:none は、はみ出した時に幅が縮められないようにする。 */
+.img-single { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; flex: none; }
+.spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; flex: none; }
 .spread img, .spread canvas { max-height: 100%; object-fit: contain; user-select: none; }
 .page-canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; }
 
@@ -83,7 +88,7 @@ body[data-viewer-file-drop="ready"]::after {
    img/canvasをこのラッパーで包み、注釈SVGをラッパーに対して100%/100%で重ねることで、
    フィット倍率・ズーム・パン・回転・反転を画像と同じCSS変換連鎖にそのまま追従させる
    （JS側で個別に再計算しない）。 */
-.viewer-ann-scene-wrap { position: relative; display: inline-block; line-height: 0; }
+.viewer-ann-scene-wrap { position: relative; display: inline-block; line-height: 0; flex: none; }
 /* .layer直下のラップは .layer 側の justify-content/align-items:center でセンタリングする
    （上記参照）。以前ここにあった margin:auto と max-width/max-height:100% は、ズームでラップの
    実サイズが .layer をはみ出すたびに margin:auto を0に潰し、かつラップ自身を100%幅/高に
@@ -172,6 +177,8 @@ body[data-viewer-file-drop="ready"]::after {
 }
 @media (max-width: 500px) {
   #controls #btn-shift-back, #controls #btn-shift-fwd { display: none; }
+  /* スマートフォン幅では前後のフォルダを右クリック（長押し）メニューと↑/↓キーに任せる */
+  #controls #btn-prev-folder, #controls #btn-next-folder { display: none; }
 }
 /* pointer:coarse または 640px以下: ボード下端ツールバーと同じタッチ操作面。外寸53px
    （44pxの操作対象 + 上下4px(--ui-space-2)ずつの余白 + 上端1pxボーダー）・44px操作対象。
@@ -194,7 +201,6 @@ body[data-viewer-file-drop="ready"]::after {
 @media (max-width: 500px) {
   #counter { display: none; }
   #controls #btn-fit { display: none; }
-  #controls #btn-default-apps { display: none; }
   #controls #btn-fullscreen { display: none; }
   #controls.gb-toolbar-viewer { gap: var(--ui-space-2, 4px); }
   #controls #seek-bar { flex: 0 0 50px; min-width: 50px; }

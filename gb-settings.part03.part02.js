@@ -623,7 +623,7 @@ function switchSettingsTab(el) {
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
   } catch {}
-  _showSettingsNavigationTarget(el.closest('.modal') || el.closest('.settings-modal'), target);
+  _openSettingsSection(tabName, el.closest('.modal') || el.closest('.settings-modal'), { pageId: target.pageId, forcePage: true });
 }
 
 // モバイル: セクションドリルダウン
@@ -970,7 +970,8 @@ function _focusInvalidSettingsInput(input) {
 }
 
 function _preflightSettingsSave() {
-  const username = document.getElementById('modal-username');
+  const overlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
+  const username = _settingsDomainIsDirty(overlay, 'modal-username') ? document.getElementById('modal-username') : null;
   if (username && !String(username.value || '').trim()) {
     _focusInvalidSettingsInput(username);
     return { ok: false, failedDomain: 'profile', error: 'ユーザー名を入力してください' };
@@ -979,11 +980,14 @@ function _preflightSettingsSave() {
     ['modal-version-max', 1, 200], ['modal-history-max', 1, 200],
     ['modal-chat-temperature', 0, 2], ['modal-chat-max-tokens', 1, 1000000],
     ['modal-chat-top-p', 0, 1],
+    ['modal-restore-point-interval', 1, 999], ['modal-restore-point-month-day', 1, 31],
+    ['modal-restore-point-retention-days', 1, 36500],
   ];
   for (const [id, min, max] of numericFields) {
-    const input = document.getElementById(id);
+    const input = _settingsDomainIsDirty(overlay, id) ? document.getElementById(id) : null;
     if (!input) continue;
     const raw = String(input.value || '').trim();
+    if (!raw && id.startsWith('modal-chat-')) continue;
     const value = Number(raw);
     if (!raw || !Number.isFinite(value) || value < min || value > max || input.checkValidity?.() === false) {
       _focusInvalidSettingsInput(input);
@@ -1014,8 +1018,11 @@ async function submitSettings() {
   let pendingTransactionalExternalSave = null;
   let pendingOldUsernameCleanup = '';
   let llmKeysChanged = false;
+  let pendingVersionConfig = null;
+  let themeDirty = false;
   try {
   const settingsOverlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
+  const settingsControl = id => _settingsDomainIsDirty(settingsOverlay, id) ? document.getElementById(id) : null;
   settingsHistoryBefore = typeof _captureSettingsDialogStorageSnapshot === 'function'
     ? _captureSettingsDialogStorageSnapshot()
     : null;
@@ -1026,7 +1033,7 @@ async function submitSettings() {
   const hasDirtyControls = settingsOverlay?.__settingsDirtyControlIds instanceof Set
     ? settingsOverlay.__settingsDirtyControlIds.size > 0
     : true;
-  const themeDirty = typeof _settingsThemeIsDirty === 'function' && _settingsThemeIsDirty();
+  themeDirty = typeof _settingsThemeIsDirty === 'function' && _settingsThemeIsDirty();
   if (!hasDirtyControls && !themeDirty && !sourceFoldersDirty) {
     showStatus('変更された設定はありません');
     return { ok: true, changedDomains: [] };
@@ -1052,7 +1059,7 @@ async function submitSettings() {
       save: () => saveAutoTagSettingsFromSettingsDialog(settingsOverlay, { silent: true }),
     });
   }
-  if (_settingsDomainIsDirty(settingsOverlay, ['cli-chat-', 'modal-cli-', 'settings-workspace-cli-'])
+  if (_settingsDomainIsDirty(settingsOverlay, ['settings-cli-chat-', 'cli-chat-', 'modal-cli-', 'settings-workspace-cli-'])
     && typeof saveCliChatSettingsFromSettingsDialog === 'function') {
     transactionalExternalSaves.push({
       domain: 'cli-chat',
@@ -1071,15 +1078,24 @@ async function submitSettings() {
     );
   }
   pendingTransactionalExternalSave = transactionalExternalSaves[0] || null;
+  if (pendingTransactionalExternalSave) {
+    const externalPrefixes = ['publish-', 'chat-budget-', 'modal-chat-budget-', 'auto-tag-', 'at-',
+      'settings-cli-chat-', 'cli-chat-', 'modal-cli-', 'settings-workspace-cli-'];
+    const commonDirty = [...(settingsOverlay?.__settingsDirtyControlIds || [])]
+      .some(id => !externalPrefixes.some(prefix => id.startsWith(prefix)));
+    if (commonDirty || themeDirty || sourceFoldersDirty) {
+      throw _settingsSaveFailure('external-settings', '外部保存を伴う設定は、ほかの設定と分けて保存してください');
+    }
+  }
   // select の change が未発火でも、保存前に共通フォントをテーマ変数へ確定する。
-  const fontFamilyInput = document.getElementById('modal-font-family');
+  const fontFamilyInput = settingsControl('modal-font-family');
   if (fontFamilyInput && typeof settingsThemeApplyCommonFont === 'function') settingsThemeApplyCommonFont(fontFamilyInput.value || '');
 
   // テーマ編集があれば、設定ダイアログの保存ボタンでも選択中テーマへ反映する。
-  if (typeof settingsThemeSaveFromSettingsDialog === 'function') {
-    const themeSaveOk = await settingsThemeSaveFromSettingsDialog({ skipRefresh: true });
+  if (themeDirty && typeof settingsThemeSaveFromSettingsDialog === 'function') {
+    const themeSaveOk = await settingsThemeSaveFromSettingsDialog({ skipRefresh: true, deferPersistence: true });
     if (themeSaveOk === false) throw _settingsSaveFailure('theme');
   }
 
   // テーマをlocalStorageに保存。失敗時は他の設定を書き込む前に中断する。
-  if (typeof saveColorSettings === 'function' && saveColorSettings() === false) throw _settingsSaveFailure('theme');
+  if ((themeDirty || fontFamilyInput) && typeof saveColorSettings === 'function' && saveColorSettings() === false) throw _settingsSaveFailure('theme');

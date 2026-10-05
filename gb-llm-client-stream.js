@@ -187,6 +187,11 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.5-flash-lite': { input: 0.3, output: 2.5, cache_read: 0.03, cache_write: 0.3 },
+      'gemini-3.1-flash-lite': { input: 0.5, output: 1.5, cache_read: 0.05, cache_write: 0.5 },
       default: { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
       'gemini-3': { input: 2.00, output: 12.00, cache_read: 0.20, cache_write: 2.00 },
       'gemini-2.5-pro': { input: 1.25, output: 10.00, cache_read: 0.31, cache_write: 1.25 },
@@ -194,12 +199,18 @@
       'gemini-2.5-flash': { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
     },
     anthropic: {
+      'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
+      'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
+      'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
       default: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
       'claude-haiku': { input: 1.00, output: 5.00, cache_read: 0.10, cache_write: 1.25 },
       'claude-sonnet': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
       'claude-opus': { input: 5.00, output: 25.00, cache_read: 0.50, cache_write: 6.25 },
     },
     openai: {
+      'gpt-6-astra': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+      'gpt-6.1-sol': { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
+      'gpt-6-luna': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
       default: { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
       'gpt-5.5': { input: 5.00, output: 30.00, cache_read: 0.50, cache_write: 5.00 },
       'gpt-5.4-mini': { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
@@ -237,11 +248,12 @@
   function _estimateCostUsd(provider, model, usage) {
     const tokens = _usageTokens(usage || {});
     const rate = _priceRate(provider, model);
+    const longContext = _providerKey(provider) === 'openai' && String(model || '').toLowerCase().startsWith('gpt-6') && tokens.input > 272000;
     return Math.round((
-      tokens.input * rate.input
-      + tokens.output * rate.output
-      + tokens.cache_read * rate.cache_read
-      + tokens.cache_write * rate.cache_write
+      tokens.input * rate.input * (longContext ? 2 : 1)
+      + tokens.output * rate.output * (longContext ? 1.5 : 1)
+      + tokens.cache_read * rate.cache_read * (longContext ? 2 : 1)
+      + tokens.cache_write * rate.cache_write * (longContext ? 2 : 1)
     ) / 1_000_000 * 100_000_000) / 100_000_000;
   }
 
@@ -832,6 +844,14 @@
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') payload.reasoning = { effort: _openAiReasoningEffort(reasoningLevel) };
+    if (model.startsWith('gpt-6')) {
+      let effort = reasoningLevel === 'off' ? 'none' : _openAiReasoningEffort(reasoningLevel);
+      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol'))) effort = 'low';
+      if (['max', 'ultracode'].includes(reasoningLevel)) effort = 'max';
+      payload.reasoning = { effort };
+      payload.store = false;
+      if (effort !== 'none') { delete payload.temperature; delete payload.top_p; }
+    }
     let emittedCodeStart = false;
     const seenCitations = new Set();
     let sawResponseEvent = false;
@@ -850,6 +870,7 @@
         sawEvent = true;
         sawResponseEvent = true;
         const type = String(data?.type || '');
+        if (type === 'response.failed' || type === 'error') throw new Error('OpenAI Responses API error: ' + JSON.stringify(data.error || data.response?.error || data));
         _sendOpenAiAnnotationCitations(data, send, seenCitations);
         if (type === 'response.output_text.delta' && data.delta) {
           send({ type: 'text_delta', content: String(data.delta) });
@@ -889,6 +910,7 @@
         lastError = err;
         const text = String(err?.message || err).toLowerCase();
         let changed = false;
+        if (sawResponseEvent) throw err;
         if (payload.tools?.some(tool => tool.type === 'code_interpreter') && (text.includes('code_interpreter') || text.includes('code'))) {
           payload.tools = payload.tools.filter(tool => tool.type !== 'code_interpreter');
           if (!payload.tools.length) delete payload.tools;
@@ -914,6 +936,7 @@
           changed = true;
         }
         if (changed) continue;
+        if (model.startsWith('gpt-6')) throw err;
         send({ type: 'internal_notice', content: 'OpenAI Responses APIのネイティブ機能が利用できないため、通常チャットで続行します。' });
         return _streamOpenAi({ ...body, allow_code_execution: false, allow_web_search: false }, apiKey, send, signal);
       }
@@ -943,7 +966,13 @@
     if (tools.length) payload.tools = tools;
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') {
-      payload.generationConfig.thinkingConfig = { thinkingBudget: _geminiThinkingBudget(reasoningLevel) };
+      if (model.startsWith('gemini-3')) {
+        let level = ['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : 'high';
+        if (model.includes('pro') && level === 'medium') level = 'high';
+        payload.generationConfig.thinkingConfig = { thinkingLevel: level };
+      } else {
+        payload.generationConfig.thinkingConfig = { thinkingBudget: _geminiThinkingBudget(reasoningLevel) };
+      }
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);
@@ -1045,7 +1074,7 @@
         return;
       }
       if (provider === 'openai') {
-        if (_requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
+        if (model.startsWith('gpt-6') || _requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
           await _streamOpenAiResponses(requestBody, apiKey, trackedSend, options.signal);
           recordUsage();
           return;

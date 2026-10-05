@@ -622,7 +622,7 @@
     }
     if (pathname === '/version/read-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
+      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
     }
     if (pathname === '/version/read-folder-file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
@@ -638,7 +638,7 @@
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFolderVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -670,7 +670,7 @@
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFileVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');

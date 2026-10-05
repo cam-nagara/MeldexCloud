@@ -104,6 +104,11 @@ async function openFolder(label, path, opts) {
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
     if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
     _folderPath = path;
+    _folderBrowseIncomplete = null;
+    clearTimeout(_folderUnifiedSearchTimer);
+    _folderUnifiedSearchTimer = 0;
+    ++_folderUnifiedSearchSeq;
+    _folderUnifiedSearchPaths = new Set();
     _folderSelected = null;
     _folderSelectedItems = [];
     if (!openOpts.skipShowView) showView('folder');
@@ -123,13 +128,15 @@ async function openFolder(label, path, opts) {
     if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
     let fetchedItems = typeof _folderFetchBrowseItems === 'function'
-      ? await _folderFetchBrowseItems(path)
+      ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
       : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+    const browseIncomplete = fetchedItems._folderBrowseIncomplete || null;
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
     }
     if (isStaleFolderLoad()) return;
     _folderItems = fetchedItems;
+    _folderBrowseIncomplete = browseIncomplete;
     if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80 });
@@ -141,9 +148,9 @@ async function openFolder(label, path, opts) {
       openOpts.selectedPath,
     ].filter(Boolean);
     renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
-    if (!_folderIsIndependentSurface()) {
-      const folderCountEl = document.getElementById('folder-item-count');
-      if (folderCountEl) folderCountEl.textContent = _folderItems.length + ' 項目';
+    const searchConfig = getFolderDisplayConfig();
+    if (searchConfig.filterText || _folderSearchRowHasTagCondition()) {
+      _refreshFolderUnifiedSearch(searchConfig.filterText || '');
     }
     if (!openOpts.skipGlobalUi) showStatus('フォルダ: ' + displayLabel);
     if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
@@ -182,6 +189,7 @@ async function openFolder(label, path, opts) {
 function renderFolderInitialPrompt() {
   _folderPath = '';
   _folderItems = [];
+  _folderBrowseIncomplete = null;
   _folderVisibleItems = [];
   _folderSelected = null;
   _folderSelectedItems = [];
@@ -307,7 +315,8 @@ function applyWaterfallLayout() {
   const colW = parseInt(getComputedStyle(grid).getPropertyValue('--fv-card-w')) || 120;
   const containerW = _waterfallElementWidth(grid) - 24; // padding考慮
   const cols = Math.max(1, Math.floor((containerW + gap) / (colW + gap)));
-  const colHeights = new Array(cols).fill(0);
+  const warning = grid.querySelector('.fv-browse-warning');
+  const colHeights = new Array(cols).fill(warning ? warning.offsetHeight + gap : 0);
 
   items.forEach(el => {
     const minH = Math.min(...colHeights);
@@ -441,13 +450,11 @@ function _getFolderFilteredItems() {
   const hasSearchTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   return _folderItems.filter(item => {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
+    const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
+    if (hasSearchTagCondition && !unifiedMatch) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
-      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
       if (!(includeName && haystack.includes(text)) && !unifiedMatch) return false;
-    } else if (hasSearchTagCondition) {
-      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
-      if (!unifiedMatch) return false;
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
@@ -631,10 +638,42 @@ function renderFolderGrid(opts) {
   _folderConfigureListLayout(container, isListLayout);
   if (isListLayout) _folderRenderListHeader(container);
 
+  if (_folderBrowseIncomplete) {
+    const warning = document.createElement('div');
+    warning.className = 'fv-browse-warning';
+    warning.setAttribute('role', 'status');
+    warning.style.cssText = 'grid-column:1 / -1;width:100%;box-sizing:border-box;flex:none;padding:8px 12px;color:var(--fg2);';
+    if (_folderLayout === 'waterfall') {
+      warning.style.position = 'absolute';
+      warning.style.top = '0';
+      warning.style.left = '0';
+    }
+    warning.textContent = _folderBrowseIncomplete.truncated
+      ? 'サブフォルダーの表示上限に達しました。一部は未確認です。'
+      : '一部のサブフォルダーを読み込めませんでした。';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'gb-btn gb-btn-sm';
+    retry.dataset.e2eId = 'folder-browse-retry';
+    retry.textContent = '再読み込み';
+    const retryPath = _folderPath;
+    retry.addEventListener('click', () => {
+      if (_folderPath !== retryPath) return;
+      openFolder(retryPath.split(/[\\/]/).pop(), retryPath, {
+        silent: true, skipNavPush: true, skipSaveLastView: true,
+        selectedPaths: _folderSelectedItems.map(item => item.path),
+        containerEl: _folderResolveRenderOverride(),
+      });
+    });
+    warning.appendChild(retry);
+    container.appendChild(warning);
+  }
+
   if (filteredItems.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'fv-empty-state';
-    empty.textContent = _folderItems.length > 0 && _folderHasActiveFilters(dcfg) ? '条件に一致する項目がありません' : 'このフォルダは空です';
+    empty.textContent = _folderItems.length > 0 && _folderHasActiveFilters(dcfg) ? '条件に一致する項目がありません'
+      : _folderBrowseIncomplete ? '読み込めた項目はありません' : 'このフォルダは空です';
     container.appendChild(empty);
     return;
   }

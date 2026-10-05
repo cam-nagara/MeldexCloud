@@ -450,10 +450,11 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
           if (opts) cfg.options = opts;
           if (ti.type === 'number' && currentPtc.unit) cfg.unit = currentPtc.unit;
           if (ti.type === 'image') cfg.options = { max_count: null, accept: ['png','jpg','jpeg','gif','webp','svg'], thumbnail_size: 256 };
-          const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath) || {})[propName] || {}));
-          const savePromise = setPropertyType(dbPath, propName, cfg, ctx);
+          const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || {}));
+          const saved = await setPropertyType(dbPath, propName, cfg, ctx);
+          if (saved === false) return;
           if (currentType === 'image' && ti.type !== 'image') {
-            Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
+            apiPost('/media/rebuild-refs', {}).catch(() => {});
           }
           _refreshDbColumnMenuView(ctx, dbPath);
           // Undo/Redo: クイック型切替も履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）

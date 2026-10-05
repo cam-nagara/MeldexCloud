@@ -65,6 +65,12 @@
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
     },
     {
+      test: info => /(?:ブラウザ版|クラウド版)では(?:まだ)?未対応の操作です/.test(info.raw),
+      title: 'クラウド版では未対応の操作です',
+      message: 'この操作は、現在のクラウド版では使えません。',
+      action: '必要な場合はデスクトップ版で実行するか、クラウド版で対応済みの操作に切り替えてください。',
+    },
+    {
       test: info => info.status === 501
         || String(info.code || '') === 'cloud_route_unwired'
         || /not implemented|cloud_route_unwired/i.test(info.raw),

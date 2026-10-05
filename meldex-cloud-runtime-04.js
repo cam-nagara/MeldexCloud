@@ -4031,7 +4031,9 @@
       const contract = window.MeldexSystemStorage;
       const kind = contract?.SystemStorageKind?.CONFLICT_BACKUPS;
       if (!resolver?.resolveTypedAdapterForProvider || !kind) {
-        throw new Error('競合した編集内容の安全な保存先を判定できません');
+        throw Object.assign(new Error('競合した編集内容の安全な保存先を判定できません'), {
+          status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable',
+        });
       }
       const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
       const now = new Date().toISOString();
@@ -4079,7 +4081,9 @@
           if (!collision || attempt >= 4) throw error;
         }
       }
-      throw new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした');
+      throw Object.assign(new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした'), {
+        status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable',
+      });
     }
 
     // 計画書§5工程2-D項目7「競合コピー作成前に正規化内容hashを比較し、同一なら
@@ -4141,16 +4145,26 @@
           return converged;
         }
         const currentMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
-        const conflict = await this._writeConflictCopy(normalized, bytes, {
-          expectedRevision: cachedMeta?.rev || '',
-          currentRevision: currentMeta?.rev || '',
-        });
+        let conflict;
+        try {
+          conflict = await this._writeConflictCopy(normalized, bytes, {
+            expectedRevision: cachedMeta?.rev || '',
+            currentRevision: currentMeta?.rev || '',
+          });
+        } catch (backupError) {
+          if (backupError?.status) throw backupError;
+          throw Object.assign(
+            backupError instanceof Error ? backupError : new Error(String(backupError)),
+            { status: 503, code: 'conflict_backup_unavailable', meldexCode: 'conflict_backup_unavailable' },
+          );
+        }
         // 計画書§5工程2-D項目3「CAS失敗時に.status/.codeを付与し、ノート側の
         // 409判定と接続する」。gb-save-safety.enrichError と同じフィールド名
         // （status/meldexCode）を使い、HTTP応答を経由しない直接Dropbox書込
         // エラーでも既存の`error?.status===409`判定を通す。
         const conflictError = new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせずMeldexの管理領域へ編集内容を保存しました: ${conflict.path}`);
         conflictError.status = 409;
+        conflictError.code = 'etag_conflict';
         conflictError.meldexCode = 'etag_conflict';
         conflictError.conflictPath = conflict.path;
         conflictError.conflictBackupDocumentId = conflict.documentId;
@@ -4168,7 +4182,12 @@
       } catch (error) {
         if (!_isDropboxConflictError(error)) throw error;
         this._forgetMeta(normalized);
-        throw Object.assign(new Error('Dropbox上で同時に更新されました'), { status: 409, meldexCode: 'etag_conflict' });
+        throw Object.assign(new Error('Dropbox 上で更新競合が発生したため保存を中止しました。元ファイルは上書きしていません'), {
+          status: 409,
+          code: 'etag_conflict',
+          meldexCode: 'etag_conflict',
+          detail: { code: 'etag_conflict', expected_transport_revision: String(expectedRevision ?? '') },
+        });
       }
     }
 
@@ -6000,6 +6019,11 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
+      'gemini-3.5-flash-lite': { input: 0.3, output: 2.5, cache_read: 0.03, cache_write: 0.3 },
+      'gemini-3.1-flash-lite': { input: 0.5, output: 1.5, cache_read: 0.05, cache_write: 0.5 },
       default: { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
       'gemini-3': { input: 2.00, output: 12.00, cache_read: 0.20, cache_write: 2.00 },
       'gemini-2.5-pro': { input: 1.25, output: 10.00, cache_read: 0.31, cache_write: 1.25 },
@@ -6007,12 +6031,18 @@
       'gemini-2.5-flash': { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
     },
     anthropic: {
+      'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
+      'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
+      'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
       default: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
       'claude-haiku': { input: 1.00, output: 5.00, cache_read: 0.10, cache_write: 1.25 },
       'claude-sonnet': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
       'claude-opus': { input: 5.00, output: 25.00, cache_read: 0.50, cache_write: 6.25 },
     },
     openai: {
+      'gpt-6-astra': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+      'gpt-6.1-sol': { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
+      'gpt-6-luna': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
       default: { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
       'gpt-5.5': { input: 5.00, output: 30.00, cache_read: 0.50, cache_write: 5.00 },
       'gpt-5.4-mini': { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
@@ -6050,11 +6080,12 @@
   function _estimateCostUsd(provider, model, usage) {
     const tokens = _usageTokens(usage || {});
     const rate = _priceRate(provider, model);
+    const longContext = _providerKey(provider) === 'openai' && String(model || '').toLowerCase().startsWith('gpt-6') && tokens.input > 272000;
     return Math.round((
-      tokens.input * rate.input
-      + tokens.output * rate.output
-      + tokens.cache_read * rate.cache_read
-      + tokens.cache_write * rate.cache_write
+      tokens.input * rate.input * (longContext ? 2 : 1)
+      + tokens.output * rate.output * (longContext ? 1.5 : 1)
+      + tokens.cache_read * rate.cache_read * (longContext ? 2 : 1)
+      + tokens.cache_write * rate.cache_write * (longContext ? 2 : 1)
     ) / 1_000_000 * 100_000_000) / 100_000_000;
   }
 
@@ -6645,6 +6676,14 @@
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') payload.reasoning = { effort: _openAiReasoningEffort(reasoningLevel) };
+    if (model.startsWith('gpt-6')) {
+      let effort = reasoningLevel === 'off' ? 'none' : _openAiReasoningEffort(reasoningLevel);
+      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol'))) effort = 'low';
+      if (['max', 'ultracode'].includes(reasoningLevel)) effort = 'max';
+      payload.reasoning = { effort };
+      payload.store = false;
+      if (effort !== 'none') { delete payload.temperature; delete payload.top_p; }
+    }
     let emittedCodeStart = false;
     const seenCitations = new Set();
     let sawResponseEvent = false;
@@ -6663,6 +6702,7 @@
         sawEvent = true;
         sawResponseEvent = true;
         const type = String(data?.type || '');
+        if (type === 'response.failed' || type === 'error') throw new Error('OpenAI Responses API error: ' + JSON.stringify(data.error || data.response?.error || data));
         _sendOpenAiAnnotationCitations(data, send, seenCitations);
         if (type === 'response.output_text.delta' && data.delta) {
           send({ type: 'text_delta', content: String(data.delta) });
@@ -6702,6 +6742,7 @@
         lastError = err;
         const text = String(err?.message || err).toLowerCase();
         let changed = false;
+        if (sawResponseEvent) throw err;
         if (payload.tools?.some(tool => tool.type === 'code_interpreter') && (text.includes('code_interpreter') || text.includes('code'))) {
           payload.tools = payload.tools.filter(tool => tool.type !== 'code_interpreter');
           if (!payload.tools.length) delete payload.tools;
@@ -6727,6 +6768,7 @@
           changed = true;
         }
         if (changed) continue;
+        if (model.startsWith('gpt-6')) throw err;
         send({ type: 'internal_notice', content: 'OpenAI Responses APIのネイティブ機能が利用できないため、通常チャットで続行します。' });
         return _streamOpenAi({ ...body, allow_code_execution: false, allow_web_search: false }, apiKey, send, signal);
       }
@@ -6756,7 +6798,13 @@
     if (tools.length) payload.tools = tools;
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') {
-      payload.generationConfig.thinkingConfig = { thinkingBudget: _geminiThinkingBudget(reasoningLevel) };
+      if (model.startsWith('gemini-3')) {
+        let level = ['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : 'high';
+        if (model.includes('pro') && level === 'medium') level = 'high';
+        payload.generationConfig.thinkingConfig = { thinkingLevel: level };
+      } else {
+        payload.generationConfig.thinkingConfig = { thinkingBudget: _geminiThinkingBudget(reasoningLevel) };
+      }
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);
@@ -6858,7 +6906,7 @@
         return;
       }
       if (provider === 'openai') {
-        if (_requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
+        if (model.startsWith('gpt-6') || _requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
           await _streamOpenAiResponses(requestBody, apiKey, trackedSend, options.signal);
           recordUsage();
           return;
@@ -24466,7 +24514,7 @@
       && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
     if (valid) return data;
     if (typeof provider?.statPath === 'function') {
-      const stat = await provider.statPath(_sheetManifestPath(dbPath)).catch(() => undefined);
+      const stat = await provider.statPath(_sheetManifestPath(dbPath));
       if (stat) {
         throw new Error('シートの保管ファイル（マニフェスト）を読み取れませんでした。時間をおいてもう一度お試しください');
       }
@@ -24498,7 +24546,7 @@
       const shard = await _readSheetShard(provider, dbPath, shardFileName);
       if (!shard) {
         if (typeof provider?.statPath === 'function') {
-          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName)).catch(() => undefined);
+          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName));
           if (stat) {
             throw new Error(`シートの保管ファイル（シャード ${shardFileName}）を読み取れませんでした。時間をおいてもう一度お試しください`);
           }
@@ -24607,9 +24655,17 @@
       return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
     }
     const storePath = _sheetStorePath(dbPath);
-    const entry = await _resolveEntryHandle(provider, storePath).catch(() => null);
-    if (!entry || entry.kind !== 'file') return null;
-    return _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), dbPath);
+    const raw = await _readJsonSafe(provider, storePath, null);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return _normalizeSheetStore(raw, dbPath);
+    const unreadable = new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
+    if (typeof provider?.statPath === 'function') {
+      const stat = await provider.statPath(storePath);
+      if (stat) throw unreadable;
+      return null;
+    }
+    const entry = await _resolveEntryHandle(provider, storePath);
+    if (entry && entry.kind === 'file') throw unreadable;
+    return null;
   }
 
   // 「保管ファイルが本当に無い」ことを確かめる。_readSheetStoreMaybe() は
@@ -27871,6 +27927,82 @@
     return name;
   }
 
+  function _isSheetCloudStoreFileName(name) {
+    const value = String(name || '');
+    return value === SHEET_CLOUD_STORE_FILE || value === SHEET_CLOUD_MANIFEST_FILE || _isSheetCloudShardFileName(value);
+  }
+
+  function _dbSnapshotStoreError(message) {
+    return Object.assign(new Error(message), { status: 409, code: 'sheet_store_snapshot_invalid' });
+  }
+
+  function _sheetStoreFromSnapshotFiles(fileTexts, dbPath) {
+    const parse = (fileName, label) => {
+      try { return JSON.parse(String(fileTexts.get(fileName))); }
+      catch { throw _dbSnapshotStoreError(`シート履歴の保管ファイル（${label}）を読み取れませんでした`); }
+    };
+    const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (fileTexts.has(SHEET_CLOUD_MANIFEST_FILE)) {
+      const manifest = parse(SHEET_CLOUD_MANIFEST_FILE, 'マニフェスト');
+      const valid = isObject(manifest) && manifest.kind === SHEET_CLOUD_MANIFEST_KIND
+        && Array.isArray(manifest.shards)
+        && manifest.shards.every(name => typeof name === 'string' && _isSheetCloudShardFileName(name))
+        && isObject(manifest.row_shard);
+      if (!valid) throw _dbSnapshotStoreError('シート履歴の保管ファイル（マニフェスト）の形式が不正です');
+      const rows = {};
+      const seen = new Set();
+      for (const shardFileName of manifest.shards) {
+        if (seen.has(shardFileName)) continue;
+        seen.add(shardFileName);
+        if (!fileTexts.has(shardFileName)) throw _dbSnapshotStoreError(`シート履歴にシャード ${shardFileName} が含まれていません`);
+        const shard = parse(shardFileName, `シャード ${shardFileName}`);
+        if (!isObject(shard) || shard.kind !== SHEET_CLOUD_SHARD_KIND || !isObject(shard.rows)) {
+          throw _dbSnapshotStoreError(`シート履歴の保管ファイル（シャード ${shardFileName}）の形式が不正です`);
+        }
+        Object.entries(shard.rows).forEach(([key, row]) => { if (isObject(row)) rows[key] = row; });
+      }
+      return _normalizeSheetStore({ kind: SHEET_CLOUD_STORE_KIND, schema_version: manifest.schema_version,
+        db_path: manifest.db_path, created: manifest.created, modified: manifest.modified, rows }, dbPath);
+    }
+    if (fileTexts.has(SHEET_CLOUD_STORE_FILE)) {
+      const raw = parse(SHEET_CLOUD_STORE_FILE, '保管ファイル');
+      if (!isObject(raw)) throw _dbSnapshotStoreError('シート履歴の保管ファイルの形式が不正です');
+      return _normalizeSheetStore(raw, dbPath);
+    }
+    return null;
+  }
+
+  function _overlaySheetStoreRows(markdownFiles, store) {
+    const files = new Map(markdownFiles);
+    Object.values(store?.rows || {}).forEach((row) => {
+      const fileName = _sheetStoreFileName(row.file_name || row.path || row.name);
+      if (row.deleted) files.delete(fileName);
+      else files.set(fileName, _frontmatterText(row.frontmatter || {}, row.body || ''));
+    });
+    return files;
+  }
+
+  function _dbSnapshotFileList(files) {
+    return [...files.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      .map(name => ({ path: name, text: String(files.get(name)) }));
+  }
+
+  async function _readCurrentDbSnapshot(provider, path) {
+    const base = _normalizeFolderPath(path);
+    const entry = await _resolveEntryHandle(provider, base);
+    if (!entry || entry.kind !== 'directory') throw Object.assign(new Error(`シートが見つかりません: ${base}`), { status: 404 });
+    const dbType = await _databaseKind(provider, base);
+    if (!dbType) throw Object.assign(new Error('新形式DBではありません'), { status: 400 });
+    const markdownFiles = new Map();
+    for (const item of await _listDirectoryEntries(provider, base)) {
+      if (item.handle.kind !== 'file' || item.name.startsWith('.') || !/\.md$/i.test(item.name)) continue;
+      markdownFiles.set(item.name, await provider.readText(_joinPath(base, item.name)));
+    }
+    const store = await _readSheetStoreMaybe(provider, base);
+    return { format: 'new-format-v1', db_type: dbType,
+      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso() };
+  }
+
   async function _readDbVersionSnapshot(provider, path, version) {
     const normalized = _normalizeFolderPath(path);
     const safeVersion = _safeVersionName(version);
@@ -27900,18 +28032,31 @@
       meta = await _readJsonSafe(provider, _joinPath(legacyVersionDir, '_meta.json'), null);
     }
     if (!meta || typeof meta !== 'object') throw new Error('シート履歴が見つかりません');
-    const files = [];
+    const markdownFiles = new Map();
+    const storeFiles = new Map();
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const rel = _normalizeFolderPath(file.rel_path || '');
-      if (!rel || rel.includes('..') || !/^[^/]+\.md$/i.test(rel)) continue;
+      if (file?.entry_type === 'directory') continue;
+      const rel = _normalizeFolderPath(file?.rel_path || '');
+      if (!rel || rel.includes('/') || rel.startsWith('.')) continue;
+      const isMarkdown = /\.md$/i.test(rel);
+      const isStore = _isSheetCloudStoreFileName(rel);
+      if (!isMarkdown && !isStore) continue;
+      let text;
       if (file.content_base64) {
         const binary = atob(file.content_base64);
         const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-        files.push({ path: rel, text: new TextDecoder().decode(bytes) });
+        text = new TextDecoder().decode(bytes);
       } else if (legacyVersionDir) {
-        files.push({ path: rel, text: await _readText(provider, _joinPath(legacyVersionDir, 'files', rel), '') });
+        text = await provider.readText(_joinPath(legacyVersionDir, 'files', rel));
+      } else {
+        throw new Error(`シート履歴内のファイルが見つかりません: ${rel}`);
       }
+      (isMarkdown ? markdownFiles : storeFiles).set(rel, text);
     }
+    const files = _dbSnapshotFileList(_overlaySheetStoreRows(
+      markdownFiles,
+      _sheetStoreFromSnapshotFiles(storeFiles, normalized),
+    ));
     const noteName = _basename(normalized) + '.md';
     const note = files.find(file => file.path === noteName)
       || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
@@ -28953,6 +29098,9 @@
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
     if (pathname === '/ruby' && method === 'GET') return _cloudRubyReading(await _requirePwaProvider('read'), url);
 
+    if (pathname === '/version/current-db-snapshot' && method === 'GET') {
+      return _readCurrentDbSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    }
     if (pathname === '/version/read-db' && method === 'GET') {
       return _readDbVersionSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('version') || '');
     }
@@ -32237,10 +32385,12 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
 async function _readFileVersion(provider, path, version) {
   const { record, name } = await _findFileVersionRecord(provider, path, version, false);
   if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
-  return { content: String(record.payload?.content || ''), name };
+  const current = await _readConflictSnapshot(provider, _normalizeFolderPath(path));
+  return { content: String(record.payload?.content || ''), name,
+    etag: current.revision, transport_revision: { transport: 'provider-revision', token: current.revision } };
 }
 
-async function _restoreFileVersion(provider, path, version) {
+async function _restoreFileVersion(provider, path, version, options = {}) {
   const normalized = _normalizeFolderPath(path);
   if (_isProductionFolderNotePath(normalized)) {
     throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
@@ -32248,10 +32398,20 @@ async function _restoreFileVersion(provider, path, version) {
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   const data = await _readFileVersion(provider, normalized, version);
+  const transport = options.transport_revision;
+  if (transport && transport.transport !== 'provider-revision') {
+    throw Object.assign(new Error('復元のrevision transportが一致しません'), { status: 409 });
+  }
+  if (options.if_match_etag && transport?.token && options.if_match_etag !== transport.token) {
+    throw Object.assign(new Error('復元のrevision指定が一致しません'), { status: 400 });
+  }
+  const expected = String(options.if_match_etag || options.transport_revision?.token || '').trim();
+  if (!expected || expected !== data.etag) throw Object.assign(new Error('復元対象が更新されました。再確認してください'), { status: 409 });
   _rejectProductionLegacyEntryContent(normalized, data.content || '');
   await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-  await provider.writeText(normalized, data.content || '');
-  return { ok: true };
+  const saved = await provider.uploadBytesConditional(normalized, new TextEncoder().encode(data.content || ''), expected);
+  const token = String(saved?.rev || saved?.revision || '');
+  return { ok: true, etag: token, transport_revision: { transport: 'provider-revision', token } };
 }
 
 async function _deleteFileVersion(provider, path, version) {
@@ -32473,10 +32633,30 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { adapter, storageKind, record };
   }
 
-  async function _readFolderVersion(provider, folderPath, version) {
+  async function _folderRestoreBaseline(provider, folderPath, files) {
+    const plans = [];
+    const seen = new Set();
+    for (const file of files) {
+      if (file.entry_type === 'directory') continue;
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
+      seen.add(relPath.toLowerCase());
+      const path = _joinPath(folderPath, relPath);
+      const entry = await _resolveEntryHandle(provider, path);
+      if (entry && entry.kind !== 'file') throw new Error('復元先にファイル以外の項目があります');
+      const current = entry ? await _readConflictSnapshot(provider, path) : { bytes: null, revision: null };
+      plans.push({ path, relPath, ...current });
+    }
+    const token = await _conflictSnapshotSha256(new TextEncoder().encode(JSON.stringify(plans.map(plan => [plan.relPath, plan.revision]))));
+    return { plans, token };
+  }
+
+  async function _readFolderVersion(provider, folderPath, version, includeRevision = false) {
     const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
     if (!record) throw new Error('フォルダバージョンが見つかりません');
-    return record.payload;
+    if (!includeRevision) return record.payload;
+    const baseline = await _folderRestoreBaseline(provider, _normalizeFolderPath(folderPath), record.payload.files || []);
+    return { ...record.payload, restore_revision: baseline.token };
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
@@ -32489,7 +32669,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { content: new TextDecoder().decode(bytes) };
   }
 
-  async function _restoreFolderVersion(provider, folderPath, version) {
+  async function _restoreFolderVersion(provider, folderPath, version, options = {}) {
     const normalized = _normalizeFolderPath(folderPath);
     const folder = await _resolveEntryHandle(provider, normalized);
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
@@ -32511,18 +32691,43 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const binary = atob(snapshot.content_base64);
       _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     }
-    await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
-    const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    let restored = 0;
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const dst = _joinPath(normalized, relPath);
-      if (!file.content_base64) continue;
-      const binary = atob(file.content_base64);
-      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
-      restored += 1;
+    if (typeof provider.uploadBytesConditional !== 'function') throw new Error('安全な条件付き復元を利用できません');
+    const baseline = await _folderRestoreBaseline(provider, normalized, meta.files || []);
+    if (options.restore_revision && options.restore_revision !== baseline.token) {
+      throw Object.assign(new Error('確認後にフォルダ内のファイルが更新されました。再確認してください'), { status: 409 });
     }
-    return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
+    for (const plan of baseline.plans) {
+      const file = meta.files.find(file => file.rel_path === plan.relPath);
+      if (typeof file.content_base64 !== 'string') throw new Error('保存版の内容がありません');
+      plan.nextBytes = Uint8Array.from(atob(file.content_base64), char => char.charCodeAt(0));
+      await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+    }
+    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const committed = [];
+    try {
+      for (const plan of baseline.plans) {
+        await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const revision = String(saved?.rev || saved?.revision || '');
+        committed.push({ plan, revision });
+        if (!revision) throw new Error('復元後の更新情報を確認できません');
+        const readback = await _readConflictSnapshot(provider, plan.path);
+        if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
+      }
+    } catch (error) {
+      const incomplete = [];
+      for (const { plan, revision } of [...committed].reverse()) {
+        try {
+          if (!revision) throw new Error('更新情報不明');
+          if (plan.bytes === null) await provider.deletePathConditional(plan.path, revision);
+          else await provider.uploadBytesConditional(plan.path, plan.bytes, revision);
+        } catch { incomplete.push(plan.relPath); }
+      }
+      throw Object.assign(new Error(incomplete.length
+        ? `復元を完了できませんでした。元データは復元前版「${backup.version}」に保持しています。再読込してください。`
+        : '復元を完了できなかったため、変更したファイルを元に戻しました。' + (error?.message || '')), { status: Number(error?.status || 500) });
+    }
+    return { ok: true, restored_count: baseline.plans.length, restored_files: baseline.plans.map(plan => plan.relPath) };
   }
 
   async function _deleteFolderVersion(provider, folderPath, version) {
@@ -33607,7 +33812,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/read-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
+      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
     }
     if (pathname === '/version/read-folder-file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
@@ -33623,7 +33828,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFolderVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -33655,7 +33860,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFileVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -40761,6 +40966,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     });
   }
 
+  function isSystemStorageConflict(err) {
+    return err?.name === 'SystemStorageConflictError' || err?.code === 'system_storage_conflict';
+  }
+
+  function cloudErrorDetail(err) {
+    return {
+      message: err?.message || String(err),
+      code: err?.code || err?.meldexCode || (isSystemStorageConflict(err) ? 'system_storage_conflict' : ''),
+      route: err?.route || '',
+      lock_entry: err?.lock_entry || null,
+      unlock_hint: err?.unlock_hint || '',
+    };
+  }
+
+  function cloudErrorStatus(err) {
+    const explicit = Number(err?.status || err?.status_code || 0);
+    if (explicit) return Math.max(400, Math.min(599, explicit));
+    return isSystemStorageConflict(err) ? 409 : 501;
+  }
+
   async function readRequestBody(input, init) {
     if (init?.body != null) return init.body;
     if (input instanceof Request) {
@@ -41244,14 +41469,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       // （実機の診断情報で "HTTP 501: 操作が中断されました" として確認）。
       // 本物の fetch と同じく reject させ、中断は中断として扱わせる。
       if (err?.name === 'AbortError' || err?.code === 20) throw err;
-      const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 501) || 501));
-      const detail = {
-        message: err?.message || String(err),
-        code: err?.code || '',
-        route: err?.route || '',
-        lock_entry: err?.lock_entry || null,
-        unlock_hint: err?.unlock_hint || '',
-      };
+      const status = cloudErrorStatus(err);
+      const detail = cloudErrorDetail(err);
       return jsonResponse({ error: detail.message, detail }, status);
     }
   };
@@ -50632,7 +50851,41 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+  }
+
+  function signature(item) { return JSON.stringify(item); }
+
+  function notFound(error) {
+    const status = Number(error?.status || error?.status_code || 0);
+    if (status) return status === 404;
+    return /^(not_found|path\/not_found)$/.test(String(error?.code || error?.message || ''));
+  }
+
+  // 更新対象以外のYAMLブロックをそのまま保ち、未知の列や将来フィールドを落とさない。
+  function patchMapping(raw, updates, indent = 0) {
+    const lines = String(raw).split(/(?<=\n)/);
+    const pattern = new RegExp('^' + ' '.repeat(indent) + '([^\\s:#][^:]*):');
+    const starts = [];
+    lines.forEach((line, index) => { const match = line.match(pattern); if (match) starts.push({ index, key: match[1].trim() }); });
+    let output = lines.slice(0, starts[0]?.index ?? lines.length).join('');
+    const seen = new Set();
+    starts.forEach((start, index) => {
+      const block = lines.slice(start.index, starts[index + 1]?.index ?? lines.length).join('');
+      if (!Object.hasOwn(updates, start.key)) { output += block; return; }
+      seen.add(start.key);
+      if (start.key === 'properties' && /^properties:\s*(?:\r?\n|$)/.test(block)) {
+        const tail = block.slice(block.indexOf('\n') + 1);
+        const childIndent = tail.match(/^( +)\S[^:]*:/m)?.[1]?.length || 2;
+        output += 'properties:\n' + patchMapping(tail, updates.properties, childIndent);
+      } else output += ' '.repeat(indent) + start.key + ': ' + jsonValue(updates[start.key]) + '\n';
+    });
+    Object.entries(updates).forEach(([key, value]) => {
+      if (seen.has(key)) return;
+      if (output && !output.endsWith('\n')) output += '\n';
+      output += ' '.repeat(indent) + key + ': ' + jsonValue(value) + '\n';
+    });
+    return output;
   }
 
   function jsonFetch(path, opts) {
@@ -50686,7 +50939,11 @@ document.addEventListener('DOMContentLoaded', () => {
       .map(part => safeFileStem(part, '').trim())
       .filter(Boolean)
       .join('/');
-    return clean || 'クイックメモ';
+    const path = clean || 'クイックメモ';
+    if (path.startsWith('__dropbox_root__/')) return path;
+    const savedRoot = String(item?.server_path || '').match(/^__dropbox_root__\/[^/]+/)?.[0];
+    const root = savedRoot || window.MeldexStandaloneCloud?.getStatus?.().activeRoot?.path;
+    return root ? String(root).replace(/\/$/, '') + '/' + path : path;
   }
 
   function targetSheetName(item) {
@@ -50799,12 +51056,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const parent = sheetPath.includes('/') ? sheetPath.split('/').slice(0, -1).join('/') : '';
     try {
       await apiFetch('/file?path=' + encodeURIComponent(`${sheetPath}/${sheetName}.md`), { silentError: true });
-    } catch {
+    } catch (error) {
+      if (!notFound(error)) throw error;
       await jsonFetch('/outliner/add', {
         method: 'POST',
         silentError: true,
         body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
-      }).catch(() => undefined);
+      });
     }
     const defaults = {
       種別: { type: 'select', options: ['メモ'] }, タグ: { type: 'multi-select', options: [] },
@@ -50812,7 +51070,7 @@ document.addEventListener('DOMContentLoaded', () => {
       保存先: { type: 'text' }, メモID: { type: 'text' }, URL: { type: 'url' },
       共有タイトル: { type: 'text' }, 共有元: { type: 'text' },
     };
-    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true }).catch(() => ({}));
+    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true });
     const existingTypes = existing?.property_types || existing?.propertyTypes || {};
     await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
       method: 'PUT',
@@ -50831,37 +51089,33 @@ document.addEventListener('DOMContentLoaded', () => {
     await ensureMemoWorkspace(item);
     const path = memoPath(item);
     const frontmatter = memoFrontmatter(item, path);
-    if (!item.server_path && !item.path) {
-      try {
-        const created = await jsonFetch('/entity/create', {
-          method: 'POST',
-          silentError: true,
-          body: JSON.stringify({
-            parent_path: targetSheetPath(item),
-            name: path.split('/').pop().replace(/\.md$/i, ''),
-            properties: frontmatter.properties,
-            source: 'quick-memo',
-            reviewed: true,
-          }),
-        });
-        const createdPath = created?.path || path;
-        await jsonFetch('/value?path=' + encodeURIComponent(createdPath), {
-          method: 'PUT',
-          silentError: true,
-          body: JSON.stringify({ new_body: memoBody(item) }),
-        });
-        item.server_path = createdPath;
-        return { ok: true, path: createdPath, target_sheet: targetSheetPath(item) };
-      } catch {}
+    let existing = null;
+    try { existing = await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true }); }
+    catch (error) { if (!notFound(error)) throw error; }
+    let content = frontmatterText(frontmatter, memoBody(item));
+    if (existing) {
+      if (!existing.etag) throw new Error('既存メモの更新情報を確認できません');
+      if (item.cloud_etag && item.cloud_etag !== existing.etag) throw new Error('クイックメモが別の画面で変更されています');
+      const match = String(existing.content || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      const parser = window.MeldexCloudFrontmatterLite?.yamlLite;
+      if (!match || !parser) throw new Error('既存メモの追加情報を安全に読み取れません');
+      const previous = parser(match[1]);
+      if (previous.quick_memo !== true || previous.quick_memo_id !== item.memo_id) throw new Error('保存先は別のメモです');
+      delete frontmatter.id;
+      delete frontmatter.created;
+      delete frontmatter.relations;
+      const properties = frontmatter.properties;
+      // Inline辞書は未知の列を含め、ブロック辞書は更新列だけを置換する。
+      if (/^properties:\s*\S/m.test(match[1])) frontmatter.properties = { ...(previous.properties || {}), ...properties };
+      content = '---\n' + patchMapping(match[1], frontmatter) + '---\n\n' + memoBody(item);
     }
-    const content = frontmatterText(frontmatter, memoBody(item));
-    await jsonFetch('/file?path=' + encodeURIComponent(path), {
+    const written = await jsonFetch('/file?path=' + encodeURIComponent(path), {
       method: 'POST',
       silentError: true,
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(existing ? { if_match_etag: existing.etag } : { create_only: true }) }),
     });
     item.server_path = path;
-    return { ok: true, path, target_sheet: targetSheetPath(item) };
+    return { ok: true, path, target_sheet: targetSheetPath(item), cloud_etag: written?.etag || '' };
   }
 
   async function saveItem(item) {
@@ -50872,35 +51126,59 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(item),
       });
       if (result?.ok) return result;
-    } catch {}
+      throw new Error('クイックメモの保存を確認できませんでした');
+    } catch (error) {
+      // 権限、ロック、競合、通信失敗を別の書込APIで迂回しない。
+      if (![404, 405, 501].includes(Number(error?.status || error?.status_code || 0))) throw error;
+    }
     return saveViaExistingApis(item);
   }
 
   async function syncQueue() {
+    if (navigator.locks?.request) return navigator.locks.request('meldex:quick-memo:sync', syncQueueUnlocked);
+    return syncQueueUnlocked();
+  }
+
+  async function syncQueueUnlocked() {
     if (syncing || typeof apiFetch !== 'function') return false;
     const queue = readJson(QUEUE_KEY, []);
     if (!Array.isArray(queue) || !queue.length) return true;
     syncing = true;
-    const remaining = [];
+    const sent = new Map();
     try {
       for (const raw of queue) {
         const item = raw && typeof raw === 'object' ? { ...raw } : null;
         if (!item) continue;
         try {
           const result = await saveItem(item);
+          sent.set(item.memo_id, { signature: signature(raw), result });
           const current = readJson(CURRENT_KEY, {});
           if (current?.memo_id === item.memo_id) {
             current.server_path = result.path || item.server_path || current.server_path || '';
-            if (Array.isArray(result.tags)) current.tags = result.tags;
+            if (Array.isArray(result.tags) && current.updated_at === item.updated_at) current.tags = result.tags;
+            current.version_path = result.version_path || current.version_path || current.server_path;
+            current.version_type = result.version_type || current.version_type || 'file';
+            if (result.memo_revision) current.memo_revision = result.memo_revision;
+            if (result.cloud_etag) current.cloud_etag = result.cloud_etag;
             delete current.auto_tag;
             writeJson(CURRENT_KEY, current);
           }
-        } catch {
-          remaining.push(raw);
-        }
+        } catch {}
       }
-      writeJson(QUEUE_KEY, remaining);
-      return remaining.length === 0;
+      const latest = readJson(QUEUE_KEY, []);
+      const remaining = (Array.isArray(latest) ? latest : []).filter(item => {
+        const saved = sent.get(item?.memo_id);
+        return !saved || signature(item) !== saved.signature;
+      });
+      remaining.forEach(item => {
+        const saved = sent.get(item.memo_id);
+        if (saved) {
+          item.server_path = saved.result.path || item.server_path || '';
+          if (saved.result.memo_revision) item.memo_revision = saved.result.memo_revision;
+          if (saved.result.cloud_etag) item.cloud_etag = saved.result.cloud_etag;
+        }
+      });
+      return writeJson(QUEUE_KEY, remaining) && remaining.length === 0;
     } finally {
       syncing = false;
     }
@@ -54535,6 +54813,7 @@ if (typeof window !== 'undefined') {
     sqlite_locked: 'ロック中',
     sqlite_database_error: 'DBエラー',
     etag_conflict: '競合',
+    conflict_backup_unavailable: '競合退避不可',
     file_exists: '同名あり',
     invalid_base64: '形式エラー',
     unknown_write_error: '不明',
@@ -54794,7 +55073,11 @@ if (typeof window !== 'undefined') {
   const MAX_DRAFTS = 100;
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
+  // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
+  // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
+  const sessionDraftKeys = new Set();
   let recoveryRetryTimer = 0;
+  let recoveryRetryOptions = null;
   let activeRecoveryModal = null;
   // 編集ロック一覧（マニュアル等のシステム保護）がまだ読み込まれていない間は、
   // ロック済みパスの残留ドラフトを掃除できない。起動1.8秒時点ではホームフォルダの
@@ -54817,11 +55100,15 @@ if (typeof window !== 'undefined') {
     return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay');
   }
 
-  function _scheduleRecoveryRetry() {
+  function _scheduleRecoveryRetry(options) {
+    // 明示的な一覧要求は、起動時だけの絞り込みより優先する。
+    if (!recoveryRetryOptions || !options?.startup) recoveryRetryOptions = options || {};
     if (recoveryRetryTimer) return;
     recoveryRetryTimer = setTimeout(() => {
+      const pendingOptions = recoveryRetryOptions || {};
+      recoveryRetryOptions = null;
       recoveryRetryTimer = 0;
-      showRecoveryDialog().catch(() => {});
+      showRecoveryDialog(pendingOptions).catch(() => {});
     }, 700);
   }
 
@@ -54935,6 +55222,9 @@ if (typeof window !== 'undefined') {
       store.put({ path: key, filePath: safePath, scope, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
       _prune(store, scope).catch(() => {});
       return { ok: true, path: safePath, savedAt };
+    }).then(result => {
+      if (result?.ok) sessionDraftKeys.add(key);
+      return result;
     }).catch(() => ({ ok: false }));
   }
 
@@ -55070,14 +55360,17 @@ if (typeof window !== 'undefined') {
     const remaining = await _pruneLockedDrafts(await listDrafts());
     const overlay = document.querySelector('[data-draft-recovery-dialog="1"]');
     if (!overlay) {
+      const pendingManualRequest = recoveryRetryOptions && !recoveryRetryOptions.startup;
       if (recoveryRetryTimer) {
         clearTimeout(recoveryRetryTimer);
         recoveryRetryTimer = 0;
+        recoveryRetryOptions = null;
       }
       // 一度出した（あるいは出す必要が無いと判断した）あとは出し直さない。
       // setSystemLockedItems は設定画面やツリー更新でも呼ばれるため、ここで無条件に
       // 開くと、ユーザーが閉じたダイアログが操作のたびに復活してしまう。
-      if (remaining.length && !startupPromptSettled) showRecoveryDialog().catch(() => {});
+      if (pendingManualRequest) showRecoveryDialog().catch(() => {});
+      else if (remaining.length && !startupPromptSettled) showRecoveryDialog({ startup: true }).catch(() => {});
       return;
     }
     const alive = new Set(remaining.map(item => String(item.path || '')));
@@ -55091,8 +55384,11 @@ if (typeof window !== 'undefined') {
     }
   }
 
-  async function showRecoveryDialog() {
-    const drafts = await _pruneLockedDrafts(await listDrafts());
+  async function showRecoveryDialog(options = {}) {
+    const available = await _pruneLockedDrafts(await listDrafts());
+    const drafts = options.startup
+      ? available.filter(item => !sessionDraftKeys.has(item.storageKey))
+      : available;
     if (!drafts.length) {
       startupPromptSettled = true;
       return;
@@ -55101,11 +55397,11 @@ if (typeof window !== 'undefined') {
     if (_systemLocksPending()) {
       // ロック一覧が来る前に出すと、閲覧専用ファイルの残骸まで一緒に出てしまう
       lockWaitAttempts += 1;
-      _scheduleRecoveryRetry();
+      _scheduleRecoveryRetry(options);
       return;
     }
     if (_hasBlockingStartupDialog()) {
-      _scheduleRecoveryRetry();
+      _scheduleRecoveryRetry(options);
       return;
     }
     window.GBTooltip?.hide?.({ suppressUntilLeave: true });
@@ -55225,7 +55521,7 @@ if (typeof window !== 'undefined') {
   }
 
   function scheduleStartupCheck() {
-    setTimeout(() => showRecoveryDialog().catch(() => {}), 1800);
+    setTimeout(() => showRecoveryDialog({ startup: true }).catch(() => {}), 1800);
   }
 
   window.MeldexDraftRecovery = {
@@ -59384,6 +59680,9 @@ ${reason.message}`
   }
 
   async function _writeCloudCrashReport(payload) {
+    if (_isPerformanceLogPayload(payload)) {
+      return { ok: true, skipped: true, reason: 'performance-log' };
+    }
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     return _appendCloudDiagnostic(provider, 'crash-reports', payload);
@@ -60709,6 +61008,12 @@ ${reason.message}`
       title: '通信に失敗しました',
       message: 'Meldex サーバーまたはクラウド保存先との通信が切れました。',
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
+    },
+    {
+      test: info => /(?:ブラウザ版|クラウド版)では(?:まだ)?未対応の操作です/.test(info.raw),
+      title: 'クラウド版では未対応の操作です',
+      message: 'この操作は、現在のクラウド版では使えません。',
+      action: '必要な場合はデスクトップ版で実行するか、クラウド版で対応済みの操作に切り替えてください。',
     },
     {
       test: info => info.status === 501

@@ -6,6 +6,16 @@
   const Annotations = () => window.MeldexViewerAnnotations;
   const sep = () => ({ type: 'separator' });
   const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
+  // アノテートのバージョン管理は単独ウィンドウのビューワーだけで開く（本体のパネル内では
+  // 本体のアノテートパネルにバージョン管理がある）。以前は下端ツールバーのボタンだった。
+  const annotationVersionsAvailable = () => window.parent === window
+    && typeof window.MeldexStandaloneVersionHistory?.openViewerAnnotations === 'function';
+
+  function openAnnotationVersions() {
+    Promise.resolve()
+      .then(() => window.MeldexStandaloneVersionHistory.openViewerAnnotations())
+      .catch(error => window.alert(String(error?.message || error)));
+  }
 
   function items() {
     const scene = Scene();
@@ -29,6 +39,7 @@
         { label: '幅フィット', shortcutId: 'viewer.fitWidth', action: () => scene.setFitMode('width') },
         { label: '原寸', shortcutId: 'viewer.fitNone', action: () => scene.setFitMode('none') },
       ] },
+      { label: '全画面', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       sep(),
       { label: '表示モード', items: [
         { label: `${scene.getMode() === 'single' ? '● ' : ''}単体`, action: () => scene.setMode('single') },
@@ -49,11 +60,13 @@
       { label: 'エフェクト', items: [
         { label: `背景ブラー ${scene.isBgBlur() ? 'ON' : 'OFF'}`, action: () => scene.toggleBg() },
         { label: `HUD ${scene.isHudVisible() ? 'ON' : 'OFF'}`, shortcutId: 'viewer.toggleHud', action: () => scene.toggleHud() },
-        { label: '全画面', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       ] },
       ...(annotationsAvailable() ? [
         sep(),
         { label: 'アノテート', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+        ...(annotationVersionsAvailable() ? [
+          { label: 'アノテートのバージョン管理...', action: openAnnotationVersions },
+        ] : []),
       ] : []),
       ...(window.MeldexStandaloneDefaultApps?.isAvailable?.() ? [
         sep(),

@@ -455,45 +455,71 @@ async function _calendarSnapshotForDb(targetDbPath, currentDbPath, currentData) 
   return apiFetch('/pivot?path=' + encodeURIComponent(targetDbPath));
 }
 
+let _calHistoryBusy = false;
+
+async function _calendarRefreshAfterHistory(targetDbPath, originalDbPath, ctx) {
+  if (_currentCalendarSnapshotSource().dbPath !== originalDbPath) return true;
+  try { await selectDatabase(targetDbPath, ctx, { silent: true }); return true; }
+  catch (error) { showStatus('履歴の反映後に表示を更新できませんでした。再読込してください', true); return false; }
+}
+
 async function _calUndo() {
-  if (!_calUndoStack.length) return;
+  if (!_calUndoStack.length || _calHistoryBusy || (typeof _historyIsBusy === 'function' && _historyIsBusy())) return false;
   const { ctx, data, dbPath } = _currentCalendarSnapshotSource();
   const snap = _calUndoStack[_calUndoStack.length - 1];
   const targetDbPath = snap.dbPath || dbPath;
+  _calHistoryBusy = true;
   try {
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
     const currentSnapshot = await _calendarSnapshotForDb(targetDbPath, dbPath, data);
     await _applyCalendarSnapshot(targetDbPath, currentSnapshot, snap.snapshot);
-    _calUndoStack.pop();
-    _calRedoStack.push({ label: '(現在)', dbPath: targetDbPath, snapshot: currentSnapshot });
+    const index = _calUndoStack.indexOf(snap);
+    const unchanged = index >= 0 && index === _calUndoStack.length - 1;
+    if (index >= 0) _calUndoStack.splice(index, 1);
+    if (unchanged) _calRedoStack.push({ label: snap.label, dbPath: targetDbPath, snapshot: currentSnapshot });
     if (_calRedoStack.length > _CAL_UNDO_MAX) _calRedoStack.shift();
-    await selectDatabase(targetDbPath, ctx, { silent: true });
-    showStatus('元に戻しました: ' + snap.label);
+    const refreshed = await _calendarRefreshAfterHistory(targetDbPath, dbPath, ctx);
+    if (refreshed) showStatus('元に戻しました: ' + snap.label);
+    return true;
   } catch (err) {
-    try { if (targetDbPath) await selectDatabase(targetDbPath, ctx, { silent: true }); } catch {}
+    try { if (targetDbPath) await _calendarRefreshAfterHistory(targetDbPath, dbPath, ctx); } catch {}
     showStatus('元に戻せませんでした: ' + (err?.message || err), true);
+    return false;
   } finally {
+    _calHistoryBusy = false;
     if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
   }
 }
 
 async function _calRedo() {
-  if (!_calRedoStack.length) return;
+  if (!_calRedoStack.length || _calHistoryBusy || (typeof _historyIsBusy === 'function' && _historyIsBusy())) return false;
   const { ctx, data, dbPath } = _currentCalendarSnapshotSource();
   const snap = _calRedoStack[_calRedoStack.length - 1];
   const targetDbPath = snap.dbPath || dbPath;
+  _calHistoryBusy = true;
   try {
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
     const currentSnapshot = await _calendarSnapshotForDb(targetDbPath, dbPath, data);
     await _applyCalendarSnapshot(targetDbPath, currentSnapshot, snap.snapshot);
-    _calRedoStack.pop();
-    _calUndoStack.push({ label: '(現在)', dbPath: targetDbPath, snapshot: currentSnapshot });
+    const index = _calRedoStack.indexOf(snap);
+    const unchanged = index >= 0 && index === _calRedoStack.length - 1;
+    if (index >= 0) _calRedoStack.splice(index, 1);
+    if (unchanged) _calUndoStack.push({ label: snap.label, dbPath: targetDbPath, snapshot: currentSnapshot });
     if (_calUndoStack.length > _CAL_UNDO_MAX) _calUndoStack.shift();
-    await selectDatabase(targetDbPath, ctx, { silent: true });
-    showStatus('やり直しました');
+    const refreshed = await _calendarRefreshAfterHistory(targetDbPath, dbPath, ctx);
+    if (refreshed) showStatus('やり直しました');
+    return true;
   } catch (err) {
-    try { if (targetDbPath) await selectDatabase(targetDbPath, ctx, { silent: true }); } catch {}
+    try { if (targetDbPath) await _calendarRefreshAfterHistory(targetDbPath, dbPath, ctx); } catch {}
     showStatus('やり直せませんでした: ' + (err?.message || err), true);
+    return false;
   } finally {
+    _calHistoryBusy = false;
     if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
   }
 }
 

@@ -199,7 +199,7 @@
       }, Number(opts.debounceMs || 450));
     }
 
-    async function markSynced(revision) {
+    async function markSynced(revision, savedSnapshot) {
       const targetId = recordId();
       let previousId = '';
       let record = await getSnapshot(targetId).catch(() => null);
@@ -213,6 +213,8 @@
         }
       }
       if (!record) return;
+      if (opts.isSnapshotCurrent && (!opts.isSnapshotCurrent(record.snapshot)
+          || (savedSnapshot && !opts.isSnapshotCurrent(savedSnapshot)))) return false;
       record.pending = false;
       record.state = 'synced';
       record.baseRevision = String(revision || opts.getRevision?.() || record.baseRevision || '');
@@ -223,6 +225,7 @@
       state.snapshotId = targetId;
       state.finalVersion = Math.max(state.finalVersion, state.localVersion);
       status('synced', 'ファイルへ保存済み・同期済み');
+      return true;
     }
 
     async function restoreLatest() {
@@ -281,9 +284,10 @@
       status('final-saving', 'ファイルへ保存中…');
       state.syncPromise = (async () => {
         try {
-          await opts.sync(structuredClone(record.snapshot), record);
-          await markSynced();
-          return true;
+          const synced = await opts.sync(structuredClone(record.snapshot), record);
+          // 保存待ちの間に編集された場合、古い内容の完了で新しい下書きを同期済みにしない。
+          if (synced === false) return false;
+          return (await markSynced(undefined, record.snapshot)) !== false;
         } catch (error) {
           const message = String(error?.userMessage || error?.message || error);
           record.retryCount += 1;

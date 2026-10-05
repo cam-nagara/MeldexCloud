@@ -1604,7 +1604,7 @@
       && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
     if (valid) return data;
     if (typeof provider?.statPath === 'function') {
-      const stat = await provider.statPath(_sheetManifestPath(dbPath)).catch(() => undefined);
+      const stat = await provider.statPath(_sheetManifestPath(dbPath));
       if (stat) {
         throw new Error('シートの保管ファイル（マニフェスト）を読み取れませんでした。時間をおいてもう一度お試しください');
       }
@@ -1636,7 +1636,7 @@
       const shard = await _readSheetShard(provider, dbPath, shardFileName);
       if (!shard) {
         if (typeof provider?.statPath === 'function') {
-          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName)).catch(() => undefined);
+          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName));
           if (stat) {
             throw new Error(`シートの保管ファイル（シャード ${shardFileName}）を読み取れませんでした。時間をおいてもう一度お試しください`);
           }
@@ -1745,9 +1745,17 @@
       return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
     }
     const storePath = _sheetStorePath(dbPath);
-    const entry = await _resolveEntryHandle(provider, storePath).catch(() => null);
-    if (!entry || entry.kind !== 'file') return null;
-    return _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), dbPath);
+    const raw = await _readJsonSafe(provider, storePath, null);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return _normalizeSheetStore(raw, dbPath);
+    const unreadable = new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
+    if (typeof provider?.statPath === 'function') {
+      const stat = await provider.statPath(storePath);
+      if (stat) throw unreadable;
+      return null;
+    }
+    const entry = await _resolveEntryHandle(provider, storePath);
+    if (entry && entry.kind === 'file') throw unreadable;
+    return null;
   }
 
   // 「保管ファイルが本当に無い」ことを確かめる。_readSheetStoreMaybe() は
@@ -5009,6 +5017,82 @@
     return name;
   }
 
+  function _isSheetCloudStoreFileName(name) {
+    const value = String(name || '');
+    return value === SHEET_CLOUD_STORE_FILE || value === SHEET_CLOUD_MANIFEST_FILE || _isSheetCloudShardFileName(value);
+  }
+
+  function _dbSnapshotStoreError(message) {
+    return Object.assign(new Error(message), { status: 409, code: 'sheet_store_snapshot_invalid' });
+  }
+
+  function _sheetStoreFromSnapshotFiles(fileTexts, dbPath) {
+    const parse = (fileName, label) => {
+      try { return JSON.parse(String(fileTexts.get(fileName))); }
+      catch { throw _dbSnapshotStoreError(`シート履歴の保管ファイル（${label}）を読み取れませんでした`); }
+    };
+    const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (fileTexts.has(SHEET_CLOUD_MANIFEST_FILE)) {
+      const manifest = parse(SHEET_CLOUD_MANIFEST_FILE, 'マニフェスト');
+      const valid = isObject(manifest) && manifest.kind === SHEET_CLOUD_MANIFEST_KIND
+        && Array.isArray(manifest.shards)
+        && manifest.shards.every(name => typeof name === 'string' && _isSheetCloudShardFileName(name))
+        && isObject(manifest.row_shard);
+      if (!valid) throw _dbSnapshotStoreError('シート履歴の保管ファイル（マニフェスト）の形式が不正です');
+      const rows = {};
+      const seen = new Set();
+      for (const shardFileName of manifest.shards) {
+        if (seen.has(shardFileName)) continue;
+        seen.add(shardFileName);
+        if (!fileTexts.has(shardFileName)) throw _dbSnapshotStoreError(`シート履歴にシャード ${shardFileName} が含まれていません`);
+        const shard = parse(shardFileName, `シャード ${shardFileName}`);
+        if (!isObject(shard) || shard.kind !== SHEET_CLOUD_SHARD_KIND || !isObject(shard.rows)) {
+          throw _dbSnapshotStoreError(`シート履歴の保管ファイル（シャード ${shardFileName}）の形式が不正です`);
+        }
+        Object.entries(shard.rows).forEach(([key, row]) => { if (isObject(row)) rows[key] = row; });
+      }
+      return _normalizeSheetStore({ kind: SHEET_CLOUD_STORE_KIND, schema_version: manifest.schema_version,
+        db_path: manifest.db_path, created: manifest.created, modified: manifest.modified, rows }, dbPath);
+    }
+    if (fileTexts.has(SHEET_CLOUD_STORE_FILE)) {
+      const raw = parse(SHEET_CLOUD_STORE_FILE, '保管ファイル');
+      if (!isObject(raw)) throw _dbSnapshotStoreError('シート履歴の保管ファイルの形式が不正です');
+      return _normalizeSheetStore(raw, dbPath);
+    }
+    return null;
+  }
+
+  function _overlaySheetStoreRows(markdownFiles, store) {
+    const files = new Map(markdownFiles);
+    Object.values(store?.rows || {}).forEach((row) => {
+      const fileName = _sheetStoreFileName(row.file_name || row.path || row.name);
+      if (row.deleted) files.delete(fileName);
+      else files.set(fileName, _frontmatterText(row.frontmatter || {}, row.body || ''));
+    });
+    return files;
+  }
+
+  function _dbSnapshotFileList(files) {
+    return [...files.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      .map(name => ({ path: name, text: String(files.get(name)) }));
+  }
+
+  async function _readCurrentDbSnapshot(provider, path) {
+    const base = _normalizeFolderPath(path);
+    const entry = await _resolveEntryHandle(provider, base);
+    if (!entry || entry.kind !== 'directory') throw Object.assign(new Error(`シートが見つかりません: ${base}`), { status: 404 });
+    const dbType = await _databaseKind(provider, base);
+    if (!dbType) throw Object.assign(new Error('新形式DBではありません'), { status: 400 });
+    const markdownFiles = new Map();
+    for (const item of await _listDirectoryEntries(provider, base)) {
+      if (item.handle.kind !== 'file' || item.name.startsWith('.') || !/\.md$/i.test(item.name)) continue;
+      markdownFiles.set(item.name, await provider.readText(_joinPath(base, item.name)));
+    }
+    const store = await _readSheetStoreMaybe(provider, base);
+    return { format: 'new-format-v1', db_type: dbType,
+      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso() };
+  }
+
   async function _readDbVersionSnapshot(provider, path, version) {
     const normalized = _normalizeFolderPath(path);
     const safeVersion = _safeVersionName(version);
@@ -5038,18 +5122,31 @@
       meta = await _readJsonSafe(provider, _joinPath(legacyVersionDir, '_meta.json'), null);
     }
     if (!meta || typeof meta !== 'object') throw new Error('シート履歴が見つかりません');
-    const files = [];
+    const markdownFiles = new Map();
+    const storeFiles = new Map();
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const rel = _normalizeFolderPath(file.rel_path || '');
-      if (!rel || rel.includes('..') || !/^[^/]+\.md$/i.test(rel)) continue;
+      if (file?.entry_type === 'directory') continue;
+      const rel = _normalizeFolderPath(file?.rel_path || '');
+      if (!rel || rel.includes('/') || rel.startsWith('.')) continue;
+      const isMarkdown = /\.md$/i.test(rel);
+      const isStore = _isSheetCloudStoreFileName(rel);
+      if (!isMarkdown && !isStore) continue;
+      let text;
       if (file.content_base64) {
         const binary = atob(file.content_base64);
         const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-        files.push({ path: rel, text: new TextDecoder().decode(bytes) });
+        text = new TextDecoder().decode(bytes);
       } else if (legacyVersionDir) {
-        files.push({ path: rel, text: await _readText(provider, _joinPath(legacyVersionDir, 'files', rel), '') });
+        text = await provider.readText(_joinPath(legacyVersionDir, 'files', rel));
+      } else {
+        throw new Error(`シート履歴内のファイルが見つかりません: ${rel}`);
       }
+      (isMarkdown ? markdownFiles : storeFiles).set(rel, text);
     }
+    const files = _dbSnapshotFileList(_overlaySheetStoreRows(
+      markdownFiles,
+      _sheetStoreFromSnapshotFiles(storeFiles, normalized),
+    ));
     const noteName = _basename(normalized) + '.md';
     const note = files.find(file => file.path === noteName)
       || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
@@ -6091,6 +6188,9 @@
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
     if (pathname === '/ruby' && method === 'GET') return _cloudRubyReading(await _requirePwaProvider('read'), url);
 
+    if (pathname === '/version/current-db-snapshot' && method === 'GET') {
+      return _readCurrentDbSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    }
     if (pathname === '/version/read-db' && method === 'GET') {
       return _readDbVersionSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('version') || '');
     }

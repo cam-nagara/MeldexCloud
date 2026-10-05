@@ -2826,10 +2826,12 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
 async function _readFileVersion(provider, path, version) {
   const { record, name } = await _findFileVersionRecord(provider, path, version, false);
   if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
-  return { content: String(record.payload?.content || ''), name };
+  const current = await _readConflictSnapshot(provider, _normalizeFolderPath(path));
+  return { content: String(record.payload?.content || ''), name,
+    etag: current.revision, transport_revision: { transport: 'provider-revision', token: current.revision } };
 }
 
-async function _restoreFileVersion(provider, path, version) {
+async function _restoreFileVersion(provider, path, version, options = {}) {
   const normalized = _normalizeFolderPath(path);
   if (_isProductionFolderNotePath(normalized)) {
     throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
@@ -2837,10 +2839,20 @@ async function _restoreFileVersion(provider, path, version) {
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   const data = await _readFileVersion(provider, normalized, version);
+  const transport = options.transport_revision;
+  if (transport && transport.transport !== 'provider-revision') {
+    throw Object.assign(new Error('復元のrevision transportが一致しません'), { status: 409 });
+  }
+  if (options.if_match_etag && transport?.token && options.if_match_etag !== transport.token) {
+    throw Object.assign(new Error('復元のrevision指定が一致しません'), { status: 400 });
+  }
+  const expected = String(options.if_match_etag || options.transport_revision?.token || '').trim();
+  if (!expected || expected !== data.etag) throw Object.assign(new Error('復元対象が更新されました。再確認してください'), { status: 409 });
   _rejectProductionLegacyEntryContent(normalized, data.content || '');
   await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-  await provider.writeText(normalized, data.content || '');
-  return { ok: true };
+  const saved = await provider.uploadBytesConditional(normalized, new TextEncoder().encode(data.content || ''), expected);
+  const token = String(saved?.rev || saved?.revision || '');
+  return { ok: true, etag: token, transport_revision: { transport: 'provider-revision', token } };
 }
 
 async function _deleteFileVersion(provider, path, version) {
@@ -3062,10 +3074,30 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { adapter, storageKind, record };
   }
 
-  async function _readFolderVersion(provider, folderPath, version) {
+  async function _folderRestoreBaseline(provider, folderPath, files) {
+    const plans = [];
+    const seen = new Set();
+    for (const file of files) {
+      if (file.entry_type === 'directory') continue;
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
+      seen.add(relPath.toLowerCase());
+      const path = _joinPath(folderPath, relPath);
+      const entry = await _resolveEntryHandle(provider, path);
+      if (entry && entry.kind !== 'file') throw new Error('復元先にファイル以外の項目があります');
+      const current = entry ? await _readConflictSnapshot(provider, path) : { bytes: null, revision: null };
+      plans.push({ path, relPath, ...current });
+    }
+    const token = await _conflictSnapshotSha256(new TextEncoder().encode(JSON.stringify(plans.map(plan => [plan.relPath, plan.revision]))));
+    return { plans, token };
+  }
+
+  async function _readFolderVersion(provider, folderPath, version, includeRevision = false) {
     const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
     if (!record) throw new Error('フォルダバージョンが見つかりません');
-    return record.payload;
+    if (!includeRevision) return record.payload;
+    const baseline = await _folderRestoreBaseline(provider, _normalizeFolderPath(folderPath), record.payload.files || []);
+    return { ...record.payload, restore_revision: baseline.token };
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
@@ -3078,7 +3110,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { content: new TextDecoder().decode(bytes) };
   }
 
-  async function _restoreFolderVersion(provider, folderPath, version) {
+  async function _restoreFolderVersion(provider, folderPath, version, options = {}) {
     const normalized = _normalizeFolderPath(folderPath);
     const folder = await _resolveEntryHandle(provider, normalized);
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
@@ -3100,18 +3132,43 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const binary = atob(snapshot.content_base64);
       _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     }
-    await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
-    const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    let restored = 0;
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const dst = _joinPath(normalized, relPath);
-      if (!file.content_base64) continue;
-      const binary = atob(file.content_base64);
-      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
-      restored += 1;
+    if (typeof provider.uploadBytesConditional !== 'function') throw new Error('安全な条件付き復元を利用できません');
+    const baseline = await _folderRestoreBaseline(provider, normalized, meta.files || []);
+    if (options.restore_revision && options.restore_revision !== baseline.token) {
+      throw Object.assign(new Error('確認後にフォルダ内のファイルが更新されました。再確認してください'), { status: 409 });
     }
-    return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
+    for (const plan of baseline.plans) {
+      const file = meta.files.find(file => file.rel_path === plan.relPath);
+      if (typeof file.content_base64 !== 'string') throw new Error('保存版の内容がありません');
+      plan.nextBytes = Uint8Array.from(atob(file.content_base64), char => char.charCodeAt(0));
+      await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+    }
+    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const committed = [];
+    try {
+      for (const plan of baseline.plans) {
+        await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const revision = String(saved?.rev || saved?.revision || '');
+        committed.push({ plan, revision });
+        if (!revision) throw new Error('復元後の更新情報を確認できません');
+        const readback = await _readConflictSnapshot(provider, plan.path);
+        if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
+      }
+    } catch (error) {
+      const incomplete = [];
+      for (const { plan, revision } of [...committed].reverse()) {
+        try {
+          if (!revision) throw new Error('更新情報不明');
+          if (plan.bytes === null) await provider.deletePathConditional(plan.path, revision);
+          else await provider.uploadBytesConditional(plan.path, plan.bytes, revision);
+        } catch { incomplete.push(plan.relPath); }
+      }
+      throw Object.assign(new Error(incomplete.length
+        ? `復元を完了できませんでした。元データは復元前版「${backup.version}」に保持しています。再読込してください。`
+        : '復元を完了できなかったため、変更したファイルを元に戻しました。' + (error?.message || '')), { status: Number(error?.status || 500) });
+    }
+    return { ok: true, restored_count: baseline.plans.length, restored_files: baseline.plans.map(plan => plan.relPath) };
   }
 
   async function _deleteFolderVersion(provider, folderPath, version) {
@@ -4196,7 +4253,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/read-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
+      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
     }
     if (pathname === '/version/read-folder-file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
@@ -4212,7 +4269,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFolderVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -4244,7 +4301,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFileVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');

@@ -264,18 +264,40 @@
     return fileInfoDepsPromise;
   }
 
-  // 「プロパティ」タブ: 本体のフォルダパネル→プロパティタブと同じ内容
+  // Windows版Meldex Viewerでは、Meldex本体のソースフォルダ外にあるファイルにタグを付けられない。
+  // その場合はタグ欄を出さない（出すと必ず「タグを読み込めませんでした」になる）。
+  // 単独版サーバーが無い環境（Cloud等）では従来どおりタグ欄を出す。
+  async function standaloneTagsAvailable() {
+    try {
+      const response = await fetch('/api/standalone/config', { cache: 'no-store' });
+      if (!response.ok) return true;
+      const config = await response.json();
+      return config?.tagsAvailable !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  const fileInfoRenderSeq = new WeakMap();
+
+  // 「プロパティ」タブ: 本体のフォルダパネル→プロパティタブと同じ内容。
+  // 表示中のファイルが続けて変わった時に、古い呼び出しの結果で上書きしないよう順番を確かめる。
   async function renderFileInfoTab(host, getPath) {
     if (!host) return;
+    const seq = (fileInfoRenderSeq.get(host) || 0) + 1;
+    fileInfoRenderSeq.set(host, seq);
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">読み込み中...</div>';
       await ensureFileInfoDeps();
     }
+    if (fileInfoRenderSeq.get(host) !== seq) return;
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">ファイル情報を読み込めませんでした</div>';
       return;
     }
-    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim());
+    const showTags = await standaloneTagsAvailable();
+    if (fileInfoRenderSeq.get(host) !== seq) return;
+    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim(), { showTags });
   }
 
   // 「ショートカットキー」タブ: 設定と同じ一覧・変更機能

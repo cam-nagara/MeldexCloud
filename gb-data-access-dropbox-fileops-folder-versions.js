@@ -184,10 +184,30 @@
     return { adapter, storageKind, record };
   }
 
-  async function _readFolderVersion(provider, folderPath, version) {
+  async function _folderRestoreBaseline(provider, folderPath, files) {
+    const plans = [];
+    const seen = new Set();
+    for (const file of files) {
+      if (file.entry_type === 'directory') continue;
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
+      seen.add(relPath.toLowerCase());
+      const path = _joinPath(folderPath, relPath);
+      const entry = await _resolveEntryHandle(provider, path);
+      if (entry && entry.kind !== 'file') throw new Error('復元先にファイル以外の項目があります');
+      const current = entry ? await _readConflictSnapshot(provider, path) : { bytes: null, revision: null };
+      plans.push({ path, relPath, ...current });
+    }
+    const token = await _conflictSnapshotSha256(new TextEncoder().encode(JSON.stringify(plans.map(plan => [plan.relPath, plan.revision]))));
+    return { plans, token };
+  }
+
+  async function _readFolderVersion(provider, folderPath, version, includeRevision = false) {
     const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
     if (!record) throw new Error('フォルダバージョンが見つかりません');
-    return record.payload;
+    if (!includeRevision) return record.payload;
+    const baseline = await _folderRestoreBaseline(provider, _normalizeFolderPath(folderPath), record.payload.files || []);
+    return { ...record.payload, restore_revision: baseline.token };
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
@@ -200,7 +220,7 @@
     return { content: new TextDecoder().decode(bytes) };
   }
 
-  async function _restoreFolderVersion(provider, folderPath, version) {
+  async function _restoreFolderVersion(provider, folderPath, version, options = {}) {
     const normalized = _normalizeFolderPath(folderPath);
     const folder = await _resolveEntryHandle(provider, normalized);
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
@@ -222,18 +242,43 @@
       const binary = atob(snapshot.content_base64);
       _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     }
-    await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
-    const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    let restored = 0;
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const dst = _joinPath(normalized, relPath);
-      if (!file.content_base64) continue;
-      const binary = atob(file.content_base64);
-      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
-      restored += 1;
+    if (typeof provider.uploadBytesConditional !== 'function') throw new Error('安全な条件付き復元を利用できません');
+    const baseline = await _folderRestoreBaseline(provider, normalized, meta.files || []);
+    if (options.restore_revision && options.restore_revision !== baseline.token) {
+      throw Object.assign(new Error('確認後にフォルダ内のファイルが更新されました。再確認してください'), { status: 409 });
     }
-    return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
+    for (const plan of baseline.plans) {
+      const file = meta.files.find(file => file.rel_path === plan.relPath);
+      if (typeof file.content_base64 !== 'string') throw new Error('保存版の内容がありません');
+      plan.nextBytes = Uint8Array.from(atob(file.content_base64), char => char.charCodeAt(0));
+      await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+    }
+    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const committed = [];
+    try {
+      for (const plan of baseline.plans) {
+        await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
+        const saved = await provider.uploadBytesConditional(plan.path, plan.nextBytes, plan.revision);
+        const revision = String(saved?.rev || saved?.revision || '');
+        committed.push({ plan, revision });
+        if (!revision) throw new Error('復元後の更新情報を確認できません');
+        const readback = await _readConflictSnapshot(provider, plan.path);
+        if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
+      }
+    } catch (error) {
+      const incomplete = [];
+      for (const { plan, revision } of [...committed].reverse()) {
+        try {
+          if (!revision) throw new Error('更新情報不明');
+          if (plan.bytes === null) await provider.deletePathConditional(plan.path, revision);
+          else await provider.uploadBytesConditional(plan.path, plan.bytes, revision);
+        } catch { incomplete.push(plan.relPath); }
+      }
+      throw Object.assign(new Error(incomplete.length
+        ? `復元を完了できませんでした。元データは復元前版「${backup.version}」に保持しています。再読込してください。`
+        : '復元を完了できなかったため、変更したファイルを元に戻しました。' + (error?.message || '')), { status: Number(error?.status || 500) });
+    }
+    return { ok: true, restored_count: baseline.plans.length, restored_files: baseline.plans.map(plan => plan.relPath) };
   }
 
   async function _deleteFolderVersion(provider, folderPath, version) {

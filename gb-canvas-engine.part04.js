@@ -175,7 +175,7 @@ function _bdApplySnapshot(s) {
   }
 }
 function bdUndo() {
-  if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
+  if (_bdHasCommonHistory()) { return historyUndo(_bdHistoryScope()); }
   if (!_bdUndoStack.length) return;
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
@@ -184,7 +184,7 @@ function bdUndo() {
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function bdRedo() {
-  if (_bdHasCommonHistory()) { historyRedo(_bdHistoryScope()); return; }
+  if (_bdHasCommonHistory()) { return historyRedo(_bdHistoryScope()); }
   if (!_bdRedoStack.length) return;
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
@@ -225,6 +225,7 @@ function _bdAwaitWithTimeout(promise, timeoutMs, label) {
 
 // --- ボード開閉 ---
 async function bdOpenBoard(label, path, opts) {
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   const openOpts = opts || {};
   const titleEl = document.getElementById('bd-title');
   const prevTitle = titleEl ? titleEl.textContent : '';
@@ -250,9 +251,10 @@ async function bdOpenBoard(label, path, opts) {
       showStatus('ボード切替前の保存に失敗しました: ' + (err.message || err), true);
       return false;
     }
-    if (!saved) {
+    if (!saved || bd.dirty) {
       if (!isCurrentOpenRequest()) return false;
       if (titleEl) titleEl.textContent = prevTitle;
+      if (saved && bd.dirty) showStatus('保存中に追加の編集があったため、ボード切替を中止しました。もう一度開いてください', true);
       return false;
     }
   }

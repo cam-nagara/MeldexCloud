@@ -110,6 +110,23 @@
     return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
   }
 
+  // フォルダ内の並びは、本体のフォルダツリー・フォルダパネル（gb-folder-sort.js）と同じ
+  // 「数字を数値として比べる名前順」にそろえる。Windowsのエクスプローラーと同じく 2.png → 10.png の順。
+  const VIEWER_NAME_COLLATOR = new Intl.Collator('ja', { numeric: true, sensitivity: 'base', ignorePunctuation: true });
+
+  function viewerEntryName(entry) {
+    return String(entry?.name || String(entry?.path || '').split(/[\\/]/).pop() || '');
+  }
+
+  function sortEntriesByName(entries) {
+    if (!Array.isArray(entries)) return [];
+    return entries.slice().sort((a, b) => {
+      const nameA = viewerEntryName(a);
+      const nameB = viewerEntryName(b);
+      return VIEWER_NAME_COLLATOR.compare(nameA, nameB) || (nameA < nameB ? -1 : (nameA > nameB ? 1 : 0));
+    });
+  }
+
   function findImageItemIndex(collection, path, name) {
     const pathKey = viewerPathKey(path);
     let found = collection.findIndex(it => viewerPathKey(it.path) === pathKey);
@@ -227,6 +244,7 @@
     splitViewerPath,
     isEmbeddedMeldexViewer,
     viewerPathKey,
+    sortEntriesByName,
     findImageItemIndex,
     cssUrl,
     parentMessageTargetOrigin,

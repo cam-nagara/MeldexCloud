@@ -141,6 +141,18 @@ function _readLastViewFromStorage() {
   }
 }
 
+async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
+  // Explicit links keep their target; Desktop keeps its saved workspace.
+  if (_isDesktopStartupLaunch() || isUrlOpen || onboardingShown || !homeRes?.exists || !homeRes.path) return false;
+  const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
+  await openFolder(label, homeRes.path, {
+    fromExplorer: true,
+    skipAutoAppLayout: true,
+    skipSaveLastView: true,
+  });
+  return true;
+}
+
 function _repairStartupDatabaseViewTabs() {
   try {
     if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
@@ -320,6 +332,7 @@ async function init() {
 
     // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
     let restored = onboardingShown;
+    let openedCloudStartupHome = false;
     const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
     const urlParams = new URLSearchParams(window.location.search);
     const openType = urlParams.get('open');
@@ -372,6 +385,13 @@ async function init() {
       } finally {
         window._skipLastViewSave = previousSkipLastView;
       }
+    }
+
+    // Cloud starts at Home even when an older document/layout is remembered.
+    // Keep saved tabs and unsaved drafts available for explicit recovery.
+    if (!restored) {
+      openedCloudStartupHome = await _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown);
+      restored = openedCloudStartupHome;
     }
 
     // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
@@ -436,7 +456,8 @@ async function init() {
     _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
       initGlobalFilterBar();
       _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
-        _highlightLastOutlinerNodeAfterStartup();
+        if (openedCloudStartupHome) highlightOutlinerNode(homeRes.path);
+        else _highlightLastOutlinerNodeAfterStartup();
         showStatus('準備完了');
       });
     });

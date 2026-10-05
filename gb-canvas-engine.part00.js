@@ -319,6 +319,7 @@ function bdYamlListObjects(fm, key) {
 // 揃え、空行は落として残りの行を単一の '\n' で結合する（段落ごとに改行1つ）。
 function bdParseFrontmatterNodeList(fm) {
   const lines = bdYamlTopLevelBlock(fm, 'nodes');
+  const listIndent = lines.find(line => /^\s*-\s/.test(line))?.match(/^(\s*)-/)?.[1].length || 0;
   const items = [];
   let current = null;
   let openKey = '';
@@ -354,7 +355,7 @@ function bdParseFrontmatterNodeList(fm) {
   };
 
   for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/, '');
+    const line = rawLine.replace(/\r$/, '').slice(listIndent);
     const itemMatch = line.match(/^-\s*(.*)$/);
     if (itemMatch) {
       finishOpen();

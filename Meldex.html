@@ -56,6 +56,83 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="apple-touch-icon" sizes="120x120" href="Meldex_apple_touch_icon_120.png">
 <link rel="apple-touch-icon" href="Meldex_apple_touch_icon_180.png">
 <link rel="manifest" href="manifest.json">
+<script>
+// Desktop recovery must run before any external startup script can fail.
+(function () {
+  const params = new URLSearchParams(location.search);
+  if (params.get('desktop') !== '1') return;
+  const retryParam = '_meldexStartupRetry';
+  let settled = false;
+  let recovering = false;
+  function retry() {
+    const url = new URL(location.href);
+    url.searchParams.set(retryParam, '1');
+    url.searchParams.set('devBust', String(Date.now()));
+    // Preserve tabs, source folders and user settings; only refresh display assets.
+    history.replaceState(history.state, '', url.href);
+    if (typeof window.__meldexPerformHardReload === 'function') {
+      window.__meldexPerformHardReload();
+    } else {
+      location.replace(url.href);
+    }
+  }
+  function showFailure() {
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', showFailure, { once: true });
+      return;
+    }
+    if (document.getElementById('meldex-startup-recovery')) return;
+    const panel = document.createElement('div');
+    panel.id = 'meldex-startup-recovery';
+    panel.setAttribute('role', 'alert');
+    panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#1e1e1e;color:#eee;font:16px system-ui;text-align:center;padding:24px';
+    const title = document.createElement('strong');
+    title.textContent = 'Meldexの起動を完了できませんでした';
+    const message = document.createElement('div');
+    message.textContent = '画面を再読み込みして再試行してください。作品や設定は削除されません。';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '再読み込みして再試行';
+    button.style.cssText = 'padding:10px 18px;font:inherit;cursor:pointer';
+    button.addEventListener('click', retry);
+    panel.append(title, message, button);
+    document.body.appendChild(panel);
+    button.focus();
+  }
+  function fail() {
+    if (settled || recovering) return;
+    recovering = true;
+    observer.disconnect();
+    clearTimeout(timer);
+    if (params.get(retryParam) === '1') showFailure();
+    else retry();
+  }
+  let splashSeen = false;
+  const observer = new MutationObserver(() => {
+    const splash = document.getElementById('gb-splash');
+    if (splash) splashSeen = true;
+    if (splashSeen && (!splash || splash.style.opacity === '0' || splash.style.pointerEvents === 'none')) {
+      window.MeldexDesktopStartupRecovery.ready();
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+  const timer = setTimeout(fail, 15000);
+  window.MeldexDesktopStartupRecovery = {
+    fail,
+    ready() {
+      if (recovering) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      if (params.has(retryParam)) {
+        const url = new URL(location.href);
+        url.searchParams.delete(retryParam);
+        history.replaceState(history.state, '', url.href);
+      }
+    },
+  };
+})();
+</script>
 <script src="meldex-cloud-runtime-01.js?v=8c14c732123e2f7d"></script>
 <script>
 (function () {
@@ -115,7 +192,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       reload();
       return;
     }
-    Promise.allSettled(tasks).then(reload).catch(reload);
+    Promise.race([Promise.allSettled(tasks), new Promise(resolve => setTimeout(resolve, 2500))]).then(reload).catch(reload);
   }
   window.__meldexPerformHardReload = performHardReload;
   document.addEventListener('keydown', function (event) {
@@ -168,7 +245,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=f07291c91ac63f9a"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=f1a1793335a5d4e7"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=56a731cf417afa15"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=da727f8244c896f6"></script>
 
 
 
@@ -206,6 +283,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-note-block-menu.css">
 <link rel="stylesheet" href="gb-note-embed-block.css">
 <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
+<link rel="stylesheet" href="gb-note-status-filter.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-view.css">
 <link rel="stylesheet" href="gb-production-topic-resources.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-create.css">
@@ -488,6 +566,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <button type="button" class="tb-icon-btn" title="取り消し線" aria-label="取り消し線" data-action="rtCmd('strikeThrough')" data-e2e-id="page-rt-strike"><span class="ico ico-strikethrough"></span></button>
         <div class="sep"></div>
         <button type="button" id="page-rt-heading-btn" class="note-heading-toolbar-btn" title="行の種類を変更" aria-label="行の種類を変更" aria-haspopup="menu" aria-expanded="false" data-e2e-id="page-rt-heading-btn" data-action="MeldexNoteToolbarBlockSelect.toggle(event)"><span class="note-heading-toolbar-btn-label" data-role="label">行の種類</span><span class="ico ico-chevronDown note-heading-toolbar-btn-caret" aria-hidden="true"></span></button>
+        <button type="button" id="page-note-status-btn" class="tb-icon-btn" title="段落ステータス" aria-label="段落ステータス" aria-haspopup="menu" data-e2e-id="page-note-status"><span class="ico ico-circleDot"></span></button>
+        <button type="button" id="page-note-filter-btn" class="tb-icon-btn" title="要素をフィルタリング" aria-label="要素をフィルタリング" aria-haspopup="menu" data-e2e-id="page-note-filter"><span class="ico ico-listFilter"></span></button>
         <div class="sep"></div>
         <button type="button" class="tb-icon-btn" title="箇条書き" aria-label="箇条書き" data-action="rtCmd('insertUnorderedList')" data-e2e-id="page-rt-unordered-list"><span class="ico ico-list"></span></button>
         <button type="button" class="tb-icon-btn" title="番号付き" aria-label="番号付き" data-action="rtCmd('insertOrderedList')" data-e2e-id="page-rt-ordered-list"><span class="ico ico-listOrdered"></span></button>
@@ -803,7 +883,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-07.js?v=2dd33ebe4173fff9"></script>
+<script src="meldex-cloud-runtime-07.js?v=c1828cd2a4a1d189"></script>
 
 
 
@@ -838,7 +918,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-08.js?v=01ca77f7f0ee4169"></script>
+<script src="meldex-cloud-runtime-08.js?v=5c8481dec52dfbe7"></script>
 
 
 
@@ -875,7 +955,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 (async function () {
   window._meldexStartupRestoring = true;
   const bootWatchdog = setTimeout(() => {
-    if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
+    if (window.MeldexDesktopStartupRecovery) window.MeldexDesktopStartupRecovery.fail();
+    else if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
   }, 12000);
   try {
     // デスクトップ付箋の小窓は付箋1枚だけを描画する。フォルダツリー・ワークスペース・
@@ -902,6 +983,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     if (window.GBSmoke?.enabled) window.GBSmoke.run();
   } catch (error) {
     console.error('[Meldex] boot failed:', error);
+    window.MeldexDesktopStartupRecovery?.fail();
     if (typeof _sendLog === 'function') {
       _sendLog('error', {
         message: '[boot-failed] ' + (error?.message || error),
@@ -915,7 +997,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-09.js?v=c85049694324cee2"></script>
+<script src="meldex-cloud-runtime-09.js?v=5fb28f1dcb8c3e17"></script>
+
 
 
 

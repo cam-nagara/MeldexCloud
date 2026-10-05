@@ -360,6 +360,31 @@ function _noteSavePayload(pc, md, extra) {
 // （gb-note-save-adapter.js）経由で送信することで、blurと同一documentKeyの
 // single-flight/coalesceへ合流させ、同じ内容の2本目のPUTを発生させない
 // （計画書§5工程1-2・5・6）。
+// 保存完了より新しい入力は、同期済みの下書きとして削除しない。
+async function _syncNoteDraftAfterSave(pc, path, savedMd) {
+  const live = () => {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const hosts = [pc, ...(coordinator?.getParticipants?.(coordinator.documentKeyForPath(path)) || [])];
+    let found = false;
+    for (const host of hosts) {
+      if (host?.dataset?.path !== path || host.isConnected === false) continue;
+      found = true;
+      const md = _noteMarkdownFromEditorNonDestructive(host);
+      if (md !== savedMd) return md;
+    }
+    // 切替後の旧文書は最新本文を確認できない。残ったドラフトは次の
+    // 読込時にサーバー本文と照合し、ここで推測して削除しない。
+    return found ? savedMd : null;
+  };
+  if (live() === savedMd) await window.MeldexDraftRecovery?.markSynced?.(path);
+  // IndexedDBの削除待ちの間にも入力できるので、完了後にもう一度照合する。
+  const latest = live();
+  if (latest !== null && latest !== savedMd) {
+    window.MeldexDraftRecovery?.queueDraft?.(path, latest, savedMd);
+    await window.MeldexDraftRecovery?.saveDraft?.(path, latest, savedMd);
+  }
+}
+
 async function _runNoteAutoSave(pc, expectedPath) {
   const currentPath = pc?.dataset?.path;
   if (!currentPath || pc.dataset.loadFailed === '1') return;
@@ -403,7 +428,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
       pc.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
       pc.dataset.lastSavedEtag = (res && res.etag) || '';
     }
-    window.MeldexDraftRecovery?.markSynced?.(currentPath);
+    await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md);
     if (!res?.joined) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(_prevSavedForDiff, md)
@@ -1123,7 +1148,7 @@ async function openPage(label, path, opts) {
         this.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
         this.dataset.lastSavedEtag = (res && res.etag) || '';
       }
-      await window.MeldexDraftRecovery?.markSynced?.(currentPath);
+      await _syncNoteDraftAfterSave(this, currentPath, res?.savedMd ?? md);
       showStatus('ノートを保存しました', false, { passiveSave: true });
       if (!res?.joined) {
         const detail = typeof summarizeHistoryTextChange === 'function'
@@ -1561,13 +1586,18 @@ function _embeddedMediaHtmlForFile(fileName, linkUrl, kind) {
 }
 
 async function _insertDroppedFileAtRange(el, range, file, dir) {
+  const path = el.dataset?.path || el.dataset?.entityPath;
+  const generation = el._openPageLoadSeq;
+  const isCurrent = () => (el.dataset?.path || el.dataset?.entityPath) === path
+    && el._openPageLoadSeq === generation && el.isContentEditable;
   const dataUrl = await _readFileAsDataURL(file);
+  if (!isCurrent()) return range;
   const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({data: dataUrl, filename: file.name}),
   });
-  if (!res.ok) return range;
+  if (!res.ok || !isCurrent()) return range;
   const rawPath = res.path || file.name;
   const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(rawPath);
   const attrs = `data-path="${esc(rawPath)}" data-name="${esc(file.name)}"`;
@@ -1592,23 +1622,28 @@ function _wireNotePasteHandler(pc) {
   // （旧実装は画像だけを見ており、動画の貼り付けはドロップと挙動が食い違っていた）
   const mediaFile = [...cd.files].find(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
   if (mediaFile) {
+    if (this.dataset.standaloneFileInput === '1') return;
     e.preventDefault();
     const editor = this;
     const isVideo = mediaFile.type.startsWith('video/');
     const pasteRange = _captureEditableSelection(editor);
     const currentPath = editor.dataset.path || state.currentPagePath;
+    const generation = editor._openPageLoadSeq;
+    const isCurrent = () => editor.dataset.path === currentPath
+      && editor._openPageLoadSeq === generation && editor.isContentEditable;
     if (!currentPath) return;
     const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
+        if (!isCurrent()) return;
         const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
         const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({data: ev.target.result, filename: fname}),
         });
-        if (res.ok && res.path) {
+        if (res.ok && res.path && isCurrent()) {
           const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
           const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
           _insertEmbeddedMediaHtml(editor, pasteRange,

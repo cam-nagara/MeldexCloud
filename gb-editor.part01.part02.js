@@ -18,6 +18,7 @@
   });
   el.addEventListener('drop', async (e) => {
     const types = e.dataTransfer.types;
+    if (el.dataset.standaloneFileInput === '1' && e.dataTransfer.files?.length) return;
     // パネル操作系のD&Dはスキップ
     if (types.includes('application/meldex-tool') ||
         types.includes('application/x-gb-tab') ||
@@ -120,7 +121,10 @@
       const currentPath = el.dataset.path || el.dataset.entityPath;
       if (!currentPath) return;
       const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
+      const generation = el._openPageLoadSeq;
       for (const f of files) {
+        if ((el.dataset.path || el.dataset.entityPath) !== currentPath
+            || el._openPageLoadSeq !== generation || !el.isContentEditable) break;
         try {
           insertRange = await _insertDroppedFileAtRange(el, insertRange, f, dir);
         } catch(err) { showStatus('ファイル挿入に失敗: ' + err.message, true); }

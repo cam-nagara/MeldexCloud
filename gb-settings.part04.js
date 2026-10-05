@@ -1,7 +1,7 @@
 /* gb-settings.part04.js */
   // 表示サイズ（zoom）
   try {
-    const uiScale = document.getElementById('modal-ui-scale')?.value;
+    const uiScale = settingsControl('modal-ui-scale')?.value;
     if (uiScale) {
       const nextScale = parseInt(uiScale) || 100;
       const currentScale = parseInt(localStorage.getItem('ui-scale') || '100', 10) || 100;
@@ -11,20 +11,20 @@
     }
   } catch (e) { console.warn('UIスケール適用失敗:', e); }
 
-  const filterSharedCb = document.getElementById('modal-outliner-filter-shared');
+  const filterSharedCb = settingsControl('modal-outliner-filter-shared');
   if (filterSharedCb) {
     if (typeof setOutlinerFilterShared === 'function') setOutlinerFilterShared(filterSharedCb.checked);
     else localStorage.setItem('gb:outliner-filter-shared', filterSharedCb.checked ? '1' : '0');
   }
 
-  const statusbarHiddenCb = document.getElementById('modal-statusbar-hidden');
+  const statusbarHiddenCb = settingsControl('modal-statusbar-hidden');
   if (statusbarHiddenCb) {
     if (statusbarHiddenCb.checked) localStorage.setItem('meldex-statusbar-hidden', '1');
     else localStorage.removeItem('meldex-statusbar-hidden');
     if (typeof applyStatusbarHidden === 'function') applyStatusbarHidden(statusbarHiddenCb.checked);
   }
 
-  const pasteLinkPromptCb = document.getElementById('modal-paste-link-prompt-enabled');
+  const pasteLinkPromptCb = settingsControl('modal-paste-link-prompt-enabled');
   if (pasteLinkPromptCb) {
     if (pasteLinkPromptCb.checked) localStorage.removeItem('meldex_suppress_folder_paste_link_choice');
     else localStorage.setItem('meldex_suppress_folder_paste_link_choice', 'true');
@@ -33,14 +33,14 @@
   // フォルダツリーのサムネイル表示（フォルダツリー改修Phase4）。行高・DOM構造が
   // 変わるため反映には再読込が必要だが、submitSettings()は保存の度に無条件で
   // 末尾でloadOutliner()を呼ぶため、ここでは値の保存だけを行い二重リロードを避ける。
-  const treeThumbnailsCb = document.getElementById('modal-tree-thumbnails-enabled');
+  const treeThumbnailsCb = settingsControl('modal-tree-thumbnails-enabled');
   if (treeThumbnailsCb) {
     if (window.GBOutlinerThumbnails?.setEnabled) window.GBOutlinerThumbnails.setEnabled(treeThumbnailsCb.checked);
     else localStorage.setItem('gb:tree-thumbnails-enabled', treeThumbnailsCb.checked ? '1' : '0');
   }
 
   // サムネイルの表示方法（フォルダツリー・シートの画像サムネイル共通）
-  const thumbnailFitSelect = document.getElementById('modal-thumbnail-fit');
+  const thumbnailFitSelect = settingsControl('modal-thumbnail-fit');
   if (thumbnailFitSelect) {
     const mode = typeof resolveThumbnailFitMode === 'function' ? resolveThumbnailFitMode(thumbnailFitSelect.value) : (thumbnailFitSelect.value === 'cover' ? 'cover' : 'contain');
     localStorage.setItem('gb:thumbnail-fit', mode);
@@ -48,7 +48,7 @@
   }
 
   // フォルダツリーのサムネイルサイズ（小/中/大）
-  const thumbnailSizeSelect = document.getElementById('modal-tree-thumbnail-size');
+  const thumbnailSizeSelect = settingsControl('modal-tree-thumbnail-size');
   if (thumbnailSizeSelect) {
     const sizeMode = typeof resolveThumbnailSizeMode === 'function' ? resolveThumbnailSizeMode(thumbnailSizeSelect.value) : 'medium';
     localStorage.setItem('gb:tree-thumbnail-size', sizeMode);
@@ -56,13 +56,13 @@
   }
 
   // フォルダツリーの項目を開く操作（ダブルクリック/クリック）
-  const treeOpenClickModeSelect = document.getElementById('modal-tree-open-click-mode');
+  const treeOpenClickModeSelect = settingsControl('modal-tree-open-click-mode');
   if (treeOpenClickModeSelect) {
     localStorage.setItem('gb:tree-open-click-mode', treeOpenClickModeSelect.value === 'single' ? 'single' : 'double');
   }
 
   // ビューワーのマウスホイール操作
-  const viewerWheelModeSelect = document.getElementById('modal-viewer-wheel-mode');
+  const viewerWheelModeSelect = settingsControl('modal-viewer-wheel-mode');
   if (viewerWheelModeSelect) {
     localStorage.setItem('gb:viewer-wheel-mode', viewerWheelModeSelect.value === 'nav' ? 'nav' : 'zoom');
   }
@@ -71,7 +71,7 @@
     ['modal-a11y-reduced-motion', 'reducedMotion'],
     ['modal-a11y-colorblind-safe', 'colorblindSafe'],
   ].forEach(([id, pref]) => {
-    const cb = document.getElementById(id);
+    const cb = settingsControl(id);
     if (!cb) return;
     if (window.MeldexAccessibility?.setPreference) {
       window.MeldexAccessibility.setPreference(pref, cb.checked);
@@ -79,11 +79,10 @@
   });
 
   // 自動起動設定
-  const autostartCb = document.getElementById('modal-autostart');
+  const autostartCb = settingsControl('modal-autostart');
   const autostartSection = document.getElementById('settings-autostart-section');
   const autostartSupportedHere = !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
-  if (autostartCb && !autostartSection?.hidden && autostartSupportedHere
-    && _settingsDomainIsDirty(settingsOverlay, 'modal-autostart')) {
+  if (autostartCb && !autostartSection?.hidden && autostartSupportedHere) {
     const autostartBefore = await apiFetch('/autostart', { silentError: true }).catch(() => null);
     if (!autostartBefore || typeof autostartBefore.enabled !== 'boolean') {
       throw _settingsSaveFailure('autostart', '自動起動の現在値を確認できませんでした');
@@ -120,7 +119,7 @@
     : previousVersionConfig;
   const restorePointScope = window.MeldexRestorePointPolicySync?.currentScope?.()
     || { kind: 'personal', readOnly: false };
-  if (!restorePointScope.readOnly) {
+  if (!restorePointScope.readOnly && _settingsDomainIsDirty(settingsOverlay, ['modal-restore-point-', 'modal-version-'])) {
     if (previousVersionConfig?.retention?.mode !== 'days' && nextVersionConfig?.retention?.mode === 'days') {
       const days = Number(nextVersionConfig.retention.days || 0);
       const preview = typeof previewRestorePointRetention === 'function'
@@ -134,14 +133,13 @@
         : window.confirm(`保持期間を${days}日に変更すると、既存の復元ポイントも期限削除の対象になります。${previewText}\n未表示の文書は次回開いたときに確認して整理します。設定を保存しますか？`);
       if (!confirmed) throw _settingsSaveFailure('restore-point-retention', '復元ポイントの保持期間変更をキャンセルしました');
     }
-    saveVersionConfig(nextVersionConfig);
-    // タイマーを再設定
-    if (_autoVersionPath) startAutoVersion(_autoVersionPath, _autoVersionType);
-    if (typeof _runPeriodicRestorePoints === 'function') _runPeriodicRestorePoints(new Date()).catch(() => null);
+    // 保存成功前に共有方針の同期や期限整理を開始しない。
+    localStorage.setItem('version-config', JSON.stringify(nextVersionConfig));
+    pendingVersionConfig = nextVersionConfig;
   }
 
   // ユーザー名保存 + チームプロフィール同期
-  const username = document.getElementById('modal-username')?.value?.trim();
+  const username = settingsControl('modal-username')?.value?.trim();
   if (username) {
     const oldUsername = getUsername();
     if (oldUsername === username) {
@@ -167,9 +165,9 @@
 
   // LLM APIキー保存
   const chatKeys = {};
-  const gk = document.getElementById('modal-gemini-key')?.value;
-  const ak = document.getElementById('modal-anthropic-key')?.value;
-  const ok = document.getElementById('modal-openai-key')?.value;
+  const gk = settingsControl('modal-gemini-key')?.value;
+  const ak = settingsControl('modal-anthropic-key')?.value;
+  const ok = settingsControl('modal-openai-key')?.value;
   if (gk && !gk.startsWith('●')) chatKeys.GEMINI_API_KEY = gk;
   if (ak && !ak.startsWith('●')) chatKeys.ANTHROPIC_API_KEY = ak;
   if (ok && !ok.startsWith('●')) chatKeys.OPENAI_API_KEY = ok;
@@ -184,6 +182,7 @@
     llmKeysChanged = true;
   }
 
+  if (_settingsDomainIsDirty(settingsOverlay, 'modal-local-llm-')) {
   const localLlmBaseUrl = document.getElementById('modal-local-llm-base-url')?.value?.trim() || '';
   if (localLlmBaseUrl) localStorage.setItem('chat-local-llm-base-url', localLlmBaseUrl);
   else localStorage.removeItem('chat-local-llm-base-url');
@@ -193,6 +192,7 @@
     localStorage.setItem('chat-model:local_llm', localLlmModel);
   } else {
     localStorage.removeItem('chat-local-llm-model');
+    localStorage.removeItem('chat-model:local_llm');
   }
   const localLlmMcpEnabled = document.getElementById('modal-local-llm-mcp-enabled');
   if (localLlmMcpEnabled) localStorage.setItem('chat-local-llm-mcp-enabled', localLlmMcpEnabled.checked ? '1' : '0');
@@ -200,19 +200,20 @@
     loadProviderModels('local_llm', { force: true }).catch(() => {});
   }
   if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+  }
 
-  const allowWebSearchCb = document.getElementById('modal-chat-allow-web-search');
+  const allowWebSearchCb = settingsControl('modal-chat-allow-web-search');
   if (allowWebSearchCb) localStorage.setItem('chat-allow-web-search', allowWebSearchCb.checked ? '1' : '0');
-  const autoCompressCb = document.getElementById('modal-chat-auto-compress');
+  const autoCompressCb = settingsControl('modal-chat-auto-compress');
   if (autoCompressCb) localStorage.setItem('chat-auto-compress', autoCompressCb.checked ? '1' : '0');
-  const allowCodeExecutionCb = document.getElementById('modal-chat-allow-code-execution');
+  const allowCodeExecutionCb = settingsControl('modal-chat-allow-code-execution');
   if (allowCodeExecutionCb) localStorage.setItem('chat-allow-code-execution', allowCodeExecutionCb.checked ? '1' : '0');
-  const reasoningLevelEl = document.getElementById('modal-chat-reasoning-level');
+  const reasoningLevelEl = settingsControl('modal-chat-reasoning-level');
   if (reasoningLevelEl) localStorage.setItem('chat-reasoning-level', reasoningLevelEl.value || 'off');
-  const paramPresetEl = document.getElementById('modal-chat-param-preset');
+  const paramPresetEl = settingsControl('modal-chat-param-preset');
   if (paramPresetEl) localStorage.setItem('chat-param-preset', paramPresetEl.value || 'standard');
   ['temperature', 'max-tokens', 'top-p'].forEach(key => {
-    const input = document.getElementById('modal-chat-' + key);
+    const input = settingsControl('modal-chat-' + key);
     if (!input) return;
     const value = input.value?.trim() || '';
     if (value) localStorage.setItem('chat-' + key, value);
@@ -222,7 +223,7 @@
     ['modal-chat-custom-about', 'chat-custom-about'],
     ['modal-chat-custom-instructions', 'chat-custom-instructions'],
   ].forEach(([id, key]) => {
-    const input = document.getElementById(id);
+    const input = settingsControl(id);
     if (!input) return;
     const value = input.value?.trim() || '';
     if (value) localStorage.setItem(key, value);
@@ -235,20 +236,20 @@
       ['modal-chat-source-custom-about', 'chat-custom-about' + suffix],
       ['modal-chat-source-custom-instructions', 'chat-custom-instructions' + suffix],
     ].forEach(([id, key]) => {
-      const input = document.getElementById(id);
+      const input = settingsControl(id);
       if (!input) return;
       const value = input.value?.trim() || '';
       if (value) localStorage.setItem(key, value);
       else localStorage.removeItem(key);
     });
   }
-  if (typeof saveKnowledgeAutomationSettingsFromModal === 'function') {
+  if (_settingsDomainIsDirty(settingsOverlay, 'knowledge-auto-') && typeof saveKnowledgeAutomationSettingsFromModal === 'function') {
     saveKnowledgeAutomationSettingsFromModal(document);
   }
 
   // ヒストリー設定
-  const histMax = parseInt(document.getElementById('modal-history-max')?.value || '50');
-  setHistoryMax(Math.max(1, Math.min(200, histMax)));
+  const historyMaxInput = settingsControl('modal-history-max');
+  if (historyMaxInput) setHistoryMax(Number(historyMaxInput.value));
 
   // フォルダツリールートを保存
   if (sourceFoldersDirty) {
@@ -274,7 +275,7 @@
   }
 
     // UI設定をサーバーにも永続保存
-    await _saveUiConfigToServer();
+    if (!pendingTransactionalExternalSave) await _saveUiConfigToServer();
 
     const pendingSourceHistory = window.__settingsPendingSourceFolderHistory;
 
@@ -299,6 +300,13 @@
       console.warn('設定履歴の記録に失敗:', historyError);
     }
     delete window.__settingsPendingSourceFolderHistory;
+    if (pendingVersionConfig) {
+      try {
+        saveVersionConfig(pendingVersionConfig);
+        if (_autoVersionPath) startAutoVersion(_autoVersionPath, _autoVersionType);
+        if (typeof _runPeriodicRestorePoints === 'function') _runPeriodicRestorePoints(new Date()).catch(() => null);
+      } catch (versionError) { console.warn('復元ポイント設定の反映に失敗:', versionError); }
+    }
 
     // 以後は失敗を保存失敗へ戻さない後処理だけにする。旧プロフィール名の掃除は
     // 新プロフィール・秘密値・OS設定を含む全保存が確定してから行う。
@@ -342,11 +350,12 @@
     if (settingsHistoryBefore) {
       if (typeof restoreLocalStorageSettings !== 'function') {
         rollbackFailures.push('ローカル設定の復元機能を利用できません');
-      } else try { restoreLocalStorageSettings(settingsHistoryBefore, () => {}); } catch (rollbackError) {
+      } else try { restoreLocalStorageSettings(settingsHistoryBefore, _restoreSettingsDialogStorageAfterHistory); } catch (rollbackError) {
         rollbackFailures.push(rollbackError?.message || String(rollbackError));
         console.error('設定のロールバック失敗:', rollbackError);
       }
     }
+    if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(themeDirty);
     if (sourceFolderHistoryBefore) {
       if (typeof _restoreOutlinerRootsSettingsSnapshot !== 'function') {
         rollbackFailures.push('ソースフォルダ設定の復元機能を利用できません');
@@ -652,6 +661,33 @@ async function _loadDataProtectionStatus() {
   return apiFetch('/data-protection/status');
 }
 
+async function _runSettingsMaintenanceAction(container, status, action) {
+  if (container.__settingsMaintenanceBusy) return false;
+  container.__settingsMaintenanceBusy = true;
+  const controls = Array.from(container.querySelectorAll('input, select, button'));
+  const disabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    if (status) status.textContent = '操作に失敗しました。再試行してください: ' + (error?.message || error);
+    return false;
+  } finally {
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
+    container.__settingsMaintenanceBusy = false;
+  }
+}
+
+function _settingsMaintenanceRetention(input) {
+  const raw = String(input?.value ?? '').trim();
+  const value = Number(raw);
+  if (!raw || !Number.isSafeInteger(value) || value < 0 || input.checkValidity?.() === false) {
+    throw new Error('保持日数には0以上の整数を入力してください（0は無期限）');
+  }
+  return value;
+}
+
 async function renderTrashSettings(root) {
   const container = (root?.querySelector ? root : document).querySelector('#trash-settings-container');
   if (!container) return;
@@ -684,20 +720,20 @@ async function renderTrashSettings(root) {
         <div id="settings-trash-status" class="gb-section-desc"></div>
       </section>`;
     const statusEl = container.querySelector('#settings-trash-status');
-    container.querySelector('#settings-trash-save')?.addEventListener('click', async () => {
-      const next = Number(container.querySelector('#settings-trash-retention')?.value || 30);
+    container.querySelector('#settings-trash-save')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
+      const next = _settingsMaintenanceRetention(container.querySelector('#settings-trash-retention'));
       await apiPut('/data-protection/settings', { trash_retention_days: next });
       statusEl.textContent = '保持日数を保存しました';
-    });
-    container.querySelector('#settings-trash-cleanup')?.addEventListener('click', async () => {
+    }));
+    container.querySelector('#settings-trash-cleanup')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
       const ok = typeof cfConfirm === 'function'
         ? await cfConfirm('期限切れのゴミ箱項目を削除しますか？この操作は元に戻せません。')
         : confirm('期限切れのゴミ箱項目を削除しますか？この操作は元に戻せません。');
       if (!ok) return;
-      const next = Number(container.querySelector('#settings-trash-retention')?.value || 30);
+      const next = _settingsMaintenanceRetention(container.querySelector('#settings-trash-retention'));
       const res = await apiPost('/data-protection/trash-cleanup', { trash_retention_days: next });
       statusEl.textContent = `削除: ${res.deleted || 0}件 / 残り ${_formatBytes(res.bytes || 0)}`;
-    });
+    }));
     container.querySelector('#settings-trash-open')?.addEventListener('click', () => showTrashModal());
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} ゴミ箱</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
@@ -737,32 +773,32 @@ async function renderDatabaseMaintenanceSettings(root) {
         <div id="settings-db-maintenance-status" class="gb-section-desc"></div>
       </section>`;
     const statusEl = container.querySelector('#settings-db-maintenance-status');
-    container.querySelector('#settings-db-ttl-save')?.addEventListener('click', async () => {
+    container.querySelector('#settings-db-ttl-save')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
       await apiPut('/data-protection/settings', {
-        db_audit_log_ttl_days: Number(container.querySelector('#settings-db-audit-ttl')?.value || 90),
+        db_audit_log_ttl_days: _settingsMaintenanceRetention(container.querySelector('#settings-db-audit-ttl')),
         calendar_log_ttl_days: 0,
         chat_usage_log_ttl_days: 0,
       });
       statusEl.textContent = '保持期間を保存しました';
-    });
-    container.querySelector('#settings-db-backup')?.addEventListener('click', async () => {
+    }));
+    container.querySelector('#settings-db-backup')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
       const res = await apiPost('/data-protection/db-backup', {});
       statusEl.textContent = res.ok ? 'バックアップを作成しました: ' + res.path : 'バックアップはスキップされました';
-    });
-    container.querySelector('#settings-db-cleanup')?.addEventListener('click', async () => {
+    }));
+    container.querySelector('#settings-db-cleanup')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
       const ok = typeof cfConfirm === 'function'
         ? await cfConfirm('保持期間を過ぎたデータベースログを削除しますか？この操作は元に戻せません。')
         : confirm('保持期間を過ぎたデータベースログを削除しますか？この操作は元に戻せません。');
       if (!ok) return;
       const res = await apiPost('/data-protection/db-cleanup', {});
       statusEl.textContent = 'クリーンアップ完了: ' + JSON.stringify(res.deleted || {});
-    });
-    container.querySelector('#settings-db-export')?.addEventListener('click', async () => {
+    }));
+    container.querySelector('#settings-db-export')?.addEventListener('click', () => _runSettingsMaintenanceAction(container, statusEl, async () => {
       const destination = await cfPrompt('バックアップのエクスポート先フォルダ', status.backupDir || '');
       if (!destination) return;
       const res = await apiPost('/data-protection/export-backup', { destination });
       statusEl.textContent = res.ok ? 'エクスポートしました: ' + res.path : 'エクスポートできませんでした';
-    });
+    }));
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
   }
@@ -976,6 +1012,9 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   }
   if (keys.includes('gb:tree-thumbnail-size') && typeof applyThumbnailSize === 'function') {
     applyThumbnailSize(resolveThumbnailSizeMode());
+  }
+  if (keys.some(key => key.startsWith('meldex-a11y-'))) {
+    window.MeldexAccessibility?.applyPreferences?.();
   }
   if (keys.some(key => key === 'editor-theme' || key === 'editor-theme-name' || key.startsWith('meldex-theme-'))) {
     if (typeof loadColorSettings === 'function') loadColorSettings();

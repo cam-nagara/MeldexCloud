@@ -160,26 +160,29 @@ const CLI_CHAT_DEFAULT_MODEL_SENTINEL = '_cli_default_';
 const CHAT_CLI_MODEL_CATALOG = {
   claude_code: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'claude-fable-5', name: 'Fable 5' },
-    { id: 'claude-opus-5', name: 'Opus 5' },
-    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
-    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
-    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+    { id: 'opus', name: 'Opus（最新版）' },
+    { id: 'sonnet', name: 'Sonnet（最新版）' },
+    { id: 'haiku', name: 'Haiku（最新版）' },
+    { id: 'fable', name: 'Fable（最新版）' },
   ],
   codex: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
   ],
-  // Antigravity CLI が受け付けるモデル名は `agy models` の一覧と対（2026-08-07 実機確認）。
+  // Antigravity CLI が受け付けるモデル名は公式Headless Modeの `agy models` 例と対。
   // CLIのモデル名は末尾に思考の深さを含む（例: gemini-3.6-flash-high）が、ここでは系統名だけを
   // 並べる。実際に渡す名前は「系統名＋思考の深さ」へサーバ側で解決する
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+    { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
     { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
     { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
     { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
@@ -191,9 +194,9 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
-  gemini: ['gemini-2.5-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite-preview'],
-  anthropic: ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-  openai: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'],
+  gemini: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001'],
+  openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
   claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
@@ -215,18 +218,29 @@ const CHAT_CLI_PROVIDERS = {
   antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 6;
+const CHAT_MODELS_CACHE_VERSION = 7;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
+    'gemini-3.8-flash': { input: 1.5, output: 7.5 },
+    'gemini-3.7-flash': { input: 1.5, output: 7.5 },
+    'gemini-3.6-flash': { input: 1.5, output: 7.5 },
+    'gemini-3.5-flash-lite': { input: 0.3, output: 2.5 },
+    'gemini-3.1-flash-lite': { input: 0.5, output: 1.5 },
     default: { input: 0.30, output: 2.50 },
     'gemini-2.5-pro': { input: 1.25, output: 10.00 },
   },
   anthropic: {
+    'claude-fable-5-1': { input: 10, output: 50 },
+    'claude-opus-5-5': { input: 4, output: 20 },
+    'claude-sonnet-5-5': { input: 2, output: 10 },
     default: { input: 3.00, output: 15.00 },
     'claude-haiku': { input: 1.00, output: 5.00 },
     'claude-opus': { input: 5.00, output: 25.00 },
   },
   openai: {
+    'gpt-6-astra': { input: 10, output: 50 },
+    'gpt-6.1-sol': { input: 2, output: 10 },
+    'gpt-6-luna': { input: 0.1, output: 0.5 },
     default: { input: 0.75, output: 4.50 },
     'gpt-5.5': { input: 5.00, output: 30.00 },
     'gpt-5.4-mini': { input: 0.75, output: 4.50 },
@@ -494,7 +508,8 @@ function _chatCostRate(provider, model) {
 function _chatEstimateCost(usage, provider, model) {
   const tokens = _chatUsageTokens(usage);
   const rate = _chatCostRate(provider, model);
-  return (tokens.input * rate.input + tokens.output * rate.output) / 1000000;
+  const longContext = _chatProviderKey(provider) === 'openai' && String(model || '').toLowerCase().startsWith('gpt-6') && tokens.input > 272000;
+  return (tokens.input * rate.input * (longContext ? 2 : 1) + tokens.output * rate.output * (longContext ? 1.5 : 1)) / 1000000;
 }
 
 // 2026-05-06時点の丸めた目安。請求額ではなく日本円感覚を掴むための表示用。

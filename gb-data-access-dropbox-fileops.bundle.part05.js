@@ -1,3 +1,60 @@
+      request_id: requestId,
+      operation,
+      fingerprint,
+      scope_id: scopeId,
+      result,
+      saved_at: new Date().toISOString(),
+    }].slice(-_FOLDER_LINK_REQUEST_LIMIT) : state.requests;
+    return { links: applied.links, requests, result };
+  });
+  return committed.result;
+}
+
+async function _handleFolderLinkBatchRoute(pathname, method, body) {
+  const operation = pathname === '/folder-links/batch/add' && method === 'POST' ? 'add'
+    : (pathname === '/folder-links/batch/remove' && method === 'POST' ? 'remove' : '');
+  if (!operation) return undefined;
+  const provider = await _requirePwaProvider('readwrite');
+  const scopeId = await _folderLinksManagementScope(provider);
+  const requestId = String(body?.request_id || '').trim();
+  const fingerprint = _folderLinkBatchFingerprint(operation, body);
+  const key = `${scopeId}:${requestId}`;
+  if (requestId) {
+    const flight = _folderLinkBatchFlights.get(key);
+    _assertFolderLinkRequestFingerprint(flight, operation, fingerprint, scopeId);
+    if (flight) return flight.promise;
+  }
+  const promise = _executeFolderLinkBatch(provider, operation, body, scopeId, fingerprint);
+  if (requestId) _folderLinkBatchFlights.set(key, { operation, fingerprint, scope_id: scopeId, promise });
+  try { return await promise; }
+  finally { if (requestId) _folderLinkBatchFlights.delete(key); }
+}
+
+// Generated split parts execute at separate script boundaries in real browsers.
+// Export through the established internals object instead of relying on a cross-part lexical binding.
+if (globalThis.__MeldexPwaDataAccessInternals) {
+  globalThis.__MeldexPwaDataAccessInternals._handleFolderLinkBatchRoute = _handleFolderLinkBatchRoute;
+}
+
+/* === gb-data-access-dropbox-fileops.part02.js === */
+      const allFiles = _boolParam(url.searchParams.get('all_files'));
+      const detail = _boolParam(url.searchParams.get('detail'));
+      const foldersOnly = _boolParam(url.searchParams.get('folders_only'));
+      const entries = await _listDirectoryEntries(provider, browsePath);
+      const folders = [];
+      const files = [];
+      for (const entry of entries) {
+        const itemPath = entry.path || _joinPath(browsePath, entry.name);
+        const item = await _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+        if (!item) continue;
+        if (_isBrowseContainerItem(item)) folders.push(item);
+        else if (!foldersOnly) files.push(item);
+      }
+      const items = _sortBrowseItems(folders, sort, order).concat(_sortBrowseItems(files, sort, order));
+      const existing = new Set(items.map((item) => item.path));
+      const folderLinks = await _folderLinksForProvider(provider);
+      for (const linked of _linkedItemsForFolder(browsePath, folderLinks)) {
+        if (existing.has(linked.path)) continue;
         const entry = await _resolveEntryHandle(provider, linked.path);
         if (!entry) continue;
         const item = await _buildBrowseItem(provider, linked.path, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
@@ -604,7 +661,7 @@
     }
     if (pathname === '/version/read-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
+      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
     }
     if (pathname === '/version/read-folder-file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
@@ -620,7 +677,7 @@
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFolderVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -652,7 +709,7 @@
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _restoreFileVersion(provider, body?.path || '', body?.version || '');
+      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
     }
     if (pathname === '/version/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -841,60 +898,3 @@
         item: confirmationItem, receipt: consumed.receipt,
         queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
       });
-    }
-
-    if (pathname === '/outliner/delete-batch' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
-      const confirmationItems = items.map(item => ({
-        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
-      }));
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
-      const results = [];
-      for (const item of confirmationItems) {
-        try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
-            item, receipt: consumed.receipt,
-            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-          }) });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
-      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
-        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
-          const sidecarPath = _csvMetadataPath(originalPath);
-          await _directoryHandle(provider, _dirname(sidecarPath), true);
-          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
-          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
-        });
-      }
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: originalPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
-
-/* === gb-data-access-dropbox-fileops-copy-routes.js === */

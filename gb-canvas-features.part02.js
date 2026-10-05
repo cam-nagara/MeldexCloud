@@ -295,6 +295,8 @@ function _bdCreateExportStage(world, bounds) {
 }
 
 async function bdExportImage() {
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
+  if (typeof bdFlushBoardUpdates === 'function') bdFlushBoardUpdates();
   const world = document.getElementById('bd-world');
   if (!world) return;
   const bounds = _bdExportImageBounds();
@@ -304,10 +306,11 @@ async function bdExportImage() {
     return;
   }
   let stage = null;
+  const path = bd.path || '';
   try {
     showStatus('ボード画像を生成中...');
-    if (document.fonts?.ready) await document.fonts.ready.catch(() => {});
     stage = _bdCreateExportStage(world, bounds);
+    if (document.fonts?.ready) await document.fonts.ready.catch(() => {});
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const html2canvas = await _bdLoadHtml2CanvasForExport();
     const stageRect = stage.getBoundingClientRect();
@@ -337,12 +340,11 @@ async function bdExportImage() {
       showStatus('ボードの画像化に失敗しました', true);
       return;
     }
-    const path = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : '';
     const baseName = (typeof MeldexExportSave.guessNameFromPath === 'function')
       ? MeldexExportSave.guessNameFromPath(path, 'board')
       : 'board';
     const stem = String(baseName || 'board').replace(/\.[^.]+$/, '') || 'board';
-    MeldexExportSave.saveBlob(blob, {
+    await MeldexExportSave.saveBlob(blob, {
       filename: stem + '.png',
       extension: '.png',
       dialogTitle: 'ボード画像として保存',

@@ -51,6 +51,26 @@ function _sn2NewHistoryScopeId() {
   return 'sn-' + Date.now().toString(36) + '-' + _sn2HistoryScopeSeq.toString(36) + '-' + Math.random().toString(36).slice(2, 7);
 }
 
+function _sn2PrepareHistoryNavigation(scope) {
+  if (!String(scope || '').startsWith('scriptnote:')) return true;
+  const editor = typeof _sn2EditorByScope === 'function' ? _sn2EditorByScope(scope) : null;
+  if (!editor || editor._readOnly || editor._imeComposing) return false;
+  editor._pushUndo('編集');
+  return true;
+}
+
+function _sn2RecordHistoryTransition(editor, label) {
+  editor._syncAllFromDom();
+  const snap = editor._takeSnapshot();
+  if (editor._lastPushedSnap === snap) return;
+  const previous = editor._lastPushedSnap;
+  editor._lastPushedSnap = snap;
+  const scope = editor._historyScope();
+  if (previous && typeof historyPush === 'function') {
+    historyPush(label, () => editor._applySnapshot(previous), () => editor._applySnapshot(snap), scope);
+  }
+}
+
 Object.assign(ScriptNoteEditor.prototype, {
 
   _takeSnapshot() {
@@ -71,28 +91,37 @@ Object.assign(ScriptNoteEditor.prototype, {
       clearTimeout(this._undoTimer);
       this._undoTimer = null;
     }
-    this._syncAllFromDom();
-    const snap = this._takeSnapshot();
-    if (this._lastPushedSnap === snap) return;
-    this._lastPushedSnap = snap;
-    const scope = this._historyScope();
-    if (typeof historyPush === 'function') {
-      historyPush(label, () => { this._applySnapshot(snap); }, null, scope);
-    }
+    _sn2RecordHistoryTransition(this, label);
+    if (label === '初期状態') return;
+    // 操作前に呼ぶ列・タイプ編集も、同じ操作の終了時に遷移を確定する。
+    // skipUndoの編集でもボタンとパネルへ直ちに反映し、次の操作へ混ぜない。
+    const document = this.doc;
+    const scopeId = this._historyScopeId;
+    queueMicrotask(() => {
+      if (this.doc !== document || this._historyScopeId !== scopeId
+          || this._pushUndoSuppressed || this._readOnly || this._imeComposing) return;
+      try { _sn2RecordHistoryTransition(this, label); }
+      catch (error) { if (typeof showStatus === 'function') showStatus('履歴の記録に失敗しました: ' + (error?.message || error), true); }
+    });
   },
 
   undo() {
+    if (this._readOnly || this._imeComposing) return;
+    // 操作前の記録と、入力後の遅延記録を同じ遷移へまとめる。
+    this._pushUndo('編集');
     const scope = this._historyScope();
-    if (typeof historyUndo === 'function') historyUndo(scope);
+    if (typeof historyUndo === 'function') return historyUndo(scope);
   },
 
   redo() {
+    if (this._readOnly || this._imeComposing) return;
+    this._pushUndo('編集');
     const scope = this._historyScope();
-    if (typeof historyRedo === 'function') historyRedo(scope);
+    if (typeof historyRedo === 'function') return historyRedo(scope);
   },
 
   _applySnapshot(snap) {
-    if (!this.doc || !this.host) return;
+    if (!this.doc || !this.host || this._readOnly || this._imeComposing) return false;
     const focusState = _sn2CaptureSnapshotFocus(this);
     this._pushUndoSuppressed = true;
     try {
@@ -115,9 +144,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.rows = data.rows;
       this.doc.source = data.source;
       this._ensureDefaultChara();
-      this._lastPushedSnap = snap;
       this._calcCache = null;
       this._render();
+      this._syncAllFromDom();
       if (this._rowSelection instanceof Set) {
         const rowIds = createScriptNoteRowIdSet(this.doc);
         for (const rowId of [...this._rowSelection]) {
@@ -128,6 +157,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._dirty = true;
       this._scheduleSave();
       this._refreshDetailPanel();
+      this._lastPushedSnap = this._takeSnapshot();
+      window.dispatchEvent(new CustomEvent('meldex:scriptnote-history-restored', { detail: { editor: this } }));
     } finally {
       this._pushUndoSuppressed = false;
     }
@@ -143,6 +174,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (this._caretSelChangeHandler) this._caretSelChangeHandler();
       });
     });
+    return true;
   },
 
   _refreshDetailPanel() {
@@ -173,11 +205,22 @@ Object.assign(ScriptNoteEditor.prototype, {
   const originalLoadDoc = proto.loadDoc;
   proto.loadDoc = function(parsed, path = '') {
     const nextPath = String(path || '');
-    if (!this._historyScopeId || (this._historyScopePath && nextPath && this._historyScopePath !== nextPath)) {
-      this._historyScopeId = _sn2NewHistoryScopeId();
-    }
+    const previousId = this._historyScopeId;
+    const previousPath = this._historyScopePath;
+    // 新規文書・同じパスの再読込も新しい履歴にする。以前の全文を保存し直さない。
+    this._historyScopeId = _sn2NewHistoryScopeId();
     this._historyScopePath = nextPath;
-    return originalLoadDoc.apply(this, arguments);
+    try {
+      const result = originalLoadDoc.apply(this, arguments);
+      if (result !== false) return result;
+      this._historyScopeId = previousId;
+      this._historyScopePath = previousPath;
+      return result;
+    } catch (error) {
+      this._historyScopeId = previousId;
+      this._historyScopePath = previousPath;
+      throw error;
+    }
   };
   proto.loadDoc.__sn2HistoryScopePatched = true;
 })();

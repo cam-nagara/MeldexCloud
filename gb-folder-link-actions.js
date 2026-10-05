@@ -12,6 +12,30 @@
 
   const STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE = 'meldex_suppress_folder_paste_link_choice';
 
+  async function refreshHistoryView(options) {
+    try {
+      if (typeof options.refresh === 'function') await options.refresh();
+      else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
+    } catch (error) {
+      return { historyWarning: '操作は反映済みですが一覧を更新できません。再読込してください' };
+    }
+    return true;
+  }
+
+  async function replayHistoryItems(items, applied, operation, options) {
+    const failures = [];
+    for (const item of items) {
+      if (item.applied === applied) continue;
+      try {
+        await operation(item);
+        item.applied = applied;
+      } catch (error) { failures.push(error?.message || String(error)); }
+    }
+    const outcome = await refreshHistoryView(options);
+    if (failures.length) throw new Error(`${failures.length}件の操作に失敗しました。成功分は保持し、残りを再試行できます: ${failures.join(' / ')}`);
+    return outcome;
+  }
+
   function isFolderPasteLinkChoiceSuppressed() {
     try {
       return localStorage.getItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE) === 'true';
@@ -216,13 +240,13 @@
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
           const newPath = res?.new_path || item.path;
           pastedPaths.push(newPath);
-          executedMoves.push({ oldPath, newPath, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
+          executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
           const newPath = res?.new_path || '';
           if (newPath) {
             pastedPaths.push(newPath);
-            executedCopies.push({ origPath: item.path, newPath, item });
+            executedCopies.push({ origPath: item.path, newPath, applied: true, item });
           }
         }
       } catch (_) {
@@ -235,52 +259,31 @@
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
       if (executedMoves.length && typeof historyPush === 'function') {
-        const moveUndo = async () => {
-          for (const m of executedMoves) {
-            try {
-              const r = await apiPost('/outliner/move', { path: m.newPath, dest_folder: m.oldParent });
-              if (r?.new_path && typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(m.newPath, r.new_path, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-              }
-            } catch (_) {}
+        const move = async (m, destination) => {
+          const from = m.currentPath;
+          const r = await apiPost('/outliner/move', { path: from, dest_folder: destination });
+          m.currentPath = r?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
+          if (typeof renameAppPathReferences === 'function') {
+            renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
           }
-          if (typeof options.refresh === 'function') await options.refresh();
-          else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
         };
-        const moveRedo = async () => {
-          for (const m of executedMoves) {
-            try {
-              const r = await apiPost('/outliner/move', { path: m.oldPath, dest_folder: destFolder });
-              if (r?.new_path && typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(m.oldPath, r.new_path, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-              }
-            } catch (_) {}
-          }
-          if (typeof options.refresh === 'function') await options.refresh();
-          else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
-        };
+        const moveUndo = () => replayHistoryItems(executedMoves, false, m => move(m, m.oldParent), options);
+        const moveRedo = () => replayHistoryItems(executedMoves, true, m => move(m, destFolder), options);
         historyPush('フォルダ: 切り取り貼り付け', moveUndo, moveRedo, '', `${executedMoves.length} 件 → ${destFolder}`);
       }
     } else {
       if (executedCopies.length && typeof historyPush === 'function') {
-        const copyUndo = async () => {
-          for (const c of executedCopies) {
-            try {
-              await apiPost('/outliner/delete', { path: c.newPath });
-            } catch (_) {}
-          }
-          if (typeof options.refresh === 'function') await options.refresh();
-          else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
-        };
-        const copyRedo = async () => {
-          for (const c of executedCopies) {
-            try {
-              await apiPost('/outliner/save-as', { path: c.origPath, dest_folder: destFolder });
-            } catch (_) {}
-          }
-          if (typeof options.refresh === 'function') await options.refresh();
-          else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
-        };
+        const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
+          const result = await apiPost('/outliner/delete', { path: c.newPath });
+          c.trash = result?.trash_name ? { trash_name: result.trash_name, ...(result.trash_root ? { trash_root: result.trash_root } : {}) } : null;
+        }, options);
+        const copyRedo = () => replayHistoryItems(executedCopies, true, async c => {
+          // 元ファイルの後続編集でコピーの内容が変わらないよう、削除した実体を復元する。
+          const result = c.trash
+            ? await apiPost('/outliner/restore', c.trash)
+            : await apiPost('/outliner/save-as', { path: c.origPath, dest_folder: destFolder });
+          c.newPath = result?.restored_path || result?.new_path || c.newPath;
+        }, options);
         historyPush('フォルダ: コピー貼り付け', copyUndo, copyRedo, '', `${executedCopies.length} 件 → ${destFolder}`);
       }
     }
@@ -326,24 +329,29 @@
     const oldFileId = res?.old_file_id || fileId;
 
     if (matPath && typeof historyPush === 'function') {
+      let currentMatPath = matPath;
+      let removed = false;
       const undoFn = async () => {
-        try {
-          await apiPost('/outliner/delete', { path: matPath });
-          await apiPost('/folder-links/batch/add', {
-            items: [{ file_path: filePath, file_id: oldFileId }],
-            folder_path: folderPath,
-            owner_token: ownerToken,
-          });
-        } catch (_) {}
-        if (typeof options.refresh === 'function') await options.refresh();
-        else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
+        if (!removed) {
+          await apiPost('/outliner/delete', { path: currentMatPath });
+          removed = true;
+        }
+        const result = await apiPost('/folder-links/batch/add', {
+          items: [{ file_path: filePath, file_id: oldFileId }],
+          folder_path: folderPath,
+          owner_token: ownerToken,
+        });
+        if (result?.failed_count || result?.results?.some(row => row.status === 'failed')) {
+          await refreshHistoryView(options);
+          throw new Error('リンクを復元できませんでした。実体の削除は完了済みで、リンク復元を再試行できます');
+        }
+        return refreshHistoryView(options);
       };
       const redoFn = async () => {
-        try {
-          await apiPost('/folder-links/materialize', payload);
-        } catch (_) {}
-        if (typeof options.refresh === 'function') await options.refresh();
-        else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
+        const result = await apiPost('/folder-links/materialize', payload);
+        currentMatPath = result?.materialized_path || currentMatPath;
+        removed = false;
+        return refreshHistoryView(options);
       };
       historyPush('フォルダリンク: 実体化', undoFn, redoFn, '', `${filePath} → ${matPath}`);
     }
@@ -383,25 +391,19 @@
     const newLinkFolder = res?.new_link_folder || '';
 
     if (newSourcePath && typeof historyPush === 'function') {
-      const undoFn = async () => {
-        try {
-          await apiPost('/folder-links/promote-to-source', {
-            file_path: newSourcePath,
-            folder_path: newLinkFolder,
-            file_id: res?.file_id || fileId,
-            owner_token: ownerToken,
-          });
-        } catch (_) {}
-        if (typeof options.refresh === 'function') await options.refresh();
-        else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
+      let currentSourcePath = newSourcePath;
+      let undoFolder = newLinkFolder;
+      const promote = async folder => {
+        const result = await apiPost('/folder-links/promote-to-source', {
+          ...payload, file_path: currentSourcePath, folder_path: folder,
+          file_id: res?.file_id || fileId,
+        });
+        currentSourcePath = result?.new_source_path || currentSourcePath;
+        if (folder === folderPath) undoFolder = result?.new_link_folder || undoFolder;
+        return refreshHistoryView(options);
       };
-      const redoFn = async () => {
-        try {
-          await apiPost('/folder-links/promote-to-source', payload);
-        } catch (_) {}
-        if (typeof options.refresh === 'function') await options.refresh();
-        else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
-      };
+      const undoFn = () => promote(undoFolder);
+      const redoFn = () => promote(folderPath);
       historyPush('フォルダリンク: リンク元ファイル化', undoFn, redoFn, '', `${oldSourcePath} ⇄ ${newSourcePath}`);
     }
 

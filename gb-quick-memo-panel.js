@@ -31,6 +31,7 @@
   let _frame = null;
   let _base = null;
   let _handoffClosing = false;
+  let _closePromise = null;
 
   function _icon(name, size) {
     return (typeof lucide === 'function') ? lucide(name, size || 16) : '';
@@ -58,6 +59,7 @@
   async function _openStandalone() {
     const api = _frame?.contentWindow?.MeldexQuickMemo;
     if (!api) throw new Error('クイックメモの準備が完了していません');
+    if (api.prepareClose && !(await api.prepareClose())) throw new Error('音声入力を確定できないため、単独アプリを開きませんでした');
     if (typeof api.flush === 'function' && !(await api.flush())) {
       throw new Error('クイックメモを保存できなかったため、単独アプリを開きませんでした');
     }
@@ -89,14 +91,27 @@
     return true;
   }
 
-  // 書きかけを取りこぼさないよう、閉じる前にクイックメモ側の保存を促す。
-  // 失敗しても下書きは quick-memo 側の localStorage に残り、送信待ちは
-  // gb-quick-memo-sync.js が後から引き取るので、閉じる操作自体は止めない。
-  function _flushFrame() {
+  // 録音・文字起こしと端末下書きの確定を待ってからiframeを破棄する。
+  async function _flushFrame() {
     try {
-      const api = _frame?.contentWindow?.MeldexQuickMemo;
-      if (api && typeof api.flush === 'function') api.flush();
-    } catch {}
+      const child = _frame?.contentWindow;
+      if (child?.MeldexStandaloneCloseGuard?.prepareClose) {
+        return await child.MeldexStandaloneCloseGuard.prepareClose('host-panel');
+      }
+      const api = child?.MeldexQuickMemo;
+      return api?.flush ? await api.flush() : true;
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus(error?.message || 'クイックメモを保存できませんでした', true);
+      return false;
+    }
+  }
+
+  function _onEscape(event) {
+    if (event.key !== 'Escape' || !isOpen()) return;
+    if (!_base?.getElement?.()?.contains(document.activeElement)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    close();
   }
 
   function _buildHeader(header) {
@@ -136,6 +151,13 @@
     frame.title = 'クイックメモ';
     frame.dataset.e2eId = 'quick-memo-float-panel-frame';
     frame.src = _frameUrl();
+    frame.addEventListener('load', () => {
+      // iframe内のキーイベントは親へ伝播しない。メニュー・ダイアログが
+      // 消費しなかったEscapeだけ、同じ保存付き閉じる経路へ渡す。
+      try { frame.contentDocument?.addEventListener('keydown', event => {
+        if (!event.defaultPrevented && _frame === frame) _onEscape(event);
+      }); } catch {}
+    });
     body.appendChild(frame);
     _frame = frame;
   }
@@ -164,8 +186,10 @@
       buildBody: _buildBody,
       onDragToggle: (enabled) => { if (_frame) _frame.style.pointerEvents = enabled ? '' : 'none'; },
       onFocus: () => { try { _frame?.contentWindow?.focus?.(); } catch {} },
-      onBeforeClose: () => { if (!_handoffClosing) _flushFrame(); },
-      onClose: () => { _frame = null; },
+      onClose: () => {
+        document.removeEventListener('keydown', _onEscape, true);
+        _frame = null;
+      },
     });
     return _base;
   }
@@ -175,15 +199,24 @@
   }
 
   function open() {
+    document.addEventListener('keydown', _onEscape, true);
     return _base_().open();
   }
 
   function close() {
-    return _base ? _base.close() : false;
+    if (!isOpen()) return false;
+    if (_handoffClosing) return _base.close();
+    if (_closePromise) return _closePromise;
+    const frame = _frame;
+    _closePromise = (async () => {
+      if (!await _flushFrame() || frame !== _frame) return false;
+      return _base.close();
+    })().finally(() => { _closePromise = null; });
+    return _closePromise;
   }
 
   function toggle() {
-    return _base_().toggle();
+    return isOpen() ? close() : open();
   }
 
   function focus() {
@@ -200,7 +233,10 @@
   async function flushVersionTarget(path) {
     const api = _versionApiFor(path);
     if (!api) return false;
-    if (typeof api.flush === 'function') await api.flush();
+    if (api.prepareClose && !(await api.prepareClose())) throw new Error('音声入力を確定できないため、バージョン操作を中止しました');
+    if (typeof api.flush === 'function' && !(await api.flush())) {
+      throw new Error('クイックメモを保存できないため、バージョン操作を中止しました');
+    }
     return true;
   }
 
