@@ -1725,8 +1725,19 @@
       try {
         sourceRegistry = await _sourceRegistry()?.loadRegistry?.({ writeIfMissing: access === 'editor' });
       } catch {}
+      // A source folder can be used without a collaborative workspace. Keep
+      // credential keys scoped to the authenticated account and stable Dropbox
+      // folder ID in that case; a mutable path is not a key identity.
+      const connection = await window.MeldexDropboxManagementRootResolver.resolveConnectionInfo(this);
+      const accountId = String(account?.account_id || '').trim();
+      const securityScopeId = connection?.kind === 'shared'
+        ? String(connection.workspace?.id || '').trim()
+        : connection?.kind === 'personal' && accountId && rootMeta.id
+          ? `dropbox:${accountId}:${rootMeta.id}` : '';
+      if (!securityScopeId) access = 'viewer';
       const nextState = {
         kind: 'dropbox',
+        securityScopeId,
         name: mountInfo?.name || rootMeta.name || this.getVaultName(),
         path: vaultPath,
         access,

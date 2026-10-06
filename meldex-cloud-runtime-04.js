@@ -280,10 +280,29 @@
   }
 
 
-  function _invalidateReadFolders() {
-    _readFolderGeneration += 1;
-    _readFolderCache.clear();
-    _readFolderPending.clear();
+  function _invalidateReadFolders(paths, options) {
+    const changed = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
+    if (!changed.length || changed.some(path => typeof path !== 'string' || !path.startsWith('/'))) {
+      _readFolderGeneration += 1;
+      _readFolderCache.clear();
+      _readFolderPending.clear();
+      return;
+    }
+    const namespace = _normalizeNamespaceKind(options?.namespaceKind);
+    const locations = changed.map(path => {
+      const value = path.replace(/\/+$/, '').toLowerCase();
+      return { value, parent: value.slice(0, value.lastIndexOf('/')) };
+    });
+    // Keep unrelated listings during background management/index writes. Drop
+    // pending entries too so an older response cannot reinsert stale evidence.
+    for (const key of new Set([..._readFolderCache.keys(), ..._readFolderPending.keys()])) {
+      const [, kind, , folder] = JSON.parse(key);
+      if (kind !== namespace) continue;
+      if (locations.some(({ value, parent }) => folder === parent || folder === value || folder.startsWith(value + '/'))) {
+        _readFolderCache.delete(key);
+        _readFolderPending.delete(key);
+      }
+    }
   }
 
   function _dispatchSessionChanged(detail) {
@@ -1091,7 +1110,7 @@
         if (!payload.cursor) throw new Error('Dropboxのフォルダ一覧に継続カーソルがありません');
         payload = await apiRpc('files/list_folder/continue', { cursor: payload.cursor }, { namespaceKind });
       }
-      if (generation === _readFolderGeneration && entries.size <= 4096) {
+      if (generation === _readFolderGeneration && _readFolderPending.get(key) === promise && entries.size <= 4096) {
         if (_readFolderCache.size >= 128) _readFolderCache.delete(_readFolderCache.keys().next().value);
         _readFolderCache.set(key, { entries, until: Date.now() + 30000 });
       }
@@ -1131,7 +1150,7 @@
         body: body == null ? 'null' : JSON.stringify(body),
       }), _isMediaRead(route, body?.path));
       if (response.ok) {
-        if (/^files\/(?:create_folder|delete|move|copy|restore)/.test(route)) _invalidateReadFolders();
+        if (/^files\/(?:create_folder|delete|move|copy|restore)/.test(route)) _invalidateReadFolders([body?.path, body?.from_path, body?.to_path], options);
         let payload = null;
         try {
           payload = await response.json();
@@ -1143,7 +1162,7 @@
       }
       const detail = await _readDropboxError(response);
       if (response.status === 401) await clearSession();
-      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders();
+      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(body?.path, options);
       throw new Error(String(detail));
     }
     throw new Error('Dropboxへもう一度接続してください');
@@ -1170,7 +1189,7 @@
         return result;
       }, _isMediaRead(route, arg?.path));
       if (response.ok) {
-        if (/^files\/(?:upload|upload_session\/finish)/.test(route)) _invalidateReadFolders();
+        if (/^files\/(?:upload|upload_session\/finish)/.test(route)) _invalidateReadFolders(arg?.path || arg?.commit?.path, options);
         return response;
       }
       if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) {
@@ -1178,7 +1197,7 @@
       }
       const detail = await _readDropboxError(response);
       if (response.status === 401) await clearSession();
-      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders();
+      if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(arg?.path, options);
       throw new Error(String(detail));
     }
     throw new Error('Dropboxへもう一度接続してください');
@@ -4787,8 +4806,19 @@
       try {
         sourceRegistry = await _sourceRegistry()?.loadRegistry?.({ writeIfMissing: access === 'editor' });
       } catch {}
+      // A source folder can be used without a collaborative workspace. Keep
+      // credential keys scoped to the authenticated account and stable Dropbox
+      // folder ID in that case; a mutable path is not a key identity.
+      const connection = await window.MeldexDropboxManagementRootResolver.resolveConnectionInfo(this);
+      const accountId = String(account?.account_id || '').trim();
+      const securityScopeId = connection?.kind === 'shared'
+        ? String(connection.workspace?.id || '').trim()
+        : connection?.kind === 'personal' && accountId && rootMeta.id
+          ? `dropbox:${accountId}:${rootMeta.id}` : '';
+      if (!securityScopeId) access = 'viewer';
       const nextState = {
         kind: 'dropbox',
+        securityScopeId,
         name: mountInfo?.name || rootMeta.name || this.getVaultName(),
         path: vaultPath,
         access,
@@ -13146,8 +13176,8 @@
     try { activeId = _safeText(window.MeldexWorkspaces?.getActiveId?.() || ''); } catch {}
     if (!workspace && !activeId) return { id: 'local-device', allowLegacyClaim: true };
     const id = _safeText(
-      workspace.workspaceId || workspace.workspace_id || workspace.stableId
-      || activeId || ''
+      workspace?.workspaceId || workspace?.workspace_id || workspace?.stableId
+      || activeId || workspace?.securityScopeId || ''
     );
     if (!id) throw new Error('安定したワークスペースIDを取得できません');
     return { id, allowLegacyClaim: workspace?.ownerKeyLegacyClaim === true };
@@ -21541,8 +21571,8 @@
     try { activeId = String(window.MeldexWorkspaces?.getActiveId?.() || '').trim(); } catch {}
     if (!state && !activeId) return { id: 'local-device', allowLegacyClaim: true };
     const id = String(
-      state.workspaceId || state.workspace_id || state.stableId
-      || activeId || ''
+      state?.workspaceId || state?.workspace_id || state?.stableId
+      || activeId || state?.securityScopeId || ''
     ).trim();
     if (!id) throw new Error('安定したワークスペースIDを取得できません');
     return { id, allowLegacyClaim: state?.oauthLegacyClaim === true };

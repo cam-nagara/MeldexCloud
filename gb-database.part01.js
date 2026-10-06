@@ -745,6 +745,12 @@ function _updateFilterBadge(options = {}) {
    ============================== */
 function clearPivot(ctx) {
   ctx = _normalizeDbRenderContext(ctx);
+  if (!ctx) return;
+  // Clearing a sheet also cancels its queued chunks and virtual scroll work.
+  // Otherwise an idle callback can insert rows into the next sheet's tbody.
+  ctx._renderToken = Symbol('clearPivot');
+  ctx._renderInProgress = false;
+  if (typeof _dbDisposeVirtualRows === 'function') _dbDisposeVirtualRows(ctx);
   const tblId = ctx.tableId || 'pivot-table';
   const thead = _paneEl(ctx, '#' + tblId + ' thead');
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');

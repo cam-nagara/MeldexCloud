@@ -1098,6 +1098,12 @@ function renderPivot(ctx) {
   const _renderChunk = (startIdx) => {
     // 中断チェック: トークンが書き換わっていれば破棄
     if (ctx._renderToken !== renderToken) return;
+    // View/tab replacement may remove the anchor without calling clearPivot.
+    // A queued chunk belongs only to the tbody in which its anchor was created.
+    if (ctx.destroyed || (renderMoreRow || newEntryRow).parentNode !== tbody) {
+      ctx._renderInProgress = false;
+      return;
+    }
     const endIdx = Math.min(startIdx + CHUNK_SIZE, rowTasks.length);
     // DocumentFragment でまとめて挿入 (reflow 削減)
     const frag = document.createDocumentFragment();
@@ -1110,7 +1116,7 @@ function renderPivot(ctx) {
       }
     }
     // 中断チェック (ループ中に破棄された可能性)
-    if (ctx._renderToken !== renderToken) return;
+    if (ctx._renderToken !== renderToken || (renderMoreRow || newEntryRow).parentNode !== tbody) return;
     // 新規エントリ行の前に挿入 → 常に末尾に新規エントリ行を維持
     tbody.insertBefore(frag, renderMoreRow || newEntryRow);
     ctx._renderDoneRows = endIdx;

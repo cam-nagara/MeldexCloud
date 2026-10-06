@@ -39,8 +39,8 @@ function getCurrentPublishContext() {
   return { kind: '', label: '未選択', path: '' };
 }
 
-function _publishContextError(message) {
-  if (typeof showStatus === 'function') showStatus(message, true);
+function _publishContextError(message, options) {
+  if (!options?.silentError && typeof showStatus === 'function') showStatus(message, true);
   return null;
 }
 
@@ -55,13 +55,13 @@ function _publishOptionPathForContext(kind, path) {
 
 // 公開開始時に表示対象と OptionTarget を一度だけ束ねる。以後の非同期工程は
 // この immutable snapshot を使い、工程ごとに現在値との一致だけを検証する。
-function createPublishContextSnapshot(expectedKind) {
+function createPublishContextSnapshot(expectedKind, options) {
   const visible = getCurrentPublishContext();
   const kind = String(visible?.kind || '');
   const path = String(visible?.path || '');
-  if (!kind || !path) return _publishContextError('公開対象が選択されていません');
+  if (!kind || !path) return _publishContextError('公開対象が選択されていません', options);
   if (expectedKind && String(expectedKind) !== kind) {
-    return _publishContextError('表示中の対象と公開種別が一致しません');
+    return _publishContextError('表示中の対象と公開種別が一致しません', options);
   }
 
   const option = (typeof GBOptionTargetContext !== 'undefined' && typeof GBOptionTargetContext.get === 'function')
@@ -69,11 +69,11 @@ function createPublishContextSnapshot(expectedKind) {
     : null;
   const targets = Array.isArray(option?.targets) ? option.targets : [];
   const optionTargetPath = _publishOptionPathForContext(kind, path);
-  if (targets.length > 1) return _publishContextError('公開対象が複数選択されているため処理を停止しました');
+  if (targets.length > 1) return _publishContextError('公開対象が複数選択されているため処理を停止しました', options);
   if (targets.length === 1) {
     const target = targets[0] || {};
     if (String(target.path || '') !== optionTargetPath || String(target.kind || '') !== kind) {
-      return _publishContextError('表示中の対象と選択対象が一致しないため処理を停止しました');
+      return _publishContextError('表示中の対象と選択対象が一致しないため処理を停止しました', options);
     }
   }
 
@@ -293,7 +293,9 @@ function _publishEntityNameSourceForContext(ctx, prev) {
 }
 
 function renderPublishSettingsPanel(contextSnapshot) {
-  const ctx = contextSnapshot || createPublishContextSnapshot();
+  // Passive sidebar refresh can run between selection and view activation.
+  // It must not report a failed publication when no action was requested.
+  const ctx = contextSnapshot || createPublishContextSnapshot(undefined, { silentError: true });
   if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない

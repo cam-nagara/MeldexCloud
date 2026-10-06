@@ -170,6 +170,7 @@ function _dbRunVirtualRowRenderer(ctx, config) {
 
   const renderVisible = (force = false) => {
     if (renderToken && ctx._renderToken !== renderToken) return;
+    if (ctx.destroyed || bottomSpacer.parentNode !== tbody) return;
     const viewportHeight = Math.max(240, scroller.clientHeight || window.innerHeight || 600);
     const first = Math.max(0, Math.floor((scroller.scrollTop || 0) / rowHeight) - DB_VIRTUAL_ROW_OVERSCAN);
     const visibleCount = Math.min(

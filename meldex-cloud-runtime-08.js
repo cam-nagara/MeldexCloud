@@ -31882,8 +31882,8 @@ function getCurrentPublishContext() {
   return { kind: '', label: '未選択', path: '' };
 }
 
-function _publishContextError(message) {
-  if (typeof showStatus === 'function') showStatus(message, true);
+function _publishContextError(message, options) {
+  if (!options?.silentError && typeof showStatus === 'function') showStatus(message, true);
   return null;
 }
 
@@ -31898,13 +31898,13 @@ function _publishOptionPathForContext(kind, path) {
 
 // 公開開始時に表示対象と OptionTarget を一度だけ束ねる。以後の非同期工程は
 // この immutable snapshot を使い、工程ごとに現在値との一致だけを検証する。
-function createPublishContextSnapshot(expectedKind) {
+function createPublishContextSnapshot(expectedKind, options) {
   const visible = getCurrentPublishContext();
   const kind = String(visible?.kind || '');
   const path = String(visible?.path || '');
-  if (!kind || !path) return _publishContextError('公開対象が選択されていません');
+  if (!kind || !path) return _publishContextError('公開対象が選択されていません', options);
   if (expectedKind && String(expectedKind) !== kind) {
-    return _publishContextError('表示中の対象と公開種別が一致しません');
+    return _publishContextError('表示中の対象と公開種別が一致しません', options);
   }
 
   const option = (typeof GBOptionTargetContext !== 'undefined' && typeof GBOptionTargetContext.get === 'function')
@@ -31912,11 +31912,11 @@ function createPublishContextSnapshot(expectedKind) {
     : null;
   const targets = Array.isArray(option?.targets) ? option.targets : [];
   const optionTargetPath = _publishOptionPathForContext(kind, path);
-  if (targets.length > 1) return _publishContextError('公開対象が複数選択されているため処理を停止しました');
+  if (targets.length > 1) return _publishContextError('公開対象が複数選択されているため処理を停止しました', options);
   if (targets.length === 1) {
     const target = targets[0] || {};
     if (String(target.path || '') !== optionTargetPath || String(target.kind || '') !== kind) {
-      return _publishContextError('表示中の対象と選択対象が一致しないため処理を停止しました');
+      return _publishContextError('表示中の対象と選択対象が一致しないため処理を停止しました', options);
     }
   }
 
@@ -32136,7 +32136,9 @@ function _publishEntityNameSourceForContext(ctx, prev) {
 }
 
 function renderPublishSettingsPanel(contextSnapshot) {
-  const ctx = contextSnapshot || createPublishContextSnapshot();
+  // Passive sidebar refresh can run between selection and view activation.
+  // It must not report a failed publication when no action was requested.
+  const ctx = contextSnapshot || createPublishContextSnapshot(undefined, { silentError: true });
   if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
@@ -111988,6 +111990,12 @@ function renderPivot(ctx) {
   const _renderChunk = (startIdx) => {
     // 中断チェック: トークンが書き換わっていれば破棄
     if (ctx._renderToken !== renderToken) return;
+    // View/tab replacement may remove the anchor without calling clearPivot.
+    // A queued chunk belongs only to the tbody in which its anchor was created.
+    if (ctx.destroyed || (renderMoreRow || newEntryRow).parentNode !== tbody) {
+      ctx._renderInProgress = false;
+      return;
+    }
     const endIdx = Math.min(startIdx + CHUNK_SIZE, rowTasks.length);
     // DocumentFragment でまとめて挿入 (reflow 削減)
     const frag = document.createDocumentFragment();
@@ -112000,7 +112008,7 @@ function renderPivot(ctx) {
       }
     }
     // 中断チェック (ループ中に破棄された可能性)
-    if (ctx._renderToken !== renderToken) return;
+    if (ctx._renderToken !== renderToken || (renderMoreRow || newEntryRow).parentNode !== tbody) return;
     // 新規エントリ行の前に挿入 → 常に末尾に新規エントリ行を維持
     tbody.insertBefore(frag, renderMoreRow || newEntryRow);
     ctx._renderDoneRows = endIdx;
@@ -112235,6 +112243,7 @@ function _dbRunVirtualRowRenderer(ctx, config) {
 
   const renderVisible = (force = false) => {
     if (renderToken && ctx._renderToken !== renderToken) return;
+    if (ctx.destroyed || bottomSpacer.parentNode !== tbody) return;
     const viewportHeight = Math.max(240, scroller.clientHeight || window.innerHeight || 600);
     const first = Math.max(0, Math.floor((scroller.scrollTop || 0) / rowHeight) - DB_VIRTUAL_ROW_OVERSCAN);
     const visibleCount = Math.min(
@@ -113071,6 +113080,12 @@ function _updateFilterBadge(options = {}) {
    ============================== */
 function clearPivot(ctx) {
   ctx = _normalizeDbRenderContext(ctx);
+  if (!ctx) return;
+  // Clearing a sheet also cancels its queued chunks and virtual scroll work.
+  // Otherwise an idle callback can insert rows into the next sheet's tbody.
+  ctx._renderToken = Symbol('clearPivot');
+  ctx._renderInProgress = false;
+  if (typeof _dbDisposeVirtualRows === 'function') _dbDisposeVirtualRows(ctx);
   const tblId = ctx.tableId || 'pivot-table';
   const thead = _paneEl(ctx, '#' + tblId + ' thead');
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');

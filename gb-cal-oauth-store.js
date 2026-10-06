@@ -43,8 +43,8 @@
     try { activeId = String(window.MeldexWorkspaces?.getActiveId?.() || '').trim(); } catch {}
     if (!state && !activeId) return { id: 'local-device', allowLegacyClaim: true };
     const id = String(
-      state.workspaceId || state.workspace_id || state.stableId
-      || activeId || ''
+      state?.workspaceId || state?.workspace_id || state?.stableId
+      || activeId || state?.securityScopeId || ''
     ).trim();
     if (!id) throw new Error('安定したワークスペースIDを取得できません');
     return { id, allowLegacyClaim: state?.oauthLegacyClaim === true };

@@ -21,8 +21,8 @@
     try { activeId = _safeText(window.MeldexWorkspaces?.getActiveId?.() || ''); } catch {}
     if (!workspace && !activeId) return { id: 'local-device', allowLegacyClaim: true };
     const id = _safeText(
-      workspace.workspaceId || workspace.workspace_id || workspace.stableId
-      || activeId || ''
+      workspace?.workspaceId || workspace?.workspace_id || workspace?.stableId
+      || activeId || workspace?.securityScopeId || ''
     );
     if (!id) throw new Error('安定したワークスペースIDを取得できません');
     return { id, allowLegacyClaim: workspace?.ownerKeyLegacyClaim === true };
