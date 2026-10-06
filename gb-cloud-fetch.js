@@ -173,9 +173,13 @@
 
   function _mediaPathCandidates(relativePath) {
     const clean = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!clean.startsWith('_media/')) return [clean];
+    // Desktop Web Clipper also records its legacy _assets files relative to
+    // the home folder, rather than the Dropbox source root.
+    if (!clean.startsWith('_media/') && !/(^|\/)_assets\//.test(clean)) return [clean];
+    if (window.MeldexSourceFolderRegistry?.parseSourcePath?.(clean)) return [clean];
     const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
     if (!home) return [clean];
+    if (clean === home || clean.startsWith(home + '/')) return [clean];
     const homeRelative = `${home}/${clean}`;
     return homeRelative === clean ? [clean] : [homeRelative, clean];
   }
