@@ -114,6 +114,17 @@ function _createAttachmentThumb(item, index) {
     img.style.color = 'transparent';
     img.alt = label;
     host.appendChild(img);
+    const browserFiles = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      && window.MeldexPwaFileUrl?.applyToElement;
+    const loadImage = (source) => {
+      if (!browserFiles || /^(https?:|data:|blob:)/i.test(source) && !window.MeldexPwaFileUrl.extractPath(source)) {
+        img.src = source;
+        return;
+      }
+      window.MeldexPwaFileUrl.applyToElement(img, source).then((info) => {
+        if (!info?.url?.startsWith('blob:') && !info?.url?.startsWith('data:')) replaceFailedImage();
+      });
+    };
     const replaceFailedImage = () => {
       // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
       // 切り替える。原寸も読めない時だけ中立タイルにする。
@@ -121,7 +132,7 @@ function _createAttachmentThumb(item, index) {
         const rawSrc = _imageSrc(item, false);
         if (rawSrc && rawSrc !== img.getAttribute('src')) {
           img.dataset.rawFallback = '1';
-          img.src = rawSrc;
+          loadImage(rawSrc);
           return;
         }
       }
@@ -150,7 +161,7 @@ function _createAttachmentThumb(item, index) {
     }, { once: true });
     // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
     // フォールバックの listener を登録してから読み込みを開始する。
-    img.src = _imageSrc(item, true);
+    loadImage(_imageSrc(item, true));
     window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
     return _setupAttachmentThumbDrag(host, item);
   }

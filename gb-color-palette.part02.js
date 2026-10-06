@@ -1,4 +1,5 @@
       if (!pickedHex) return;
+      selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
       selectedCustomIdx = -1;
@@ -12,6 +13,7 @@
   });
 
   function applyOsAccentColor(hex, tone) {
+    selectedHex = hex;
     hsb = _hexToHsb(hex);
     selectedIsTransparent = false;
     selectedCustomIdx = -1;
@@ -30,7 +32,7 @@
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
-      btn.style.background = color || info?.fallback || 'var(--theme-os-accent, AccentColor)';
+      btn.style.background = color || info?.fallback || 'var(--theme-native-os-accent, AccentColor)';
       btn.dataset.hex = color;
       btn.title = color ? `${btn.dataset.osAccentLabel}: ${color}` : btn.dataset.osAccentLabel;
     });
@@ -52,7 +54,7 @@
     btn.dataset.e2eId = `color-palette-os-accent-${info.tone}`;
     btn.setAttribute('data-palette-os-accent-swatch', info.tone);
     btn.setAttribute('aria-label', `${info.label}カラーを設定`);
-    btn.style.background = info.color || info.fallback || 'var(--theme-os-accent, AccentColor)';
+    btn.style.background = info.color || info.fallback || 'var(--theme-native-os-accent, AccentColor)';
     btn.dataset.hex = info.color || '';
     btn.title = info.color ? `${info.label}: ${info.color}` : info.label;
     btn.addEventListener('click', async () => {
@@ -100,7 +102,7 @@
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  function onSliderChange() { selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;

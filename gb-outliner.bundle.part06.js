@@ -1,3 +1,21 @@
+          expanded = true;
+        }
+        break;
+      }
+    }
+    // 展開したら次の階層でターゲットが見つかるかチェック
+    if (expanded && _findAndHighlight(targetPath, noScroll)) return;
+  }
+  _findAndHighlight(targetPath, noScroll);
+}
+
+/* ==============================
+   フォルダごとのファイル非表示
+   ============================== */
+/* フィルタ / 検索 / フォルダごとの非表示は gb-outliner-search.js に分離 */
+document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.preventDefault());
+
+let _outlinerKeyboardFocusSeq = 0;
 
 function _outlinerKeyboardRow(nodeEl) {
   return nodeEl?.querySelector?.(':scope > .tree-node-row') || null;

@@ -3404,6 +3404,8 @@
       this._metaCache = new Map();
       this._fileCache = new Map();
       this._fileDownloadInFlight = new Map();
+      this._mediaChecks = new Map();
+      this._mediaScope = '';
       this._listCache = new Map();
       this._listInFlight = new Map();
       this._listCacheGeneration = 0;
@@ -3555,6 +3557,9 @@
 
     _forgetFileCache(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      for (const [key, value] of this._mediaChecks) {
+        if (!normalized || value.path === normalized || value.path.startsWith(normalized + '/')) this._mediaChecks.delete(key);
+      }
       if (!normalized) {
         this._fileCache.clear();
         this._fileDownloadInFlight.clear();
@@ -3687,6 +3692,8 @@
       this._metaCache.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
+      this._mediaChecks.clear();
+      this._mediaScope = '';
       this._forgetListCache('');
       this._recentConflictCopies.clear();
     }
@@ -4082,30 +4089,131 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      // Only immutable display assets use the persistent cache. Sheet/source
+      // reads retain their existing freshness and conflict handling.
+      const media = /\.(png|jpe?g|jpe|jfif|gif|webp|svg|bmp|avif|ico|apng|tiff?|heic|heif|pdf|mp[34]|webm|mov|avi|mkv|ogg|wav|m4a|aac|flac)$/i.test(normalized)
+        ? await this._mediaCacheRecord(normalized) : null;
       const cached = this._cachedDownloadedFile(normalized);
-      if (cached) return cached;
-      const inFlight = this._fileDownloadInFlight.get(normalized);
+      if (cached && (!media || cached.__meldexMediaKey === media.key)) return cached;
+      const flightKey = media?.key || normalized;
+      const inFlight = this._fileDownloadInFlight.get(flightKey);
       if (inFlight) return inFlight;
       const promise = (async () => {
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        let savedFile = null;
+        if (media?.cache) {
+          try {
+            const saved = await media.cache.match(media.key);
+            if (saved) {
+              const file = _createFile(new Uint8Array(await saved.arrayBuffer()), media.meta.name || _basename(normalized), {
+                type: saved.headers.get('content-type') || _mimeFromPath(normalized),
+                lastModified: _jsonDate(media.meta.server_modified || media.meta.client_modified || ''),
+              });
+              file.__meldexMediaKey = media.key;
+              savedFile = file;
+            }
+          } catch (_) { /* Cache unavailable: download normally. */ }
+        }
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        if (savedFile) {
+          const latest = this._metaCache.get(normalized);
+          if (latest?.rev !== media.meta.rev) throw new Error('画像の取得中にファイルの版が変更されました');
+          this._rememberDownloadedFile(normalized, savedFile, media.meta);
+          return savedFile;
+        }
         const location = this._dropboxLocation(normalized);
         const response = await this._content('files/download', { path: location.path }, undefined, location);
         const resultHeader = response.headers.get('dropbox-api-result');
         const meta = _safeJsonParse(resultHeader, null) || {};
-        this._rememberMeta(normalized, meta);
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        const currentMeta = this._metaCache.get(normalized);
+        const remember = !media || currentMeta?.rev === media.meta.rev;
+        if (remember) this._rememberMeta(normalized, meta);
         const bytes = new Uint8Array(await response.arrayBuffer());
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
         const modified = meta.server_modified || meta.client_modified || '';
         const file = _createFile(bytes, meta.name || _basename(normalized), {
           type: response.headers.get('content-type') || _mimeFromPath(normalized),
           lastModified: _jsonDate(modified),
         });
-        this._rememberDownloadedFile(normalized, file, meta);
+        if (media) {
+          // A change between metadata and download must never populate the
+          // previous revision's key.
+          file.__meldexMediaKey = meta.rev === media.meta.rev ? media.key : '';
+          if (media.cache && meta.rev === media.meta.rev && file.size <= 24 * 1024 * 1024) {
+            try {
+              await media.cache.put(media.key, new Response(file, { headers: {
+                'content-type': file.type, 'content-length': String(file.size),
+              } }));
+              const keys = await media.cache.keys();
+              let total = 0;
+              for (let index = keys.length - 1; index >= 0; index--) {
+                const entry = await media.cache.match(keys[index]);
+                total += Number(entry?.headers.get('content-length') || 0);
+                if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
+              }
+            } catch (_) { /* Quota/private browsing must not break display. */ }
+          }
+        }
+        if (remember) this._rememberDownloadedFile(normalized, file, meta);
         return file;
       })();
-      this._fileDownloadInFlight.set(normalized, promise);
+      this._fileDownloadInFlight.set(flightKey, promise);
       try {
         return await promise;
       } finally {
-        if (this._fileDownloadInFlight.get(normalized) === promise) this._fileDownloadInFlight.delete(normalized);
+        if (this._fileDownloadInFlight.get(flightKey) === promise) this._fileDownloadInFlight.delete(flightKey);
+      }
+    }
+
+    async _mediaCacheRecord(normalized) {
+      const auth = _auth();
+      if (!auth?.getCurrentAccount) return null;
+      const account = await auth.getCurrentAccount(false);
+      if (!account?.account_id) throw new Error('Dropboxへもう一度接続してください');
+      const location = this._dropboxLocation(normalized);
+      const resolved = auth.resolveFileLocation?.(location.path, location.namespaceKind) || location;
+      const scope = JSON.stringify([account.account_id, account.root_info || {}, this.getVaultPath(), auth.getVaultNamespaceKind?.() || 'home']);
+      if (this._mediaScope !== scope) {
+        const previousScope = this._mediaScope;
+        this._mediaScope = scope;
+        this._mediaChecks.clear();
+        if (previousScope) {
+          this._metaCache.clear();
+          this._fileCache.clear();
+        }
+      }
+      const identity = JSON.stringify([scope, resolved.namespaceKind, resolved.path]);
+      const checked = this._mediaChecks.get(identity);
+      // Coalesce validation as well as downloads; failures are not retained.
+      const known = this._metaCache.get(normalized);
+      if (checked && Date.now() - checked.at < 30 * 1000
+        && (!this._metaCache.has(normalized) || known?.rev && (!checked.rev || known.rev === checked.rev))) return checked.promise;
+      const promise = (async () => {
+        const meta = await this._rpc('files/get_metadata', {
+          path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+        }, { ...location, freshMissingCheck: true });
+        if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        this._rememberMeta(normalized, meta);
+        if (!meta || meta['.tag'] !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+        if (!meta.rev || !globalThis.crypto?.subtle || !globalThis.caches) return null;
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity + '\n' + meta.rev));
+        const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        const key = new URL('./__meldex_media_cache__/' + hash, document.baseURI).href;
+        let cache = null;
+        try { cache = await caches.open('meldex-media-files-v1'); } catch (_) {}
+        if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        return { key, cache, meta, scope };
+      })();
+      const record = { path: normalized, at: Date.now(), promise, rev: '' };
+      this._mediaChecks.set(identity, record);
+      try {
+        const result = await promise;
+        record.rev = result?.meta?.rev || '';
+        return result;
+      } catch (error) {
+        if (this._mediaChecks.get(identity) === record) this._mediaChecks.delete(identity);
+        throw error;
       }
     }
 
@@ -41731,6 +41839,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+  const ELEMENT_REQUESTS = new WeakMap();
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -41889,6 +41998,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     let lastError = null;
     for (const candidate of candidates) {
       try {
+        // Dropbox media downloads validate their revision before cache access.
+        // Avoid a separate getFileHandle metadata round-trip for every image.
+        if (typeof provider.downloadAsFile === 'function') return await provider.downloadAsFile(candidate);
         const handle = await provider.getFileHandle(candidate, { create: false });
         return await handle.getFile();
       } catch (error) {
@@ -41949,24 +42061,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const file = await _getFileWithMediaFallback(provider, normalized);
     const fileSize = Number(file.size || 0);
-    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
-      const cachedLarge = CACHE[normalized];
-      if (cachedLarge?.url?.startsWith('blob:')) {
-        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
-      }
-      delete CACHE[normalized];
-      return { path: normalized, url: _fallbackRawUrl(normalized), mime: file.type || _mimeFromPath(normalized), size: fileSize, modified: String(file.lastModified || 0), streamed: true };
-    }
     const modified = String(file.lastModified || 0);
     const cached = CACHE[normalized];
-    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
-    const url = fileSize > BLOB_CACHE_MAX_BYTES
-      ? URL.createObjectURL(file)
-      : _bytesToUrl(new Uint8Array(await file.arrayBuffer()), file.type || _mimeFromPath(normalized));
+    const identity = file.__meldexMediaKey || file;
+    if (cached && cached.identity === identity && cached.modified === modified && cached.size === fileSize) return cached;
+    // File/Blob URLs work for large files too; the desktop HTTP fallback is
+    // absent on static Cloud. Avoid copying every image into an ArrayBuffer.
+    const mime = file.type && file.type !== 'application/octet-stream' ? file.type : _mimeFromPath(normalized);
+    const url = URL.createObjectURL(file.type === mime ? file : file.slice(0, file.size, mime));
     if (cached?.url && cached.url.startsWith('blob:')) {
       try { URL.revokeObjectURL(cached.url); } catch {}
     }
-    const next = { path: normalized, url, mime: file.type || _mimeFromPath(normalized), size: fileSize, modified };
+    const next = { path: normalized, url, mime, size: fileSize, modified, identity };
     CACHE[normalized] = next;
     return next;
   }
@@ -42024,16 +42130,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const target = element;
     const prop = propName || 'src';
     if (!target) return Promise.resolve({ path: '', url: '' });
+    const requests = ELEMENT_REQUESTS.get(target) || {};
+    const request = {};
+    requests[prop] = request;
+    ELEMENT_REQUESTS.set(target, requests);
     const current = displayUrl(pathLike);
     // A browser has no native /api/file-raw endpoint. Wait for the provider
     // URL instead of starting a doomed HTTP request before the blob is ready.
-    if (current && (!_runtime()?.isBrowserDataMode?.() || /^(blob:|data:)/i.test(current))) {
+    if (current && !_runtime()?.isBrowserDataMode?.()) {
       _setElementUrlIfChanged(target, prop, current);
     }
     return ensureDisplayUrl(pathLike).then((info) => {
-      if (target.isConnected && info?.url) _setElementUrlIfChanged(target, prop, info.url);
+      if (target.isConnected && requests[prop] === request && info?.url) _setElementUrlIfChanged(target, prop, info.url);
       return info;
-    }).catch(() => ({ path: '', url: current || '' }));
+    }).catch(() => ({ path: '', url: '' }));
   }
 
   function _clearCachePath(path, isFolder) {
@@ -62996,6 +63106,13 @@ ${reason.message}`
     if (typeof positionPopup === 'function') {
       positionPopup(tip, rect, { prefer: 'below', gap: 6 });
     }
+    let layer = 100000;
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      const z = Number.parseInt(getComputedStyle(node).zIndex, 10);
+      if (Number.isFinite(z)) layer = Math.max(layer, z + 1);
+    }
+    tip.setAttribute('style', `${tip.getAttribute('style') || ''};z-index:${Math.min(layer, 2147483647)}`);
+
   }
 
   function showFor(el, explicitText) {
@@ -65861,7 +65978,7 @@ ${reason.message}`
 .gb-palette-picker-row .gb-btn-eyedropper:disabled { opacity: 0.5; cursor: not-allowed; }
 .gb-palette-picker-row .gb-palette-os-accent-swatch {
   width: 24px; height: 24px; padding: 0; margin: 0;
-  background: var(--theme-os-accent, AccentColor); border-color: var(--border);
+  background: var(--theme-native-os-accent, AccentColor); border-color: var(--border);
   appearance: none;
 }
 .gb-palette-picker-row .gb-palette-os-accent-swatch:hover { border-color: var(--accent); }
@@ -66208,7 +66325,7 @@ function getPaletteOsAccentColor() {
     const managerColor = _colorValueToHex(MeldexThemeManager.getOsAccentColor());
     if (managerColor) return managerColor;
   }
-  return _documentCssVarColorToHex('--theme-os-accent');
+  return _documentCssVarColorToHex('--theme-native-os-accent');
 }
 
 async function resolvePaletteOsAccentColor() {
@@ -66233,10 +66350,10 @@ function getPaletteOsAccentVariants(color) {
     ...info,
     color: base ? (info.tone === 'dark' ? _mixHexColors(base, '#000000', contrast) : info.tone === 'light' ? _mixHexColors(base, '#ffffff', contrast) : base) : '',
     fallback: info.tone === 'dark'
-      ? `color-mix(in srgb, var(--theme-os-accent, AccentColor) ${keep}%, black ${contrast}%)`
+      ? `color-mix(in srgb, var(--theme-native-os-accent, AccentColor) ${keep}%, black ${contrast}%)`
       : info.tone === 'light'
-      ? `color-mix(in srgb, var(--theme-os-accent, AccentColor) ${keep}%, white ${contrast}%)`
-      : 'var(--theme-os-accent, AccentColor)',
+      ? `color-mix(in srgb, var(--theme-native-os-accent, AccentColor) ${keep}%, white ${contrast}%)`
+      : 'var(--theme-native-os-accent, AccentColor)',
   }));
 }
 
@@ -66497,10 +66614,10 @@ function _constrainColorPaletteToViewport(palette) {
   palette.style.overflowY = 'auto';
 }
 
-function openColorPalette(anchorEl, currentColor, onSelect) {
+function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
   closeColorPalette();
   _gbPaletteAnchor = anchorEl;
-  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }));
+  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }), options);
   palette.classList.add('gb-palette-popup');
   palette.setAttribute('role', 'dialog');
   palette.setAttribute('aria-label', '色を選択');
@@ -66592,7 +66709,7 @@ function createInlineColorGrid(currentColor, onSelect) {
 // ============================================================
 // 内部: パレット要素の構築
 // ============================================================
-function _buildPaletteElement(currentColor, onChange, onClose) {
+function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const { hex: curHex } = parseColorToHexAlpha(currentColor);
   const isTransparent = !currentColor || currentColor === 'transparent';
 
@@ -66614,7 +66731,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   let hsb = _hexToHsb(selectedHex);
 
   const palette = document.createElement('div');
-  palette.className = 'gb-palette';
+  palette.className = 'gb-palette' + (options.themeUi ? ' gb-palette--theme-settings' : '');
   function reclampPalette() {
     if (typeof clampPopupToViewport !== 'function') return;
     const requestFrame = (typeof window !== 'undefined' && window.requestAnimationFrame) || (fn => setTimeout(fn, 0));
@@ -66623,10 +66740,15 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
 
   function currentOutputColor() {
     if (selectedIsTransparent) return 'transparent';
-    return _hsbToHex(hsb.h, hsb.s, hsb.b);
+    return currentHex();
   }
-  function currentHex() { return _hsbToHex(hsb.h, hsb.s, hsb.b); }
-  function applyLive() { if (typeof onChange === 'function') onChange(currentOutputColor()); }
+  // Keep exact RGB selections in the theme editor; only slider edits need HSB conversion.
+  function currentHex() { return options.themeUi && selectedHex ? selectedHex : _hsbToHex(hsb.h, hsb.s, hsb.b); }
+  function applyLive() {
+    const preset = selectedPresetIdx >= 0 ? getStandardPaletteSwatches(standardAdjust)[selectedPresetIdx] : null;
+    if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedOsAccentTone, preset });
+    palette.querySelectorAll('[data-theme-palette-auto-row]').forEach(check => { check.checked = false; });
+  }
 
   function selectSwatch(hex, isTransp, customIdx, presetIdx) {
     selectedHex = hex; selectedIsTransparent = isTransp; selectedCustomIdx = customIdx; selectedPresetIdx = presetIdx ?? -1;
@@ -66649,6 +66771,18 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   function renderPresetGrid(refreshHighlights) {
     presetMatrix.innerHTML = '';
     const all = getStandardPaletteSwatches(standardAdjust);
+    if (options.themeUi) {
+      const tone = options.themeUi.getTone();
+      const colors = typeof getCurrentThemeColorSet === 'function' ? getCurrentThemeColorSet() : [];
+      all.forEach(info => {
+        if ((info.row === 2 || info.row === 4) && colors[info.index]) {
+          const color = _colorValueToHex(colors[info.index]);
+          if (!color) return;
+          const amount = (info.row === 2 ? tone.light : tone.dark) / 100;
+          info.color = '#' + color.slice(1).match(/../g).map(hex => Math.round(parseInt(hex, 16) * (1 - amount) + (info.row === 2 ? 255 : 0) * amount).toString(16).padStart(2, '0')).join('');
+        }
+      });
+    }
     const rowKeys = [1, 2, 3, 4];
     rowKeys.forEach(rowNum => {
       const items = all.filter(s => s.row === rowNum);
@@ -66684,11 +66818,41 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         _setPaletteSwatchControl(swatch, `${info.title || c}を選択`, selectPreset);
         swatchesEl.appendChild(swatch);
       });
-      presetMatrix.appendChild(swatchesEl);
+      if (options.themeUi) {
+        const group = document.createElement('div');
+        group.className = 'gb-theme-palette-auto-row';
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.dataset.themePaletteAutoRow = String(rowNum);
+        check.checked = options.themeUi.getRows().includes(rowNum);
+        const names = ['無彩色', '自動（明）', 'テーマカラー', '自動（暗）'];
+        check.setAttribute('aria-label', `${names[rowNum - 1]}を自動適用に使う`);
+        check.title = check.getAttribute('aria-label');
+        check.addEventListener('change', () => options.themeUi.onRowsChange(
+          [...presetMatrix.querySelectorAll('[data-theme-palette-auto-row]:checked')].map(input => Number(input.dataset.themePaletteAutoRow))));
+        group.append(check, swatchesEl);
+        presetMatrix.appendChild(group);
+      } else presetMatrix.appendChild(swatchesEl);
     });
     if (refreshHighlights) updateSwatchHighlights();
   }
   renderPresetGrid(false);
+  if (options.themeUi && typeof renderThemeUiAutoToneControls === 'function') {
+    const toneHost = document.createElement('section');
+    toneHost.className = 'gb-fmt-theme-ui-tone';
+    toneHost.innerHTML = '<div class="gb-palette-section-heading">自動（明／暗）の強さ（共通）</div>' + renderThemeUiAutoToneControls();
+    presetMatrix.after(toneHost);
+    const applyTone = event => {
+      const kind = event.target.dataset.themeUiAutoTone || event.target.dataset.themeUiAutoToneInput;
+      if (!kind) return;
+      options.themeUi.onToneChange(kind, event.target.value);
+      const tone = options.themeUi.getTone();
+      toneHost.querySelectorAll(`[data-theme-ui-auto-tone="${kind}"],[data-theme-ui-auto-tone-input="${kind}"]`).forEach(input => { input.value = String(tone[kind]); });
+      renderPresetGrid(true);
+    };
+    toneHost.addEventListener('input', applyTone);
+    reclampPalette();
+  }
 
   // 標準色調整スライダーは設定ダイアログのテーマタブに移動。
   // ポップアップでは表示のみ。スライダー変更を外部で反映するためイベントを購読。
@@ -66893,6 +67057,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
   const onPickerChange = () => {
+    selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
     selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
@@ -66941,6 +67106,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
       const result = await ed.open();
       const pickedHex = parseColorToHexAlpha(result?.sRGBHex).hex;
       if (!pickedHex) return;
+      selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
       selectedCustomIdx = -1;
@@ -66954,6 +67120,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   });
 
   function applyOsAccentColor(hex, tone) {
+    selectedHex = hex;
     hsb = _hexToHsb(hex);
     selectedIsTransparent = false;
     selectedCustomIdx = -1;
@@ -66972,7 +67139,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
-      btn.style.background = color || info?.fallback || 'var(--theme-os-accent, AccentColor)';
+      btn.style.background = color || info?.fallback || 'var(--theme-native-os-accent, AccentColor)';
       btn.dataset.hex = color;
       btn.title = color ? `${btn.dataset.osAccentLabel}: ${color}` : btn.dataset.osAccentLabel;
     });
@@ -66994,7 +67161,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     btn.dataset.e2eId = `color-palette-os-accent-${info.tone}`;
     btn.setAttribute('data-palette-os-accent-swatch', info.tone);
     btn.setAttribute('aria-label', `${info.label}カラーを設定`);
-    btn.style.background = info.color || info.fallback || 'var(--theme-os-accent, AccentColor)';
+    btn.style.background = info.color || info.fallback || 'var(--theme-native-os-accent, AccentColor)';
     btn.dataset.hex = info.color || '';
     btn.title = info.color ? `${info.label}: ${info.color}` : info.label;
     btn.addEventListener('click', async () => {
@@ -67042,7 +67209,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  function onSliderChange() { selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
@@ -67933,7 +68100,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
   let _osAccentRuntimeColor = '';
   let _osAccentRuntimeAvailable = null;
   const _appliedThemeVarKeys = new Set();
-  let _trackedExistingThemeVars = false;
   const THEME_UI_PROP_FG = 'fg';
   const THEME_UI_PROP_BG = 'bg';
   const THEME_UI_PROP_ACCENT = 'underline';
@@ -68101,6 +68267,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const PANEL_SURFACE_UI_TARGETS = Object.freeze([
     { id: 'surface-dock', group: 'ui', label: '左右レールの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-dockbar-bg' } } },
     { id: 'surface-popup', group: 'ui', label: 'ポップアップの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-popup-bg' } } },
+    { id: 'surface-dialog', group: 'ui', label: 'ダイアログ', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { fg: '文字色', bg: '背景色', underline: '枠線' }, vars: { normal: { fg: '--ui-modal-fg', bg: '--ui-modal-bg', underline: '--ui-modal-border' } } },
     { id: 'surface-folder', group: 'style', app: 'フォルダ', label: 'フォルダパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--fv-panel-bg' } } },
     { id: 'surface-note', group: 'style', app: 'ノート', label: 'ノートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--page-text-bg' } } },
     { id: 'surface-scriptnote', group: 'style', app: 'シナリオ', label: 'シナリオパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--sn2-page-bg' } } },
@@ -68316,7 +68483,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#4f7f3b', '--ui-accent-fg': '#000000',
+    '--ui-accent': '#51813d', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
@@ -68618,6 +68785,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
+    if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
+      const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();
+      const single = { 2: THEME_UI_VALUE_AUTO_LIGHT, 3: THEME_UI_VALUE_AUTO, 4: THEME_UI_VALUE_AUTO_DARK };
+      return rows.length === 1 && single[rows[0]] ? single[rows[0]] : `auto-rows:${rows.join(',')}`;
+    }
     if (raw === THEME_UI_VALUE_OS_ACCENT) return THEME_UI_VALUE_OS_ACCENT;
     if (raw === THEME_UI_VALUE_NONE || raw === '') return THEME_UI_VALUE_NONE;
     if (raw.startsWith(THEME_UI_VALUE_COLOR_PREFIX) || raw.startsWith('#')) {
@@ -68860,6 +69032,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (typeof fetch !== 'function') {
       _osAccentRuntimeAvailable = false;
       _osAccentRuntimeColor = '';
+      document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
       if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
       return Promise.resolve(null);
     }
@@ -68871,11 +69044,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (!color) {
           _osAccentRuntimeAvailable = false;
           _osAccentRuntimeColor = '';
+          document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
           if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
           return null;
         }
         _osAccentRuntimeAvailable = true;
         _osAccentRuntimeColor = color.toLowerCase();
+        document.documentElement.style.setProperty('--theme-native-os-accent', _osAccentRuntimeColor);
         if (getUseOsAccentColor()) {
           applyOsAccentColorSetting(true, { skipNativeRefresh: true });
           global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: true, color: _osAccentRuntimeColor } }));
@@ -68886,6 +69061,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       .catch(() => {
         _osAccentRuntimeAvailable = false;
         _osAccentRuntimeColor = '';
+        document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
         if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
         return null;
       });
@@ -68964,6 +69140,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function applyOsAccentColorSetting(enabled = getUseOsAccentColor(), options = {}) {
     const root = document.documentElement;
+    root.style.setProperty('--theme-native-os-accent', getOsAccentColor() || 'AccentColor');
     const themeDef = options.themeDef || getThemeById(getDefaultThemeId());
     const policy = getThemeAccentPolicy(themeDef);
     const useAvailableOsAccent = policy.kind === 'system-or-default'
@@ -68983,7 +69160,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     root.style.setProperty('--theme-os-accent-text', useAvailableOsAccent
       ? getOsAccentTextColor()
       : getAccentTextColor(effectiveAccent));
+    const explicitKeys = typeof global.settingsThemeExplicitColorKeys === 'function'
+      ? global.settingsThemeExplicitColorKeys() : new Set();
     THEME_OS_ACCENT_STYLE_KEYS.forEach(key => {
+      if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
         root.style.setProperty(key, appliedAccent);
@@ -68994,6 +69174,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
     });
     THEME_OS_ACCENT_TEXT_STYLE_KEYS.forEach(key => {
+      if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
         root.style.setProperty(key, useAvailableOsAccent ? THEME_OS_ACCENT_TEXT_CSS : getAccentTextColor(effectiveAccent));
@@ -69036,6 +69217,21 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return next;
   }
 
+  function _builtinAccentThemeUiApplications(id, applications) {
+    const cfg = normalizeThemeUiApplications(applications);
+    const accent = BUILTIN_ACCENT_POLICIES[id]?.defaultColor;
+    if (!accent) return cfg;
+    // Dark/light presets use their default accent rather than sequential palette tones.
+    for (const states of Object.values(cfg)) for (const props of Object.values(states)) {
+      for (const [prop, value] of Object.entries(props)) {
+        if (THEME_UI_AUTO_VALUES.has(value) || /^auto-rows:/.test(value)) {
+          props[prop] = `${THEME_UI_VALUE_COLOR_PREFIX}${accent}`;
+        }
+      }
+    }
+    return cfg;
+  }
+
   function theme(id, name, vars, board, palette, options = {}) {
     const colorSet = normalizeThemeColorSet(palette, RAINBOW_PALETTE);
     const standardPaletteAdjust = themeStandardPaletteAdjustFromTheme({ ui: { standardPaletteAdjust: options.standardPaletteAdjust } }, null);
@@ -69047,7 +69243,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       themeColorSet: colorSet,
       colorSet,
       palette: colorSet,
-      themeUiApplications: _defaultThemeUiApplications(),
+      themeUiApplications: _builtinAccentThemeUiApplications(id, _defaultThemeUiApplications()),
       themeUiAutoTone: normalizeThemeUiAutoTone(null),
     };
     if (standardPaletteAdjust) {
@@ -69355,7 +69551,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         ...(base.ui || {}),
         ...(src.ui || {}),
         cssVars: { ...(base.ui?.cssVars || {}), ...(src.ui?.cssVars || {}) },
-        themeUiApplications: normalizeThemeUiApplications(src.ui?.themeUiApplications || src.themeUiApplications || base.ui?.themeUiApplications),
+        themeUiApplications: _builtinAccentThemeUiApplications(target.id, src.ui?.themeUiApplications || src.themeUiApplications || base.ui?.themeUiApplications),
         themeUiAutoTone: normalizeThemeUiAutoTone(src.ui?.themeUiAutoTone || src.themeUiAutoTone || base.ui?.themeUiAutoTone),
       },
       board: { ...(base.board || {}), ...(src.board || {}) },
@@ -69455,8 +69651,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function trackExistingThemeVars(root) {
-    if (_trackedExistingThemeVars) return;
-    _trackedExistingThemeVars = true;
+    // Include edits made since the last application, regardless of which editor made them.
     collectKnownThemeVarKeys().forEach(key => {
       if (root.style.getPropertyValue(key)) _appliedThemeVarKeys.add(key);
     });
@@ -69668,10 +69863,25 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized.startsWith('auto-rows:')) {
+      const rows = normalized.slice(10).split(',').map(Number);
+      const index = options.paletteIndex || 0;
+      const row = rows[index % rows.length];
+      if (row === 1) {
+        const grays = typeof getStandardPaletteSwatches === 'function'
+          ? getStandardPaletteSwatches().filter(item => item.row === 1).map(item => item.color)
+          : ['#ffffff', '#d4d4d4', '#ababab', '#808080', '#545454', '#2b2b2b', '#000000'];
+        return grays[Math.floor(index / rows.length) % grays.length];
+      }
+      const color = `var(--theme-palette-${Math.floor(index / rows.length)},#569cd6)`;
+      if (row === 3) return color;
+      const amount = row === 2 ? autoTone.light : autoTone.dark;
+      return `color-mix(in srgb, ${color} ${100 - amount}%, ${row === 2 ? 'white' : 'black'} ${amount}%)`;
+    }
     if (normalized === THEME_UI_VALUE_AUTO) return _themeUiSlotColorCss(options);
     if (normalized === THEME_UI_VALUE_AUTO_LIGHT) return _themeUiAutoMixCss('white', autoTone?.light, options);
     if (normalized === THEME_UI_VALUE_AUTO_DARK) return _themeUiAutoMixCss('black', autoTone?.dark, options);
-    if (normalized === THEME_UI_VALUE_OS_ACCENT) return THEME_OS_ACCENT_CSS;
+    if (normalized === THEME_UI_VALUE_OS_ACCENT) return 'var(--theme-native-os-accent, AccentColor)';
     if (normalized.startsWith(THEME_UI_VALUE_COLOR_PREFIX)) return normalized.slice(THEME_UI_VALUE_COLOR_PREFIX.length);
     return `var(--theme-palette-${normalized},${_themeUiSlotColorCss(options)})`;
   }
@@ -69771,6 +69981,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
     const rules = [];
     const autoTone = getThemeUiAutoTone();
+    document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
+    document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
     const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
@@ -69788,6 +70000,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
             : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
+          if (!target.vars && String(value).startsWith('auto-rows:')) {
+            for (let index = 0; index < THEME_COLOR_SET_SIZE; index++) {
+              const indexedSelector = selector.split(',').map(base => `${base}[data-theme-palette-index="${index}"]`).join(',');
+              rules.push(_themeUiRuleForProp(indexedSelector, target, state.id, prop.id,
+                _themeUiColorCss(value, autoTone, { paletteIndex: index })));
+            }
+          }
         });
       });
     });
@@ -70049,7 +70268,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     fallback('--page-quote-cite-link-fg', '--accent', '#569cd6');
     if (!next['--page-quote-cite-opacity']) next['--page-quote-cite-opacity'] = '0.6';
     if (!next['--page-quote-cite-hover-opacity']) next['--page-quote-cite-hover-opacity'] = '1';
-    fallback('--page-link-hover-bg', '--bg3', '#2d2d2d');
+    if (!next['--page-link-hover-bg']) next['--page-link-hover-bg'] = 'transparent';
     if (!next['--page-link-hover-radius']) next['--page-link-hover-radius'] = '2px';
     fallback('--page-code-block-border', '--border', '#333333');
     if (!next['--page-code-block-border-width']) next['--page-code-block-border-width'] = '1px';
@@ -70380,6 +70599,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
     if (board) {
       const readBoardThemeVar = (key) => {
+        const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
+        if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
         const local = canvas?.style?.getPropertyValue?.(key)?.trim();
         if (local) return local;
         return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';
@@ -70825,6 +71046,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     getThemeUiApplications,
     saveThemeUiApplications,
     setThemeUiApplication,
+    resolveThemeUiColor: (value, index = 0) => _themeUiColorCss(value, getThemeUiAutoTone(), { paletteIndex: index }),
     resetThemeUiApplicationTargets,
     resetThemeUiApplications,
     normalizeThemeUiAutoTone,
@@ -71829,6 +72051,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
         trigger: () => options.focusTarget || anchorEl,
         close: () => _removeFormatPopup(popup),
       });
+    }
+
+    // Theme settings keep all supported typography/decorations on one row.
+    // Other callers retain their existing layout.
+    if (options.compactStyleRow) {
+      const rows = [...popup.children].filter(row => row.matches('.gb-fmt-popup-row--text,.gb-fmt-popup-row--text-decoration,.gb-fmt-popup-row--decoration'));
+      const first = rows[0];
+      if (first) {
+        first.classList.add('gb-fmt-popup-row--compact-style');
+        rows.slice(1).forEach(row => { while (row.firstChild) first.appendChild(row.firstChild); row.remove(); });
+      }
     }
 
     // --- マウント + 位置決め ---
@@ -75633,10 +75866,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     button.id = id;
     button.type = 'button';
     button.className = `gb-btn meldex-offline-choice-button${primary ? ' meldex-offline-choice-button-primary' : ''}`;
-    button.style.cssText = `min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
+    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
     const strong = document.createElement('strong');
     strong.textContent = title;
-    strong.style.cssText = 'display:block;font-size:16px;margin-bottom:5px;';
+    strong.style.cssText = 'display:block;font-size:16px;line-height:1.5;margin-bottom:5px;';
     const detail = document.createElement('span');
     detail.textContent = description;
     detail.style.cssText = 'display:block;font-size:12px;line-height:1.6;color:var(--ui-fg-muted,#aaa);';

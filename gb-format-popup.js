@@ -689,6 +689,17 @@
       });
     }
 
+    // Theme settings keep all supported typography/decorations on one row.
+    // Other callers retain their existing layout.
+    if (options.compactStyleRow) {
+      const rows = [...popup.children].filter(row => row.matches('.gb-fmt-popup-row--text,.gb-fmt-popup-row--text-decoration,.gb-fmt-popup-row--decoration'));
+      const first = rows[0];
+      if (first) {
+        first.classList.add('gb-fmt-popup-row--compact-style');
+        rows.slice(1).forEach(row => { while (row.firstChild) first.appendChild(row.firstChild); row.remove(); });
+      }
+    }
+
     // --- マウント + 位置決め ---
     document.body.appendChild(popup);
     const anchor = options.positionAnchor || anchorEl;

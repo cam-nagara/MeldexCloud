@@ -19375,6 +19375,7 @@ function _applySettingsNavigationView(root, target) {
       section.hidden = !showSection;
       section.style.display = showSection ? '' : 'none';
     });
+    if (target.view === 'theme' && panel.dataset.panel === 'テーマ' && typeof settingsThemeSyncSimpleModeVisibility === 'function') settingsThemeSyncSimpleModeVisibility(panel);
   });
 }
 /* Meldex settings dialog navigation state machine */
@@ -19882,6 +19883,8 @@ async function showSettingsModal(opts) {
     : (typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle');
   const defaultSettingsTab = typeof _settingsDefaultTabId === 'function' ? _settingsDefaultTabId() : (settingsTabs[0] || '全般');
   const requestedPanel = opts.panel ? (typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(opts.panel).tabId : _settingsCanonicalPanelName(opts.panel || '')) : '';
+  // Register starter copies before capturing Cancel's theme snapshot.
+  if (typeof settingsThemeEnsureInitialSimplePresets === 'function') settingsThemeEnsureInitialSimplePresets();
   _settingsThemeSetDirty(false);
   window._settingsOutlinerRootsDirty = false;
   // テーマ変更のキャンセル用にスナップショットを保存
@@ -22665,6 +22668,9 @@ function restoreThemeSnapshot(snap) {
   if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyOsAccentColorSetting === 'function' && Object.prototype.hasOwnProperty.call(snap, '__themeOsAccent')) {
     MeldexThemeManager.applyOsAccentColorSetting(snap.__themeOsAccent === '1');
   }
+  // CSS復元後に個別テーマ・ファイル指定を優先し、JS側の影／整列も戻す。
+  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') MeldexThemeManager.applyBoardThemeRuntime(bd);
+  if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
 }
 
 function _deriveUiStyleVarsFromBase(vars) {
@@ -22795,6 +22801,7 @@ const UI_STYLE_SECTIONS = {
     { label: 'サブ背景色', bg:'--bg2', text:'パネル背景' },
     { label: '強調背景色', bg:'--bg3', text:'ダイアログ/ホバー領域背景' },
     { label: 'ポップアップ', bg:'--ui-popup-bg', text:'ポップアップ背景' },
+    { label: 'ダイアログ', fg:'--ui-modal-fg', bg:'--ui-modal-bg', line:'--ui-modal-border', text:'設定ダイアログ' },
     { label: 'ツールチップ', fg:'--ui-tooltip-fg', bg:'--ui-tooltip-bg', text:'ツールチップ' },
     { label: 'ツールチップ枠線', line:'--ui-tooltip-border', text:'━━' },
     { label: 'スクロールバー背景', bg:'--ui-scrollbar-track-bg', text:'スクロール背景' },
@@ -22807,6 +22814,8 @@ const UI_STYLE_SECTIONS = {
     { label: 'ボタンホバー', fg:'--ui-button-hover-fg', bg:'--ui-button-hover-bg', line:'--ui-button-hover-border', width:'--ui-button-hover-border-width', leftAccent:'--ui-button-hover-left-accent', underline:'--ui-button-hover-underline', accent:'--ui-button-hover-accent-color', bold:'--ui-button-hover-font-weight', italic:'--ui-button-hover-font-style', fontSize:'--ui-button-hover-font-size', font:'--ui-button-hover-font', lineHeight:'--ui-button-hover-line-height', text:'ホバー' },
     { label: 'ボタン選択', fg:'--ui-button-active-fg', bg:'--ui-button-active-bg', line:'--ui-button-active-border', width:'--ui-button-active-border-width', leftAccent:'--ui-button-active-left-accent', underline:'--ui-button-active-underline', accent:'--ui-button-active-accent-color', bold:'--ui-button-active-font-weight', italic:'--ui-button-active-font-style', fontSize:'--ui-button-active-font-size', font:'--ui-button-active-font', lineHeight:'--ui-button-active-line-height', text:'選択' },
     { label: '通常文字', fg:'--fg', bg:'--ui-text-bg', bold:'--ui-text-bold', italic:'--ui-text-italic', fontSize:'--ui-text-font-size', text:'通常テキスト', font:'--ui-font' },
+    { label: '入力欄', fg:'--ui-fg-default', bg:'--ui-bg-field', line:'--ui-border', font:'--ui-font', text:'入力欄' },
+    { label: 'ドロップダウン', fg:'--ui-fg-default', bg:'--ui-bg-control', line:'--ui-border', font:'--ui-font', text:'選択項目' },
     { label: 'サブテキスト', fg:'--fg2', bold:'--ui-muted-bold', italic:'--ui-muted-italic', fontSize:'--ui-muted-font-size', text:'サブテキスト', font:'--ui-muted-font' },
     { label: 'ヘッダー', fg:'--ui-header-fg', bg:'--ui-header-bg', text:'ヘッダー', font:'--ui-header-font' },
     { label: 'ツールバー', fg:'--ui-toolbar-fg', bg:'--ui-toolbar-bg', text:'ツールバー', font:'--ui-toolbar-font' },
@@ -23083,9 +23092,11 @@ function _extraStyleKeys(d) {
   const base = _styleBaseKeyForExtras(d);
   if (!base) return [];
   return [
-    d.bg || `${base}-bg`,
+    d.bg === null ? null : d.bg || `${base}-bg`,
     d.font || `${base}-font`,
     d.fontSize || `${base}-font-size`,
+    d.bold || `${base}-bold`,
+    d.italic || `${base}-italic`,
     d.stroke || `${base}-stroke-color`,
     d.strokeWidth || `${base}-stroke-width`,
     d.leftAccent || `${base}-left-accent`,
@@ -23133,7 +23144,7 @@ function applySettingsThemeStyleSetting(key, value, options = {}) {
 }
 
 function getAllStyleKeys() {
-  const keys = new Set();
+  const keys = new Set(typeof SETTINGS_SIMPLE_THEME_BASE_KEYS === 'undefined' ? [] : SETTINGS_SIMPLE_THEME_BASE_KEYS);
   for (const defs of Object.values(UI_STYLE_SECTIONS)) {
     defs.forEach(d => {
       if(d.fg) keys.add(d.fg); if(d.bg) keys.add(d.bg);
@@ -23143,10 +23154,27 @@ function getAllStyleKeys() {
       if(d.lineStyle) keys.add(d.lineStyle);
       if(d.fontSize) keys.add(d.fontSize);
       if(d.lineHeight) keys.add(d.lineHeight);
+      // 枠線付き／選択状態の行は仮想キー生成の対象外でも、明示された
+      // 装飾キーを保存・取消・再読込の対象から落とさない。
+      ['stroke', 'strokeWidth', 'leftAccent', 'underline', 'accent'].forEach(prop => {
+        if (d[prop]) keys.add(d[prop]);
+      });
       if(Array.isArray(d.numbers)) d.numbers.forEach(n => { if(n?.key) keys.add(n.key); });
       if(Array.isArray(d.popupNumbers)) d.popupNumbers.forEach(n => { if(n?.key) keys.add(n.key); });
       _extraStyleKeys(d).forEach(k => keys.add(k));
     });
+  }
+  // プレビュー専用のパネルタブ／レール等も同じ保存・取消契約に含める。
+  if (typeof MeldexThemeManager !== 'undefined') {
+    for (const target of MeldexThemeManager.THEME_UI_TARGETS || []) {
+      for (const states of [target.formatVars, target.vars]) {
+        for (const props of Object.values(states || {})) {
+          Object.values(props).flat().forEach(key => {
+            if (typeof key === 'string' && key.startsWith('--')) keys.add(key);
+          });
+        }
+      }
+    }
   }
   keys.add('--page-margin-x');
   keys.add('--page-content-max-width');
@@ -23312,13 +23340,16 @@ const SETTINGS_THEME_PREVIEW_AUTO_VAR_TARGETS = Object.freeze({
   '--fv-item-selected-fg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
   '--fv-item-selected-bg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
   '--fv-item-selected-border': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
-  '--outliner-item-fg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
-  '--outliner-item-bg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
-  '--outliner-item-hover-fg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
-  '--outliner-item-hover-bg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
-  '--outliner-item-selected-fg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
-  '--outliner-item-selected-bg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
-  '--outliner-accent': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
+  // 「項目」はフォルダ専用ターゲットではなく、ファイル行・お気に入り行も含む
+  // 共通のフォルダツリー項目へ結び付ける。従来はfolder-tree-folderへ誤配線され、
+  // 設定を変えてもファイル名だけ反映されなかった。
+  '--outliner-item-fg': { targetId: 'folder', stateId: 'normal', index: 0 },
+  '--outliner-item-bg': { targetId: 'folder', stateId: 'normal', index: 0 },
+  '--outliner-item-hover-fg': { targetId: 'folder', stateId: 'hover', index: 0 },
+  '--outliner-item-hover-bg': { targetId: 'folder', stateId: 'hover', index: 0 },
+  '--outliner-item-selected-fg': { targetId: 'folder', stateId: 'selected', index: 0 },
+  '--outliner-item-selected-bg': { targetId: 'folder', stateId: 'selected', index: 0 },
+  '--outliner-accent': { targetId: 'folder', stateId: 'selected', index: 0 },
 });
 
 function _settingsThemePreviewRowKeys(d) {
@@ -23375,10 +23406,11 @@ function _settingsThemePreviewAutoColor(value, sequentialIndex) {
   const paletteLength = Math.max(1, colors.length || 0);
   const seqIndex = Math.max(0, parseInt(sequentialIndex, 10) || 0) % paletteLength;
   const seqFallback = colors[seqIndex] || colors[0] || '#ef4444';
+  if (normalized.startsWith('auto-rows:')) return MeldexThemeManager.resolveThemeUiColor(normalized, seqIndex);
   if (normalized === 'auto') return `var(--theme-palette-${seqIndex}, ${seqFallback})`;
   if (normalized === 'auto-light') return _settingsThemePreviewAutoMixCss('white', _themeUiAutoTone()?.light, seqIndex, seqFallback);
   if (normalized === 'auto-dark') return _settingsThemePreviewAutoMixCss('black', _themeUiAutoTone()?.dark, seqIndex, seqFallback);
-  if (normalized === 'os-accent') return 'var(--theme-os-accent, AccentColor)';
+  if (normalized === 'os-accent') return 'var(--theme-native-os-accent, AccentColor)';
   const custom = _themeUiCustomColor(normalized);
   if (custom) return custom;
   const paletteIndex = parseInt(normalized, 10);
@@ -23422,7 +23454,7 @@ function _settingsThemePreviewStyle(d) {
       : 'background:var(--ui-inner-tab-bg);color:var(--ui-inner-tab-fg);';
   }
   const autoStyle = _settingsThemePreviewAutoStyleForRow(d);
-  const pvBg = autoStyle.bg || (d.previewBg ? `var(${d.previewBg})` : (d.bg ? `var(${d.bg})` : 'var(--bg)'));
+  const pvBg = d.bg === null ? 'transparent' : autoStyle.bg || (d.previewBg ? `var(${d.previewBg})` : (d.bg ? `var(${d.bg})` : 'transparent'));
   const pvFg = autoStyle.fg || (d.fg ? `var(${d.fg})` : d.line ? `var(${d.line})` : 'var(--fg)');
   const strokeKey = _settingsThemePreviewExtraKey(d, 'stroke', '-stroke-color');
   const strokeWidthKey = _settingsThemePreviewExtraKey(d, 'strokeWidth', '-stroke-width');
@@ -23972,6 +24004,7 @@ function _themeUiOptionItems(value) {
     { value: 'os-accent', label: 'OSアクセント', swatch: 'var(--theme-os-accent, AccentColor)', title: 'OSのアクセントカラー' },
     { value: _themeUiCustomValue(customColor), label: '指定カラー', swatch: customColor, title: 'カラーパレットから指定', custom: true },
   ];
+  if (String(value || '').startsWith('auto-rows:')) items.push({ value, label: '自動（複数行）', swatch: _themeUiAutoSwatch('auto') });
   if (osAccent) return items;
   items.push({ group: true, label: 'テーマカラー' });
   colors.forEach((color, index) => {
@@ -24452,6 +24485,392 @@ function openSettingsThemeColorSlotPopup(anchor, index, root) {
   };
   setTimeout(() => document.addEventListener('pointerdown', _settingsThemeColorSlotOutsideHandler, true), 0);
 }
+/* Bulk color and decoration controls for the shared UI; uses the existing theme save/cancel contract. */
+let _settingsThemeSimpleMode = (() => {
+  try { return localStorage.getItem('meldex-settings-theme-mode') === 'simple' ? 'simple' : 'detail'; }
+  catch { return 'detail'; }
+})();
+const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([
+  '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--border', '--selection', '--accent', '--accent2',
+  '--ui-bg-app', '--ui-bg-panel', '--ui-bg-surface', '--ui-border', '--ui-border-strong', '--ui-popup-border', '--ui-fg-muted', '--ui-fg-strong',
+  ...['background', 'surface', 'control', 'text', 'muted', 'border', 'hover', 'selected', 'selectedText', 'accent'].map(id => `--simple-theme-${id}`),
+  '--page-link-hover-fg', '--ui-accent', '--ui-panelset-tabbar-bg',
+  '--ui-bg-control', '--ui-bg-control-hover', '--ui-bg-control-active', '--ui-fg-default', '--ui-control-active-fg', '--link-fg',
+]);
+const SETTINGS_SIMPLE_THEME_FIELDS = Object.freeze([
+  { id: 'background', label: '全体の背景色', key: '--bg', fallback: '#0b0d10' },
+  { id: 'surface', label: 'パネル・ダイアログ・ポップアップの背景色', key: '--ui-popup-bg', fallback: '#181c22' },
+  { id: 'control', label: 'ボタン・入力欄・通常タブ・項目の背景色', key: '--ui-button-bg', fallback: '#242a32' },
+  { id: 'text', label: '通常の文字・アイコン色', key: '--fg', fallback: '#d4d4d4' },
+  { id: 'muted', label: '補助文字・補助アイコン色', key: '--fg2', fallback: '#969696' },
+  { id: 'border', label: '枠線・罫線・区切り線の色', key: '--border', fallback: '#2b323b' },
+  { id: 'hover', label: 'ホバー時の背景色', key: '--ui-hover-bg', fallback: '#242a32' },
+  { id: 'selected', label: '選択中・アクティブ状態の背景色', key: '--ui-selection-bg', fallback: '#264f78' },
+  { id: 'selectedText', label: '選択中・アクティブ状態の文字・アイコン色', key: '--ui-selection-fg', fallback: '#ffffff' },
+  { id: 'accent', label: 'アクセント色', key: '--ui-accent', fallback: '#569cd6' },
+]);
+
+function settingsThemeSyncSimpleModeVisibility(root) {
+  settingsThemeSetSimpleMode(_settingsThemeSimpleMode, root);
+}
+
+function settingsThemeSimpleSelections() {
+  return Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => {
+    const stored = getCssVar(`--simple-theme-${field.id}`).trim();
+    const matchesCurrent = document.documentElement.style.getPropertyValue(field.key).trim() === _settingsSimpleResolve(stored);
+    const hex = parseColorToHexAlpha(getCssVar(field.key)).hex;
+    return [field.id, /^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6})$/i.test(stored) && matchesCurrent
+      ? stored : `color:${/^#[0-9a-f]{6}$/i.test(hex || '') ? hex : field.fallback}`];
+  }));
+}
+
+function _settingsSimpleResolve(value) {
+  const single = { auto: 3, 'auto-light': 2, 'auto-dark': 4 }[value]
+    || (/^auto-rows:[234](?:,[1-4])*$/.test(value) ? Number(value.slice(10, 11)) : 0);
+  if (!single) return MeldexThemeManager.resolveThemeUiColor(value) || 'transparent';
+  const color = 'var(--theme-palette-0, #569cd6)';
+  if (single === 3) return color;
+  const amount = `var(--theme-ui-auto-${single === 2 ? 'light' : 'dark'}-percent, 30%)`;
+  return `color-mix(in srgb, ${color} calc(100% - ${amount}), ${single === 2 ? 'white' : 'black'} ${amount})`;
+}
+
+function settingsThemeSimpleValues() {
+  return Object.fromEntries(Object.entries(settingsThemeSimpleSelections()).map(([id, value]) => [id, _settingsSimpleResolve(value)]));
+}
+
+function renderSettingsSimpleThemeEditor() {
+  const colors = settingsThemeSimpleValues();
+  return `<section class="gb-section gb-section--boxed" data-settings-simple-theme data-settings-view="theme" hidden>
+    <div class="gb-section-title">一括設定</div>
+    <div class="gb-section-desc">変更した色・装飾だけを対応するUIへ一括適用します。適用後もプレビューから個別に編集できます。</div>
+    <div class="settings-simple-theme-grid">
+    ${SETTINGS_SIMPLE_THEME_FIELDS.map(field => `<div class="gb-field-row" data-simple-theme-item="${field.id}">
+      <span class="cs-row-label">${esc(field.label)}</span>
+      <button type="button" class="cs-swatch" data-e2e-id="settings-simple-theme-color-${field.id}" data-simple-theme-color="${field.id}" aria-label="${esc(field.label)}を設定" title="${esc(field.label)}" style="background:${colors[field.id]}"></button>
+    </div>`).join('')}
+    </div>
+    <div class="gb-field-row"><span class="cs-row-label">装飾</span><button type="button" class="gb-btn" data-settings-bulk-decoration data-e2e-id="settings-theme-bulk-decoration">装飾を一括設定…</button></div>
+  </section>`;
+}
+
+function settingsThemeSetSimpleMode(mode, root) {
+  _settingsThemeSimpleMode = mode === 'simple' ? 'simple' : 'detail';
+  try { localStorage.setItem('meldex-settings-theme-mode', _settingsThemeSimpleMode); } catch {}
+  const workspace = root?.closest?.('[data-settings-theme-workspace]') || root?.querySelector?.('[data-settings-theme-workspace]') || document.querySelector('[data-settings-theme-workspace]');
+  if (!workspace) return;
+  const simple = true;
+  workspace.querySelector('[data-settings-simple-theme]').hidden = !simple;
+  workspace.querySelectorAll('[data-simple-theme-detail]').forEach(el => {
+    el.hidden = simple;
+  });
+  workspace.querySelectorAll('[data-simple-theme-mode]').forEach(button => {
+    const selected = button.dataset.simpleThemeMode === _settingsThemeSimpleMode;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    button.classList.toggle('gb-inner-tab-active', selected);
+  });
+  syncSettingsSimpleThemeSwatches(workspace);
+}
+
+// Resolve semantic roles from the actual property definitions, not a parallel list of apps.
+function _settingsSimpleThemeRole(key, prop = '', label = '') {
+  if (key.startsWith('--simple-theme-')) return '';
+  const baseRoles = { '--bg': 'background', '--bg2': 'surface', '--bg3': 'control', '--bg4': 'hover', '--fg': 'text', '--fg2': 'muted', '--selection': 'selected' };
+  if (baseRoles[key]) return baseRoles[key];
+  if (/(?:shadow|saturday|sunday)/i.test(key)) return 'semantic';
+  if (/(?:font|line-height|width|height|padding|margin|radius|opacity|alpha|space|enabled|image|shadow|align|show-grid)/i.test(key)) return '';
+  if (/^--(?:red|green|orange|blue)$/.test(key) || /(?:error|warning|danger|success|status|badge|priority|weekend|holiday)/i.test(key + ' ' + label)) return 'semantic';
+  if (/(?:selection|selected|select-rect|drag-select|today|active|checked|adopted)/i.test(key)) return prop === 'fg' || /(?:-fg|-text-color)$/.test(key) ? 'selectedText' : prop === 'bg' || (!prop && /(?:-bg|selection-color)$/.test(key)) ? 'selected' : 'accent';
+  if (/^--page-link(?:-hover)?-bg$/.test(key)) return 'transparent';
+  if (/link/.test(key) && prop === 'bg') return /hover/.test(key) ? 'hover' : 'control';
+  if (/(?:accent|link|caret|focus|drop|range-fill|now-line)/i.test(key)) return prop === 'bg' ? 'accent' : /(?:-fg)$/.test(key) && /accent/.test(key) ? 'selectedText' : 'accent';
+  if (/(?:-width|-size|-opacity|-radius|-style|-weight)$/.test(key)) return '';
+  if (prop === 'line' || prop === 'stroke' || /(?:border|separator|grid)/i.test(key)) return 'border';
+  if (/(?:hover)/i.test(key)) return prop === 'fg' || /-fg$/.test(key) ? 'text' : 'hover';
+  if (/(?:muted|meta|secondary|subtext|placeholder)/i.test(key)) return 'muted';
+  if (prop === 'fg' || /(?:-fg|-text-color)$/.test(key)) return 'text';
+  if (prop === 'bg' || /-bg$/.test(key)) return /(?:panel|modal|popup|tooltip|toolbar|header|tabbar|dockbar|content|page-text-bg|sn2-page-bg|outliner-bg|preview-bg|detail-bg|chat-bg|history-bg|annotation-bg|search-bg|version-bg|bd-bg|cal-content-bg|db-row-bg)/i.test(key) ? 'surface' : 'control';
+  return '';
+}
+
+function settingsThemeBuildSimpleStyles(colors, definitions, targets, base) {
+  const styles = {};
+  const selectedText = colors.selectedText;
+  const values = { ...colors, transparent: 'transparent' };
+  const assign = (key, prop, label) => {
+    if (!key) return;
+    const role = _settingsSimpleThemeRole(key, prop, label);
+    if (values[role]) styles[key] = values[role];
+  };
+  Object.keys(base || {}).forEach(key => assign(key));
+  for (const defs of Object.values(definitions)) for (const def of defs) {
+    for (const prop of ['fg', 'bg', 'line', 'stroke', 'accent']) assign(def[prop], prop, def.label);
+
+  }
+  for (const target of targets) for (const [state, props] of Object.entries(target.vars || {})) {
+    for (const [prop, raw] of Object.entries(props)) for (const key of [raw].flat()) {
+      if (_settingsSimpleThemeRole(key, prop, '') === 'semantic') continue;
+      assign(key, prop === 'underline' ? 'line' : prop);
+    }
+  }
+  Object.assign(styles, {
+    '--bg': colors.background, '--bg2': colors.surface, '--bg3': colors.control, '--bg4': colors.hover,
+    '--fg': colors.text, '--fg2': colors.muted, '--border': colors.border,
+    '--accent': colors.accent, '--accent2': colors.accent, '--ui-accent': colors.accent,
+    '--ui-accent-fg': selectedText, '--ui-selection-fg': selectedText, '--ui-selection-bg': colors.selected,
+    '--selection': colors.selected, '--ui-hover-bg': colors.hover, '--ui-button-bg': colors.control,
+    '--ui-popup-bg': colors.surface, '--ui-modal-bg': colors.surface, '--content-bg': colors.surface,
+    '--ui-bg-control': colors.control, '--ui-bg-control-hover': colors.hover, '--ui-bg-control-active': colors.selected,
+    '--ui-bg-app': colors.background, '--ui-bg-panel': colors.surface, '--ui-bg-surface': colors.surface,
+    '--ui-border': colors.border, '--ui-border-strong': colors.border, '--ui-popup-border': colors.border,
+    '--ui-fg-muted': colors.muted, '--ui-fg-strong': colors.text,
+    '--ui-fg-default': colors.text, '--ui-control-active-fg': selectedText, '--link-fg': colors.accent,
+    '--page-link-fg': colors.accent, '--page-link-hover-fg': colors.accent,
+    '--editor-caret-color': colors.accent, '--a11y-focus-ring': colors.accent,
+    '--ui-range-fill-bg': colors.accent, '--ui-range-track-bg': colors.control,
+  });
+  return styles;
+}
+
+function settingsThemeSimpleDecorationStyles(dark) {
+  const decoration = /(?:font|bold|italic|line-height|line-style|stroke-(?:color|width)|left-accent|underline|width|height|radius|padding|margin|opacity|indent|space-before|space-after|gap|shadow|spacing|tracking|align)/i;
+  return Object.fromEntries(getAllStyleKeys().filter(key => !key.startsWith('--simple-theme-') && decoration.test(key))
+    .map(key => [key, dark.ui.cssVars[key] || '']));
+}
+
+// Explicit bulk edits remain independent of the palette's shared accent control.
+function settingsThemeExplicitColorKeys() {
+  const root = document.documentElement;
+  const roles = Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id]));
+  const edited = new Set(['selected', 'selectedText', 'accent'].filter(id =>
+    root.style.getPropertyValue(`--simple-theme-${id}`).trim()));
+  if (!edited.size) return new Set();
+  const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), MeldexThemeManager.getThemeById('builtin-dark').ui.cssVars);
+  const mapping = settingsThemeBuildSimpleStyles(roles, UI_STYLE_SECTIONS, MeldexThemeManager.THEME_UI_TARGETS, base);
+  return new Set(Object.entries(mapping).filter(([,role]) => edited.has(role)).map(([key]) => key));
+}
+
+function settingsThemeApplySimpleColors(overrides = {}) {
+  const selections = { ...settingsThemeSimpleSelections() };
+  for (const [id, value] of Object.entries(overrides)) {
+    if (!(id in selections)) return false;
+    selections[id] = /^#[0-9a-f]{6}$/i.test(value) ? `color:${value}` : value;
+  }
+  if (Object.values(selections).some(value => !/^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6})$/i.test(value))) return false;
+  const colors = Object.fromEntries(Object.entries(selections).map(([id, value]) => [id, _settingsSimpleResolve(value)]));
+  const manager = MeldexThemeManager;
+  const changed = new Set(Object.keys(overrides));
+  if (!changed.size) return true;
+  const roles = Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id]));
+  const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), manager.getThemeById('builtin-dark').ui.cssVars);
+  const styleRoles = settingsThemeBuildSimpleStyles(roles, UI_STYLE_SECTIONS, manager.THEME_UI_TARGETS, base);
+  // Inline links keep the surrounding surface instead of taking the control background.
+  const changedBackground = changed.has('control') || changed.has('hover');
+  const styles = Object.fromEntries(Object.entries(styleRoles)
+    .filter(([, role]) => changed.has(role) || role === 'transparent' && changedBackground)
+    .map(([key, role]) => [key, role === 'transparent' ? 'transparent' : colors[role]]));
+  const root = document.documentElement;
+  const apps = manager.getThemeUiApplications();
+  for (const target of manager.THEME_UI_TARGETS) for (const state of target.states) {
+    for (const prop of target.props) {
+      if (!(prop in (apps[target.id]?.[state] || {}))) continue;
+      const rawKeys = target.vars?.[state]?.[prop];
+      const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
+        : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
+        : state === 'selected' ? 'accent' : 'border';
+      if (target.vars ? ![rawKeys].flat().some(key => changed.has(styleRoles[key])) : !changed.has(role)) continue;
+      apps[target.id][state][prop] = target.vars ? 'none'
+        : prop === 'fg' ? selections[state === 'selected' ? 'selectedText' : 'text']
+        : prop === 'bg' ? selections[state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control']
+        : selections[state === 'selected' ? 'accent' : 'border'];
+    }
+  }
+  _runSettingsWithoutLocalStorageHistory(() => {
+    manager.saveThemeUiApplications(apps, { skipHistory: true });
+    Object.entries(styles).forEach(([key, value]) => root.style.setProperty(key, value));
+    for (const id of changed) root.style.setProperty(`--simple-theme-${id}`, selections[id]);
+  });
+  if (Object.prototype.hasOwnProperty.call(styles, '--bd-bg') && typeof _bdApplyCurrentBoardBackground === 'function') {
+    _bdApplyCurrentBoardBackground();
+  }
+  _settingsThemeMarkDirty();
+  refreshSettingsThemePreview();
+  syncSettingsSimpleThemeSwatches(document);
+  return true;
+}
+
+function syncSettingsSimpleThemeSwatches(root) {
+  const values = settingsThemeSimpleValues();
+  root.querySelectorAll('[data-simple-theme-color]').forEach(button => { button.style.background = values[button.dataset.simpleThemeColor]; });
+
+}
+
+// Reuse the detail popup's property map, including its registered generated keys.
+// Only the property explicitly changed here is written; colors and unrelated decorations remain intact.
+function settingsThemeBulkDecorationKeys(prop) {
+  return [...new Set(Object.values(UI_STYLE_SECTIONS).flatMap(defs => defs.flatMap(def => {
+    const map = window.getSettingsThemePreviewPropertyMap(def);
+    return map[prop] ? [map[prop]] : [];
+  })))];
+}
+
+function settingsThemeApplyBulkDecoration(prop, value) {
+  const supported = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'borderWidth', 'borderStyle', 'lineHeight'];
+  if (!supported.includes(prop)) return false;
+  let css = value == null ? '' : String(value);
+  if (['fontSize', 'textStrokeWidth', 'borderWidth'].includes(prop)) {
+    if (value != null && (!Number.isFinite(Number(value)) || Number(value) < 0)) return false;
+    css = value == null ? '' : `${Number(value)}px`;
+  } else if (prop === 'fontWeight') css = value === 'bold' ? 'bold' : 'normal';
+  else if (prop === 'fontStyle') css = value === 'italic' ? 'italic' : 'normal';
+  else if (prop === 'leftAccent') css = value ? THEME_STYLE_LEFT_ACCENT_WIDTH : '0px';
+  else if (prop === 'underline') css = value ? THEME_STYLE_UNDERLINE_WIDTH : '0px';
+  else if (prop === 'lineHeight') {
+    if (!Number.isFinite(Number(value)) || Number(value) < 50 || Number(value) > 400) return false;
+    css = `${Number(value)}%`;
+  } else if (prop === 'borderStyle' && !['none', 'solid', 'dotted', 'dashed'].includes(css)) return false;
+  const keys = settingsThemeBulkDecorationKeys(prop);
+  _runSettingsWithoutLocalStorageHistory(() => keys.forEach(key => applySettingsThemeStyleSetting(key, css)));
+  _settingsThemeMarkDirty();
+  refreshSettingsThemePreview();
+  return true;
+}
+
+function settingsThemeOpenBulkDecoration(button) {
+  if (_settingsThemeIsReadonlyElement(button)) { _settingsThemePromptDuplicateForEdit(); return; }
+  const extra = document.createElement('label');
+  extra.className = 'gb-field-row';
+  extra.innerHTML = '行間 <input type="number" class="gb-input" min="50" max="400" step="1" placeholder="個別" aria-label="行間を一括設定" data-e2e-id="settings-theme-bulk-line-height"> %';
+  extra.querySelector('input').addEventListener('change', event => {
+    if (event.target.value) settingsThemeApplyBulkDecoration('lineHeight', Number(event.target.value));
+  });
+  const hint = document.createElement('div');
+  hint.className = 'gb-section-desc';
+  hint.textContent = '操作した装飾だけを、対応する全要素へ適用します。';
+  const values = {};
+  for (const prop of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'borderWidth', 'borderStyle', 'lineHeight']) {
+    const distinct = [...new Set(settingsThemeBulkDecorationKeys(prop).map(key => getCssVar(key).trim()))];
+    if (distinct.length !== 1) continue;
+    const raw = distinct[0];
+    values[prop] = ['fontSize', 'textStrokeWidth', 'borderWidth'].includes(prop) ? (raw ? parseFloat(raw) : null)
+      : ['leftAccent', 'underline'].includes(prop) ? parseFloat(raw) > 0 : raw;
+    if (prop === 'lineHeight' && raw.endsWith('%')) extra.querySelector('input').value = parseFloat(raw);
+  }
+  openFormatPopup(button, {
+    extraRowTop: [hint],
+    fields: ['fontFamily', 'fontSize', 'bold', 'italic', 'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'borderWidth', 'borderStyle'],
+    values,
+    extraRow2: [extra],
+    onChange: (prop, value) => settingsThemeApplyBulkDecoration(prop, value),
+  });
+}
+
+function bindSettingsSimpleThemeEditor(root) {
+  const workspace = root.querySelector('[data-settings-theme-workspace]');
+  if (!workspace || workspace.dataset.simpleThemeBound === '1') return;
+  workspace.dataset.simpleThemeBound = '1';
+  workspace.querySelector('[data-settings-bulk-decoration]')?.addEventListener('click', event => settingsThemeOpenBulkDecoration(event.currentTarget));
+  root.querySelectorAll('[data-simple-theme-mode]').forEach(button => {
+    button.addEventListener('click', () => settingsThemeSetSimpleMode(button.dataset.simpleThemeMode, root));
+    button.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      settingsThemeSetSimpleMode(event.key === 'Home' ? 'simple' : event.key === 'End' ? 'detail' : _settingsThemeSimpleMode === 'simple' ? 'detail' : 'simple', root);
+      root.querySelector('[data-simple-theme-mode][aria-selected="true"]').focus();
+    });
+  });
+  root.querySelectorAll('[data-simple-theme-color]').forEach(button => button.addEventListener('click', () => {
+    if (_settingsThemeIsReadonlyElement(button)) { _settingsThemePromptDuplicateForEdit(); return; }
+    const id = button.dataset.simpleThemeColor;
+    const apply = value => settingsThemeApplySimpleColors({ [id]: value });
+    const rows = () => {
+      const value = settingsThemeSimpleSelections()[id];
+      return value.startsWith('auto-rows:') ? value.slice(10).split(',').map(Number)
+        : { auto: [3], 'auto-light': [2], 'auto-dark': [4] }[value] || [];
+    };
+    openColorPalette(button, settingsThemeSimpleValues()[id], (color, metadata) => {
+      if (metadata?.osAccentTone === 'base') apply('os-accent');
+      else if (metadata?.preset?.row === 3 && metadata.preset.themeSlot) apply(String(metadata.preset.index));
+      else if (color === 'transparent') apply('none');
+      else { const hex = parseColorToHexAlpha(color).hex; if (/^#[0-9a-f]{6}$/i.test(hex || '')) apply(`color:${hex}`); }
+    }, { themeUi: {
+      getRows: rows,
+      onRowsChange: selected => apply(selected.length ? `auto-rows:${selected.join(',')}` : 'none'),
+      getTone: () => MeldexThemeManager.getThemeUiAutoTone(),
+      onToneChange: (kind, value) => { MeldexThemeManager.setThemeUiAutoTone(kind, value); _settingsThemeMarkDirty(); },
+    } });
+  }));
+  settingsThemeSetSimpleMode(_settingsThemeSimpleMode, root);
+}
+
+// These markers describe the editor choice only. Colors are ordinary theme CSS vars
+// and application settings; theme and palette events must never reapply grouped edits.
+function settingsThemeRefreshSimpleReferences() {
+  syncSettingsSimpleThemeSwatches(document);
+}
+for (const event of ['meldex-theme-change', 'meldex-theme-color-set-change', 'meldex-theme-os-accent-change', 'meldex-theme-ui-auto-tone-change', 'meldex-theme-ui-applications-change']) {
+  window.addEventListener(event, settingsThemeRefreshSimpleReferences);
+}
+
+// Seed ordinary editable themes once, without changing the selected theme or live colors.
+const SETTINGS_SIMPLE_PRESETS_SEEDED_KEY = 'meldex-simple-theme-presets-seeded-v1';
+function settingsThemeBuildSimplePreset(source, dark) {
+  const vars = source.ui.cssVars;
+  const colors = {
+    background: vars['--bg'], surface: vars['--content-bg'] || vars['--bg2'], control: vars['--bg3'],
+    text: vars['--fg'], muted: vars['--fg2'], border: vars['--border'],
+    hover: vars['--ui-hover-bg'] || vars['--bg4'], selected: vars['--ui-selection-bg'] || vars['--selection'],
+    selectedText: vars['--ui-selection-fg'] || vars['--fg'], accent: vars['--ui-accent'] || vars['--accent'],
+  };
+  const theme = JSON.parse(JSON.stringify(dark));
+  theme.id = `custom-simple-${source.id.replace(/^builtin-/, '')}`;
+  theme.name = `${source.name}（シンプル）`;
+  theme.builtIn = false;
+  const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), dark.ui.cssVars);
+  theme.ui.cssVars = { ...dark.ui.cssVars, ...settingsThemeBuildSimpleStyles(colors, UI_STYLE_SECTIONS, MeldexThemeManager.THEME_UI_TARGETS, base) };
+  for (const [key, value] of Object.entries(settingsThemeSimpleDecorationStyles(dark))) {
+    if (value) theme.ui.cssVars[key] = value; else delete theme.ui.cssVars[key];
+  }
+  for (const [id, color] of Object.entries(colors)) theme.ui.cssVars[`--simple-theme-${id}`] = `color:${color}`;
+  theme.ui.useOsAccentColor = false;
+  theme.ui['_theme-use-os-accent'] = false;
+  theme['_theme-use-os-accent'] = false;
+  const applications = theme.ui.themeUiApplications = {};
+  for (const target of MeldexThemeManager.THEME_UI_TARGETS) {
+    applications[target.id] = {};
+    for (const state of target.states) {
+      applications[target.id][state] = {};
+      for (const prop of target.props) {
+        const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
+          : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
+          : state === 'selected' ? 'accent' : 'border';
+        applications[target.id][state][prop] = target.vars ? 'none' : `color:${colors[role]}`;
+      }
+    }
+  }
+  return theme;
+}
+
+function settingsThemeEnsureInitialSimplePresets() {
+  if (typeof MeldexThemeManager === 'undefined') return false;
+  const manager = MeldexThemeManager;
+  if (!manager.THEME_SETTINGS_KEYS.includes(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY)) manager.THEME_SETTINGS_KEYS.push(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY);
+  try {
+    if (localStorage.getItem(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY) === '1') return true;
+    // A malformed saved list must be preserved, not replaced with the seed themes.
+    const raw = localStorage.getItem(manager.CUSTOM_THEMES_KEY);
+    if (raw != null && !Array.isArray(JSON.parse(raw))) return false;
+    const existing = manager.getCustomThemes();
+    const dark = manager.getThemeById('builtin-dark');
+    const presets = ['dark', 'light', 'pastel', 'earth'].map(id => settingsThemeBuildSimplePreset(manager.getThemeById(`builtin-${id}`), dark));
+    const additions = presets.filter(theme => !existing.some(item => item.id === theme.id));
+    if (additions.length) manager.saveCustomThemes([...existing, ...additions], { skipHistory: true });
+    localStorage.setItem(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY, '1');
+    return true;
+  } catch {
+    return false;
+  }
+}
 /* gb-settings.part03.js */
 function openSettingsThemeExtraSlotPopup(anchor, row, col, root) {
   if (!anchor || !Number.isInteger(row) || !Number.isInteger(col)) return;
@@ -24758,6 +25177,16 @@ function _syncThemeUiPicker(wrap, value) {
   _syncThemeUiCustomOption(wrap, value);
   const btn = wrap.querySelector('[data-theme-ui-picker]');
   if (btn) btn.innerHTML = _themeUiPickerContent(value);
+  const swatch = wrap.querySelector('[data-theme-ui-color-swatch]');
+  if (swatch) {
+    const item = _themeUiOptionForValue(value);
+    swatch.innerHTML = _themeUiSwatchHtml(item);
+    if (String(value).startsWith('auto-rows:')) {
+      swatch.querySelector('.cs-theme-ui-option-swatch').style.background = MeldexThemeManager.resolveThemeUiColor(value);
+    }
+    swatch.title = item.label;
+    swatch.dataset.themeUiValue = value;
+  }
   wrap.querySelectorAll('[data-theme-ui-option-value]').forEach(opt => {
     opt.setAttribute('aria-selected', String(opt.dataset.themeUiOptionValue || '') === String(value || 'none') ? 'true' : 'false');
   });
@@ -24769,10 +25198,10 @@ function _syncThemeUiNativeSelect(select, value) {
   select.querySelectorAll('option[data-theme-ui-custom-option]').forEach(opt => {
     if (opt.value !== current) opt.remove();
   });
-  if (_themeUiCustomColor(current) && !Array.from(select.options).some(opt => opt.value === current)) {
+  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:')) && !Array.from(select.options).some(opt => opt.value === current)) {
     const opt = document.createElement('option');
     opt.value = current;
-    opt.textContent = '指定カラー';
+    opt.textContent = current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
     opt.dataset.themeUiCustomOption = '1';
     select.appendChild(opt);
   }
@@ -24825,6 +25254,38 @@ function bindThemeUiAutoToneControls(root) {
 function bindThemeUiApplicationEditor(root) {
   if (!root || typeof MeldexThemeManager === 'undefined') return;
   bindThemeUiAutoToneControls(root);
+  root.querySelectorAll('[data-theme-ui-color-swatch]').forEach(button => {
+    button.addEventListener('click', () => {
+      const wrap = button.closest('.cs-theme-ui-picker-wrap');
+      const select = wrap.querySelector('[data-theme-ui-setting]');
+      const apply = value => {
+        _syncThemeUiNativeSelect(select, value);
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const rows = () => {
+        const value = select.value;
+        if (value.startsWith('auto-rows:')) return value.slice(10).split(',').map(Number);
+        return { auto: [3], 'auto-light': [2], 'auto-dark': [4] }[value] || [];
+      };
+      openColorPalette(button, _themeUiCustomColor(select.value) || getComputedStyle(button.querySelector('.cs-theme-ui-option-swatch') || button).backgroundColor,
+        (color, metadata) => {
+          if (metadata?.osAccentTone === 'base') apply('os-accent');
+          else if (metadata?.preset?.row === 3 && metadata.preset.themeSlot) apply(String(metadata.preset.index));
+          else apply(color === 'transparent' ? 'none' : _themeUiCustomValue(color));
+        }, { themeUi: {
+          getRows: rows,
+          onRowsChange: selected => apply(selected.length ? `auto-rows:${selected.join(',')}` : 'none'),
+          getTone: _themeUiAutoTone,
+          onToneChange: (kind, value) => {
+            const next = MeldexThemeManager.setThemeUiAutoTone(kind, value);
+            _settingsThemeMarkDirty?.();
+            _syncThemeUiAutoToneControls(root, next);
+            if (typeof refreshSettingsThemeStylePreviews === 'function') refreshSettingsThemeStylePreviews(root);
+          },
+        } });
+    });
+    _syncThemeUiPicker(button.closest('.cs-theme-ui-picker-wrap'), button.closest('.cs-theme-ui-picker-wrap').querySelector('[data-theme-ui-setting]').value);
+  });
   root.querySelectorAll('[data-theme-ui-setting]').forEach(select => {
     select.addEventListener('change', () => {
       const [targetId, stateId, propId] = String(select.dataset.themeUiSetting || '').split('|');
@@ -28339,7 +28800,7 @@ function _renderSettingsThemeCommonFontSection() {
 
 const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
   surface: [
-    ['共通', ['共通本文背景色', 'アプリ基礎背景色', 'サブ背景色', '強調背景色', 'ポップアップ', 'パネルタブバー', 'パネルタブ選択背景', '折りたたみ/ドックバー', 'パネル内タブバー', 'パネル内タブ 通常', 'パネル内タブ 選択']],
+    ['共通', ['共通本文背景色', 'アプリ基礎背景色', 'サブ背景色', '強調背景色', 'ポップアップ', 'ダイアログ', 'パネルタブバー', 'パネルタブ選択背景', '折りたたみ/ドックバー', 'パネル内タブバー', 'パネル内タブ 通常', 'パネル内タブ 選択']],
     ['フォルダ', ['カード', 'カード枠線']],
     ['ノート', ['引用ブロック']],
     ['シート', ['ヘッダー', 'エントリ列', 'セル']],
@@ -28447,9 +28908,10 @@ function _settingsThemeApplyAccentColor(color) {
   const textColor = typeof MeldexThemeManager?.getAccentTextColor === 'function'
     ? MeldexThemeManager.getAccentTextColor(value)
     : '#ffffff';
-  keys.forEach(key => root.style.setProperty(key, value.toLowerCase()));
-  textKeys.forEach(key => root.style.setProperty(key, textColor));
-  root.style.setProperty('--ui-accent', value.toLowerCase());
+  const explicitKeys = typeof settingsThemeExplicitColorKeys === 'function' ? settingsThemeExplicitColorKeys() : new Set();
+  keys.forEach(key => { if (!explicitKeys.has(key)) root.style.setProperty(key, value.toLowerCase()); });
+  textKeys.forEach(key => { if (!explicitKeys.has(key)) root.style.setProperty(key, textColor); });
+  if (!explicitKeys.has('--ui-accent')) root.style.setProperty('--ui-accent', value.toLowerCase());
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
   if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
   document.querySelectorAll('[data-settings-theme-accent-swatch]').forEach(swatch => { swatch.style.background = value; });
@@ -28496,11 +28958,12 @@ function settingsThemeChooseAccentColor(anchor) {
 }
 
 const SETTINGS_THEME_PREVIEW_APPS = Object.freeze([
-  ['folder', 'フォルダ'], ['note', 'ノート'], ['scriptnote', 'シナリオ'], ['sheet', 'シート'],
+  ['main', 'メインウィンドウ'], ['folder', 'フォルダ'], ['note', 'ノート'], ['scriptnote', 'シナリオ'], ['sheet', 'シート'],
   ['board', 'ボード'], ['calendar', 'スケジュール'], ['aux', '補助パネル'], ['popup', 'ポップアップ'],
 ]);
 
 const SETTINGS_THEME_PREVIEW_SECTION_MAP = Object.freeze({
+  main: Object.freeze(['共通', 'フォルダツリー', 'フォルダ', 'オプション', 'チャット', 'ヒストリー', 'アノテート', '検索', 'バージョン管理', 'ビューワー']),
   folder: Object.freeze(['フォルダ']),
   note: Object.freeze(['ノート']),
   scriptnote: Object.freeze(['シナリオ']),
@@ -28512,6 +28975,7 @@ const SETTINGS_THEME_PREVIEW_SECTION_MAP = Object.freeze({
 });
 
 const SETTINGS_THEME_PREVIEW_APP_SURFACES = Object.freeze({
+  main: Object.freeze({ bg: '--fv-panel-bg', fg: '--fv-item-fg' }),
   folder: Object.freeze({ bg: '--fv-panel-bg', fg: '--fv-item-fg' }),
   note: Object.freeze({ bg: '--page-text-bg', fg: '--page-text-fg' }),
   scriptnote: Object.freeze({ bg: '--sn2-page-bg', fg: '--sn2-base-text-color' }),
@@ -28523,6 +28987,7 @@ const SETTINGS_THEME_PREVIEW_APP_SURFACES = Object.freeze({
 });
 
 const SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS = Object.freeze({
+  main: 'surface-folder',
   folder: 'surface-folder',
   note: 'surface-note',
   scriptnote: 'surface-scriptnote',
@@ -28549,6 +29014,7 @@ const SETTINGS_THEME_PREVIEW_SIDE_SURFACES = Object.freeze({
 });
 
 const SETTINGS_THEME_STATE_KEYS = Object.freeze({
+  main: Object.freeze({ bg: '--bg', fg: '--fg', border: '--border', accent: '--ui-accent', hoverBg: '--ui-hover-bg', hoverFg: '--ui-hover-fg', selectedBg: '--ui-selection-bg', selectedFg: '--ui-selection-fg' }),
   folder: Object.freeze({ bg: '--fv-item-bg', fg: '--fv-item-fg', border: '--fv-item-border', accent: '--fv-item-selected-border', hoverBg: '--fv-item-hover-bg', hoverFg: '--fv-item-hover-fg', selectedBg: '--fv-item-selected-bg', selectedFg: '--fv-item-selected-fg' }),
   sheet: Object.freeze({ bg: '--db-row-bg', fg: '--db-cell-fg', border: '--db-grid-border', accent: '--db-active-color', hoverBg: '--db-cell-bg', hoverFg: '--db-th-fg', selectedBg: '--db-selection-color', selectedFg: '--db-selection-fg' }),
   scriptnote: Object.freeze({ bg: '--sn2-page-bg', fg: '--sn2-base-text-color', border: '--sn2-border-color', accent: '--sn2-selection-color', hoverBg: '--sn2-hover-bg', hoverFg: '--sn2-base-text-color', selectedBg: '--sn2-selection-color', selectedFg: '--sn2-selection-fg' }),
@@ -28567,8 +29033,8 @@ const SETTINGS_THEME_STATE_SECTIONS = Object.freeze([
   Object.freeze(['operation-states', '操作状態']),
 ]);
 const SETTINGS_THEME_STATES = Object.freeze(['default', 'hover', 'focus', 'selected']);
-let _settingsThemePreviewAppId = 'note';
-let _settingsThemePreviewLeftRailId = 'note';
+let _settingsThemePreviewAppId = 'main';
+let _settingsThemePreviewLeftRailId = 'folder';
 let _settingsThemePreviewRightRailId = 'theme';
 
 function _settingsThemeStateKeys(config, section, state) {
@@ -28723,6 +29189,7 @@ function _settingsThemePreviewElement(appId, sampleId, section, label, tagName, 
 }
 
 function _settingsThemePreviewActualSurface(appId) {
+  if (appId === 'main') return _settingsThemePreviewActualSurface('folder');
   const sample = (id, section, label, text, className = '') =>
     _settingsThemePreviewSample(appId, id, section, label, text, className);
   const sampleMarkup = (id, section, label, markup, className = '') =>
@@ -28832,7 +29299,7 @@ function _settingsThemePreviewActualSurface(appId) {
 
 function settingsThemePreviewManifest() {
   return SETTINGS_THEME_PREVIEW_APPS.flatMap(([appId, appLabel]) =>
-    (SETTINGS_THEME_PREVIEW_SAMPLE_SPECS[appId] || []).map(([sampleId, section, label]) => {
+    [...(SETTINGS_THEME_PREVIEW_SAMPLE_SPECS[appId] || []), ...settingsThemePreviewSupplementEntries(appId).map(entry => [entry.id.slice(appId.length+1),entry.section,entry.label])].map(([sampleId, section, label]) => {
         const index = (UI_STYLE_SECTIONS?.[section] || []).findIndex(def => def?.label === label);
         const def = index >= 0 ? UI_STYLE_SECTIONS[section][index] : null;
         if (!def) return null;
@@ -28879,10 +29346,55 @@ function _settingsThemePreviewSurfaceAttributes(stableId, label, bgKey, targetId
   return ` data-e2e-id="${esc(`settings-theme-preview-${stableId}`)}" data-style-id="${esc(stableId)}" data-style-label="${esc(label)}" data-style-bg-key="${esc(bgKey)}" data-theme-ui-target-id="${esc(targetId)}" data-theme-ui-state-id="normal" data-style-preview-native="1" data-action="openStylePreviewPopup(this)" title="${esc(actionTitle)}"`;
 }
 
+function settingsThemePreviewSupplementEntries(appId) {
+  const sections = [...new Set(SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || [])];
+  // 新しい詳細カテゴリも補助パネルの見本に含め、入口の追加忘れを防ぐ。
+  if (appId === 'aux') {
+    const assigned = new Set(Object.values(SETTINGS_THEME_PREVIEW_SECTION_MAP).flat());
+    sections.push(...Object.keys(UI_STYLE_SECTIONS).filter(section => !assigned.has(section)));
+  }
+  const shown = new Set((SETTINGS_THEME_PREVIEW_SAMPLE_SPECS[appId] || []).map(([,section,label]) => `${section}/${label}`));
+  return sections.flatMap(section => (UI_STYLE_SECTIONS[section] || []).map((def,index) => ({
+    id:`${appId}/extra/${section}/${index}`, appId, section, index, label:def.label, def,
+  })).filter(entry => !shown.has(`${section}/${entry.label}`)));
+}
+
+function _settingsThemePreviewSupplement(appId) {
+  const entries = settingsThemePreviewSupplementEntries(appId);
+  const sections = [...new Set(entries.map(entry=>entry.section))];
+  const samples = sections.map(section => `<section class="settings-theme-preview-group"><h3>${esc(section)}</h3><div class="settings-theme-extra-samples">${entries.filter(entry=>entry.section===section).map(entry=>_settingsThemePreviewTarget(entry.section,entry.label,entry.def.text || entry.label,'',entry.id)).join('')}</div></section>`).join('');
+  const ownSections = new Set(SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || []);
+  const windowOnly = new Set(['left-chrome', 'collapse-button', 'folder-section', 'folder', 'surface-dock', 'surface-outliner']);
+  const auto = (MeldexThemeManager.THEME_UI_TARGETS || []).filter(target =>
+    target.app ? ownSections.has(target.app)
+      : appId === 'main' || !windowOnly.has(target.id)
+  ).map(target => `<button type="button" class="settings-theme-preview-target" data-style-id="palette/${esc(target.id)}" data-style-label="${esc(target.label)}" data-theme-ui-target-id="${esc(target.id)}" data-theme-ui-state-id="normal" data-action="openStylePreviewPopup(this)" aria-label="${esc(target.label)}の状態別配色">${esc(target.label)}</button>`).join('');
+  return `<details class="settings-theme-extra-elements"><summary data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+}
+
+function settingsThemePreviewExtraControls(def, previewEl) {
+  if (!previewEl.closest('[data-settings-theme-preview]')) return null;
+  const root = document.createElement('div');
+  root.dataset.settingsThemePopupExtras = '1';
+  root.className = 'settings-theme-preview-popup-controls';
+  const appId = previewEl.closest('[data-style-preview-app]')?.dataset.stylePreviewApp;
+  const section = previewEl.dataset.styleSection || '';
+  let html = `<details><summary>共通フォント</summary>${_renderSettingsThemeCommonFontSection()}</details>`;
+  if (section === 'ノート' || appId === 'note') html += _renderSettingsThemeNoteLayoutRows();
+  if (section === 'ボード' || appId === 'board') html += _renderSettingsThemeBoardExtras();
+  if (def.toggle) html += `<label class="gb-field-row"><span>${esc(def.label)}の表示</span><input type="checkbox" data-settings-theme-popup-toggle="${esc(def.toggle)}"${/^0(?:px)?$/.test(getCssVar(def.toggle)) ? '' : ' checked'}></label>`;
+  root.innerHTML = html;
+  root.querySelector('[data-settings-theme-popup-toggle]')?.addEventListener('change',event => {
+    applySettingsThemeStyleSetting(def.toggle,event.target.checked ? (def.toggleOn || '1') : (def.toggleOff || '0'));
+    refreshSettingsThemePreview();
+  });
+  return root;
+}
+
 function _settingsThemePreviewMain(appId) {
   const surface = SETTINGS_THEME_PREVIEW_APP_SURFACES[appId] || SETTINGS_THEME_PREVIEW_APP_SURFACES.note;
   const targetId = SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS[appId] || SETTINGS_THEME_PREVIEW_APP_SURFACE_TARGETS.note;
-  return `<div class="settings-theme-preview-all settings-theme-preview-panel-surface" data-style-preview-app="${esc(appId)}" data-style-preview-app-surface="1"${_settingsThemePreviewSurfaceAttributes(`surface/main/${appId}`, `${SETTINGS_THEME_PREVIEW_APPS.find(([id]) => id === appId)?.[1] || 'メイン'}パネルの背景`, surface.bg, targetId)} style="background:var(${esc(surface.bg)});color:var(${esc(surface.fg)});">${_settingsThemePreviewActualSurface(appId)}</div>`;
+  return `<div class="settings-theme-preview-all settings-theme-preview-panel-surface" data-style-preview-app="${esc(appId)}" data-style-preview-app-surface="1"${_settingsThemePreviewSurfaceAttributes(`surface/main/${appId}`, `${SETTINGS_THEME_PREVIEW_APPS.find(([id]) => id === appId)?.[1] || 'メイン'}パネルの背景`, surface.bg, targetId)} style="background:var(${esc(surface.bg)});color:var(${esc(surface.fg)});">${_settingsThemePreviewActualSurface(appId)}${_settingsThemePreviewSupplement(appId)}</div>`;
 }
 
 function _settingsThemePreviewTargetMarkup(section, label, markup, className = '', manifestId = '') {
@@ -28915,14 +29427,14 @@ function _settingsThemePreviewThemeUiTarget(stableId, section, label) {
   if (id.startsWith('chrome/pane/tab/')) return 'panel-tab';
   if (id.startsWith('chrome/sheet/view/')) return 'inner-tab';
   if (id.startsWith('chrome/tree/heading/')) return 'folder-section';
-  if (id.startsWith('chrome/tree/item/') || id.startsWith('chrome/tree/selected/')) return 'folder-tree-folder';
+  if (id.startsWith('chrome/tree/item/') || id.startsWith('chrome/tree/selected/')) return 'folder';
   if (id === 'chrome/tree/panel') return 'surface-outliner';
   if (section === '共通' && /ボタン/.test(label || '')) return 'button';
   return '';
 }
 
-function _settingsThemePreviewInteractiveAttributes(stableId, section, label, action = 'openStylePreviewPopup(this)') {
-  const themeUiTarget = _settingsThemePreviewThemeUiTarget(stableId, section, label);
+function _settingsThemePreviewInteractiveAttributes(stableId, section, label, action = 'openStylePreviewPopup(this)', targetId = '') {
+  const themeUiTarget = targetId || _settingsThemePreviewThemeUiTarget(stableId, section, label);
   const themeUiState = /選択/.test(label || '') ? 'selected' : (/ホバー/.test(label || '') ? 'hover' : 'normal');
   const themeUiAttrs = themeUiTarget
     ? ` data-theme-ui-target-id="${esc(themeUiTarget)}" data-theme-ui-state-id="${esc(themeUiState)}"`
@@ -28931,6 +29443,7 @@ function _settingsThemePreviewInteractiveAttributes(stableId, section, label, ac
 }
 
 const SETTINGS_THEME_PREVIEW_MAIN_TABS = Object.freeze({
+  main: ['フォルダ', 'folder'],
   folder: ['フォルダ', 'folder'],
   note: ['テーマプレビュー.md', 'page'],
   scriptnote: ['第一話.scriptnote', 'bookOpenText'],
@@ -28981,7 +29494,7 @@ function _settingsThemePreviewRailButton(side, id, label, iconName, activeId) {
 }
 
 function _settingsThemePreviewTree() {
-  const treeRow = (label, iconName, options = {}) => `<div class="tree-node${options.child ? ' settings-theme-tree-child' : ''}"><div class="tree-node-row settings-theme-preview-hotspot ${options.folder ? 'folder-row' : 'file-row'}${options.selected ? ' selected active' : ''}" role="treeitem" tabindex="0"${options.folder ? ' aria-expanded="true"' : ''}${_settingsThemePreviewInteractiveAttributes(`chrome/tree/${options.selected ? 'selected' : 'item'}/${label}`, 'フォルダツリー', options.selected ? '項目選択' : '項目')} title="${esc(`${label}／クリックで書式設定`)}">
+  const treeRow = (label, iconName, options = {}) => `<div class="tree-node${options.child ? ' settings-theme-tree-child' : ''}"><div class="tree-node-row settings-theme-preview-hotspot ${options.folder ? 'folder-row' : 'file-row'}${options.selected ? ' selected active' : ''}" data-item-type="${options.folder ? 'folder' : 'file'}" role="treeitem" tabindex="0"${options.folder ? ' aria-expanded="true"' : ''}${_settingsThemePreviewInteractiveAttributes(`chrome/tree/${options.selected ? 'selected' : 'item'}/${label}`, 'フォルダツリー', options.selected ? '項目選択' : '項目', 'openStylePreviewPopup(this)', options.folder ? 'folder-tree-folder' : 'folder')} title="${esc(`${label}／クリックで書式設定`)}">
     <span class="tree-toggle${options.folder ? ' expanded' : ''}">${options.folder ? lucide('chevronRight', 13) : ''}</span>
     <span class="tree-icon">${lucide(iconName, 15)}</span><span class="tree-label">${esc(label)}</span>
   </div></div>`;
@@ -28996,6 +29509,20 @@ function _settingsThemePreviewTree() {
       <div class="tree-children">${treeRow('原稿', 'folderOpen', { folder: true, child: true })}${treeRow('第一話.md', 'fileText', { child: true, selected: true })}${treeRow('資料', 'folder', { folder: true, child: true })}</div>
     </div>
   </div>`;
+}
+
+function _settingsThemePreviewSidebarControls() {
+  const item = (id, label, text, className = 'gb-btn') => _settingsThemePreviewElement('main', `sidebar/${id}`, '共通', label, 'div', text, className);
+  return `<section class="settings-theme-preview-sidebar-controls" aria-label="サイドバー共通の操作部品">
+    ${item('header', 'ヘッダー', '共通の操作部品', 'gb-panel-header')}
+    <div class="gb-toolbar">${item('toolbar', 'ツールバー', 'ツールバー')}${item('button', 'ボタン', '操作')}</div>
+    <div class="gb-inner-tabs">${item('tab', 'パネル内タブ 通常', '通常タブ', 'gb-inner-tab')}${item('selected-tab', 'パネル内タブ 選択', '選択タブ', 'gb-inner-tab gb-inner-tab-active')}</div>
+    ${item('input', '入力欄', '入力欄', 'gb-input')}
+    ${item('select', 'ドロップダウン', '選択項目 ▾', 'gb-select')}
+    ${item('muted', 'サブテキスト', '補足・説明', '')}
+    ${_settingsThemePreviewElement('main', 'sidebar/section', 'オプション', 'セクション背景', 'div', 'セクション', 'gb-section gb-section--boxed')}
+    ${item('divider', 'ボーダー', '区切り線')}
+  </section>`;
 }
 
 function _settingsThemePreviewSide(panelId) {
@@ -29020,6 +29547,7 @@ function _settingsThemePreviewSide(panelId) {
     <div class="gb-panel-header"><div class="gb-panel-title">${esc(rows[0])}</div></div>
     <div class="gb-panel-body gb-panel-body-scroll gb-panel-body-padded">${palette}
       ${rows.slice(1).map((row, index) => `<button type="button" class="gb-btn${index === 0 ? ' active' : ''}"${_settingsThemePreviewInteractiveAttributes(`chrome/side/${panelId}/${index}`, '共通', index === 0 ? 'ボタン選択' : 'ボタン')} tabindex="-1" aria-label="${esc(row)}の書式設定" title="${esc(`${row}／クリックで書式設定`)}">${esc(row)}</button>`).join('')}
+      ${_settingsThemePreviewSidebarControls()}
     </div>
   </div>`;
 }
@@ -29043,7 +29571,18 @@ function _settingsThemePreviewRail(side, activeId) {
   </aside>`;
 }
 
-function renderSettingsThemePreview(appId = 'note') {
+function _settingsThemePreviewShell(appId, leftId = _settingsThemePreviewLeftRailId) {
+  const mainWindow = appId === 'main';
+  return `<div class="settings-theme-preview-shell${mainWindow ? '' : ' settings-theme-preview-shell--app'}">
+      ${mainWindow ? _settingsThemePreviewRail('left', leftId) : ''}
+      ${mainWindow ? `<aside class="settings-theme-preview-tree" data-settings-theme-preview-tree>${_settingsThemePreviewPaneTabs('tree', 'フォルダツリー', 'folderTree')}${_settingsThemePreviewTree()}</aside>` : ''}
+      <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMainPane(appId)}</main>
+      ${mainWindow ? `<aside class="settings-theme-preview-side" data-settings-theme-preview-side>${_settingsThemePreviewSidePane(_settingsThemePreviewRightRailId)}</aside>` : ''}
+      ${mainWindow ? _settingsThemePreviewRail('right', _settingsThemePreviewRightRailId) : ''}
+    </div>`;
+}
+
+function renderSettingsThemePreview(appId = 'main') {
   const leftId = SETTINGS_THEME_PREVIEW_LEFT_RAIL.some(([id]) => id === appId) ? appId : _settingsThemePreviewLeftRailId;
   _settingsThemePreviewLeftRailId = leftId;
   const options = SETTINGS_THEME_PREVIEW_APPS.map(([id, label]) => `<option value="${id}"${id === appId ? ' selected' : ''}>${label}</option>`).join('');
@@ -29052,16 +29591,10 @@ function renderSettingsThemePreview(appId = 'note') {
       <div class="gb-section-title">プレビュー</div>
       <div class="settings-theme-preview-toolbar-actions">
         <select class="gb-select" data-e2e-id="settings-theme-preview-app" data-settings-theme-preview-select data-onchange="settingsThemePreviewAppChanged(this.value)">${options}</select>
-        <button type="button" class="gb-btn settings-theme-preview-details-btn" aria-expanded="false" data-action="settingsThemeToggleDetails(this)">詳細設定を開く</button>
       </div>
     </div>
-    <div class="settings-theme-preview-shell">
-      ${_settingsThemePreviewRail('left', leftId)}
-      <aside class="settings-theme-preview-tree" data-settings-theme-preview-tree>${_settingsThemePreviewPaneTabs('tree', 'フォルダツリー', 'folderTree')}${_settingsThemePreviewTree()}</aside>
-      <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMainPane(appId)}</main>
-      <aside class="settings-theme-preview-side" data-settings-theme-preview-side>${_settingsThemePreviewSidePane(_settingsThemePreviewRightRailId)}</aside>
-      ${_settingsThemePreviewRail('right', _settingsThemePreviewRightRailId)}
-    </div>
+    ${_settingsThemePreviewShell(appId, leftId)}
+    <details data-settings-theme-details><summary>操作状態の見本</summary><div data-settings-theme-state-coverage>${_settingsThemeStateMatrix(appId)}</div></details>
   </section>`;
 }
 
@@ -29159,8 +29692,9 @@ function settingsThemePreviewAppChanged(appId) {
   _settingsThemePreviewAppId = appId;
   const select = root.querySelector('[data-settings-theme-preview-select]');
   if (select && [...select.options].some(option => option.value === appId)) select.value = appId;
-  main.innerHTML = _settingsThemePreviewMainPane(appId);
-  _bindSettingsThemePreviewHotspots(main);
+  root.classList.remove('settings-theme-preview-left-collapsed', 'settings-theme-preview-right-collapsed');
+  root.querySelector('.settings-theme-preview-shell').outerHTML = _settingsThemePreviewShell(appId);
+  _bindSettingsThemePreviewHotspots(root);
   root.dataset.settingsThemePreviewApp = appId;
   const panel = root.closest('.settings-panel[data-panel="テーマ"]');
   if (panel) panel.dataset.settingsThemePreviewApp = appId;
@@ -29178,6 +29712,7 @@ function settingsThemePreviewAppChanged(appId) {
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     _settingsThemePreviewSetRailStyleState(btn, active);
   });
+  MeldexThemeManager.applyThemeUiApplications(null, { forceTargets: true });
 }
 
 function settingsThemePreviewRailChanged(side, id, previewTarget = null) {
@@ -29186,7 +29721,8 @@ function settingsThemePreviewRailChanged(side, id, previewTarget = null) {
   if (side === 'left') {
     if (!SETTINGS_THEME_PREVIEW_LEFT_RAIL.some(([railId]) => railId === id)) return;
     _settingsThemePreviewLeftRailId = id;
-    settingsThemePreviewAppChanged(id);
+    // The main-window sample keeps the folder panel while rail controls remain editable.
+
   } else {
     if (!SETTINGS_THEME_PREVIEW_RIGHT_RAIL.some(([railId]) => railId === id)) return;
     _settingsThemePreviewRightRailId = id;
@@ -29202,6 +29738,7 @@ function settingsThemePreviewRailChanged(side, id, previewTarget = null) {
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     _settingsThemePreviewSetRailStyleState(btn, active);
   });
+  MeldexThemeManager.applyThemeUiApplications(null, { forceTargets: true });
   if (previewTarget) window.openStylePreviewPopup?.(previewTarget);
 }
 
@@ -29214,7 +29751,10 @@ function refreshSettingsThemePreview() {
     || _settingsThemePreviewAppId;
   const main = root.querySelector('[data-settings-theme-preview-main]');
   if (main) {
+    const extrasOpen = !!main.querySelector('.settings-theme-extra-elements[open]');
     main.innerHTML = _settingsThemePreviewMainPane(appId);
+    const extras = main.querySelector('.settings-theme-extra-elements');
+    if (extras) extras.open = extrasOpen;
     _bindSettingsThemePreviewHotspots(main);
   }
   root.querySelectorAll('[data-style-section][data-style-label]').forEach(target => {
@@ -29233,6 +29773,7 @@ function refreshSettingsThemePreview() {
     _settingsThemePreviewSetRailStyleState(btn, active);
   });
   _settingsThemePreviewEnsureSharedStyles(root);
+  MeldexThemeManager.applyThemeUiApplications(null, { forceTargets: true });
 }
 
 function _bindSettingsThemeStateTargets(root) {
@@ -29258,13 +29799,7 @@ function _bindSettingsThemeStateTargets(root) {
 }
 
 function settingsThemeToggleDetails(button) {
-  const details = button?.closest?.('.settings-theme-workspace')?.querySelector?.('[data-settings-theme-details]');
-  if (!details) return;
-  details.hidden = !details.hidden;
-  button.setAttribute('aria-expanded', details.hidden ? 'false' : 'true');
-  const label = details.hidden ? '詳細設定を開く' : '詳細設定を閉じる';
-  button.textContent = label;
-  button.setAttribute('aria-label', label);
+  settingsThemeSetSimpleMode('detail', button?.closest?.('[data-settings-theme-workspace]'));
 }
 
 function renderSettingsAppearancePanel(currentTheme, options = {}) {
@@ -29286,46 +29821,8 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor({ id: 'settings-theme-palette-editor' }) : renderThemeColorSetEditor(null, { hideLabel: true })}
       ${renderSettingsThemeAccentEditor()}
     </section>
-    <div class="settings-theme-details" data-settings-theme-details hidden>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
-      <div class="gb-section-title">自動色の強さ</div>
-      ${typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : ''}
-    </section>
-    <!-- 「テーマカラーの自動適用設定」の対象別ピッカーは、下の「アプリ別テーマ」タブ群
-         （共通/フォルダ/ノート/シナリオ/シート/ボード/スケジュール/補助パネル）で
-         全ターゲットを重複なく網羅している。以前はここに全ターゲット横断の一覧を
-         フィルタなしで別途表示しており、アプリ別タブと同じ data-e2e-id を持つ行が
-         同時に2つ描画されていた（2026-08-05 v0.7.151でテーマ詳細設定ダイアログを
-         サブタブへ統合した際、旧「連番配色」タブと旧「アプリ別」タブが排他表示
-         ではなくなり重複が顕在化。2026-08-13 バグ報告で確認・削除）。 -->
-    <section class="gb-section gb-section--boxed" data-settings-view="theme">
-      <div class="gb-section-title">基本の面</div>
-      ${_renderSettingsThemeDetailStyleGroups('surface')}
-    </section>
-    ${_renderSettingsThemeCommonFontSection()}
-    <section class="gb-section gb-section--boxed" data-settings-view="theme">
-      <div class="gb-section-title">文字</div>
-      ${_renderSettingsThemeDetailStyleGroups('text')}
-    </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme">
-      <div class="gb-section-title">操作状態</div>
-      ${_renderSettingsThemeDetailStyleGroups('state')}
-    </section>
-    <div class="settings-theme-state-coverage-panel" data-settings-theme-state-coverage>
-      ${_settingsThemeStateMatrix(options.previewApp || 'note')}
-    </div>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme">
-      <div class="gb-section-title">装飾</div>
-      ${_renderSettingsThemeDetailStyleGroups('ornament')}
-    </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme">
-      <div class="gb-section-title">アプリ別テーマ</div>
-      ${renderSettingsThemeEditor(options.activeStyleTab, {
-        deferStyleRows: options.deferStyleRows,
-        renderedStyleTab: options.renderedStyleTab,
-      })}
-    </section></div>
-    ${renderSettingsThemePreview(options.previewApp || 'note')}
+    ${renderSettingsSimpleThemeEditor()}
+    ${renderSettingsThemePreview(options.previewApp || 'main')}
   </div>`;
 }
 
@@ -29547,6 +30044,7 @@ function _settingsThemeBoardSetVar(key, value) {
   if (value == null || value === '') document.documentElement.style.removeProperty(key);
   else document.documentElement.style.setProperty(key, String(value));
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
+  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') MeldexThemeManager.applyBoardThemeRuntime(bd);
   if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
 }
 
@@ -29555,23 +30053,11 @@ function settingsThemeBoardToggleShadow(input) {
   // '1'/'0' の2値で保存（saveColorSettings は空文字を保存しないため）。
   // bd._fileStyle 側は '1'/'' を使う既存仕様に注意。どちらも on=真、それ以外=偽で評価される。
   _settingsThemeBoardSetVar('--bd-shadow', input.checked ? '1' : '0');
-  // キャンバスの bd-shadow-on クラスは bd._showShadow から付けられる。
-  // ファイル側で明示指定 (キーが存在) されている場合はファイルを優先、未指定のみテーマ追従。
-  if (typeof bd !== 'undefined' && (!bd._fileStyle || bd._fileStyle['--bd-shadow'] === undefined)) {
-    bd._showShadow = !!input.checked;
-    const canvas = document.getElementById('bd-canvas');
-    if (canvas) canvas.classList.toggle('bd-shadow-on', !!input.checked);
-  }
 }
 
 function settingsThemeBoardToggleAutoAlign(input) {
   if (_settingsThemeBoardReadonlyCheck(input)) { input.checked = !input.checked; return; }
   _settingsThemeBoardSetVar('--bd-auto-align', input.checked ? '1' : '0');
-  // ファイル側が未設定のときはテーマに追従させる
-  if (typeof bd !== 'undefined' && (!bd._fileStyle || bd._fileStyle['--bd-auto-align'] === undefined)) {
-    bd.autoAlign = !!input.checked;
-    if (bd.autoAlign && typeof _bdRelayoutAllStructureTrees === 'function') _bdRelayoutAllStructureTrees();
-  }
 }
 
 function settingsThemeBoardSetBgFit(value) {
@@ -29579,7 +30065,7 @@ function settingsThemeBoardSetBgFit(value) {
   const next = allowed.includes(value) ? value : 'contain';
   _settingsThemeBoardSetVar('--bd-bg-image-fit', next);
   // スケール行の表示切替
-  const panel = document.querySelector('[data-settings-theme-style-panel="ボード"]');
+  const panel = _settingsThemeBoardControlsRoot();
   if (panel) {
     const scaleRow = panel.querySelector('input[data-onchange^="settingsThemeBoardSetBgScale"]')?.closest('.gb-field-row');
     if (scaleRow) scaleRow.hidden = next !== 'world';
@@ -29601,7 +30087,7 @@ function _settingsThemeIsImageFile(file) {
 }
 
 function settingsThemeBoardChooseBgImage() {
-  const panel = document.querySelector('[data-settings-theme-style-panel="ボード"]');
+  const panel = _settingsThemeBoardControlsRoot();
   if (panel && _settingsThemeBoardReadonlyCheck(panel)) return;
   if (typeof bd === 'undefined' || !bd?.path) {
     if (typeof showStatus === 'function') showStatus('ボードを開いてから背景画像を設定してください', true);
@@ -29653,15 +30139,20 @@ function settingsThemeBoardChooseBgImage() {
 }
 
 function settingsThemeBoardClearBgImage() {
-  const panel = document.querySelector('[data-settings-theme-style-panel="ボード"]');
+  const panel = _settingsThemeBoardControlsRoot();
   if (panel && _settingsThemeBoardReadonlyCheck(panel)) return;
   _settingsThemeBoardSetVar('--bd-bg-image', '');
   _settingsThemeBoardSetVar('--bd-bg-image-scale', '');
   _settingsThemeRefreshBoardExtras();
 }
 
+function _settingsThemeBoardControlsRoot() {
+  return document.querySelector('[data-settings-theme-popup-extras]')
+    || document.querySelector('[data-settings-theme-style-panel="ボード"]');
+}
+
 function _settingsThemeRefreshBoardExtras() {
-  const panel = document.querySelector('[data-settings-theme-style-panel="ボード"]');
+  const panel = _settingsThemeBoardControlsRoot();
   if (!panel) return;
   const section = panel.querySelector('[data-settings-theme-board-extras="1"]');
   if (!section) return;
@@ -29741,6 +30232,7 @@ function bindSettingsThemePanel(root) {
   const panel = root || document;
   const editor = panel.querySelector?.('#settings-theme-editor');
   const activeStylePanel = editor?.querySelector?.('[data-settings-theme-style-panel]:not([hidden])');
+  bindSettingsSimpleThemeEditor(panel);
   _bindSettingsThemeStateTargets(panel);
   // 書式行（基本の面/文字/操作状態/装飾）がエディタ外にも並ぶため panel 全体を同期する
   syncCsSwatches(panel);
@@ -29769,7 +30261,8 @@ const _SETTINGS_THEME_DETAIL_PAGE_MAP = Object.freeze({
 });
 
 function openSettingsThemeDetailDialog(activeTab) {
-  const pageId = _SETTINGS_THEME_DETAIL_PAGE_MAP[activeTab] || 'theme';
+  settingsThemeSetSimpleMode('detail');
+  const pageId = 'theme';
   const modal = document.querySelector('.modal-overlay[data-settings-modal="1"] .settings-modal');
   if (modal && typeof _openSettingsSection === 'function') {
     _openSettingsSection('テーマ', modal, { pageId });
@@ -78876,11 +79369,12 @@ function hideBoardNoteTab() {
 
   function _themeUiRowFormatDef(targetId, stateId) {
     if (!targetId || typeof _settingsThemePreviewAutoTargetForRow !== 'function') return null;
+    const rowTargetId = targetId === 'folder-tree-folder' ? 'folder' : targetId;
     const sections = typeof UI_STYLE_SECTIONS !== 'undefined' ? Object.values(UI_STYLE_SECTIONS) : [];
     for (const defs of sections) {
       for (const candidate of defs || []) {
         const resolved = _settingsThemePreviewAutoTargetForRow(candidate);
-        if (resolved?.targetId === targetId && resolved?.stateId === stateId) return candidate;
+        if (resolved?.targetId === rowTargetId && resolved?.stateId === stateId) return candidate;
       }
     }
     return null;
@@ -78893,7 +79387,7 @@ function hideBoardNoteTab() {
     const stateId = _themeUiPopupStateId(previewEl, target);
     const vars = target?.formatVars?.[stateId];
     const rowDef = vars ? null : _themeUiRowFormatDef(targetId, stateId);
-    if (!vars && !rowDef) return fallbackDef;
+    if (!vars && !rowDef) return { ...(fallbackDef || {}), __themeUiTargetId: targetId, __themeUiStateId: stateId };
     return {
       ...(fallbackDef || {}),
       ...(rowDef || {}),
@@ -79069,25 +79563,67 @@ function hideBoardNoteTab() {
     host.dataset.themeUiPopupTarget = target.id;
     host.dataset.themeUiPopupState = resolved.stateId || 'normal';
     host.dataset.e2eId = _e2eId('settings-theme-preview-auto', target.id);
-    const stateOptions = (Array.isArray(target.states) ? target.states : [])
-      .map(stateId => `<option value="${_e(stateId)}"${stateId === resolved.stateId ? ' selected' : ''}>${_e(_themeUiStateLabel(target, stateId))}</option>`)
-      .join('');
-    host.innerHTML = `<div class="gb-fmt-theme-ui-editor-title">
-      <span>テーマカラーの自動適用設定</span>
-      <span class="gb-fmt-theme-ui-editor-target">${_e(target.label)}</span>
-    </div>
-    ${stateOptions ? `<label class="gb-fmt-theme-ui-state-row"><span>編集する状態</span><select class="gb-select" data-theme-ui-popup-state-select aria-label="編集する状態">${stateOptions}</select></label>` : ''}
-    ${renderThemeUiApplicationEditor({ targetIds: [target.id], hideLabel: true })}
-    <details class="gb-fmt-theme-ui-tone" open>
-      <summary>自動（明／暗）の強さ</summary>
-      ${renderThemeUiAutoToneControls()}
-    </details>`;
-    host.querySelector('[data-theme-ui-popup-state-select]')?.addEventListener('change', (event) => {
-      previewEl.dataset.themeUiEditStateId = event.currentTarget.value;
+    const stateId = resolved.stateId || 'normal';
+    host.innerHTML = `<div class="gb-fmt-theme-ui-editor-title"><span>${_e(target.label)}</span></div>
+      <div class="gb-tabbar" role="tablist" aria-label="編集する状態">${target.states.map(id =>
+        `<button type="button" class="gb-inner-tab${id === stateId ? ' gb-inner-tab-active' : ''}" role="tab" aria-selected="${id === stateId}" tabindex="${id === stateId ? 0 : -1}" data-theme-ui-popup-state="${_e(id)}">${_e(_themeUiStateLabel(target, id))}</button>`).join('')}</div>`;
+    host.querySelectorAll('[data-theme-ui-popup-state]').forEach(button => button.addEventListener('click', () => {
+      previewEl.dataset.themeUiEditStateId = button.dataset.themeUiPopupState;
       window.openStylePreviewPopup?.(previewEl);
+    }));
+    host.querySelector('[role="tablist"]').addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = target.states.indexOf(stateId);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? target.states.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + target.states.length) % target.states.length;
+      host.querySelector(`[data-theme-ui-popup-state="${target.states[next]}"]`).click();
+      document.querySelector('.gb-fmt-popup [role="tab"][aria-selected="true"]')?.focus();
     });
-    host.querySelectorAll('.cs-theme-ui-target').forEach(details => { details.open = true; });
+    const formatMap = _mapSettingsDef(def).map;
+    const colors = document.createElement('div');
+    colors.className = 'gb-fmt-popup-row gb-fmt-theme-ui-colors';
+    const config = MeldexThemeManager.getThemeUiApplications();
+    for (const prop of MeldexThemeManager.THEME_UI_PROPS) {
+      if (prop.id === 'fg' && !formatMap.textColor || prop.id === 'bg' && !formatMap.bgColor || prop.id === 'underline' && !formatMap.accentColor && !formatMap.borderColor) continue;
+      if (!target.props.includes(prop.id) || (target.vars && !target.vars[stateId]?.[prop.id])) continue;
+      const group = document.createElement('span');
+      group.className = 'gb-fmt-popup-group cs-theme-ui-picker-wrap';
+      group.innerHTML = `<span class="gb-fmt-popup-label">${_e(target.propLabels?.[prop.id] || prop.label)}</span>
+        <select class="cs-theme-ui-native" tabindex="-1" data-theme-ui-setting="${_e(target.id)}|${_e(stateId)}|${prop.id}">${_themeUiSelectOptions(config[target.id][stateId][prop.id])}</select>
+        <button type="button" class="gb-fmt-swatch" data-theme-ui-color-swatch aria-label="${_e(target.label)} ${_e(_themeUiStateLabel(target, stateId))} ${_e(prop.label)}の色を設定"></button>`;
+      colors.appendChild(group);
+    }
+    host.appendChild(colors);
     return host;
+  }
+
+  function _clearThemeUiColorOverride(def, previewEl, map, prop) {
+    const key = map[prop];
+    if (!key || typeof MeldexThemeManager === 'undefined') return;
+    const colorProp = prop === 'textColor' ? 'fg' : prop === 'bgColor' ? 'bg'
+      : prop === 'accentColor' || prop === 'borderColor' ? 'underline' : '';
+    if (!colorProp) return;
+    const config = MeldexThemeManager.getThemeUiApplications();
+    const resolved = def.__themeUiTargetId
+      ? { targetId: def.__themeUiTargetId, stateId: def.__themeUiStateId }
+      : typeof _settingsThemePreviewAutoTargetForRow === 'function' ? _settingsThemePreviewAutoTargetForRow(def) : null;
+    let changed = false;
+    for (const target of MeldexThemeManager.THEME_UI_TARGETS) {
+      for (const state of target.states) {
+        const raw = target.vars?.[state]?.[colorProp];
+        const keys = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        const direct = !target.vars && target.id === resolved?.targetId && state === resolved?.stateId;
+        if (!(keys.includes(key) || direct) || !target.props.includes(colorProp)) continue;
+        if (config[target.id][state][colorProp] === 'none') continue;
+        config[target.id][state][colorProp] = 'none';
+        changed = true;
+      }
+    }
+    if (changed) {
+      MeldexThemeManager.saveThemeUiApplications(config, { skipHistory: true });
+      if (typeof syncThemeUiApplicationSelectors === 'function') syncThemeUiApplicationSelectors(document.querySelector('.gb-fmt-popup') || previewEl);
+    }
   }
 
   function _settingsValues(def, map) {
@@ -79492,9 +80028,12 @@ function hideBoardNoteTab() {
     const { map, fields } = _mapSettingsDef(def);
     const popupNumberSpecs = _popupNumberSpecs(def, map);
     const hasNumbers = popupNumberSpecs.length > 0;
-    const themeUiEditor = _makeThemeUiApplicationPopupEditor(def, previewEl);
+    // State samples edit their own CSS key and retain the direct edit/cancel contract.
+    const themeUiEditor = def.__themeStateEntry ? null : _makeThemeUiApplicationPopupEditor(def, previewEl);
     if (!fields.length && !hasNumbers && !themeUiEditor) return;
     const extraNumberRows = _makePopupNumberRows(def, previewEl, popupNumberSpecs);
+    const extraControls = typeof window.settingsThemePreviewExtraControls === 'function'
+      ? window.settingsThemePreviewExtraControls(def,previewEl) : null;
     const stateEntry = def.__themeStateEntry || null;
     const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
       ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
@@ -79549,14 +80088,18 @@ function hideBoardNoteTab() {
     }
     let openedPopup = null;
     openedPopup = popupOpen(previewEl, {
-      fields,
+      fields: themeUiEditor ? fields.filter(field => {
+        const prop = { textColor: 'fg', bgColor: 'bg', accentColor: 'underline' }[field];
+        return !prop || !themeUiEditor.querySelector(`[data-theme-ui-setting$="|${prop}"]`);
+      }) : fields,
+      ...(themeUiEditor ? { compactStyleRow: true } : {}),
       values: _settingsValues(def, map),
       bgColorType: def.bgType || '',
       ...(themeUiEditor ? {
         className: 'gb-fmt-popup--theme-preview-auto',
         extraRowTop: [themeUiEditor],
       } : {}),
-      ...(extraNumberRows.length ? { extraRow2: extraNumberRows } : {}),
+      extraRow2: [...extraNumberRows, extraControls].filter(Boolean),
       onChange(prop, value) {
         const stateKey = stateEntry && ({
           textColor: map.textColor,
@@ -79579,6 +80122,8 @@ function hideBoardNoteTab() {
           }
           return;
         }
+        // 指定色の操作を、自動配色の!importantルールで隠さない。
+        _clearThemeUiColorOverride(def, previewEl, map, prop);
         if (prop === 'textColor' && map.textColor) _setThemeStyle(map.textColor, value || '');
         else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, _styleBgColorWithPreservedAlpha(def, _cssVar(map.bgColor), value));
         else if (prop === 'fontWeight' && map.fontWeight) _setThemeStyle(map.fontWeight, value === 'bold' ? 'bold' : 'normal');
@@ -80021,6 +80566,7 @@ function hideBoardNoteTab() {
 
   window.renderStyleRow = renderStyleRowUnified;
   window.openStylePreviewPopup = openStylePreviewPopupUnified;
+  window.getSettingsThemePreviewPropertyMap = def => ({ ..._mapSettingsDef(def).map });
   window.getSettingsThemePreviewMappedFields = def => _mapSettingsDef(def).fields;
   window.openStyleBgOnlyPalette = openStyleBgOnlyPaletteUnified;
   window.renderFileStyleTab = renderFileStyleTabUnified;
@@ -105287,6 +105833,17 @@ function _createAttachmentThumb(item, index) {
     img.style.color = 'transparent';
     img.alt = label;
     host.appendChild(img);
+    const browserFiles = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      && window.MeldexPwaFileUrl?.applyToElement;
+    const loadImage = (source) => {
+      if (!browserFiles || /^(https?:|data:|blob:)/i.test(source) && !window.MeldexPwaFileUrl.extractPath(source)) {
+        img.src = source;
+        return;
+      }
+      window.MeldexPwaFileUrl.applyToElement(img, source).then((info) => {
+        if (!info?.url?.startsWith('blob:') && !info?.url?.startsWith('data:')) replaceFailedImage();
+      });
+    };
     const replaceFailedImage = () => {
       // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
       // 切り替える。原寸も読めない時だけ中立タイルにする。
@@ -105294,7 +105851,7 @@ function _createAttachmentThumb(item, index) {
         const rawSrc = _imageSrc(item, false);
         if (rawSrc && rawSrc !== img.getAttribute('src')) {
           img.dataset.rawFallback = '1';
-          img.src = rawSrc;
+          loadImage(rawSrc);
           return;
         }
       }
@@ -105323,7 +105880,7 @@ function _createAttachmentThumb(item, index) {
     }, { once: true });
     // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
     // フォールバックの listener を登録してから読み込みを開始する。
-    img.src = _imageSrc(item, true);
+    loadImage(_imageSrc(item, true));
     window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
     return _setupAttachmentThumbDrag(host, item);
   }
@@ -119673,7 +120230,11 @@ function _appendDbCardImagePreview(root, items, options = {}) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    img.src = src;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+      window.MeldexPwaFileUrl.applyToElement(img, src);
+    } else {
+      img.src = src;
+    }
     img.alt = item.caption || item.filename || options.propName || '画像';
     img.dataset.imageIndex = String(idx);
     img.addEventListener('click', (ev) => {
@@ -126251,7 +126812,11 @@ function _elBuildImageCellContent(cell, ctx, canvasEl) {
   }
   const img = document.createElement('img');
   img.className = 'el-cell-image';
-  img.src = src;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+    window.MeldexPwaFileUrl.applyToElement(img, src);
+  } else {
+    img.src = src;
+  }
   img.alt = String(image.alt || cell.type || '');
   img.draggable = false;
   img.style.objectFit = image.fit === 'cover' ? 'cover' : 'contain';

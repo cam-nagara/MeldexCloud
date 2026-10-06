@@ -6,6 +6,7 @@
   const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+  const ELEMENT_REQUESTS = new WeakMap();
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -164,6 +165,9 @@
     let lastError = null;
     for (const candidate of candidates) {
       try {
+        // Dropbox media downloads validate their revision before cache access.
+        // Avoid a separate getFileHandle metadata round-trip for every image.
+        if (typeof provider.downloadAsFile === 'function') return await provider.downloadAsFile(candidate);
         const handle = await provider.getFileHandle(candidate, { create: false });
         return await handle.getFile();
       } catch (error) {
@@ -224,24 +228,18 @@
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const file = await _getFileWithMediaFallback(provider, normalized);
     const fileSize = Number(file.size || 0);
-    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
-      const cachedLarge = CACHE[normalized];
-      if (cachedLarge?.url?.startsWith('blob:')) {
-        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
-      }
-      delete CACHE[normalized];
-      return { path: normalized, url: _fallbackRawUrl(normalized), mime: file.type || _mimeFromPath(normalized), size: fileSize, modified: String(file.lastModified || 0), streamed: true };
-    }
     const modified = String(file.lastModified || 0);
     const cached = CACHE[normalized];
-    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
-    const url = fileSize > BLOB_CACHE_MAX_BYTES
-      ? URL.createObjectURL(file)
-      : _bytesToUrl(new Uint8Array(await file.arrayBuffer()), file.type || _mimeFromPath(normalized));
+    const identity = file.__meldexMediaKey || file;
+    if (cached && cached.identity === identity && cached.modified === modified && cached.size === fileSize) return cached;
+    // File/Blob URLs work for large files too; the desktop HTTP fallback is
+    // absent on static Cloud. Avoid copying every image into an ArrayBuffer.
+    const mime = file.type && file.type !== 'application/octet-stream' ? file.type : _mimeFromPath(normalized);
+    const url = URL.createObjectURL(file.type === mime ? file : file.slice(0, file.size, mime));
     if (cached?.url && cached.url.startsWith('blob:')) {
       try { URL.revokeObjectURL(cached.url); } catch {}
     }
-    const next = { path: normalized, url, mime: file.type || _mimeFromPath(normalized), size: fileSize, modified };
+    const next = { path: normalized, url, mime, size: fileSize, modified, identity };
     CACHE[normalized] = next;
     return next;
   }
@@ -299,16 +297,20 @@
     const target = element;
     const prop = propName || 'src';
     if (!target) return Promise.resolve({ path: '', url: '' });
+    const requests = ELEMENT_REQUESTS.get(target) || {};
+    const request = {};
+    requests[prop] = request;
+    ELEMENT_REQUESTS.set(target, requests);
     const current = displayUrl(pathLike);
     // A browser has no native /api/file-raw endpoint. Wait for the provider
     // URL instead of starting a doomed HTTP request before the blob is ready.
-    if (current && (!_runtime()?.isBrowserDataMode?.() || /^(blob:|data:)/i.test(current))) {
+    if (current && !_runtime()?.isBrowserDataMode?.()) {
       _setElementUrlIfChanged(target, prop, current);
     }
     return ensureDisplayUrl(pathLike).then((info) => {
-      if (target.isConnected && info?.url) _setElementUrlIfChanged(target, prop, info.url);
+      if (target.isConnected && requests[prop] === request && info?.url) _setElementUrlIfChanged(target, prop, info.url);
       return info;
-    }).catch(() => ({ path: '', url: current || '' }));
+    }).catch(() => ({ path: '', url: '' }));
   }
 
   function _clearCachePath(path, isFolder) {

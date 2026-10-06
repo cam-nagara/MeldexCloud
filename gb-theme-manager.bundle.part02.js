@@ -1,3 +1,8 @@
+
+  function _pushThemeSettingsHistory(label, beforeSnapshot, keys, detail, options = {}) {
+    if (!beforeSnapshot || _themeSettingsHistorySuppressed(options)) return false;
+    if (typeof global.pushLocalStorageSettingsHistory !== 'function') return false;
+    return global.pushLocalStorageSettingsHistory(
       label,
       beforeSnapshot,
       _captureThemeSettingsStorage(keys),
@@ -123,6 +128,7 @@
     if (typeof fetch !== 'function') {
       _osAccentRuntimeAvailable = false;
       _osAccentRuntimeColor = '';
+      document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
       if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
       return Promise.resolve(null);
     }
@@ -134,11 +140,13 @@
         if (!color) {
           _osAccentRuntimeAvailable = false;
           _osAccentRuntimeColor = '';
+          document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
           if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
           return null;
         }
         _osAccentRuntimeAvailable = true;
         _osAccentRuntimeColor = color.toLowerCase();
+        document.documentElement.style.setProperty('--theme-native-os-accent', _osAccentRuntimeColor);
         if (getUseOsAccentColor()) {
           applyOsAccentColorSetting(true, { skipNativeRefresh: true });
           global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: true, color: _osAccentRuntimeColor } }));
@@ -149,6 +157,7 @@
       .catch(() => {
         _osAccentRuntimeAvailable = false;
         _osAccentRuntimeColor = '';
+        document.documentElement.style.setProperty('--theme-native-os-accent', 'AccentColor');
         if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
         return null;
       });
@@ -227,6 +236,7 @@
 
   function applyOsAccentColorSetting(enabled = getUseOsAccentColor(), options = {}) {
     const root = document.documentElement;
+    root.style.setProperty('--theme-native-os-accent', getOsAccentColor() || 'AccentColor');
     const themeDef = options.themeDef || getThemeById(getDefaultThemeId());
     const policy = getThemeAccentPolicy(themeDef);
     const useAvailableOsAccent = policy.kind === 'system-or-default'
@@ -246,7 +256,10 @@
     root.style.setProperty('--theme-os-accent-text', useAvailableOsAccent
       ? getOsAccentTextColor()
       : getAccentTextColor(effectiveAccent));
+    const explicitKeys = typeof global.settingsThemeExplicitColorKeys === 'function'
+      ? global.settingsThemeExplicitColorKeys() : new Set();
     THEME_OS_ACCENT_STYLE_KEYS.forEach(key => {
+      if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
         root.style.setProperty(key, appliedAccent);
@@ -257,6 +270,7 @@
       }
     });
     THEME_OS_ACCENT_TEXT_STYLE_KEYS.forEach(key => {
+      if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
         root.style.setProperty(key, useAvailableOsAccent ? THEME_OS_ACCENT_TEXT_CSS : getAccentTextColor(effectiveAccent));
@@ -299,6 +313,21 @@
     return next;
   }
 
+  function _builtinAccentThemeUiApplications(id, applications) {
+    const cfg = normalizeThemeUiApplications(applications);
+    const accent = BUILTIN_ACCENT_POLICIES[id]?.defaultColor;
+    if (!accent) return cfg;
+    // Dark/light presets use their default accent rather than sequential palette tones.
+    for (const states of Object.values(cfg)) for (const props of Object.values(states)) {
+      for (const [prop, value] of Object.entries(props)) {
+        if (THEME_UI_AUTO_VALUES.has(value) || /^auto-rows:/.test(value)) {
+          props[prop] = `${THEME_UI_VALUE_COLOR_PREFIX}${accent}`;
+        }
+      }
+    }
+    return cfg;
+  }
+
   function theme(id, name, vars, board, palette, options = {}) {
     const colorSet = normalizeThemeColorSet(palette, RAINBOW_PALETTE);
     const standardPaletteAdjust = themeStandardPaletteAdjustFromTheme({ ui: { standardPaletteAdjust: options.standardPaletteAdjust } }, null);
@@ -310,7 +339,7 @@
       themeColorSet: colorSet,
       colorSet,
       palette: colorSet,
-      themeUiApplications: _defaultThemeUiApplications(),
+      themeUiApplications: _builtinAccentThemeUiApplications(id, _defaultThemeUiApplications()),
       themeUiAutoTone: normalizeThemeUiAutoTone(null),
     };
     if (standardPaletteAdjust) {
@@ -618,7 +647,7 @@
         ...(base.ui || {}),
         ...(src.ui || {}),
         cssVars: { ...(base.ui?.cssVars || {}), ...(src.ui?.cssVars || {}) },
-        themeUiApplications: normalizeThemeUiApplications(src.ui?.themeUiApplications || src.themeUiApplications || base.ui?.themeUiApplications),
+        themeUiApplications: _builtinAccentThemeUiApplications(target.id, src.ui?.themeUiApplications || src.themeUiApplications || base.ui?.themeUiApplications),
         themeUiAutoTone: normalizeThemeUiAutoTone(src.ui?.themeUiAutoTone || src.themeUiAutoTone || base.ui?.themeUiAutoTone),
       },
       board: { ...(base.board || {}), ...(src.board || {}) },
@@ -718,8 +747,7 @@
   }
 
   function trackExistingThemeVars(root) {
-    if (_trackedExistingThemeVars) return;
-    _trackedExistingThemeVars = true;
+    // Include edits made since the last application, regardless of which editor made them.
     collectKnownThemeVarKeys().forEach(key => {
       if (root.style.getPropertyValue(key)) _appliedThemeVarKeys.add(key);
     });
@@ -870,31 +898,3 @@
   }
 
   function setThemeColorSet(colors, options = {}) {
-    const next = normalizeThemeColorSet(colors, getThemeColorSet());
-    const commitOptions = {
-      ...options,
-      skipHistory: options.skipHistory === true || _themeSettingsHistorySuppressed(options),
-    };
-    if (options.save !== false) {
-      scheduleThemeColorSetCommit(next, commitOptions);
-    }
-    const applied = options.apply !== false ? paintThemeColorSet(next, { bindTargets: options.bindTargets !== false && options.immediateTargets === true }) : next;
-    _activeThemeColorSet = applied.slice();
-    if (options.save === false) {
-      if (options.bindTargets !== false) bindPaletteTargets(next);
-      if (options.renderBoard !== false) scheduleBoardRender();
-      global.dispatchEvent(new CustomEvent('meldex-theme-color-set-change', { detail: { colorSet: next } }));
-    }
-    return next;
-  }
-
-  function scheduleThemeColorSetCommit(colors, options = {}) {
-    cancelThemeColorSetCommit();
-    const token = ++_themeColorSetCommitToken;
-    const scheduledThemeId = getDefaultThemeId();
-    _themeColorSetCommitTimer = setTimeout(() => {
-      if (token !== _themeColorSetCommitToken) return;
-      _themeColorSetCommitTimer = 0;
-      if (options.save !== false && getDefaultThemeId() !== scheduledThemeId) return;
-      const before = _captureThemeSettingsStorage([THEME_COLOR_SET_KEY]);
-      if (options.save !== false) {

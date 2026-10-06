@@ -81,10 +81,10 @@
     button.id = id;
     button.type = 'button';
     button.className = `gb-btn meldex-offline-choice-button${primary ? ' meldex-offline-choice-button-primary' : ''}`;
-    button.style.cssText = `min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
+    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
     const strong = document.createElement('strong');
     strong.textContent = title;
-    strong.style.cssText = 'display:block;font-size:16px;margin-bottom:5px;';
+    strong.style.cssText = 'display:block;font-size:16px;line-height:1.5;margin-bottom:5px;';
     const detail = document.createElement('span');
     detail.textContent = description;
     detail.style.cssText = 'display:block;font-size:12px;line-height:1.6;color:var(--ui-fg-muted,#aaa);';

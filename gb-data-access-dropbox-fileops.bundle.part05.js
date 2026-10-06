@@ -43,12 +43,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const entries = await _listDirectoryEntries(provider, browsePath);
       const folders = [];
       const files = [];
-      for (const entry of entries) {
-        const itemPath = entry.path || _joinPath(browsePath, entry.name);
-        const item = await _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
-        if (!item) continue;
-        if (_isBrowseContainerItem(item)) folders.push(item);
-        else if (!foldersOnly) files.push(item);
+      // Bound remote reads while avoiding one network round trip per item in
+      // series. Keep input order so sorting and folder/file grouping are stable.
+      for (let offset = 0; offset < entries.length; offset += 6) {
+        const batch = await Promise.all(entries.slice(offset, offset + 6).map(entry => {
+          const itemPath = entry.path || _joinPath(browsePath, entry.name);
+          return _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+        }));
+        for (const item of batch) {
+          if (!item) continue;
+          if (_isBrowseContainerItem(item)) folders.push(item);
+          else if (!foldersOnly) files.push(item);
+        }
       }
       const items = _sortBrowseItems(folders, sort, order).concat(_sortBrowseItems(files, sort, order));
       const existing = new Set(items.map((item) => item.path));
@@ -892,9 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       _rejectProductionStructureMutation(body?.path || '', '削除');
       const confirmationItem = {
         path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
-      };
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
-        item: confirmationItem, receipt: consumed.receipt,
-        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-      });

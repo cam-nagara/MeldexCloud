@@ -73,6 +73,7 @@ const UI_STYLE_SECTIONS = {
     { label: 'サブ背景色', bg:'--bg2', text:'パネル背景' },
     { label: '強調背景色', bg:'--bg3', text:'ダイアログ/ホバー領域背景' },
     { label: 'ポップアップ', bg:'--ui-popup-bg', text:'ポップアップ背景' },
+    { label: 'ダイアログ', fg:'--ui-modal-fg', bg:'--ui-modal-bg', line:'--ui-modal-border', text:'設定ダイアログ' },
     { label: 'ツールチップ', fg:'--ui-tooltip-fg', bg:'--ui-tooltip-bg', text:'ツールチップ' },
     { label: 'ツールチップ枠線', line:'--ui-tooltip-border', text:'━━' },
     { label: 'スクロールバー背景', bg:'--ui-scrollbar-track-bg', text:'スクロール背景' },
@@ -85,6 +86,8 @@ const UI_STYLE_SECTIONS = {
     { label: 'ボタンホバー', fg:'--ui-button-hover-fg', bg:'--ui-button-hover-bg', line:'--ui-button-hover-border', width:'--ui-button-hover-border-width', leftAccent:'--ui-button-hover-left-accent', underline:'--ui-button-hover-underline', accent:'--ui-button-hover-accent-color', bold:'--ui-button-hover-font-weight', italic:'--ui-button-hover-font-style', fontSize:'--ui-button-hover-font-size', font:'--ui-button-hover-font', lineHeight:'--ui-button-hover-line-height', text:'ホバー' },
     { label: 'ボタン選択', fg:'--ui-button-active-fg', bg:'--ui-button-active-bg', line:'--ui-button-active-border', width:'--ui-button-active-border-width', leftAccent:'--ui-button-active-left-accent', underline:'--ui-button-active-underline', accent:'--ui-button-active-accent-color', bold:'--ui-button-active-font-weight', italic:'--ui-button-active-font-style', fontSize:'--ui-button-active-font-size', font:'--ui-button-active-font', lineHeight:'--ui-button-active-line-height', text:'選択' },
     { label: '通常文字', fg:'--fg', bg:'--ui-text-bg', bold:'--ui-text-bold', italic:'--ui-text-italic', fontSize:'--ui-text-font-size', text:'通常テキスト', font:'--ui-font' },
+    { label: '入力欄', fg:'--ui-fg-default', bg:'--ui-bg-field', line:'--ui-border', font:'--ui-font', text:'入力欄' },
+    { label: 'ドロップダウン', fg:'--ui-fg-default', bg:'--ui-bg-control', line:'--ui-border', font:'--ui-font', text:'選択項目' },
     { label: 'サブテキスト', fg:'--fg2', bold:'--ui-muted-bold', italic:'--ui-muted-italic', fontSize:'--ui-muted-font-size', text:'サブテキスト', font:'--ui-muted-font' },
     { label: 'ヘッダー', fg:'--ui-header-fg', bg:'--ui-header-bg', text:'ヘッダー', font:'--ui-header-font' },
     { label: 'ツールバー', fg:'--ui-toolbar-fg', bg:'--ui-toolbar-bg', text:'ツールバー', font:'--ui-toolbar-font' },
@@ -361,9 +364,11 @@ function _extraStyleKeys(d) {
   const base = _styleBaseKeyForExtras(d);
   if (!base) return [];
   return [
-    d.bg || `${base}-bg`,
+    d.bg === null ? null : d.bg || `${base}-bg`,
     d.font || `${base}-font`,
     d.fontSize || `${base}-font-size`,
+    d.bold || `${base}-bold`,
+    d.italic || `${base}-italic`,
     d.stroke || `${base}-stroke-color`,
     d.strokeWidth || `${base}-stroke-width`,
     d.leftAccent || `${base}-left-accent`,
@@ -411,7 +416,7 @@ function applySettingsThemeStyleSetting(key, value, options = {}) {
 }
 
 function getAllStyleKeys() {
-  const keys = new Set();
+  const keys = new Set(typeof SETTINGS_SIMPLE_THEME_BASE_KEYS === 'undefined' ? [] : SETTINGS_SIMPLE_THEME_BASE_KEYS);
   for (const defs of Object.values(UI_STYLE_SECTIONS)) {
     defs.forEach(d => {
       if(d.fg) keys.add(d.fg); if(d.bg) keys.add(d.bg);
@@ -421,10 +426,27 @@ function getAllStyleKeys() {
       if(d.lineStyle) keys.add(d.lineStyle);
       if(d.fontSize) keys.add(d.fontSize);
       if(d.lineHeight) keys.add(d.lineHeight);
+      // 枠線付き／選択状態の行は仮想キー生成の対象外でも、明示された
+      // 装飾キーを保存・取消・再読込の対象から落とさない。
+      ['stroke', 'strokeWidth', 'leftAccent', 'underline', 'accent'].forEach(prop => {
+        if (d[prop]) keys.add(d[prop]);
+      });
       if(Array.isArray(d.numbers)) d.numbers.forEach(n => { if(n?.key) keys.add(n.key); });
       if(Array.isArray(d.popupNumbers)) d.popupNumbers.forEach(n => { if(n?.key) keys.add(n.key); });
       _extraStyleKeys(d).forEach(k => keys.add(k));
     });
+  }
+  // プレビュー専用のパネルタブ／レール等も同じ保存・取消契約に含める。
+  if (typeof MeldexThemeManager !== 'undefined') {
+    for (const target of MeldexThemeManager.THEME_UI_TARGETS || []) {
+      for (const states of [target.formatVars, target.vars]) {
+        for (const props of Object.values(states || {})) {
+          Object.values(props).flat().forEach(key => {
+            if (typeof key === 'string' && key.startsWith('--')) keys.add(key);
+          });
+        }
+      }
+    }
   }
   keys.add('--page-margin-x');
   keys.add('--page-content-max-width');
@@ -590,13 +612,16 @@ const SETTINGS_THEME_PREVIEW_AUTO_VAR_TARGETS = Object.freeze({
   '--fv-item-selected-fg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
   '--fv-item-selected-bg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
   '--fv-item-selected-border': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
-  '--outliner-item-fg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
-  '--outliner-item-bg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
-  '--outliner-item-hover-fg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
-  '--outliner-item-hover-bg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
-  '--outliner-item-selected-fg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
-  '--outliner-item-selected-bg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
-  '--outliner-accent': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
+  // 「項目」はフォルダ専用ターゲットではなく、ファイル行・お気に入り行も含む
+  // 共通のフォルダツリー項目へ結び付ける。従来はfolder-tree-folderへ誤配線され、
+  // 設定を変えてもファイル名だけ反映されなかった。
+  '--outliner-item-fg': { targetId: 'folder', stateId: 'normal', index: 0 },
+  '--outliner-item-bg': { targetId: 'folder', stateId: 'normal', index: 0 },
+  '--outliner-item-hover-fg': { targetId: 'folder', stateId: 'hover', index: 0 },
+  '--outliner-item-hover-bg': { targetId: 'folder', stateId: 'hover', index: 0 },
+  '--outliner-item-selected-fg': { targetId: 'folder', stateId: 'selected', index: 0 },
+  '--outliner-item-selected-bg': { targetId: 'folder', stateId: 'selected', index: 0 },
+  '--outliner-accent': { targetId: 'folder', stateId: 'selected', index: 0 },
 });
 
 function _settingsThemePreviewRowKeys(d) {
@@ -653,10 +678,11 @@ function _settingsThemePreviewAutoColor(value, sequentialIndex) {
   const paletteLength = Math.max(1, colors.length || 0);
   const seqIndex = Math.max(0, parseInt(sequentialIndex, 10) || 0) % paletteLength;
   const seqFallback = colors[seqIndex] || colors[0] || '#ef4444';
+  if (normalized.startsWith('auto-rows:')) return MeldexThemeManager.resolveThemeUiColor(normalized, seqIndex);
   if (normalized === 'auto') return `var(--theme-palette-${seqIndex}, ${seqFallback})`;
   if (normalized === 'auto-light') return _settingsThemePreviewAutoMixCss('white', _themeUiAutoTone()?.light, seqIndex, seqFallback);
   if (normalized === 'auto-dark') return _settingsThemePreviewAutoMixCss('black', _themeUiAutoTone()?.dark, seqIndex, seqFallback);
-  if (normalized === 'os-accent') return 'var(--theme-os-accent, AccentColor)';
+  if (normalized === 'os-accent') return 'var(--theme-native-os-accent, AccentColor)';
   const custom = _themeUiCustomColor(normalized);
   if (custom) return custom;
   const paletteIndex = parseInt(normalized, 10);
@@ -700,7 +726,7 @@ function _settingsThemePreviewStyle(d) {
       : 'background:var(--ui-inner-tab-bg);color:var(--ui-inner-tab-fg);';
   }
   const autoStyle = _settingsThemePreviewAutoStyleForRow(d);
-  const pvBg = autoStyle.bg || (d.previewBg ? `var(${d.previewBg})` : (d.bg ? `var(${d.bg})` : 'var(--bg)'));
+  const pvBg = d.bg === null ? 'transparent' : autoStyle.bg || (d.previewBg ? `var(${d.previewBg})` : (d.bg ? `var(${d.bg})` : 'transparent'));
   const pvFg = autoStyle.fg || (d.fg ? `var(${d.fg})` : d.line ? `var(${d.line})` : 'var(--fg)');
   const strokeKey = _settingsThemePreviewExtraKey(d, 'stroke', '-stroke-color');
   const strokeWidthKey = _settingsThemePreviewExtraKey(d, 'strokeWidth', '-stroke-width');

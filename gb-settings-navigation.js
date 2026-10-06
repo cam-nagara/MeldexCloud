@@ -343,5 +343,6 @@ function _applySettingsNavigationView(root, target) {
       section.hidden = !showSection;
       section.style.display = showSection ? '' : 'none';
     });
+    if (target.view === 'theme' && panel.dataset.panel === 'テーマ' && typeof settingsThemeSyncSimpleModeVisibility === 'function') settingsThemeSyncSimpleModeVisibility(panel);
   });
 }

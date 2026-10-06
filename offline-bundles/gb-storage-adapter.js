@@ -392,6 +392,8 @@
       this._metaCache = new Map();
       this._fileCache = new Map();
       this._fileDownloadInFlight = new Map();
+      this._mediaChecks = new Map();
+      this._mediaScope = '';
       this._listCache = new Map();
       this._listInFlight = new Map();
       this._listCacheGeneration = 0;
@@ -543,6 +545,9 @@
 
     _forgetFileCache(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      for (const [key, value] of this._mediaChecks) {
+        if (!normalized || value.path === normalized || value.path.startsWith(normalized + '/')) this._mediaChecks.delete(key);
+      }
       if (!normalized) {
         this._fileCache.clear();
         this._fileDownloadInFlight.clear();
@@ -675,6 +680,8 @@
       this._metaCache.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
+      this._mediaChecks.clear();
+      this._mediaScope = '';
       this._forgetListCache('');
       this._recentConflictCopies.clear();
     }
@@ -1070,30 +1077,131 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      // Only immutable display assets use the persistent cache. Sheet/source
+      // reads retain their existing freshness and conflict handling.
+      const media = /\.(png|jpe?g|jpe|jfif|gif|webp|svg|bmp|avif|ico|apng|tiff?|heic|heif|pdf|mp[34]|webm|mov|avi|mkv|ogg|wav|m4a|aac|flac)$/i.test(normalized)
+        ? await this._mediaCacheRecord(normalized) : null;
       const cached = this._cachedDownloadedFile(normalized);
-      if (cached) return cached;
-      const inFlight = this._fileDownloadInFlight.get(normalized);
+      if (cached && (!media || cached.__meldexMediaKey === media.key)) return cached;
+      const flightKey = media?.key || normalized;
+      const inFlight = this._fileDownloadInFlight.get(flightKey);
       if (inFlight) return inFlight;
       const promise = (async () => {
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        let savedFile = null;
+        if (media?.cache) {
+          try {
+            const saved = await media.cache.match(media.key);
+            if (saved) {
+              const file = _createFile(new Uint8Array(await saved.arrayBuffer()), media.meta.name || _basename(normalized), {
+                type: saved.headers.get('content-type') || _mimeFromPath(normalized),
+                lastModified: _jsonDate(media.meta.server_modified || media.meta.client_modified || ''),
+              });
+              file.__meldexMediaKey = media.key;
+              savedFile = file;
+            }
+          } catch (_) { /* Cache unavailable: download normally. */ }
+        }
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        if (savedFile) {
+          const latest = this._metaCache.get(normalized);
+          if (latest?.rev !== media.meta.rev) throw new Error('画像の取得中にファイルの版が変更されました');
+          this._rememberDownloadedFile(normalized, savedFile, media.meta);
+          return savedFile;
+        }
         const location = this._dropboxLocation(normalized);
         const response = await this._content('files/download', { path: location.path }, undefined, location);
         const resultHeader = response.headers.get('dropbox-api-result');
         const meta = _safeJsonParse(resultHeader, null) || {};
-        this._rememberMeta(normalized, meta);
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        const currentMeta = this._metaCache.get(normalized);
+        const remember = !media || currentMeta?.rev === media.meta.rev;
+        if (remember) this._rememberMeta(normalized, meta);
         const bytes = new Uint8Array(await response.arrayBuffer());
+        if (media && this._mediaScope !== media.scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
         const modified = meta.server_modified || meta.client_modified || '';
         const file = _createFile(bytes, meta.name || _basename(normalized), {
           type: response.headers.get('content-type') || _mimeFromPath(normalized),
           lastModified: _jsonDate(modified),
         });
-        this._rememberDownloadedFile(normalized, file, meta);
+        if (media) {
+          // A change between metadata and download must never populate the
+          // previous revision's key.
+          file.__meldexMediaKey = meta.rev === media.meta.rev ? media.key : '';
+          if (media.cache && meta.rev === media.meta.rev && file.size <= 24 * 1024 * 1024) {
+            try {
+              await media.cache.put(media.key, new Response(file, { headers: {
+                'content-type': file.type, 'content-length': String(file.size),
+              } }));
+              const keys = await media.cache.keys();
+              let total = 0;
+              for (let index = keys.length - 1; index >= 0; index--) {
+                const entry = await media.cache.match(keys[index]);
+                total += Number(entry?.headers.get('content-length') || 0);
+                if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
+              }
+            } catch (_) { /* Quota/private browsing must not break display. */ }
+          }
+        }
+        if (remember) this._rememberDownloadedFile(normalized, file, meta);
         return file;
       })();
-      this._fileDownloadInFlight.set(normalized, promise);
+      this._fileDownloadInFlight.set(flightKey, promise);
       try {
         return await promise;
       } finally {
-        if (this._fileDownloadInFlight.get(normalized) === promise) this._fileDownloadInFlight.delete(normalized);
+        if (this._fileDownloadInFlight.get(flightKey) === promise) this._fileDownloadInFlight.delete(flightKey);
+      }
+    }
+
+    async _mediaCacheRecord(normalized) {
+      const auth = _auth();
+      if (!auth?.getCurrentAccount) return null;
+      const account = await auth.getCurrentAccount(false);
+      if (!account?.account_id) throw new Error('Dropboxへもう一度接続してください');
+      const location = this._dropboxLocation(normalized);
+      const resolved = auth.resolveFileLocation?.(location.path, location.namespaceKind) || location;
+      const scope = JSON.stringify([account.account_id, account.root_info || {}, this.getVaultPath(), auth.getVaultNamespaceKind?.() || 'home']);
+      if (this._mediaScope !== scope) {
+        const previousScope = this._mediaScope;
+        this._mediaScope = scope;
+        this._mediaChecks.clear();
+        if (previousScope) {
+          this._metaCache.clear();
+          this._fileCache.clear();
+        }
+      }
+      const identity = JSON.stringify([scope, resolved.namespaceKind, resolved.path]);
+      const checked = this._mediaChecks.get(identity);
+      // Coalesce validation as well as downloads; failures are not retained.
+      const known = this._metaCache.get(normalized);
+      if (checked && Date.now() - checked.at < 30 * 1000
+        && (!this._metaCache.has(normalized) || known?.rev && (!checked.rev || known.rev === checked.rev))) return checked.promise;
+      const promise = (async () => {
+        const meta = await this._rpc('files/get_metadata', {
+          path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+        }, { ...location, freshMissingCheck: true });
+        if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        this._rememberMeta(normalized, meta);
+        if (!meta || meta['.tag'] !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+        if (!meta.rev || !globalThis.crypto?.subtle || !globalThis.caches) return null;
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity + '\n' + meta.rev));
+        const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        const key = new URL('./__meldex_media_cache__/' + hash, document.baseURI).href;
+        let cache = null;
+        try { cache = await caches.open('meldex-media-files-v1'); } catch (_) {}
+        if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
+        return { key, cache, meta, scope };
+      })();
+      const record = { path: normalized, at: Date.now(), promise, rev: '' };
+      this._mediaChecks.set(identity, record);
+      try {
+        const result = await promise;
+        record.rev = result?.meta?.rev || '';
+        return result;
+      } catch (error) {
+        if (this._mediaChecks.get(identity) === record) this._mediaChecks.delete(identity);
+        throw error;
       }
     }
 

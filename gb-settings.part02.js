@@ -3,4 +3,5 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
 __loadSplitScript('gb-settings.part02.js', [
   'gb-settings.part02.part01.js',
   'gb-settings.part02.part02.js',
+  'gb-settings-theme-simple.js',
 ]);

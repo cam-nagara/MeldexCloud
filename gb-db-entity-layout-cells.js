@@ -146,7 +146,11 @@ function _elBuildImageCellContent(cell, ctx, canvasEl) {
   }
   const img = document.createElement('img');
   img.className = 'el-cell-image';
-  img.src = src;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+    window.MeldexPwaFileUrl.applyToElement(img, src);
+  } else {
+    img.src = src;
+  }
   img.alt = String(image.alt || cell.type || '');
   img.draggable = false;
   img.style.objectFit = image.fit === 'cover' ? 'cover' : 'contain';

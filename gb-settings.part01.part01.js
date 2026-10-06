@@ -217,6 +217,8 @@ async function showSettingsModal(opts) {
     : (typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle');
   const defaultSettingsTab = typeof _settingsDefaultTabId === 'function' ? _settingsDefaultTabId() : (settingsTabs[0] || '全般');
   const requestedPanel = opts.panel ? (typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(opts.panel).tabId : _settingsCanonicalPanelName(opts.panel || '')) : '';
+  // Register starter copies before capturing Cancel's theme snapshot.
+  if (typeof settingsThemeEnsureInitialSimplePresets === 'function') settingsThemeEnsureInitialSimplePresets();
   _settingsThemeSetDirty(false);
   window._settingsOutlinerRootsDirty = false;
   // テーマ変更のキャンセル用にスナップショットを保存

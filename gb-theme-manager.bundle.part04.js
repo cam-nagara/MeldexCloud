@@ -1,3 +1,57 @@
+    return compact;
+  }
+
+  function setThemeOsAccentOnTheme(themeDef, enabled) {
+    if (!themeDef) return false;
+    themeDef.ui = themeDef.ui || {};
+    themeDef.ui.useOsAccentColor = normalizeThemeOsAccentSetting(enabled);
+    return themeDef.ui.useOsAccentColor;
+  }
+
+  function setThemeStandardPaletteAdjustOnTheme(themeDef, adjust) {
+    if (!themeDef) return null;
+    themeDef.ui = themeDef.ui || {};
+    const next = adjust == null ? null : normalizeThemeStandardPaletteAdjust(adjust);
+    if (next) themeDef.ui.standardPaletteAdjust = next;
+    else delete themeDef.ui.standardPaletteAdjust;
+    return next;
+  }
+
+  function setThemeUiSettingsOnTheme(themeDef, applications, autoTone) {
+    themeDef.ui = themeDef.ui || {};
+    themeDef.ui.themeUiApplications = normalizeThemeUiApplications(applications);
+    themeDef.ui.themeUiAutoTone = normalizeThemeUiAutoTone(autoTone);
+    return themeDef.ui;
+  }
+
+  function applyThemeOsAccentSettingFromTheme(themeDef, options = {}) {
+    const stored = getUseOsAccentColor();
+    const next = themeOsAccentFromTheme(themeDef, null);
+    const enabled = next == null && options.preserveStored === true
+      ? stored
+      : normalizeThemeOsAccentSetting(next, false);
+    try { localStorage.setItem(THEME_OS_ACCENT_KEY, enabled ? '1' : '0'); } catch {}
+    return enabled;
+  }
+
+  function applyThemeStandardPaletteAdjustFromTheme(themeDef, options = {}) {
+    if (typeof global.setStandardPaletteAdjust !== 'function') return null;
+    const fallback = options.preserveStored === true && typeof global.getStandardPaletteAdjust === 'function'
+      ? global.getStandardPaletteAdjust()
+      : null;
+    const next = themeStandardPaletteAdjustFromTheme(themeDef, fallback);
+    return global.setStandardPaletteAdjust(next || normalizeThemeStandardPaletteAdjust(null));
+  }
+
+  function applyThemeColorSlotSettingsFromTheme(themeDef, options = {}) {
+    let slots = themeColorSlotSettingsFromTheme(themeDef, null);
+    let hasStored = false;
+    try { hasStored = localStorage.getItem(THEME_COLOR_SLOT_SETTINGS_KEY) != null; } catch {}
+    if (options.preserveStored === true && hasStored) {
+      slots = compactThemeColorSlotSettings(readStoredThemeColorSlotSettings());
+    }
+    if (slots) {
+      writeStoredThemeColorSlotSettings(slots);
       if (typeof global.computeThemeColorSetFromSlots === 'function') {
         const next = global.computeThemeColorSetFromSlots(undefined, slots);
         if (Array.isArray(next) && next.length) {
@@ -290,6 +344,7 @@
     getThemeUiApplications,
     saveThemeUiApplications,
     setThemeUiApplication,
+    resolveThemeUiColor: (value, index = 0) => _themeUiColorCss(value, getThemeUiAutoTone(), { paletteIndex: index }),
     resetThemeUiApplicationTargets,
     resetThemeUiApplications,
     normalizeThemeUiAutoTone,

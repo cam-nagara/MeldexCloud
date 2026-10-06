@@ -735,6 +735,13 @@
     if (typeof positionPopup === 'function') {
       positionPopup(tip, rect, { prefer: 'below', gap: 6 });
     }
+    let layer = 100000;
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      const z = Number.parseInt(getComputedStyle(node).zIndex, 10);
+      if (Number.isFinite(z)) layer = Math.max(layer, z + 1);
+    }
+    tip.setAttribute('style', `${tip.getAttribute('style') || ''};z-index:${Math.min(layer, 2147483647)}`);
+
   }
 
   function showFor(el, explicitText) {

@@ -96,7 +96,6 @@
   let _osAccentRuntimeColor = '';
   let _osAccentRuntimeAvailable = null;
   const _appliedThemeVarKeys = new Set();
-  let _trackedExistingThemeVars = false;
   const THEME_UI_PROP_FG = 'fg';
   const THEME_UI_PROP_BG = 'bg';
   const THEME_UI_PROP_ACCENT = 'underline';
@@ -264,6 +263,7 @@
   const PANEL_SURFACE_UI_TARGETS = Object.freeze([
     { id: 'surface-dock', group: 'ui', label: '左右レールの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-dockbar-bg' } } },
     { id: 'surface-popup', group: 'ui', label: 'ポップアップの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--ui-popup-bg' } } },
+    { id: 'surface-dialog', group: 'ui', label: 'ダイアログ', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { fg: '文字色', bg: '背景色', underline: '枠線' }, vars: { normal: { fg: '--ui-modal-fg', bg: '--ui-modal-bg', underline: '--ui-modal-border' } } },
     { id: 'surface-folder', group: 'style', app: 'フォルダ', label: 'フォルダパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--fv-panel-bg' } } },
     { id: 'surface-note', group: 'style', app: 'ノート', label: 'ノートパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--page-text-bg' } } },
     { id: 'surface-scriptnote', group: 'style', app: 'シナリオ', label: 'シナリオパネルの背景', props: BUTTON_UI_PROPS, states: Object.freeze([THEME_UI_STATE_NORMAL]), propLabels: { bg: '背景色' }, vars: { normal: { bg: '--sn2-page-bg' } } },
@@ -479,7 +479,7 @@
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#4f7f3b', '--ui-accent-fg': '#000000',
+    '--ui-accent': '#51813d', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
@@ -781,6 +781,11 @@
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
+    if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
+      const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();
+      const single = { 2: THEME_UI_VALUE_AUTO_LIGHT, 3: THEME_UI_VALUE_AUTO, 4: THEME_UI_VALUE_AUTO_DARK };
+      return rows.length === 1 && single[rows[0]] ? single[rows[0]] : `auto-rows:${rows.join(',')}`;
+    }
     if (raw === THEME_UI_VALUE_OS_ACCENT) return THEME_UI_VALUE_OS_ACCENT;
     if (raw === THEME_UI_VALUE_NONE || raw === '') return THEME_UI_VALUE_NONE;
     if (raw.startsWith(THEME_UI_VALUE_COLOR_PREFIX) || raw.startsWith('#')) {
@@ -893,8 +898,3 @@
     }
     if (typeof global._refreshSettingsThemePanel === 'function') global._refreshSettingsThemePanel();
   }
-
-  function _pushThemeSettingsHistory(label, beforeSnapshot, keys, detail, options = {}) {
-    if (!beforeSnapshot || _themeSettingsHistorySuppressed(options)) return false;
-    if (typeof global.pushLocalStorageSettingsHistory !== 'function') return false;
-    return global.pushLocalStorageSettingsHistory(

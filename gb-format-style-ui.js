@@ -149,11 +149,12 @@
 
   function _themeUiRowFormatDef(targetId, stateId) {
     if (!targetId || typeof _settingsThemePreviewAutoTargetForRow !== 'function') return null;
+    const rowTargetId = targetId === 'folder-tree-folder' ? 'folder' : targetId;
     const sections = typeof UI_STYLE_SECTIONS !== 'undefined' ? Object.values(UI_STYLE_SECTIONS) : [];
     for (const defs of sections) {
       for (const candidate of defs || []) {
         const resolved = _settingsThemePreviewAutoTargetForRow(candidate);
-        if (resolved?.targetId === targetId && resolved?.stateId === stateId) return candidate;
+        if (resolved?.targetId === rowTargetId && resolved?.stateId === stateId) return candidate;
       }
     }
     return null;
@@ -166,7 +167,7 @@
     const stateId = _themeUiPopupStateId(previewEl, target);
     const vars = target?.formatVars?.[stateId];
     const rowDef = vars ? null : _themeUiRowFormatDef(targetId, stateId);
-    if (!vars && !rowDef) return fallbackDef;
+    if (!vars && !rowDef) return { ...(fallbackDef || {}), __themeUiTargetId: targetId, __themeUiStateId: stateId };
     return {
       ...(fallbackDef || {}),
       ...(rowDef || {}),
@@ -342,25 +343,67 @@
     host.dataset.themeUiPopupTarget = target.id;
     host.dataset.themeUiPopupState = resolved.stateId || 'normal';
     host.dataset.e2eId = _e2eId('settings-theme-preview-auto', target.id);
-    const stateOptions = (Array.isArray(target.states) ? target.states : [])
-      .map(stateId => `<option value="${_e(stateId)}"${stateId === resolved.stateId ? ' selected' : ''}>${_e(_themeUiStateLabel(target, stateId))}</option>`)
-      .join('');
-    host.innerHTML = `<div class="gb-fmt-theme-ui-editor-title">
-      <span>テーマカラーの自動適用設定</span>
-      <span class="gb-fmt-theme-ui-editor-target">${_e(target.label)}</span>
-    </div>
-    ${stateOptions ? `<label class="gb-fmt-theme-ui-state-row"><span>編集する状態</span><select class="gb-select" data-theme-ui-popup-state-select aria-label="編集する状態">${stateOptions}</select></label>` : ''}
-    ${renderThemeUiApplicationEditor({ targetIds: [target.id], hideLabel: true })}
-    <details class="gb-fmt-theme-ui-tone" open>
-      <summary>自動（明／暗）の強さ</summary>
-      ${renderThemeUiAutoToneControls()}
-    </details>`;
-    host.querySelector('[data-theme-ui-popup-state-select]')?.addEventListener('change', (event) => {
-      previewEl.dataset.themeUiEditStateId = event.currentTarget.value;
+    const stateId = resolved.stateId || 'normal';
+    host.innerHTML = `<div class="gb-fmt-theme-ui-editor-title"><span>${_e(target.label)}</span></div>
+      <div class="gb-tabbar" role="tablist" aria-label="編集する状態">${target.states.map(id =>
+        `<button type="button" class="gb-inner-tab${id === stateId ? ' gb-inner-tab-active' : ''}" role="tab" aria-selected="${id === stateId}" tabindex="${id === stateId ? 0 : -1}" data-theme-ui-popup-state="${_e(id)}">${_e(_themeUiStateLabel(target, id))}</button>`).join('')}</div>`;
+    host.querySelectorAll('[data-theme-ui-popup-state]').forEach(button => button.addEventListener('click', () => {
+      previewEl.dataset.themeUiEditStateId = button.dataset.themeUiPopupState;
       window.openStylePreviewPopup?.(previewEl);
+    }));
+    host.querySelector('[role="tablist"]').addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = target.states.indexOf(stateId);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? target.states.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + target.states.length) % target.states.length;
+      host.querySelector(`[data-theme-ui-popup-state="${target.states[next]}"]`).click();
+      document.querySelector('.gb-fmt-popup [role="tab"][aria-selected="true"]')?.focus();
     });
-    host.querySelectorAll('.cs-theme-ui-target').forEach(details => { details.open = true; });
+    const formatMap = _mapSettingsDef(def).map;
+    const colors = document.createElement('div');
+    colors.className = 'gb-fmt-popup-row gb-fmt-theme-ui-colors';
+    const config = MeldexThemeManager.getThemeUiApplications();
+    for (const prop of MeldexThemeManager.THEME_UI_PROPS) {
+      if (prop.id === 'fg' && !formatMap.textColor || prop.id === 'bg' && !formatMap.bgColor || prop.id === 'underline' && !formatMap.accentColor && !formatMap.borderColor) continue;
+      if (!target.props.includes(prop.id) || (target.vars && !target.vars[stateId]?.[prop.id])) continue;
+      const group = document.createElement('span');
+      group.className = 'gb-fmt-popup-group cs-theme-ui-picker-wrap';
+      group.innerHTML = `<span class="gb-fmt-popup-label">${_e(target.propLabels?.[prop.id] || prop.label)}</span>
+        <select class="cs-theme-ui-native" tabindex="-1" data-theme-ui-setting="${_e(target.id)}|${_e(stateId)}|${prop.id}">${_themeUiSelectOptions(config[target.id][stateId][prop.id])}</select>
+        <button type="button" class="gb-fmt-swatch" data-theme-ui-color-swatch aria-label="${_e(target.label)} ${_e(_themeUiStateLabel(target, stateId))} ${_e(prop.label)}の色を設定"></button>`;
+      colors.appendChild(group);
+    }
+    host.appendChild(colors);
     return host;
+  }
+
+  function _clearThemeUiColorOverride(def, previewEl, map, prop) {
+    const key = map[prop];
+    if (!key || typeof MeldexThemeManager === 'undefined') return;
+    const colorProp = prop === 'textColor' ? 'fg' : prop === 'bgColor' ? 'bg'
+      : prop === 'accentColor' || prop === 'borderColor' ? 'underline' : '';
+    if (!colorProp) return;
+    const config = MeldexThemeManager.getThemeUiApplications();
+    const resolved = def.__themeUiTargetId
+      ? { targetId: def.__themeUiTargetId, stateId: def.__themeUiStateId }
+      : typeof _settingsThemePreviewAutoTargetForRow === 'function' ? _settingsThemePreviewAutoTargetForRow(def) : null;
+    let changed = false;
+    for (const target of MeldexThemeManager.THEME_UI_TARGETS) {
+      for (const state of target.states) {
+        const raw = target.vars?.[state]?.[colorProp];
+        const keys = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        const direct = !target.vars && target.id === resolved?.targetId && state === resolved?.stateId;
+        if (!(keys.includes(key) || direct) || !target.props.includes(colorProp)) continue;
+        if (config[target.id][state][colorProp] === 'none') continue;
+        config[target.id][state][colorProp] = 'none';
+        changed = true;
+      }
+    }
+    if (changed) {
+      MeldexThemeManager.saveThemeUiApplications(config, { skipHistory: true });
+      if (typeof syncThemeUiApplicationSelectors === 'function') syncThemeUiApplicationSelectors(document.querySelector('.gb-fmt-popup') || previewEl);
+    }
   }
 
   function _settingsValues(def, map) {
@@ -765,9 +808,12 @@
     const { map, fields } = _mapSettingsDef(def);
     const popupNumberSpecs = _popupNumberSpecs(def, map);
     const hasNumbers = popupNumberSpecs.length > 0;
-    const themeUiEditor = _makeThemeUiApplicationPopupEditor(def, previewEl);
+    // State samples edit their own CSS key and retain the direct edit/cancel contract.
+    const themeUiEditor = def.__themeStateEntry ? null : _makeThemeUiApplicationPopupEditor(def, previewEl);
     if (!fields.length && !hasNumbers && !themeUiEditor) return;
     const extraNumberRows = _makePopupNumberRows(def, previewEl, popupNumberSpecs);
+    const extraControls = typeof window.settingsThemePreviewExtraControls === 'function'
+      ? window.settingsThemePreviewExtraControls(def,previewEl) : null;
     const stateEntry = def.__themeStateEntry || null;
     const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
       ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
@@ -822,14 +868,18 @@
     }
     let openedPopup = null;
     openedPopup = popupOpen(previewEl, {
-      fields,
+      fields: themeUiEditor ? fields.filter(field => {
+        const prop = { textColor: 'fg', bgColor: 'bg', accentColor: 'underline' }[field];
+        return !prop || !themeUiEditor.querySelector(`[data-theme-ui-setting$="|${prop}"]`);
+      }) : fields,
+      ...(themeUiEditor ? { compactStyleRow: true } : {}),
       values: _settingsValues(def, map),
       bgColorType: def.bgType || '',
       ...(themeUiEditor ? {
         className: 'gb-fmt-popup--theme-preview-auto',
         extraRowTop: [themeUiEditor],
       } : {}),
-      ...(extraNumberRows.length ? { extraRow2: extraNumberRows } : {}),
+      extraRow2: [...extraNumberRows, extraControls].filter(Boolean),
       onChange(prop, value) {
         const stateKey = stateEntry && ({
           textColor: map.textColor,
@@ -852,6 +902,8 @@
           }
           return;
         }
+        // 指定色の操作を、自動配色の!importantルールで隠さない。
+        _clearThemeUiColorOverride(def, previewEl, map, prop);
         if (prop === 'textColor' && map.textColor) _setThemeStyle(map.textColor, value || '');
         else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, _styleBgColorWithPreservedAlpha(def, _cssVar(map.bgColor), value));
         else if (prop === 'fontWeight' && map.fontWeight) _setThemeStyle(map.fontWeight, value === 'bold' ? 'bold' : 'normal');
@@ -1294,6 +1346,7 @@
 
   window.renderStyleRow = renderStyleRowUnified;
   window.openStylePreviewPopup = openStylePreviewPopupUnified;
+  window.getSettingsThemePreviewPropertyMap = def => ({ ..._mapSettingsDef(def).map });
   window.getSettingsThemePreviewMappedFields = def => _mapSettingsDef(def).fields;
   window.openStyleBgOnlyPalette = openStyleBgOnlyPaletteUnified;
   window.renderFileStyleTab = renderFileStyleTabUnified;

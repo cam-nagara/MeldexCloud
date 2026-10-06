@@ -1128,6 +1128,9 @@ function restoreThemeSnapshot(snap) {
   if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyOsAccentColorSetting === 'function' && Object.prototype.hasOwnProperty.call(snap, '__themeOsAccent')) {
     MeldexThemeManager.applyOsAccentColorSetting(snap.__themeOsAccent === '1');
   }
+  // CSS復元後に個別テーマ・ファイル指定を優先し、JS側の影／整列も戻す。
+  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') MeldexThemeManager.applyBoardThemeRuntime(bd);
+  if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
 }
 
 function _deriveUiStyleVarsFromBase(vars) {

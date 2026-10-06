@@ -269,6 +269,7 @@ function _themeUiOptionItems(value) {
     { value: 'os-accent', label: 'OSアクセント', swatch: 'var(--theme-os-accent, AccentColor)', title: 'OSのアクセントカラー' },
     { value: _themeUiCustomValue(customColor), label: '指定カラー', swatch: customColor, title: 'カラーパレットから指定', custom: true },
   ];
+  if (String(value || '').startsWith('auto-rows:')) items.push({ value, label: '自動（複数行）', swatch: _themeUiAutoSwatch('auto') });
   if (osAccent) return items;
   items.push({ group: true, label: 'テーマカラー' });
   colors.forEach((color, index) => {

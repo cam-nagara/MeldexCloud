@@ -1,3 +1,31 @@
+    const next = normalizeThemeColorSet(colors, getThemeColorSet());
+    const commitOptions = {
+      ...options,
+      skipHistory: options.skipHistory === true || _themeSettingsHistorySuppressed(options),
+    };
+    if (options.save !== false) {
+      scheduleThemeColorSetCommit(next, commitOptions);
+    }
+    const applied = options.apply !== false ? paintThemeColorSet(next, { bindTargets: options.bindTargets !== false && options.immediateTargets === true }) : next;
+    _activeThemeColorSet = applied.slice();
+    if (options.save === false) {
+      if (options.bindTargets !== false) bindPaletteTargets(next);
+      if (options.renderBoard !== false) scheduleBoardRender();
+      global.dispatchEvent(new CustomEvent('meldex-theme-color-set-change', { detail: { colorSet: next } }));
+    }
+    return next;
+  }
+
+  function scheduleThemeColorSetCommit(colors, options = {}) {
+    cancelThemeColorSetCommit();
+    const token = ++_themeColorSetCommitToken;
+    const scheduledThemeId = getDefaultThemeId();
+    _themeColorSetCommitTimer = setTimeout(() => {
+      if (token !== _themeColorSetCommitToken) return;
+      _themeColorSetCommitTimer = 0;
+      if (options.save !== false && getDefaultThemeId() !== scheduledThemeId) return;
+      const before = _captureThemeSettingsStorage([THEME_COLOR_SET_KEY]);
+      if (options.save !== false) {
         try { localStorage.setItem(THEME_COLOR_SET_KEY, JSON.stringify(colors)); } catch {}
       }
       _pushThemeSettingsHistory('設定: テーマカラーセット変更', before, [THEME_COLOR_SET_KEY], '', options);
@@ -33,10 +61,25 @@
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized.startsWith('auto-rows:')) {
+      const rows = normalized.slice(10).split(',').map(Number);
+      const index = options.paletteIndex || 0;
+      const row = rows[index % rows.length];
+      if (row === 1) {
+        const grays = typeof getStandardPaletteSwatches === 'function'
+          ? getStandardPaletteSwatches().filter(item => item.row === 1).map(item => item.color)
+          : ['#ffffff', '#d4d4d4', '#ababab', '#808080', '#545454', '#2b2b2b', '#000000'];
+        return grays[Math.floor(index / rows.length) % grays.length];
+      }
+      const color = `var(--theme-palette-${Math.floor(index / rows.length)},#569cd6)`;
+      if (row === 3) return color;
+      const amount = row === 2 ? autoTone.light : autoTone.dark;
+      return `color-mix(in srgb, ${color} ${100 - amount}%, ${row === 2 ? 'white' : 'black'} ${amount}%)`;
+    }
     if (normalized === THEME_UI_VALUE_AUTO) return _themeUiSlotColorCss(options);
     if (normalized === THEME_UI_VALUE_AUTO_LIGHT) return _themeUiAutoMixCss('white', autoTone?.light, options);
     if (normalized === THEME_UI_VALUE_AUTO_DARK) return _themeUiAutoMixCss('black', autoTone?.dark, options);
-    if (normalized === THEME_UI_VALUE_OS_ACCENT) return THEME_OS_ACCENT_CSS;
+    if (normalized === THEME_UI_VALUE_OS_ACCENT) return 'var(--theme-native-os-accent, AccentColor)';
     if (normalized.startsWith(THEME_UI_VALUE_COLOR_PREFIX)) return normalized.slice(THEME_UI_VALUE_COLOR_PREFIX.length);
     return `var(--theme-palette-${normalized},${_themeUiSlotColorCss(options)})`;
   }
@@ -136,6 +179,8 @@
     }
     const rules = [];
     const autoTone = getThemeUiAutoTone();
+    document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
+    document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
     const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
@@ -153,6 +198,13 @@
             : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
+          if (!target.vars && String(value).startsWith('auto-rows:')) {
+            for (let index = 0; index < THEME_COLOR_SET_SIZE; index++) {
+              const indexedSelector = selector.split(',').map(base => `${base}[data-theme-palette-index="${index}"]`).join(',');
+              rules.push(_themeUiRuleForProp(indexedSelector, target, state.id, prop.id,
+                _themeUiColorCss(value, autoTone, { paletteIndex: index })));
+            }
+          }
         });
       });
     });
@@ -414,7 +466,7 @@
     fallback('--page-quote-cite-link-fg', '--accent', '#569cd6');
     if (!next['--page-quote-cite-opacity']) next['--page-quote-cite-opacity'] = '0.6';
     if (!next['--page-quote-cite-hover-opacity']) next['--page-quote-cite-hover-opacity'] = '1';
-    fallback('--page-link-hover-bg', '--bg3', '#2d2d2d');
+    if (!next['--page-link-hover-bg']) next['--page-link-hover-bg'] = 'transparent';
     if (!next['--page-link-hover-radius']) next['--page-link-hover-radius'] = '2px';
     fallback('--page-code-block-border', '--border', '#333333');
     if (!next['--page-code-block-border-width']) next['--page-code-block-border-width'] = '1px';
@@ -745,6 +797,8 @@
     // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
     if (board) {
       const readBoardThemeVar = (key) => {
+        const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
+        if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
         const local = canvas?.style?.getPropertyValue?.(key)?.trim();
         if (local) return local;
         return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';
@@ -844,57 +898,3 @@
     const compact = compactThemeColorExtraSlotSettings(slots);
     if (compact) themeDef.ui.themeColorExtraSlotSettings = compact;
     else delete themeDef.ui.themeColorExtraSlotSettings;
-    return compact;
-  }
-
-  function setThemeOsAccentOnTheme(themeDef, enabled) {
-    if (!themeDef) return false;
-    themeDef.ui = themeDef.ui || {};
-    themeDef.ui.useOsAccentColor = normalizeThemeOsAccentSetting(enabled);
-    return themeDef.ui.useOsAccentColor;
-  }
-
-  function setThemeStandardPaletteAdjustOnTheme(themeDef, adjust) {
-    if (!themeDef) return null;
-    themeDef.ui = themeDef.ui || {};
-    const next = adjust == null ? null : normalizeThemeStandardPaletteAdjust(adjust);
-    if (next) themeDef.ui.standardPaletteAdjust = next;
-    else delete themeDef.ui.standardPaletteAdjust;
-    return next;
-  }
-
-  function setThemeUiSettingsOnTheme(themeDef, applications, autoTone) {
-    themeDef.ui = themeDef.ui || {};
-    themeDef.ui.themeUiApplications = normalizeThemeUiApplications(applications);
-    themeDef.ui.themeUiAutoTone = normalizeThemeUiAutoTone(autoTone);
-    return themeDef.ui;
-  }
-
-  function applyThemeOsAccentSettingFromTheme(themeDef, options = {}) {
-    const stored = getUseOsAccentColor();
-    const next = themeOsAccentFromTheme(themeDef, null);
-    const enabled = next == null && options.preserveStored === true
-      ? stored
-      : normalizeThemeOsAccentSetting(next, false);
-    try { localStorage.setItem(THEME_OS_ACCENT_KEY, enabled ? '1' : '0'); } catch {}
-    return enabled;
-  }
-
-  function applyThemeStandardPaletteAdjustFromTheme(themeDef, options = {}) {
-    if (typeof global.setStandardPaletteAdjust !== 'function') return null;
-    const fallback = options.preserveStored === true && typeof global.getStandardPaletteAdjust === 'function'
-      ? global.getStandardPaletteAdjust()
-      : null;
-    const next = themeStandardPaletteAdjustFromTheme(themeDef, fallback);
-    return global.setStandardPaletteAdjust(next || normalizeThemeStandardPaletteAdjust(null));
-  }
-
-  function applyThemeColorSlotSettingsFromTheme(themeDef, options = {}) {
-    let slots = themeColorSlotSettingsFromTheme(themeDef, null);
-    let hasStored = false;
-    try { hasStored = localStorage.getItem(THEME_COLOR_SLOT_SETTINGS_KEY) != null; } catch {}
-    if (options.preserveStored === true && hasStored) {
-      slots = compactThemeColorSlotSettings(readStoredThemeColorSlotSettings());
-    }
-    if (slots) {
-      writeStoredThemeColorSlotSettings(slots);

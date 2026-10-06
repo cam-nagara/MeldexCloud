@@ -13,10 +13,25 @@
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized.startsWith('auto-rows:')) {
+      const rows = normalized.slice(10).split(',').map(Number);
+      const index = options.paletteIndex || 0;
+      const row = rows[index % rows.length];
+      if (row === 1) {
+        const grays = typeof getStandardPaletteSwatches === 'function'
+          ? getStandardPaletteSwatches().filter(item => item.row === 1).map(item => item.color)
+          : ['#ffffff', '#d4d4d4', '#ababab', '#808080', '#545454', '#2b2b2b', '#000000'];
+        return grays[Math.floor(index / rows.length) % grays.length];
+      }
+      const color = `var(--theme-palette-${Math.floor(index / rows.length)},#569cd6)`;
+      if (row === 3) return color;
+      const amount = row === 2 ? autoTone.light : autoTone.dark;
+      return `color-mix(in srgb, ${color} ${100 - amount}%, ${row === 2 ? 'white' : 'black'} ${amount}%)`;
+    }
     if (normalized === THEME_UI_VALUE_AUTO) return _themeUiSlotColorCss(options);
     if (normalized === THEME_UI_VALUE_AUTO_LIGHT) return _themeUiAutoMixCss('white', autoTone?.light, options);
     if (normalized === THEME_UI_VALUE_AUTO_DARK) return _themeUiAutoMixCss('black', autoTone?.dark, options);
-    if (normalized === THEME_UI_VALUE_OS_ACCENT) return THEME_OS_ACCENT_CSS;
+    if (normalized === THEME_UI_VALUE_OS_ACCENT) return 'var(--theme-native-os-accent, AccentColor)';
     if (normalized.startsWith(THEME_UI_VALUE_COLOR_PREFIX)) return normalized.slice(THEME_UI_VALUE_COLOR_PREFIX.length);
     return `var(--theme-palette-${normalized},${_themeUiSlotColorCss(options)})`;
   }
@@ -116,6 +131,8 @@
     }
     const rules = [];
     const autoTone = getThemeUiAutoTone();
+    document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
+    document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
     const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
@@ -133,6 +150,13 @@
             : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
+          if (!target.vars && String(value).startsWith('auto-rows:')) {
+            for (let index = 0; index < THEME_COLOR_SET_SIZE; index++) {
+              const indexedSelector = selector.split(',').map(base => `${base}[data-theme-palette-index="${index}"]`).join(',');
+              rules.push(_themeUiRuleForProp(indexedSelector, target, state.id, prop.id,
+                _themeUiColorCss(value, autoTone, { paletteIndex: index })));
+            }
+          }
         });
       });
     });
@@ -394,7 +418,7 @@
     fallback('--page-quote-cite-link-fg', '--accent', '#569cd6');
     if (!next['--page-quote-cite-opacity']) next['--page-quote-cite-opacity'] = '0.6';
     if (!next['--page-quote-cite-hover-opacity']) next['--page-quote-cite-hover-opacity'] = '1';
-    fallback('--page-link-hover-bg', '--bg3', '#2d2d2d');
+    if (!next['--page-link-hover-bg']) next['--page-link-hover-bg'] = 'transparent';
     if (!next['--page-link-hover-radius']) next['--page-link-hover-radius'] = '2px';
     fallback('--page-code-block-border', '--border', '#333333');
     if (!next['--page-code-block-border-width']) next['--page-code-block-border-width'] = '1px';
@@ -725,6 +749,8 @@
     // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
     if (board) {
       const readBoardThemeVar = (key) => {
+        const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
+        if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
         const local = canvas?.style?.getPropertyValue?.(key)?.trim();
         if (local) return local;
         return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';

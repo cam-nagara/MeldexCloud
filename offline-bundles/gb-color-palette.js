@@ -152,7 +152,7 @@
 .gb-palette-picker-row .gb-btn-eyedropper:disabled { opacity: 0.5; cursor: not-allowed; }
 .gb-palette-picker-row .gb-palette-os-accent-swatch {
   width: 24px; height: 24px; padding: 0; margin: 0;
-  background: var(--theme-os-accent, AccentColor); border-color: var(--border);
+  background: var(--theme-native-os-accent, AccentColor); border-color: var(--border);
   appearance: none;
 }
 .gb-palette-picker-row .gb-palette-os-accent-swatch:hover { border-color: var(--accent); }
@@ -499,7 +499,7 @@ function getPaletteOsAccentColor() {
     const managerColor = _colorValueToHex(MeldexThemeManager.getOsAccentColor());
     if (managerColor) return managerColor;
   }
-  return _documentCssVarColorToHex('--theme-os-accent');
+  return _documentCssVarColorToHex('--theme-native-os-accent');
 }
 
 async function resolvePaletteOsAccentColor() {
@@ -524,10 +524,10 @@ function getPaletteOsAccentVariants(color) {
     ...info,
     color: base ? (info.tone === 'dark' ? _mixHexColors(base, '#000000', contrast) : info.tone === 'light' ? _mixHexColors(base, '#ffffff', contrast) : base) : '',
     fallback: info.tone === 'dark'
-      ? `color-mix(in srgb, var(--theme-os-accent, AccentColor) ${keep}%, black ${contrast}%)`
+      ? `color-mix(in srgb, var(--theme-native-os-accent, AccentColor) ${keep}%, black ${contrast}%)`
       : info.tone === 'light'
-      ? `color-mix(in srgb, var(--theme-os-accent, AccentColor) ${keep}%, white ${contrast}%)`
-      : 'var(--theme-os-accent, AccentColor)',
+      ? `color-mix(in srgb, var(--theme-native-os-accent, AccentColor) ${keep}%, white ${contrast}%)`
+      : 'var(--theme-native-os-accent, AccentColor)',
   }));
 }
 
@@ -788,10 +788,10 @@ function _constrainColorPaletteToViewport(palette) {
   palette.style.overflowY = 'auto';
 }
 
-function openColorPalette(anchorEl, currentColor, onSelect) {
+function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
   closeColorPalette();
   _gbPaletteAnchor = anchorEl;
-  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }));
+  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }), options);
   palette.classList.add('gb-palette-popup');
   palette.setAttribute('role', 'dialog');
   palette.setAttribute('aria-label', '色を選択');
@@ -883,7 +883,7 @@ function createInlineColorGrid(currentColor, onSelect) {
 // ============================================================
 // 内部: パレット要素の構築
 // ============================================================
-function _buildPaletteElement(currentColor, onChange, onClose) {
+function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const { hex: curHex } = parseColorToHexAlpha(currentColor);
   const isTransparent = !currentColor || currentColor === 'transparent';
 
@@ -905,7 +905,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   let hsb = _hexToHsb(selectedHex);
 
   const palette = document.createElement('div');
-  palette.className = 'gb-palette';
+  palette.className = 'gb-palette' + (options.themeUi ? ' gb-palette--theme-settings' : '');
   function reclampPalette() {
     if (typeof clampPopupToViewport !== 'function') return;
     const requestFrame = (typeof window !== 'undefined' && window.requestAnimationFrame) || (fn => setTimeout(fn, 0));
@@ -914,10 +914,15 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
 
   function currentOutputColor() {
     if (selectedIsTransparent) return 'transparent';
-    return _hsbToHex(hsb.h, hsb.s, hsb.b);
+    return currentHex();
   }
-  function currentHex() { return _hsbToHex(hsb.h, hsb.s, hsb.b); }
-  function applyLive() { if (typeof onChange === 'function') onChange(currentOutputColor()); }
+  // Keep exact RGB selections in the theme editor; only slider edits need HSB conversion.
+  function currentHex() { return options.themeUi && selectedHex ? selectedHex : _hsbToHex(hsb.h, hsb.s, hsb.b); }
+  function applyLive() {
+    const preset = selectedPresetIdx >= 0 ? getStandardPaletteSwatches(standardAdjust)[selectedPresetIdx] : null;
+    if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedOsAccentTone, preset });
+    palette.querySelectorAll('[data-theme-palette-auto-row]').forEach(check => { check.checked = false; });
+  }
 
   function selectSwatch(hex, isTransp, customIdx, presetIdx) {
     selectedHex = hex; selectedIsTransparent = isTransp; selectedCustomIdx = customIdx; selectedPresetIdx = presetIdx ?? -1;
@@ -940,6 +945,18 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   function renderPresetGrid(refreshHighlights) {
     presetMatrix.innerHTML = '';
     const all = getStandardPaletteSwatches(standardAdjust);
+    if (options.themeUi) {
+      const tone = options.themeUi.getTone();
+      const colors = typeof getCurrentThemeColorSet === 'function' ? getCurrentThemeColorSet() : [];
+      all.forEach(info => {
+        if ((info.row === 2 || info.row === 4) && colors[info.index]) {
+          const color = _colorValueToHex(colors[info.index]);
+          if (!color) return;
+          const amount = (info.row === 2 ? tone.light : tone.dark) / 100;
+          info.color = '#' + color.slice(1).match(/../g).map(hex => Math.round(parseInt(hex, 16) * (1 - amount) + (info.row === 2 ? 255 : 0) * amount).toString(16).padStart(2, '0')).join('');
+        }
+      });
+    }
     const rowKeys = [1, 2, 3, 4];
     rowKeys.forEach(rowNum => {
       const items = all.filter(s => s.row === rowNum);
@@ -975,11 +992,41 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         _setPaletteSwatchControl(swatch, `${info.title || c}を選択`, selectPreset);
         swatchesEl.appendChild(swatch);
       });
-      presetMatrix.appendChild(swatchesEl);
+      if (options.themeUi) {
+        const group = document.createElement('div');
+        group.className = 'gb-theme-palette-auto-row';
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.dataset.themePaletteAutoRow = String(rowNum);
+        check.checked = options.themeUi.getRows().includes(rowNum);
+        const names = ['無彩色', '自動（明）', 'テーマカラー', '自動（暗）'];
+        check.setAttribute('aria-label', `${names[rowNum - 1]}を自動適用に使う`);
+        check.title = check.getAttribute('aria-label');
+        check.addEventListener('change', () => options.themeUi.onRowsChange(
+          [...presetMatrix.querySelectorAll('[data-theme-palette-auto-row]:checked')].map(input => Number(input.dataset.themePaletteAutoRow))));
+        group.append(check, swatchesEl);
+        presetMatrix.appendChild(group);
+      } else presetMatrix.appendChild(swatchesEl);
     });
     if (refreshHighlights) updateSwatchHighlights();
   }
   renderPresetGrid(false);
+  if (options.themeUi && typeof renderThemeUiAutoToneControls === 'function') {
+    const toneHost = document.createElement('section');
+    toneHost.className = 'gb-fmt-theme-ui-tone';
+    toneHost.innerHTML = '<div class="gb-palette-section-heading">自動（明／暗）の強さ（共通）</div>' + renderThemeUiAutoToneControls();
+    presetMatrix.after(toneHost);
+    const applyTone = event => {
+      const kind = event.target.dataset.themeUiAutoTone || event.target.dataset.themeUiAutoToneInput;
+      if (!kind) return;
+      options.themeUi.onToneChange(kind, event.target.value);
+      const tone = options.themeUi.getTone();
+      toneHost.querySelectorAll(`[data-theme-ui-auto-tone="${kind}"],[data-theme-ui-auto-tone-input="${kind}"]`).forEach(input => { input.value = String(tone[kind]); });
+      renderPresetGrid(true);
+    };
+    toneHost.addEventListener('input', applyTone);
+    reclampPalette();
+  }
 
   // 標準色調整スライダーは設定ダイアログのテーマタブに移動。
   // ポップアップでは表示のみ。スライダー変更を外部で反映するためイベントを購読。
@@ -1184,6 +1231,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
   const onPickerChange = () => {
+    selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
     selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
@@ -1232,6 +1280,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
       const result = await ed.open();
       const pickedHex = parseColorToHexAlpha(result?.sRGBHex).hex;
       if (!pickedHex) return;
+      selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
       selectedCustomIdx = -1;
@@ -1245,6 +1294,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   });
 
   function applyOsAccentColor(hex, tone) {
+    selectedHex = hex;
     hsb = _hexToHsb(hex);
     selectedIsTransparent = false;
     selectedCustomIdx = -1;
@@ -1263,7 +1313,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
-      btn.style.background = color || info?.fallback || 'var(--theme-os-accent, AccentColor)';
+      btn.style.background = color || info?.fallback || 'var(--theme-native-os-accent, AccentColor)';
       btn.dataset.hex = color;
       btn.title = color ? `${btn.dataset.osAccentLabel}: ${color}` : btn.dataset.osAccentLabel;
     });
@@ -1285,7 +1335,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     btn.dataset.e2eId = `color-palette-os-accent-${info.tone}`;
     btn.setAttribute('data-palette-os-accent-swatch', info.tone);
     btn.setAttribute('aria-label', `${info.label}カラーを設定`);
-    btn.style.background = info.color || info.fallback || 'var(--theme-os-accent, AccentColor)';
+    btn.style.background = info.color || info.fallback || 'var(--theme-native-os-accent, AccentColor)';
     btn.dataset.hex = info.color || '';
     btn.title = info.color ? `${info.label}: ${info.color}` : info.label;
     btn.addEventListener('click', async () => {
@@ -1333,7 +1383,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  function onSliderChange() { selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;

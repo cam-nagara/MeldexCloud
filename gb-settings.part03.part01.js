@@ -304,6 +304,16 @@ function _syncThemeUiPicker(wrap, value) {
   _syncThemeUiCustomOption(wrap, value);
   const btn = wrap.querySelector('[data-theme-ui-picker]');
   if (btn) btn.innerHTML = _themeUiPickerContent(value);
+  const swatch = wrap.querySelector('[data-theme-ui-color-swatch]');
+  if (swatch) {
+    const item = _themeUiOptionForValue(value);
+    swatch.innerHTML = _themeUiSwatchHtml(item);
+    if (String(value).startsWith('auto-rows:')) {
+      swatch.querySelector('.cs-theme-ui-option-swatch').style.background = MeldexThemeManager.resolveThemeUiColor(value);
+    }
+    swatch.title = item.label;
+    swatch.dataset.themeUiValue = value;
+  }
   wrap.querySelectorAll('[data-theme-ui-option-value]').forEach(opt => {
     opt.setAttribute('aria-selected', String(opt.dataset.themeUiOptionValue || '') === String(value || 'none') ? 'true' : 'false');
   });
@@ -315,10 +325,10 @@ function _syncThemeUiNativeSelect(select, value) {
   select.querySelectorAll('option[data-theme-ui-custom-option]').forEach(opt => {
     if (opt.value !== current) opt.remove();
   });
-  if (_themeUiCustomColor(current) && !Array.from(select.options).some(opt => opt.value === current)) {
+  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:')) && !Array.from(select.options).some(opt => opt.value === current)) {
     const opt = document.createElement('option');
     opt.value = current;
-    opt.textContent = '指定カラー';
+    opt.textContent = current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
     opt.dataset.themeUiCustomOption = '1';
     select.appendChild(opt);
   }
@@ -371,6 +381,38 @@ function bindThemeUiAutoToneControls(root) {
 function bindThemeUiApplicationEditor(root) {
   if (!root || typeof MeldexThemeManager === 'undefined') return;
   bindThemeUiAutoToneControls(root);
+  root.querySelectorAll('[data-theme-ui-color-swatch]').forEach(button => {
+    button.addEventListener('click', () => {
+      const wrap = button.closest('.cs-theme-ui-picker-wrap');
+      const select = wrap.querySelector('[data-theme-ui-setting]');
+      const apply = value => {
+        _syncThemeUiNativeSelect(select, value);
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const rows = () => {
+        const value = select.value;
+        if (value.startsWith('auto-rows:')) return value.slice(10).split(',').map(Number);
+        return { auto: [3], 'auto-light': [2], 'auto-dark': [4] }[value] || [];
+      };
+      openColorPalette(button, _themeUiCustomColor(select.value) || getComputedStyle(button.querySelector('.cs-theme-ui-option-swatch') || button).backgroundColor,
+        (color, metadata) => {
+          if (metadata?.osAccentTone === 'base') apply('os-accent');
+          else if (metadata?.preset?.row === 3 && metadata.preset.themeSlot) apply(String(metadata.preset.index));
+          else apply(color === 'transparent' ? 'none' : _themeUiCustomValue(color));
+        }, { themeUi: {
+          getRows: rows,
+          onRowsChange: selected => apply(selected.length ? `auto-rows:${selected.join(',')}` : 'none'),
+          getTone: _themeUiAutoTone,
+          onToneChange: (kind, value) => {
+            const next = MeldexThemeManager.setThemeUiAutoTone(kind, value);
+            _settingsThemeMarkDirty?.();
+            _syncThemeUiAutoToneControls(root, next);
+            if (typeof refreshSettingsThemeStylePreviews === 'function') refreshSettingsThemeStylePreviews(root);
+          },
+        } });
+    });
+    _syncThemeUiPicker(button.closest('.cs-theme-ui-picker-wrap'), button.closest('.cs-theme-ui-picker-wrap').querySelector('[data-theme-ui-setting]').value);
+  });
   root.querySelectorAll('[data-theme-ui-setting]').forEach(select => {
     select.addEventListener('change', () => {
       const [targetId, stateId, propId] = String(select.dataset.themeUiSetting || '').split('|');

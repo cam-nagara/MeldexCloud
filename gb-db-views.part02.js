@@ -318,7 +318,11 @@ function _appendDbCardImagePreview(root, items, options = {}) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    img.src = src;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+      window.MeldexPwaFileUrl.applyToElement(img, src);
+    } else {
+      img.src = src;
+    }
     img.alt = item.caption || item.filename || options.propName || '画像';
     img.dataset.imageIndex = String(idx);
     img.addEventListener('click', (ev) => {

@@ -1,3 +1,9 @@
+      };
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
+      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
+        item: confirmationItem, receipt: consumed.receipt,
+        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+      });
     }
 
     if (pathname === '/outliner/delete-batch' && method === 'POST') {

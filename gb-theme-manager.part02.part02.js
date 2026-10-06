@@ -247,6 +247,7 @@
     getThemeUiApplications,
     saveThemeUiApplications,
     setThemeUiApplication,
+    resolveThemeUiColor: (value, index = 0) => _themeUiColorCss(value, getThemeUiAutoTone(), { paletteIndex: index }),
     resetThemeUiApplicationTargets,
     resetThemeUiApplications,
     normalizeThemeUiAutoTone,

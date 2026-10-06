@@ -12,7 +12,7 @@
 .modal-overlay.no-dim { background: transparent; pointer-events: none; }
 .modal-overlay.no-dim > .modal { pointer-events: auto; box-shadow: var(--ui-shadow-lg); }
 .modal {
-  background: var(--ui-bg-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md);
+  background: var(--ui-modal-bg, var(--ui-bg-surface)); color: var(--ui-modal-fg, var(--ui-fg-default)); border: 1px solid var(--ui-modal-border, var(--ui-border)); border-radius: var(--ui-radius-md);
   box-shadow: var(--ui-shadow-lg);
   box-sizing: border-box;
   padding: var(--ui-space-6); min-width: 400px; max-width: 80vw; max-height: 85vh;
