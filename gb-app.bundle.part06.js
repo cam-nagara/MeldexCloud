@@ -1,3 +1,6 @@
+    if (!boardCanvas
+      && !openOpts.skipNavPush
+      && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'
       && GBPaneBridge?.initialized) {
       requestedPaneId = openOpts.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);

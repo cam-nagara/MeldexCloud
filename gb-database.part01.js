@@ -225,20 +225,6 @@ async function selectDatabase(dbPath, ctx, opts) {
   const syncGlobalState = !ctx.embedded && openOpts.skipGlobalState !== true;
   const isolatedContext = !!ctx.embedded;
   const loadGeneration = ctx.generation || 0;
-  const previousContext = {
-    dbPath: ctx.dbPath,
-    entityPath: ctx.entityPath,
-    pivotData: ctx.pivotData,
-    dbMetadata: ctx.dbMetadata,
-    viewMode: ctx.viewMode,
-  };
-  const previousGlobal = syncGlobalState ? {
-    currentDbPath: state.currentDbPath,
-    currentEntityPath: state.currentEntityPath,
-    pivotData: state.pivotData,
-    dbMetadata: state.dbMetadata,
-    filter: state.filter,
-  } : null;
   const inFlightLoad = ctx?._selectDatabaseInFlight;
   if (!openOpts.forceReload && inFlightLoad && inFlightLoad.dbPath === dbPath && inFlightLoad.promise) {
     if (typeof _logPerfEvent === 'function') {
@@ -249,6 +235,9 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     return inFlightLoad.promise;
   }
+  ctx._dbLoadAbortController?.abort();
+  const dbLoadController = new AbortController();
+  ctx._dbLoadAbortController = dbLoadController;
   let resolveInFlightLoad = null;
   let finalLoadResult = null;
   const completeLoad = result => {
@@ -392,6 +381,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
   // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
   if (!openOpts.silent && _isDbSwitch) {
+    clearPivot(ctx);
     const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
     const _containerScope = ctx?.containerEl || null;
     for (const _cid of _clearIds) {
@@ -410,7 +400,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (syncGlobalState) state.dbMetadata = null;
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
-    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
+    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
     if (syncGlobalState) state.dbMetadata = dbMetadata;
@@ -488,7 +478,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
-    const pivotData = await apiFetch(url);
+    const pivotData = await apiFetch(url, { signal: dbLoadController.signal });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
@@ -575,19 +565,11 @@ async function selectDatabase(dbPath, ctx, opts) {
     // テンプレートはメニュー/ツールバーから手動で適用
   } catch (e) {
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed, error: e });
-    ctx.dbPath = previousContext.dbPath;
-    ctx.entityPath = previousContext.entityPath;
-    ctx.pivotData = previousContext.pivotData;
-    ctx.dbMetadata = previousContext.dbMetadata;
-    ctx.viewMode = previousContext.viewMode;
-    if (syncGlobalState && previousGlobal) {
-      Object.assign(state, previousGlobal);
-    }
-    if (previousContext.pivotData) {
-      _renderCurrentDbView(ctx, previousContext.dbPath);
-    } else {
-      _renderDbLoadError(ctx, e);
-    }
+    // Keep the selected target and show its failure. Restoring the previous
+    // sheet underneath the new tab lets subsequent edits target another file.
+    ctx.pivotData = null;
+    if (syncGlobalState) state.pivotData = null;
+    _renderDbLoadError(ctx, e);
     if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
       showStatus('シート読み込みエラー: ' + (e?.message || e), true);
     }
@@ -615,6 +597,7 @@ async function selectDatabase(dbPath, ctx, opts) {
         hideLoadingMessage('大きいシートを描画中...');
       }
     }
+    if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
     }

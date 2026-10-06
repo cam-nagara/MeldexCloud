@@ -27,6 +27,37 @@
   const _readFolderPending = new Map();
   let _readFolderGeneration = 0;
   let _rateLimitUntil = 0;
+  let _apiSessionGeneration = 0;
+  // Leave capacity for sheet reads and writes while thumbnails are loading.
+  const _apiQueue = [];
+  let _apiActive = 0;
+  let _mediaActive = 0;
+  function _isMediaRead(route, path) {
+    return /^(files\/download|files\/get_metadata)$/.test(route)
+      && /\.(png|jpe?g|gif|webp|svg|bmp|avif|pdf|mp[34]|webm|mov|ogg|wav)$/i.test(String(path || ''));
+  }
+  function _drainApiQueue() {
+    while (_apiActive < 4) {
+      let index = _apiQueue.findIndex(item => !item.media);
+      if (index < 0 && _mediaActive < 2) index = _apiQueue.findIndex(item => item.media);
+      if (index < 0) break;
+      const item = _apiQueue.splice(index, 1)[0];
+      _apiActive += 1;
+      if (item.media) _mediaActive += 1;
+      Promise.resolve().then(item.run).then(item.resolve, item.reject).finally(() => {
+        _apiActive -= 1;
+        if (item.media) _mediaActive -= 1;
+        _drainApiQueue();
+      });
+    }
+  }
+  function _queueApi(run, media) {
+    return new Promise((resolve, reject) => {
+      _apiQueue.push({ run, media, resolve, reject });
+      _drainApiQueue();
+    });
+  }
+
 
   function _invalidateReadFolders() {
     _readFolderGeneration += 1;
@@ -35,6 +66,7 @@
   }
 
   function _dispatchSessionChanged(detail) {
+    _apiSessionGeneration += 1;
     _accountRootInfo = null;
     _invalidateReadFolders();
     _rateLimitUntil = 0;
@@ -755,7 +787,17 @@
     return Math.min(500 * (2 ** attempt), 4000);
   }
 
-  async function _fetchDropboxWithRetry(label, fetcher) {
+  async function _fetchDropboxWithRetry(label, fetcher, media) {
+    const generation = _apiSessionGeneration;
+    return _queueApi(() => _fetchDropboxAttempts(label, async () => {
+      if (generation !== _apiSessionGeneration) throw new DOMException('Dropboxの接続先が変更されました', 'AbortError');
+      const response = await fetcher();
+      if (generation !== _apiSessionGeneration) throw new DOMException('Dropboxの接続先が変更されました', 'AbortError');
+      return response;
+    }), !!media);
+  }
+
+  async function _fetchDropboxAttempts(label, fetcher) {
     let lastError = null;
     for (let attempt = 0; attempt <= DROPBOX_API_MAX_RETRIES; attempt += 1) {
       try {
@@ -768,6 +810,7 @@
         }
         return response;
       } catch (err) {
+        if (err?.name === 'AbortError') throw err;
         lastError = err;
         if (attempt >= DROPBOX_API_MAX_RETRIES) break;
         await _sleep(Math.min(500 * (2 ** attempt), 4000));
@@ -865,7 +908,7 @@
           'Content-Type': 'application/json',
         }, options),
         body: body == null ? 'null' : JSON.stringify(body),
-      }));
+      }), _isMediaRead(route, body?.path));
       if (response.ok) {
         if (/^files\/(?:create_folder|delete|move|copy|restore)/.test(route)) _invalidateReadFolders();
         let payload = null;
@@ -897,7 +940,14 @@
         'Dropbox-API-Arg': _jsonHeaderValue(arg || {}),
         ...(requestInit.headers || {}),
       }, options);
-      const response = await _fetchDropboxWithRetry(route, async () => fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit));
+      const response = await _fetchDropboxWithRetry(route, async () => {
+        const result = await fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit);
+        // Keep the slot until the download body finishes, not just its headers.
+        if (result.ok && route === 'files/download') {
+          return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
+        }
+        return result;
+      }, _isMediaRead(route, arg?.path));
       if (response.ok) {
         if (/^files\/(?:upload|upload_session\/finish)/.test(route)) _invalidateReadFolders();
         return response;

@@ -1141,7 +1141,7 @@
     }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
-      const result = await handler({ method, body, url, pathname, headers: opts?.headers });
+      const result = await handler({ method, body, url, pathname, headers: opts?.headers, signal: opts?.signal });
       if (result !== NOT_HANDLED) return result;
     }
     return NOT_HANDLED;

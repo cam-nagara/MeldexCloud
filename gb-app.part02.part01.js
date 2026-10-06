@@ -525,6 +525,9 @@ function _gbAppApiFetchDefaultTimeout(path) {
   const pathname = String(path || '').split('?')[0];
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
+  // Cloud reads may include a large sheet and bounded Dropbox retry waits.
+  if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
+      && ['/pivot', '/db-metadata', '/value'].includes(pathname)) return 120000;
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
     ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
     : GB_APP_API_FETCH_TIMEOUT_MS;

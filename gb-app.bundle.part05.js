@@ -1,3 +1,6 @@
+    let outputCanvas = canvas;
+    if (_screenshotModeIsRegion(mode)) {
+      const region = await _selectScreenshotRegionFromCanvas(canvas);
       if (!region) return;
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
@@ -895,6 +898,3 @@ async function openBoard(label, path, opts) {
     // DOMをマウントしない。ノート等の別型タブから開く場合は先にnavPushして
     // CanvasComponentを作り、そのコンポーネントが開始した読込を待つ。
     const boardCanvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
-    if (!boardCanvas
-      && !openOpts.skipNavPush
-      && typeof navPush === 'function'

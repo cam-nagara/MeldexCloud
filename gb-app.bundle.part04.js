@@ -1,3 +1,6 @@
+      console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
       }
       if (typeof _sendLog === 'function') {
         _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
@@ -895,6 +898,3 @@ async function captureScreenshot(mode) {
       await _restoreMeldexWindowForScreenshot(hideState);
       hideState = null;
     }
-    let outputCanvas = canvas;
-    if (_screenshotModeIsRegion(mode)) {
-      const region = await _selectScreenshotRegionFromCanvas(canvas);

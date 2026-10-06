@@ -1751,7 +1751,7 @@
     }
   }
 
-  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
+  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal }) {
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -1776,7 +1776,7 @@
     }
 
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
-    if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '');
+    if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '', signal);
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/value' && method === 'PUT') return _updateValue(
       await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},

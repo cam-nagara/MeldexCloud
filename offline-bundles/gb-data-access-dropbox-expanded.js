@@ -1627,13 +1627,26 @@
   // 進んでしまう（独立レビューで指摘。マニフェスト自体の存在確認と同じ
   // 考え方をシャード1本ずつにも適用する）。失敗時だけ追加でstatPathを
   // 呼ぶため、正常系（大多数の読み込み）の負荷は増えない。
-  async function _readShardedRawStore(provider, dbPath, manifest) {
+  async function _mapSheetReads(items, read, signal) {
+    const results = new Array(items.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, items.length) }, async () => {
+      while (next < items.length) {
+        if (signal?.aborted) throw new DOMException('シートの読込が中断されました', 'AbortError');
+        const index = next++;
+        results[index] = await read(items[index]);
+      }
+    }));
+    return results;
+  }
+
+  async function _readShardedRawStore(provider, dbPath, manifest, signal) {
     const rows = {};
-    const seen = new Set();
-    for (const shardFileName of manifest.shards || []) {
-      if (typeof shardFileName !== 'string' || seen.has(shardFileName)) continue;
-      seen.add(shardFileName);
-      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+    const names = [...new Set((manifest.shards || []).filter(name => typeof name === 'string'))];
+    const shards = await _mapSheetReads(names, name => _readSheetShard(provider, dbPath, name), signal);
+    for (let index = 0; index < names.length; index += 1) {
+      const shardFileName = names[index];
+      const shard = shards[index];
       if (!shard) {
         if (typeof provider?.statPath === 'function') {
           const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName));
@@ -1732,7 +1745,7 @@
     return out;
   }
 
-  async function _readSheetStoreMaybe(provider, dbPath) {
+  async function _readSheetStoreMaybe(provider, dbPath, signal) {
     // マニフェスト（分割方式）の存在確認・「存在するのに読めない」場合の
     // 安全策は _readSheetManifest 側に一元化済み（読み側・書き込み側
     // `_writeSheetStore` の両方がここを通るため）。ここを _readJsonSafe
@@ -1742,7 +1755,7 @@
     // （物理.mdが覆い隠された既知の事故と同じ形）。
     const manifest = await _readSheetManifest(provider, dbPath);
     if (manifest) {
-      return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
+      return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest, signal), dbPath);
     }
     const storePath = _sheetStorePath(dbPath);
     const raw = await _readJsonSafe(provider, storePath, null);
@@ -1974,10 +1987,10 @@
     return normalized;
   }
 
-  async function _sheetStoreMode(provider, dbPath) {
+  async function _sheetStoreMode(provider, dbPath, signal) {
     const note = await _folderFrontmatter(provider, dbPath).catch(() => ({ frontmatter: {} }));
     const fm = note.frontmatter || {};
-    const store = await _readSheetStoreMaybe(provider, dbPath);
+    const store = await _readSheetStoreMaybe(provider, dbPath, signal);
     return {
       enabled: !!store || String(fm.storage || fm.sheet_storage || fm.entry_storage || fm.storage_backend || '').toLowerCase() === 'sqlite'
         || String(fm.cloud_storage || '').toLowerCase() === 'sheet-store-v1',
@@ -1986,12 +1999,13 @@
     };
   }
 
-  async function _migrateMarkdownEntriesToSheetStore(provider, dbPath, store) {
+  async function _migrateMarkdownEntriesToSheetStore(provider, dbPath, store, signal) {
     const base = _normalizeFolderPath(dbPath);
     let next = store || await _ensureSheetStore(provider, base);
     const addedFileNames = [];
     const entries = await _listDirectoryEntries(provider, base).catch(() => []);
     for (const item of entries) {
+      if (signal?.aborted) throw new DOMException('シートの読込が中断されました', 'AbortError');
       if (item.handle.kind !== 'file' || !item.name.endsWith('.md') || item.name.startsWith('_') || item.name === _basename(base) + '.md') continue;
       if (next.rows[item.name]) continue;
       const filePath = _joinPath(base, item.name);
@@ -2010,15 +2024,16 @@
       };
       addedFileNames.push(item.name);
     }
+    if (signal?.aborted) throw new DOMException('シートの読込が中断されました', 'AbortError');
     if (addedFileNames.length) next = await _writeSheetStore(provider, base, next, { changedFileNames: addedFileNames });
     return next;
   }
 
-  async function _sheetStoreForRead(provider, dbPath) {
-    const mode = await _sheetStoreMode(provider, dbPath);
+  async function _sheetStoreForRead(provider, dbPath, knownMode, signal) {
+    const mode = knownMode || await _sheetStoreMode(provider, dbPath, signal);
     if (!mode.enabled) return null;
     const store = mode.store || await _ensureSheetStore(provider, dbPath);
-    return _migrateMarkdownEntriesToSheetStore(provider, dbPath, store);
+    return _migrateMarkdownEntriesToSheetStore(provider, dbPath, store, signal);
   }
 
   async function _readSheetStoreEntry(provider, rawPath) {
@@ -2156,9 +2171,9 @@
     };
   }
 
-  async function _readPivotFromSheetStore(provider, dbPath, filters) {
+  async function _readPivotFromSheetStore(provider, dbPath, filters, mode, signal) {
     const base = _normalizeFolderPath(dbPath);
-    const store = await _sheetStoreForRead(provider, base);
+    const store = await _sheetStoreForRead(provider, base, mode, signal);
     const entities = {};
     const properties = new Set();
     Object.values(store?.rows || {}).forEach((row) => {
@@ -2228,23 +2243,26 @@
     }
   }
 
-  async function _readPivot(provider, dbPath, statusFilter) {
+  async function _readPivot(provider, dbPath, statusFilter, signal) {
     const base = _normalizeFolderPath(dbPath);
     const entry = await _resolveEntryHandle(provider, base);
     if (!entry || entry.kind !== 'directory') throw new Error(`シートが見つかりません: ${base}`);
     const kind = await _databaseKind(provider, base);
     const filters = statusFilter ? String(statusFilter).split(',').map(v => v.trim()).filter(Boolean) : null;
     if (kind === 'settings-db') {
-      const mode = await _sheetStoreMode(provider, base);
-      if (mode.enabled) return _readPivotFromSheetStore(provider, base, filters);
+      const mode = await _sheetStoreMode(provider, base, signal);
+      if (mode.enabled) return _readPivotFromSheetStore(provider, base, filters, mode, signal);
     }
     const entities = {};
     const properties = new Set();
-    const entries = await _listDirectoryEntries(provider, base);
-    for (const item of entries) {
-      if (item.handle.kind !== 'file' || !item.name.endsWith('.md') || item.name.startsWith('_') || item.name === _basename(base) + '.md') continue;
+    const entries = (await _listDirectoryEntries(provider, base)).filter(item =>
+      item.handle.kind === 'file' && item.name.endsWith('.md') && !item.name.startsWith('_') && item.name !== _basename(base) + '.md');
+    const loadedEntries = await _mapSheetReads(entries, async item => ({
+      item,
+      parsed: _parseFrontmatter(await provider.readText(_joinPath(base, item.name))),
+    }), signal);
+    for (const { item, parsed } of loadedEntries) {
       const filePath = _joinPath(base, item.name);
-      const parsed = await _readFrontmatterFile(provider, filePath);
       const type = String(parsed.frontmatter?.type || '');
       if (type === 'settings-entry') {
         const row = _entityRowFromEntry(filePath, item.name.replace(/\.md$/i, ''), parsed.frontmatter, filters);
@@ -6120,7 +6138,7 @@
     }
   }
 
-  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
+  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal }) {
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -6145,7 +6163,7 @@
     }
 
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
-    if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '');
+    if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '', signal);
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/value' && method === 'PUT') return _updateValue(
       await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},
