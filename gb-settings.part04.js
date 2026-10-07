@@ -375,7 +375,7 @@
       rollbackFailed: rollbackFailures.length > 0,
     };
   } finally {
-    hideLoading();
+    hideLoading(loading);
   }
 }
 

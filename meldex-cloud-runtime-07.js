@@ -32546,7 +32546,7 @@ async function bdOpenBoard(label, path, opts) {
     }
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...', { key: 'board:' + nextPath });
       if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     }
     if (typeof _bdIsBoardWritablePath === 'function' && !_bdIsBoardWritablePath(nextPath)) {
@@ -71336,7 +71336,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     const normalizedMember = String(member || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     const path = virtualPath(archivePath, normalizedMember);
     if (!options.skipShowView && typeof showView === 'function') showView('folder');
-    if (typeof showLoading === 'function' && !options.silent) showLoading('ZIPの内容を読み込み中...');
+    const loading = typeof showLoading === 'function' && !options.silent
+      ? showLoading('ZIPの内容を読み込み中...', { key: 'archive:' + path }) : null;
     try {
       const data = await apiFetch('/archive/browse?path=' + encodeURIComponent(archivePath)
         + '&member=' + encodeURIComponent(normalizedMember), { silentError: true });
@@ -71384,7 +71385,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       return false;
     } finally {
-      if (typeof hideLoading === 'function' && !options.silent) hideLoading();
+      if (typeof hideLoading === 'function' && !options.silent) hideLoading(loading);
     }
   }
 

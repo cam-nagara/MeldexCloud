@@ -571,7 +571,7 @@ async function openFileChat(targetPath) {
     : null;
   const restoreStillCurrent = () => !restoreGuard || restoreGuard();
   const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  const loading = showOpenLoading ? showLoading('チャットを読み込み中...', { key: 'chat:' + targetPath }) : null;
   try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   await _initChatSourceFolderSelector();
@@ -718,7 +718,7 @@ async function openFileChat(targetPath) {
   _chatRevealLatest('llm');
   return true;
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (showOpenLoading) hideLoading(loading);
   }
 }
 
@@ -805,7 +805,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     : null;
   const restoreStillCurrent = () => !restoreGuard || restoreGuard();
   const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  const loading = showOpenLoading ? showLoading('チャットを読み込み中...', { key: 'saved-chat:' + path }) : null;
   try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   const hashIndex = String(path || '').indexOf('#');
@@ -962,7 +962,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   else _chatRevealLatest('llm');
   return true;
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (showOpenLoading) hideLoading(loading);
   }
 }
 

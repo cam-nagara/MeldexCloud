@@ -1005,7 +1005,7 @@ function _refreshTreeAfterDisplaySettingsChange(reason) {
     priority: 40,
   }) || null;
   const fallbackLoading = !progress && typeof showLoading === 'function';
-  if (fallbackLoading) showLoading('フォルダツリーの表示設定を反映中…');
+  const loading = fallbackLoading ? showLoading('フォルダツリーの表示設定を反映中…', { key: 'outliner-display-settings' }) : null;
 
   _treeDisplayRefreshPromise = (async () => {
     try {
@@ -1025,7 +1025,7 @@ function _refreshTreeAfterDisplaySettingsChange(reason) {
       progress?.fail?.({ error, dismissMs: 0 });
       throw error;
     } finally {
-      if (fallbackLoading && typeof hideLoading === 'function') hideLoading();
+      if (fallbackLoading && typeof hideLoading === 'function') hideLoading(loading);
       _treeDisplayRefreshRunning = false;
       _treeDisplayRefreshPending = false;
       _treeDisplayRefreshPromise = null;

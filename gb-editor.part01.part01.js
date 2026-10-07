@@ -914,6 +914,7 @@ async function openPage(label, path, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
   let preloadedFileData = openOpts.prefetchedFileData || null;
   let pageLoadSucceeded = false;
   const pc = openOpts.containerEl || document.getElementById('page-content');
@@ -926,10 +927,10 @@ async function openPage(label, path, opts) {
   pc.dataset.loadPending = '1';
   const isStaleInvocation = () => pc._openPageLoadSeq !== pageLoadSeq;
   try {
-    if (showOpenLoading) { showLoading('ノートを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) { loading = showLoading('ノートを読み込み中...', { key: 'note:' + path }); loadingShown = true; }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
       delete pc.dataset.loadPending;
-      if (loadingShown) { hideLoading(); loadingShown = false; }
+      if (loadingShown) { hideLoading(loading); loadingShown = false; }
       await openBoard(label, path, openOpts);
       return;
     }
@@ -939,7 +940,7 @@ async function openPage(label, path, opts) {
         if (isStaleInvocation()) return false;
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
           delete pc.dataset.loadPending;
-          if (loadingShown) { hideLoading(); loadingShown = false; }
+          if (loadingShown) { hideLoading(loading); loadingShown = false; }
           await openBoard(label, path, openOpts);
           return;
         }
@@ -1039,7 +1040,7 @@ async function openPage(label, path, opts) {
     const raw = data.content || '';
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...', { loading });
       if (isStalePageLoad()) return;
     }
     if (
@@ -1225,11 +1226,7 @@ async function openPage(label, path, opts) {
   } finally {
     if (!isStaleInvocation() && pc.dataset.loadPending === '1') delete pc.dataset.loadPending;
     if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ノートを読み込み中...');
-        hideLoadingMessage('大きいノートを描画中...');
-      }
+      hideLoading(loading);
     }
   }
   return pageLoadSucceeded;

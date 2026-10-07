@@ -302,7 +302,7 @@ async function openCsvFile(label, path, opts) {
   if (_csvPath && _csvPath !== path) {
     _csvShowTakeoverNotice(_csvDisplayLabel(label, path));
   }
-  if (showGlobalLoading) showLoading('CSVを読み込み中...');
+  const loading = showGlobalLoading ? showLoading('CSVを読み込み中...', { key: 'csv:' + path }) : null;
   const openSeq = ++_csvOpenSeq;
     _csvPath = '';
     _csvData = [];
@@ -342,7 +342,7 @@ async function openCsvFile(label, path, opts) {
     if (coordinator) documentKeyAtOpen = coordinator.bindDocumentIdentity(path, data) || documentKeyAtOpen;
     const raw = data.content || '';
     if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいCSVを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいCSVを描画中...', { loading });
       if (_csvOpenSeq !== openSeq) return false;
     }
     const parsedResult = globalThis.MeldexCsv
@@ -417,7 +417,7 @@ async function openCsvFile(label, path, opts) {
     if (!openOpts.skipGlobalUi) showStatus('CSVを読み込めませんでした', true);
     return false;
   } finally {
-    if (showGlobalLoading) hideLoading();
+    if (showGlobalLoading) hideLoading(loading);
   }
   return true;
 }

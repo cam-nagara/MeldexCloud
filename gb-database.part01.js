@@ -252,8 +252,14 @@ async function selectDatabase(dbPath, ctx, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
+  const endLoading = () => { if (loadingShown) { hideLoading(loading); loadingShown = false; } };
   try {
-    if (showOpenLoading) { showLoading('シートを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) {
+      loading = showLoading('シートを読み込み中...', { key: 'sheet:' + dbPath });
+      loadingShown = true;
+      dbLoadController.signal.addEventListener('abort', endLoading, { once: true });
+    }
     const _isDbSwitch = (syncGlobalState ? state.currentDbPath : ctx.dbPath) !== dbPath;
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
     if (_isDbSwitch) {
@@ -527,7 +533,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     const entityCountForLoading = Object.keys(ctx.pivotData.entities || {}).length;
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250 });
+      await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250, loading });
       if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     }
     _renderDbViewTabsSafely(ctx);
@@ -590,13 +596,8 @@ async function selectDatabase(dbPath, ctx, opts) {
         propertyCount,
       });
     }
-    if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('シートを読み込み中...');
-        hideLoadingMessage('大きいシートを描画中...');
-      }
-    }
+    dbLoadController.signal.removeEventListener('abort', endLoading);
+    endLoading();
     if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;

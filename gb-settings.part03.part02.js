@@ -1010,7 +1010,7 @@ async function submitSettings() {
     showStatus(preflight.error, true);
     return preflight;
   }
-  showLoading('設定を保存中...');
+  const loading = showLoading('設定を保存中...');
   let settingsHistoryBefore = null;
   let sourceFolderHistoryBefore = null;
   let sourceFoldersDirty = false;

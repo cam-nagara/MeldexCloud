@@ -307,7 +307,7 @@ async function loadOutliner(options) {
   const loadGeneration = ++_outlinerLoadGeneration;
   const loadPromise = (async () => {
     const useLoadingIndicator = !opts.suppressLoading;
-    if (useLoadingIndicator) showLoading('フォルダを読み込み中...');
+    const loading = useLoadingIndicator ? showLoading('フォルダを読み込み中...', { key: 'outliner' }) : null;
     let rendered = false;
     try {
       // フォルダツリー改修Phase4: 再読込前に未開始のサムネイル/形式アイコン取得と
@@ -369,7 +369,7 @@ async function loadOutliner(options) {
       return { rendered };
     } finally {
       if (typeof _logPerfEvent === 'function') _logPerfEvent('outliner.load.total', perfStartedAt);
-      if (useLoadingIndicator) hideLoading();
+      if (useLoadingIndicator) hideLoading(loading);
     }
   })();
   _outlinerLoadInFlight = loadPromise;

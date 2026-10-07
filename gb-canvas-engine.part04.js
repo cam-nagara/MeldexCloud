@@ -321,7 +321,7 @@ async function bdOpenBoard(label, path, opts) {
     }
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...', { key: 'board:' + nextPath });
       if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     }
     if (typeof _bdIsBoardWritablePath === 'function' && !_bdIsBoardWritablePath(nextPath)) {

@@ -889,7 +889,7 @@ async function openBoard(label, path, opts) {
     if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
     else if (!openOpts.skipStateView) state.view = prevView || '';
   };
-  if (showOpenLoading) showLoading('ボードを読み込み中...');
+  const loading = showOpenLoading ? showLoading('ボードを読み込み中...', { key: 'board:' + path }) : null;
   try {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;

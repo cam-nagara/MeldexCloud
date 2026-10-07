@@ -35,7 +35,8 @@
     const normalizedMember = String(member || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     const path = virtualPath(archivePath, normalizedMember);
     if (!options.skipShowView && typeof showView === 'function') showView('folder');
-    if (typeof showLoading === 'function' && !options.silent) showLoading('ZIPの内容を読み込み中...');
+    const loading = typeof showLoading === 'function' && !options.silent
+      ? showLoading('ZIPの内容を読み込み中...', { key: 'archive:' + path }) : null;
     try {
       const data = await apiFetch('/archive/browse?path=' + encodeURIComponent(archivePath)
         + '&member=' + encodeURIComponent(normalizedMember), { silentError: true });
@@ -83,7 +84,7 @@
       }
       return false;
     } finally {
-      if (typeof hideLoading === 'function' && !options.silent) hideLoading();
+      if (typeof hideLoading === 'function' && !options.silent) hideLoading(loading);
     }
   }
 

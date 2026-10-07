@@ -478,7 +478,7 @@ async function openBoard(label, path, opts) {
     if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
     else if (!openOpts.skipStateView) state.view = prevView || '';
   };
-  if (showOpenLoading) showLoading('ボードを読み込み中...');
+  const loading = showOpenLoading ? showLoading('ボードを読み込み中...', { key: 'board:' + path }) : null;
   try {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;
@@ -526,7 +526,7 @@ async function openBoard(label, path, opts) {
     if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
     const opened = mountedBoardLoad
       ? await mountedBoardLoad
-      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true);
+      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, { ...openOpts, loading }) : true);
     if (opened === false) {
       restorePreviousView();
       return false;
@@ -546,10 +546,7 @@ async function openBoard(label, path, opts) {
     return false;
   } finally {
     if (showOpenLoading) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ボードを読み込み中...');
-      }
+      hideLoading(loading);
     }
   }
 }
@@ -1049,6 +1046,8 @@ let _loadingTimer = null;
 let _loadingVisible = false;
 let _loadingMessage = '';
 const _loadingOperations = [];
+const _loadingGroups = new Map();
+const _iframeLoadingTrackers = new Map();
 
 function _commonLoadingProgress() {
   return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'
@@ -1138,8 +1137,11 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
     : String(sizeOrText || '').length;
   if (size < threshold) return;
   if (_commonLoadingProgress()) {
-    const current = _loadingOperations[_loadingOperations.length - 1];
-    if (!current) return;
+    const current = Object.prototype.hasOwnProperty.call(options, 'loading')
+      ? options.loading : options.key != null
+        ? _loadingOperations.find(lease => lease.group.key === options.key)
+        : _loadingOperations[_loadingOperations.length - 1];
+    if (!current?.active) return;
     _loadingMessage = _loadingText(msg);
     current.update({ label: _loadingMessage });
     current.showNow();
@@ -1156,82 +1158,80 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   await _loadingPaintDelay();
 }
 
-function showLoading(msg) {
-  _loadingCount++;
-  _loadingMessage = _loadingText(msg);
-  const common = _commonLoadingProgress();
-  if (common) {
-    _loadingOperations.push(common.begin({
-      kind: 'loading',
-      label: _loadingMessage,
-      mode: 'indeterminate',
-      background: false,
-      delayMs: 300,
-      showInTray: true,
-      priority: 40,
-    }));
-    return;
+// A lease belongs to one invocation; a keyed group is the one visible task.
+// Repeated starts for the same target share its bar until every lease ends.
+function showLoading(msg, opts) {
+  const options = opts || {};
+  const key = options.key ?? Symbol('loading');
+  let group = _loadingGroups.get(key);
+  if (!group) {
+    const label = _loadingText(msg);
+    const common = _commonLoadingProgress();
+    group = { key, label, refs: 0, operation: common?.begin({
+      kind: 'loading', label, mode: 'indeterminate', background: false,
+      delayMs: 300, showInTray: true, priority: 40,
+    }) || null };
+    _loadingGroups.set(key, group);
   }
-  if (_loadingVisible) {
-    _renderLoadingUi(_loadingMessage);
-    return;
-  }
-  if (!_loadingTimer) {
-    _loadingTimer = setTimeout(() => {
+  group.refs++;
+  const lease = {
+    active: true, group,
+    getState: () => group.operation?.getState() || { label: group.label },
+    update: patch => { if (lease.active) { group.label = patch.label || group.label; group.operation?.update(patch); } },
+    showNow: () => { if (lease.active) group.operation?.showNow(); },
+  };
+  _loadingOperations.push(lease);
+  _loadingCount = _loadingOperations.length;
+  _loadingMessage = group.label;
+  if (!group.operation) {
+    if (_loadingVisible) _renderLoadingUi(_loadingMessage);
+    else if (!_loadingTimer) _loadingTimer = setTimeout(() => {
       _loadingTimer = null;
       if (_loadingCount > 0) _renderLoadingUi(_loadingMessage);
     }, 300);
   }
+  return lease;
 }
 
-function hideLoading() {
-  _loadingCount = Math.max(0, _loadingCount - 1);
-  if (_commonLoadingProgress()) {
-    const current = _loadingOperations.pop();
-    current?.succeed({ dismissMs: 0 });
-    if (_loadingCount === 0) _loadingMessage = '';
-    return;
+function hideLoading(lease) {
+  // No-argument calls retain legacy stack semantics. An explicit missing or
+  // already completed lease must never dismiss another invocation's task.
+  const current = arguments.length ? lease : _loadingOperations[_loadingOperations.length - 1];
+  if (!current?.active) return;
+  const index = _loadingOperations.indexOf(current);
+  if (index < 0) return;
+  _loadingOperations.splice(index, 1);
+  current.active = false;
+  const group = current.group;
+  if (--group.refs === 0) {
+    _loadingGroups.delete(group.key);
+    group.operation?.succeed({ dismissMs: 0 });
   }
+  _loadingCount = _loadingOperations.length;
+  _loadingMessage = _loadingOperations[_loadingCount - 1]?.group.label || '';
   if (_loadingCount === 0) {
     clearTimeout(_loadingTimer);
     _loadingTimer = null;
-    _loadingMessage = '';
-    _hideLoadingUi();
-  }
+    if (_loadingVisible) _hideLoadingUi();
+  } else if (_loadingVisible) _renderLoadingUi(_loadingMessage);
 }
 
 function hideLoadingMessage(msg) {
   const expected = _loadingText(msg);
-  if (_commonLoadingProgress()) {
-    for (let index = _loadingOperations.length - 1; index >= 0; index -= 1) {
-      const operation = _loadingOperations[index];
-      if (operation.getState()?.label !== expected) continue;
-      _loadingOperations.splice(index, 1);
-      operation.dispose();
-      _loadingCount = Math.max(0, _loadingCount - 1);
-      if (_loadingCount === 0) _loadingMessage = '';
-      return true;
-    }
-    return false;
-  }
-  if (!_loadingVisible && !_loadingTimer) return false;
-  if (_loadingMessage && _loadingMessage !== expected) return false;
-  const floatingEl = document.getElementById('gb-global-loading');
-  const visibleText = (floatingEl?.textContent || '').trim();
-  if (visibleText && visibleText !== expected) return false;
-  _loadingCount = 0;
-  clearTimeout(_loadingTimer);
-  _loadingTimer = null;
-  _loadingMessage = '';
-  _hideLoadingUi();
+  const current = [..._loadingOperations].reverse().find(lease => lease.getState()?.label === expected);
+  if (!current) return false;
+  hideLoading(current);
   return true;
 }
 
 function trackIframeLoading(iframe, msg, opts) {
   const options = opts || {};
-  if (!iframe || options.silent || options.skipGlobalUi) return;
-  if (typeof showLoading !== 'function' || typeof hideLoading !== 'function') return;
-  showLoading(msg || 'ビューアを読み込み中...');
+  if (!iframe) return;
+  // A replaced iframe with the same id is still the same visible loading slot.
+  const key = iframe.id || iframe;
+  _iframeLoadingTrackers.get(key)?.();
+  if (options.silent || options.skipGlobalUi) return;
+  const loading = showLoading(msg || 'ビューアを読み込み中...', { key });
   let done = false;
   let timer = null;
   const finish = () => {
@@ -1240,8 +1240,10 @@ function trackIframeLoading(iframe, msg, opts) {
     if (timer) clearTimeout(timer);
     iframe.removeEventListener('load', finish);
     iframe.removeEventListener('error', finish);
-    hideLoading();
+    if (_iframeLoadingTrackers.get(key) === finish) _iframeLoadingTrackers.delete(key);
+    hideLoading(loading);
   };
+  _iframeLoadingTrackers.set(key, finish);
   iframe.addEventListener('load', finish);
   iframe.addEventListener('error', finish);
   timer = setTimeout(finish, Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000);

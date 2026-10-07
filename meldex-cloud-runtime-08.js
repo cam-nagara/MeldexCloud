@@ -9518,13 +9518,13 @@ class ScriptNoteComponent extends ToolComponent {
     }
     const showGlobalLoading = !options.silent && !options.skipGlobalUi
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
-    if (showGlobalLoading) showLoading('シナリオを読み込み中...');
+    const loading = showGlobalLoading ? showLoading('シナリオを読み込み中...', { key: 'scenario:' + nextPath }) : null;
     try {
       const data = await apiFetch('/file?path=' + encodeURIComponent(nextPath));
       if (isStaleLoad()) return false;
       const content = data.content || '{}';
       if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-        await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...');
+        await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...', { loading });
         if (isStaleLoad()) return false;
       }
       const parsed = JSON.parse(content);
@@ -9601,11 +9601,7 @@ class ScriptNoteComponent extends ToolComponent {
       return false;
     } finally {
       if (showGlobalLoading) {
-        hideLoading();
-        if (typeof hideLoadingMessage === 'function') {
-          hideLoadingMessage('シナリオを読み込み中...');
-          hideLoadingMessage('大きいシナリオを描画中...');
-        }
+        hideLoading(loading);
       }
     }
   }
@@ -10841,7 +10837,7 @@ async function showVersionsModal(path, type) {
 async function saveManualVersion(path, type) {
   const label = await cfPrompt('バージョンラベル（任意）:', '');
   if (label === null) return false;
-  showLoading('バージョンを保存中...');
+  const loading = showLoading('バージョンを保存中...');
   try {
     const isDb = type === 'db';
     await _flushOpenVersionTarget(path, type || 'file');
@@ -10851,7 +10847,7 @@ async function saveManualVersion(path, type) {
   } catch (err) {
     showStatus('バージョン保存に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 async function deleteVersion(path, versionName, type) {
@@ -10923,7 +10919,7 @@ function _refreshVersionViews(path, type) {
 
 async function restoreVersion(path, versionName, type) {
   if (!await cfConfirm('このバージョンに復元しますか？\n（現在のバージョンは自動保存されます）')) return false;
-  showLoading('復元中...');
+  const loading = showLoading('復元中...');
   let restored = false;
   try {
     await _flushOpenVersionTarget(path, type || 'file');
@@ -10958,7 +10954,7 @@ async function restoreVersion(path, versionName, type) {
   } catch (err) {
     showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : '復元に失敗しました: ') + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 // バージョンプレビュー
@@ -11471,7 +11467,7 @@ function showDbDiff(snapshot, title, currentData = null) {
 async function saveFolderVersion(folderPath) {
   const label = await cfPrompt('フォルダバージョンのラベル（任意）:', '');
   if (label === null) return false;
-  showLoading('フォルダバージョンを保存中...');
+  const loading = showLoading('フォルダバージョンを保存中...');
   try {
     await _flushOpenFolderVersionTargets(folderPath);
     const result = await apiPost('/version/save-folder', { path: folderPath, label, auto: false });
@@ -11480,14 +11476,14 @@ async function saveFolderVersion(folderPath) {
   } catch (err) {
     showStatus('フォルダバージョン保存に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 async function showFolderVersionFiles(folderPath, versionName) {
-  showLoading('ファイル一覧を取得中...');
+  const loading = showLoading('ファイル一覧を取得中...');
   try {
     const meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
-    hideLoading();
+    hideLoading(loading);
     const files = meta.files || [];
     let listHtml = '<div style="max-height:60vh;overflow:auto;">';
     files.forEach(f => {
@@ -11534,24 +11530,24 @@ async function showFolderVersionFiles(folderPath, versionName) {
     closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
     modalApi.open();
   } catch (err) {
-    hideLoading();
+    hideLoading(loading);
     showStatus('ファイル一覧の取得に失敗しました', true);
   }
 }
 
 async function restoreFolderVersion(folderPath, versionName) {
   // 復元前に影響範囲を確認
-  showLoading('復元内容を確認中...');
+  const loading = showLoading('復元内容を確認中...');
   let meta;
   try {
     await _flushOpenFolderVersionTargets(folderPath);
     meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
   } catch (err) {
-    hideLoading();
+    hideLoading(loading);
     showStatus('バージョン情報の取得に失敗しました', true);
     return false;
   }
-  hideLoading();
+  hideLoading(loading);
 
   const files = meta.files || [];
   const label = meta.label ? `「${meta.label}」` : versionName;
@@ -11560,7 +11556,7 @@ async function restoreFolderVersion(folderPath, versionName) {
     `⚠ 復元前に現在の状態が自動保存されます。`;
   if (!await cfConfirm(msg)) return false;
 
-  showLoading('フォルダバージョンを復元中...');
+  const restoreLoading = showLoading('フォルダバージョンを復元中...');
   let restored = false;
   try {
     await _flushOpenFolderVersionTargets(folderPath);
@@ -11572,12 +11568,12 @@ async function restoreFolderVersion(folderPath, versionName) {
   } catch (err) {
     showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : 'フォルダバージョン復元に失敗しました: ') + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(restoreLoading); }
 }
 
 async function deleteFolderVersion(folderPath, versionName) {
   if (!await cfConfirm('このフォルダバージョンを削除しますか？')) return false;
-  showLoading('削除中...');
+  const loading = showLoading('削除中...');
   try {
     let currentName = versionName;
     let deletedToken = '';
@@ -11607,7 +11603,7 @@ async function deleteFolderVersion(folderPath, versionName) {
   } catch (err) {
     showStatus('フォルダバージョン削除に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 // フォルダ用のバージョンタブを開く
@@ -26982,7 +26978,7 @@ async function submitSettings() {
     showStatus(preflight.error, true);
     return preflight;
   }
-  showLoading('設定を保存中...');
+  const loading = showLoading('設定を保存中...');
   let settingsHistoryBefore = null;
   let sourceFolderHistoryBefore = null;
   let sourceFoldersDirty = false;
@@ -27448,7 +27444,7 @@ async function submitSettings() {
       rollbackFailed: rollbackFailures.length > 0,
     };
   } finally {
-    hideLoading();
+    hideLoading(loading);
   }
 }
 
@@ -43564,6 +43560,7 @@ async function openPage(label, path, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
   let preloadedFileData = openOpts.prefetchedFileData || null;
   let pageLoadSucceeded = false;
   const pc = openOpts.containerEl || document.getElementById('page-content');
@@ -43576,10 +43573,10 @@ async function openPage(label, path, opts) {
   pc.dataset.loadPending = '1';
   const isStaleInvocation = () => pc._openPageLoadSeq !== pageLoadSeq;
   try {
-    if (showOpenLoading) { showLoading('ノートを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) { loading = showLoading('ノートを読み込み中...', { key: 'note:' + path }); loadingShown = true; }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
       delete pc.dataset.loadPending;
-      if (loadingShown) { hideLoading(); loadingShown = false; }
+      if (loadingShown) { hideLoading(loading); loadingShown = false; }
       await openBoard(label, path, openOpts);
       return;
     }
@@ -43589,7 +43586,7 @@ async function openPage(label, path, opts) {
         if (isStaleInvocation()) return false;
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
           delete pc.dataset.loadPending;
-          if (loadingShown) { hideLoading(); loadingShown = false; }
+          if (loadingShown) { hideLoading(loading); loadingShown = false; }
           await openBoard(label, path, openOpts);
           return;
         }
@@ -43689,7 +43686,7 @@ async function openPage(label, path, opts) {
     const raw = data.content || '';
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...', { loading });
       if (isStalePageLoad()) return;
     }
     if (
@@ -43875,11 +43872,7 @@ async function openPage(label, path, opts) {
   } finally {
     if (!isStaleInvocation() && pc.dataset.loadPending === '1') delete pc.dataset.loadPending;
     if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ノートを読み込み中...');
-        hideLoadingMessage('大きいノートを描画中...');
-      }
+      hideLoading(loading);
     }
   }
   return pageLoadSucceeded;
@@ -112590,8 +112583,14 @@ async function selectDatabase(dbPath, ctx, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
+  const endLoading = () => { if (loadingShown) { hideLoading(loading); loadingShown = false; } };
   try {
-    if (showOpenLoading) { showLoading('シートを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) {
+      loading = showLoading('シートを読み込み中...', { key: 'sheet:' + dbPath });
+      loadingShown = true;
+      dbLoadController.signal.addEventListener('abort', endLoading, { once: true });
+    }
     const _isDbSwitch = (syncGlobalState ? state.currentDbPath : ctx.dbPath) !== dbPath;
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
     if (_isDbSwitch) {
@@ -112865,7 +112864,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     const entityCountForLoading = Object.keys(ctx.pivotData.entities || {}).length;
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250 });
+      await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250, loading });
       if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     }
     _renderDbViewTabsSafely(ctx);
@@ -112928,13 +112927,8 @@ async function selectDatabase(dbPath, ctx, opts) {
         propertyCount,
       });
     }
-    if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('シートを読み込み中...');
-        hideLoadingMessage('大きいシートを描画中...');
-      }
-    }
+    dbLoadController.signal.removeEventListener('abort', endLoading);
+    endLoading();
     if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
@@ -144827,7 +144821,7 @@ async function openFileChat(targetPath) {
     : null;
   const restoreStillCurrent = () => !restoreGuard || restoreGuard();
   const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  const loading = showOpenLoading ? showLoading('チャットを読み込み中...', { key: 'chat:' + targetPath }) : null;
   try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   await _initChatSourceFolderSelector();
@@ -144974,7 +144968,7 @@ async function openFileChat(targetPath) {
   _chatRevealLatest('llm');
   return true;
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (showOpenLoading) hideLoading(loading);
   }
 }
 
@@ -145061,7 +145055,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     : null;
   const restoreStillCurrent = () => !restoreGuard || restoreGuard();
   const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  const loading = showOpenLoading ? showLoading('チャットを読み込み中...', { key: 'saved-chat:' + path }) : null;
   try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   const hashIndex = String(path || '').indexOf('#');
@@ -145218,7 +145212,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   else _chatRevealLatest('llm');
   return true;
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (showOpenLoading) hideLoading(loading);
   }
 }
 
@@ -155317,6 +155311,7 @@ async function openFolder(label, path, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
   const displayLabel = _folderDisplayLabel(label, path);
   const folderLoadSeq = (window._openFolderLoadSeq || 0) + 1;
   window._openFolderLoadSeq = folderLoadSeq;
@@ -155334,7 +155329,7 @@ async function openFolder(label, path, opts) {
   _folderRenderContainerOverride = openOpts.containerEl || null;
   let hadError = false;
   try {
-    if (showOpenLoading) { showLoading('フォルダを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) { loading = showLoading('フォルダを読み込み中...', { key: 'folder:' + path }); loadingShown = true; }
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
     if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
     _folderPath = path;
@@ -155373,7 +155368,7 @@ async function openFolder(label, path, opts) {
     _folderBrowseIncomplete = browseIncomplete;
     if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80 });
+      await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80, loading });
       if (isStaleFolderLoad()) return;
     }
     registerFileTypes(_folderItems);
@@ -155405,11 +155400,7 @@ async function openFolder(label, path, opts) {
     }
   } finally {
     if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('フォルダを読み込み中...');
-        hideLoadingMessage('大きいフォルダを描画中...');
-      }
+      hideLoading(loading);
     }
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
@@ -159386,7 +159377,7 @@ function _refreshTreeAfterDisplaySettingsChange(reason) {
     priority: 40,
   }) || null;
   const fallbackLoading = !progress && typeof showLoading === 'function';
-  if (fallbackLoading) showLoading('フォルダツリーの表示設定を反映中…');
+  const loading = fallbackLoading ? showLoading('フォルダツリーの表示設定を反映中…', { key: 'outliner-display-settings' }) : null;
 
   _treeDisplayRefreshPromise = (async () => {
     try {
@@ -159406,7 +159397,7 @@ function _refreshTreeAfterDisplaySettingsChange(reason) {
       progress?.fail?.({ error, dismissMs: 0 });
       throw error;
     } finally {
-      if (fallbackLoading && typeof hideLoading === 'function') hideLoading();
+      if (fallbackLoading && typeof hideLoading === 'function') hideLoading(loading);
       _treeDisplayRefreshRunning = false;
       _treeDisplayRefreshPending = false;
       _treeDisplayRefreshPromise = null;
@@ -161299,7 +161290,7 @@ async function openCsvFile(label, path, opts) {
   if (_csvPath && _csvPath !== path) {
     _csvShowTakeoverNotice(_csvDisplayLabel(label, path));
   }
-  if (showGlobalLoading) showLoading('CSVを読み込み中...');
+  const loading = showGlobalLoading ? showLoading('CSVを読み込み中...', { key: 'csv:' + path }) : null;
   const openSeq = ++_csvOpenSeq;
     _csvPath = '';
     _csvData = [];
@@ -161339,7 +161330,7 @@ async function openCsvFile(label, path, opts) {
     if (coordinator) documentKeyAtOpen = coordinator.bindDocumentIdentity(path, data) || documentKeyAtOpen;
     const raw = data.content || '';
     if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(raw, '大きいCSVを描画中...');
+      await showLoadingBeforeHeavyWork(raw, '大きいCSVを描画中...', { loading });
       if (_csvOpenSeq !== openSeq) return false;
     }
     const parsedResult = globalThis.MeldexCsv
@@ -161414,7 +161405,7 @@ async function openCsvFile(label, path, opts) {
     if (!openOpts.skipGlobalUi) showStatus('CSVを読み込めませんでした', true);
     return false;
   } finally {
-    if (showGlobalLoading) hideLoading();
+    if (showGlobalLoading) hideLoading(loading);
   }
   return true;
 }
@@ -163455,7 +163446,7 @@ async function loadOutliner(options) {
   const loadGeneration = ++_outlinerLoadGeneration;
   const loadPromise = (async () => {
     const useLoadingIndicator = !opts.suppressLoading;
-    if (useLoadingIndicator) showLoading('フォルダを読み込み中...');
+    const loading = useLoadingIndicator ? showLoading('フォルダを読み込み中...', { key: 'outliner' }) : null;
     let rendered = false;
     try {
       // フォルダツリー改修Phase4: 再読込前に未開始のサムネイル/形式アイコン取得と
@@ -163517,7 +163508,7 @@ async function loadOutliner(options) {
       return { rendered };
     } finally {
       if (typeof _logPerfEvent === 'function') _logPerfEvent('outliner.load.total', perfStartedAt);
-      if (useLoadingIndicator) hideLoading();
+      if (useLoadingIndicator) hideLoading(loading);
     }
   })();
   _outlinerLoadInFlight = loadPromise;
@@ -186057,7 +186048,7 @@ async function openBoard(label, path, opts) {
     if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
     else if (!openOpts.skipStateView) state.view = prevView || '';
   };
-  if (showOpenLoading) showLoading('ボードを読み込み中...');
+  const loading = showOpenLoading ? showLoading('ボードを読み込み中...', { key: 'board:' + path }) : null;
   try {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;
@@ -186105,7 +186096,7 @@ async function openBoard(label, path, opts) {
     if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
     const opened = mountedBoardLoad
       ? await mountedBoardLoad
-      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true);
+      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, { ...openOpts, loading }) : true);
     if (opened === false) {
       restorePreviousView();
       return false;
@@ -186125,10 +186116,7 @@ async function openBoard(label, path, opts) {
     return false;
   } finally {
     if (showOpenLoading) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ボードを読み込み中...');
-      }
+      hideLoading(loading);
     }
   }
 }
@@ -186628,6 +186616,8 @@ let _loadingTimer = null;
 let _loadingVisible = false;
 let _loadingMessage = '';
 const _loadingOperations = [];
+const _loadingGroups = new Map();
+const _iframeLoadingTrackers = new Map();
 
 function _commonLoadingProgress() {
   return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'
@@ -186717,8 +186707,11 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
     : String(sizeOrText || '').length;
   if (size < threshold) return;
   if (_commonLoadingProgress()) {
-    const current = _loadingOperations[_loadingOperations.length - 1];
-    if (!current) return;
+    const current = Object.prototype.hasOwnProperty.call(options, 'loading')
+      ? options.loading : options.key != null
+        ? _loadingOperations.find(lease => lease.group.key === options.key)
+        : _loadingOperations[_loadingOperations.length - 1];
+    if (!current?.active) return;
     _loadingMessage = _loadingText(msg);
     current.update({ label: _loadingMessage });
     current.showNow();
@@ -186735,82 +186728,80 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   await _loadingPaintDelay();
 }
 
-function showLoading(msg) {
-  _loadingCount++;
-  _loadingMessage = _loadingText(msg);
-  const common = _commonLoadingProgress();
-  if (common) {
-    _loadingOperations.push(common.begin({
-      kind: 'loading',
-      label: _loadingMessage,
-      mode: 'indeterminate',
-      background: false,
-      delayMs: 300,
-      showInTray: true,
-      priority: 40,
-    }));
-    return;
+// A lease belongs to one invocation; a keyed group is the one visible task.
+// Repeated starts for the same target share its bar until every lease ends.
+function showLoading(msg, opts) {
+  const options = opts || {};
+  const key = options.key ?? Symbol('loading');
+  let group = _loadingGroups.get(key);
+  if (!group) {
+    const label = _loadingText(msg);
+    const common = _commonLoadingProgress();
+    group = { key, label, refs: 0, operation: common?.begin({
+      kind: 'loading', label, mode: 'indeterminate', background: false,
+      delayMs: 300, showInTray: true, priority: 40,
+    }) || null };
+    _loadingGroups.set(key, group);
   }
-  if (_loadingVisible) {
-    _renderLoadingUi(_loadingMessage);
-    return;
-  }
-  if (!_loadingTimer) {
-    _loadingTimer = setTimeout(() => {
+  group.refs++;
+  const lease = {
+    active: true, group,
+    getState: () => group.operation?.getState() || { label: group.label },
+    update: patch => { if (lease.active) { group.label = patch.label || group.label; group.operation?.update(patch); } },
+    showNow: () => { if (lease.active) group.operation?.showNow(); },
+  };
+  _loadingOperations.push(lease);
+  _loadingCount = _loadingOperations.length;
+  _loadingMessage = group.label;
+  if (!group.operation) {
+    if (_loadingVisible) _renderLoadingUi(_loadingMessage);
+    else if (!_loadingTimer) _loadingTimer = setTimeout(() => {
       _loadingTimer = null;
       if (_loadingCount > 0) _renderLoadingUi(_loadingMessage);
     }, 300);
   }
+  return lease;
 }
 
-function hideLoading() {
-  _loadingCount = Math.max(0, _loadingCount - 1);
-  if (_commonLoadingProgress()) {
-    const current = _loadingOperations.pop();
-    current?.succeed({ dismissMs: 0 });
-    if (_loadingCount === 0) _loadingMessage = '';
-    return;
+function hideLoading(lease) {
+  // No-argument calls retain legacy stack semantics. An explicit missing or
+  // already completed lease must never dismiss another invocation's task.
+  const current = arguments.length ? lease : _loadingOperations[_loadingOperations.length - 1];
+  if (!current?.active) return;
+  const index = _loadingOperations.indexOf(current);
+  if (index < 0) return;
+  _loadingOperations.splice(index, 1);
+  current.active = false;
+  const group = current.group;
+  if (--group.refs === 0) {
+    _loadingGroups.delete(group.key);
+    group.operation?.succeed({ dismissMs: 0 });
   }
+  _loadingCount = _loadingOperations.length;
+  _loadingMessage = _loadingOperations[_loadingCount - 1]?.group.label || '';
   if (_loadingCount === 0) {
     clearTimeout(_loadingTimer);
     _loadingTimer = null;
-    _loadingMessage = '';
-    _hideLoadingUi();
-  }
+    if (_loadingVisible) _hideLoadingUi();
+  } else if (_loadingVisible) _renderLoadingUi(_loadingMessage);
 }
 
 function hideLoadingMessage(msg) {
   const expected = _loadingText(msg);
-  if (_commonLoadingProgress()) {
-    for (let index = _loadingOperations.length - 1; index >= 0; index -= 1) {
-      const operation = _loadingOperations[index];
-      if (operation.getState()?.label !== expected) continue;
-      _loadingOperations.splice(index, 1);
-      operation.dispose();
-      _loadingCount = Math.max(0, _loadingCount - 1);
-      if (_loadingCount === 0) _loadingMessage = '';
-      return true;
-    }
-    return false;
-  }
-  if (!_loadingVisible && !_loadingTimer) return false;
-  if (_loadingMessage && _loadingMessage !== expected) return false;
-  const floatingEl = document.getElementById('gb-global-loading');
-  const visibleText = (floatingEl?.textContent || '').trim();
-  if (visibleText && visibleText !== expected) return false;
-  _loadingCount = 0;
-  clearTimeout(_loadingTimer);
-  _loadingTimer = null;
-  _loadingMessage = '';
-  _hideLoadingUi();
+  const current = [..._loadingOperations].reverse().find(lease => lease.getState()?.label === expected);
+  if (!current) return false;
+  hideLoading(current);
   return true;
 }
 
 function trackIframeLoading(iframe, msg, opts) {
   const options = opts || {};
-  if (!iframe || options.silent || options.skipGlobalUi) return;
-  if (typeof showLoading !== 'function' || typeof hideLoading !== 'function') return;
-  showLoading(msg || 'ビューアを読み込み中...');
+  if (!iframe) return;
+  // A replaced iframe with the same id is still the same visible loading slot.
+  const key = iframe.id || iframe;
+  _iframeLoadingTrackers.get(key)?.();
+  if (options.silent || options.skipGlobalUi) return;
+  const loading = showLoading(msg || 'ビューアを読み込み中...', { key });
   let done = false;
   let timer = null;
   const finish = () => {
@@ -186819,8 +186810,10 @@ function trackIframeLoading(iframe, msg, opts) {
     if (timer) clearTimeout(timer);
     iframe.removeEventListener('load', finish);
     iframe.removeEventListener('error', finish);
-    hideLoading();
+    if (_iframeLoadingTrackers.get(key) === finish) _iframeLoadingTrackers.delete(key);
+    hideLoading(loading);
   };
+  _iframeLoadingTrackers.set(key, finish);
   iframe.addEventListener('load', finish);
   iframe.addEventListener('error', finish);
   timer = setTimeout(finish, Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000);

@@ -1342,13 +1342,13 @@ class ScriptNoteComponent extends ToolComponent {
     }
     const showGlobalLoading = !options.silent && !options.skipGlobalUi
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
-    if (showGlobalLoading) showLoading('シナリオを読み込み中...');
+    const loading = showGlobalLoading ? showLoading('シナリオを読み込み中...', { key: 'scenario:' + nextPath }) : null;
     try {
       const data = await apiFetch('/file?path=' + encodeURIComponent(nextPath));
       if (isStaleLoad()) return false;
       const content = data.content || '{}';
       if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-        await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...');
+        await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...', { loading });
         if (isStaleLoad()) return false;
       }
       const parsed = JSON.parse(content);
@@ -1425,11 +1425,7 @@ class ScriptNoteComponent extends ToolComponent {
       return false;
     } finally {
       if (showGlobalLoading) {
-        hideLoading();
-        if (typeof hideLoadingMessage === 'function') {
-          hideLoadingMessage('シナリオを読み込み中...');
-          hideLoadingMessage('大きいシナリオを描画中...');
-        }
+        hideLoading(loading);
       }
     }
   }

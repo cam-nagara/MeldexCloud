@@ -83,6 +83,7 @@ async function openFolder(label, path, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
+  let loading = null;
   const displayLabel = _folderDisplayLabel(label, path);
   const folderLoadSeq = (window._openFolderLoadSeq || 0) + 1;
   window._openFolderLoadSeq = folderLoadSeq;
@@ -100,7 +101,7 @@ async function openFolder(label, path, opts) {
   _folderRenderContainerOverride = openOpts.containerEl || null;
   let hadError = false;
   try {
-    if (showOpenLoading) { showLoading('フォルダを読み込み中...'); loadingShown = true; }
+    if (showOpenLoading) { loading = showLoading('フォルダを読み込み中...', { key: 'folder:' + path }); loadingShown = true; }
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
     if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
     _folderPath = path;
@@ -139,7 +140,7 @@ async function openFolder(label, path, opts) {
     _folderBrowseIncomplete = browseIncomplete;
     if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
-      await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80 });
+      await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80, loading });
       if (isStaleFolderLoad()) return;
     }
     registerFileTypes(_folderItems);
@@ -171,11 +172,7 @@ async function openFolder(label, path, opts) {
     }
   } finally {
     if (loadingShown) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('フォルダを読み込み中...');
-        hideLoadingMessage('大きいフォルダを描画中...');
-      }
+      hideLoading(loading);
     }
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');

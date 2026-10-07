@@ -500,7 +500,7 @@ async function showVersionsModal(path, type) {
 async function saveManualVersion(path, type) {
   const label = await cfPrompt('バージョンラベル（任意）:', '');
   if (label === null) return false;
-  showLoading('バージョンを保存中...');
+  const loading = showLoading('バージョンを保存中...');
   try {
     const isDb = type === 'db';
     await _flushOpenVersionTarget(path, type || 'file');
@@ -510,7 +510,7 @@ async function saveManualVersion(path, type) {
   } catch (err) {
     showStatus('バージョン保存に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 async function deleteVersion(path, versionName, type) {
@@ -582,7 +582,7 @@ function _refreshVersionViews(path, type) {
 
 async function restoreVersion(path, versionName, type) {
   if (!await cfConfirm('このバージョンに復元しますか？\n（現在のバージョンは自動保存されます）')) return false;
-  showLoading('復元中...');
+  const loading = showLoading('復元中...');
   let restored = false;
   try {
     await _flushOpenVersionTarget(path, type || 'file');
@@ -617,7 +617,7 @@ async function restoreVersion(path, versionName, type) {
   } catch (err) {
     showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : '復元に失敗しました: ') + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 // バージョンプレビュー
@@ -1130,7 +1130,7 @@ function showDbDiff(snapshot, title, currentData = null) {
 async function saveFolderVersion(folderPath) {
   const label = await cfPrompt('フォルダバージョンのラベル（任意）:', '');
   if (label === null) return false;
-  showLoading('フォルダバージョンを保存中...');
+  const loading = showLoading('フォルダバージョンを保存中...');
   try {
     await _flushOpenFolderVersionTargets(folderPath);
     const result = await apiPost('/version/save-folder', { path: folderPath, label, auto: false });
@@ -1139,14 +1139,14 @@ async function saveFolderVersion(folderPath) {
   } catch (err) {
     showStatus('フォルダバージョン保存に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 async function showFolderVersionFiles(folderPath, versionName) {
-  showLoading('ファイル一覧を取得中...');
+  const loading = showLoading('ファイル一覧を取得中...');
   try {
     const meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
-    hideLoading();
+    hideLoading(loading);
     const files = meta.files || [];
     let listHtml = '<div style="max-height:60vh;overflow:auto;">';
     files.forEach(f => {
@@ -1193,24 +1193,24 @@ async function showFolderVersionFiles(folderPath, versionName) {
     closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
     modalApi.open();
   } catch (err) {
-    hideLoading();
+    hideLoading(loading);
     showStatus('ファイル一覧の取得に失敗しました', true);
   }
 }
 
 async function restoreFolderVersion(folderPath, versionName) {
   // 復元前に影響範囲を確認
-  showLoading('復元内容を確認中...');
+  const loading = showLoading('復元内容を確認中...');
   let meta;
   try {
     await _flushOpenFolderVersionTargets(folderPath);
     meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
   } catch (err) {
-    hideLoading();
+    hideLoading(loading);
     showStatus('バージョン情報の取得に失敗しました', true);
     return false;
   }
-  hideLoading();
+  hideLoading(loading);
 
   const files = meta.files || [];
   const label = meta.label ? `「${meta.label}」` : versionName;
@@ -1219,7 +1219,7 @@ async function restoreFolderVersion(folderPath, versionName) {
     `⚠ 復元前に現在の状態が自動保存されます。`;
   if (!await cfConfirm(msg)) return false;
 
-  showLoading('フォルダバージョンを復元中...');
+  const restoreLoading = showLoading('フォルダバージョンを復元中...');
   let restored = false;
   try {
     await _flushOpenFolderVersionTargets(folderPath);
@@ -1231,12 +1231,12 @@ async function restoreFolderVersion(folderPath, versionName) {
   } catch (err) {
     showStatus((restored ? '保存内容は復元しましたが、表示の更新に失敗しました: ' : 'フォルダバージョン復元に失敗しました: ') + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(restoreLoading); }
 }
 
 async function deleteFolderVersion(folderPath, versionName) {
   if (!await cfConfirm('このフォルダバージョンを削除しますか？')) return false;
-  showLoading('削除中...');
+  const loading = showLoading('削除中...');
   try {
     let currentName = versionName;
     let deletedToken = '';
@@ -1266,7 +1266,7 @@ async function deleteFolderVersion(folderPath, versionName) {
   } catch (err) {
     showStatus('フォルダバージョン削除に失敗しました: ' + (err.message || ''), true);
     return false;
-  } finally { hideLoading(); }
+  } finally { hideLoading(loading); }
 }
 
 // フォルダ用のバージョンタブを開く
