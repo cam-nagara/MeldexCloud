@@ -1,3 +1,6 @@
+      _rejectProductionStructureMutation(body?.path || '', '削除');
+      const confirmationItem = {
+        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
       };
       const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
       return _deleteOutlinerPathToTrash(provider, body?.path || '', {

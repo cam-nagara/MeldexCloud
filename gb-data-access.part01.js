@@ -894,21 +894,26 @@
     return moved?.kind || 'file';
   }
 
-  async function _classifyDirectoryType(provider, relativePath) {
+  async function _classifyDirectoryType(provider, relativePath, options) {
+    options?.signal?.throwIfAborted();
     const normalized = _normalizeFolderPath(relativePath);
     const folderName = _basename(normalized);
     const entries = await _listDirectoryEntries(provider, normalized);
+    options?.signal?.throwIfAborted();
     if (folderName && entries.some(entry => entry.handle.kind === 'file' && entry.name === folderName + '.md')) {
       const folderNote = _joinPath(normalized, folderName + '.md');
       const folderType = _extractFrontmatterType(await _readTextSafe(provider, folderNote, ''));
+      options?.signal?.throwIfAborted();
       if (folderType === 'calendar-db') return _phase1SurfaceType('calendar', 'directory');
       if (folderType === 'settings-db') return _phase1SurfaceType('database', 'directory');
     }
     const markdown = entries.filter(entry => entry.handle.kind === 'file' && entry.name.endsWith('.md')
       && !entry.name.startsWith('.') && !entry.name.startsWith('_') && entry.name !== folderName + '.md');
     for (let offset = 0; offset < markdown.length; offset += 6) {
+      options?.signal?.throwIfAborted();
       const types = await Promise.all(markdown.slice(offset, offset + 6).map(async entry =>
         _extractFrontmatterType(await _readTextSafe(provider, _joinPath(normalized, entry.name), ''))));
+      options?.signal?.throwIfAborted();
       if (types.includes('settings-entry')) return _phase1SurfaceType('database', 'directory');
     }
     return 'folder';
@@ -954,12 +959,16 @@
 
   async function _buildBrowseItem(provider, relativePath, handle, options) {
     const safeOptions = options || {};
+    safeOptions.signal?.throwIfAborted();
     const name = _basename(relativePath);
     if (!name || name.startsWith('.') || name.startsWith('_')) return null;
     const sourceId = window.MeldexSourceFolderRegistry?.parseSourcePath?.(relativePath)?.sourceId || '';
     if (handle.kind === 'directory') {
       const type = safeOptions.classifyDirectories
-        ? (await _classifyDirectoryType(provider, relativePath).catch(() => 'folder')) || 'folder'
+        ? (await _classifyDirectoryType(provider, relativePath, safeOptions).catch(error => {
+          if (error?.name === 'AbortError') throw error;
+          return 'folder';
+        })) || 'folder'
         : 'folder';
       const folderItem = { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
       if (safeOptions.detail) folderItem.os_type = _fallbackOsTypeLabel(name, type, true);

@@ -3266,7 +3266,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
   }
 
-  handlers.push(async ({ method, body, url, pathname }) => {
+  handlers.push(async ({ method, body, url, pathname, signal }) => {
     if (pathname === '/cloud/space-usage' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
@@ -3638,10 +3638,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       // Bound remote reads while avoiding one network round trip per item in
       // series. Keep input order so sorting and folder/file grouping are stable.
       for (let offset = 0; offset < entries.length; offset += 6) {
+        signal?.throwIfAborted();
         const batch = await Promise.all(entries.slice(offset, offset + 6).map(entry => {
           const itemPath = entry.path || _joinPath(browsePath, entry.name);
-          return _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+          return _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail, signal, classifyDirectories: allFiles || detail });
         }));
+        signal?.throwIfAborted();
         for (const item of batch) {
           if (!item) continue;
           if (_isBrowseContainerItem(item)) folders.push(item);
@@ -3652,10 +3654,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const existing = new Set(items.map((item) => item.path));
       const folderLinks = await _folderLinksForProvider(provider);
       for (const linked of _linkedItemsForFolder(browsePath, folderLinks)) {
+        signal?.throwIfAborted();
         if (existing.has(linked.path)) continue;
         const entry = await _resolveEntryHandle(provider, linked.path);
         if (!entry) continue;
-        const item = await _buildBrowseItem(provider, linked.path, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
+        const item = await _buildBrowseItem(provider, linked.path, entry.handle, { allFiles, detail, signal, classifyDirectories: allFiles || detail });
         if (!item) continue;
         if (_isBrowseContainerItem(item)) {
           items.push({ ...item, linked: true, exists: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
@@ -3672,7 +3675,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const entry = await _resolveEntryHandle(provider, targetPath);
       if (!entry) return { type: 'unknown', exists: false };
       if (entry.kind === 'directory') {
-        return { type: await _classifyDirectoryType(provider, targetPath), exists: true };
+        return { type: await _classifyDirectoryType(provider, targetPath, { signal }), exists: true };
       }
       return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown', exists: true };
     }

@@ -54,7 +54,7 @@
     return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
   }
 
-  handlers.push(async ({ method, body, url, pathname }) => {
+  handlers.push(async ({ method, body, url, pathname, signal }) => {
     if (pathname === '/cloud/space-usage' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
