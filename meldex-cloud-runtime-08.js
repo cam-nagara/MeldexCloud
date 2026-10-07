@@ -112207,6 +112207,9 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   const rowTasks = config?.rowTasks;
   const scroller = _dbVirtualScrollContainer(ctx, tbody);
   if (!ctx || !tbody || !Array.isArray(rowTasks) || !scroller) return false;
+  // Cells and groups must retain this sheet's owner, including isolated tabs.
+  // Falling back to the globally active/legacy sheet loses image cell context.
+  config = { ...config, ctx };
   const table = tbody.closest('table');
 
   const colSpan = (config.visibleProps?.length || 0) + 3;
