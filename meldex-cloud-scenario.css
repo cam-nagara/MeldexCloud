@@ -1,0 +1,3912 @@
+/* gb-scriptnote-editor.css: split stylesheet loader */
+/* gb-scriptnote-editor.part01.css: split stylesheet loader */
+/* gb-scriptnote-editor.css: 軽量台本エディタ v2 */
+
+/* === スクロール領域 === */
+.sn2-scroll {
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg)));
+  scrollbar-width: thin;
+  position: relative; /* パン余白スペーサーの位置基準 */
+}
+/* 右ドラッグパン中のカーソル */
+.sn2-scroll.sn2-panning,
+.sn2-scroll.sn2-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+/* パン余白用スペーサー: editor の右下に絶対配置して
+   スクロール領域を広げる。editor の content box に
+   一切影響しないので折り返し計算は壊れない。 */
+.sn2-pan-spacer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  z-index: -1;
+  background: transparent;
+}
+
+/* === エディタ本体 === */
+.sn2-editor {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  gap: 0;
+}
+
+/* ============================
+   折り返しOFF（デフォルト）: 横書き=下スクロール、縦書き=左スクロール
+   ============================ */
+
+/* ============================
+   横書き折り返しON: 右方向スクロール
+   ============================ */
+.sn2-scroll.sn2-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sn2-scroll.sn2-wrap .sn2-editor {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  /* ウィンドウ縮小時に内容を潰さないよう、min-height で下限 100% を保証しつつ
+     コンテンツがそれより大きければ max-content で伸ばす */
+  min-height: 100%;
+  height: max-content;
+  width: max-content;
+  gap: var(--sn2-wrap-gap, var(--sn2-margin, 16px)); /* 段の隙間 = 段間隔（未指定なら余白） */
+  padding: 0 24px; /* 両端にスクロール余白 */
+}
+.sn2-column-group {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 100%;
+  height: max-content;
+}
+.sn2-scroll.sn2-wrap .sn2-column-group > .sn2-row {
+  flex-shrink: 0;
+}
+/* 折り返し時の行スペーサーは非表示 */
+
+/* ============================
+   縦書き
+   レイアウト: ヘッダーが右端に縦並び、行は右→左に横並び
+   各行の中身は上から 番号→タイプ→テキスト（縦並び）
+   ============================ */
+
+/* 縦書き折り返しOFF: 左方向スクロール */
+.sn2-scroll.sn2-vertical:not(.sn2-wrap) {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sn2-scroll.sn2-vertical:not(.sn2-wrap) > .sn2-header {
+  position: sticky;
+  right: 0;
+}
+/* 縦書き折り返しON: 下方向スクロール */
+.sn2-scroll.sn2-vertical.sn2-wrap {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* editor: 行を右→左に横並び（row-reverse） */
+.sn2-scroll.sn2-vertical .sn2-editor {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  height: max-content;
+  width: max-content;
+  /* scroll が flex 親 (row-reverse) なので、flex-shrink 無指定だと scroll が
+     狭くなったとき editor が縮められ、中の行が潰される */
+  flex-shrink: 0;
+}
+
+/* 各行: 縦並び（上→下: ハンドル→番号→タイプ→テキスト→カスタム列→スペーサー） */
+.sn2-scroll.sn2-vertical .sn2-row {
+  flex-direction: column;
+  min-height: auto;
+  min-width: 0;
+  width: auto;
+  border-bottom: none;
+  /* border-leftは枠線モード(.sn2-editor[data-border])で制御 */
+  /* editor (flex row-reverse) が狭くなっても行は縮まない */
+  flex-shrink: 0;
+}
+
+/* 各セルの中身を縦書きにする */
+.sn2-scroll.sn2-vertical .sn2-text,
+.sn2-scroll.sn2-vertical .sn2-gutter,
+.sn2-scroll.sn2-vertical .sn2-custom-text {
+  writing-mode: vertical-rl !important;
+  text-orientation: upright !important;
+  font-feature-settings: "vert" 1, "vpal" 1;
+}
+/* タイプ列: mixed（半角スペースの幅を正常に保つ） */
+.sn2-scroll.sn2-vertical .sn2-role-btn {
+  writing-mode: vertical-rl !important;
+  text-orientation: mixed !important;
+  font-feature-settings: "vert" 1, "vpal" 1;
+}
+.sn2-scroll.sn2-vertical .sn2-status-btn {
+  writing-mode: vertical-rl !important;
+  text-orientation: mixed !important;
+  font-feature-settings: "vert" 1, "vpal" 1;
+}
+/* 縦中横: 連続半角英数字を横組みブロックで表示 */
+.sn2-tcy {
+  -webkit-text-combine: horizontal;
+  text-combine-upright: all;
+  text-orientation: mixed;
+}
+/* 縦中横（幅圧縮なし）: 横書きブロックとして配置し元の文字幅を維持 */
+.sn2-tcy-wide {
+  display: inline-block;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+  text-align: center;
+}
+
+/* 縦書き: 各セルの高さをCSS変数で制御 */
+/* 注意: セル間 border (縦書き DOM では border-bottom = 視覚的な水平線)
+   は data-border 属性の専用ルール (下方の .sn2-editor[data-border=...])
+   で制御する。ここでハードコードすると「枠線なし」設定が効かなくなる。*/
+.sn2-scroll.sn2-vertical .sn2-gutter {
+  width: auto;
+  height: var(--sn2-vcol-_gutter, auto);
+  text-align: center;
+  /* ヘッダー (.sn2-header-vertical .sn2-header-cell) の padding: 6px 4px と
+     合わせて垂直方向の累積高を一致させる。不一致だと JS が行全体を
+     ヘッダー高に合わせたときに text セルが余り分を吸収してヘッダーと
+     行の各セル位置がズレて見える */
+  padding: 6px 4px;
+  border-right: none;
+}
+.sn2-scroll.sn2-vertical .sn2-gutter2 {
+  height: var(--sn2-vcol-_gutter2, auto);
+}
+.sn2-scroll.sn2-vertical .sn2-role-btn {
+  width: auto;
+  height: var(--sn2-vcol-_role, auto);
+  border-left: none;
+  border-right: none;
+}
+.sn2-scroll.sn2-vertical .sn2-status-btn {
+  width: auto;
+  height: var(--sn2-vcol-_status, auto);
+  border-left: none;
+  border-right: none;
+  justify-content: center;
+}
+.sn2-scroll.sn2-vertical .sn2-handle {
+  width: auto;
+  height: var(--sn2-vcol-_handle, 36px);
+  padding: 2px 4px 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-handle > span {
+  transform: rotate(90deg);
+}
+
+/* 縦書きテキスト */
+.sn2-scroll.sn2-vertical .sn2-text {
+  flex: 1 1 0 !important;
+  width: auto;
+  min-width: 0; /* 横書きのmin-width:60pxを無効化 */
+  height: auto !important;
+  padding: 6px 6px; /* 横書きの行高(≈34px)に合わせてセル幅を調整 */
+  overflow-wrap: break-word;
+  word-break: normal;
+  overflow: visible;
+}
+
+/* 縦書き時: スペーサーは非表示（テキストがflex:1で残りを埋める） */
+.sn2-scroll.sn2-vertical .sn2-row-spacer {
+  display: none;
+}
+
+/* 縦書き + 折り返しON: 段を縦並び */
+.sn2-scroll.sn2-vertical.sn2-wrap {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.sn2-scroll.sn2-vertical.sn2-wrap .sn2-editor {
+  flex-direction: column;
+  /* 縦書き折り返しは横スクロールを使わない。段の右端を表示幅の右端に
+     固定し、先頭ページが max-content の右外へ押し出されるのを防ぐ。 */
+  min-width: 100%;
+  width: 100%;
+  max-width: 100%;
+  height: max-content;
+  gap: var(--sn2-wrap-gap, var(--sn2-margin, 16px)); /* 段の隙間 = 段間隔（未指定なら余白） */
+  padding: 24px 0; /* 上下にスクロール余白 */
+}
+.sn2-scroll.sn2-vertical.sn2-wrap .sn2-column-group {
+  flex-direction: row-reverse;
+  height: auto;
+  min-width: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.sn2-scroll.sn2-vertical.sn2-wrap .sn2-column-group > .sn2-row {
+  flex-shrink: 0;
+}
+
+/* === ヘッダー（editorの外、scroll直下） === */
+.sn2-header {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg3);
+  border-bottom: 2px solid var(--sn2-border-color, var(--border));
+  min-height: 28px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg2);
+  user-select: none;
+  width: fit-content;
+  box-sizing: border-box;
+}
+/* 折り返し時: 各column-group内のヘッダーは通常配置（段内に固定） */
+.sn2-scroll.sn2-wrap .sn2-header {
+  position: sticky;
+  top: 0;
+  left: 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+/* 縦書き時のヘッダー: 縦並び（上から 番号→タイプ→テキスト） */
+.sn2-header-vertical {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  align-content: flex-start !important;
+  flex-wrap: nowrap !important;
+  width: auto !important;
+  min-width: 28px;
+  height: auto;
+  min-height: auto;
+  border-bottom: none !important;
+  border-left: 2px solid var(--sn2-border-color, var(--border));
+}
+.sn2-header-vertical .sn2-header-cell {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-feature-settings: "vert" 1, "vpal" 1;
+  white-space: normal;
+  padding: 6px 4px;
+  width: auto !important;
+  border-bottom: var(--sn2-border-width, 1px) solid var(--fg2, #888);
+}
+/* 各セルの高さをCSS変数で対応 */
+.sn2-header-vertical .sn2-header-cell[data-col-id="_handle"] { height: var(--sn2-vcol-_handle, 36px); padding: 2px 4px 0; box-sizing: border-box; }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_gutter"] { height: var(--sn2-vcol-_gutter, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_gutter2"] { height: var(--sn2-vcol-_gutter2, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_role"] { height: var(--sn2-vcol-_role, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_status"] { height: var(--sn2-vcol-_status, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_text"] { flex: 0 0 auto !important; height: var(--sn2-vcol-_text, var(--sn2-col-_text, 300px)) !important; }
+.sn2-header-vertical .sn2-header-flex {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  height: var(--sn2-vcol-_text, var(--sn2-col-_text, 300px)) !important;
+}
+.sn2-header-vertical .sn2-col-resizer {
+  width: auto;
+  height: 4px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+
+/* 縦書き時: ヘッダースペーサーは非表示（テキストセルがflex:1で残りを埋める） */
+.sn2-header-vertical .sn2-header-spacer { display: none; }
+/* ヘッダースペーサー（残り領域をページ背景色に） */
+.sn2-header-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg)));
+}
+
+/* ヘッダーセル: クリック可能 */
+.sn2-header-cell { transition: background 0.1s; }
+.sn2-header-cell:hover { background: var(--bg2); }
+
+/* ポップアップ共通: position:fixedが正しく動作するよう、containの影響を排除 */
+.sn2-role-menu,
+.sn2-header-popup,
+.gb-fmt-popup,
+.sn2-filter-popup {
+  contain: none !important;
+}
+
+/* ヘッダーメニューポップアップ */
+.sn2-header-popup {
+  background: var(--ui-popup-bg, var(--bg2));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  min-width: 160px;
+  padding: 4px;
+  z-index: 10000;
+}
+.sn2-ruby-popup {
+  box-sizing: border-box;
+  min-width: 240px;
+  padding: 8px 12px;
+}
+.sn2-ruby-popup-title {
+  margin-bottom: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.sn2-ruby-popup-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.sn2-ruby-popup-input {
+  flex: 0 1 140px;
+  min-width: 60px;
+  height: 24px;
+  font-size: 13px;
+}
+.sn2-ruby-popup-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.sn2-ruby-popup-check {
+  min-width: 0;
+}
+.sn2-ruby-popup-check span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sn2-ruby-popup-auto {
+  margin-left: 0;
+}
+.sn2-header-popup-sep { border-top: 1px solid var(--border); margin: 2px 0; }
+.sn2-header-popup-label { padding: 4px 8px 2px; font-size: 10px; color: var(--fg2); font-weight: 600; }
+.sn2-header-popup-item {
+  display: block; width: 100%; padding: 5px 12px;
+  appearance: none; border: none; background: transparent; color: var(--fg);
+  font-family: inherit; font-size: 12px; line-height: 1.2; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.sn2-header-popup-item:hover { background: var(--bg4); }
+.sn2-header-popup-item.active { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 28%, transparent); }
+.sn2-header-popup-item:disabled {
+  background: transparent;
+  color: var(--fg2);
+  cursor: default;
+}
+.sn2-header-popup-item:disabled:hover { background: transparent; }
+/* サブメニュートリガー */
+.sn2-header-popup-sub-trigger {
+  display: flex !important; align-items: center; justify-content: space-between;
+}
+.sn2-header-popup-sub-trigger b { color: var(--fg); }
+.sn2-header-popup-arrow { color: var(--fg2); font-size: 10px; margin-left: 8px; }
+/* サブメニューポップアップ */
+.sn2-header-sub-popup { min-width: 120px; }
+.sn2-filter-all-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sn2-filter-grid-header {
+  display: grid;
+  grid-template-columns: 36px 36px minmax(0, 1fr);
+  gap: 0;
+  padding: 2px 8px 4px;
+  font-size: 10px;
+  color: var(--fg2);
+  font-weight: 600;
+  text-align: center;
+}
+.sn2-filter-grid-label {
+  text-align: left;
+  padding-left: 4px;
+}
+.sn2-filter-row {
+  display: grid;
+  grid-template-columns: 36px 36px minmax(0, 1fr);
+  gap: 0;
+  align-items: center;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: default;
+  border-radius: 4px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .sn2-filter-row:hover {
+    background: var(--ui-bg-control-hover, var(--bg4));
+  }
+}
+.sn2-filter-checkbox {
+  justify-self: center;
+  margin: 0;
+  cursor: pointer;
+}
+.sn2-filter-checkbox-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  cursor: pointer;
+}
+.sn2-filter-item-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 配置設定 */
+.sn2-text[data-align="left"] { text-align: left; }
+.sn2-text[data-align="center"] { text-align: center; }
+.sn2-text[data-align="right"] { text-align: right; }
+/* 垂直配置: セルの高さは維持（stretch）、内容の位置をflex配置で制御 */
+.sn2-gutter[data-valign="top"],
+.sn2-gutter2[data-valign="top"],
+.sn2-role-btn[data-valign="top"],
+.sn2-custom-text[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-gutter[data-valign="middle"],
+.sn2-gutter2[data-valign="middle"],
+.sn2-role-btn[data-valign="middle"],
+.sn2-custom-text[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-gutter[data-valign="bottom"],
+.sn2-gutter2[data-valign="bottom"],
+.sn2-role-btn[data-valign="bottom"],
+.sn2-custom-text[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
+.sn2-status-btn[data-valign],
+.sn2-custom-cell[data-valign] { flex-direction: row; }
+.sn2-status-btn[data-valign="top"],
+.sn2-custom-cell[data-valign="top"] { align-items: flex-start; }
+.sn2-status-btn[data-valign="middle"],
+.sn2-custom-cell[data-valign="middle"] { align-items: center; }
+.sn2-status-btn[data-valign="bottom"],
+.sn2-custom-cell[data-valign="bottom"] { align-items: flex-end; }
+/* .sn2-text: flex-columnだと::before/::afterが別のflex itemになり改行される。
+   align-content（block layout対応）で垂直配置し、inline ::before/::afterを保持する */
+.sn2-text[data-valign] { display: block !important; flex-direction: initial !important; }
+.sn2-text[data-valign="top"] { align-content: start; }
+.sn2-text[data-valign="middle"] { align-content: center; }
+.sn2-text[data-valign="bottom"] { align-content: end; }
+.sn2-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; }
+.sn2-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; }
+.sn2-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }
+/* カスタム列の配置設定 */
+.sn2-custom-cell[data-align="left"] { justify-content: flex-start; }
+.sn2-custom-cell[data-align="center"] { justify-content: center; }
+.sn2-custom-cell[data-align="right"] { justify-content: flex-end; }
+/* 折返設定: タイプ列・ガター列・カスタム列テキスト（.sn2-text と同じ3モード） */
+.sn2-role-btn[data-overflow="wrap"],
+.sn2-gutter[data-overflow="wrap"],
+.sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; text-overflow: clip; }
+.sn2-role-btn[data-overflow="overflow"],
+.sn2-gutter[data-overflow="overflow"],
+.sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; text-overflow: clip; }
+.sn2-role-btn[data-overflow="clip"],
+.sn2-gutter[data-overflow="clip"],
+.sn2-custom-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="wrap"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="wrap"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="overflow"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="overflow"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="clip"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="clip"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }
+
+/* （段ごとのクローンヘッダーは廃止、全モードでstickyフロートに統一） */
+.sn2-header-cell {
+  padding: 4px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sn2-header-cell[role="button"]:focus-visible,
+.sn2-col-resizer:focus-visible {
+  outline: 1px solid var(--ui-focus, var(--blue, #4a90d9));
+  outline-offset: -1px;
+}
+/* テキスト列(ヘッダー): 固定幅未設定時はデフォルト幅。リサイズ後はCSS変数で制御 */
+.sn2-header-flex { width: var(--sn2-col-_text, 300px); flex: 0 0 auto; }
+.sn2-col-resizer {
+  width: 4px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  align-self: stretch;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+.sn2-col-resizer:hover,
+.sn2-col-resizer:active {
+  background: var(--blue, #4a90d9);
+}
+/* 折り返し時は行スペーサーを非表示 */
+.sn2-scroll.sn2-wrap .sn2-row-spacer {
+  display: none;
+}
+
+/* === 行 === */
+.sn2-editor {
+  --sn2-border-color: var(--border);
+  --sn2-border-width: 1px;
+}
+.sn2-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 32px;
+  width: fit-content;
+  box-sizing: border-box;
+  position: relative;
+  color: var(--sn2-base-text-color, var(--fg));
+  font-family: var(--sn2-base-text-font-family, var(--ui-font, inherit));
+  font-weight: var(--sn2-base-text-bold, normal);
+  font-style: var(--sn2-base-text-italic, normal);
+  font-size: var(--sn2-base-text-font-size, 13px);
+}
+
+/* 枠線モード */
+.sn2-editor[data-border="all"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-editor[data-border="vertical"] .sn2-row { border-bottom: none; }
+.sn2-editor[data-border="none"] .sn2-row { border-bottom: none; }
+/* 横書き列間枠線（allまたはverticalのとき各セルにborder-right） */
+.sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-right: var(--sn2-border-width) solid var(--sn2-border-color);
+}
+/* 縦書き枠線モード: 行間はborder-left（horizontal=行間枠線、vertical=列間枠線） */
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row { border-left: none; }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="none"] .sn2-row { border-left: none; }
+/* 縦書き: 列間枠線をborder-right→border-bottomに変換 */
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-right: none;
+  border-bottom: var(--sn2-border-width) solid var(--sn2-border-color);
+}
+
+/* 見開き区切り線（outline行との競合を避けるため詳細度を上げたルールも追加） */
+.sn2-row[data-spread-border],
+.sn2-row[data-outline][data-spread-border] { border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-scroll.sn2-vertical .sn2-row[data-spread-border],
+.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-top: none !important; border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+/* 見開き区切り線は行選択メニュー列（ハンドル列）には表示しない。
+   線は行のborderで引かれるため、ハンドル列の区間だけページ背景色で覆って消す */
+.sn2-row[data-spread-border] > .sn2-handle::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--sn2-spread-border-width, 2px));
+  height: var(--sn2-spread-border-width, 2px);
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg)));
+  pointer-events: none;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-spread-border] > .sn2-handle::before {
+  top: 0;
+  bottom: 0;
+  left: auto;
+  right: calc(-1 * var(--sn2-spread-border-width, 2px));
+  width: var(--sn2-spread-border-width, 2px);
+  height: auto;
+}
+
+.sn2-row:hover { background: var(--sn2-hover-bg, var(--bg2)); }
+.sn2-row.sn2-row-selected { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 35%, transparent); }
+.sn2-row.sn2-row-selected:hover { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 48%, transparent); }
+.sn2-row.sn2-row-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--sn2-selection-border-width, 2px) var(--sn2-selection-border-color, var(--sn2-caret-color, var(--accent, #4a90d9)));
+}
+/* 行選択中はテキストセルをネイティブ選択と同等の色で塗ってテキスト選択風に。
+   background ではなく inset box-shadow を使うことでキャラスタイルの
+   背景色を上書きせずにオーバーレイだけ乗せる */
+.sn2-row.sn2-row-selected .sn2-text {
+  box-shadow: inset 0 0 0 9999px var(--sn2-selection-color, color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 45%, transparent));
+}
+.sn2-row:focus-within { background: var(--sn2-hover-bg, var(--bg3)); }
+/* ホバー時: 背景色付きセルは filter でテキスト色ごと明度変化させる。
+   ::before オーバーレイ方式は前置文字（data-before の ::before）と同一疑似要素を
+   奪い合い、前置文字付きセルだけハイライトされなくなるため使わないこと */
+.sn2-row:hover > .sn2-gutter[style*="background"],
+.sn2-row:hover > .sn2-role-btn[style*="background"],
+.sn2-row:hover > .sn2-status-btn[style*="background"],
+.sn2-row:hover > .sn2-text[style*="background"],
+.sn2-row:hover > .sn2-custom-cell[style*="background"] {
+  filter: brightness(1.35);
+}
+.sn2-row:focus-within > .sn2-gutter[style*="background"],
+.sn2-row:focus-within > .sn2-role-btn[style*="background"],
+.sn2-row:focus-within > .sn2-status-btn[style*="background"],
+.sn2-row:focus-within > .sn2-text[style*="background"],
+.sn2-row:focus-within > .sn2-custom-cell[style*="background"] {
+  filter: brightness(1.5);
+}
+
+/* 行の右端スペーサー */
+.sn2-row-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg))) !important;
+  pointer-events: none;
+}
+
+/* ドラッグハンドル — 常にページ背景色、チェックボックス+グリップを内包 */
+.sn2-handle {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_handle, 36px);
+  padding: 4px 2px 0;
+  font-size: 12px;
+  color: transparent;
+  cursor: grab;
+  text-align: center;
+  user-select: none;
+  transition: color 0.15s;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg))) !important;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+/* 行選択チェックボックス（ハンドルdiv内に配置） */
+.sn2-row-check {
+  flex: 0 0 auto; width: 14px;
+  margin: 0; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s;
+  accent-color: var(--ui-selection-bg, var(--blue, #4a90d9));
+}
+/* ドラッグ選択矩形（スタイルはJS側で全設定） */
+.sn2-drag-select-rect { pointer-events: none; }
+.sn2-row:hover .sn2-row-check,
+.sn2-row-check:checked { opacity: 1; }
+.sn2-row:hover .sn2-handle { color: var(--fg2); }
+.sn2-handle:hover { color: var(--fg) !important; }
+@media (hover: none), (pointer: coarse) {
+  .sn2-row-check { opacity: 1; }
+  .sn2-handle { color: var(--fg2); }
+}
+.sn2-row.sn2-dragging { opacity: 0.3; }
+/* 行入れ替えハイライト */
+.sn2-row.sn2-swap-highlight { animation: sn2-swap-flash 0.4s ease-out; }
+@keyframes sn2-swap-flash {
+  0% { outline: 2px solid var(--blue, #4a90d9); outline-offset: -2px; }
+  100% { outline: 2px solid transparent; outline-offset: -2px; }
+}
+/* ドロップインジケーター: ::afterで前面に描画（セル背景に隠れないようにする） */
+.sn2-row.sn2-drop-above::after,
+.sn2-row.sn2-drop-below::after {
+  content: ''; position: absolute; left: 0; right: 0; z-index: 5; pointer-events: none;
+  height: var(--sn2-drop-width, 2px);
+  background: var(--sn2-drop-color, var(--blue, #4a90d9));
+}
+.sn2-row.sn2-drop-above::after { top: 0; }
+.sn2-row.sn2-drop-below::after { bottom: 0; }
+/* 縦書き: ドロップインジケーターを左右に変更 */
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-above::after,
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-below::after {
+  top: 0; bottom: 0; left: auto; right: auto;
+  height: auto; width: var(--sn2-drop-width, 2px);
+}
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-above::after { right: 0; }
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-below::after { left: 0; }
+
+/* ガター（大区切り：ページ番号等） */
+.sn2-gutter {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_gutter, 40px);
+  padding: 7px 4px 0;
+  font-size: 10px;
+  font-family: var(--sn2-base-text-font-family, var(--ui-font, inherit));
+  color: var(--fg2);
+  text-align: right;
+  user-select: none;
+  white-space: nowrap;
+}
+/* ガター2（小区切り：コマ番号等） */
+.sn2-gutter2 {
+  width: var(--sn2-col-_gutter2, 48px);
+}
+
+/* タイプボタン */
+.sn2-role-btn {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_role, 88px);
+  padding: 6px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: stretch;
+}
+
+.sn2-status-btn {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_status, 92px);
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.sn2-status-btn:hover { background: var(--bg3); color: var(--fg); }
+.sn2-status-btn.is-empty { color: var(--fg2); }
+
+.sn2-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: transparent;
+  flex: 0 0 auto;
+}
+
+.sn2-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 列間枠線: 各列のborder-rightで実装（隣接列のborder-leftは不要 — 二重線防止） */
+.sn2-gutter[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-gutter2[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-role-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-status-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-text[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-custom-cell[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+/* 縦書き: 列間枠線をborder-bottomに変更 */
+.sn2-scroll.sn2-vertical .sn2-gutter[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-gutter2[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-status-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-text[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-custom-cell[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+
+.sn2-role-btn:hover { background: var(--bg3); color: var(--fg); }
+.sn2-role-btn.sn2-role-cell-selected {
+  outline: 2px solid var(--accent, #4a90d9);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22);
+  color: var(--fg);
+}
+.sn2-role-btn.sn2-role-cell-selected:not([style*="background"]) {
+  background: color-mix(in srgb, var(--accent, #4a90d9) 18%, transparent);
+}
+
+/* テキスト（contenteditable） */
+.sn2-text {
+  flex: var(--sn2-text-flex, 0 1 auto);
+  width: var(--sn2-col-_text, 300px);
+  min-width: 60px;
+  min-height: 28px;
+  padding: 6px 8px;
+  outline: none;
+  font-size: 14px;
+  line-height: var(--sn2-base-text-line-height, 1.6);
+  letter-spacing: var(--sn2-base-text-letter-spacing, normal);
+  color: var(--fg);
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  caret-color: transparent; /* ネイティブキャレットを非表示、カスタムキャレットを使用 */
+}
+.sn2-text::selection {
+  background: var(--sn2-selection-color, color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 45%, transparent));
+  color: var(--sn2-selection-fg, var(--ui-selection-fg, inherit));
+}
+/* カスタムキャレット */
+.sn2-custom-caret {
+  position: absolute;
+  width: var(--sn2-caret-width, var(--editor-caret-width, 2px));
+  height: auto;
+  background: var(--sn2-caret-color, var(--editor-caret-color, var(--accent, #4a90d9)));
+  pointer-events: none;
+  z-index: 5;
+  animation: sn2-caret-blink 1s step-end infinite;
+}
+/* 縦書き: キャレットは横線 */
+.sn2-scroll.sn2-vertical .sn2-custom-caret {
+  width: auto;
+  height: var(--sn2-caret-width, var(--editor-caret-width, 2px));
+}
+@keyframes sn2-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+
+.sn2-text:empty::before {
+  content: '　';
+  color: var(--fg2);
+  opacity: 0.2;
+}
+/* ルビ表示 */
+/* gb-tools.css のグローバル [data-ruby]::before を無効化（::after で独自表示するため） */
+.sn2-text span[data-ruby]::before,
+.sn2-custom-text span[data-ruby]::before { content: none; }
+.sn2-text span[data-ruby],
+.sn2-custom-text span[data-ruby] {
+  position: relative;
+  /* ベーステキストをセル端で折り返したときに ::after ルビが span の
+     途中で分断されて中央寄せ計算が壊れ、ルビがセル外へ飛び出すのを防ぐ。
+     inline-block にして span 全体を 1 行に収める (入りきらないときは
+     次の行に丸ごと送る)。*/
+  display: inline-block;
+  vertical-align: baseline;
+  /* B-MANGA と同じく、ルビを含む行だけ rubyLineHeight で字送りする。 */
+  line-height: var(--sn2-ruby-line-height, 1.8);
+  /* 前の文字列（タイプの textBefore）がある行は .sn2-text に text-indent:-1em が付く。
+     text-indent は継承プロパティで、inline-block である本 span（ブロックコンテナ）の
+     内部の本文字にも効いてしまい、本文字だけが 1em 左へずれる。一方ルビ ::after は
+     span 外形基準で置かれるため、結果としてルビが本文字の約1em右へズレる。
+     span 側で text-indent を打ち消し、本文字とルビの基準を一致させる（横書き限定の不具合）。 */
+  text-indent: 0;
+}
+.sn2-text span[data-ruby]::after,
+.sn2-custom-text span[data-ruby]::after {
+  content: attr(data-ruby-rendered);
+  position: absolute;
+  /* 親文字の仮想ボディ上端から、親文字基準の相対間隔だけ離す。 */
+  bottom: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  left: var(--sn2-ruby-inline-start, 0px);
+  right: auto;
+  width: var(--sn2-ruby-layout-extent, max-content);
+  margin-left: 0;
+  margin-right: 0;
+  transform: none;
+  font-size: var(--sn2-ruby-size-override, var(--sn2-ruby-size, 0.5em));
+  line-height: 1;
+  font-family: var(--sn2-ruby-font-family, inherit);
+  color: inherit;
+  opacity: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
+}
+/* 自動リンク */
+.sn2-text .auto-link,
+.sn2-custom-text .auto-link {
+  cursor: pointer;
+  color: var(--link-fg);
+  text-decoration: none;
+}
+.sn2-text .auto-link:hover,
+.sn2-custom-text .auto-link:hover {
+  text-decoration: underline;
+  background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 24%, transparent);
+}
+.sn2-search-popup input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.sn2-text .auto-link[data-ruby],
+.sn2-custom-text .auto-link[data-ruby] {
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+}
+.sn2-text .auto-link[data-ruby]::before,
+.sn2-custom-text .auto-link[data-ruby]::before { content: none; }
+.sn2-text .auto-link[data-ruby]::after,
+.sn2-custom-text .auto-link[data-ruby]::after {
+  content: attr(data-ruby-rendered);
+  position: absolute;
+  bottom: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  left: var(--sn2-ruby-inline-start, 0px);
+  right: auto;
+  width: var(--sn2-ruby-layout-extent, max-content);
+  margin-left: 0;
+  margin-right: 0;
+  transform: none;
+  font-size: var(--sn2-ruby-size-override, var(--sn2-ruby-size, 0.5em));
+  line-height: 1;
+  font-family: var(--sn2-ruby-font-family, inherit);
+  color: inherit;
+  opacity: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
+}
+
+/* 縦書きルビ: 右側に配置、上下はauto marginでセンタリング */
+.sn2-scroll.sn2-vertical .sn2-text span[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-text .auto-link[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-custom-text .auto-link[data-ruby] {
+  text-decoration: none;
+  /* 縦書きでは inline-block をやめて inline に戻す。inline-block だと
+     span のベースラインが周囲テキストのベースラインに合わされる過程で
+     セル先頭の文字が 1 文字分上へズレる現象が発生する。折返し時のルビ
+     分断問題は縦書きでは起きにくいので影響は許容 */
+  display: inline !important;
+}
+.sn2-scroll.sn2-vertical .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby]::after {
+  /* 横書き用のリセット */
+  bottom: auto;
+  right: auto;
+  width: auto;
+  margin-left: 0;
+  margin-right: 0;
+  /* テキストからの距離 */
+  left: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  top: var(--sn2-ruby-inline-start, 0px);
+  bottom: auto;
+  height: var(--sn2-ruby-layout-extent, max-content);
+  margin-top: 0;
+  margin-bottom: 0;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical .sn2-custom-text .auto-link[data-ruby]::after {
+  bottom: auto;
+  right: auto;
+  width: auto;
+  margin-left: 0;
+  margin-right: 0;
+  left: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  top: var(--sn2-ruby-inline-start, 0px);
+  bottom: auto;
+  height: var(--sn2-ruby-layout-extent, max-content);
+  margin-top: 0;
+  margin-bottom: 0;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
+}
+
+/* 旧文書互換: 縦書きはpx offsetをそのまま使い、明示変更されるまで見た目を維持する。
+   横書きは旧offset(既定3.5px)が本文の字面上端へ食い込み、ルビが手前の文字列に
+   覆いかぶさって読めなくなるため、互換モードでも通常配置(親文字仮想ボディ上端基準)を使う。 */
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-custom-text .auto-link[data-ruby]::after {
+  bottom: 0;
+  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
+}
+
+/* 肩付きは横書きでは左端、縦書きでは上端へ揃える。 */
+.sn2-scroll[data-ruby-align="start"] .sn2-text span[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-custom-text .auto-link[data-ruby]::after {
+  margin-left: 0;
+  margin-right: auto;
+}
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-custom-text .auto-link[data-ruby]::after {
+  margin-top: 0;
+  margin-bottom: auto;
+}
+
+/* テキスト前後文字列（タイプオプション） — テキスト列の色・書式を継承 */
+/* data-before がある場合、prefix (::before) と本文を横並びのflexアイテムにする。
+   text-indentによるhanging indent（旧実装）は、prefix幅を固定1emで見積もるため
+   実際の文字幅とズレるうえ、継承されたtext-indentがルビ用span[data-ruby]
+   （display:inline-blockで新たな整形コンテキストになる）の内部にまで及び、
+   本文字だけがずれてルビ位置が狂う副作用があった（主因はspan[data-ruby]側の
+   text-indent:0リセットで解消済み、下記参照）。
+   flexなら prefix は内容なりの幅を占め（width固定不要）、本文は残りの幅で
+   折り返す独立ボックスになるため、1行目・折り返し行のどちらも本文の開始位置が
+   自然に揃う。data-valign併用時は縦方向中央寄せに display:block!important
+   （align-contentベース、下記参照）を要求するため、この構造は使わず旧方式を残す。 */
+.sn2-text[data-before]:not(:empty):not([data-valign]) {
+  display: flex;
+  align-items: flex-start;
+}
+.sn2-text[data-before]:not(:empty):not([data-valign])::before {
+  content: attr(data-before);
+  flex: 0 0 auto;
+  color: inherit;
+  pointer-events: none;
+}
+/* data-valign併用時のみ旧方式（prefix幅1em固定のhanging indent）を維持 */
+.sn2-text[data-before]:not(:empty)[data-valign] {
+  padding-left: calc(8px + 1em);
+  text-indent: -1em;
+}
+.sn2-text[data-before]:not(:empty)[data-valign]::before {
+  content: attr(data-before);
+  display: inline-block;
+  width: 1em;
+  text-indent: 0;
+  color: inherit;
+  pointer-events: none;
+}
+/* 縦書きモードでは上下方向での揃えになる（横書き用flex構造は使わずblockへ戻す） */
+.sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty) {
+  display: block;
+  padding-left: 6px;
+  padding-top: 6px;
+  text-indent: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty)::before {
+  display: inline;
+  width: auto;
+  height: auto;
+}
+.sn2-text[data-after]:not(:empty)::after {
+  content: attr(data-after);
+  color: inherit;
+  pointer-events: none;
+}
+/* 区切り行の直前に「1行ぶんの空白」相当の余白を追加（表示のみ。データ構造には影響しない）
+   横書き: 行の上側に margin-top、縦書き(vertical-rl): 行の右側に margin-right
+   親コンテナ内で同種(.sn2-row)の最初の要素（＝シナリオ先頭行）は打ち消して余白をつけない */
+.sn2-row[data-kind="break"] {
+  margin-top: 1.8em;
+}
+.sn2-row[data-kind="break"]:first-of-type {
+  margin-top: 0;
+}
+.sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
+  margin-top: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"] {
+  margin-top: 0;
+  margin-right: 1.8em;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"]:first-of-type {
+  margin-right: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
+  margin-right: 0;
+}
+.sn2-scroll.sn2-no-page-break-spacing .sn2-row[data-kind="break"] {
+  margin-top: 0;
+  margin-right: 0;
+}
+
+/* アクティブセル（Excel風ナビゲーション: 非編集状態のカーソル位置表示）
+   クリック直後や矢印/Tab移動で「選ばれているがまだ編集していない」セルを示す。
+   .sn2-text-cell-selected 等（クラス2つ）の方が詳細度が高く優先されるため、
+   別の選択系と同時に残っても見た目が競合しない。 */
+.sn2-cell-active {
+  position: relative;
+  z-index: 7;
+  box-shadow: inset 0 0 0 2px var(--accent, #4a90d9);
+  outline: none;
+}
+
+
+/* gb-scriptnote-editor.part02.css: split stylesheet loader */
+/* === 行タイプ別スタイル === */
+/* 注意: タイプ管理の背景色・文字色はinline styleで設定される。
+   kind別スタイルはinline styleが未設定のときのフォールバック。
+   inline style付きの行ではここの background/color は無視される。 */
+
+/* 設定駆動方針: heading 種別の暗黙装飾は撤廃。
+   見出し用の枠線を付けたいタイプは、オプション設定の「見出し枠線」(chara.outline) で
+   明示的に有効化する。 */
+
+/* 行枠線（汎用） — ハンドル列・スペーサーは範囲外、右辺なし */
+/* タイプごとの色・太さは --sn2-outline-color / --sn2-outline-width で上書き可能 */
+.sn2-row[data-outline="true"] {
+  border: none !important;
+}
+.sn2-row[data-outline="true"] > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-top: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+  border-bottom: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+}
+.sn2-row[data-outline="true"] > .sn2-handle + * {
+  border-left: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+}
+.sn2-row[data-outline="true"] > :first-child:not(.sn2-handle) {
+  border-left: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+}
+/* 縦書き: 横書きの上下→左右、横書きの左→上（全セルに適用） */
+.sn2-scroll.sn2-vertical .sn2-row[data-outline="true"] > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-top: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+  border-bottom: none;
+  border-left: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+  border-right: var(--sn2-outline-width, var(--sn2-border-width)) solid var(--sn2-outline-color, var(--sn2-border-color));
+}
+
+/* ページ区切り系 */
+.sn2-row[data-kind="break"]:not([style*="background"]) { background: var(--bg3); min-height: 24px; }
+.sn2-row[data-kind="break"][style*="background"] { min-height: 24px; }
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"] { min-height: auto; min-width: 24px; }
+
+/* インデントは chara.indent (オプション設定) でインライン適用される */
+
+/* プロット */
+.sn2-row[data-kind="summary"]:not([style*="background"]) { background: var(--bg2); }
+
+/* 空行 */
+.sn2-row[data-kind="blank"] { min-height: 24px; }
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="blank"] { min-height: auto; min-width: 24px; }
+.sn2-row[data-kind="blank"] .sn2-role-btn:not([style*="color"]) { color: var(--fg2); }
+
+/* === カスタム列 === */
+.sn2-custom-cell {
+  padding: 4px 4px;
+  display: flex;
+  align-items: flex-start;
+}
+/* 縦書き: カスタム列のサイズ・方向を調整 */
+.sn2-scroll.sn2-vertical .sn2-custom-cell {
+  width: auto;
+  flex-direction: column;
+}
+.sn2-custom-input,
+.sn2-custom-select {
+  width: 100%;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+.sn2-custom-input:focus,
+.sn2-custom-select:focus {
+  background: var(--bg);
+}
+.sn2-custom-unit {
+  color: var(--fg2);
+  flex-shrink: 0;
+  font-size: 10px;
+  margin-left: 2px;
+}
+.sn2-custom-text {
+  width: 100%;
+  min-height: 20px;
+  padding: 2px 4px;
+  outline: none;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+/* === タイプ選択メニュー === */
+
+.sn2-role-menu {
+  background: var(--ui-popup-bg, var(--bg2));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 10100;
+  width: 210px;
+  min-width: 150px;
+  max-width: 270px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.sn2-role-group { padding: 4px 0; }
+.sn2-role-group + .sn2-role-group { border-top: 1px solid var(--border); }
+.sn2-role-group-label { padding: 4px 8px 2px; font-size: 11px; color: var(--fg2); font-weight: 600; }
+.sn2-role-item {
+  display: block; width: 100%; padding: 5px 12px;
+  border: none; background: transparent; color: var(--fg);
+  font-size: 13px; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.sn2-role-item:hover,
+.sn2-role-item:focus { background: var(--bg4); outline: none; }
+.sn2-role-item[style*="background"]:hover,
+.sn2-role-item[style*="background"]:focus { filter: brightness(1.3); }
+.sn2-role-item.active { border-left: 3px solid var(--accent, #4a90d9); font-weight: bold; padding-left: 9px; }
+.sn2-role-link {
+  display: block; width: 100%; margin-top: 6px; padding: 5px 12px;
+  border: none; border-top: 1px solid var(--border); background: transparent; color: var(--fg);
+  font-size: 13px; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.sn2-role-link:hover,
+.sn2-role-link:focus { background: var(--bg4); outline: none; }
+.sn2-role-input {
+  width: calc(100% - 16px); margin: 4px 8px; padding: 4px 8px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg3); color: var(--fg); font-size: 13px; outline: none;
+}
+.sn2-role-input:focus { border-color: var(--blue, #4a90d9); }
+
+/* カテゴリボタン・サブメニュー（.sn2-role-cat / .sn2-role-sub-popup）は
+   2026-07-17 のフラット表示化（タイプ選択メニューを件数に関わらず全件表示）で廃止 */
+
+/* スタイルポップアップの定義は gb-format-popup.css (.gb-fmt-popup 系) に移行済み（E-2 フェーズ 2026-04-16） */
+
+/* === 詳細パネル（タイプ管理） === */
+
+.sn2-detail { display: flex; flex-direction: column; flex: 1; overflow: auto; background: var(--bg2); }
+.sn2-ruby-panel { display: flex; flex-direction: column; flex: 1; overflow: auto; background: var(--bg2); }
+.sn2-ruby-title {
+  font-size: var(--ui-font-13);
+  font-weight: var(--ui-weight-semibold);
+  line-height: 1.2;
+  color: var(--ui-fg-default);
+}
+.sn2-ruby-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+}
+.sn2-ruby-add-rule {
+  display: inline-flex;
+  align-items: center;
+}
+.sn2-ruby-btn-icon,
+.sn2-ruby-delete-rule {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sn2-ruby-btn-icon svg,
+.sn2-ruby-delete-rule svg {
+  width: 13px;
+  height: 13px;
+}
+.sn2-ruby-section-label {
+  padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-2);
+  font-weight: var(--ui-weight-semibold);
+  line-height: 1.2;
+}
+.sn2-ruby-section-label--ruled {
+  border-top: 1px solid var(--ui-border);
+}
+.sn2-ruby-settings {
+  padding: var(--ui-space-2) var(--ui-space-5) var(--ui-space-4);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--ui-border);
+}
+.sn2-ruby-presentation-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.sn2-ruby-presentation-field {
+  justify-content: space-between;
+}
+.sn2-ruby-presentation-control {
+  min-width: 96px;
+}
+.sn2-ruby-compatibility-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.sn2-ruby-presentation-global {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--ui-space-2) var(--ui-space-4);
+}
+.sn2-ruby-presentation-global-field {
+  justify-content: space-between;
+}
+.sn2-ruby-field {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+}
+.sn2-ruby-field-label {
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
+}
+.sn2-ruby-number-input {
+  width: 64px;
+}
+.sn2-ruby-unit {
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+  white-space: nowrap;
+}
+/* ファイル内ルビ一覧はパネルの残り縦幅いっぱいまで伸ばす（他セクションは固定） */
+.sn2-ruby-panel > .sn2-detail-header,
+.sn2-ruby-panel > .sn2-ruby-section-label,
+.sn2-ruby-panel > .sn2-ruby-settings,
+.sn2-ruby-panel > .sn2-detail-list {
+  flex: 0 0 auto;
+}
+.sn2-ruby-table-wrap {
+  /* パネルに余りがあれば一覧を残り縦幅いっぱいまで伸ばす。
+     パネルが内容より短い場合は縮めず（内容の自然高さを維持）、パネル側のスクロールに任せる。 */
+  flex: 1 0 auto;
+  overflow-y: auto;
+  padding: 0 var(--ui-space-2);
+}
+.sn2-ruby-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ui-font-12);
+}
+.sn2-ruby-table thead tr {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  border-bottom: 1px solid var(--ui-border);
+}
+.sn2-ruby-table th,
+.sn2-ruby-table td {
+  padding: 3px var(--ui-space-2);
+  text-align: left;
+}
+.sn2-ruby-file-row {
+  cursor: pointer;
+  border-bottom: 1px solid var(--ui-border);
+}
+.sn2-ruby-file-row:hover,
+.sn2-ruby-file-row:focus-visible {
+  background: var(--ui-bg-control);
+  outline: none;
+}
+.sn2-ruby-file-ruby,
+.sn2-ruby-file-pos {
+  color: var(--ui-fg-muted);
+}
+.sn2-ruby-file-actions {
+  white-space: nowrap;
+}
+.sn2-ruby-file-actions .gb-btn + .gb-btn {
+  margin-left: var(--ui-space-1);
+}
+.sn2-ruby-file-pos {
+  text-align: right;
+  font-size: var(--ui-font-10);
+}
+.sn2-ruby-rule-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  padding: 3px var(--ui-space-4);
+  min-height: var(--ui-h-sm);
+  box-sizing: border-box;
+}
+.sn2-ruby-rule-handle {
+  flex-shrink: 0;
+}
+.sn2-ruby-rule-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.sn2-ruby-rule-arrow {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+  flex-shrink: 0;
+}
+.sn2-ruby-delete-rule {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--ui-fg-muted);
+}
+.sn2-ruby-delete-rule:hover {
+  color: var(--ui-danger);
+}
+
+/* Phase 3c-Q: .sn2-detail-* はクラス名を維持しつつ --ui-* トークン経由に書き直し (ui-design-system-spec-v2.md §3.2) */
+.sn2-detail-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--ui-space-4) var(--ui-space-5); border-bottom: 1px solid var(--ui-border);
+}
+.sn2-detail-add-btn {
+  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg-control); color: var(--ui-fg-default); font-size: var(--ui-font-12); cursor: pointer;
+}
+.sn2-detail-add-btn:hover { background: var(--ui-bg-control-hover); }
+
+/* ツールバー */
+.sn2-detail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px; /* トークン外: 2/4px の中間値を維持 */
+  padding: var(--ui-space-2) var(--ui-space-4);
+  border-top: 1px solid var(--ui-border);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.sn2-detail-bulk-sep { color: var(--ui-fg-muted); opacity: 0.3; margin: 0 var(--ui-space-1); }
+.sn2-detail-bulk-count { font-size: var(--ui-font-11); color: var(--ui-fg-muted); }
+
+/* DB読み込みボタン */
+.sn2-detail-db-btn {
+  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-11); cursor: pointer;
+}
+.sn2-detail-db-btn:hover { background: var(--ui-bg-control-hover); }
+
+/* 設定セクション */
+.sn2-detail-settings {
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border-bottom: 1px solid var(--ui-border);
+  display: flex; flex-direction: column; gap: var(--ui-space-3);
+}
+.sn2-detail-settings-row {
+  display: flex; align-items: center; gap: var(--ui-space-3); flex-wrap: wrap;
+}
+.sn2-detail-settings-row--center { align-items: center; }
+.sn2-detail-settings-row--nowrap { flex-wrap: nowrap; }
+.sn2-detail-settings-label {
+  font-size: var(--ui-font-11); color: var(--ui-fg-muted); white-space: nowrap;
+}
+.sn2-detail-settings-input {
+  width: 48px; padding: var(--ui-space-1) var(--ui-space-3);
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-12); outline: none; text-align: center;
+}
+.sn2-detail-settings-input:focus { border-color: var(--ui-accent); }
+.sn2-detail-settings-select {
+  padding: var(--ui-space-1) var(--ui-space-2); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-11);
+}
+.sn2-detail-settings--spaced { margin-top: var(--ui-space-4); }
+.sn2-detail-theme-banner {
+  padding: 6px var(--ui-space-4);
+  margin: var(--ui-space-2) 0;
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
+  background: var(--ui-bg-control);
+  border-left: 3px solid var(--ui-accent);
+  border-radius: var(--ui-radius-xs);
+}
+.sn2-detail-theme-range { min-width: 120px; flex: 1; }
+.sn2-detail-theme-range-value { width: 48px; text-align: right; justify-content: flex-end; }
+.sn2-detail-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+}
+.sn2-detail-settings-input--status-name { width: 96px; }
+
+/* キャラリスト */
+.sn2-detail-list { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: var(--ui-space-2) 0; }
+.sn2-detail-list .sn2-detail-toolbar { position: sticky; left: 0; }
+.sn2-detail-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--ui-bg-surface);
+}
+
+.sn2-detail-item {
+  cursor: default;
+}
+.sn2-detail-item > td {
+  vertical-align: middle;
+}
+.sn2-detail-item:hover { background: var(--ui-bg-control); }
+.sn2-detail-item.selected { background: var(--ui-bg-selected); }
+.sn2-detail-item.sn2-dragging { opacity: 0.4; }
+.sn2-detail-item.sn2-drop-above { border-top: var(--sn2-drop-width, 2px) solid var(--sn2-drop-color, var(--ui-accent)); }
+.sn2-detail-item.sn2-drop-below { border-bottom: var(--sn2-drop-width, 2px) solid var(--sn2-drop-color, var(--ui-accent)); }
+/* デフォルトタイプ行（役割が空の行のスタイル供給元、末尾固定） */
+.sn2-detail-item.sn2-detail-default { border-top: var(--ui-active-width) solid var(--ui-border); background: var(--ui-bg-panel); }
+.sn2-detail-item.sn2-detail-default:hover { background: var(--ui-bg-control); }
+
+/* チェックボックス */
+.sn2-detail-check { opacity: 0; transition: opacity 0.15s; }
+.sn2-detail-item:hover .sn2-detail-check,
+.sn2-detail-item.selected .sn2-detail-check { opacity: 1; }
+/* ホバー/選択時は枠線を強調（行のホバー背景に溶けて視認できないため） */
+.sn2-detail-item:hover .sn2-detail-check:not(:checked):not(:disabled),
+.sn2-detail-item.selected .sn2-detail-check:not(:checked):not(:disabled) {
+  border-color: var(--ui-fg-muted);
+}
+
+.sn2-detail-handle { cursor: grab; color: var(--ui-fg-muted); font-size: var(--ui-font-14); opacity: 0.4; user-select: none; padding: 0 var(--ui-space-1); }
+.sn2-detail-handle:hover { opacity: 1; }
+
+/* 行セットタブ */
+.sn2-rowset-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ui-bg-panel);
+}
+.sn2-rowset-title {
+  font-size: var(--ui-font-13);
+  font-weight: var(--ui-weight-semibold);
+  line-height: 1.2;
+  color: var(--ui-fg-default);
+}
+.sn2-rowset-preset-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-5);
+  border-bottom: 1px solid var(--ui-border);
+  flex-wrap: wrap;
+}
+.sn2-rowset-preset-select {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.sn2-rowset-list-label {
+  padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-2);
+  font-weight: var(--ui-weight-semibold);
+  line-height: 1.2;
+}
+.sn2-rowset-list-wrap {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--ui-space-4);
+}
+.sn2-rowset-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+}
+.sn2-rowset-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-h-sm);
+  padding: 3px var(--ui-space-2);
+  border-radius: var(--ui-radius-xs);
+  box-sizing: border-box;
+}
+.sn2-rowset-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-h-xs);
+  min-width: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  padding: 0;
+}
+.sn2-rowset-role-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sn2-rowset-delete-row {
+  flex-shrink: 0;
+  color: var(--ui-fg-muted);
+}
+.sn2-rowset-delete-row:hover {
+  color: var(--ui-fg-default);
+}
+.sn2-rowset-add-row {
+  align-self: flex-start;
+  margin: var(--ui-space-2) var(--ui-space-5);
+}
+.sn2-rowset-exec-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border-top: 1px solid var(--ui-border);
+  flex-wrap: wrap;
+}
+.sn2-rowset-repeat-label {
+  line-height: 1.2;
+}
+.sn2-rowset-panel .sn2-rowset-repeat-input {
+  width: 56px;
+  text-align: center;
+}
+.sn2-rowset-save-modal {
+  min-width: min(320px, calc(100vw - 24px));
+}
+.sn2-rowset-save-body {
+  padding: var(--ui-space-5) var(--ui-space-6);
+}
+.sn2-rowset-save-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+}
+.sn2-rowset-save-actions {
+  display: flex;
+  gap: var(--ui-space-4);
+  justify-content: flex-end;
+  padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-6);
+}
+
+/* 色スウォッチコンテナ（中身は gb-fmt-swatch-bg / gb-fmt-swatch-fg に統合済み、E-2 フェーズ 2026-04-16） */
+.sn2-detail-swatches { display: flex; gap: var(--ui-space-1); }
+
+.sn2-detail-name {
+  flex: 1; min-width: 0; padding: var(--ui-space-1) var(--ui-space-3);
+  border: 1px solid transparent; border-radius: var(--ui-radius-xs);
+  background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-13); outline: none;
+}
+.sn2-detail-name:focus { border-color: var(--ui-border); background: var(--ui-bg-app); }
+
+.sn2-detail-kind-sel {
+  width: 64px; padding: 1px var(--ui-space-1); /* width は種別セレクト用の特殊寸法 */
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app); color: var(--ui-fg-muted); font-size: var(--ui-font-11);
+}
+
+/* .sn2-detail-fmt / .sn2-detail-fmt-btn は gb-fmt-btn に統合済み（E-2 フェーズ 2026-04-16） */
+.sn2-detail-fmt { display: flex; gap: 1px; }
+
+.sn2-detail-actions { display: flex; gap: var(--ui-space-1); margin-left: auto; }
+.sn2-detail-act-btn {
+  padding: var(--ui-space-1) var(--ui-space-3); border: none; border-radius: var(--ui-radius-xs);
+  background: transparent; color: var(--ui-fg-muted); font-size: var(--ui-font-11); cursor: pointer;
+}
+.sn2-detail-act-btn:hover { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); }
+.sn2-detail-act-del:hover { color: var(--ui-danger); }
+
+/* ==============================
+   Phase 3c-R: 詳細パネル インライン style 削減用 クラス群
+   （ui-design-system-spec-v2.md §10.1）
+   ============================== */
+
+/* 詳細パネル本体のテーブルとセル */
+.sn2-detail-table {
+  border-collapse: collapse; width: 100%;
+  font-size: var(--ui-font-12); table-layout: fixed;
+}
+.sn2-detail-th-ctrl {
+  border-bottom: 1px solid var(--ui-border);
+  padding: var(--ui-space-2) 2px;
+}
+.sn2-detail-th-col {
+  padding: var(--ui-space-2) 2px;
+  text-align: center;
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+  border-bottom: 1px solid var(--ui-border);
+  border-left: 1px solid var(--ui-border);
+  cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.sn2-detail-th-info {
+  border-bottom: 1px solid var(--ui-border);
+  border-left: 1px solid var(--ui-border);
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+  text-align: center;
+  padding: var(--ui-space-2) 2px;
+  white-space: nowrap;
+}
+.sn2-detail-td-ctrl {
+  padding: 2px;
+  border-bottom: 1px solid var(--ui-border);
+  vertical-align: middle;
+  white-space: nowrap;
+  text-align: center;
+}
+.sn2-detail-td-cell {
+  padding: 2px;
+  border-bottom: 1px solid var(--ui-border);
+  border-left: 1px solid var(--ui-border);
+  position: relative;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.sn2-detail-td-info {
+  padding: 2px 3px;
+  border-bottom: 1px solid var(--ui-border);
+  border-left: 1px solid var(--ui-border);
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.sn2-detail-td-cell > .sn2-detail-cell-preview,
+.sn2-detail-td-cell > .sn2-detail-cell-label {
+  padding: 3px 4px;
+  box-sizing: border-box;
+  font-size: var(--ui-font-12);
+  height: 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sn2-detail-cell-label {
+  line-height: 24px;
+  text-align: center;
+  font-style: italic;
+  cursor: pointer;
+}
+.sn2-detail-cell-input {
+  border: none;
+  width: 100%;
+  padding: 3px 4px;
+  box-sizing: border-box;
+  font-size: var(--ui-font-12);
+  outline: none;
+  height: 30px;
+  line-height: 30px;
+}
+/* セル内 書式設定「…」ボタン: ホバー時に表示 */
+.sn2-detail-cell-fmt-btn {
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--ui-font-10);
+  padding: 0 3px;
+  background: var(--ui-bg-control-hover);
+  color: var(--ui-fg-muted);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+  display: none;
+  z-index: 2;
+  line-height: 1.2;
+}
+.sn2-detail-td-cell:hover > .sn2-detail-cell-fmt-btn { display: block; }
+
+/* ツールバー右寄せスペーサー */
+.sn2-detail-toolbar-spacer { flex: 1; }
+
+/* ネイティブカラーピッカーのフォールバック用 隠し input */
+.sn2-hidden-color-input {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* チェックボックス隣のドラッグハンドル（テキストだけの記号） */
+.sn2-detail-handle-inline {
+  cursor: grab;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  margin-left: 2px;
+}
+
+/* オプションボタン */
+.sn2-detail-opt-btn {
+  width: auto;
+  min-width: 64px;
+  max-width: 100%;
+  font-size: var(--ui-font-11);
+  padding: 1px var(--ui-space-3);
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.sn2-detail-opt-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-content: center;
+}
+
+/* スタイルポップアップ（_showCellStylePopup / _showColBulkPopup /
+   _showBulkEditPopup / _showRoleOptionsPopup 共通）の定義は
+   gb-format-popup.css の .gb-fmt-popup 系に移行済み（E-2 フェーズ 2026-04-16） */
+
+/* ================================
+   テーマパネル
+   ================================ */
+
+/* 2026-04-17: detail-panel-section-unification-plan.md に基づき、下線方式からアクセントバー方式に統一 */
+.sn2-detail-theme-section {
+  padding: 0 var(--ui-space-5);
+  margin-top: var(--ui-space-5);
+}
+.sn2-detail-theme-section:first-child { margin-top: 0; }
+.sn2-detail-theme-section > *:not(.sn2-detail-theme-section-title) { margin-left: 1em; }
+.sn2-detail-theme-section-title {
+  font-size: var(--ui-font-11);
+  font-weight: 600;
+  color: var(--ui-fg-default);
+  border-left: 2px solid var(--ui-accent);
+  padding-left: var(--ui-space-3);
+  line-height: 1.2;
+  margin-bottom: var(--ui-space-2);
+}
+.sn2-detail-theme-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  flex-wrap: wrap;
+}
+.sn2-detail-theme-row + .sn2-detail-theme-row {
+  margin-top: var(--ui-space-2);
+}
+.sn2-detail-theme-swatch {
+  width: 20px; height: 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+}
+.sn2-detail-theme-num-sm {
+  width: 52px;
+  font-size: var(--ui-font-10);
+  padding: 1px 3px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-num-md {
+  width: 60px;
+  font-size: var(--ui-font-10);
+  padding: 1px 3px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-label {
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+}
+.sn2-detail-theme-label--spaced {
+  margin-left: var(--ui-space-2);
+}
+.sn2-detail-theme-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-header-strong {
+  font-weight: 600;
+  font-size: var(--ui-font-13);
+}
+.sn2-detail-theme-section--autocolor {
+  /* 2026-04-17: アクセントバー統一方針に合わせて上側の罫線を削除 */
+}
+
+/* 列間枠線UI（renderThemePanel 内） */
+.sn2-detail-colborder-lbl {
+  padding: 2px 4px;
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  white-space: nowrap;
+}
+.sn2-detail-colborder-cb {
+  margin: 0 1px;
+  cursor: pointer;
+  accent-color: var(--ui-selection-bg, var(--blue, #4a90d9));
+}
+.sn2-detail-colborder-hit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  cursor: pointer;
+}
+.sn2-detail-colborder-ui {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-size: var(--ui-font-11);
+  flex-wrap: wrap;
+}
+
+/* DB 読み込みモーダル内 */
+.sn2-db-import-modal {
+  min-width: 400px;
+  max-width: 600px;
+}
+.sn2-db-import-body {
+  min-height: 200px;
+  max-height: 400px;
+  overflow: auto;
+}
+.sn2-db-import-group { margin-bottom: var(--ui-space-4); }
+.sn2-db-import-group-label {
+  font-weight: 600;
+  padding: var(--ui-space-2) 0;
+}
+.sn2-db-import-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding: 2px var(--ui-space-4);
+  cursor: pointer;
+}
+.sn2-db-import-tree { font-size: var(--ui-font-13); }
+.sn2-db-import-selected {
+  padding: var(--ui-space-4);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+
+/* _showBulkEditPopup 内の補助クラス */
+.sn2-bulk-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-4);
+}
+.sn2-bulk-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  font-size: var(--ui-font-11);
+}
+.sn2-bulk-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.sn2-bulk-input-num {
+  width: 48px;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  text-align: center;
+}
+.sn2-bulk-input-num--sm { width: 40px; }
+.sn2-bulk-input-text {
+  flex: 1;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+}
+.sn2-bulk-sel {
+  font-size: var(--ui-font-11);
+  padding: 1px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-bulk-section-divider {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-2);
+  margin-top: var(--ui-space-2);
+}
+.sn2-bulk-section-title {
+  font-size: var(--ui-font-10);
+  font-weight: 600;
+  color: var(--ui-fg-muted);
+  margin-bottom: var(--ui-space-2);
+}
+.sn2-bulk-apply-row {
+  margin-top: var(--ui-space-2);
+  display: flex;
+  gap: var(--ui-space-2);
+  justify-content: flex-end;
+}
+
+/* _showRoleOptionsPopup 内の補助クラス */
+.sn2-role-opts-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+}
+.sn2-role-opts-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  font-size: var(--ui-font-11);
+}
+.sn2-role-opts-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  /* ポップアップ幅半減（2026-07-17）に伴い、説明文などは折り返して表示する */
+  flex-wrap: wrap;
+}
+.sn2-role-opts-row--top {
+  margin-top: var(--ui-space-2);
+}
+.sn2-role-opts-row--wrap {
+  flex-wrap: wrap;
+}
+.sn2-role-opts-divider {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-3);
+}
+.sn2-role-opts-gutter-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+}
+.sn2-role-opts-gutter-settings .sn2-detail-add-btn {
+  min-width: 88px;
+}
+.sn2-role-opts-divider-flex {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-3);
+  display: flex;
+  gap: var(--ui-space-2);
+}
+.sn2-role-opts-check-lbl {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+.sn2-role-opts-hint {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+}
+.sn2-role-opts-field-label {
+  color: var(--ui-fg-muted);
+  width: 72px;
+}
+.sn2-role-opts-input-num {
+  width: 48px;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  text-align: center;
+}
+.sn2-role-opts-input-num--sm { width: 36px; }
+.sn2-role-opts-sel {
+  font-size: var(--ui-font-11);
+  padding: 1px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+/* .sn2-role-opts-swatch-sm は gb-fmt-swatch--sm に移行済み（E-2 フェーズ 2026-04-16） */
+.sn2-role-opts-flex1 { flex: 1; }
+.sn2-role-opts-del { color: var(--ui-danger); }
+.sn2-role-opts-unit {
+  color: var(--ui-fg-muted);
+}
+.sn2-role-opts-sep {
+  color: var(--ui-fg-muted);
+  margin-left: var(--ui-space-2);
+}
+
+/* 設定テーブル内 swatch サイズ 16x16 は gb-fmt-swatch--xs に移行済み（E-2 フェーズ 2026-04-16） */
+
+/* 設定行内 label 幅 48px（mkCountRow） */
+.sn2-detail-settings-label--w48 { width: 48px; }
+.sn2-detail-settings-label--mr2 { margin-right: 2px; }
+.sn2-detail-settings-label--ml0 { margin-left: 0; }
+.sn2-detail-settings-input--w56 { width: 56px; }
+.sn2-detail-settings-input--w48 { width: 48px; }
+.sn2-detail-settings-input--w36 { width: 36px; }
+.sn2-detail-settings-input--w28 { width: 28px; }
+.sn2-detail-ac-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-ac-settings-label {
+  text-align: center;
+  flex: 1;
+  font-size: var(--ui-font-10);
+}
+.sn2-detail-ac-select {
+  font-size: var(--ui-font-10);
+  flex: 1;
+  min-width: 0;
+}
+
+/* ==============================
+   gb-scenario.css から抽出: 台本エディタ共有スタイル
+   ============================== */
+
+/* .gb-se-root 基本レイアウト（台本エディタのルートコンテナ） */
+.gb-se-root {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
+  font-family: var(--ui-font,
+    'Noto Sans JP',
+    -apple-system, BlinkMacSystemFont,
+    'Hiragino Sans', 'ヒラギノ角ゴシック',
+    'Segoe UI', 'Yu Gothic UI', 'Meiryo',
+    'Noto Sans CJK JP',
+    Roboto, 'Helvetica Neue', Arial, sans-serif);
+  font-size: 15px;
+}
+
+/* #se-toolbar: z-index を .gb-toolbar(20) より上に */
+#se-toolbar { z-index: 30; }
+.sn2-toolbar-layout-select {
+  max-width: 160px;
+}
+.sn2-toolbar-filter-preset {
+  max-width: 140px;
+}
+
+/* タイトル入力欄。2026-04-18: 他アプリのツールバーと同じ .tb-title 標準（12px / weight 600 / padding 0 6px）に統一
+   2026-04-24: .tb-file-title 固定幅 240px に統一（他アプリと揃える・入力開始時の幅変動を防ぐ）*/
+#se-toolbar .title-input {
+  background: transparent; border: 1px solid transparent; color: var(--ui-fg-default);
+  font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold);
+}
+#se-toolbar .title-input:focus { background: var(--ui-bg-app); border-color: var(--ui-accent); outline: none; border-radius: var(--ui-radius-xs); }
+
+.sn2-preset-modal {
+  min-width: 320px;
+  max-width: min(92vw, 420px);
+}
+.sn2-preset-manager-modal {
+  min-width: 420px;
+  max-width: min(92vw, 520px);
+}
+.sn2-preset-modal-body,
+.sn2-preset-manager-body {
+  padding: var(--ui-space-5) var(--ui-space-6);
+}
+.sn2-preset-modal-body {
+  display: block;
+}
+.sn2-preset-manager-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-5);
+}
+.sn2-preset-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+.sn2-preset-name {
+  box-sizing: border-box;
+  width: 100%;
+}
+.sn2-toolbar-modal-select {
+  box-sizing: border-box;
+  width: 100%;
+}
+.sn2-preset-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ui-space-4);
+  padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-6);
+}
+.sn2-preset-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  max-height: min(54vh, 420px);
+  overflow: auto;
+}
+.sn2-preset-manager-empty {
+  padding: var(--ui-space-5);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+}
+.sn2-preset-manager-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ui-space-4);
+  align-items: center;
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: transparent;
+}
+.sn2-preset-manager-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-preset-manager-tools {
+  display: flex;
+  gap: var(--ui-space-2);
+}
+.sn2-preset-manager-btn--delete {
+  color: var(--ui-danger);
+}
+.sn2-preset-manager-btn--delete:hover {
+  border-color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger) 14%, transparent);
+}
+
+.sn2-sep-modal {
+  min-width: 350px;
+  max-width: min(92vw, 520px);
+}
+.sn2-sep-range-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-4);
+  margin: var(--ui-space-2) 0;
+}
+.sn2-sep-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  cursor: pointer;
+  font-size: var(--ui-font-13);
+  color: var(--ui-fg-default);
+}
+.modal .sn2-sep-choice {
+  margin-bottom: 0;
+}
+.sn2-sep-choice input[type="checkbox"],
+.sn2-sep-choice input[type="radio"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+}
+.sn2-sep-help {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-13);
+  margin: var(--ui-space-4) 0;
+  line-height: 1.45;
+}
+.sn2-sep-status {
+  display: none;
+  margin: var(--ui-space-4) 0;
+  padding: var(--ui-space-3);
+  min-height: 1.4em;
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-panel);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-13);
+}
+.sn2-sep-stop-btn,
+.sn2-sep-running-stop {
+  background: var(--ui-danger, var(--red));
+  color: var(--ui-fg-strong);
+  border-color: var(--ui-danger, var(--red));
+  font-weight: var(--ui-weight-semibold);
+}
+.sn2-sep-running-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.78);
+  color: var(--ui-fg-strong);
+}
+.sn2-sep-running-box {
+  box-sizing: border-box;
+  min-width: 340px;
+  max-width: 560px;
+  padding: 28px 32px;
+  border: 2px solid var(--ui-danger, var(--red));
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-bg-surface);
+  box-shadow: var(--ui-shadow-lg);
+  color: var(--ui-fg-default);
+  text-align: center;
+}
+.sn2-sep-running-title {
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-danger, var(--red));
+  font-size: var(--ui-font-18);
+  font-weight: var(--ui-weight-bold);
+}
+.sn2-sep-running-warning {
+  margin: var(--ui-space-2) 0 var(--ui-space-5);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-14);
+  line-height: 1.5;
+}
+.sn2-sep-running-status {
+  min-height: 1.4em;
+  margin: var(--ui-space-5) 0;
+  padding: var(--ui-space-4);
+  border-radius: var(--ui-radius-xs);
+  background: color-mix(in srgb, var(--ui-fg-strong) 8%, transparent);
+  font-size: var(--ui-font-14);
+}
+.sn2-sep-running-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--ui-space-3);
+}
+.sn2-sep-running-stop {
+  min-width: 88px;
+  min-height: 36px;
+  padding: var(--ui-space-2) var(--ui-space-7);
+  border: 1px solid var(--ui-danger, var(--red));
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+  font-size: var(--ui-font-14);
+}
+.sn2-clipstudio-copy-buffer {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sn2-col-style-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.sn2-col-style-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.sn2-col-style-reset {
+  margin-left: auto;
+}
+.sn2-col-style-reset svg {
+  pointer-events: none;
+}
+.sn2-col-style-note {
+  color: var(--fg2);
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.sn2-save-as-modal {
+  box-sizing: border-box;
+  width: min(520px, calc(100vw - 32px));
+  min-width: min(360px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+}
+.sn2-save-as-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
+  padding: var(--ui-space-6);
+}
+.sn2-save-field {
+  min-width: 0;
+}
+.sn2-save-name-input {
+  width: 100%;
+}
+.sn2-save-folder-display {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  text-align: left;
+}
+.sn2-dialog-touch-target,
+.sn2-dialog-touch-choice {
+  /* Tablet互換表示の0.9倍描画後も44px以上を確保する。 */
+  min-height: 49px !important;
+}
+.sn2-dialog-touch-button {
+  min-width: 49px !important;
+}
+.sn2-dialog-touch-choice {
+  display: flex;
+  align-items: center;
+}
+.sn2-save-folder-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-save-folder-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  color: var(--ui-fg-muted);
+  flex: 0 0 auto;
+}
+.sn2-save-folder-tree {
+  display: none;
+  max-height: 200px;
+  margin-top: var(--ui-space-2);
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg-app);
+}
+.sn2-save-folder-tree.is-open {
+  display: block;
+}
+.sn2-save-folder-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-height: 30px;
+  padding: var(--ui-space-1) var(--ui-space-2);
+  padding-left: calc(var(--ui-space-2) + (var(--sn2-save-folder-depth, 0) * 16px));
+  box-sizing: border-box;
+}
+.sn2-save-folder-toggle,
+.sn2-save-folder-toggle-spacer {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+.sn2-save-folder-toggle-spacer {
+  display: inline-block;
+}
+.sn2-save-folder-select {
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-fg-default);
+}
+.sn2-save-folder-select:hover {
+  border-color: var(--ui-border);
+}
+.sn2-save-folder-row.is-selected .sn2-save-folder-select {
+  color: var(--ui-fg-strong);
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+.sn2-save-folder-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  min-width: 16px;
+  color: currentColor;
+}
+.sn2-save-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-save-folder-status {
+  padding: var(--ui-space-3);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  line-height: 1.35;
+}
+.sn2-save-folder-status.is-error {
+  color: var(--ui-danger);
+}
+.sn2-save-as-actions {
+  flex-wrap: wrap;
+}
+
+.sn2-column-options-modal,
+.sn2-column-options-modal-body,
+.sn2-column-options-body,
+.sn2-column-options-field,
+.sn2-column-options-input,
+.sn2-save-as-modal,
+.sn2-save-as-body,
+.sn2-save-as-content,
+.sn2-save-field,
+.sn2-save-name-input,
+.sn2-save-folder-display,
+.sn2-save-as-actions {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.sn2-column-options-modal-body,
+.sn2-column-options-body,
+.sn2-column-options-field,
+.sn2-column-options-input,
+.sn2-save-as-body,
+.sn2-save-as-content,
+.sn2-save-field,
+.sn2-save-name-input,
+.sn2-save-folder-display,
+.sn2-save-as-actions {
+  width: 100%;
+}
+.sn2-column-options-body,
+.sn2-column-options-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.sn2-column-options-input {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.sn2-column-options-modal > .gb-modal-footer,
+.sn2-save-as-modal > .gb-modal-footer {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.sn2-column-options-modal > .gb-modal-footer > .gb-btn,
+.sn2-save-as-modal > .gb-modal-footer > .gb-btn {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .sn2-column-options-modal,
+  .sn2-save-as-modal,
+  .sn2-save-as-body,
+  .sn2-save-as-content,
+  .sn2-save-field,
+  .sn2-save-name-input,
+  .sn2-save-folder-display {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .sn2-save-as-content,
+  .sn2-save-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sn2-column-options-modal,
+  .sn2-save-as-modal {
+    width: min(100%, calc((100vw - 16px) / var(--meldex-ui-zoom, 1))) !important;
+    max-width: min(100%, calc((100vw - 16px) / var(--meldex-ui-zoom, 1))) !important;
+  }
+  .sn2-column-options-modal > .gb-modal-footer,
+  .sn2-save-as-modal > .gb-modal-footer {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, max-content)) !important;
+    justify-content: end !important;
+    width: 100% !important;
+    padding-right: 16px !important;
+    padding-left: 16px !important;
+  }
+  .sn2-column-options-modal > .gb-modal-footer > .gb-btn,
+  .sn2-save-as-modal > .gb-modal-footer > .gb-btn {
+    width: auto;
+    min-width: 49px;
+  }
+}
+
+.sn2-column-modal-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.sn2-column-modal-fields > .field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+.sn2-column-modal-fields > .field:first-child,
+.sn2-column-modal-fields > [data-column-options-wrap] {
+  grid-column: 1 / -1;
+}
+.sn2-column-modal-fields input,
+.sn2-column-modal-fields select,
+.sn2-column-modal-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  #se-toolbar {
+    box-sizing: border-box;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  #se-toolbar .tb-icon-btn,
+  #se-toolbar .tb-text-btn,
+  #se-toolbar .tb-select,
+  #se-toolbar .title-input {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  #se-toolbar .tb-icon-btn {
+    width: 44px;
+    min-width: 44px;
+  }
+  #se-toolbar .tb-text-btn {
+    padding: 0 12px;
+  }
+  #se-toolbar .title-input {
+    min-width: 180px;
+  }
+  .sn2-preset-modal,
+  .sn2-preset-manager-modal {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .sn2-preset-name,
+  .sn2-toolbar-modal-select,
+  .sn2-preset-modal-actions .gb-btn,
+  .sn2-preset-manager-add,
+  .sn2-preset-manager-btn {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-preset-manager-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    padding: var(--ui-space-4);
+  }
+  .sn2-preset-manager-tools {
+    flex-wrap: wrap;
+  }
+  .sn2-preset-manager-btn {
+    min-width: 44px;
+  }
+  .sn2-sep-modal {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .sn2-sep-range-row {
+    gap: var(--ui-space-2);
+  }
+  .sn2-sep-choice {
+    min-height: 44px;
+    min-width: 44px;
+    font-size: 15px;
+  }
+  .sn2-sep-choice input[type="checkbox"],
+  .sn2-sep-choice input[type="radio"] {
+    width: 20px;
+    height: 20px;
+  }
+  .sn2-sep-modal input:not([type="checkbox"]):not([type="radio"]),
+  .sn2-sep-modal button,
+  .sn2-sep-running-stop {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-sep-modal .btn-row {
+    flex-wrap: wrap;
+  }
+  .sn2-sep-modal .btn-row button {
+    min-width: 88px;
+  }
+  .sn2-sep-help,
+  .sn2-sep-status {
+    font-size: 14px;
+  }
+  .sn2-sep-running-overlay {
+    align-items: center;
+    padding: 12px;
+  }
+  .sn2-sep-running-box {
+    min-width: 0;
+    width: min(100%, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    padding: 20px;
+  }
+  .sn2-sep-running-title {
+    font-size: 17px;
+  }
+  .sn2-sep-running-actions {
+    margin-top: var(--ui-space-4);
+  }
+  .sn2-header-popup {
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    padding: 6px;
+  }
+  .sn2-ruby-popup {
+    width: min(360px, calc(100vw - 16px));
+    min-width: 0;
+    padding: 8px;
+  }
+  .sn2-ruby-popup-title {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .sn2-ruby-popup-main,
+  .sn2-ruby-popup-options {
+    gap: 8px;
+  }
+  .sn2-ruby-popup-input {
+    flex: 1 1 auto; /* タッチ環境は操作面を優先して幅いっぱいに戻す */
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-ruby-popup .gb-btn {
+    min-height: 44px;
+  }
+  .sn2-ruby-popup-check {
+    min-height: 44px;
+    padding: 0 4px;
+  }
+  .sn2-ruby-popup-check input[type="checkbox"] {
+    --gb-checkbox-size-override: 22px;
+  }
+  .sn2-ruby-popup-auto {
+    min-width: 44px;
+  }
+  .sn2-header-popup-item {
+    align-items: center;
+    display: flex;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+  .sn2-header-popup-label {
+    font-size: 12px;
+    padding: 8px 10px 4px;
+  }
+  .sn2-header-popup-sep {
+    margin: 4px 0;
+  }
+  .sn2-col-resizer {
+    width: 12px;
+    margin: 0 -6px;
+    min-height: 44px;
+    touch-action: none;
+  }
+  .sn2-col-resizer::before {
+    content: "";
+    position: absolute;
+    inset: 0 -16px;
+  }
+  .sn2-header-vertical .sn2-col-resizer {
+    width: auto;
+    height: 12px;
+    min-width: 44px;
+    margin: -6px 0;
+  }
+  .sn2-header-vertical .sn2-col-resizer::before {
+    inset: -16px 0;
+  }
+  .sn2-filter-all-row,
+  .sn2-filter-row {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+  .sn2-filter-grid-header,
+  .sn2-filter-row {
+    grid-template-columns: 44px 44px minmax(0, 1fr);
+  }
+  .sn2-filter-grid-header {
+    padding: 4px 10px 6px;
+    font-size: 11px;
+  }
+  .sn2-filter-checkbox {
+    width: 22px;
+    height: 22px;
+  }
+  .sn2-filter-checkbox-cell {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .sn2-header-popup input:not([type="checkbox"]):not([type="radio"]),
+  .sn2-header-popup select,
+  .sn2-header-popup textarea,
+  .sn2-header-popup button.primary,
+  .sn2-header-popup .meldex-dropdown-close-btn {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-header-popup .meldex-dropdown-close-btn {
+    min-width: 44px;
+  }
+  .sn2-header-sub-popup {
+    max-width: calc(100vw - 16px);
+  }
+  .sn2-role-menu {
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    padding: 6px;
+  }
+  .sn2-role-menu .sn2-role-item,
+  .sn2-role-menu .sn2-role-input,
+  .sn2-role-menu .sn2-role-link,
+  .sn2-role-menu .meldex-dropdown-close-btn {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-role-menu .meldex-dropdown-close-btn {
+    min-width: 44px;
+  }
+  .sn2-search-popup {
+    box-sizing: border-box;
+    min-width: min(320px, calc(100vw - 16px)) !important;
+  }
+  .sn2-search-popup .meldex-dropdown-close-btn {
+    min-width: 44px;
+  }
+  .gb-fmt-popup--col-style {
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+  .gb-fmt-popup--col-style .gb-fmt-btn,
+  .gb-fmt-popup--col-style .gb-fmt-swatch,
+  .gb-fmt-popup--col-style .gb-fmt-num,
+  .gb-fmt-popup--col-style .meldex-dropdown-close-btn {
+    min-height: 44px;
+  }
+  .gb-fmt-popup--col-style .gb-fmt-btn,
+  .gb-fmt-popup--col-style .gb-fmt-swatch,
+  .gb-fmt-popup--col-style .meldex-dropdown-close-btn {
+    min-width: 44px;
+  }
+  .gb-fmt-popup--bulk-edit,
+  .gb-fmt-popup--role-opts,
+  .gb-fmt-popup--colbulk,
+  .gb-fmt-popup--cell-style {
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+  .gb-fmt-popup--bulk-edit .sn2-bulk-row,
+  .gb-fmt-popup--role-opts .sn2-role-opts-row,
+  .gb-fmt-popup--role-opts .sn2-role-opts-divider-flex {
+    min-height: 44px;
+    flex-wrap: wrap;
+  }
+  .gb-fmt-popup--bulk-edit label,
+  .gb-fmt-popup--role-opts label {
+    min-height: 44px;
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .gb-fmt-popup--bulk-edit .sn2-bulk-input-num,
+  .gb-fmt-popup--bulk-edit .sn2-bulk-input-text,
+  .gb-fmt-popup--bulk-edit .sn2-bulk-sel,
+  .gb-fmt-popup--bulk-edit .sn2-detail-add-btn,
+  .gb-fmt-popup--role-opts .sn2-role-opts-input-num,
+  .gb-fmt-popup--role-opts .sn2-role-opts-sel,
+  .gb-fmt-popup--role-opts .sn2-detail-add-btn {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-detail-settings {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .sn2-detail-settings-row {
+    align-items: stretch;
+    gap: 8px;
+  }
+  .sn2-detail-settings-row--nowrap {
+    flex-wrap: wrap;
+  }
+  .sn2-detail-settings-label,
+  .sn2-detail-colborder-lbl,
+  .sn2-detail-colborder-hit {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .sn2-detail-settings-label,
+  .sn2-detail-colborder-hit {
+    min-width: 44px;
+  }
+  .sn2-detail-settings input:not([type="checkbox"]):not([type="radio"]),
+  .sn2-detail-settings select,
+  .sn2-detail-settings button,
+  .sn2-detail-settings .gb-fmt-swatch {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-detail-settings button,
+  .sn2-detail-settings .gb-fmt-swatch {
+    min-width: 44px;
+  }
+  .sn2-detail-settings input[type="checkbox"],
+  .sn2-detail-settings input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    margin-right: 8px;
+  }
+  .sn2-detail-colborder-cb {
+    width: 20px;
+    height: 20px;
+    margin: 0;
+  }
+  .sn2-detail-theme-range {
+    flex: 1 1 180px;
+    min-width: min(180px, 100%);
+  }
+  .sn2-detail-theme-range-value {
+    width: auto;
+    min-width: 52px;
+    justify-content: flex-end;
+  }
+  .sn2-detail-toolbar {
+    gap: 6px;
+    padding: 6px 8px;
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+  }
+  .sn2-detail-list .sn2-detail-toolbar {
+    width: calc(100vw - 16px);
+  }
+  .sn2-detail-toolbar-spacer {
+    display: none;
+  }
+  .sn2-detail-add-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px 12px;
+    font-size: 15px;
+    line-height: 1.2;
+  }
+  .sn2-ruby-panel {
+    font-size: 15px;
+    box-sizing: border-box;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+  .sn2-ruby-header-actions {
+    gap: 8px;
+  }
+  .sn2-ruby-settings {
+    gap: 8px;
+    padding: 6px 12px 10px;
+  }
+  .sn2-ruby-section-label {
+    padding: 10px 12px 6px;
+    font-size: 14px;
+  }
+  .sn2-ruby-field {
+    min-height: 44px;
+  }
+  .sn2-ruby-number-input,
+  .sn2-ruby-presentation-control,
+  .sn2-ruby-rule-input {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-ruby-number-input {
+    width: 74px;
+    min-width: 74px;
+  }
+  .sn2-ruby-unit,
+  .sn2-ruby-field-label,
+  .sn2-ruby-rule-arrow {
+    font-size: 14px;
+  }
+  .sn2-ruby-table-wrap {
+    max-height: min(260px, calc(100vh - 360px));
+    padding: 0 8px;
+  }
+  .sn2-ruby-table {
+    font-size: 14px;
+  }
+  .sn2-ruby-table thead tr,
+  .sn2-ruby-file-pos {
+    font-size: 13px;
+  }
+  .sn2-ruby-file-row {
+    height: 44px;
+  }
+  .sn2-ruby-table th,
+  .sn2-ruby-table td {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .sn2-ruby-rule-item {
+    min-height: 44px;
+    padding: 6px 8px;
+    gap: 8px;
+  }
+  .sn2-ruby-panel .sn2-ruby-rule-handle,
+  .sn2-ruby-panel .sn2-ruby-delete-rule {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sn2-ruby-panel .sn2-ruby-delete-rule.gb-btn.gb-btn-icon.gb-btn-xs {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sn2-ruby-btn-icon svg,
+  .sn2-ruby-delete-rule svg {
+    width: 16px;
+    height: 16px;
+  }
+  .sn2-rowset-panel {
+    font-size: 15px;
+  }
+  .sn2-rowset-preset-row,
+  .sn2-rowset-exec-row {
+    gap: 8px;
+    padding: 8px 12px;
+    align-items: stretch;
+  }
+  .sn2-rowset-panel .sn2-rowset-preset-select,
+  .sn2-rowset-panel .sn2-rowset-role-select,
+  .sn2-rowset-panel .sn2-rowset-repeat-input,
+  .sn2-rowset-save-input {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-rowset-list-label {
+    padding: 10px 12px 6px;
+    font-size: 14px;
+  }
+  .sn2-rowset-list-wrap {
+    padding: 0 8px;
+  }
+  .sn2-rowset-item {
+    min-height: 44px;
+    padding: 6px 4px;
+    gap: 8px;
+  }
+  .sn2-rowset-panel .sn2-rowset-handle,
+  .sn2-rowset-panel .sn2-rowset-delete-row {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sn2-rowset-panel .sn2-rowset-delete-row.gb-btn.gb-btn-icon.gb-btn-xs {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sn2-rowset-add-row {
+    margin: 8px 12px;
+  }
+  .sn2-rowset-repeat-label {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    font-size: 14px;
+  }
+  .sn2-rowset-panel .sn2-rowset-repeat-input {
+    width: 72px;
+    min-width: 72px;
+  }
+  .sn2-rowset-save-modal {
+    box-sizing: border-box;
+    min-width: 0;
+    width: min(360px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+  }
+  .sn2-rowset-save-body,
+  .sn2-rowset-save-actions {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .sn2-rowset-save-actions .gb-btn {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-save-as-modal {
+    box-sizing: border-box;
+    min-width: 0;
+    width: min(520px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+  }
+  .sn2-save-as-body,
+  .sn2-save-as-actions {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .sn2-save-as-modal .gb-modal-close,
+  .sn2-save-as-actions .gb-btn,
+  .sn2-save-name-input,
+  .sn2-save-folder-display,
+  .sn2-save-folder-select,
+  .sn2-save-folder-toggle {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-save-as-modal .gb-modal-close,
+  .sn2-save-folder-toggle {
+    min-width: 44px;
+  }
+  .sn2-save-folder-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+    min-height: 44px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  .sn2-save-folder-tree {
+    max-height: min(320px, calc(100dvh - 280px));
+  }
+  .sn2-detail-bulk-count {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .sn2-detail-td-cell {
+    min-height: 44px;
+    padding: 4px;
+    padding-right: 48px;
+  }
+  .sn2-detail-td-cell > .sn2-detail-cell-preview,
+  .sn2-detail-td-cell > .sn2-detail-cell-label {
+    min-height: 44px;
+    height: auto;
+    display: flex;
+    align-items: center;
+    line-height: 1.25;
+    padding: 6px 4px;
+  }
+  .sn2-detail-cell-input {
+    min-height: 44px;
+    height: 44px;
+    line-height: 1.25;
+    font-size: 15px;
+  }
+  .sn2-detail-cell-fmt-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    right: 2px;
+    font-size: 15px;
+  }
+  .sn2-db-import-modal {
+    box-sizing: border-box;
+    min-width: 0;
+    width: min(520px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+  .sn2-db-import-body {
+    max-height: min(420px, calc(100dvh - 180px));
+  }
+  .sn2-db-import-item {
+    min-height: 44px;
+    align-items: center;
+    font-size: 15px;
+  }
+  .sn2-db-import-item input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+  .sn2-db-import-modal .btn-row button {
+    min-height: 44px;
+    min-width: 88px;
+    font-size: 15px;
+  }
+  .sn2-column-modal input:not([type="checkbox"]):not([type="radio"]),
+  .sn2-column-modal select,
+  .sn2-column-modal textarea,
+  .sn2-column-modal button {
+    min-height: 44px;
+    font-size: 15px;
+  }
+}
+
+
+/* キャラ／タイプ分離管理。上下の一覧は互いにスクロール位置を共有しない。 */
+.sn2-role-management {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+  overflow: hidden;
+  gap: 10px;
+  padding: 10px;
+}
+.sn2-role-manage-section {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 150px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg-panel);
+}
+.sn2-role-manage-separator {
+  position: relative;
+  flex: 0 0 10px;
+  min-height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.sn2-role-manage-separator::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  border-top: 2px solid var(--ui-border);
+}
+.sn2-role-manage-separator:hover::before,
+.sn2-role-manage-separator:focus-visible::before { border-color: var(--ui-accent); }
+.sn2-role-manage-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg-surface);
+}
+.sn2-role-manage-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-13);
+  font-weight: var(--ui-weight-semibold);
+}
+.sn2-role-manage-count {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  font-weight: var(--ui-weight-normal);
+}
+.sn2-role-manage-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.sn2-role-manage-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--ui-font-11);
+}
+.sn2-role-manage-table--characters { min-width: 560px; }
+.sn2-role-manage-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg-surface);
+  color: var(--ui-fg-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+.sn2-role-manage-table th { box-sizing: border-box; }
+.sn2-role-manage-format-header { cursor: pointer; }
+.sn2-role-column-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 3;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sn2-role-column-resizer:hover,
+.sn2-role-column-resizer:focus-visible { background: color-mix(in srgb, var(--ui-accent) 35%, transparent); }
+.sn2-role-manage-table td {
+  height: 32px;
+  padding: 3px 5px;
+  border-bottom: 1px solid var(--ui-border);
+  vertical-align: middle;
+}
+.sn2-role-manage-table th:first-child,
+.sn2-role-manage-table td:first-child { width: 32px; padding-inline: 2px; text-align: center; }
+.sn2-role-manage-table th:nth-child(2),
+.sn2-role-manage-table td:nth-child(2) { width: 32px; text-align: center; }
+.sn2-role-manage-table--types th:nth-child(3) { width: 34%; }
+.sn2-role-manage-table--types th:nth-child(4) { width: 36%; }
+.sn2-role-manage-table--types th:last-child { width: 72px; }
+.sn2-role-manage-table--characters th:nth-child(3) { width: 42px; }
+.sn2-role-manage-table--characters th:nth-child(4) { width: 27%; }
+.sn2-role-manage-table--characters th:nth-child(5) { width: 30%; }
+.sn2-role-manage-table--characters th:last-child { width: 72px; }
+.sn2-role-manage-grip {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-fg-muted);
+  cursor: grab;
+  touch-action: none;
+}
+.sn2-role-manage-grip:hover,
+.sn2-role-manage-grip:focus-visible { background: var(--ui-bg-control); color: var(--ui-fg-default); }
+.sn2-role-manage-grip:active { cursor: grabbing; }
+.sn2-role-manage-row:hover { background: var(--ui-bg-control); }
+.sn2-role-manage-row.selected { background: var(--ui-bg-selected); }
+.sn2-role-manage-row.sn2-dragging { opacity: 0.4; }
+.sn2-role-manage-row.sn2-drop-above { box-shadow: inset 0 2px 0 var(--ui-accent); }
+.sn2-role-manage-row.sn2-drop-below { box-shadow: inset 0 -2px 0 var(--ui-accent); }
+.sn2-role-manage-row.is-editing { outline: 1px solid var(--ui-accent); outline-offset: -1px; }
+.sn2-role-manage-name,
+.sn2-role-type-select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-fg-default);
+  font: inherit;
+}
+.sn2-role-manage-name:hover,
+.sn2-role-manage-name:focus,
+.sn2-role-type-select:hover,
+.sn2-role-type-select:focus {
+  border-color: var(--ui-border);
+  background: var(--ui-bg-app);
+  outline: none;
+}
+.sn2-role-manage-name--static {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  color: var(--ui-fg-muted);
+  font: inherit;
+  user-select: none;
+}
+.sn2-role-manage-grip--disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+.sn2-role-manage-row--none {
+  background: color-mix(in srgb, var(--ui-bg-surface) 40%, transparent);
+}
+.sn2-role-name-color {
+  width: 28px;
+  height: 24px;
+  padding: 1px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+}
+.sn2-role-style-preview {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-role-manage-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.sn2-role-manage-actions .sn2-detail-add-btn { min-width: 28px; padding-inline: 6px; }
+.sn2-role-unset-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-warning, #d99a32) 18%, transparent);
+  color: var(--ui-warning, #d99a32);
+  font-size: var(--ui-font-9);
+}
+.sn2-role-manage-empty {
+  padding: 14px !important;
+  color: var(--ui-fg-muted);
+  text-align: center;
+}
+.sn2-role-manage-toolbar {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--ui-border);
+  background: var(--ui-bg-surface);
+}
+.sn2-role-bulk-type {
+  min-width: 132px;
+  max-width: 220px;
+}
+.sn2-role-delete-modal {
+  width: min(520px, calc(100vw - 32px));
+}
+.sn2-role-delete-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.sn2-role-delete-modal .gb-modal-body,
+.sn2-role-delete-body > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.sn2-role-delete-body p,
+.sn2-role-delete-body ul {
+  margin: 0;
+}
+.sn2-role-delete-body ul {
+  max-height: 132px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-left: 22px;
+  color: var(--ui-fg-muted);
+}
+.sn2-role-delete-body li {
+  overflow-wrap: anywhere;
+}
+.sn2-role-delete-field {
+  display: grid;
+  gap: 6px;
+  color: var(--ui-fg-default);
+  font-weight: var(--ui-weight-semibold);
+}
+.sn2-role-delete-field select {
+  width: 100%;
+  min-height: 34px;
+}
+
+
+@media (max-width: 640px), (pointer: coarse) {
+  .sn2-role-management {
+    gap: 10px;
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .sn2-role-manage-section {
+    min-height: 150px;
+  }
+  .sn2-role-manage-header {
+    min-height: 44px;
+    padding: 4px 10px;
+  }
+  .sn2-role-manage-title {
+    font-size: 15px;
+  }
+  .sn2-role-manage-count {
+    font-size: 12px;
+  }
+  .sn2-role-manage-table {
+    font-size: 14px;
+  }
+  .sn2-role-manage-table td {
+    height: 44px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  .sn2-role-manage-table input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+  .sn2-role-manage-name,
+  .sn2-role-type-select,
+  .sn2-role-style-preview,
+  .sn2-role-name-color {
+    min-height: 44px;
+    height: 44px;
+    font-size: 15px;
+  }
+  .sn2-role-name-color {
+    width: 44px;
+  }
+  .sn2-role-manage-grip { width: 44px; height: 44px; }
+  .sn2-role-manage-actions {
+    gap: 4px;
+  }
+  .sn2-role-manage-actions .sn2-detail-add-btn {
+    min-width: 44px;
+    padding-inline: 8px;
+  }
+  .sn2-role-manage-toolbar {
+    width: auto;
+    max-width: none;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .sn2-role-bulk-type {
+    flex: 0 0 170px;
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .sn2-role-delete-modal {
+    width: 100%;
+  }
+  .sn2-role-delete-field select {
+    min-height: 44px;
+    font-size: 15px;
+  }
+}
+
+/* gb-scriptnote-rules.css: シナリオ入力設定タブのレガシーUI補正 */
+
+.rules-fallback-message {
+  padding: var(--ui-space-6);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-13);
+}
+.rules-section {
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border-bottom: 1px solid var(--ui-border);
+  color: var(--ui-fg-default);
+}
+.rules-section-title {
+  margin-bottom: var(--ui-space-2);
+  padding-left: var(--ui-space-3);
+  border-left: 2px solid var(--ui-accent);
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-semibold);
+  line-height: 1.25;
+}
+.rules-section-help,
+.rules-current-body,
+.rules-empty-note,
+.rules-db-caption,
+.rules-page-label {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+}
+.rules-section-help {
+  margin-bottom: var(--ui-space-3);
+  line-height: 1.45;
+}
+.rules-type-row,
+.rules-chara-row,
+.rules-action-row,
+.rules-db-label {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.rules-type-row--top { align-items: flex-start; }
+.rules-type-row--wrap,
+.rules-chara-row,
+.rules-action-row { flex-wrap: wrap; }
+.rules-current-body { line-height: 1.7; }
+.rules-current-name { color: var(--ui-fg-default); }
+.rules-type-label {
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-12);
+  min-width: 0;
+}
+.rules-type-label--fixed {
+  flex: 0 0 auto;
+  min-width: 72px;
+}
+.rules-chara-row {
+  min-height: 28px;
+  padding: 2px 0;
+}
+.rules-page-block {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--ui-border);
+}
+.rules-page-options {
+  padding-left: 22px;
+  gap: var(--ui-space-3);
+}
+.rules-drag-handle {
+  color: var(--ui-fg-muted);
+  cursor: grab;
+  user-select: none;
+}
+.rules-swatch {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+}
+.rules-swatch:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+.rules-swatch-auto {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ui-accent) 50%, transparent);
+}
+.rules-preview {
+  min-width: 64px;
+  padding: 2px var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-12);
+  line-height: 1.3;
+}
+.rules-font-btn,
+.rules-clear,
+.rules-remove,
+.rules-add-btn,
+.rules-secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 22px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+  font-size: var(--ui-font-11);
+  line-height: 1;
+}
+.rules-font-btn,
+.rules-clear,
+.rules-remove {
+  min-width: 22px;
+  padding: 0 var(--ui-space-2);
+  background: transparent;
+  color: var(--ui-fg-default);
+}
+.rules-font-btn--bold { font-weight: var(--ui-weight-bold); }
+.rules-font-btn--italic { font-style: italic; }
+.rules-font-btn.active {
+  border-color: var(--ui-accent);
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+}
+.rules-font-btn:hover,
+.rules-clear:hover,
+.rules-remove:hover,
+.rules-secondary-btn:hover {
+  background: var(--ui-bg-control-hover);
+}
+.rules-remove:hover {
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+}
+.rules-add-btn {
+  padding: var(--ui-space-1) var(--ui-space-4);
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-fg-strong);
+}
+.rules-add-btn:hover {
+  filter: brightness(1.08);
+}
+.rules-secondary-btn {
+  padding: var(--ui-space-1) var(--ui-space-4);
+  background: var(--ui-bg-control);
+  color: var(--ui-fg-default);
+}
+.rules-secondary-btn--stacked {
+  margin: var(--ui-space-2) 0;
+  font-size: var(--ui-font-11);
+}
+.rules-input,
+.rules-chara-name,
+.rules-font-size,
+.rules-mini-select,
+.rules-page-select,
+.rules-page-input {
+  box-sizing: border-box;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-12);
+}
+.rules-input,
+.rules-chara-name {
+  flex: 1 1 120px;
+  min-width: 96px;
+  padding: var(--ui-space-1) var(--ui-space-3);
+}
+.rules-input--compact {
+  font-size: var(--ui-font-11);
+}
+.rules-font-size {
+  width: 48px;
+  padding: 1px var(--ui-space-2);
+}
+.rules-mini-select,
+.rules-page-select {
+  min-width: 92px;
+  padding: var(--ui-space-1) var(--ui-space-2);
+  font-size: var(--ui-font-11);
+}
+.rules-page-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.rules-page-input {
+  padding: var(--ui-space-1) var(--ui-space-2);
+  font-size: var(--ui-font-11);
+}
+.rules-page-input--prefix { width: 54px; }
+.rules-page-input--separator { width: 88px; }
+.rules-page-label--checkbox input {
+  margin: 0;
+}
+.rules-input:focus,
+.rules-chara-name:focus,
+.rules-font-size:focus,
+.rules-mini-select:focus,
+.rules-page-select:focus,
+.rules-page-input:focus {
+  border-color: var(--ui-accent);
+  outline: none;
+}
+.rules-action-row {
+  padding: var(--ui-space-2) 0;
+}
+.rules-db-caption {
+  margin-top: var(--ui-space-2);
+}
+.rules-db-list {
+  max-height: 100px;
+  overflow-y: auto;
+}
+.rules-db-label {
+  min-height: 22px;
+  padding: 1px 0;
+  cursor: pointer;
+}
+.rules-db-check {
+  margin: 0;
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .rules-section {
+    padding: 10px 12px;
+  }
+  .rules-section-title {
+    font-size: 14px;
+  }
+  .rules-section-help,
+  .rules-current-body,
+  .rules-empty-note,
+  .rules-db-caption,
+  .rules-page-label,
+  .rules-type-label {
+    font-size: 14px;
+  }
+  .rules-type-row,
+  .rules-chara-row,
+  .rules-action-row {
+    gap: 8px;
+  }
+  .rules-chara-row,
+  .rules-action-row,
+  .rules-db-label,
+  .rules-page-label {
+    min-height: 44px;
+  }
+  .rules-type-label--fixed {
+    min-width: 76px;
+  }
+  .rules-drag-handle,
+  .rules-swatch,
+  .rules-font-btn,
+  .rules-clear,
+  .rules-remove,
+  .rules-add-btn,
+  .rules-secondary-btn,
+  .rules-mini-select,
+  .rules-font-size,
+  .rules-input,
+  .rules-chara-name,
+  .rules-page-select,
+  .rules-page-input {
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .rules-drag-handle,
+  .rules-swatch,
+  .rules-font-btn,
+  .rules-clear,
+  .rules-remove {
+    min-width: 44px;
+  }
+  .rules-swatch {
+    width: 44px;
+    height: 44px;
+  }
+  .rules-input,
+  .rules-chara-name {
+    flex-basis: 160px;
+    min-width: min(160px, 100%);
+  }
+  .rules-font-size {
+    width: 64px;
+  }
+  .rules-page-options {
+    padding-left: 0;
+  }
+  .rules-page-select {
+    min-width: 132px;
+  }
+  .rules-page-input--prefix {
+    width: 72px;
+  }
+  .rules-page-input--separator {
+    width: 112px;
+  }
+  .rules-db-label input[type="checkbox"],
+  .rules-page-label input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+
+/* gb-scriptnote-text-selection.css: シナリオのセル範囲選択の表示 */
+
+/* 複数行×複数列の矩形選択。タイプ別のインライン背景・枠線より選択状態を優先する。 */
+.sn2-row > [data-col-id].sn2-grid-cell-selected {
+  box-shadow:
+    inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 22%, transparent),
+    inset 0 0 0 1px var(--accent, #4a90d9) !important;
+}
+.sn2-row:hover > [data-col-id].sn2-grid-cell-selected {
+  box-shadow:
+    inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 30%, transparent),
+    inset 0 0 0 1px var(--accent, #4a90d9) !important;
+}
+
+/* 選択中テキストセル: キャラスタイルの背景色を上書きしないよう
+   inset box-shadow でアクセント色（テーマ変数）を薄く敷く */
+.sn2-text.sn2-text-cell-selected {
+  box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 22%, transparent);
+}
+.sn2-row:hover .sn2-text.sn2-text-cell-selected {
+  box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 30%, transparent);
+}

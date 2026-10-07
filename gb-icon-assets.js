@@ -518,6 +518,20 @@
     else if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
     search.focus();
     scheduleInitialRender();
+    if (global.MeldexCloudAssets) {
+      global.MeldexCloudAssets.load('icons').then(() => {
+        allItems = null;
+        renderGrid();
+      }).catch(error => {
+        if (picker.isConnected) {
+          grid.textContent = error.message;
+          const retry = document.createElement('button');
+          retry.textContent = '再試行';
+          retry.onclick = () => { removePicker(); openPicker(options); };
+          grid.appendChild(retry);
+        }
+      });
+    }
 
     closeHandler = (ev) => {
       if (!picker.contains(ev.target) && ev.target !== options.anchorEl) {

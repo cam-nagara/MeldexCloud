@@ -965,6 +965,25 @@
         if (result.ok && route === 'files/download') {
           return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
         }
+        if (result.ok && route === 'files/download_zip') {
+          // Bound a racing folder expansion, and hold the shared queue slot for
+          // the complete body. Never retain a ZIP beyond this read-only snapshot.
+          const reader = result.body.getReader();
+          const chunks = []; let size = 0;
+          try {
+            while (true) {
+              const next = await reader.read();
+              if (next.done) break;
+              size += next.value.length;
+              if (size > 12 * 1024 * 1024) {
+                await reader.cancel();
+                throw new Error('シート一括読込のサイズ上限を超えました');
+              }
+              chunks.push(next.value);
+            }
+          } finally { reader.releaseLock(); }
+          return new Response(new Blob(chunks), { status: result.status, statusText: result.statusText, headers: result.headers });
+        }
         return result;
       }, _isMediaRead(route, arg?.path));
       if (response.ok) {

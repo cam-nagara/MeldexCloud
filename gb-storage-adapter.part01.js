@@ -2,6 +2,22 @@
   let mediaTrimTimer = null;
   let mediaTrimRunning = false;
   let mediaTrimDirty = false;
+  const documentTrims = new Map();
+  function _scheduleDocumentTrim(cache, maxEntries) {
+    if (documentTrims.has(maxEntries)) { documentTrims.get(maxEntries).dirty = true; return; }
+    const job = { dirty: false };
+    documentTrims.set(maxEntries, job);
+    setTimeout(async () => {
+      try {
+        const keys = await cache.keys();
+        for (const key of keys.slice(0, Math.max(0, keys.length - maxEntries))) await cache.delete(key);
+      } catch (_) {}
+      finally {
+        documentTrims.delete(maxEntries);
+        if (job.dirty) _scheduleDocumentTrim(cache, maxEntries);
+      }
+    }, 200);
+  }
   function _scheduleMediaTrim(cache) {
     mediaTrimDirty = true;
     if (mediaTrimTimer !== null || mediaTrimRunning) return;
@@ -1133,6 +1149,105 @@
       }
     }
 
+    // Read-only optimization for flat Markdown sheets. No remote index or format
+    // migration. Accept a ZIP only after per-file Dropbox content_hash validation
+    // and a fresh second listing; otherwise use the ordinary revision-aware reads.
+    async prefetchSheetTexts(relativePath, signal) {
+      const base = _normalizeRelativePath(relativePath);
+      const engine = window.MeldexArchiveZipEngine;
+      const skip = reason => {
+        this._sheetPrefetchResult = reason;
+        if (['zip-member', 'file-size', 'content-hash', 'listing-changed'].includes(reason)) this._forgetMeta(base);
+        return reason;
+      };
+      if (!engine || !globalThis.crypto?.subtle) return;
+      const entries = await this.listEntries(base);
+      if (entries.length < 128 || entries.length > 2000
+          || entries.some(e => e.kind !== 'file' || !e.name.endsWith('.md') || e.name.startsWith('_') || e.size > 65536)
+          || entries.reduce((sum, e) => sum + e.size, 0) > 8 * 1024 * 1024) return;
+      // The folder note carries view settings and may be written by the UI
+      // during open. It is read through the normal metadata route, never ZIP.
+      const records = entries.filter(e => e.name !== _basename(base) + '.md')
+        .map(e => ({ path: e.path, meta: this._metaCache.get(e.path) }));
+      if (records.some(e => !e.meta?.rev || !e.meta?.content_hash)) return;
+      // Warm sheets and single external edits must not download the whole folder.
+      const sample = await this._mediaCacheRecord(records[0].path, true);
+      if (!sample) return;
+      const scope = sample.scope;
+      const uncached = records.filter(record => !this._cachedDownloadedFile(record.path, true));
+      if (uncached.length < 128) return;
+      const location = this._dropboxLocation(base);
+      const assertCurrent = () => {
+        if (signal?.aborted || this._mediaScope !== scope
+            || JSON.stringify(this._dropboxLocation(base)) !== JSON.stringify(location)) {
+          throw new DOMException('シートの接続先または読込対象が変更されました', 'AbortError');
+        }
+      };
+      let missing = 0;
+      for (const record of uncached) {
+        assertCurrent();
+        const media = await this._mediaCacheRecord(record.path, true);
+        if (!this._cachedDownloadedFile(record.path, true)) {
+          let retained = false;
+          try { retained = !!(await media?.cache?.match(media.key)); } catch (_) {}
+          if (!retained) missing++;
+        }
+      }
+      if (missing < 128) return;
+      let response;
+      try {
+        response = await this._content('files/download_zip', { path: location.path }, undefined, location);
+      } catch (error) {
+        assertCurrent();
+        if (error?.name === 'AbortError') throw error;
+        if (/no_permission|not_found|insufficient_scope|invalid_access_token|expired_access_token|もう一度接続|再度接続/.test(String(error?.message || ''))) throw error;
+        // Unsupported ZIP/size/transport failures fall back to protected reads.
+        // Permission loss still fails there and can never be treated as an empty sheet.
+        return skip('download-fallback');
+      }
+      assertCurrent();
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > 12 * 1024 * 1024) return;
+      let archive;
+      try { archive = await engine.parseZip(bytes); } catch (_) { return skip('zip-format'); }
+      const texts = new Map();
+      for (const record of records) {
+        assertCurrent();
+        const name = _basename(record.path);
+        const member = archive.members.get(_basename(base) + '/' + name) || archive.members.get(name);
+        if (!member || member.isDir || member.uncompressedSize > 65536) return skip('zip-member');
+        let data;
+        try { data = await engine.extractMember(bytes, member); } catch (_) { return skip('zip-integrity'); }
+        if (data.length !== Number(record.meta.size)) return skip('file-size');
+        // All candidates are <=64KiB: a single 4MiB Dropbox hash block.
+        const block = data.length ? await crypto.subtle.digest('SHA-256', data) : new Uint8Array(0);
+        const digest = await crypto.subtle.digest('SHA-256', block);
+        const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+        if (hash !== record.meta.content_hash) return skip('content-hash');
+        texts.set(record.path, data);
+      }
+      this._listCache.delete(base);
+      await this._listInFlight.get(base);
+      this._listCache.delete(base);
+      const after = await this.listEntries(base);
+      assertCurrent();
+      const afterPaths = new Set(after.map(e => e.path));
+      if (after.length !== entries.length || records.some(e => !afterPaths.has(e.path) || this._metaCache.get(e.path)?.rev !== e.meta.rev)) return skip('listing-changed');
+      for (const record of records) {
+        assertCurrent();
+        const file = _createFile(texts.get(record.path), _basename(record.path), { type: _mimeFromPath(record.path) });
+        const media = await this._mediaCacheRecord(record.path, true);
+        assertCurrent();
+        if (media?.meta.rev !== record.meta.rev) return;
+        file.__meldexMediaKey = media.key;
+        this._rememberDownloadedFile(record.path, file, record.meta);
+        await this._persistCachedFile(media, file);
+      }
+      assertCurrent();
+      this._sheetPrefetchResult = 'accepted';
+      return 'accepted';
+    }
+
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       // Documents use revision-keyed local copies too. Management/security
@@ -1217,8 +1332,7 @@
           'content-type': file.type, 'content-length': String(file.size),
         } }));
         if (media.documentFile) {
-          const keys = await media.cache.keys();
-          for (const key of keys.slice(0, Math.max(0, keys.length - media.maxEntries))) await media.cache.delete(key);
+          _scheduleDocumentTrim(media.cache, media.maxEntries);
         } else {
           // Coalesce bursts and keep cache inventory scans off the display path.
           _scheduleMediaTrim(media.cache);

@@ -195,6 +195,16 @@ function _dbRunVirtualRowRenderer(ctx, config) {
       frag.appendChild(row);
     }
     tbody.insertBefore(frag, bottomSpacer);
+    // Empty image cells can be much shorter than the estimated image row.
+    // Keep the logical viewport anchor at its actual rendered position; otherwise
+    // revealing a row can leave every thumbnail outside IntersectionObserver.
+    const anchorIndex = Math.min(last, Math.max(first, Math.floor((scroller.scrollTop || 0) / rowHeight)));
+    let heightCorrection = 0;
+    for (let index = first; index < anchorIndex; index++) {
+      heightCorrection += rowHeight - (vState.renderedRows[index - first]?.offsetHeight || rowHeight);
+    }
+    _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight + heightCorrection);
+    _dbSetVirtualSpacerHeight(bottomSpacer, Math.max(0, (rowTasks.length - last) * rowHeight - heightCorrection));
     vState.start = first;
     vState.end = last;
     ctx._renderDoneRows = Math.max(0, last - first);

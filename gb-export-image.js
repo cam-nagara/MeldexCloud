@@ -41,6 +41,10 @@ const MeldexExportImage = (() => {
 
   async function _loadHtml2Canvas() {
     if (window.html2canvas) return window.html2canvas;
+    if (window.MeldexCloudAssets) {
+      await window.MeldexCloudAssets.load('capture');
+      return window.html2canvas;
+    }
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.src = 'vendor/html2canvas.min.js';

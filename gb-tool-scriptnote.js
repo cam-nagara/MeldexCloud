@@ -1344,6 +1344,8 @@ class ScriptNoteComponent extends ToolComponent {
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
     const loading = showGlobalLoading ? showLoading('シナリオを読み込み中...', { key: 'scenario:' + nextPath }) : null;
     try {
+      await window.MeldexCloudAssets?.load('scenario');
+      if (isStaleLoad()) return false;
       const data = await apiFetch('/file?path=' + encodeURIComponent(nextPath));
       if (isStaleLoad()) return false;
       const content = data.content || '{}';

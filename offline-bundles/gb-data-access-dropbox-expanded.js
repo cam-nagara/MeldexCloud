@@ -1374,8 +1374,24 @@
     catch { return fallback == null ? '' : fallback; }
   }
 
+  const _parsedSheetTexts = new WeakMap();
+  const _folderNoteFlights = new WeakMap();
+  function _parsedSheetText(provider, path, text) {
+    let cache = _parsedSheetTexts.get(provider);
+    if (!cache) { cache = new Map(); _parsedSheetTexts.set(provider, cache); }
+    const key = JSON.stringify([provider._mediaScope || '', provider._dropboxLocation?.(path) || path]);
+    const previous = cache.get(key);
+    const parsed = previous?.text === text ? previous.parsed : _parseFrontmatter(text);
+    cache.delete(key);
+    // Retain only small documents. Every hit still reads through the provider's
+    // validated revision cache, and callers receive private mutable objects.
+    if (text.length <= 65536) cache.set(key, { text, parsed });
+    while (cache.size > 2048) cache.delete(cache.keys().next().value);
+    return structuredClone(parsed);
+  }
+
   async function _readFrontmatterFile(provider, path) {
-    return _parseFrontmatter(await _readText(provider, path, ''));
+    return _parsedSheetText(provider, path, await _readText(provider, path, ''));
   }
 
   async function _writeFrontmatterFile(provider, path, frontmatter, body) {
@@ -1399,10 +1415,19 @@
   }
 
   async function _folderFrontmatter(provider, folderPath) {
-    const note = await _folderNotePath(provider, folderPath);
-    if (!note) return { path: '', frontmatter: {}, body: '' };
-    const parsed = await _readFrontmatterFile(provider, note);
-    return { path: note, ...parsed };
+    let flights = _folderNoteFlights.get(provider);
+    if (!flights) { flights = new Map(); _folderNoteFlights.set(provider, flights); }
+    const key = JSON.stringify([provider._mediaScope || '', provider._dropboxLocation?.(folderPath) || folderPath]);
+    if (flights.has(key)) return structuredClone(await flights.get(key));
+    const pending = (async () => {
+      const note = await _folderNotePath(provider, folderPath);
+      if (!note) return { path: '', frontmatter: {}, body: '' };
+      const parsed = await _readFrontmatterFile(provider, note);
+      return { path: note, ...parsed };
+    })();
+    flights.set(key, pending);
+    try { return structuredClone(await pending); }
+    finally { if (flights.get(key) === pending) flights.delete(key); }
   }
 
   // 計算列（読み取り専用・コードが更新する列）: フォルダノートの computed_props 宣言を
@@ -2255,11 +2280,16 @@
     }
     const entities = {};
     const properties = new Set();
-    const entries = (await _listDirectoryEntries(provider, base)).filter(item =>
+    let entries = (await _listDirectoryEntries(provider, base)).filter(item =>
       item.handle.kind === 'file' && item.name.endsWith('.md') && !item.name.startsWith('_') && item.name !== _basename(base) + '.md');
+    const prefetchResult = await provider.prefetchSheetTexts?.(base, signal);
+    if (['zip-member', 'file-size', 'content-hash', 'listing-changed'].includes(prefetchResult)) {
+      entries = (await _listDirectoryEntries(provider, base)).filter(item =>
+        item.handle.kind === 'file' && item.name.endsWith('.md') && !item.name.startsWith('_') && item.name !== _basename(base) + '.md');
+    }
     const loadedEntries = await _mapSheetReads(entries, async item => ({
       item,
-      parsed: _parseFrontmatter(await provider.readText(_joinPath(base, item.name))),
+      parsed: _parsedSheetText(provider, _joinPath(base, item.name), await provider.readText(_joinPath(base, item.name))),
     }), signal);
     for (const { item, parsed } of loadedEntries) {
       const filePath = _joinPath(base, item.name);

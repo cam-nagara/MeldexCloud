@@ -7,6 +7,7 @@
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
+  const THUMBNAIL_FLIGHTS = new Map();
   const IMAGE_REFRESH_QUEUE = [];
   let imageRefreshCount = 0;
   let warmScopePending = null;
@@ -30,7 +31,8 @@
   async function _warmImage(pathLike) {
     if (!_runtime()?.isDropboxMode?.()) return null;
     const normalized = _extractRawPath(pathLike);
-    const cached = CACHE[normalized];
+    const key = _thumbnailCacheKey(pathLike) || normalized;
+    const cached = CACHE[key] || CACHE[normalized];
     if (!cached?.mediaScope || !cached.url?.startsWith('blob:') || !/^image\//.test(cached.mime || '')) return null;
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!warmScopePending) {
@@ -47,7 +49,7 @@
     }
     try {
       const scope = await warmScopePending;
-      return CACHE[normalized] === cached && scope === cached.mediaScope
+      return (CACHE[key] === cached || CACHE[normalized] === cached) && scope === cached.mediaScope
         && cached.mediaLocation === JSON.stringify(provider?._dropboxLocation?.(normalized)) ? cached : null;
     } catch (_) { return null; }
   }
@@ -339,10 +341,75 @@
     return getCachedRawUrl(normalized) || _fallbackRawUrl(normalized);
   }
 
+  function _thumbnailSize(pathLike) {
+    if (!/\/(?:api\/)?thumbnail\?/.test(String(pathLike))) return 0;
+    try { return Math.max(64, Math.min(1024, Number(new URL(pathLike, document.baseURI).searchParams.get('size')) || 256)); }
+    catch (_) { return 256; }
+  }
+
+  function _thumbnailCacheKey(pathLike) {
+    const size = _thumbnailSize(pathLike);
+    return size ? _extractRawPath(pathLike) + '#thumbnail-' + size : '';
+  }
+
+  async function _ensureThumbnailUrl(pathLike, options) {
+    const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
+    const provider = await _provider();
+    if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
+        || typeof createImageBitmap !== 'function' || !/\.(?:png|jpe?g|webp|bmp|avif)$/i.test(normalized)) {
+      return ensureRawUrl(pathLike, options);
+    }
+    const media = await provider._mediaCacheRecord(normalized);
+    if (!media?.key) return ensureRawUrl(pathLike, options);
+    const key = _thumbnailCacheKey(pathLike), persistentKey = media.key + '/thumbnail-v1-' + size;
+    const memory = CACHE[key];
+    if (memory?.identity === persistentKey) return memory;
+    if (THUMBNAIL_FLIGHTS.has(persistentKey)) return THUMBNAIL_FLIGHTS.get(persistentKey);
+    const work = (async () => {
+      let cache, blob;
+      try { cache = await caches.open('meldex-image-thumbnails-v1'); blob = await (await cache.match(persistentKey))?.blob(); } catch (_) {}
+      const retained = !!blob;
+      if (!blob) {
+        const file = await _getFileWithMediaFallback(provider, normalized);
+        let bitmap;
+        try {
+          bitmap = await createImageBitmap(file);
+          const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        } catch (_) { return ensureRawUrl(pathLike, options); }
+        finally { bitmap?.close(); }
+        if (!blob) return ensureRawUrl(pathLike, options);
+      }
+      const current = await provider._mediaCacheRecord(normalized);
+      if (current?.key !== media.key || current?.scope !== media.scope
+          || provider._mediaScope !== media.scope) throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
+      // Reuse the existing bounded background trim, in a separate local store.
+      if (cache && !retained) await provider._persistCachedFile({ cache, key: persistentKey, documentFile: true, maxBytes: 128 * 1024, maxEntries: 1024 }, blob);
+      const published = await provider._mediaCacheRecord(normalized);
+      if (published?.key !== media.key || published?.scope !== media.scope || provider._mediaScope !== media.scope) {
+        throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
+      }
+      const url = URL.createObjectURL(blob);
+      const next = { path: normalized, cacheKey: key, url, mime: blob.type, size: blob.size,
+        identity: persistentKey, mediaScope: media.scope, mediaLocation: JSON.stringify(provider._dropboxLocation(normalized)) };
+      CACHE[key] = next;
+      if (memory?.url?.startsWith('blob:')) URL.revokeObjectURL(memory.url);
+      return next;
+    })();
+    THUMBNAIL_FLIGHTS.set(persistentKey, work);
+    try { return await work; }
+    finally { if (THUMBNAIL_FLIGHTS.get(persistentKey) === work) THUMBNAIL_FLIGHTS.delete(persistentKey); }
+  }
+
   async function ensureDisplayUrl(pathLike, options) {
     const direct = String(pathLike || '').trim();
     if (!direct) return { path: '', url: '' };
     if (_isDirectUrl(direct)) return { path: '', url: direct };
+    if (_thumbnailSize(direct) && _runtime()?.isBrowserDataMode?.()) return _ensureThumbnailUrl(direct, options);
     return ensureRawUrl(direct, options);
   }
 
@@ -394,7 +461,7 @@
           // Keep the last image through temporary network failures, but never
           // keep a confirmed deleted/inaccessible file visible.
           if (cached && /path\/(?:not_found|no_permission)|path_not_found|invalid_access_token|expired_access_token|再度接続|もう一度接続|保存先が変更|接続先が変更/.test(String(error?.message || error?.code || ''))) {
-            if (CACHE[cached.path] === cached) _clearCachePath(cached.path, false);
+            if (CACHE[cached.cacheKey || cached.path] === cached) _clearCachePath(cached.path, false);
             if (ownsTarget()) {
               target.removeAttribute(prop);
               target.dispatchEvent(new Event('error'));
@@ -412,7 +479,7 @@
   function _clearCachePath(path, isFolder) {
     const normalized = _normalizeLocalPath(path);
     Object.keys(CACHE).forEach((key) => {
-      if (key === normalized || (isFolder && key.startsWith(normalized + '/'))) {
+      if (key === normalized || CACHE[key]?.path === normalized || (isFolder && key.startsWith(normalized + '/'))) {
         const url = CACHE[key]?.url;
         if (url && url.startsWith('blob:')) {
           try { URL.revokeObjectURL(url); } catch {}
@@ -531,6 +598,11 @@
       return;
     }
     Object.keys(CACHE).forEach((key) => {
+      if (CACHE[key]?.cacheKey && (CACHE[key].path === oldPath || event?.isFolder && CACHE[key].path.startsWith(oldPath + '/'))) {
+        try { URL.revokeObjectURL(CACHE[key].url); } catch (_) {}
+        delete CACHE[key];
+        return;
+      }
       if (key === oldPath || (event?.isFolder && key.startsWith(oldPath + '/'))) {
         const rewritten = key === oldPath ? newPath : (newPath + key.slice(oldPath.length));
         CACHE[rewritten] = { ...CACHE[key], path: rewritten };

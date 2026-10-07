@@ -161,8 +161,14 @@ function _createAttachmentThumb(item, index) {
     }, { once: true });
     // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
     // フォールバックの listener を登録してから読み込みを開始する。
-    loadImage(_imageSrc(item, true));
-    window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
+    const startImage = () => {
+      img.fetchPriority = 'high';
+      loadImage(_imageSrc(item, true));
+      window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
+    };
+    if (browserFiles && typeof IntersectionObserver === 'function') {
+      _observeAttachmentImage(host, startImage);
+    } else startImage();
     return _setupAttachmentThumbDrag(host, item);
   }
   const tile = document.createElement('div');
@@ -175,6 +181,41 @@ function _createAttachmentThumb(item, index) {
   caption.textContent = label;
   tile.appendChild(caption);
   return _setupAttachmentThumbDrag(tile, item);
+}
+
+// Observe hosts rather than empty img bounds. Weak entries do not retain old sheets.
+const _attachmentImageStarts = new WeakMap();
+let _attachmentImageObserver;
+function _observeAttachmentImage(host, start) {
+  if (!_attachmentImageObserver) {
+    _attachmentImageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      _attachmentImageObserver.unobserve(entry.target);
+      const load = _attachmentImageStarts.get(entry.target);
+      _attachmentImageStarts.delete(entry.target);
+      if (entry.target.isConnected) load?.();
+    }
+  }, { rootMargin: '0px' });
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.removedNodes) {
+        if (node.nodeType !== 1 || node.isConnected) continue;
+        const hosts = [...node.querySelectorAll('[data-meldex-image-host]')];
+        if (node.matches('[data-meldex-image-host]')) hosts.push(node);
+        for (const old of hosts) {
+          _attachmentImageObserver.unobserve(old);
+        }
+      }
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const hosts = [...node.querySelectorAll('[data-meldex-image-host]')];
+        if (node.matches('[data-meldex-image-host]')) hosts.push(node);
+        for (const host of hosts) if (_attachmentImageStarts.has(host)) _attachmentImageObserver.observe(host);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  _attachmentImageStarts.set(host, start);
+  _attachmentImageObserver.observe(host);
 }
 
 function _setupAttachmentThumbDrag(element, item) {

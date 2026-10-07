@@ -240,6 +240,7 @@ function _bdExportImageBounds() {
 
 function _bdLoadHtml2CanvasForExport() {
   if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (window.MeldexCloudAssets) return window.MeldexCloudAssets.load('capture').then(() => window.html2canvas);
   return new Promise((resolve, reject) => {
     const existing = document.querySelector('script[data-html2canvas-loader="1"]');
     if (existing) {

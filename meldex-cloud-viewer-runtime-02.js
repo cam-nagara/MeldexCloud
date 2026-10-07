@@ -1065,6 +1065,25 @@
         if (result.ok && route === 'files/download') {
           return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
         }
+        if (result.ok && route === 'files/download_zip') {
+          // Bound a racing folder expansion, and hold the shared queue slot for
+          // the complete body. Never retain a ZIP beyond this read-only snapshot.
+          const reader = result.body.getReader();
+          const chunks = []; let size = 0;
+          try {
+            while (true) {
+              const next = await reader.read();
+              if (next.done) break;
+              size += next.value.length;
+              if (size > 12 * 1024 * 1024) {
+                await reader.cancel();
+                throw new Error('シート一括読込のサイズ上限を超えました');
+              }
+              chunks.push(next.value);
+            }
+          } finally { reader.releaseLock(); }
+          return new Response(new Blob(chunks), { status: result.status, statusText: result.statusText, headers: result.headers });
+        }
         return result;
       }, _isMediaRead(route, arg?.path));
       if (response.ok) {
@@ -3769,6 +3788,22 @@
   let mediaTrimTimer = null;
   let mediaTrimRunning = false;
   let mediaTrimDirty = false;
+  const documentTrims = new Map();
+  function _scheduleDocumentTrim(cache, maxEntries) {
+    if (documentTrims.has(maxEntries)) { documentTrims.get(maxEntries).dirty = true; return; }
+    const job = { dirty: false };
+    documentTrims.set(maxEntries, job);
+    setTimeout(async () => {
+      try {
+        const keys = await cache.keys();
+        for (const key of keys.slice(0, Math.max(0, keys.length - maxEntries))) await cache.delete(key);
+      } catch (_) {}
+      finally {
+        documentTrims.delete(maxEntries);
+        if (job.dirty) _scheduleDocumentTrim(cache, maxEntries);
+      }
+    }, 200);
+  }
   function _scheduleMediaTrim(cache) {
     mediaTrimDirty = true;
     if (mediaTrimTimer !== null || mediaTrimRunning) return;
@@ -4900,6 +4935,105 @@
       }
     }
 
+    // Read-only optimization for flat Markdown sheets. No remote index or format
+    // migration. Accept a ZIP only after per-file Dropbox content_hash validation
+    // and a fresh second listing; otherwise use the ordinary revision-aware reads.
+    async prefetchSheetTexts(relativePath, signal) {
+      const base = _normalizeRelativePath(relativePath);
+      const engine = window.MeldexArchiveZipEngine;
+      const skip = reason => {
+        this._sheetPrefetchResult = reason;
+        if (['zip-member', 'file-size', 'content-hash', 'listing-changed'].includes(reason)) this._forgetMeta(base);
+        return reason;
+      };
+      if (!engine || !globalThis.crypto?.subtle) return;
+      const entries = await this.listEntries(base);
+      if (entries.length < 128 || entries.length > 2000
+          || entries.some(e => e.kind !== 'file' || !e.name.endsWith('.md') || e.name.startsWith('_') || e.size > 65536)
+          || entries.reduce((sum, e) => sum + e.size, 0) > 8 * 1024 * 1024) return;
+      // The folder note carries view settings and may be written by the UI
+      // during open. It is read through the normal metadata route, never ZIP.
+      const records = entries.filter(e => e.name !== _basename(base) + '.md')
+        .map(e => ({ path: e.path, meta: this._metaCache.get(e.path) }));
+      if (records.some(e => !e.meta?.rev || !e.meta?.content_hash)) return;
+      // Warm sheets and single external edits must not download the whole folder.
+      const sample = await this._mediaCacheRecord(records[0].path, true);
+      if (!sample) return;
+      const scope = sample.scope;
+      const uncached = records.filter(record => !this._cachedDownloadedFile(record.path, true));
+      if (uncached.length < 128) return;
+      const location = this._dropboxLocation(base);
+      const assertCurrent = () => {
+        if (signal?.aborted || this._mediaScope !== scope
+            || JSON.stringify(this._dropboxLocation(base)) !== JSON.stringify(location)) {
+          throw new DOMException('シートの接続先または読込対象が変更されました', 'AbortError');
+        }
+      };
+      let missing = 0;
+      for (const record of uncached) {
+        assertCurrent();
+        const media = await this._mediaCacheRecord(record.path, true);
+        if (!this._cachedDownloadedFile(record.path, true)) {
+          let retained = false;
+          try { retained = !!(await media?.cache?.match(media.key)); } catch (_) {}
+          if (!retained) missing++;
+        }
+      }
+      if (missing < 128) return;
+      let response;
+      try {
+        response = await this._content('files/download_zip', { path: location.path }, undefined, location);
+      } catch (error) {
+        assertCurrent();
+        if (error?.name === 'AbortError') throw error;
+        if (/no_permission|not_found|insufficient_scope|invalid_access_token|expired_access_token|もう一度接続|再度接続/.test(String(error?.message || ''))) throw error;
+        // Unsupported ZIP/size/transport failures fall back to protected reads.
+        // Permission loss still fails there and can never be treated as an empty sheet.
+        return skip('download-fallback');
+      }
+      assertCurrent();
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > 12 * 1024 * 1024) return;
+      let archive;
+      try { archive = await engine.parseZip(bytes); } catch (_) { return skip('zip-format'); }
+      const texts = new Map();
+      for (const record of records) {
+        assertCurrent();
+        const name = _basename(record.path);
+        const member = archive.members.get(_basename(base) + '/' + name) || archive.members.get(name);
+        if (!member || member.isDir || member.uncompressedSize > 65536) return skip('zip-member');
+        let data;
+        try { data = await engine.extractMember(bytes, member); } catch (_) { return skip('zip-integrity'); }
+        if (data.length !== Number(record.meta.size)) return skip('file-size');
+        // All candidates are <=64KiB: a single 4MiB Dropbox hash block.
+        const block = data.length ? await crypto.subtle.digest('SHA-256', data) : new Uint8Array(0);
+        const digest = await crypto.subtle.digest('SHA-256', block);
+        const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+        if (hash !== record.meta.content_hash) return skip('content-hash');
+        texts.set(record.path, data);
+      }
+      this._listCache.delete(base);
+      await this._listInFlight.get(base);
+      this._listCache.delete(base);
+      const after = await this.listEntries(base);
+      assertCurrent();
+      const afterPaths = new Set(after.map(e => e.path));
+      if (after.length !== entries.length || records.some(e => !afterPaths.has(e.path) || this._metaCache.get(e.path)?.rev !== e.meta.rev)) return skip('listing-changed');
+      for (const record of records) {
+        assertCurrent();
+        const file = _createFile(texts.get(record.path), _basename(record.path), { type: _mimeFromPath(record.path) });
+        const media = await this._mediaCacheRecord(record.path, true);
+        assertCurrent();
+        if (media?.meta.rev !== record.meta.rev) return;
+        file.__meldexMediaKey = media.key;
+        this._rememberDownloadedFile(record.path, file, record.meta);
+        await this._persistCachedFile(media, file);
+      }
+      assertCurrent();
+      this._sheetPrefetchResult = 'accepted';
+      return 'accepted';
+    }
+
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       // Documents use revision-keyed local copies too. Management/security
@@ -4984,8 +5118,7 @@
           'content-type': file.type, 'content-length': String(file.size),
         } }));
         if (media.documentFile) {
-          const keys = await media.cache.keys();
-          for (const key of keys.slice(0, Math.max(0, keys.length - media.maxEntries))) await media.cache.delete(key);
+          _scheduleDocumentTrim(media.cache, media.maxEntries);
         } else {
           // Coalesce bursts and keep cache inventory scans off the display path.
           _scheduleMediaTrim(media.cache);
@@ -15594,6 +15727,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
+  const THUMBNAIL_FLIGHTS = new Map();
   const IMAGE_REFRESH_QUEUE = [];
   let imageRefreshCount = 0;
   let warmScopePending = null;
@@ -15617,7 +15751,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   async function _warmImage(pathLike) {
     if (!_runtime()?.isDropboxMode?.()) return null;
     const normalized = _extractRawPath(pathLike);
-    const cached = CACHE[normalized];
+    const key = _thumbnailCacheKey(pathLike) || normalized;
+    const cached = CACHE[key] || CACHE[normalized];
     if (!cached?.mediaScope || !cached.url?.startsWith('blob:') || !/^image\//.test(cached.mime || '')) return null;
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!warmScopePending) {
@@ -15634,7 +15769,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     try {
       const scope = await warmScopePending;
-      return CACHE[normalized] === cached && scope === cached.mediaScope
+      return (CACHE[key] === cached || CACHE[normalized] === cached) && scope === cached.mediaScope
         && cached.mediaLocation === JSON.stringify(provider?._dropboxLocation?.(normalized)) ? cached : null;
     } catch (_) { return null; }
   }
@@ -15926,10 +16061,75 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return getCachedRawUrl(normalized) || _fallbackRawUrl(normalized);
   }
 
+  function _thumbnailSize(pathLike) {
+    if (!/\/(?:api\/)?thumbnail\?/.test(String(pathLike))) return 0;
+    try { return Math.max(64, Math.min(1024, Number(new URL(pathLike, document.baseURI).searchParams.get('size')) || 256)); }
+    catch (_) { return 256; }
+  }
+
+  function _thumbnailCacheKey(pathLike) {
+    const size = _thumbnailSize(pathLike);
+    return size ? _extractRawPath(pathLike) + '#thumbnail-' + size : '';
+  }
+
+  async function _ensureThumbnailUrl(pathLike, options) {
+    const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
+    const provider = await _provider();
+    if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
+        || typeof createImageBitmap !== 'function' || !/\.(?:png|jpe?g|webp|bmp|avif)$/i.test(normalized)) {
+      return ensureRawUrl(pathLike, options);
+    }
+    const media = await provider._mediaCacheRecord(normalized);
+    if (!media?.key) return ensureRawUrl(pathLike, options);
+    const key = _thumbnailCacheKey(pathLike), persistentKey = media.key + '/thumbnail-v1-' + size;
+    const memory = CACHE[key];
+    if (memory?.identity === persistentKey) return memory;
+    if (THUMBNAIL_FLIGHTS.has(persistentKey)) return THUMBNAIL_FLIGHTS.get(persistentKey);
+    const work = (async () => {
+      let cache, blob;
+      try { cache = await caches.open('meldex-image-thumbnails-v1'); blob = await (await cache.match(persistentKey))?.blob(); } catch (_) {}
+      const retained = !!blob;
+      if (!blob) {
+        const file = await _getFileWithMediaFallback(provider, normalized);
+        let bitmap;
+        try {
+          bitmap = await createImageBitmap(file);
+          const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        } catch (_) { return ensureRawUrl(pathLike, options); }
+        finally { bitmap?.close(); }
+        if (!blob) return ensureRawUrl(pathLike, options);
+      }
+      const current = await provider._mediaCacheRecord(normalized);
+      if (current?.key !== media.key || current?.scope !== media.scope
+          || provider._mediaScope !== media.scope) throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
+      // Reuse the existing bounded background trim, in a separate local store.
+      if (cache && !retained) await provider._persistCachedFile({ cache, key: persistentKey, documentFile: true, maxBytes: 128 * 1024, maxEntries: 1024 }, blob);
+      const published = await provider._mediaCacheRecord(normalized);
+      if (published?.key !== media.key || published?.scope !== media.scope || provider._mediaScope !== media.scope) {
+        throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
+      }
+      const url = URL.createObjectURL(blob);
+      const next = { path: normalized, cacheKey: key, url, mime: blob.type, size: blob.size,
+        identity: persistentKey, mediaScope: media.scope, mediaLocation: JSON.stringify(provider._dropboxLocation(normalized)) };
+      CACHE[key] = next;
+      if (memory?.url?.startsWith('blob:')) URL.revokeObjectURL(memory.url);
+      return next;
+    })();
+    THUMBNAIL_FLIGHTS.set(persistentKey, work);
+    try { return await work; }
+    finally { if (THUMBNAIL_FLIGHTS.get(persistentKey) === work) THUMBNAIL_FLIGHTS.delete(persistentKey); }
+  }
+
   async function ensureDisplayUrl(pathLike, options) {
     const direct = String(pathLike || '').trim();
     if (!direct) return { path: '', url: '' };
     if (_isDirectUrl(direct)) return { path: '', url: direct };
+    if (_thumbnailSize(direct) && _runtime()?.isBrowserDataMode?.()) return _ensureThumbnailUrl(direct, options);
     return ensureRawUrl(direct, options);
   }
 
@@ -15981,7 +16181,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           // Keep the last image through temporary network failures, but never
           // keep a confirmed deleted/inaccessible file visible.
           if (cached && /path\/(?:not_found|no_permission)|path_not_found|invalid_access_token|expired_access_token|再度接続|もう一度接続|保存先が変更|接続先が変更/.test(String(error?.message || error?.code || ''))) {
-            if (CACHE[cached.path] === cached) _clearCachePath(cached.path, false);
+            if (CACHE[cached.cacheKey || cached.path] === cached) _clearCachePath(cached.path, false);
             if (ownsTarget()) {
               target.removeAttribute(prop);
               target.dispatchEvent(new Event('error'));
@@ -15999,7 +16199,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function _clearCachePath(path, isFolder) {
     const normalized = _normalizeLocalPath(path);
     Object.keys(CACHE).forEach((key) => {
-      if (key === normalized || (isFolder && key.startsWith(normalized + '/'))) {
+      if (key === normalized || CACHE[key]?.path === normalized || (isFolder && key.startsWith(normalized + '/'))) {
         const url = CACHE[key]?.url;
         if (url && url.startsWith('blob:')) {
           try { URL.revokeObjectURL(url); } catch {}
@@ -16118,6 +16318,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return;
     }
     Object.keys(CACHE).forEach((key) => {
+      if (CACHE[key]?.cacheKey && (CACHE[key].path === oldPath || event?.isFolder && CACHE[key].path.startsWith(oldPath + '/'))) {
+        try { URL.revokeObjectURL(CACHE[key].url); } catch (_) {}
+        delete CACHE[key];
+        return;
+      }
       if (key === oldPath || (event?.isFolder && key.startsWith(oldPath + '/'))) {
         const rewritten = key === oldPath ? newPath : (newPath + key.slice(oldPath.length));
         CACHE[rewritten] = { ...CACHE[key], path: rewritten };
