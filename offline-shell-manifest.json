@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-831a181daf853a904af4",
+  "version": "0.7.368-5f807bb7ecb0feabf67f",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -3361,7 +3361,7 @@
     },
     {
       "path": "gb-tools.part04.part02.css",
-      "sha256": "0d587a455c25b8a6a3938850e65c95b706e50de2c3d8fe21c9e661a71a710060"
+      "sha256": "98d71d5611d6fe64e7db8984bf8609170e732ccaf7a88245945fed504e2f1a29"
     },
     {
       "path": "gb-tools.part05.css",
