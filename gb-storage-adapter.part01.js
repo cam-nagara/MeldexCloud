@@ -1,4 +1,31 @@
 (function () {
+  let mediaTrimTimer = null;
+  let mediaTrimRunning = false;
+  let mediaTrimDirty = false;
+  function _scheduleMediaTrim(cache) {
+    mediaTrimDirty = true;
+    if (mediaTrimTimer !== null || mediaTrimRunning) return;
+    mediaTrimTimer = setTimeout(async () => {
+      mediaTrimTimer = null;
+      mediaTrimRunning = true;
+      mediaTrimDirty = false;
+      try {
+        const keys = await cache.keys();
+        let total = 0;
+        for (let index = keys.length - 1; index >= 0; index--) {
+          if (keys.length - index > 2048) { await cache.delete(keys[index]); continue; }
+          const entry = await cache.match(keys[index]);
+          total += Number(entry?.headers.get('content-length') || 0);
+          if (total > 256 * 1024 * 1024) await cache.delete(keys[index]);
+        }
+      } catch (_) { /* Cache eviction must never block image display. */ }
+      finally {
+        mediaTrimRunning = false;
+        if (mediaTrimDirty) _scheduleMediaTrim(cache);
+      }
+    }, 200);
+  }
+
   function _runtime() {
     return window.MeldexRuntimeAdapter;
   }
@@ -1114,7 +1141,7 @@
       const media = /\.(png|jpe?g|jpe|jfif|gif|webp|svg|bmp|avif|ico|apng|tiff?|heic|heif|pdf|mp[34]|webm|mov|avi|mkv|ogg|wav|m4a|aac|flac)$/i.test(normalized)
         ? await this._mediaCacheRecord(normalized)
         : documentFile ? await this._mediaCacheRecord(normalized, true) : null;
-      const cached = this._cachedDownloadedFile(normalized, documentFile && !!media);
+      const cached = this._cachedDownloadedFile(normalized, !!media);
       const remembered = this._fileCache.get(normalized);
       if (cached && (!media || cached.__meldexMediaKey === media.key
           || documentFile && remembered?.metaKey === this._fileCacheMetaKey(media.meta)
@@ -1189,18 +1216,12 @@
         await media.cache.put(media.key, new Response(file, { headers: {
           'content-type': file.type, 'content-length': String(file.size),
         } }));
-        const keys = await media.cache.keys();
         if (media.documentFile) {
-          // Fixed per-file size and entry caps bound disk usage without
-          // reading every cached response on every sheet-row download.
+          const keys = await media.cache.keys();
           for (const key of keys.slice(0, Math.max(0, keys.length - media.maxEntries))) await media.cache.delete(key);
         } else {
-          let total = 0;
-          for (let index = keys.length - 1; index >= 0; index--) {
-            const entry = await media.cache.match(keys[index]);
-            total += Number(entry?.headers.get('content-length') || 0);
-            if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
-          }
+          // Coalesce bursts and keep cache inventory scans off the display path.
+          _scheduleMediaTrim(media.cache);
         }
       } catch (_) { /* Quota/private browsing must not break display. */ }
     }

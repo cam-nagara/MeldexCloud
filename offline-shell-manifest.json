@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-2ba1ce06fcb1e7eff08a",
+  "version": "0.7.368-07f5103ad62454da87d2",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -721,7 +721,7 @@
     },
     {
       "path": "gb-cloud-file-url.js",
-      "sha256": "0574a0e766ac615b0c69378006c0c3f524ef442a78c368acdfda1f6866e9db6e"
+      "sha256": "eadd0844410488d95e022999dc16e3b6a39c08024f566542e5d4fec171ce1cb3"
     },
     {
       "path": "gb-cloud-form-relay.js",
@@ -2981,7 +2981,7 @@
     },
     {
       "path": "gb-storage-adapter.part01.js",
-      "sha256": "aca4b2436faa9a9a703ce6efa7b75a78766b0297b50f2eb6f9532a1c57b76036"
+      "sha256": "a4ab217eb9e1e7233b504609d1d4db1cb699576ecfa1310f6a7020825ade369d"
     },
     {
       "path": "gb-storage-adapter.part02.js",
@@ -3605,7 +3605,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "2448c71665c3a20bac0622b7634c1fa22602963babb326540444e850b09d98fe"
+      "sha256": "7f4fa9a7a2c45e1606130cec9d53fbecaa6ea54dc4740842cc87bcf279556168"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3633,7 +3633,7 @@
     },
     {
       "path": "meldex-cloud-viewer-runtime-02.js",
-      "sha256": "37f5a4091fc727cf92377c7b9a692edf711419e70e0a249aac45844452c529a8"
+      "sha256": "0f0da395143a887df8f9ec7ffe6e2e7f35c73a5b94df95378c413ab84045e049"
     },
     {
       "path": "meldex-cloud-viewer-runtime-03.js",
@@ -3693,7 +3693,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "429698b850eaccbd18c40b6a7710444e08a4142279dcba4f24ef95be3b1720e6"
+      "sha256": "19037f573c0fa5067fb2b38317759d8c932f5438af019ceed83a17571ed15e2e"
     },
     {
       "path": "Meldex.ico",
@@ -3825,7 +3825,7 @@
     },
     {
       "path": "offline-bundles/gb-storage-adapter.js",
-      "sha256": "99efe10dc687811fb2825d1a1b6ff064fbd70d73ff2b8358132e28f8d8169e09"
+      "sha256": "c1319268fb51d7fda4c92bf34c8fbea7c674cbfec93e858b91e3a946e0b2d8ef"
     },
     {
       "path": "offline-bundles/gb-tooltip.js",
@@ -4125,7 +4125,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "186178c544393b377d7dd8c14ad6b16e59ebe999fff468b197443541dfc7ea8f"
+      "sha256": "66f4cc06fa33ffa2c61124e569115e2f309153be71c3ac10eda5ed1feca6f0fd"
     }
   ]
 }

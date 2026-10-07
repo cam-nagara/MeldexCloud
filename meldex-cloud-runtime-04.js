@@ -3080,6 +3080,33 @@
 /* === gb-storage-adapter.js === */
 ;
 (function () {
+  let mediaTrimTimer = null;
+  let mediaTrimRunning = false;
+  let mediaTrimDirty = false;
+  function _scheduleMediaTrim(cache) {
+    mediaTrimDirty = true;
+    if (mediaTrimTimer !== null || mediaTrimRunning) return;
+    mediaTrimTimer = setTimeout(async () => {
+      mediaTrimTimer = null;
+      mediaTrimRunning = true;
+      mediaTrimDirty = false;
+      try {
+        const keys = await cache.keys();
+        let total = 0;
+        for (let index = keys.length - 1; index >= 0; index--) {
+          if (keys.length - index > 2048) { await cache.delete(keys[index]); continue; }
+          const entry = await cache.match(keys[index]);
+          total += Number(entry?.headers.get('content-length') || 0);
+          if (total > 256 * 1024 * 1024) await cache.delete(keys[index]);
+        }
+      } catch (_) { /* Cache eviction must never block image display. */ }
+      finally {
+        mediaTrimRunning = false;
+        if (mediaTrimDirty) _scheduleMediaTrim(cache);
+      }
+    }, 200);
+  }
+
   function _runtime() {
     return window.MeldexRuntimeAdapter;
   }
@@ -4195,7 +4222,7 @@
       const media = /\.(png|jpe?g|jpe|jfif|gif|webp|svg|bmp|avif|ico|apng|tiff?|heic|heif|pdf|mp[34]|webm|mov|avi|mkv|ogg|wav|m4a|aac|flac)$/i.test(normalized)
         ? await this._mediaCacheRecord(normalized)
         : documentFile ? await this._mediaCacheRecord(normalized, true) : null;
-      const cached = this._cachedDownloadedFile(normalized, documentFile && !!media);
+      const cached = this._cachedDownloadedFile(normalized, !!media);
       const remembered = this._fileCache.get(normalized);
       if (cached && (!media || cached.__meldexMediaKey === media.key
           || documentFile && remembered?.metaKey === this._fileCacheMetaKey(media.meta)
@@ -4270,18 +4297,12 @@
         await media.cache.put(media.key, new Response(file, { headers: {
           'content-type': file.type, 'content-length': String(file.size),
         } }));
-        const keys = await media.cache.keys();
         if (media.documentFile) {
-          // Fixed per-file size and entry caps bound disk usage without
-          // reading every cached response on every sheet-row download.
+          const keys = await media.cache.keys();
           for (const key of keys.slice(0, Math.max(0, keys.length - media.maxEntries))) await media.cache.delete(key);
         } else {
-          let total = 0;
-          for (let index = keys.length - 1; index >= 0; index--) {
-            const entry = await media.cache.match(keys[index]);
-            total += Number(entry?.headers.get('content-length') || 0);
-            if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
-          }
+          // Coalesce bursts and keep cache inventory scans off the display path.
+          _scheduleMediaTrim(media.cache);
         }
       } catch (_) { /* Quota/private browsing must not break display. */ }
     }
@@ -42031,6 +42052,50 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
+  const IMAGE_REFRESH_QUEUE = [];
+  let imageRefreshCount = 0;
+  let warmScopePending = null;
+
+  function _queueImageRefresh(work) {
+    return new Promise(resolve => {
+      IMAGE_REFRESH_QUEUE.push({ work, resolve });
+      const drain = () => {
+        while (imageRefreshCount < 3 && IMAGE_REFRESH_QUEUE.length) {
+          const job = IMAGE_REFRESH_QUEUE.shift();
+          imageRefreshCount++;
+          Promise.resolve().then(job.work).catch(() => null).then(job.resolve).finally(() => {
+            imageRefreshCount--; drain();
+          });
+        }
+      };
+      drain();
+    });
+  }
+
+  async function _warmImage(pathLike) {
+    if (!_runtime()?.isDropboxMode?.()) return null;
+    const normalized = _extractRawPath(pathLike);
+    const cached = CACHE[normalized];
+    if (!cached?.mediaScope || !cached.url?.startsWith('blob:') || !/^image\//.test(cached.mime || '')) return null;
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!warmScopePending) {
+      const pending = (async () => {
+        const auth = window.MeldexDropboxAuth;
+        const account = await auth?.getCurrentAccount(false);
+        return account?.account_id ? JSON.stringify([
+          account.account_id, account.root_info || {}, provider?.getVaultPath?.(),
+          auth.getVaultNamespaceKind?.() || 'home',
+        ]) : '';
+      })();
+      warmScopePending = pending;
+      pending.finally(() => { if (warmScopePending === pending) warmScopePending = null; }).catch(() => {});
+    }
+    try {
+      const scope = await warmScopePending;
+      return CACHE[normalized] === cached && scope === cached.mediaScope
+        && cached.mediaLocation === JSON.stringify(provider?._dropboxLocation?.(normalized)) ? cached : null;
+    } catch (_) { return null; }
+  }
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -42293,7 +42358,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (cached?.url && cached.url.startsWith('blob:')) {
       try { URL.revokeObjectURL(cached.url); } catch {}
     }
-    const next = { path: normalized, url, mime, size: fileSize, modified, identity };
+    const next = { path: normalized, url, mime, size: fileSize, modified, identity,
+      mediaScope: provider._mediaScope || '', mediaLocation: JSON.stringify(provider._dropboxLocation?.(normalized)) };
     CACHE[normalized] = next;
     return next;
   }
@@ -42361,10 +42427,31 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (current && !_runtime()?.isBrowserDataMode?.()) {
       _setElementUrlIfChanged(target, prop, current);
     }
-    return ensureDisplayUrl(pathLike).then((info) => {
-      if (target.isConnected && requests[prop] === request && info?.url) _setElementUrlIfChanged(target, prop, info.url);
-      return info;
-    }).catch(() => ({ path: '', url: '' }));
+    return _warmImage(pathLike).then(cached => {
+      const ownsTarget = () => target.isConnected && requests[prop] === request;
+      if (cached && ownsTarget()) _setElementUrlIfChanged(target, prop, cached.url);
+      const refresh = () => {
+        if (cached && !ownsTarget()) return cached;
+        return ensureDisplayUrl(pathLike).then(info => {
+          if (ownsTarget() && info?.url) _setElementUrlIfChanged(target, prop, info.url);
+          return info;
+        }).catch(error => {
+          // Keep the last image through temporary network failures, but never
+          // keep a confirmed deleted/inaccessible file visible.
+          if (cached && /path\/(?:not_found|no_permission)|path_not_found|invalid_access_token|expired_access_token|再度接続|もう一度接続|保存先が変更|接続先が変更/.test(String(error?.message || error?.code || ''))) {
+            if (CACHE[cached.path] === cached) _clearCachePath(cached.path, false);
+            if (ownsTarget()) {
+              target.removeAttribute(prop);
+              target.dispatchEvent(new Event('error'));
+            }
+            return { path: '', url: '' };
+          }
+          return cached || { path: '', url: '' };
+        });
+      };
+      const refreshing = cached ? _queueImageRefresh(refresh) : refresh();
+      return cached || refreshing;
+    });
   }
 
   function _clearCachePath(path, isFolder) {

@@ -7,6 +7,50 @@
   const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
+  const IMAGE_REFRESH_QUEUE = [];
+  let imageRefreshCount = 0;
+  let warmScopePending = null;
+
+  function _queueImageRefresh(work) {
+    return new Promise(resolve => {
+      IMAGE_REFRESH_QUEUE.push({ work, resolve });
+      const drain = () => {
+        while (imageRefreshCount < 3 && IMAGE_REFRESH_QUEUE.length) {
+          const job = IMAGE_REFRESH_QUEUE.shift();
+          imageRefreshCount++;
+          Promise.resolve().then(job.work).catch(() => null).then(job.resolve).finally(() => {
+            imageRefreshCount--; drain();
+          });
+        }
+      };
+      drain();
+    });
+  }
+
+  async function _warmImage(pathLike) {
+    if (!_runtime()?.isDropboxMode?.()) return null;
+    const normalized = _extractRawPath(pathLike);
+    const cached = CACHE[normalized];
+    if (!cached?.mediaScope || !cached.url?.startsWith('blob:') || !/^image\//.test(cached.mime || '')) return null;
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!warmScopePending) {
+      const pending = (async () => {
+        const auth = window.MeldexDropboxAuth;
+        const account = await auth?.getCurrentAccount(false);
+        return account?.account_id ? JSON.stringify([
+          account.account_id, account.root_info || {}, provider?.getVaultPath?.(),
+          auth.getVaultNamespaceKind?.() || 'home',
+        ]) : '';
+      })();
+      warmScopePending = pending;
+      pending.finally(() => { if (warmScopePending === pending) warmScopePending = null; }).catch(() => {});
+    }
+    try {
+      const scope = await warmScopePending;
+      return CACHE[normalized] === cached && scope === cached.mediaScope
+        && cached.mediaLocation === JSON.stringify(provider?._dropboxLocation?.(normalized)) ? cached : null;
+    } catch (_) { return null; }
+  }
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -269,7 +313,8 @@
     if (cached?.url && cached.url.startsWith('blob:')) {
       try { URL.revokeObjectURL(cached.url); } catch {}
     }
-    const next = { path: normalized, url, mime, size: fileSize, modified, identity };
+    const next = { path: normalized, url, mime, size: fileSize, modified, identity,
+      mediaScope: provider._mediaScope || '', mediaLocation: JSON.stringify(provider._dropboxLocation?.(normalized)) };
     CACHE[normalized] = next;
     return next;
   }
@@ -337,10 +382,31 @@
     if (current && !_runtime()?.isBrowserDataMode?.()) {
       _setElementUrlIfChanged(target, prop, current);
     }
-    return ensureDisplayUrl(pathLike).then((info) => {
-      if (target.isConnected && requests[prop] === request && info?.url) _setElementUrlIfChanged(target, prop, info.url);
-      return info;
-    }).catch(() => ({ path: '', url: '' }));
+    return _warmImage(pathLike).then(cached => {
+      const ownsTarget = () => target.isConnected && requests[prop] === request;
+      if (cached && ownsTarget()) _setElementUrlIfChanged(target, prop, cached.url);
+      const refresh = () => {
+        if (cached && !ownsTarget()) return cached;
+        return ensureDisplayUrl(pathLike).then(info => {
+          if (ownsTarget() && info?.url) _setElementUrlIfChanged(target, prop, info.url);
+          return info;
+        }).catch(error => {
+          // Keep the last image through temporary network failures, but never
+          // keep a confirmed deleted/inaccessible file visible.
+          if (cached && /path\/(?:not_found|no_permission)|path_not_found|invalid_access_token|expired_access_token|再度接続|もう一度接続|保存先が変更|接続先が変更/.test(String(error?.message || error?.code || ''))) {
+            if (CACHE[cached.path] === cached) _clearCachePath(cached.path, false);
+            if (ownsTarget()) {
+              target.removeAttribute(prop);
+              target.dispatchEvent(new Event('error'));
+            }
+            return { path: '', url: '' };
+          }
+          return cached || { path: '', url: '' };
+        });
+      };
+      const refreshing = cached ? _queueImageRefresh(refresh) : refresh();
+      return cached || refreshing;
+    });
   }
 
   function _clearCachePath(path, isFolder) {
