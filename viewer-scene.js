@@ -589,7 +589,7 @@
   }
 
   async function ensureGroupMeta(startIdx) {
-    if (!isPdf) await Promise.all([items[startIdx], items[startIdx + 1]].filter(Boolean).map(loadImageMeta));
+    if (!isPdf) await Promise.all(getGroup(startIdx).map(i => items[i]).filter(Boolean).map(loadImageMeta));
   }
 
   function getGroup(startIdx) {

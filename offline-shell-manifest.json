@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.368-5f807bb7ecb0feabf67f",
+  "version": "0.7.368-19f64655e6f6df79e437",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -721,7 +721,7 @@
     },
     {
       "path": "gb-cloud-file-url.js",
-      "sha256": "f47ac490746e63856e56f880718a041bac1f9dc4ec92373647b88cf3c6057a87"
+      "sha256": "0574a0e766ac615b0c69378006c0c3f524ef442a78c368acdfda1f6866e9db6e"
     },
     {
       "path": "gb-cloud-form-relay.js",
@@ -3605,7 +3605,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "627e70945534dd9ac3796e04255ec55ea8e5930f918cd9df4adc48d55a2227ac"
+      "sha256": "2448c71665c3a20bac0622b7634c1fa22602963babb326540444e850b09d98fe"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3626,6 +3626,22 @@
     {
       "path": "meldex-cloud-runtime-09.js",
       "sha256": "fcf9aa42ba5811ea4dd5d8b3f260a29cdfaed7a22c6c3ded06def6cc476745ad"
+    },
+    {
+      "path": "meldex-cloud-viewer-runtime-01.js",
+      "sha256": "8614bab782fffba0de8535f5fda962b1d7415f6574d9f959ba96002a618e3d72"
+    },
+    {
+      "path": "meldex-cloud-viewer-runtime-02.js",
+      "sha256": "37f5a4091fc727cf92377c7b9a692edf711419e70e0a249aac45844452c529a8"
+    },
+    {
+      "path": "meldex-cloud-viewer-runtime-03.js",
+      "sha256": "bb3ab4807ef593056406f376bc3c20d7962ee605ff639a6b568d0dc5e8d5f5f2"
+    },
+    {
+      "path": "meldex-cloud-viewer-runtime-04.js",
+      "sha256": "d9da1a4215fc53d448ea32a95fab32118253d03490d95c640b9fd790029975ec"
     },
     {
       "path": "meldex-core.bundle.js",
@@ -3677,7 +3693,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "8be61f312c2ed010f542336c1ecfa07fbaa7671b956d256c36769042fe9977d6"
+      "sha256": "50a3c980879c915ff9478e1864a74bbfcc6d1303ad34d518dac42ad120c04a84"
     },
     {
       "path": "Meldex.ico",
@@ -4097,7 +4113,7 @@
     },
     {
       "path": "viewer-scene.js",
-      "sha256": "a66ffb052837135f8ab06896033446b4af9c7ca16dada865ff3fa92dc32e4998"
+      "sha256": "763a71ed7768a409574ca54c4a4891e70a7a938ceb2005dac6ff04eb6cb9fb91"
     },
     {
       "path": "viewer-video.js",
@@ -4109,7 +4125,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "f151dbcecbbfb27d0fdd1e98a3a489e2fb5f7ec561dbcf815bc2e3c4191e5104"
+      "sha256": "fbab46630153e893e709f23f69d8a5747253768c0871dd810d4426543b68fcc0"
     }
   ]
 }

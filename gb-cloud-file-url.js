@@ -147,6 +147,27 @@
     return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
   }
 
+  // Embedded viewers share the host's revision-checked image cache. Never
+  // borrow across origins, accounts, namespace roots or vaults.
+  async function _sharedImageOwner() {
+    if (!_runtime()?.isDropboxMode?.() || !/\/viewer(?:\.html)?$/.test(location.pathname)) return null;
+    try {
+      const host = window.parent;
+      if (!host || host === window || host.location.origin !== location.origin) return null;
+      const owner = host.MeldexPwaFileUrl;
+      const ownAuth = window.MeldexDropboxAuth;
+      const hostAuth = host.MeldexDropboxAuth;
+      if (!owner?.ensureDisplayUrl || !host.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+      const accounts = await Promise.all([ownAuth?.getCurrentAccount(false), hostAuth?.getCurrentAccount(false)]);
+      const scope = (auth, account) => account?.account_id ? JSON.stringify([
+        auth.getAppKey?.(), account.account_id, account.root_info || {},
+        auth.getVaultPath?.(), auth.getVaultNamespaceKind?.() || 'home',
+      ]) : '';
+      const ownScope = scope(ownAuth, accounts[0]);
+      return ownScope && ownScope === scope(hostAuth, accounts[1]) ? { owner, scope: ownScope } : null;
+    } catch (_) { return null; }
+  }
+
   async function _provider() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) return null;
@@ -224,6 +245,15 @@
     if (!normalized) return { path: '', url: direct };
     if (normalized.startsWith('zip:')) return _ensureArchiveRawUrl(normalized, direct, opts);
     if (!_runtime()?.isBrowserDataMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
+    const shared = await _sharedImageOwner();
+    if (shared) {
+      const result = await shared.owner.ensureDisplayUrl(direct, opts);
+      const current = await _sharedImageOwner();
+      if (!current || current.owner !== shared.owner || current.scope !== shared.scope) {
+        throw new Error('画像の取得中にDropboxの保存先が変更されました');
+      }
+      return result;
+    }
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const file = await _getFileWithMediaFallback(provider, normalized);
