@@ -191,9 +191,17 @@
     return options || {};
   }
 
+  function _cacheableDocumentPath(path) {
+    const relative = path.replace(/^__dropbox_root__\/[^/]+\/?/, '');
+    return /\.(md|json|csv|txt|html?)$/i.test(relative)
+      && !relative.split('/').some(part => part.startsWith('.')
+        || part.startsWith('_') && !/^_meldex_sheet\.cloud(?:\.manifest|\.shard-\d+)?\.json$/i.test(part));
+  }
+
   const DROPBOX_FILE_CACHE_TTL_MS = 20 * 1000;
-  const DROPBOX_FILE_CACHE_MAX_ENTRIES = 24;
-  const DROPBOX_FILE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+  const DROPBOX_FILE_CACHE_MAX_ENTRIES = 2048;
+  const DROPBOX_FILE_CACHE_TOTAL_BYTES = 64 * 1024 * 1024;
+  const DROPBOX_FILE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
   // Dropbox の単発アップロード上限は150MB。境界ぎりぎりを避けて分割へ切り替える。
   const DROPBOX_SINGLE_UPLOAD_MAX_BYTES = 140 * 1024 * 1024;
   // 分割送信の1回あたりのサイズ（Dropbox の推奨は4MBの倍数）。
@@ -390,6 +398,7 @@
     constructor() {
       this.rootHandle = null;
       this._metaCache = new Map();
+      this._metaCheckedAt = new Map();
       this._fileCache = new Map();
       this._fileDownloadInFlight = new Map();
       this._mediaChecks = new Map();
@@ -491,7 +500,9 @@
     }
 
     _rememberMeta(relativePath, meta) {
-      this._metaCache.set(_normalizeRelativePath(relativePath), meta || null);
+      const path = _normalizeRelativePath(relativePath);
+      this._metaCache.set(path, meta || null);
+      this._metaCheckedAt.set(path, { at: Date.now(), location: JSON.stringify(this._dropboxLocation(path)) });
     }
 
     _fileCacheMetaKey(meta) {
@@ -509,20 +520,23 @@
         file,
         metaKey: this._fileCacheMetaKey(meta),
         size,
+        location: JSON.stringify(this._dropboxLocation(normalized)),
         at: Date.now(),
       });
-      while (this._fileCache.size > DROPBOX_FILE_CACHE_MAX_ENTRIES) {
+      let total = [...this._fileCache.values()].reduce((sum, entry) => sum + entry.size, 0);
+      while (this._fileCache.size > DROPBOX_FILE_CACHE_MAX_ENTRIES || total > DROPBOX_FILE_CACHE_TOTAL_BYTES) {
         const firstKey = this._fileCache.keys().next().value;
         if (!firstKey) break;
+        total -= this._fileCache.get(firstKey).size;
         this._fileCache.delete(firstKey);
       }
     }
 
-    _cachedDownloadedFile(relativePath) {
+    _cachedDownloadedFile(relativePath, revisionValidated = false) {
       const normalized = _normalizeRelativePath(relativePath);
       const cached = this._fileCache.get(normalized);
       if (!cached) return null;
-      if (Date.now() - Number(cached.at || 0) > DROPBOX_FILE_CACHE_TTL_MS) {
+      if (!revisionValidated && Date.now() - Number(cached.at || 0) > DROPBOX_FILE_CACHE_TTL_MS) {
         this._fileCache.delete(normalized);
         return null;
       }
@@ -620,11 +634,15 @@
     _forgetMeta(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       this._metaCache.delete(normalized);
+      this._metaCheckedAt.delete(normalized);
       this._forgetFileCache(normalized);
       this._forgetListCache(normalized);
       const prefix = normalized ? (normalized + '/') : '';
       [...this._metaCache.keys()].forEach((key) => {
-        if (prefix && key.startsWith(prefix)) this._metaCache.delete(key);
+        if (prefix && key.startsWith(prefix)) {
+          this._metaCache.delete(key);
+          this._metaCheckedAt.delete(key);
+        }
       });
     }
 
@@ -637,6 +655,7 @@
     _forgetMetaSelf(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       this._metaCache.delete(normalized);
+      this._metaCheckedAt.delete(normalized);
       this._forgetFileCache(normalized);
       this._forgetListCache(normalized);
     }
@@ -678,6 +697,7 @@
       this._vaultMetadataInFlight = null;
       this.rootHandle = null;
       this._metaCache.clear();
+      this._metaCheckedAt.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
       this._mediaChecks.clear();
@@ -988,7 +1008,18 @@
         } else {
           current = _joinPath(current, segment);
         }
-        const meta = await this.refreshMetadata(current);
+        // Confirm the directory itself without discarding every downloaded
+        // child or its read revision on each autosave/view-config write.
+        const known = this._metaCache.get(current);
+        const checked = this._metaCheckedAt.get(current);
+        let meta = known;
+        if (known?.['.tag'] !== 'folder' || !checked
+            || Date.now() - checked.at >= 30000
+            || checked.location !== JSON.stringify(this._dropboxLocation(current))) {
+          this._metaCache.delete(current);
+          this._metaCheckedAt.delete(current);
+          meta = await this.getMetadata(current);
+        }
         if (meta?.['.tag'] === 'folder') continue;
         if (meta) throw new Error(`フォルダと同じパスにファイルがあります: ${current}`);
         try {
@@ -1077,12 +1108,23 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
-      // Only immutable display assets use the persistent cache. Sheet/source
-      // reads retain their existing freshness and conflict handling.
+      // Documents use revision-keyed local copies too. Management/security
+      // records and explicit fresh reads keep their existing download path.
+      const documentFile = _cacheableDocumentPath(normalized);
       const media = /\.(png|jpe?g|jpe|jfif|gif|webp|svg|bmp|avif|ico|apng|tiff?|heic|heif|pdf|mp[34]|webm|mov|avi|mkv|ogg|wav|m4a|aac|flac)$/i.test(normalized)
-        ? await this._mediaCacheRecord(normalized) : null;
-      const cached = this._cachedDownloadedFile(normalized);
-      if (cached && (!media || cached.__meldexMediaKey === media.key)) return cached;
+        ? await this._mediaCacheRecord(normalized)
+        : documentFile ? await this._mediaCacheRecord(normalized, true) : null;
+      const cached = this._cachedDownloadedFile(normalized, documentFile && !!media);
+      const remembered = this._fileCache.get(normalized);
+      if (cached && (!media || cached.__meldexMediaKey === media.key
+          || documentFile && remembered?.metaKey === this._fileCacheMetaKey(media.meta)
+            && remembered.location === JSON.stringify(this._dropboxLocation(normalized)))) return cached;
+      const checked = this._metaCheckedAt.get(normalized);
+      if (this._metaCache.has(normalized) && this._metaCache.get(normalized) === null
+          && checked?.location === JSON.stringify(this._dropboxLocation(normalized))
+          && Date.now() - checked.at < 30000) {
+        throw new Error(`ファイルが見つかりません: ${normalized}`);
+      }
       const flightKey = media?.key || normalized;
       const inFlight = this._fileDownloadInFlight.get(flightKey);
       if (inFlight) return inFlight;
@@ -1128,20 +1170,7 @@
           // A change between metadata and download must never populate the
           // previous revision's key.
           file.__meldexMediaKey = meta.rev === media.meta.rev ? media.key : '';
-          if (media.cache && meta.rev === media.meta.rev && file.size <= 24 * 1024 * 1024) {
-            try {
-              await media.cache.put(media.key, new Response(file, { headers: {
-                'content-type': file.type, 'content-length': String(file.size),
-              } }));
-              const keys = await media.cache.keys();
-              let total = 0;
-              for (let index = keys.length - 1; index >= 0; index--) {
-                const entry = await media.cache.match(keys[index]);
-                total += Number(entry?.headers.get('content-length') || 0);
-                if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
-              }
-            } catch (_) { /* Quota/private browsing must not break display. */ }
-          }
+          if (meta.rev === media.meta.rev) await this._persistCachedFile(media, file);
         }
         if (remember) this._rememberDownloadedFile(normalized, file, meta);
         return file;
@@ -1154,7 +1183,29 @@
       }
     }
 
-    async _mediaCacheRecord(normalized) {
+    async _persistCachedFile(media, file) {
+      if (!media?.cache || file.size > (media.documentFile ? media.maxBytes : 24 * 1024 * 1024)) return;
+      try {
+        await media.cache.put(media.key, new Response(file, { headers: {
+          'content-type': file.type, 'content-length': String(file.size),
+        } }));
+        const keys = await media.cache.keys();
+        if (media.documentFile) {
+          // Fixed per-file size and entry caps bound disk usage without
+          // reading every cached response on every sheet-row download.
+          for (const key of keys.slice(0, Math.max(0, keys.length - media.maxEntries))) await media.cache.delete(key);
+        } else {
+          let total = 0;
+          for (let index = keys.length - 1; index >= 0; index--) {
+            const entry = await media.cache.match(keys[index]);
+            total += Number(entry?.headers.get('content-length') || 0);
+            if (keys.length - index > 128 || total > 256 * 1024 * 1024) await media.cache.delete(keys[index]);
+          }
+        }
+      } catch (_) { /* Quota/private browsing must not break display. */ }
+    }
+
+    async _mediaCacheRecord(normalized, documentFile = false) {
       const auth = _auth();
       if (!auth?.getCurrentAccount) return null;
       const account = await auth.getCurrentAccount(false);
@@ -1168,6 +1219,7 @@
         this._mediaChecks.clear();
         if (previousScope) {
           this._metaCache.clear();
+          this._metaCheckedAt.clear();
           this._fileCache.clear();
         }
       }
@@ -1176,25 +1228,37 @@
       // Coalesce validation as well as downloads; failures are not retained.
       const known = this._metaCache.get(normalized);
       if (checked && Date.now() - checked.at < 30 * 1000
-        && (!this._metaCache.has(normalized) || known?.rev && (!checked.rev || known.rev === checked.rev))) return checked.promise;
+        && (!this._metaCache.has(normalized) || known?.rev && ((!documentFile && !checked.rev) || known.rev === checked.rev))) return checked.promise;
       const promise = (async () => {
-        const meta = await this._rpc('files/get_metadata', {
-          path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
-        }, { ...location, freshMissingCheck: true });
+        // A recent directory listing already validated every row's revision.
+        // Reuse that evidence instead of adding a metadata request per row.
+        const listed = documentFile && this._metaCache.get(normalized);
+        const meta = listed && this._metaCheckedAt.get(normalized)?.location === JSON.stringify(location)
+          && Date.now() - (this._metaCheckedAt.get(normalized)?.at || 0) < 30000
+          ? listed : await this._rpc('files/get_metadata', {
+            path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+          }, { ...location, freshMissingCheck: true });
         if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
-        this._rememberMeta(normalized, meta);
+        if (meta !== listed) this._rememberMeta(normalized, meta);
         if (!meta || meta['.tag'] !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
         if (!meta.rev || !globalThis.crypto?.subtle || !globalThis.caches) return null;
         const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity + '\n' + meta.rev));
         const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
         const key = new URL('./__meldex_media_cache__/' + hash, document.baseURI).href;
+        const small = Number(meta.size || 0) <= 64 * 1024;
+        const maxBytes = small ? 64 * 1024 : 8 * 1024 * 1024;
+        const maxEntries = small ? 2048 : 32;
         let cache = null;
-        try { cache = await caches.open('meldex-media-files-v1'); } catch (_) {}
+        try { cache = await caches.open(documentFile
+          ? (small ? 'meldex-document-files-v1' : 'meldex-large-document-files-v1')
+          : 'meldex-media-files-v1'); } catch (_) {}
         if (this._mediaScope !== scope) throw new Error('画像の取得中にDropboxの保存先が変更されました');
-        return { key, cache, meta, scope };
+        return { key, cache, meta, scope, documentFile, maxBytes, maxEntries };
       })();
-      const record = { path: normalized, at: Date.now(), promise, rev: '' };
+      // Pin pending document validation to its observed revision as well.
+      const record = { path: normalized, at: Date.now(), promise, rev: documentFile && known?.rev || '' };
       this._mediaChecks.set(identity, record);
+      while (this._mediaChecks.size > 4096) this._mediaChecks.delete(this._mediaChecks.keys().next().value);
       try {
         const result = await promise;
         record.rev = result?.meta?.rev || '';
@@ -1266,10 +1330,22 @@
       }, location);
       const meta = await response.json();
       this._rememberMeta(normalized, meta);
-      this._rememberDownloadedFile(normalized, _createFile(bytes, meta.name || _basename(normalized), {
+      const file = _createFile(bytes, meta.name || _basename(normalized), {
         type: _mimeFromPath(normalized),
         lastModified: _jsonDate(meta.server_modified || meta.client_modified || ''),
-      }), meta);
+      });
+      this._rememberDownloadedFile(normalized, file, meta);
+      if (_cacheableDocumentPath(normalized)) {
+        // Cache the exact bytes/revision returned by the successful CAS upload,
+        // so a browser reload need not download its own saved document again.
+        try {
+          const record = await this._mediaCacheRecord(normalized, true);
+          if (record?.meta.rev === meta.rev) {
+            file.__meldexMediaKey = record.key;
+            await this._persistCachedFile(record, file);
+          }
+        } catch (_) { /* Local caching cannot turn a successful save into a failure. */ }
+      }
       this._forgetListCache(_dirname(normalized));
       return meta;
     }
@@ -1646,6 +1722,7 @@
 
     async preflight() {
       this._metaCache.clear();
+      this._metaCheckedAt.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
       this._forgetListCache('');

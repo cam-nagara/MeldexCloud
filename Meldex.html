@@ -163,11 +163,14 @@ html[data-desktop-launch="1"] #gb-layout-root{
           .map(function (registration) { return registration.unregister(); }));
       });
   }
-  function clearMeldexCaches() {
+  function clearMeldexCaches(preserveUserFiles) {
     if (!window.caches || !caches.keys) return Promise.resolve([]);
     return caches.keys().then(function (keys) {
       return Promise.all(keys
         .filter(shouldClearMeldexCache)
+        .filter(function (key) {
+          return !preserveUserFiles || !['meldex-media-files-v1', 'meldex-document-files-v1', 'meldex-large-document-files-v1'].includes(key);
+        })
         .map(function (key) { return caches.delete(key); }));
     });
   }
@@ -216,7 +219,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
     if (!('serviceWorker' in navigator) || params.has('smoke')) return;
     if (disablePwa) {
       unregisterMeldexServiceWorkers().catch(() => {});
-      clearMeldexCaches().catch(() => {});
+      clearMeldexCaches(true).catch(() => {});
       return;
     }
     navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' })
@@ -245,7 +248,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=e286e0edb153dd79"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=9db3b4ee18bc540f"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=e286e0edb153dd79"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=627e70945534dd9a"></script>
 
 
 

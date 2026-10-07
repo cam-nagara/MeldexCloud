@@ -1,9 +1,9 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-10-07T02:21:27.057031+00:00",
+  "generatedAt": "2026-10-07T03:10:57.067991+00:00",
   "semver": "0.7.368",
   "variant": "cloud-beta",
-  "sourceSha": "0a80e298a10fd172e751d0f06a40bcd762cfc7d6",
+  "sourceSha": "662e7e60e23d5dc4ad3ec3103af993dabf417a72",
   "publicRepoCommit": null,
   "externalValueSources": {
     "cloudPublicUrl": {
@@ -37,17 +37,17 @@
     "manual-corpus.json": "92e4642239580abe0f58bbaabf1c0a70e2c04d853e2bd0baa23a9965c279f831",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "a2946b90e558d3447048d4ec88a1d5168cd0f0b9772c27e6e88dbc994b1e1244",
+    "Meldex.html": "7b618345c60ae8574081d6f5e3f4ed655dc563a3fde4f53e85db1520d456156b",
     "manifest.json": "90213367b9dcd7801921a770556392e2ecd750da37d77e639d88a10cb0f46c0a",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "fe3946ebf125270d5905a8e961e7102db4e991213097263698d492c7e5402d41",
+    "offline-shell-manifest.json": "a91b0c06985d61685048b71d37ff4fe0db5c57bdc5620be999bab08c45a7ec2f",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "ce89d04bd2b3297f3233ae45eaf3476edfa4ebcc9d3fcfcf0ed1f33d90f353de",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",
     "meldex-cloud-runtime-02.js": "aa03cb1e62028fe45e5ea7eb7f549babf44bdec770ddd64c9a9cc4e83b4df583",
     "meldex-cloud-runtime-03.js": "e286e0edb153dd799b24a0b3637a5b7feab70bba3a78524d561189d35e0ac7fb",
-    "meldex-cloud-runtime-04.js": "9db3b4ee18bc540f8556ad6afe91a0b69ddd1cf5124bcbad33cf8abf043e5b86",
+    "meldex-cloud-runtime-04.js": "627e70945534dd9ac3796e04255ec55ea8e5930f918cd9df4adc48d55a2227ac",
     "meldex-cloud-runtime-05.js": "0be7ee1355b445c830a8d7cd7f6041a4864917af07a0e1577b026bb0c2a79bb1",
     "meldex-cloud-runtime-06.js": "c1e14f4542352b8a69417ad5f2f64b236ec88fa8383528ccfa98484c87cc3468",
     "meldex-cloud-runtime-07.js": "c1828cd2a4a1d189ed0cf244dfdf4f9b0380205321d1a0516fcf7dd06c2d98b9",
@@ -59,7 +59,7 @@
     "offline-bundles/gb-data-access-dropbox-expanded.js": "7a744865b02162a4d0c62463f9cccdcb68a9c695a507ca7d694e7c5903d80263",
     "offline-bundles/gb-data-access-dropbox-fileops.js": "9745f35564c58e922796b325dcdedff514efd748f9731b88a28e1ebb559c77c3",
     "offline-bundles/gb-data-access.js": "9fee7e987e2ab42ec0eaf3dd10f928661f1f72dd55efada4e30a27e969292aa3",
-    "offline-bundles/gb-storage-adapter.js": "f70cc7e2fe816b870120adeb93dfe6980d14845e5a313a0e3a600bc07fe61239",
+    "offline-bundles/gb-storage-adapter.js": "99efe10dc687811fb2825d1a1b6ff064fbd70d73ff2b8358132e28f8d8169e09",
     "offline-bundles/gb-tooltip.js": "a6c8279061e3607a9b317f4bc6e83f54d08a8947356d552079d55a608f3a5f5c",
     "offline-bundles/meldex-core.js": "8c0bd96c0f99b9cf0f3f7d5ae42c507019b309aa0df48eb7d841cbb434b744c9"
   }
