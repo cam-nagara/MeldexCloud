@@ -1158,26 +1158,56 @@ function showFolderDisplaySettings(options) {
 
   _fdSep(menu);
 
-  const thumbSize = cfg.thumbnailSize || (cfg.showThumb === false ? 'none' : 'md');
   _fdSection(menu, 'サムネイルサイズ');
-  [
-    { key: 'none', label: 'なし' },
-    { key: 'sm', label: '小' },
-    { key: 'md', label: '中' },
-    { key: 'lg', label: '大' },
-  ].forEach(it => {
-    const row = document.createElement('div');
-    row.className = 'gb-context-menu-item';
-    row.innerHTML = radioMark(thumbSize === it.key) + it.label;
-    row.addEventListener('click', () => {
-      cfg.thumbnailSize = it.key;
-      cfg.showThumb = it.key !== 'none';
+  const thumbControls = document.createElement('div');
+  thumbControls.className = 'fd-thumbnail-size-controls';
+  thumbControls.style.cssText = 'display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;padding:7px 14px;min-width:260px;';
+  const showThumbLabel = document.createElement('label');
+  showThumbLabel.style.cssText = 'grid-column:1 / -1;display:flex;align-items:center;gap:8px;cursor:pointer;';
+  const showThumbInput = document.createElement('input');
+  showThumbInput.type = 'checkbox';
+  showThumbInput.checked = cfg.showThumb !== false;
+  showThumbInput.dataset.e2eId = 'folder-thumbnail-visible';
+  showThumbInput.addEventListener('change', () => {
+    cfg.showThumb = showThumbInput.checked;
+    thumbRange.disabled = !showThumbInput.checked;
+    saveFolderDisplayConfig(cfg);
+    renderFolderGrid();
+  });
+  showThumbLabel.append(showThumbInput, document.createTextNode('サムネイルを表示'));
+  const thumbRange = document.createElement('input');
+  thumbRange.type = 'range';
+  thumbRange.min = '48';
+  thumbRange.max = '1000';
+  thumbRange.step = '1';
+  thumbRange.value = String(Math.max(48, Math.min(1000, Math.round(120 * _folderZoom))));
+  thumbRange.dataset.e2eId = 'folder-thumbnail-size-slider';
+  thumbRange.setAttribute('aria-label', 'サムネイルサイズ');
+  thumbRange.disabled = !showThumbInput.checked;
+  const thumbValue = document.createElement('output');
+  thumbValue.style.cssText = 'min-width:74px;text-align:right;font-variant-numeric:tabular-nums;';
+  const applyThumbSize = (persist) => {
+    const px = Math.max(48, Math.min(1000, parseInt(thumbRange.value, 10) || 120));
+    thumbValue.textContent = `${px} × ${px}px`;
+    _folderZoom = px / 120;
+    localStorage.setItem('folder-zoom', String(_folderZoom));
+    localStorage.setItem('folder-thumbnail-size-px', String(px));
+    if (persist && cfg.showThumb === false) {
+      cfg.showThumb = true;
+      showThumbInput.checked = true;
+      thumbRange.disabled = false;
       saveFolderDisplayConfig(cfg);
       renderFolderGrid();
-      menu.remove();
-    });
-    menu.appendChild(row);
-  });
+    } else {
+      applyFolderZoom();
+    }
+    if (persist) saveFolderDisplayConfig(cfg);
+  };
+  thumbRange.addEventListener('input', () => applyThumbSize(false));
+  thumbRange.addEventListener('change', () => applyThumbSize(true));
+  thumbControls.append(showThumbLabel, thumbRange, thumbValue);
+  menu.appendChild(thumbControls);
+  thumbValue.textContent = `${thumbRange.value} × ${thumbRange.value}px`;
 
   _fdSep(menu);
 

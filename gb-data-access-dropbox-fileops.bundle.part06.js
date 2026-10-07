@@ -1,3 +1,10 @@
+        relocate = await _relocateReferences(provider, oldPath, nextPath, false);
+      });
+      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+    }
+
+    if (pathname === '/outliner/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
       _rejectProductionStructureMutation(body?.path || '', '削除');
       const confirmationItem = {
         path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',

@@ -2110,6 +2110,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   regId('btn-flip-h',       { label: '左右反転',     desc: '画像を左右に反転させます' });
   regId('btn-flip-v',       { label: '上下反転',     desc: '画像を上下に反転させます' });
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
+  regId('btn-annotation',   { label: 'アノテート',     desc: '表示中の画像へ書き込むフロートパネルを開きます', shortcutId: 'viewer.annotation' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });
@@ -3337,13 +3338,18 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       icon('x') + '</button></header><div class="sa-secondary-panel-body"></div>';
     document.body.append(scrim, panel);
     const widthKey = storageKey(appId, 'width');
-    panel.style.setProperty('--sa-secondary-width', `${readNumber(widthKey, 340)}px`);
+    // 幅は :root へ置く。パネル自身の幅と、本文を左へ押し出す余白（body の padding-right）が
+    // 同じ値を参照するため（standalone-secondary-panel.css）。
+    const setPanelWidth = (width) => document.documentElement.style.setProperty('--sa-secondary-width', `${width}px`);
+    setPanelWidth(readNumber(widthKey, 340));
     let lastFocus = null;
 
     function setOpen(open, persist) {
       const next = !!open;
       if (next) lastFocus = document.activeElement;
       panel.classList.toggle('is-open', next);
+      // 画面へ重ねず左へ押し出す（PC幅）。狭い画面ではCSS側で重ね表示に戻す。
+      document.body.classList.toggle('sa-secondary-open', next);
       scrim.classList.toggle('is-open', next);
       panel.setAttribute('aria-hidden', next ? 'false' : 'true');
       button.setAttribute('aria-pressed', next ? 'true' : 'false');
@@ -3371,7 +3377,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       const startWidth = panel.getBoundingClientRect().width;
       const move = moveEvent => {
         const width = Math.max(260, Math.min(620, startWidth + startX - moveEvent.clientX));
-        panel.style.setProperty('--sa-secondary-width', `${width}px`);
+        setPanelWidth(width);
       };
       const up = () => {
         document.removeEventListener('pointermove', move);
@@ -3386,7 +3392,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       event.preventDefault();
       const delta = event.key === 'ArrowLeft' ? 16 : -16;
       const width = Math.max(260, Math.min(620, panel.getBoundingClientRect().width + delta));
-      panel.style.setProperty('--sa-secondary-width', `${width}px`);
+      setPanelWidth(width);
       saveValue(widthKey, Math.round(width));
     });
     setOpen(readBool(storageKey(appId, 'open'), false), false);
@@ -3539,6 +3545,36 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     // デスクトップ32px帯・タッチ44px操作領域のトークンをそのまま適用する。
     const shell = setupShell('viewer', controls, 'tb-icon-btn');
     if (!shell) return false;
+    const infoSource = document.getElementById('hud-info');
+    if (embedded) {
+      shell.body.append(...embeddedSections(infoSource));
+      return true;
+    }
+
+    // 単独アプリでは「ビューワー」タブを置かない（表示モード・スライドショー・アノテートは
+    // 下端ツールバーと右クリックメニューに同じ入口があり、二重になっていた）。
+    root.__meldexAppShortcutScope = 'viewer';
+    const tabs = setupTabs(shell, [
+      {
+        id: 'info',
+        label: 'プロパティ',
+        onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
+      },
+      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
+    ]);
+    // 表示中のファイルが変わったら「プロパティ」タブを追従させる
+    if (infoSource) {
+      new MutationObserver(() => {
+        const host = tabs.panels.get('info');
+        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+      }).observe(infoSource, { childList: true, subtree: true, characterData: true });
+    }
+    return true;
+  }
+
+  // 本体のビューワーパネル内（iframe）だけで使う表示設定。単独アプリでは
+  // 下端ツールバー・右クリックメニューが同じ操作を持つため作らない。
+  function embeddedSections(infoSource) {
     const display = section('表示方法');
     const modeSource = document.getElementById('sel-mode');
     if (modeSource) display.appendChild(row('表示モード', linkedSelect(modeSource, '表示モード')));
@@ -3572,42 +3608,16 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     slideshow.appendChild(slideshowActions);
 
     const metadata = section('現在のファイル');
-    const current = statusElement(document.getElementById('hud-info')?.textContent || 'ファイルを開いてください');
+    const current = statusElement(infoSource?.textContent || 'ファイルを開いてください');
     metadata.appendChild(row('情報', current));
-    const infoSource = document.getElementById('hud-info');
     if (infoSource) new MutationObserver(() => { current.textContent = infoSource.textContent || '—'; })
       .observe(infoSource, { childList: true, subtree: true, characterData: true });
     const metadataActions = document.createElement('div');
     metadataActions.className = 'sa-secondary-actions';
-    // ツールバーのアノテートボタンは撤去済み（ビューワー安定化計画）。右サイドバーは単独ビューワーの
-    // 公開アノテートコントローラーへ直接発呼する（右クリックメニュー・Aキーと同じ入口）。
     metadataActions.appendChild(actionButton('アノテートを開く', () => window.MeldexViewerAnnotations?.toggle?.()));
     metadata.appendChild(metadataActions);
 
-    if (embedded) {
-      shell.body.append(display, slideshow, metadata);
-      return true;
-    }
-
-    root.__meldexAppShortcutScope = 'viewer';
-    const tabs = setupTabs(shell, [
-      { id: 'settings', label: 'ビューワー' },
-      {
-        id: 'info',
-        label: 'プロパティ',
-        onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
-      },
-      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
-    ]);
-    tabs.panels.get('settings').append(display, slideshow, metadata);
-    // 表示中のファイルが変わったら「プロパティ」タブを追従させる
-    if (infoSource) {
-      new MutationObserver(() => {
-        const host = tabs.panels.get('info');
-        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
-      }).observe(infoSource, { childList: true, subtree: true, characterData: true });
-    }
-    return true;
+    return [display, slideshow, metadata];
   }
 
   function install() {
@@ -4963,6 +4973,112 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
 ;
 
+/* === viewer-media-seek.js === */
+;
+/* viewer-media-seek.js — 下端ツールバーのシークバーを、動画・音声の再生位置に使う。
+
+   これまでシークバー（#seek-bar）はフォルダ内の画像の位置（0〜枚数-1）専用だった。
+   動画を開いた時もそのまま表示されるため、ドラッグしても再生位置が動かず「操作できない」
+   状態になっていた（単独ビューワーで動画を1本だけ開くと最大値0で、何も起きない）。
+   動画・音声を表示している間だけシークバーと件数表示を再生位置・再生時間へ切り替える。
+
+   ネイティブの <video controls> のシークバーは画面下端に出るため、下端ツールバーと
+   重なって掴みにくい。こちらは常に下端ツールバー上にあり、どの表示倍率でも同じ位置になる。
+
+   公開: window.MeldexViewerMediaSeek */
+(function () {
+  'use strict';
+
+  const MEDIA_EVENTS = [
+    'loadedmetadata', 'durationchange', 'timeupdate', 'seeked', 'play', 'pause', 'ended', 'emptied',
+  ];
+
+  let dragging = false;
+
+  function seekBar() { return document.getElementById('seek-bar'); }
+  function counter() { return document.getElementById('counter'); }
+  function activeMedia() { return document.querySelector('.layer.show video, .layer.show audio'); }
+
+  // 長さが確定していない（ストリーミング等でInfinity/NaN）場合は再生位置モードにしない。
+  function usableDuration(media) {
+    const duration = Number(media?.duration);
+    return Number.isFinite(duration) && duration > 0 ? duration : 0;
+  }
+
+  function formatTime(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const rest = total % 60;
+    const pad = value => String(value).padStart(2, '0');
+    return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${minutes}:${pad(rest)}`;
+  }
+
+  // 動画・音声を表示中ならシークバー・件数表示を再生位置へ切り替えて true を返す。
+  // 画像・PDFでは何もせず false を返し、viewer-scene.js 側の枚数表示に任せる。
+  function syncControls() {
+    const bar = seekBar();
+    if (!bar) return false;
+    const media = activeMedia();
+    const duration = usableDuration(media);
+    if (!duration) {
+      delete bar.dataset.seekMode;
+      return false;
+    }
+    bar.dataset.seekMode = 'media';
+    bar.min = '0';
+    bar.max = String(duration);
+    bar.step = '0.05';
+    if (!dragging) bar.value = String(Math.min(duration, Math.max(0, media.currentTime || 0)));
+    const label = counter();
+    if (label) label.textContent = `${formatTime(bar.value)} / ${formatTime(duration)}`;
+    return true;
+  }
+
+  function isMediaMode() {
+    return seekBar()?.dataset.seekMode === 'media';
+  }
+
+  // シークバーの input から呼ぶ。再生位置を動かせた時だけ true を返す。
+  function seekTo(value) {
+    const media = activeMedia();
+    const duration = usableDuration(media);
+    if (!duration) return false;
+    const next = Math.min(duration, Math.max(0, Number(value) || 0));
+    if (Number.isFinite(next)) media.currentTime = next;
+    syncControls();
+    return true;
+  }
+
+  // buildVideoElement / buildAudioElement から呼ぶ。
+  function attach(media) {
+    if (!media || media._viewerMediaSeekAttached) return media;
+    media._viewerMediaSeekAttached = true;
+    const update = () => { if (media.closest('.layer.show')) syncControls(); };
+    MEDIA_EVENTS.forEach(name => media.addEventListener(name, update));
+    return media;
+  }
+
+  // ドラッグ中は再生の timeupdate でつまみを戻さない。
+  function installDragGuard() {
+    const bar = seekBar();
+    if (!bar) return;
+    bar.addEventListener('pointerdown', () => { dragging = true; });
+    document.addEventListener('pointerup', () => { dragging = false; });
+    document.addEventListener('pointercancel', () => { dragging = false; });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installDragGuard, { once: true });
+  } else {
+    installDragGuard();
+  }
+
+  window.MeldexViewerMediaSeek = { attach, syncControls, isMediaMode, seekTo, formatTime };
+})();
+
+;
+
 /* === viewer-video.js === */
 ;
 /* viewer-video.js — Meldexビューワー: 動画ファイル表示の責務分離モジュール。
@@ -5024,10 +5140,21 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     console.warn('動画の再生に失敗しました', error);
   }
 
+  // ネイティブの操作バー（controls）は動画の下端に重なる。そこでのクリックは再生位置の
+  // 移動・音量操作なので、画面クリックでの再生/一時停止に横取りさせない
+  // （viewer-scene.js のパン開始判定 isBlockedTarget() と同じ下端の帯で判定する）。
+  const NATIVE_CONTROLS_BAND_PX = 40;
+  function isOnNativeControls(video, clientY) {
+    if (!video?.controls) return false;
+    const rect = video.getBoundingClientRect();
+    return clientY >= rect.bottom - NATIVE_CONTROLS_BAND_PX && clientY <= rect.bottom;
+  }
+
   function wireVideoClickToggle(video) {
     if (!video) return video;
     video.addEventListener('click', (ev) => {
       if (!isVideoInActiveLayer(video)) return;
+      if (isOnNativeControls(video, ev.clientY)) return;
       if (video.paused || video.ended) {
         video.play().catch(_reportPlaybackError);
       } else {
@@ -5051,6 +5178,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     video.addEventListener('pause', onVideoPause);
     video.addEventListener('ended', onVideoEnded);
     wireVideoClickToggle(video);
+    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    window.MeldexViewerMediaSeek?.attach?.(video);
     return video;
   }
 
@@ -5211,6 +5340,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     audio.addEventListener('play', onAudioPlay);
     audio.addEventListener('pause', onAudioPause);
     audio.addEventListener('ended', onAudioEnded);
+
+    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    window.MeldexViewerMediaSeek?.attach?.(audio);
 
     wrap.append(icon, filename, audio);
     return wrap;
@@ -5930,9 +6062,48 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     } catch {}
   }
 
+  // 単独アプリのタイトルバーへ、開いているファイル名とフォルダを出す。
+  // pywebview は document.title の変化をネイティブのタイトルバーへ反映しないため、
+  // 単独版サーバー（/api/standalone/window-title）経由でウィンドウ名を変えてもらう。
+  let _windowTitlePath = '';
+  function updateWindowTitle() {
+    if (Utils.isEmbeddedMeldexViewer()) return;
+    // items[].path は作業範囲からの相対パスのことがある（単独版は開いたファイルのフォルダが作業範囲）。
+    // その場合は作業範囲の絶対パス（nativeRoot）を前に付けてフォルダを組み立てる。
+    const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
+    const rawPath = String(currentViewerPathForFolderNavigation() || '');
+    const name = String(item?.name || '') || rawPath.split(/[\\/]/).pop() || '';
+    const rawFolder = String(Utils.splitViewerPath(rawPath).folder || '');
+    const absolute = /^([a-zA-Z]:[\\/]|[\\/][\\/]|[\\/])/.test(rawPath);
+    const base = absolute ? '' : [nativeRoot, _currentFolderPath, folderPath].find(value => value && value !== '.') || '';
+    let folder = [base, rawFolder].filter(Boolean).join('/').replace(/[\\/]+$/, '');
+    // Windowsのパスは区切りを「\」で揃える（開き方によって「/」と「\」が混ざって見えるため）。
+    if (/^([a-zA-Z]:|\\\\)/.test(folder)) folder = folder.replace(/\//g, '\\');
+    const fullPath = name ? (folder ? folder + '/' + name : name) : '';
+    if (fullPath === _windowTitlePath) return;
+    _windowTitlePath = fullPath;
+    document.title = name
+      ? ['Meldex ビューワー', name, folder].filter(Boolean).join(' — ')
+      : 'Meldex ビューワー';
+    if (params.get('native') !== '1') return;
+    fetch(API + '/standalone/window-title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: fullPath }),
+    }).catch(() => { /* タイトルを変えられなくても表示は続ける。 */ });
+  }
+
   function updateViewerPositionControls() {
+    // 動画・音声を表示している間は、シークバーと件数表示を再生位置・再生時間に使う
+    // （viewer-media-seek.js）。画像・PDFでは従来どおり何枚目かを示す。
+    if (window.MeldexViewerMediaSeek?.syncControls?.()) {
+      updateZoomLabel();
+      return;
+    }
     document.getElementById('counter').textContent = items.length ? (idx + 1) + ' / ' + items.length : '0 / 0';
     const seekBar = document.getElementById('seek-bar');
+    seekBar.min = 0;
+    seekBar.step = 1;
     seekBar.max = Math.max(0, items.length - 1);
     seekBar.value = idx;
     updateZoomLabel();
@@ -5974,6 +6145,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const group = getGroup(idx);
     if (group.length === 0) return;
     notifyParentCurrentViewerFile();
+    updateWindowTitle();
     if (!isPdf) {
       await Promise.all(group.map(i => ensureItemUrl(items[i])));
       if (token !== showGroupToken) return;
@@ -6069,6 +6241,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       layer.classList.add('show');
       activeLayer = target;
       incomingLayer = '';
+      // レイヤーを入れ替えた後にもう一度合わせる。入替前は直前の画像・動画がまだ
+      // 表示中扱いのため、動画から画像へ移ってもシークバーが再生位置のままになる。
+      updateViewerPositionControls();
       updateZoomLabel();
       hideViewerLoading(loadingToken);
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
@@ -6376,11 +6551,30 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     document.getElementById('hud-status').textContent = playing ? (reversePlay ? '◀ 逆再生中' : '▶ 再生中') : '⏸ 停止';
   }
 
+  // 動画・音声は showGroup() で作り直すと <video>/<audio> ごと差し替わり、再生位置が
+  // 先頭へ戻ってしまう。表示対象が変わらない再表示（フィット切替・表示モード・背景ブラー）は
+  // DOMを作り直さず、その場でフィットだけ適用し直す。
+  function refreshCurrentGroupInPlace() {
+    if (isPdf || items.length === 0) return false;
+    const type = items[idx]?.type;
+    if (type !== 'video' && type !== 'audio') return false;
+    const layer = document.getElementById('layer' + activeLayer);
+    if (!layer || !layer.querySelector('video, audio')) return false;
+    resetPan();
+    reapplyMediaFitStyle();
+    clampPan();
+    applyPan();
+    updateViewerPositionControls();
+    updateHud();
+    return true;
+  }
+
   function setMode(nextMode) {
     mode = nextMode;
     document.getElementById('sel-mode').value = mode;
     localStorage.setItem('viewer-mode', mode);
     if (isPdf) applyFit();
+    if (refreshCurrentGroupInPlace()) return;
     showGroup(idx);
   }
 
@@ -6391,6 +6585,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     renderCache.clear();
     applyFit();
     setFitUI();
+    if (refreshCurrentGroupInPlace()) return;
     showGroup(idx);
   }
 
@@ -6466,7 +6661,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     document.getElementById('btn-bg').classList.toggle('active', bgBlur);
     localStorage.setItem('viewer-bg', bgBlur);
     if (!bgBlur) { document.getElementById('bgA').classList.remove('show'); document.getElementById('bgB').classList.remove('show'); }
-    else if (!isPdf) showGroup(idx);
+    else if (!isPdf && !refreshCurrentGroupInPlace()) showGroup(idx);
   }
 
   function toggleHud() {
@@ -6807,6 +7002,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     _nativeFolderState = nextState;
     if (nextState?.root) nativeRoot = String(nextState.root);
     updateFolderNavButtons();
+    // 作業範囲が分かってからタイトルバーへフォルダを出す（items[].path は相対パスのため）。
+    updateWindowTitle();
   }
 
   // 単独版サーバーに作業範囲を前後の兄弟フォルダへ切り替えてもらい、そのフォルダを開き直す。

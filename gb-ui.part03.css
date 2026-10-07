@@ -367,8 +367,9 @@ input[type="range"]::-moz-range-thumb {
 .gb-modal {
   display: flex;
   flex-direction: column;
-  background: var(--ui-bg-surface);
-  border: 1px solid var(--ui-border);
+  background: var(--ui-modal-bg, var(--ui-bg-surface));
+  color: var(--ui-modal-fg, var(--ui-fg-default));
+  border: 1px solid var(--ui-modal-border, var(--ui-border));
   border-radius: var(--ui-radius-md);
   box-shadow: var(--ui-shadow-lg);
   max-width: 90vw;
@@ -433,7 +434,8 @@ input[type="range"]::-moz-range-thumb {
   flex: 1 1 auto;
   min-height: 120px;
   padding: var(--ui-space-6);
-  background: var(--ui-bg-surface);
+  background: var(--ui-modal-bg, var(--ui-bg-surface));
+  color: var(--ui-modal-fg, var(--ui-fg-default));
   overflow: auto;
 }
 .gb-modal-variant-full-bleed > .gb-modal-body,

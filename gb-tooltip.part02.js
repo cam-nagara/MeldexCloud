@@ -389,6 +389,7 @@
   regId('btn-flip-h',       { label: '左右反転',     desc: '画像を左右に反転させます' });
   regId('btn-flip-v',       { label: '上下反転',     desc: '画像を上下に反転させます' });
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
+  regId('btn-annotation',   { label: 'アノテート',     desc: '表示中の画像へ書き込むフロートパネルを開きます', shortcutId: 'viewer.annotation' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });

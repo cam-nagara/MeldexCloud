@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.372",
+    "semver": "0.7.373",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -17,13 +17,20 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.366"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.373"
   },
   "desktop": {
-    "currentVersion": "0.7.366",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.366/Meldex-v0.7.366.zip",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.366",
+    "currentVersion": "0.7.373",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.373/Meldex-v0.7.373.zip",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.373",
     "versions": [
+      {
+        "publishedAt": "2026-10-08",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.373",
+        "assetName": "Meldex-v0.7.373.zip",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.373/Meldex-v0.7.373.zip",
+        "version": "0.7.373"
+      },
       {
         "publishedAt": "2026-09-05",
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.366",
@@ -123,12 +130,12 @@
     "viewer": {
       "cloudUrl": "apps/viewer/",
       "windowsAsset": "MeldexViewer.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.366/MeldexViewer.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.373/MeldexViewer.zip"
     },
     "quick-memo": {
       "cloudUrl": "apps/quick-memo/",
       "windowsAsset": "MeldexQuickMemo.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.366/MeldexQuickMemo.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.373/MeldexQuickMemo.zip"
     }
   },
   "dropbox": {

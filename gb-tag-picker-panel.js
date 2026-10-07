@@ -43,6 +43,7 @@
     tagIds: [],
     matchMode: 'all',
     onChange: null,
+    anchor: null,
   };
   let _selected = new Set();
   let _catalog = { tags: [], groups: [] };
@@ -361,6 +362,7 @@
       tagIds: Array.isArray(opts.tagIds) ? opts.tagIds.map(String) : [],
       matchMode: opts.matchMode === 'any' ? 'any' : 'all',
       onChange: typeof opts.onChange === 'function' ? opts.onChange : null,
+      anchor: opts.anchor instanceof Element ? opts.anchor : null,
     };
     _selected = new Set(_ctx.tagIds);
     if (_titleEl) _titleEl.textContent = _ctx.headerLabel;
@@ -394,6 +396,18 @@
     const wasOpen = base.isOpen();
     base.open();
     _applyContext(options);
+    const anchor = options?.anchor;
+    if (anchor?.getBoundingClientRect && !base.isMobileSheetActive()) {
+      const anchorRect = anchor.getBoundingClientRect();
+      const panelRect = base.getElement()?.getBoundingClientRect();
+      const zoom = typeof _getZoom === 'function' ? Number(_getZoom()) || 1 : 1;
+      base.applyRect({
+        left: anchorRect.right / zoom + 6,
+        top: anchorRect.top / zoom,
+        w: (panelRect?.width || DEFAULT_W) / zoom,
+        h: (panelRect?.height || DEFAULT_H) / zoom,
+      });
+    }
     if (!wasOpen) base.focus();
     return base.getElement();
   }

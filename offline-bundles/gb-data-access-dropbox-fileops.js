@@ -3451,7 +3451,14 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       if (!targetPath) throw new Error('path は必須です');
       const entry = await _resolveEntryHandle(provider, targetPath);
       if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
-      _safeWriteJson(PWA_HOME_KEY, { path: targetPath, name: _basename(targetPath), exists: true, locked_folders: [], locked_paths: [] });
+      _safeWriteJson(PWA_HOME_KEY, {
+        path: targetPath,
+        name: _basename(targetPath),
+        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+        exists: true,
+        locked_folders: [],
+        locked_paths: [],
+      });
       return { ok: true, path: targetPath };
     }
 

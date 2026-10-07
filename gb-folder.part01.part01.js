@@ -339,10 +339,9 @@ function applyWaterfallLayout() {
 function applyFolderZoom() {
   const grid = _folderGridEl();
   if (!grid) return;
-  const w = Math.round(120 * _folderZoom);
-  const h = Math.round(75 * _folderZoom);
-  grid.style.setProperty('--fv-card-w', w + 'px');
-  grid.style.setProperty('--fv-card-h', h + 'px');
+  const size = Math.max(48, Math.min(1000, Math.round(120 * _folderZoom)));
+  grid.style.setProperty('--fv-card-w', size + 'px');
+  grid.style.setProperty('--fv-card-h', size + 'px');
   if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
 }
 
@@ -713,6 +712,7 @@ function renderFolderGrid(opts) {
       const idx = nextRenderIndex;
     const el = document.createElement('div');
     el.className = 'fv-item';
+    if (item.type === 'folder' || item.type === 'database') el.classList.add('fv-folder-list-item');
     el.dataset.idx = idx;
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
@@ -1233,10 +1233,22 @@ function showFolderItemContextMenu(e, item, options = {}) {
       onCopy: () => folderToolbarCopyItems(operationItems),
       onCut: () => folderToolbarCutItems(operationItems),
       onPaste: () => folderToolbarPasteToFolder(pasteTarget),
+      onDuplicate: async () => {
+        let count = 0;
+        for (const target of editableItems) {
+          try {
+            await apiPost('/outliner/duplicate', { path: target.path });
+            count += 1;
+          } catch {}
+        }
+        if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
+        showStatus(count > 0 ? `${count} 件を複製しました` : '複製に失敗しました', count === 0);
+      },
       onDelete: () => folderToolbarDeleteSelection(),
       copyDisabled: operationItems.length === 0,
       cutDisabled: editableItems.length === 0,
       pasteDisabled: !folderToolbarCanPasteTo(pasteTarget),
+      duplicateDisabled: editableItems.length === 0,
       deleteDisabled: editableItems.length === 0,
     });
     addSep();

@@ -393,6 +393,7 @@
       ['copy', 'コピー', 'copy', options.onCopy, options.copyDisabled],
       ['cut', '切り取り', 'scissors', options.onCut, options.cutDisabled],
       ['paste', '貼り付け', 'clipboardPaste', options.onPaste, options.pasteDisabled],
+      ['duplicate', '複製', 'copyPlus', options.onDuplicate, options.duplicateDisabled],
       ['delete', '削除', 'trash2', options.onDelete, options.deleteDisabled],
     ];
     actions.forEach(([name, label, icon, handler, disabled]) => {

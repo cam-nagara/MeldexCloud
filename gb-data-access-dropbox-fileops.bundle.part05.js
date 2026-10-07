@@ -1,3 +1,10 @@
+    }
+    const previous = requestId ? state.requests.find(record => record.request_id === requestId) : null;
+    _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
+    if (previous) return { ...state, result: previous.result };
+    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId);
+    const result = _folderLinkBatchSummary(operation, requestId, applied.results.concat(validationFailures));
+    const requests = requestId ? [...state.requests, {
       request_id: requestId,
       operation,
       fingerprint,
@@ -891,10 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, oldPath, nextPath, false);
-      });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/outliner/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');

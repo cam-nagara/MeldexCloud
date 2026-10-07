@@ -11068,6 +11068,21 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   color: var(--annotation-accent, var(--accent));
   border-color: var(--annotation-accent, var(--accent));
 }
+#folder-grid.grid-layout .fv-item.fv-folder-list-item,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  text-align: left;
+}
+#folder-grid.grid-layout .fv-item.fv-folder-list-item .fv-thumb,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item .fv-thumb {
+  width: 32px;
+  height: 32px;
+}
 .vl-lock-icon.vl-lock-icon-error {
   color: var(--error, #d65c5c);
   border-color: var(--error, #d65c5c);
@@ -12010,6 +12025,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
 }
 #entity-freetext > div, #page-content > div { margin-block: 2px; }
+#page-content > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
 #entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }
 
 /* 目次の項目。旧実装は見た目もホバーも JS のインラインstyle直書きだったため、
@@ -12022,18 +12038,18 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   padding-inline: 0 4px;
   cursor: pointer;
   border: 0;
-  background: transparent;
+  background: var(--page-toc-item-bg, transparent);
   text-align: start;
   font: inherit;
   border-radius: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--fg);
+  color: var(--page-toc-item-fg, var(--fg));
 }
 #note-toc .note-toc-item:hover,
 #note-toc .note-toc-item:focus-visible { background: var(--bg4); }
-#note-toc .note-toc-level-1 { padding-inline-start: 0; color: var(--accent); }
+#note-toc .note-toc-level-1 { padding-inline-start: 0; color: var(--page-toc-item-fg, var(--accent)); }
 #note-toc .note-toc-level-2 { padding-inline-start: 12px; }
 #note-toc .note-toc-level-3 { padding-inline-start: 24px; }
 #note-toc .note-toc-level-4 { padding-inline-start: 36px; }
@@ -13209,6 +13225,11 @@ input.gb-middle-ellipsis-input-active {
   gap: var(--ui-space-2);
   margin-bottom: var(--ui-space-2);
 }
+/* 設定ダイアログから body 直下へ開く各種ポップアップは、設定モーダルより
+   必ず前面へ出す。プリセット、色、アイコン、CLI使用量など共通経路を覆う。 */
+body:has(> .modal-overlay[data-settings-modal="1"]) > :is(.gb-context-menu,.gb-palette-popup,.gb-icon-picker-popup,.gb-format-popup,[role="listbox"][class*="popup"]) {
+  z-index: 100100 !important;
+}
 .pt-select-option-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
@@ -13539,6 +13560,14 @@ html.thumb-size-large #tree-scroll-container.tree-grid-layout #outliner-tree:has
 #outliner-tree.tree-grid-layout .tree-node,
 #tree-scroll-container.tree-grid-layout #outliner-tree .tree-node {
   min-width: 0;
+}
+/* グリッド表示でもフォルダは階層ナビゲーションとして一行を使い、
+   ファイルだけをカード状に並べる。 */
+#outliner-tree.tree-grid-layout .tree-node:has(> .tree-node-row[data-item-type="folder"]),
+#outliner-tree.tree-grid-layout .tree-node:has(> .tree-node-row[data-item-type="database"]),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-node:has(> .tree-node-row[data-item-type="folder"]),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-node:has(> .tree-node-row[data-item-type="database"]) {
+  grid-column: 1 / -1;
 }
 /* サムネイル行（Phase4で使用開始）向けの寸法変数を先行定義しておく（§4.1-5） */
 :root {
@@ -26756,8 +26785,9 @@ input[type="range"]::-moz-range-thumb {
 .gb-modal {
   display: flex;
   flex-direction: column;
-  background: var(--ui-bg-surface);
-  border: 1px solid var(--ui-border);
+  background: var(--ui-modal-bg, var(--ui-bg-surface));
+  color: var(--ui-modal-fg, var(--ui-fg-default));
+  border: 1px solid var(--ui-modal-border, var(--ui-border));
   border-radius: var(--ui-radius-md);
   box-shadow: var(--ui-shadow-lg);
   max-width: 90vw;
@@ -26822,7 +26852,8 @@ input[type="range"]::-moz-range-thumb {
   flex: 1 1 auto;
   min-height: 120px;
   padding: var(--ui-space-6);
-  background: var(--ui-bg-surface);
+  background: var(--ui-modal-bg, var(--ui-bg-surface));
+  color: var(--ui-modal-fg, var(--ui-fg-default));
   overflow: auto;
 }
 .gb-modal-variant-full-bleed > .gb-modal-body,
@@ -30229,374 +30260,6 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   .external-responder-dialog { max-height:calc(100vh - 16px); border-radius:10px 10px 0 0; }
   .external-responder-setting-row { align-items:flex-start; flex-direction:column; }
   .external-responder-setting-row button { width:100%; }
-}
-
-.llm-review-modal {
-  width: min(920px, calc(100vw - 48px));
-  height: min(760px, calc(100vh - 48px));
-  max-width: none;
-  background: var(--bg2);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.llm-review-header,
-.llm-review-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.llm-review-footer {
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  border-top: 1px solid var(--border);
-  border-bottom: 0;
-}
-
-.llm-review-title {
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.llm-review-close {
-  margin-left: auto;
-  flex: 0 0 auto;
-}
-
-.llm-review-close svg {
-  width: 14px;
-  height: 14px;
-}
-
-.llm-review-modal:focus {
-  outline: none;
-}
-
-.llm-review-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 14px;
-  display: grid;
-  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
-  gap: 14px;
-}
-
-.llm-review-section {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  border-radius: 6px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.llm-review-section h3 {
-  margin: 0;
-  font-size: 13px;
-}
-
-.llm-review-label {
-  display: grid;
-  gap: 6px;
-  color: var(--fg2);
-  font-size: 12px;
-}
-
-.llm-review-meta {
-  color: var(--fg2);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.llm-review-input,
-.llm-review-select,
-.llm-review-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--bg3);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 7px 8px;
-  font: inherit;
-  font-size: 12px;
-}
-
-.llm-review-textarea {
-  min-height: 104px;
-  resize: vertical;
-}
-
-.llm-review-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--fg);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.llm-review-check input {
-  margin-top: 2px;
-  flex: 0 0 auto;
-}
-
-.llm-review-details {
-  display: grid;
-  gap: 10px;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-}
-
-.llm-review-details summary {
-  cursor: pointer;
-  color: var(--fg2);
-  font-size: 12px;
-  user-select: none;
-}
-
-.llm-review-results {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.llm-review-summary {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg2);
-}
-
-.llm-review-summary-title {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.45;
-}
-
-.llm-review-summary-chips,
-.llm-review-issue-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.llm-review-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  min-height: 24px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg3);
-  color: var(--fg);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.llm-review-pill-label {
-  color: var(--fg2);
-}
-
-.llm-review-bulk-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg2);
-}
-
-.llm-review-bulk-label {
-  color: var(--fg2);
-  font-size: 12px;
-  margin-right: 2px;
-}
-
-.llm-review-issue {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 6px;
-  background: var(--bg2);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.llm-review-issue[data-severity="high"] {
-  border-left-color: var(--danger, #d9534f);
-}
-
-.llm-review-issue[data-severity="medium"] {
-  border-left-color: var(--warning, #d6a300);
-}
-
-.llm-review-issue-title {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.llm-review-issue-note {
-  display: grid;
-  gap: 3px;
-  color: var(--fg);
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-
-.llm-review-issue-note-label,
-.llm-review-source-title {
-  color: var(--fg2);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.llm-review-source-refs {
-  display: grid;
-  gap: 4px;
-  padding: 7px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-}
-
-.llm-review-source-ref {
-  color: var(--fg2);
-  font-size: 11px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.llm-review-issue-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.llm-review-state-btn {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--fg);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.llm-review-state-btn[data-active="1"] {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.llm-review-status {
-  flex: 1 1 180px;
-  min-width: 0;
-  color: var(--fg2);
-  font-size: 12px;
-  min-height: 18px;
-  overflow-wrap: anywhere;
-}
-
-.llm-review-progress-log {
-  min-height: 240px;
-  max-height: 520px;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg2);
-  padding: 8px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.llm-review-progress-row {
-  color: var(--fg2);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  padding: 2px 0;
-}
-
-.llm-review-progress-row[data-kind="error"] {
-  color: var(--danger, #d9534f);
-}
-
-@media (max-width: 760px) {
-  .llm-review-modal {
-    width: calc(100vw - 16px);
-    height: calc(100vh - 16px);
-  }
-
-  .llm-review-header,
-  .llm-review-footer {
-    padding: 10px;
-  }
-
-  .llm-review-body {
-    grid-template-columns: 1fr;
-    padding: 10px;
-    gap: 10px;
-  }
-
-  .llm-review-input,
-  .llm-review-select,
-  .llm-review-textarea {
-    min-height: 44px;
-    font-size: 16px;
-  }
-
-  .llm-review-check {
-    min-height: 44px;
-    align-items: center;
-    padding: 6px 0;
-  }
-
-  .llm-review-check input {
-    width: 18px;
-    height: 18px;
-    margin-top: 0;
-  }
-
-  .llm-review-details summary {
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-  }
-
-  .llm-review-footer .gb-btn,
-  .llm-review-state-btn {
-    min-height: 44px;
-  }
-
-  .llm-review-close.gb-btn-icon {
-    width: 44px;
-    min-width: 44px;
-  }
 }
 
 /* ==============================

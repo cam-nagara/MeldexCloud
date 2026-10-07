@@ -99,6 +99,7 @@
   <button id="btn-flip-v" class="tb-icon-btn" title="上下反転" aria-label="上下反転"><span class="ico ico-flipVertical2"></span></button>
   <button id="btn-rotate" class="tb-icon-btn" title="回転 (Q)" aria-label="回転"><span class="ico ico-rotateCw"></span></button>
   <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
+  <button id="btn-annotation" class="tb-icon-btn" title="アノテート (A)" aria-label="アノテート" aria-pressed="false" data-e2e-id="viewer-annotation-toggle"><span class="ico ico-squarePen"></span></button>
   <!-- アノテートのバージョン管理と既定アプリの設定は、下端ツールバーではなく右クリックメニューから開く -->
 </div>
 <input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
@@ -124,6 +125,7 @@
 <script src="standalone-offline-outbox.js"></script>
 <script src="viewer-scene-utils.js"></script>
 <script src="viewer-pdf-renderer.js"></script>
+<script src="viewer-media-seek.js"></script>
 <script src="viewer-video.js"></script>
 <script src="viewer-audio.js"></script>
 <script src="viewer-scene.js"></script>
@@ -142,6 +144,9 @@
   });
 </script>
 <script src="viewer-controls.js"></script>
+<!-- アノテートのフロートパネルは本体と同じ共通カラーパレットを開く（gb-color-palette.js） -->
+<script src="offline-bundles/gb-color-palette.js"></script>
+<script src="viewer-annotation-toolbar.js"></script>
 <script src="viewer-annotation-scene.js"></script>
 <script src="viewer-annotation-notes.js"></script>
 <script src="viewer-annotation-legacy.js"></script>

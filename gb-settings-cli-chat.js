@@ -89,7 +89,7 @@ function _renderCliChatSettingsContainer(container, config) {
   container.innerHTML = `
     <div class="gb-check-help-row" style="margin-top:4px;">
       <label class="gb-check"><input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}><span>CLIチャットを有効にする</span></label>
-      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
+      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / agy')}
     </div>
     <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
     <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">

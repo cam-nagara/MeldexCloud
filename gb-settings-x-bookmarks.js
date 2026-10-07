@@ -2,11 +2,60 @@
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
+  const SHARED_SETTINGS_DOCUMENT = 'x-bookmarks-settings';
   const X_DEVELOPER_CONSOLE_URL = 'https://console.x.com/';
   const X_DEVELOPER_CONSOLE_HELP = 'X Developer Consoleを開きます。左側の「クレジット」で残高を購入し、「使用状況」で取得件数と費用、「支払い」で支払方法を確認します。自動チャージは任意です。使う場合は利用上限も設定してください。毎月自動補充されるX API無料枠は案内されていません。xAI用の無料クレジットはXブックマーク取得には使えません。';
   let syncInFlight = false;
   let _currentSchedule = null;
   let _scheduleWidget = null;
+
+  function isCloudSurface() {
+    return window.isCloudStaticImportSurface?.() === true;
+  }
+
+  function settingsPayload() {
+    return {
+      save_dir: document.getElementById('x-bookmarks-save-dir')?.value || 'Xブックマーク',
+      max_results: Number(document.getElementById('x-bookmarks-max-results')?.value || 100),
+      client_id: getInputValue('x-bookmarks-client-id'),
+      redirect_uri: getInputValue('x-bookmarks-redirect-uri'),
+      auth_url: getInputValue('x-bookmarks-auth-url'),
+      token_url: getInputValue('x-bookmarks-token-url'),
+      api_base: getInputValue('x-bookmarks-api-base'),
+      scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
+    };
+  }
+
+  function applySettingsPayload(config) {
+    if (!config || typeof config !== 'object') return;
+    setInputValue('x-bookmarks-save-dir', config.save_dir || 'Xブックマーク');
+    setInputValue('x-bookmarks-max-results', config.max_results || 100);
+    setInputValue('x-bookmarks-client-id', config.client_id || '');
+    setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
+    setInputValue('x-bookmarks-auth-url', config.auth_url || '');
+    setInputValue('x-bookmarks-token-url', config.token_url || '');
+    setInputValue('x-bookmarks-api-base', config.api_base || '');
+    const folders = document.getElementById('x-bookmarks-scheduled-folders');
+    if (folders) folders.checked = config.scheduled_include_folders === true;
+  }
+
+  async function loadSharedSettings() {
+    if (typeof apiFetch !== 'function') return null;
+    const result = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, { silentError: true });
+    if (result?.available !== false && result?.payload) applySettingsPayload(result.payload);
+    return result;
+  }
+
+  async function saveSharedSettings(payload) {
+    if (typeof apiFetch !== 'function') return { available: false };
+    const current = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, { silentError: true });
+    const body = { payload };
+    if (current?.available !== false) body.expectedRevision = current?.revision || null;
+    return apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), silentError: true,
+    });
+  }
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -83,6 +132,17 @@
   async function loadStatus(options = {}) {
     const container = document.getElementById(rootId);
     if (!container || typeof apiFetch !== 'function') return;
+    if (isCloudSurface()) {
+      try {
+        const shared = await loadSharedSettings();
+        setText('x-bookmarks-connection', 'Cloud版: 共通設定を利用');
+        setText('x-bookmarks-client-state', shared?.exists ? 'デスクトップ版と同期済み' : '共通設定は未保存');
+        setStatus('接続情報は共有されています。Xへの接続と取得は現在このブラウザーでは利用できません。', false);
+      } catch (err) {
+        setStatus('共通設定を取得できませんでした: ' + (err.userMessage || err.message || err), true);
+      }
+      return;
+    }
     if (!options?.preserveStatus) setStatus('X連携の状態を確認しています...', false);
     try {
       const data = await apiFetch('/x-bookmarks/status', { silentError: true });
@@ -110,6 +170,7 @@
       );
       _currentSchedule = config.schedule || null;
       _initScheduleWidget(config.schedule, config.schedule_state);
+      await loadSharedSettings();
       if (!options?.preserveStatus) {
         const alert = data.alert;
         setStatus(
@@ -152,34 +213,19 @@
 
   async function saveConfig(options = {}) {
     const silentError = options?.silentError === true;
-    if (typeof apiPost !== 'function') {
+    if ((isCloudSurface() ? typeof apiFetch !== 'function' : typeof apiPost !== 'function')) {
       if (!silentError) setStatus('設定を保存できませんでした: APIを利用できません', true);
       return false;
     }
-    const saveDir = document.getElementById('x-bookmarks-save-dir')?.value || 'Xブックマーク';
-    const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-    const clientId = getInputValue('x-bookmarks-client-id');
-    const redirectUri = getInputValue('x-bookmarks-redirect-uri');
-    const authUrl = getInputValue('x-bookmarks-auth-url');
-    const tokenUrl = getInputValue('x-bookmarks-token-url');
-    const apiBase = getInputValue('x-bookmarks-api-base');
+    const body = settingsPayload();
     const schedulePayload = _scheduleWidget ? _scheduleWidget.getCurrentConfig() : _currentSchedule;
     try {
-      const body = {
-        save_dir: saveDir,
-        max_results: maxResults,
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        auth_url: authUrl,
-        token_url: tokenUrl,
-        api_base: apiBase,
-        scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
-      };
       if (schedulePayload) body.schedule = schedulePayload;
-      await apiPost('/x-bookmarks/config', body, { silentError: true });
+      await saveSharedSettings(settingsPayload());
+      if (!isCloudSurface()) await apiPost('/x-bookmarks/config', body, { silentError: true });
       if (options?.showSuccess) {
         await loadStatus();
-        setStatus('X接続設定を保存しました。', false);
+        setStatus('X接続設定をデスクトップ版とクラウド版の共通設定へ保存しました。', false);
       }
       return true;
     } catch (err) {
@@ -479,14 +525,6 @@
   function renderXBookmarksSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
-    // OAuth中継を持たないDropbox直結のCloud静的版では、押しても成立しない
-    // デスクトップ専用操作（X接続・差分保存等）を表示しない。gb-external-import.js
-    // が定義する既存判定をそのまま再利用する（新しい判定は作らない）。
-    if (window.isCloudStaticImportSurface?.()) {
-      container.hidden = true;
-      container.dataset.cloudDesktopOnlyHidden = '1';
-      return;
-    }
     container.hidden = false;
     delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
@@ -558,6 +596,14 @@
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
     bind();
+    if (isCloudSurface()) {
+      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect']
+        .forEach(id => { const control = document.getElementById(id); if (control) control.hidden = true; });
+      const schedule = document.getElementById('x-bookmarks-schedule-container');
+      if (schedule) schedule.hidden = true;
+      const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');
+      if (scheduledFolders) scheduledFolders.hidden = true;
+    }
     setSyncBusy(syncInFlight);
     loadStatus();
   }

@@ -89,6 +89,9 @@
     audio.addEventListener('pause', onAudioPause);
     audio.addEventListener('ended', onAudioEnded);
 
+    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    window.MeldexViewerMediaSeek?.attach?.(audio);
+
     wrap.append(icon, filename, audio);
     return wrap;
   }

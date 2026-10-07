@@ -881,5 +881,6 @@
     });
   }
 
-  window.openLlmCrossReviewDialog = openLlmCrossReviewDialog;
+  // LLMレビューは撤廃済み。旧版スクリプトが先に読み込まれた場合も入口を残さない。
+  delete window.openLlmCrossReviewDialog;
 })();

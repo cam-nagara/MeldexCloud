@@ -210,16 +210,35 @@
 
   async function checkCloudHomeFolderSharing(vaultInfo = {}) {
     try {
-      const isTeamRoot = vaultInfo?.namespaceKind === 'team_root' || vaultInfo?.state?.namespaceKind === 'team_root';
-      const rootPath = vaultInfo?.path || vaultInfo?.state?.path || '/';
+      let storedHome = null;
+      try { storedHome = JSON.parse(localStorage.getItem('meldex-cloud-home-folder') || 'null'); } catch {}
+      let homeInfo = storedHome;
+      if (!homeInfo?.path) {
+        try { homeInfo = await apiFetch('/home-folder', { silentError: true }); } catch { homeInfo = null; }
+      }
+      // 起動直後など個人設定をまだ読めない場合は、呼び出し元が明示した
+      // ホームパスだけを使う。source/vault 側の isSharedRoot はホームとは
+      // 別契約なので、誤警告を避けるため参照しない。
+      if (!homeInfo?.path) {
+        const explicitPath = vaultInfo?.path || vaultInfo?.state?.path || '';
+        if (explicitPath) {
+          homeInfo = {
+            path: explicitPath,
+            namespaceKind: vaultInfo?.namespaceKind || vaultInfo?.state?.namespaceKind || 'home',
+          };
+        }
+      }
+      const rootPath = homeInfo?.path || '';
+      const namespaceKind = homeInfo?.namespaceKind || 'home';
+      const isTeamRoot = namespaceKind === 'team_root';
       let isWorkspace = false;
 
-      if (window.MeldexWorkspaceFolderDetect?.isWorkspaceFolder) {
-        const detectRes = await window.MeldexWorkspaceFolderDetect.isWorkspaceFolder(rootPath, vaultInfo?.namespaceKind || 'home');
+      if (rootPath && window.MeldexWorkspaceFolderDetect?.isWorkspaceFolder) {
+        const detectRes = await window.MeldexWorkspaceFolderDetect.isWorkspaceFolder(rootPath, namespaceKind);
         if (detectRes?.workspace) isWorkspace = true;
       }
 
-      const isShared = isTeamRoot || isWorkspace || !!vaultInfo?.isSharedRoot;
+      const isShared = !!rootPath && (isTeamRoot || isWorkspace);
       if (isShared && !_startupWarningShown) {
         _startupWarningShown = true;
         const reason = isTeamRoot ? 'チームスペース' : '共有ワークスペース';

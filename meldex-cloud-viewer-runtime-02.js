@@ -8419,7 +8419,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -13022,7 +13022,14 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       if (!targetPath) throw new Error('path は必須です');
       const entry = await _resolveEntryHandle(provider, targetPath);
       if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
-      _safeWriteJson(PWA_HOME_KEY, { path: targetPath, name: _basename(targetPath), exists: true, locked_folders: [], locked_paths: [] });
+      _safeWriteJson(PWA_HOME_KEY, {
+        path: targetPath,
+        name: _basename(targetPath),
+        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+        exists: true,
+        locked_folders: [],
+        locked_paths: [],
+      });
       return { ok: true, path: targetPath };
     }
 

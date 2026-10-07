@@ -413,7 +413,9 @@
 
   async function _eraseAt(scene, clientX, clientY) {
     const local = clientToLocal(scene.svg, clientX, clientY);
-    const tolerance = localLengthForScreenPx(scene.svg, 10);
+    // 消しゴムの当たり半径はフロートパネルの太さスライダーに従う（既定14で従来と同じ約10px）。
+    const eraserWidth = Number(_ann.widths?.eraser);
+    const tolerance = localLengthForScreenPx(scene.svg, Math.max(4, (Number.isFinite(eraserWidth) && eraserWidth > 0 ? eraserWidth : 14) * 0.7));
     const els = Array.from(scene.strokesG.querySelectorAll('path, polygon, rect')).reverse();
     for (const el of els) {
       if (el.classList.contains('viewer-ann-preview')) continue;
@@ -539,6 +541,46 @@
     _scenes.forEach(scene => { scene.svg.style.display = _ann.visible ? '' : 'none'; });
   }
   function setColor(color) { _ann.color = color; }
+  // フロートパネルの太さスライダー（ペン・マーカー・消しゴム）。画面上のpxで保持し、
+  // 描画時に localLengthForScreenPx() で画像固有ピクセルへ換算する。
+  function setWidth(tool, width) {
+    const value = Number(width);
+    if (!tool || !Number.isFinite(value) || value <= 0) return;
+    _ann.widths[tool] = value;
+    _scenes.forEach(scene => {
+      if (_ann.active) scene.svg.style.cursor = annotationCursor();
+    });
+  }
+  // 表示中のすべてのシーンのアノテートを消す（本体の annClear() 相当）。
+  async function clearAll() {
+    const strokes = [];
+    _scenes.forEach(scene => {
+      scene.strokesG.querySelectorAll('path, polygon, rect, ellipse').forEach(el => {
+        if (!el.classList.contains('viewer-ann-preview')) strokes.push(el);
+      });
+    });
+    const noteCount = _scenes.reduce((sum, scene) => sum + (scene.notes?.length || 0), 0);
+    if (!strokes.length && !noteCount) return false;
+    if (!window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
+    for (const el of strokes) {
+      try {
+        const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
+        const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
+        el.remove();
+        window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
+      } catch (error) {
+        viewerAnnotationSaveFailed(error, 'アノテートを削除できませんでした');
+        window.__viewerAnnotationReportSave?.(false, 'delete', error);
+        return false;
+      }
+    }
+    for (const scene of _scenes) {
+      if (await window.MeldexViewerAnnotationNotes?.deleteAll?.(scene) === false) return false;
+    }
+    // 旧座標系のアノテート（viewer-annotation-legacy.js）は消しゴムと同じく対象外。
+    // 破壊的な座標変換を避けるため表示専用で扱っている。
+    return true;
+  }
   function setOpacity(opacity) {
     _ann.opacity = _normalizeOpacity(opacity, 1);
     _scenes.forEach(scene => { scene.svg.style.opacity = _ann.opacity; });
@@ -566,8 +608,10 @@
     toggle,
     setTool,
     setColor,
+    setWidth,
     setVisible,
     setOpacity,
+    clearAll,
     flushDrawing,
     isDrawing: () => _draw.isDrawing(),
     viewerAnnotationUser,

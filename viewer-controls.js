@@ -34,7 +34,21 @@
   document.getElementById('btn-flip-h').onclick = Scene.toggleFlipH;
   document.getElementById('btn-flip-v').onclick = Scene.toggleFlipV;
   document.getElementById('btn-rotate').onclick = Scene.rotate;
-  document.getElementById('seek-bar').addEventListener('input', function() { Scene.pause(); Scene.goToIndex(parseInt(this.value, 10)); });
+  // 動画・音声を表示中は再生位置、それ以外はフォルダ内の何枚目かを動かす。
+  document.getElementById('seek-bar').addEventListener('input', function() {
+    if (window.MeldexViewerMediaSeek?.isMediaMode?.() && window.MeldexViewerMediaSeek.seekTo(this.value)) return;
+    Scene.pause();
+    Scene.goToIndex(parseInt(this.value, 10));
+  });
+  // アノテートボタン。本体のビューワーパネル内（iframe）では本体側に同じ入口があるため出さない
+  // （常に最前面ボタンと同じ扱い）。使えないファイル（Cloudの直接オープン等）でも出さない。
+  const annotationButton = document.getElementById('btn-annotation');
+  if (annotationButton) {
+    // iframe内では二度と出さないので取り除く（アノテートの可否が後から変わっても復活させない）。
+    if (window.MeldexViewerSceneUtils?.isEmbeddedMeldexViewer?.()) annotationButton.remove();
+    else if (annotationsAvailable()) annotationButton.onclick = () => window.MeldexViewerAnnotations?.toggle?.();
+    else annotationButton.hidden = true;
+  }
   document.getElementById('btn-prev-folder').onclick = Scene.prevFolder;
   document.getElementById('btn-next-folder').onclick = Scene.nextFolder;
   // skipBack / skipForward は共通のアイコン置換表（replaceIcons）に無い形のため、ここで直接描画する。

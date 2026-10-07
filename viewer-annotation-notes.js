@@ -341,6 +341,15 @@
     return false;
   }
 
+  // 全削除（フロートパネルのゴミ箱）から呼ぶ。1件でも削除できなければ false を返す。
+  async function deleteAll(scene) {
+    for (const entry of [...(scene?.notes || [])]) {
+      await _deleteEntry(scene, entry);
+      if ((scene.notes || []).includes(entry)) return false;
+    }
+    return true;
+  }
+
   function hasUnsaved() {
     return (SceneEngine().getScenes() || []).some(scene =>
       (scene.notes || []).some(entry => entry.note?.dataset?.saveState === 'unsaved')
@@ -358,6 +367,7 @@
     createAt,
     setInteractive,
     eraseAt,
+    deleteAll,
     hasUnsaved,
   };
 })();

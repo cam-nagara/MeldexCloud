@@ -1263,8 +1263,45 @@
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
+          // 固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
+          // DOM・選択・スクロールを保持したまま、右サイドバー本体だけ差し替える。
+          const switchFixedRightRailContent = () => {
+            const previousGroup = groups.find(item => item?.id === panelsetNode.activeGroupId);
+            if (previousGroup?.root && previousGroup.id !== g.id) {
+              _collectPanesInGroup(previousGroup.root).forEach(previousPane => {
+                if (typeof GBPaneBridge?.retractPaneContent === 'function') {
+                  GBPaneBridge.retractPaneContent(previousPane.id);
+                }
+                if (GBLayout?.paneMap) delete GBLayout.paneMap[previousPane.id];
+              });
+            }
+            panelsetNode.activeGroupId = g.id;
+            pane.activeTabIndex = tabIdx;
+            panelsetNode.collapsed = false;
+            col.classList.remove('gb-dock-collapsed');
+            body.style.display = 'flex';
+            body.replaceChildren();
+            if (g.root && typeof GBLayout?.renderNode === 'function') {
+              body.appendChild(GBLayout.renderNode(g.root, depth));
+            }
+            dockBar.querySelectorAll('.gb-dock-icon[data-tab-id]').forEach(icon => {
+              const active = icon.dataset.groupId === g.id
+                && icon.dataset.paneId === pane.id
+                && icon.dataset.tabId === (tab.id || '');
+              icon.classList.toggle('active', active);
+              icon.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+            if (typeof GBPaneBridge?.refreshPaneAfterTabSwitch === 'function') {
+              GBPaneBridge.refreshPaneAfterTabSwitch(pane.id, { previousActivePane: null });
+            }
+            if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+          };
           const activateFixedTab = () => {
             if (fixedSide === 'right') recordRightRailSwitch(pane.id, tab.id || '');
+            if (fixedSide === 'right') {
+              switchFixedRightRailContent();
+              return;
+            }
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
             if (panelsetNode.collapsed) {

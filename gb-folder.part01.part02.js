@@ -131,60 +131,6 @@
         });
       }
     }, null, 'pencil');
-    addItem('複製', async () => {
-      try {
-        const res = await apiPost('/outliner/duplicate', { path: item.path });
-        showStatus('複製しました: ' + (res.new_name || ''));
-        if (_folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
-      } catch { showStatus('複製に失敗しました', true); }
-    }, null, 'copy');
-    addItem('削除', async () => {
-      const targets = (_folderSelectedItems.length > 1 ? _folderSelectedItems : [item])
-        .filter(target => !_folderMenuItemLocked(target));
-      if (!targets.length) {
-        showStatus('編集ロック中の項目は削除できません', true);
-        return;
-      }
-      // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
-      // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ。
-      const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
-        ? await handleDisplayedFolderLinkDelete(targets, _folderPath, {
-          refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
-        })
-        : { handled: false, result: null };
-      if (linkedDelete.handled) {
-        if (!linkedDelete.result) return;
-        _folderSelectedItems = [];
-        _folderSelected = null;
-        _updateFolderBulkBar();
-        return;
-      }
-      const impactTargets = targets.map(target => ({
-        path: target.path,
-        kind: target.type === 'folder' ? 'folder' : 'file',
-        ...((target.assetId || target.asset_id) ? { assetId: String(target.assetId || target.asset_id) } : {}),
-      }));
-      const confirmMessage = targets.length + ' 件を削除しますか？';
-      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-        : await cfConfirm(confirmMessage);
-      if (!confirmed) return;
-      const result = await deleteOutlinerItemsWithHistory(targets, {
-        confirmation: confirmed,
-        label: targets.length + ' 件を削除',
-        refresh: async () => {
-          if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-        },
-      });
-      _folderSelectedItems = [];
-      _folderSelected = null;
-      _updateFolderBulkBar();
-      if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-      const deletedCount = result.deletedCount || result.succeeded.length;
-      if (result.failedCount > 0) showStatus(`${deletedCount} 件を削除、${result.failedCount} 件は失敗しました`, true);
-      else if (deletedCount > 0) showStatus(deletedCount + ' 件を削除しました（Undoで戻せます）');
-      else showStatus('削除対象が見つからなかったため、表示を更新しました', true);
-    }, 'red', 'trash2');
   }
 
   if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
@@ -1032,8 +978,9 @@ let _lassoJustCompleted = false;
 document.getElementById('folder-grid').addEventListener('wheel', function(e) {
   if (!e.ctrlKey) return;
   e.preventDefault();
-  _folderZoom = Math.max(0.5, Math.min(3, _folderZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+  _folderZoom = Math.max(48 / 120, Math.min(1000 / 120, _folderZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
   localStorage.setItem('folder-zoom', _folderZoom);
+  localStorage.setItem('folder-thumbnail-size-px', String(Math.round(120 * _folderZoom)));
   applyFolderZoom();
 }, {passive: false});
 

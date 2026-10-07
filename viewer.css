@@ -36,7 +36,7 @@ body[data-viewer-file-drop="ready"]::after {
 }
 
 /* 背景ブラー */
-.bg-layer { position: absolute; inset: 0; background-size: cover; background-position: center; filter: blur(20px) brightness(0.4) saturate(1.2); transform: scale(1.1); opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; z-index: 0; }
+.bg-layer { position: absolute; inset: 0; right: var(--sa-secondary-inset, 0px); background-size: cover; background-position: center; filter: blur(20px) brightness(0.4) saturate(1.2); transform: scale(1.1); opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; z-index: 0; }
 .bg-layer.show { opacity: 1; }
 
 /* 表示エリア */
@@ -107,6 +107,24 @@ body[data-viewer-file-drop="ready"]::after {
 .viewer-ann-note-textarea { width: 100%; height: 100%; background: transparent; border: none;
   color: #333; font-size: 12px; resize: both; outline: none; font-family: inherit; }
 
+/* アノテートのフロートパネル（viewer-annotation-toolbar.js）。本体の #ann-toolbar と同じ
+   共通クラス（.floating-toolbar / .ann-tool / .ann-width-control / .gb-color-swatch）を使い、
+   本体が Meldex.html のインラインstyleで持っている区切り線・不透明度欄の寸法だけをここで補う。 */
+.viewer-ann-toolbar { z-index: 60; }
+.viewer-ann-toolbar-separator { width: 1px; height: 20px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+.viewer-ann-toolbar #ann-opacity { width: 60px; accent-color: var(--annotation-accent, var(--accent)); }
+.viewer-ann-toolbar #ann-opacity-label { font-size: 10px; color: var(--fg2); min-width: 28px; font-variant-numeric: tabular-nums; }
+.viewer-ann-toolbar .ann-tool { display: inline-flex; align-items: center; justify-content: center; }
+.viewer-ann-toolbar .viewer-ann-danger { color: var(--red, #d16969); }
+.viewer-ann-toolbar .viewer-ann-danger.active,
+.viewer-ann-toolbar .viewer-ann-toolbar-close.active { background: var(--annotation-card-bg); border-color: var(--annotation-border); color: var(--red, #d16969); }
+.viewer-ann-toolbar .viewer-ann-toolbar-close { color: var(--annotation-muted-fg); }
+@media (max-width: 640px), (pointer: coarse) {
+  .viewer-ann-toolbar .ann-tool,
+  .viewer-ann-toolbar .gb-color-swatch { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
+  .viewer-ann-toolbar .ann-width-control { min-height: var(--ui-h-touch, 44px); }
+}
+
 /* 旧座標系（coordinateSpaceを持たない既存注釈）の後方互換オーバーレイ。
    #display全体を基準にした固定位置のまま描画し、ズーム/パンには追従しない
    （viewer-annotation-legacy.js。破壊的な座標変換を避けるための現状維持）。 */
@@ -123,7 +141,7 @@ body[data-viewer-file-drop="ready"]::after {
 .nav-area svg { filter: drop-shadow(0 0 4px rgba(0,0,0,0.8)); }
 
 /* HUD */
-#hud { position: absolute; top: 12px; right: 12px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
+#hud { position: absolute; top: 12px; right: calc(12px + var(--sa-secondary-inset, 0px)); background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
 #hud.hidden { opacity: 0; pointer-events: none; }
 #hud-status { color: var(--accent); font-weight: bold; margin-bottom: 4px; }
 #hud-info { color: var(--fg2); font-size: 11px; line-height: 1.5; }
@@ -138,7 +156,10 @@ body[data-viewer-file-drop="ready"]::after {
 #controls.gb-toolbar-viewer {
   position: absolute;
   left: 0;
-  right: 0;
+  /* 右サイドバーは画面へ重ねず本文を左へ押し出す。絶対配置の基準は body の padding box
+     （padding-right の内側ではない）なので、ここでも同じ幅を引く
+     （standalone-secondary-panel.css の --sa-secondary-inset）。 */
+  right: var(--sa-secondary-inset, 0px);
   bottom: 0;
   background: var(--panel-bg);
   border-bottom: none;

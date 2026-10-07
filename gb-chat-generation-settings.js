@@ -192,14 +192,6 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
-  const showRecommendations = menu.querySelector('#chat-menu-show-recommendations');
-  if (showRecommendations) {
-    const nextValue = showRecommendations.checked ? '1' : '0';
-    if (localStorage.getItem('chat-recommendations-enabled') !== nextValue) {
-      localStorage.setItem('chat-recommendations-enabled', nextValue);
-      try { window.GBChatRecommendations?.refresh?.({ force: true }); } catch {}
-    }
-  }
   const reasoning = menu.querySelector('#chat-menu-reasoning-level');
   if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
   const preset = menu.querySelector('#chat-menu-param-preset');
@@ -232,7 +224,6 @@ function showChatGenerationSettingsMenu(event) {
     ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
     ${_chatGenerationCodeExecutionControlHtml()}
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-show-recommendations" type="checkbox" ${localStorage.getItem('chat-recommendations-enabled') !== '0' ? 'checked' : ''}><span>「次にできること」の提案を表示</span></label>
     <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
     ${_chatGenerationReasoningRowHtml()}
     ${_chatGenerationResponseTuningHtml()}

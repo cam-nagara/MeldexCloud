@@ -224,17 +224,32 @@ async function _changeHomeFolder() {
   // ホーム専用のタイトルと現在位置でOSフォルダ選択を開く。ソースフォルダ追加APIを
   // 流用すると用途名・開始位置・失敗契約が食い違うため、共通pick-folderを直接使う。
   let path = null;
-  try {
-    const query = new URLSearchParams({
-      title: 'ホームフォルダを選択',
-      initialdir: _homeFolderPath || '',
+  let namespaceKind = 'home';
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDropboxFolderPicker?.pickFolder) {
+    const picked = await window.MeldexDropboxFolderPicker.pickFolder({
+      title: 'Dropbox内のホームフォルダを選択',
+      initialPath: _homeFolderPath || '/',
+      namespaceKind: 'home',
     });
-    const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
-    if (res?.path) path = res.path;
+    if (picked?.path) {
+      path = picked.path;
+      namespaceKind = picked.namespaceKind === 'team_root' ? 'team_root' : 'home';
+    }
+  }
+  if (!path && window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+  try {
+    if (!path) {
+      const query = new URLSearchParams({
+        title: 'ホームフォルダを選択',
+        initialdir: _homeFolderPath || '',
+      });
+      const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
+      if (res?.path) path = res.path;
+    }
   } catch { path = await _promptFolderPath(); }
   if (path) {
     try {
-      await apiPut('/home-folder', { path });
+      await apiPut('/home-folder', { path, namespaceKind });
     } catch (e) {
       showStatus('ホームフォルダを変更できませんでした: ' + (e.userMessage || e.message || e), true);
       return;
@@ -248,6 +263,9 @@ async function _changeHomeFolder() {
     const homeInput = document.getElementById('modal-home-folder');
     if (homeInput) homeInput.value = path;
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+    if (typeof loadHomeFolderSharingStatusForSettings === 'function') {
+      loadHomeFolderSharingStatusForSettings().catch(() => {});
+    }
     showStatus('ホームフォルダを変更しました');
   }
 }

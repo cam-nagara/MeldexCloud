@@ -560,17 +560,9 @@
     refreshNow({ force: true });
   }
 
-  global.GBChatRecommendations = {
-    refresh: refreshNow,
-    scheduleRefresh,
-    getRecommendations: () => filteredActions(contextSnapshot()),
-    run: runAction,
-    dismiss: dismissAction,
-  };
-
-  if (global.document.readyState === 'loading') {
-    global.document.addEventListener('DOMContentLoaded', install);
-  } else {
-    install();
-  }
+  // 「次にできること」は撤廃済み。旧版からの同一ページ再読込でも残存UIを消す。
+  global.document.getElementById(PANEL_ID)?.remove();
+  global.localStorage.removeItem(STORAGE_KEY);
+  global.localStorage.removeItem(ENABLED_STORAGE_KEY);
+  delete global.GBChatRecommendations;
 })(window);

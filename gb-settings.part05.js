@@ -409,7 +409,7 @@ const SETTINGS_THEME_PREVIEW_SAMPLE_SPECS = Object.freeze({
     ['title', 'ノート', 'タイトル'], ['h1', 'ノート', '見出し H1'], ['h2', 'ノート', '見出し H2'],
     ['h3', 'ノート', '見出し H3'], ['h4', 'ノート', '見出し H4'], ['h5', 'ノート', '見出し H5'],
     ['h6', 'ノート', '見出し H6'], ['heading-icon', 'ノート', '見出しアイコン不透明度'],
-    ['paragraph', 'ノート', '本文'], ['bullet-list', 'ノート', '本文'], ['number-list', 'ノート', '本文'],
+    ['paragraph', 'ノート', '本文'], ['toc-1', 'ノート', '目次'], ['toc-2', 'ノート', '目次'], ['toc-3', 'ノート', '目次'], ['bullet-list', 'ノート', '本文'], ['number-list', 'ノート', '本文'],
     ['task-list', 'ノート', '本文'], ['link', '共通', 'リンク'], ['quote', 'ノート', '引用ブロック'],
     ['quote-cite', 'ノート', '引用元'], ['callout-icon', 'ノート', 'コールアウトアイコン'],
     ['callout-body', 'ノート', 'コールアウト本文'], ['table-header', 'ノート', '表 見出し'],
@@ -513,7 +513,7 @@ function _settingsThemePreviewActualSurface(appId) {
       ${toolButton('refresh', 'refreshCw', '再読み込み')}${toolButton('search', 'search', '検索')}${toolButton('options', 'slidersHorizontal', 'オプション')}
     </div>
     <div class="note-editor-body settings-theme-preview-note-body">
-      <nav class="settings-theme-preview-note-toc" aria-label="目次"><strong>目次</strong><a>見出し 1</a><a>見出し 2</a><a>見出し 3</a></nav>
+      <nav class="settings-theme-preview-note-toc" aria-label="目次"><strong>目次</strong>${_settingsThemePreviewElement(appId, 'toc-1', 'ノート', '目次', 'a', '見出し 1')}${_settingsThemePreviewElement(appId, 'toc-2', 'ノート', '目次', 'a', '見出し 2')}${_settingsThemePreviewElement(appId, 'toc-3', 'ノート', '目次', 'a', '見出し 3')}</nav>
       <article data-settings-theme-note-content aria-label="ノート本文">
         <div class="settings-theme-note-title-row">${_settingsThemePreviewElement(appId, 'heading-icon', 'ノート', '見出しアイコン不透明度', 'span', icon('pilcrow', 16), 'heading-icon', { markup: true })}${_settingsThemePreviewElement(appId, 'title', 'ノート', 'タイトル', 'div', 'ページタイトル', 'note-title')}</div>
         ${_settingsThemePreviewElement(appId, 'h1', 'ノート', '見出し H1', 'h1', '見出し 1')}
@@ -1213,6 +1213,14 @@ function _settingsThemeSubsection(title, body) {
   </section>`;
 }
 
+function _settingsThemeCollapsedSubsection(title, body) {
+  if (!body) return '';
+  return `<details class="gb-section gb-section--detail settings-theme-subsection settings-theme-subsection--collapsed">
+    <summary class="gb-section-title">${esc(title)}</summary>
+    ${body}
+  </details>`;
+}
+
 function _settingsThemePxValue(key, fallback) {
   const raw = getCssVar(key) || fallback || '';
   const n = parseFloat(raw);
@@ -1237,7 +1245,7 @@ function _renderSettingsThemeNoteLayoutRows() {
 function _renderSettingsThemeStyleAutoRows(name) {
   const targetIds = SETTINGS_THEME_STYLE_AUTO_TARGETS[name];
   if (!targetIds) return '';
-  return _settingsThemeSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, targetIds, showReset: false }));
+  return _settingsThemeCollapsedSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, targetIds, showReset: false }));
 }
 
 // 共通タブと重複するため、個別パネルタブから除外するラベル
@@ -1312,7 +1320,7 @@ function _renderSettingsThemeStyleRows(name) {
   const styleRows = defs.map(d => renderStyleRow(d)).join('');
   const styleSection = _settingsThemeSubsection('書式設定', styleRows);
   if (name === '共通') {
-    return _settingsThemeSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, group: 'ui' }))
+    return _settingsThemeCollapsedSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, group: 'ui' }))
       + styleSection;
   }
   const autoRows = _renderSettingsThemeStyleAutoRows(name);

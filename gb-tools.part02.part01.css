@@ -686,6 +686,11 @@ input.gb-middle-ellipsis-input-active {
   gap: var(--ui-space-2);
   margin-bottom: var(--ui-space-2);
 }
+/* 設定ダイアログから body 直下へ開く各種ポップアップは、設定モーダルより
+   必ず前面へ出す。プリセット、色、アイコン、CLI使用量など共通経路を覆う。 */
+body:has(> .modal-overlay[data-settings-modal="1"]) > :is(.gb-context-menu,.gb-palette-popup,.gb-icon-picker-popup,.gb-format-popup,[role="listbox"][class*="popup"]) {
+  z-index: 100100 !important;
+}
 .pt-select-option-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
@@ -1016,6 +1021,14 @@ html.thumb-size-large #tree-scroll-container.tree-grid-layout #outliner-tree:has
 #outliner-tree.tree-grid-layout .tree-node,
 #tree-scroll-container.tree-grid-layout #outliner-tree .tree-node {
   min-width: 0;
+}
+/* グリッド表示でもフォルダは階層ナビゲーションとして一行を使い、
+   ファイルだけをカード状に並べる。 */
+#outliner-tree.tree-grid-layout .tree-node:has(> .tree-node-row[data-item-type="folder"]),
+#outliner-tree.tree-grid-layout .tree-node:has(> .tree-node-row[data-item-type="database"]),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-node:has(> .tree-node-row[data-item-type="folder"]),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-node:has(> .tree-node-row[data-item-type="database"]) {
+  grid-column: 1 / -1;
 }
 /* サムネイル行（Phase4で使用開始）向けの寸法変数を先行定義しておく（§4.1-5） */
 :root {

@@ -53,9 +53,11 @@ function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
 
 function _imageSrc(item, preferThumb, thumbSize) {
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
-  // 動画・PDFは縮小版を作らないため、常に生ファイルを返す。
+  // 動画は共通サムネイルAPIが先頭付近のフレームを生成する。PDFだけは
+  // 生成契約がないため生ファイル表示へ戻す。
   if (item && item.path) {
-    const wantThumb = !!preferThumb && (!item.kind || item.kind === 'image');
+    const kind = _attachmentKind(item);
+    const wantThumb = !!preferThumb && (kind === 'image' || kind === 'video');
     return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
   }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))

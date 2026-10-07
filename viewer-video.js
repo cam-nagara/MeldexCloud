@@ -57,10 +57,21 @@
     console.warn('動画の再生に失敗しました', error);
   }
 
+  // ネイティブの操作バー（controls）は動画の下端に重なる。そこでのクリックは再生位置の
+  // 移動・音量操作なので、画面クリックでの再生/一時停止に横取りさせない
+  // （viewer-scene.js のパン開始判定 isBlockedTarget() と同じ下端の帯で判定する）。
+  const NATIVE_CONTROLS_BAND_PX = 40;
+  function isOnNativeControls(video, clientY) {
+    if (!video?.controls) return false;
+    const rect = video.getBoundingClientRect();
+    return clientY >= rect.bottom - NATIVE_CONTROLS_BAND_PX && clientY <= rect.bottom;
+  }
+
   function wireVideoClickToggle(video) {
     if (!video) return video;
     video.addEventListener('click', (ev) => {
       if (!isVideoInActiveLayer(video)) return;
+      if (isOnNativeControls(video, ev.clientY)) return;
       if (video.paused || video.ended) {
         video.play().catch(_reportPlaybackError);
       } else {
@@ -84,6 +95,8 @@
     video.addEventListener('pause', onVideoPause);
     video.addEventListener('ended', onVideoEnded);
     wireVideoClickToggle(video);
+    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    window.MeldexViewerMediaSeek?.attach?.(video);
     return video;
   }
 

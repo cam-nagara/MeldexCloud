@@ -9461,7 +9461,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -33829,7 +33829,14 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       if (!targetPath) throw new Error('path は必須です');
       const entry = await _resolveEntryHandle(provider, targetPath);
       if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
-      _safeWriteJson(PWA_HOME_KEY, { path: targetPath, name: _basename(targetPath), exists: true, locked_folders: [], locked_paths: [] });
+      _safeWriteJson(PWA_HOME_KEY, {
+        path: targetPath,
+        name: _basename(targetPath),
+        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+        exists: true,
+        locked_folders: [],
+        locked_paths: [],
+      });
       return { ok: true, path: targetPath };
     }
 
@@ -64492,6 +64499,7 @@ ${reason.message}`
   regId('btn-flip-h',       { label: '左右反転',     desc: '画像を左右に反転させます' });
   regId('btn-flip-v',       { label: '上下反転',     desc: '画像を上下に反転させます' });
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
+  regId('btn-annotation',   { label: 'アノテート',     desc: '表示中の画像へ書き込むフロートパネルを開きます', shortcutId: 'viewer.annotation' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });
@@ -68852,7 +68860,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       selected: { fg: '--fv-item-selected-fg', bg: '--fv-item-selected-bg', underline: '--fv-item-selected-border' },
     } },
     { id: 'style-note', group: 'style', app: 'ノート', label: 'ノート', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { hover: 'リンク', selected: '選択/カーソル' }, vars: {
-      normal: { fg: '--page-text-fg', underline: ['--page-hr-color', '--page-quote-border', '--page-table-border-color', '--page-table-control-border', '--page-table-toolbar-border', '--page-callout-border', '--page-callout-info-border', '--page-callout-warning-border', '--page-callout-danger-border', '--page-callout-success-border', '--page-copy-button-border', '--page-code-block-border', '--page-kbd-border', '--page-details-border', '--page-details-open-border', '--page-heading-icon-fg', '--page-drag-guide-color'] },
+      normal: { fg: '--page-text-fg', bg: '--page-paragraph-bg', underline: ['--page-hr-color', '--page-quote-border', '--page-table-border-color', '--page-table-control-border', '--page-table-toolbar-border', '--page-callout-border', '--page-callout-info-border', '--page-callout-warning-border', '--page-callout-danger-border', '--page-callout-success-border', '--page-copy-button-border', '--page-code-block-border', '--page-kbd-border', '--page-details-border', '--page-details-open-border', '--page-heading-icon-fg', '--page-drag-guide-color'] },
       hover: { fg: ['--page-link-fg', '--page-table-control-hover-fg', '--page-table-toolbar-hover-fg', '--page-copy-button-hover-fg'], bg: ['--page-link-bg', '--page-link-hover-bg', '--page-table-row-hover-bg', '--page-table-control-hover-bg', '--page-table-toolbar-button-hover-bg', '--page-copy-button-hover-bg', '--page-details-summary-hover-bg'], underline: ['--page-link-accent-color', '--page-table-control-hover-border'] },
       selected: { fg: '--page-selection-fg', bg: '--page-selection-color', underline: ['--page-caret-color', '--page-cell-edit-outline-color'] },
     } },

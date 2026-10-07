@@ -1,5 +1,32 @@
-.sa-secondary-panel {
+/* 幅は :root で持つ。右サイドバーは画面へ重ねず本文を左へ押し出すため、パネル自身と
+   本文側の余白（--sa-secondary-inset）が同じ値を参照できる必要がある。 */
+:root {
   --sa-secondary-width: 340px;
+  --sa-secondary-inset: 0px;
+}
+
+/* 押し出し方式（PC幅）。#controls / #hud / .bg-layer は body の padding box を基準にした
+   絶対配置なので、padding-right だけでは右端がパネルの下へ潜る。各要素側で
+   --sa-secondary-inset を引く（viewer.css）。 */
+body.sa-secondary-open {
+  --sa-secondary-inset: min(var(--sa-secondary-width), calc(100vw - 48px));
+}
+
+/* 余白はアニメーションさせない。表示領域が1フレームごとに変わると、画像のフィット計算
+   （viewer-resize.js → notifyResize）が拡大中の倍率を毎フレーム測り直してしまう。
+   スライドして見えるのはパネル自身の transform だけにする。 */
+body {
+  padding-right: var(--sa-secondary-inset, 0px);
+}
+
+@media (max-width: 820px) {
+  /* 狭い画面では従来どおり画面へ重ねる（押し出すと表示領域が残らない）。 */
+  body.sa-secondary-open {
+    --sa-secondary-inset: 0px;
+  }
+}
+
+.sa-secondary-panel {
   position: fixed;
   z-index: 9900;
   top: 0;
@@ -53,14 +80,18 @@
   font-size: 13px;
 }
 
+/* タブ（.gb-inner-tab）は共通トークンで大きさ・書体が決まる。ここの汎用ボタン指定
+   （font: inherit / padding / min-height）の方がセレクターが強く、通常時だけ共通の
+   文字サイズを打ち消して、カーソルオーバー時・選択時（:hover / .gb-inner-tab-active は
+   クラス2つで強い）と食い違っていた。タブは対象外にする。 */
 .sa-secondary-panel-header button,
-.sa-secondary-panel button,
+.sa-secondary-panel button:not(.gb-inner-tab),
 .sa-secondary-panel select,
 .sa-secondary-panel input {
   min-height: 32px;
 }
 
-.sa-secondary-panel button,
+.sa-secondary-panel button:not(.gb-inner-tab),
 .sa-secondary-panel select,
 .sa-secondary-panel input:not([type="range"]) {
   box-sizing: border-box;
@@ -72,7 +103,7 @@
   padding: 5px 9px;
 }
 
-.sa-secondary-panel button:hover,
+.sa-secondary-panel button:not(.gb-inner-tab):hover,
 .sa-secondary-panel select:hover {
   border-color: var(--accent, #569cd6);
   background: var(--bg4, #242a32);

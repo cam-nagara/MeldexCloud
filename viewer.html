@@ -18,11 +18,11 @@
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-loading-indicators.css">
 <link rel="stylesheet" href="viewer.css">
-<script src="meldex-cloud-viewer-runtime-01.js?v=f533ed4ac0872390"></script>
+<script src="meldex-cloud-viewer-runtime-01.js?v=8f2a64d3b0eaa7e5"></script>
 
 
 <script src="gb-cloud-runtime-config.js"></script>
-<script src="meldex-cloud-viewer-runtime-02.js?v=b0a00945eca37214"></script>
+<script src="meldex-cloud-viewer-runtime-02.js?v=ee88b11afcd0c4ca"></script>
 
 
 
@@ -91,6 +91,7 @@
   <button id="btn-flip-v" class="tb-icon-btn" title="上下反転" aria-label="上下反転"><span class="ico ico-flipVertical2"></span></button>
   <button id="btn-rotate" class="tb-icon-btn" title="回転 (Q)" aria-label="回転"><span class="ico ico-rotateCw"></span></button>
   <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
+  <button id="btn-annotation" class="tb-icon-btn" title="アノテート (A)" aria-label="アノテート" aria-pressed="false" data-e2e-id="viewer-annotation-toggle"><span class="ico ico-squarePen"></span></button>
   <!-- アノテートのバージョン管理と既定アプリの設定は、下端ツールバーではなく右クリックメニューから開く -->
 </div>
 <input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
@@ -103,7 +104,8 @@
 <button id="btn-hud" style="display:none;"></button>
 <button id="btn-original" style="display:none;"></button>
 
-<script src="meldex-cloud-viewer-runtime-03.js?v=73431f9a7a2b82b1"></script>
+<script src="meldex-cloud-viewer-runtime-03.js?v=2e5583df393d265d"></script>
+
 
 
 
@@ -133,7 +135,10 @@
     });
   });
 </script>
-<script src="meldex-cloud-viewer-runtime-04.js?v=d9da1a4215fc53d4"></script>
+<script src="meldex-cloud-viewer-runtime-04.js?v=510a6b36b2952531"></script>
+<!-- アノテートのフロートパネルは本体と同じ共通カラーパレットを開く（gb-color-palette.js） -->
+
+
 
 
 

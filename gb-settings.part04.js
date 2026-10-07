@@ -935,7 +935,7 @@ const _UI_CONFIG_KEYS = [
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
   'gb:thumbnail-fit', 'gb:tree-thumbnail-size', 'gb:tree-open-click-mode', 'gb:viewer-wheel-mode',
   // カレンダー / チャット
-  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-recommendations-enabled', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
+  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',

@@ -130,8 +130,8 @@ function _setOutlinerFilterStateValues(state) {
   if (entityCb) entityCb.checked = next.includeEntities;
   const bar = document.getElementById('global-filter-bar');
   const btn = document.getElementById('btn-filter-toggle');
-  if (bar) bar.style.display = next.filterBarVisible ? '' : 'none';
-  if (btn) btn.style.color = next.filterBarVisible ? 'var(--accent)' : 'var(--fg2)';
+  if (bar) bar.style.display = 'none';
+  if (btn) btn.style.color = 'var(--fg2)';
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = next.treeSearchQuery;
   const clearBtn = document.getElementById('btn-tree-search-clear');
@@ -153,7 +153,7 @@ function getCurrentOutlinerFilterState() {
     try { treeSearchQuery = _treeSearchQuery || ''; } catch {}
   }
   const bar = document.getElementById('global-filter-bar');
-  const filterBarVisible = bar ? bar.style.display !== 'none' : localStorage.getItem('gb:filter-bar-visible') === '1';
+  const filterBarVisible = false;
   return {
     globalFilter: _normalizeGlobalFilter(_globalFilter),
     includeEntities: _getTreeSearchIncludeEntities(),

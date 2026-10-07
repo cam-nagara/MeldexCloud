@@ -66,7 +66,10 @@ let _folderVisibleItems = [];
 let _folderBulkPopupRaf = 0;
 let _folderBulkPopupTracking = false;
 // パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
-let _folderZoom = parseFloat(localStorage.getItem('folder-zoom') || '1');
+const _savedFolderThumbnailPx = parseInt(localStorage.getItem('folder-thumbnail-size-px') || '', 10);
+let _folderZoom = Number.isFinite(_savedFolderThumbnailPx)
+  ? Math.max(48, Math.min(1000, _savedFolderThumbnailPx)) / 120
+  : parseFloat(localStorage.getItem('folder-zoom') || '1');
 // ボードのリンクカード計画 Phase B-2（縮小スコープ）: フォルダの状態
 // （_folderPath/_folderItems/_folderSelected等）はシートのctxと違い、単一の
 // グローバル変数のまま（CSVの_csvRenderContainerOverrideと同じ方針）。サブパネル等の

@@ -1,26 +1,3 @@
-            filename: ei.filename,
-            extension: ei.extension,
-            dialogTitle: `${ei.label}として保存`,
-            filetypes: ei.filetypes,
-            okMessage: `${ei.label} として保存しました`,
-            errorMessage: `${ei.label} の保存に失敗しました`,
-            path: nodeData.path,
-            title: nodeData.name || '無題',
-          });
-          },
-        });
-      });
-      addSep();
-    }
-  }
-
-  // --- 所属フォルダ（リンク登録） ---
-  if (!isEntity && nodeData.path) {
-    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
-    addMenuItem(linkLabel, () => {
-      closeTreeContextMenu();
-      showAddFolderLinkModal(nodeData.path, null);
-    }, null, 'link2');
   }
 
   // --- 色設定 ---
@@ -898,3 +875,25 @@ async function _autoExpandToPath(targetPath, noScroll) {
             await new Promise(r => setTimeout(r, 100));
             if (childrenDiv && childrenDiv.dataset.loaded === 'true') break;
           }
+          expanded = true;
+        }
+        break;
+      }
+    }
+    // 展開したら次の階層でターゲットが見つかるかチェック
+    if (expanded && _findAndHighlight(targetPath, noScroll)) return;
+  }
+  _findAndHighlight(targetPath, noScroll);
+}
+
+/* ==============================
+   フォルダごとのファイル非表示
+   ============================== */
+/* フィルタ / 検索 / フォルダごとの非表示は gb-outliner-search.js に分離 */
+document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.preventDefault());
+
+let _outlinerKeyboardFocusSeq = 0;
+
+function _outlinerKeyboardRow(nodeEl) {
+  return nodeEl?.querySelector?.(':scope > .tree-node-row') || null;
+}

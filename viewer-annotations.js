@@ -5,7 +5,7 @@
      - viewer-annotation-notes.js  … 新座標系(media-pixel-v1)の付箋＋しっぽ
      - viewer-annotation-legacy.js … coordinateSpaceを持たない旧アノテートの後方互換表示
    本ファイルの役割:
-     - ツールバー（既存の createMarkupToolbar、meldex-core.js／事前ビルド済みバンドル経由）と
+     - フロートパネル（viewer-annotation-toolbar.js。Meldex本体の #ann-toolbar と同じ部品構成）と
        上記シーンエンジンを繋ぐ薄い統合層。
      - 単一の公開アノテートコントローラー window.MeldexViewerAnnotations を提供する
        （toggle/setState/load/getSceneState。親画面・単独版・右クリックメニュー・Aキー・
@@ -110,55 +110,67 @@
     });
   }
 
-  // createMarkupToolbar（meldex-core.part03.js、共通・編集不可）は内部に固定色ミニパレット
-  // （sa-markup-palette、PALETTE_COLORSのみ・カスタムカラー非対応）を持つ。ビューワー残課題修正
-  // 計画 2026-08-04「4. 共通カラーパレット」に合わせ、生成後に色ボタンのクリックハンドラだけを
-  // 共通 openColorPalette（gb-color-palette.js）へ外部から差し替える（.onclickの単純上書きのため
-  // 元ハンドラの副作用は残らない）。
-  function _wireCommonColorPalette(toolbarEl, bridge) {
-    if (typeof openColorPalette !== 'function') return;
-    const colorBtn = toolbarEl.querySelector('.sa-markup-color-btn');
-    const swatch = toolbarEl.querySelector('.sa-markup-color-swatch');
-    if (!colorBtn) return;
-    colorBtn.onclick = () => {
-      openColorPalette(colorBtn, bridge.ann.color, (color) => {
-        bridge.setColor(color);
-        if (swatch) swatch.style.background = color;
-      });
-    };
+  // フロートパネルは Meldex本体の #ann-toolbar と同じ部品構成で作る
+  // （viewer-annotation-toolbar.js）。色は本体と同じ共通カラーパレット
+  // （gb-color-palette.js の openColorPalette）を開く。以前は meldex-core.js の
+  // createMarkupToolbar()（固定8色のミニパレット・太さ/不透明度なし）だったため本体と揃っていなかった。
+  function _syncToolbar() {
+    _toolbar?.syncFromState(SceneEngine().ann());
   }
 
   function ensureToolbar() {
     if (_toolbar) return;
-    const bridge = {
-      get ann() { return SceneEngine().ann(); },
-      toggle(active) { setState(active === undefined ? !SceneEngine().ann().active : !!active); },
-      setTool(tool) { SceneEngine().setTool(tool); },
-      setColor(color) { SceneEngine().setColor(color); },
+    const controller = {
+      setTool(tool) { SceneEngine().setTool(tool); _syncToolbar(); },
+      setColor(color) { SceneEngine().setColor(color); _syncToolbar(); },
       setOpacity(opacity) { SceneEngine().setOpacity(opacity); },
+      setWidth(tool, width) { SceneEngine().setWidth(tool, width); },
+      toggleVisible() { SceneEngine().setVisible(SceneEngine().ann().visible === false); _syncToolbar(); },
+      clearAll() { SceneEngine().clearAll(); },
+      close() { setState(false); },
+      openColorPicker(anchor) {
+        const engine = SceneEngine();
+        if (typeof openColorPalette !== 'function') return;
+        openColorPalette(anchor, engine.ann().color, (color) => {
+          engine.setColor(color);
+          _syncToolbar();
+        });
+      },
     };
-    _toolbar = createMarkupToolbar(bridge, document.body);
-    _toolbar.style.display = 'none';
-    _wireCommonColorPalette(_toolbar, bridge);
+    _toolbar = window.MeldexViewerAnnotationToolbar.create(controller);
+    _syncToolbar();
+  }
+
+  // 下端ツールバーのアノテートボタンの押下状態を合わせる。
+  function _syncToolbarButton(active) {
+    const button = document.getElementById('btn-annotation');
+    if (!button) return;
+    button.classList.toggle('active', !!active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 
   function setState(active) {
     ensureToolbar();
     const willActivate = !!active;
     const unavailable = willActivate ? _unavailableReason() : '';
+    const anchor = document.getElementById('btn-annotation');
     if (unavailable) {
       SceneEngine().setState(false);
-      if (_toolbar) _toolbar.style.display = 'none';
+      _toolbar?.setVisible(false);
+      _syncToolbarButton(false);
       if (typeof window.showStatus === 'function') window.showStatus(unavailable, true);
       _notifyParentStateChanged();
       return false;
     }
     if (willActivate === !!SceneEngine().ann().active) {
-      if (_toolbar) _toolbar.style.display = willActivate ? 'flex' : 'none';
+      _toolbar?.setVisible(willActivate, anchor);
+      _syncToolbarButton(willActivate);
       return willActivate;
     }
     SceneEngine().setState(willActivate);
-    if (_toolbar) _toolbar.style.display = willActivate ? 'flex' : 'none';
+    _toolbar?.setVisible(willActivate, anchor);
+    _syncToolbar();
+    _syncToolbarButton(willActivate);
     if (willActivate) SceneEngine().rebuild();
     _notifyParentStateChanged();
     return willActivate;
@@ -181,6 +193,8 @@
 
   function setAvailability(available, reason) {
     _availability = { available: !!available, reason: String(reason || '') };
+    const button = document.getElementById('btn-annotation');
+    if (button) button.hidden = !_availability.available;
     if (!_availability.available && SceneEngine()?.ann?.()?.active) setState(false);
     return { ..._availability };
   }
@@ -264,6 +278,7 @@
     if (msg.widths) Object.assign(engine.ann().widths, msg.widths);
     if (msg.visible !== undefined) engine.setVisible(msg.visible);
     setState(!!msg.active);
+    _syncToolbar();
   }
 
   window.addEventListener('message', (ev) => {

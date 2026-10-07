@@ -755,7 +755,14 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       if (!targetPath) throw new Error('path は必須です');
       const entry = await _resolveEntryHandle(provider, targetPath);
       if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
-      _safeWriteJson(PWA_HOME_KEY, { path: targetPath, name: _basename(targetPath), exists: true, locked_folders: [], locked_paths: [] });
+      _safeWriteJson(PWA_HOME_KEY, {
+        path: targetPath,
+        name: _basename(targetPath),
+        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+        exists: true,
+        locked_folders: [],
+        locked_paths: [],
+      });
       return { ok: true, path: targetPath };
     }
 
@@ -891,10 +898,3 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
   const committed = await _updateFolderLinksStateForProvider(provider, (state) => {
     if (!Array.isArray(state?.links) || !Array.isArray(state?.requests)) {
       throw new Error('フォルダリンクの再試行履歴が破損しています');
-    }
-    const previous = requestId ? state.requests.find(record => record.request_id === requestId) : null;
-    _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
-    if (previous) return { ...state, result: previous.result };
-    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId);
-    const result = _folderLinkBatchSummary(operation, requestId, applied.results.concat(validationFailures));
-    const requests = requestId ? [...state.requests, {

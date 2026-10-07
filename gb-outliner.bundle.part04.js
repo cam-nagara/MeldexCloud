@@ -486,10 +486,19 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       onCopy: () => folderToolbarCopyItems(contextOperationItems),
       onCut: () => folderToolbarCutItems(contextOperationItems),
       onPaste: () => folderToolbarPasteToFolder(addParent),
+      onDuplicate: async () => {
+        let count = 0;
+        for (const target of editableContextItems) {
+          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
+        }
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
+      },
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
       cutDisabled: editableContextItems.length === 0,
       pasteDisabled: !folderToolbarCanPasteTo(addParent),
+      duplicateDisabled: editableContextItems.length === 0,
       deleteDisabled: editableContextItems.length === 0,
     });
     addSep();
@@ -783,38 +792,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'pencil');
   }
 
-  // --- 複製 ---
-  {
-    // nodeDataとnodeElをペアで保持し、フィルタ後もインデックスがずれないようにする
-    const dupPairs = isMulti
-      ? [...treeSelection.items].filter(n => n._nodeData && n._nodeData.path && !n._nodeData._isRoot).map(n => ({ data: n._nodeData, el: n }))
-      : (nodeData.path && !nodeData._isRoot ? [{ data: nodeData, el: nodeEl }] : []);
-    if (dupPairs.length > 0) {
-      const dupLabel = isMulti ? `複製（${dupPairs.length}件）` : '複製';
-      addMenuItem(dupLabel, async () => {
-        closeTreeContextMenu();
-        let count = 0;
-        for (const { data: d, el: srcEl } of dupPairs) {
-          try {
-            const res = await apiPost('/outliner/duplicate', { path: d.path });
-            count++;
-            const newItem = { ...d, name: res.new_name, path: res.new_path };
-            if (res.file_id) newItem.file_id = res.file_id;
-            else delete newItem.file_id;
-            const parentChildren = srcEl?.parentElement;
-            if (parentChildren) {
-              const rootPath = srcEl.closest('#outliner-tree > .tree-node')?._nodeData?.path;
-              const newNode = createTreeNodeFromBrowse(newItem, rootPath);
-              srcEl.nextSibling ? parentChildren.insertBefore(newNode, srcEl.nextSibling) : parentChildren.appendChild(newNode);
-            }
-          } catch {}
-        }
-        if (count > 0) showStatus(`${count}件を複製しました`);
-        else showStatus('複製に失敗しました', true);
-      }, null, 'copy');
-    }
-  }
-
   // --- パスをコピー ---
   {
     const pathTargets = isMulti
@@ -898,3 +875,26 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
             return;
           }
           await MeldexExportSave.saveUrl(ei.url, {
+            filename: ei.filename,
+            extension: ei.extension,
+            dialogTitle: `${ei.label}として保存`,
+            filetypes: ei.filetypes,
+            okMessage: `${ei.label} として保存しました`,
+            errorMessage: `${ei.label} の保存に失敗しました`,
+            path: nodeData.path,
+            title: nodeData.name || '無題',
+          });
+          },
+        });
+      });
+      addSep();
+    }
+  }
+
+  // --- 所属フォルダ（リンク登録） ---
+  if (!isEntity && nodeData.path) {
+    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
+    addMenuItem(linkLabel, () => {
+      closeTreeContextMenu();
+      showAddFolderLinkModal(nodeData.path, null);
+    }, null, 'link2');

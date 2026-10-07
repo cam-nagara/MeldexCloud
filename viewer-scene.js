@@ -645,9 +645,48 @@
     } catch {}
   }
 
+  // 単独アプリのタイトルバーへ、開いているファイル名とフォルダを出す。
+  // pywebview は document.title の変化をネイティブのタイトルバーへ反映しないため、
+  // 単独版サーバー（/api/standalone/window-title）経由でウィンドウ名を変えてもらう。
+  let _windowTitlePath = '';
+  function updateWindowTitle() {
+    if (Utils.isEmbeddedMeldexViewer()) return;
+    // items[].path は作業範囲からの相対パスのことがある（単独版は開いたファイルのフォルダが作業範囲）。
+    // その場合は作業範囲の絶対パス（nativeRoot）を前に付けてフォルダを組み立てる。
+    const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
+    const rawPath = String(currentViewerPathForFolderNavigation() || '');
+    const name = String(item?.name || '') || rawPath.split(/[\\/]/).pop() || '';
+    const rawFolder = String(Utils.splitViewerPath(rawPath).folder || '');
+    const absolute = /^([a-zA-Z]:[\\/]|[\\/][\\/]|[\\/])/.test(rawPath);
+    const base = absolute ? '' : [nativeRoot, _currentFolderPath, folderPath].find(value => value && value !== '.') || '';
+    let folder = [base, rawFolder].filter(Boolean).join('/').replace(/[\\/]+$/, '');
+    // Windowsのパスは区切りを「\」で揃える（開き方によって「/」と「\」が混ざって見えるため）。
+    if (/^([a-zA-Z]:|\\\\)/.test(folder)) folder = folder.replace(/\//g, '\\');
+    const fullPath = name ? (folder ? folder + '/' + name : name) : '';
+    if (fullPath === _windowTitlePath) return;
+    _windowTitlePath = fullPath;
+    document.title = name
+      ? ['Meldex ビューワー', name, folder].filter(Boolean).join(' — ')
+      : 'Meldex ビューワー';
+    if (params.get('native') !== '1') return;
+    fetch(API + '/standalone/window-title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: fullPath }),
+    }).catch(() => { /* タイトルを変えられなくても表示は続ける。 */ });
+  }
+
   function updateViewerPositionControls() {
+    // 動画・音声を表示している間は、シークバーと件数表示を再生位置・再生時間に使う
+    // （viewer-media-seek.js）。画像・PDFでは従来どおり何枚目かを示す。
+    if (window.MeldexViewerMediaSeek?.syncControls?.()) {
+      updateZoomLabel();
+      return;
+    }
     document.getElementById('counter').textContent = items.length ? (idx + 1) + ' / ' + items.length : '0 / 0';
     const seekBar = document.getElementById('seek-bar');
+    seekBar.min = 0;
+    seekBar.step = 1;
     seekBar.max = Math.max(0, items.length - 1);
     seekBar.value = idx;
     updateZoomLabel();
@@ -689,6 +728,7 @@
     const group = getGroup(idx);
     if (group.length === 0) return;
     notifyParentCurrentViewerFile();
+    updateWindowTitle();
     if (!isPdf) {
       await Promise.all(group.map(i => ensureItemUrl(items[i])));
       if (token !== showGroupToken) return;
@@ -784,6 +824,9 @@
       layer.classList.add('show');
       activeLayer = target;
       incomingLayer = '';
+      // レイヤーを入れ替えた後にもう一度合わせる。入替前は直前の画像・動画がまだ
+      // 表示中扱いのため、動画から画像へ移ってもシークバーが再生位置のままになる。
+      updateViewerPositionControls();
       updateZoomLabel();
       hideViewerLoading(loadingToken);
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
@@ -1091,11 +1134,30 @@
     document.getElementById('hud-status').textContent = playing ? (reversePlay ? '◀ 逆再生中' : '▶ 再生中') : '⏸ 停止';
   }
 
+  // 動画・音声は showGroup() で作り直すと <video>/<audio> ごと差し替わり、再生位置が
+  // 先頭へ戻ってしまう。表示対象が変わらない再表示（フィット切替・表示モード・背景ブラー）は
+  // DOMを作り直さず、その場でフィットだけ適用し直す。
+  function refreshCurrentGroupInPlace() {
+    if (isPdf || items.length === 0) return false;
+    const type = items[idx]?.type;
+    if (type !== 'video' && type !== 'audio') return false;
+    const layer = document.getElementById('layer' + activeLayer);
+    if (!layer || !layer.querySelector('video, audio')) return false;
+    resetPan();
+    reapplyMediaFitStyle();
+    clampPan();
+    applyPan();
+    updateViewerPositionControls();
+    updateHud();
+    return true;
+  }
+
   function setMode(nextMode) {
     mode = nextMode;
     document.getElementById('sel-mode').value = mode;
     localStorage.setItem('viewer-mode', mode);
     if (isPdf) applyFit();
+    if (refreshCurrentGroupInPlace()) return;
     showGroup(idx);
   }
 
@@ -1106,6 +1168,7 @@
     renderCache.clear();
     applyFit();
     setFitUI();
+    if (refreshCurrentGroupInPlace()) return;
     showGroup(idx);
   }
 
@@ -1181,7 +1244,7 @@
     document.getElementById('btn-bg').classList.toggle('active', bgBlur);
     localStorage.setItem('viewer-bg', bgBlur);
     if (!bgBlur) { document.getElementById('bgA').classList.remove('show'); document.getElementById('bgB').classList.remove('show'); }
-    else if (!isPdf) showGroup(idx);
+    else if (!isPdf && !refreshCurrentGroupInPlace()) showGroup(idx);
   }
 
   function toggleHud() {
@@ -1522,6 +1585,8 @@
     _nativeFolderState = nextState;
     if (nextState?.root) nativeRoot = String(nextState.root);
     updateFolderNavButtons();
+    // 作業範囲が分かってからタイトルバーへフォルダを出す（items[].path は相対パスのため）。
+    updateWindowTitle();
   }
 
   // 単独版サーバーに作業範囲を前後の兄弟フォルダへ切り替えてもらい、そのフォルダを開き直す。

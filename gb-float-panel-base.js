@@ -159,15 +159,18 @@
           h: _dragState.h,
         });
       };
-      const onUp = () => {
+      const finishDrag = () => {
         _dragState = null;
         _notifyDragToggle(true);
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', finishDrag, true);
+        window.removeEventListener('pointercancel', finishDrag, true);
         _saveRect();
       };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', finishDrag, true);
+      window.addEventListener('pointercancel', finishDrag, true);
+      try { _header?.setPointerCapture?.(event.pointerId); } catch {}
     }
 
     function _bindResize() {
@@ -211,15 +214,17 @@
             }
             _applyRect({ left, top, w, h });
           };
-          const onUp = () => {
+          const finishResize = () => {
             _resizeState = null;
             _notifyDragToggle(true);
-            document.removeEventListener('pointermove', onMove);
-            document.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', finishResize, true);
+            window.removeEventListener('pointercancel', finishResize, true);
             _saveRect();
           };
-          document.addEventListener('pointermove', onMove);
-          document.addEventListener('pointerup', onUp);
+          window.addEventListener('pointermove', onMove, true);
+          window.addEventListener('pointerup', finishResize, true);
+          window.addEventListener('pointercancel', finishResize, true);
           // ポインタ捕捉は失敗しても続行する。ここで例外が出ると、操作対象を
           // 無効化したままリサイズが始まらない状態で止まってしまう。
           try { handle.setPointerCapture?.(event.pointerId); } catch {}

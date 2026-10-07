@@ -1375,6 +1375,21 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   color: var(--annotation-accent, var(--accent));
   border-color: var(--annotation-accent, var(--accent));
 }
+#folder-grid.grid-layout .fv-item.fv-folder-list-item,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  text-align: left;
+}
+#folder-grid.grid-layout .fv-item.fv-folder-list-item .fv-thumb,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item .fv-thumb {
+  width: 32px;
+  height: 32px;
+}
 .vl-lock-icon.vl-lock-icon-error {
   color: var(--error, #d65c5c);
   border-color: var(--error, #d65c5c);

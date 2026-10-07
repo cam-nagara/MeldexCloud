@@ -114,13 +114,18 @@
       icon('x') + '</button></header><div class="sa-secondary-panel-body"></div>';
     document.body.append(scrim, panel);
     const widthKey = storageKey(appId, 'width');
-    panel.style.setProperty('--sa-secondary-width', `${readNumber(widthKey, 340)}px`);
+    // 幅は :root へ置く。パネル自身の幅と、本文を左へ押し出す余白（body の padding-right）が
+    // 同じ値を参照するため（standalone-secondary-panel.css）。
+    const setPanelWidth = (width) => document.documentElement.style.setProperty('--sa-secondary-width', `${width}px`);
+    setPanelWidth(readNumber(widthKey, 340));
     let lastFocus = null;
 
     function setOpen(open, persist) {
       const next = !!open;
       if (next) lastFocus = document.activeElement;
       panel.classList.toggle('is-open', next);
+      // 画面へ重ねず左へ押し出す（PC幅）。狭い画面ではCSS側で重ね表示に戻す。
+      document.body.classList.toggle('sa-secondary-open', next);
       scrim.classList.toggle('is-open', next);
       panel.setAttribute('aria-hidden', next ? 'false' : 'true');
       button.setAttribute('aria-pressed', next ? 'true' : 'false');
@@ -148,7 +153,7 @@
       const startWidth = panel.getBoundingClientRect().width;
       const move = moveEvent => {
         const width = Math.max(260, Math.min(620, startWidth + startX - moveEvent.clientX));
-        panel.style.setProperty('--sa-secondary-width', `${width}px`);
+        setPanelWidth(width);
       };
       const up = () => {
         document.removeEventListener('pointermove', move);
@@ -163,7 +168,7 @@
       event.preventDefault();
       const delta = event.key === 'ArrowLeft' ? 16 : -16;
       const width = Math.max(260, Math.min(620, panel.getBoundingClientRect().width + delta));
-      panel.style.setProperty('--sa-secondary-width', `${width}px`);
+      setPanelWidth(width);
       saveValue(widthKey, Math.round(width));
     });
     setOpen(readBool(storageKey(appId, 'open'), false), false);
@@ -316,6 +321,36 @@
     // デスクトップ32px帯・タッチ44px操作領域のトークンをそのまま適用する。
     const shell = setupShell('viewer', controls, 'tb-icon-btn');
     if (!shell) return false;
+    const infoSource = document.getElementById('hud-info');
+    if (embedded) {
+      shell.body.append(...embeddedSections(infoSource));
+      return true;
+    }
+
+    // 単独アプリでは「ビューワー」タブを置かない（表示モード・スライドショー・アノテートは
+    // 下端ツールバーと右クリックメニューに同じ入口があり、二重になっていた）。
+    root.__meldexAppShortcutScope = 'viewer';
+    const tabs = setupTabs(shell, [
+      {
+        id: 'info',
+        label: 'プロパティ',
+        onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
+      },
+      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
+    ]);
+    // 表示中のファイルが変わったら「プロパティ」タブを追従させる
+    if (infoSource) {
+      new MutationObserver(() => {
+        const host = tabs.panels.get('info');
+        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+      }).observe(infoSource, { childList: true, subtree: true, characterData: true });
+    }
+    return true;
+  }
+
+  // 本体のビューワーパネル内（iframe）だけで使う表示設定。単独アプリでは
+  // 下端ツールバー・右クリックメニューが同じ操作を持つため作らない。
+  function embeddedSections(infoSource) {
     const display = section('表示方法');
     const modeSource = document.getElementById('sel-mode');
     if (modeSource) display.appendChild(row('表示モード', linkedSelect(modeSource, '表示モード')));
@@ -349,42 +384,16 @@
     slideshow.appendChild(slideshowActions);
 
     const metadata = section('現在のファイル');
-    const current = statusElement(document.getElementById('hud-info')?.textContent || 'ファイルを開いてください');
+    const current = statusElement(infoSource?.textContent || 'ファイルを開いてください');
     metadata.appendChild(row('情報', current));
-    const infoSource = document.getElementById('hud-info');
     if (infoSource) new MutationObserver(() => { current.textContent = infoSource.textContent || '—'; })
       .observe(infoSource, { childList: true, subtree: true, characterData: true });
     const metadataActions = document.createElement('div');
     metadataActions.className = 'sa-secondary-actions';
-    // ツールバーのアノテートボタンは撤去済み（ビューワー安定化計画）。右サイドバーは単独ビューワーの
-    // 公開アノテートコントローラーへ直接発呼する（右クリックメニュー・Aキーと同じ入口）。
     metadataActions.appendChild(actionButton('アノテートを開く', () => window.MeldexViewerAnnotations?.toggle?.()));
     metadata.appendChild(metadataActions);
 
-    if (embedded) {
-      shell.body.append(display, slideshow, metadata);
-      return true;
-    }
-
-    root.__meldexAppShortcutScope = 'viewer';
-    const tabs = setupTabs(shell, [
-      { id: 'settings', label: 'ビューワー' },
-      {
-        id: 'info',
-        label: 'プロパティ',
-        onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
-      },
-      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
-    ]);
-    tabs.panels.get('settings').append(display, slideshow, metadata);
-    // 表示中のファイルが変わったら「プロパティ」タブを追従させる
-    if (infoSource) {
-      new MutationObserver(() => {
-        const host = tabs.panels.get('info');
-        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
-      }).observe(infoSource, { childList: true, subtree: true, characterData: true });
-    }
-    return true;
+    return [display, slideshow, metadata];
   }
 
   function install() {

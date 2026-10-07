@@ -16401,8 +16401,45 @@ const GBLayout = (() => {
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
+          // 固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
+          // DOM・選択・スクロールを保持したまま、右サイドバー本体だけ差し替える。
+          const switchFixedRightRailContent = () => {
+            const previousGroup = groups.find(item => item?.id === panelsetNode.activeGroupId);
+            if (previousGroup?.root && previousGroup.id !== g.id) {
+              _collectPanesInGroup(previousGroup.root).forEach(previousPane => {
+                if (typeof GBPaneBridge?.retractPaneContent === 'function') {
+                  GBPaneBridge.retractPaneContent(previousPane.id);
+                }
+                if (GBLayout?.paneMap) delete GBLayout.paneMap[previousPane.id];
+              });
+            }
+            panelsetNode.activeGroupId = g.id;
+            pane.activeTabIndex = tabIdx;
+            panelsetNode.collapsed = false;
+            col.classList.remove('gb-dock-collapsed');
+            body.style.display = 'flex';
+            body.replaceChildren();
+            if (g.root && typeof GBLayout?.renderNode === 'function') {
+              body.appendChild(GBLayout.renderNode(g.root, depth));
+            }
+            dockBar.querySelectorAll('.gb-dock-icon[data-tab-id]').forEach(icon => {
+              const active = icon.dataset.groupId === g.id
+                && icon.dataset.paneId === pane.id
+                && icon.dataset.tabId === (tab.id || '');
+              icon.classList.toggle('active', active);
+              icon.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+            if (typeof GBPaneBridge?.refreshPaneAfterTabSwitch === 'function') {
+              GBPaneBridge.refreshPaneAfterTabSwitch(pane.id, { previousActivePane: null });
+            }
+            if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+          };
           const activateFixedTab = () => {
             if (fixedSide === 'right') recordRightRailSwitch(pane.id, tab.id || '');
+            if (fixedSide === 'right') {
+              switchFixedRightRailContent();
+              return;
+            }
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
             if (panelsetNode.collapsed) {
@@ -78946,17 +78983,32 @@ async function _changeHomeFolder() {
   // ホーム専用のタイトルと現在位置でOSフォルダ選択を開く。ソースフォルダ追加APIを
   // 流用すると用途名・開始位置・失敗契約が食い違うため、共通pick-folderを直接使う。
   let path = null;
-  try {
-    const query = new URLSearchParams({
-      title: 'ホームフォルダを選択',
-      initialdir: _homeFolderPath || '',
+  let namespaceKind = 'home';
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDropboxFolderPicker?.pickFolder) {
+    const picked = await window.MeldexDropboxFolderPicker.pickFolder({
+      title: 'Dropbox内のホームフォルダを選択',
+      initialPath: _homeFolderPath || '/',
+      namespaceKind: 'home',
     });
-    const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
-    if (res?.path) path = res.path;
+    if (picked?.path) {
+      path = picked.path;
+      namespaceKind = picked.namespaceKind === 'team_root' ? 'team_root' : 'home';
+    }
+  }
+  if (!path && window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+  try {
+    if (!path) {
+      const query = new URLSearchParams({
+        title: 'ホームフォルダを選択',
+        initialdir: _homeFolderPath || '',
+      });
+      const res = await apiFetch('/pick-folder?' + query.toString(), { silentError: true });
+      if (res?.path) path = res.path;
+    }
   } catch { path = await _promptFolderPath(); }
   if (path) {
     try {
-      await apiPut('/home-folder', { path });
+      await apiPut('/home-folder', { path, namespaceKind });
     } catch (e) {
       showStatus('ホームフォルダを変更できませんでした: ' + (e.userMessage || e.message || e), true);
       return;
@@ -78970,6 +79022,9 @@ async function _changeHomeFolder() {
     const homeInput = document.getElementById('modal-home-folder');
     if (homeInput) homeInput.value = path;
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+    if (typeof loadHomeFolderSharingStatusForSettings === 'function') {
+      loadHomeFolderSharingStatusForSettings().catch(() => {});
+    }
     showStatus('ホームフォルダを変更しました');
   }
 }
@@ -80034,7 +80089,8 @@ const UI_STYLE_SECTIONS = {
     { label: '見出し H4', fg:'--page-h4-fg', bold:'--page-h4-bold', italic:'--page-h4-italic', bg:'--page-h4-bg', text:'見出し4', font:'--page-h4-font', lineHeight:'--page-h4-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h4-space-before', min:0, max:96, step:1, unit:'px', fallback:10 }, { label:'本文まで', key:'--page-h4-space-after', min:0, max:64, step:1, unit:'px', fallback:3 }] },
     { label: '見出し H5', fg:'--page-h5-fg', bold:'--page-h5-bold', italic:'--page-h5-italic', bg:'--page-h5-bg', text:'見出し5', font:'--page-h5-font', lineHeight:'--page-h5-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h5-space-before', min:0, max:96, step:1, unit:'px', fallback:8 }, { label:'本文まで', key:'--page-h5-space-after', min:0, max:64, step:1, unit:'px', fallback:3 }] },
     { label: '見出し H6', fg:'--page-h6-fg', bold:'--page-h6-bold', italic:'--page-h6-italic', bg:'--page-h6-bg', text:'見出し6', font:'--page-h6-font', lineHeight:'--page-h6-line-height', popupNumbers:[{ label:'見出し前', key:'--page-h6-space-before', min:0, max:96, step:1, unit:'px', fallback:6 }, { label:'本文まで', key:'--page-h6-space-after', min:0, max:64, step:1, unit:'px', fallback:2 }] },
-    { label: '本文', fg:'--page-text-fg', bold:'--page-text-bold', italic:'--page-text-italic', text:'本文テキスト', font:'--page-text-font', lineHeight:'--page-text-line-height' },
+    { label: '本文', fg:'--page-text-fg', bg:'--page-paragraph-bg', bold:'--page-text-bold', italic:'--page-text-italic', text:'本文テキスト', font:'--page-text-font', lineHeight:'--page-text-line-height' },
+    { label: '目次', fg:'--page-toc-item-fg', bg:'--page-toc-item-bg', text:'目次項目' },
     { label: '引用ブロック', fg:'--page-quote-fg', bold:'--page-quote-bold', italic:'--page-quote-italic', bg:'--page-quote-bg', text:'引用テキスト', bgType:'rgba' },
     { label: '引用線', line:'--page-quote-border', text:'━━' },
   ],
@@ -85190,7 +85246,7 @@ const _UI_CONFIG_KEYS = [
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
   'gb:thumbnail-fit', 'gb:tree-thumbnail-size', 'gb:tree-open-click-mode', 'gb:viewer-wheel-mode',
   // カレンダー / チャット
-  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-recommendations-enabled', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
+  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',
@@ -85439,7 +85495,7 @@ function _renderCliChatSettingsContainer(container, config) {
   container.innerHTML = `
     <div class="gb-check-help-row" style="margin-top:4px;">
       <label class="gb-check"><input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}><span>CLIチャットを有効にする</span></label>
-      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
+      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / agy')}
     </div>
     <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
     <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
@@ -86301,7 +86357,7 @@ const SETTINGS_THEME_PREVIEW_SAMPLE_SPECS = Object.freeze({
     ['title', 'ノート', 'タイトル'], ['h1', 'ノート', '見出し H1'], ['h2', 'ノート', '見出し H2'],
     ['h3', 'ノート', '見出し H3'], ['h4', 'ノート', '見出し H4'], ['h5', 'ノート', '見出し H5'],
     ['h6', 'ノート', '見出し H6'], ['heading-icon', 'ノート', '見出しアイコン不透明度'],
-    ['paragraph', 'ノート', '本文'], ['bullet-list', 'ノート', '本文'], ['number-list', 'ノート', '本文'],
+    ['paragraph', 'ノート', '本文'], ['toc-1', 'ノート', '目次'], ['toc-2', 'ノート', '目次'], ['toc-3', 'ノート', '目次'], ['bullet-list', 'ノート', '本文'], ['number-list', 'ノート', '本文'],
     ['task-list', 'ノート', '本文'], ['link', '共通', 'リンク'], ['quote', 'ノート', '引用ブロック'],
     ['quote-cite', 'ノート', '引用元'], ['callout-icon', 'ノート', 'コールアウトアイコン'],
     ['callout-body', 'ノート', 'コールアウト本文'], ['table-header', 'ノート', '表 見出し'],
@@ -86405,7 +86461,7 @@ function _settingsThemePreviewActualSurface(appId) {
       ${toolButton('refresh', 'refreshCw', '再読み込み')}${toolButton('search', 'search', '検索')}${toolButton('options', 'slidersHorizontal', 'オプション')}
     </div>
     <div class="note-editor-body settings-theme-preview-note-body">
-      <nav class="settings-theme-preview-note-toc" aria-label="目次"><strong>目次</strong><a>見出し 1</a><a>見出し 2</a><a>見出し 3</a></nav>
+      <nav class="settings-theme-preview-note-toc" aria-label="目次"><strong>目次</strong>${_settingsThemePreviewElement(appId, 'toc-1', 'ノート', '目次', 'a', '見出し 1')}${_settingsThemePreviewElement(appId, 'toc-2', 'ノート', '目次', 'a', '見出し 2')}${_settingsThemePreviewElement(appId, 'toc-3', 'ノート', '目次', 'a', '見出し 3')}</nav>
       <article data-settings-theme-note-content aria-label="ノート本文">
         <div class="settings-theme-note-title-row">${_settingsThemePreviewElement(appId, 'heading-icon', 'ノート', '見出しアイコン不透明度', 'span', icon('pilcrow', 16), 'heading-icon', { markup: true })}${_settingsThemePreviewElement(appId, 'title', 'ノート', 'タイトル', 'div', 'ページタイトル', 'note-title')}</div>
         ${_settingsThemePreviewElement(appId, 'h1', 'ノート', '見出し H1', 'h1', '見出し 1')}
@@ -87105,6 +87161,14 @@ function _settingsThemeSubsection(title, body) {
   </section>`;
 }
 
+function _settingsThemeCollapsedSubsection(title, body) {
+  if (!body) return '';
+  return `<details class="gb-section gb-section--detail settings-theme-subsection settings-theme-subsection--collapsed">
+    <summary class="gb-section-title">${esc(title)}</summary>
+    ${body}
+  </details>`;
+}
+
 function _settingsThemePxValue(key, fallback) {
   const raw = getCssVar(key) || fallback || '';
   const n = parseFloat(raw);
@@ -87129,7 +87193,7 @@ function _renderSettingsThemeNoteLayoutRows() {
 function _renderSettingsThemeStyleAutoRows(name) {
   const targetIds = SETTINGS_THEME_STYLE_AUTO_TARGETS[name];
   if (!targetIds) return '';
-  return _settingsThemeSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, targetIds, showReset: false }));
+  return _settingsThemeCollapsedSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, targetIds, showReset: false }));
 }
 
 // 共通タブと重複するため、個別パネルタブから除外するラベル
@@ -87204,7 +87268,7 @@ function _renderSettingsThemeStyleRows(name) {
   const styleRows = defs.map(d => renderStyleRow(d)).join('');
   const styleSection = _settingsThemeSubsection('書式設定', styleRows);
   if (name === '共通') {
-    return _settingsThemeSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, group: 'ui' }))
+    return _settingsThemeCollapsedSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true, group: 'ui' }))
       + styleSection;
   }
   const autoRows = _renderSettingsThemeStyleAutoRows(name);
@@ -88809,16 +88873,35 @@ async function showMeldexChangelogDialog(returnFocus) {
 
   async function checkCloudHomeFolderSharing(vaultInfo = {}) {
     try {
-      const isTeamRoot = vaultInfo?.namespaceKind === 'team_root' || vaultInfo?.state?.namespaceKind === 'team_root';
-      const rootPath = vaultInfo?.path || vaultInfo?.state?.path || '/';
+      let storedHome = null;
+      try { storedHome = JSON.parse(localStorage.getItem('meldex-cloud-home-folder') || 'null'); } catch {}
+      let homeInfo = storedHome;
+      if (!homeInfo?.path) {
+        try { homeInfo = await apiFetch('/home-folder', { silentError: true }); } catch { homeInfo = null; }
+      }
+      // 起動直後など個人設定をまだ読めない場合は、呼び出し元が明示した
+      // ホームパスだけを使う。source/vault 側の isSharedRoot はホームとは
+      // 別契約なので、誤警告を避けるため参照しない。
+      if (!homeInfo?.path) {
+        const explicitPath = vaultInfo?.path || vaultInfo?.state?.path || '';
+        if (explicitPath) {
+          homeInfo = {
+            path: explicitPath,
+            namespaceKind: vaultInfo?.namespaceKind || vaultInfo?.state?.namespaceKind || 'home',
+          };
+        }
+      }
+      const rootPath = homeInfo?.path || '';
+      const namespaceKind = homeInfo?.namespaceKind || 'home';
+      const isTeamRoot = namespaceKind === 'team_root';
       let isWorkspace = false;
 
-      if (window.MeldexWorkspaceFolderDetect?.isWorkspaceFolder) {
-        const detectRes = await window.MeldexWorkspaceFolderDetect.isWorkspaceFolder(rootPath, vaultInfo?.namespaceKind || 'home');
+      if (rootPath && window.MeldexWorkspaceFolderDetect?.isWorkspaceFolder) {
+        const detectRes = await window.MeldexWorkspaceFolderDetect.isWorkspaceFolder(rootPath, namespaceKind);
         if (detectRes?.workspace) isWorkspace = true;
       }
 
-      const isShared = isTeamRoot || isWorkspace || !!vaultInfo?.isSharedRoot;
+      const isShared = !!rootPath && (isTeamRoot || isWorkspace);
       if (isShared && !_startupWarningShown) {
         _startupWarningShown = true;
         const reason = isTeamRoot ? 'チームスペース' : '共有ワークスペース';
@@ -92617,11 +92700,60 @@ async function resetLayoutToDefault() {
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
+  const SHARED_SETTINGS_DOCUMENT = 'x-bookmarks-settings';
   const X_DEVELOPER_CONSOLE_URL = 'https://console.x.com/';
   const X_DEVELOPER_CONSOLE_HELP = 'X Developer Consoleを開きます。左側の「クレジット」で残高を購入し、「使用状況」で取得件数と費用、「支払い」で支払方法を確認します。自動チャージは任意です。使う場合は利用上限も設定してください。毎月自動補充されるX API無料枠は案内されていません。xAI用の無料クレジットはXブックマーク取得には使えません。';
   let syncInFlight = false;
   let _currentSchedule = null;
   let _scheduleWidget = null;
+
+  function isCloudSurface() {
+    return window.isCloudStaticImportSurface?.() === true;
+  }
+
+  function settingsPayload() {
+    return {
+      save_dir: document.getElementById('x-bookmarks-save-dir')?.value || 'Xブックマーク',
+      max_results: Number(document.getElementById('x-bookmarks-max-results')?.value || 100),
+      client_id: getInputValue('x-bookmarks-client-id'),
+      redirect_uri: getInputValue('x-bookmarks-redirect-uri'),
+      auth_url: getInputValue('x-bookmarks-auth-url'),
+      token_url: getInputValue('x-bookmarks-token-url'),
+      api_base: getInputValue('x-bookmarks-api-base'),
+      scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
+    };
+  }
+
+  function applySettingsPayload(config) {
+    if (!config || typeof config !== 'object') return;
+    setInputValue('x-bookmarks-save-dir', config.save_dir || 'Xブックマーク');
+    setInputValue('x-bookmarks-max-results', config.max_results || 100);
+    setInputValue('x-bookmarks-client-id', config.client_id || '');
+    setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
+    setInputValue('x-bookmarks-auth-url', config.auth_url || '');
+    setInputValue('x-bookmarks-token-url', config.token_url || '');
+    setInputValue('x-bookmarks-api-base', config.api_base || '');
+    const folders = document.getElementById('x-bookmarks-scheduled-folders');
+    if (folders) folders.checked = config.scheduled_include_folders === true;
+  }
+
+  async function loadSharedSettings() {
+    if (typeof apiFetch !== 'function') return null;
+    const result = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, { silentError: true });
+    if (result?.available !== false && result?.payload) applySettingsPayload(result.payload);
+    return result;
+  }
+
+  async function saveSharedSettings(payload) {
+    if (typeof apiFetch !== 'function') return { available: false };
+    const current = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, { silentError: true });
+    const body = { payload };
+    if (current?.available !== false) body.expectedRevision = current?.revision || null;
+    return apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), silentError: true,
+    });
+  }
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -92698,6 +92830,17 @@ async function resetLayoutToDefault() {
   async function loadStatus(options = {}) {
     const container = document.getElementById(rootId);
     if (!container || typeof apiFetch !== 'function') return;
+    if (isCloudSurface()) {
+      try {
+        const shared = await loadSharedSettings();
+        setText('x-bookmarks-connection', 'Cloud版: 共通設定を利用');
+        setText('x-bookmarks-client-state', shared?.exists ? 'デスクトップ版と同期済み' : '共通設定は未保存');
+        setStatus('接続情報は共有されています。Xへの接続と取得は現在このブラウザーでは利用できません。', false);
+      } catch (err) {
+        setStatus('共通設定を取得できませんでした: ' + (err.userMessage || err.message || err), true);
+      }
+      return;
+    }
     if (!options?.preserveStatus) setStatus('X連携の状態を確認しています...', false);
     try {
       const data = await apiFetch('/x-bookmarks/status', { silentError: true });
@@ -92725,6 +92868,7 @@ async function resetLayoutToDefault() {
       );
       _currentSchedule = config.schedule || null;
       _initScheduleWidget(config.schedule, config.schedule_state);
+      await loadSharedSettings();
       if (!options?.preserveStatus) {
         const alert = data.alert;
         setStatus(
@@ -92767,34 +92911,19 @@ async function resetLayoutToDefault() {
 
   async function saveConfig(options = {}) {
     const silentError = options?.silentError === true;
-    if (typeof apiPost !== 'function') {
+    if ((isCloudSurface() ? typeof apiFetch !== 'function' : typeof apiPost !== 'function')) {
       if (!silentError) setStatus('設定を保存できませんでした: APIを利用できません', true);
       return false;
     }
-    const saveDir = document.getElementById('x-bookmarks-save-dir')?.value || 'Xブックマーク';
-    const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-    const clientId = getInputValue('x-bookmarks-client-id');
-    const redirectUri = getInputValue('x-bookmarks-redirect-uri');
-    const authUrl = getInputValue('x-bookmarks-auth-url');
-    const tokenUrl = getInputValue('x-bookmarks-token-url');
-    const apiBase = getInputValue('x-bookmarks-api-base');
+    const body = settingsPayload();
     const schedulePayload = _scheduleWidget ? _scheduleWidget.getCurrentConfig() : _currentSchedule;
     try {
-      const body = {
-        save_dir: saveDir,
-        max_results: maxResults,
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        auth_url: authUrl,
-        token_url: tokenUrl,
-        api_base: apiBase,
-        scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
-      };
       if (schedulePayload) body.schedule = schedulePayload;
-      await apiPost('/x-bookmarks/config', body, { silentError: true });
+      await saveSharedSettings(settingsPayload());
+      if (!isCloudSurface()) await apiPost('/x-bookmarks/config', body, { silentError: true });
       if (options?.showSuccess) {
         await loadStatus();
-        setStatus('X接続設定を保存しました。', false);
+        setStatus('X接続設定をデスクトップ版とクラウド版の共通設定へ保存しました。', false);
       }
       return true;
     } catch (err) {
@@ -93094,14 +93223,6 @@ async function resetLayoutToDefault() {
   function renderXBookmarksSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
-    // OAuth中継を持たないDropbox直結のCloud静的版では、押しても成立しない
-    // デスクトップ専用操作（X接続・差分保存等）を表示しない。gb-external-import.js
-    // が定義する既存判定をそのまま再利用する（新しい判定は作らない）。
-    if (window.isCloudStaticImportSurface?.()) {
-      container.hidden = true;
-      container.dataset.cloudDesktopOnlyHidden = '1';
-      return;
-    }
     container.hidden = false;
     delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
@@ -93173,6 +93294,14 @@ async function resetLayoutToDefault() {
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
     bind();
+    if (isCloudSurface()) {
+      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect']
+        .forEach(id => { const control = document.getElementById(id); if (control) control.hidden = true; });
+      const schedule = document.getElementById('x-bookmarks-schedule-container');
+      if (schedule) schedule.hidden = true;
+      const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');
+      if (scheduledFolders) scheduledFolders.hidden = true;
+    }
     setSyncBusy(syncInFlight);
     loadStatus();
   }
@@ -162953,9 +163082,11 @@ function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
 
 function _imageSrc(item, preferThumb, thumbSize) {
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
-  // 動画・PDFは縮小版を作らないため、常に生ファイルを返す。
+  // 動画は共通サムネイルAPIが先頭付近のフレームを生成する。PDFだけは
+  // 生成契約がないため生ファイル表示へ戻す。
   if (item && item.path) {
-    const wantThumb = !!preferThumb && (!item.kind || item.kind === 'image');
+    const kind = _attachmentKind(item);
+    const wantThumb = !!preferThumb && (kind === 'image' || kind === 'video');
     return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
   }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
@@ -177299,9 +177430,9 @@ function _dbEntityPassesAdvancedFilters(entityData, filters, filterMode) {
 
 function _isKanbanGroupableProperty(dbPath, propName) {
   const ptc = getPropertyTypes(dbPath)[propName] || {};
-  if (ptc.source) return false;
-  if (['formula', 'rollup', 'button', 'multi-source-relation', 'chat'].includes(ptc.type || '')) return false;
-  return !checkColumnEditable(dbPath, propName);
+  // グループ化は読み取り専用列でも表示できる。編集可否はカードのD&D時に
+  // checkColumnEditable()で別途判定するため、取り込み列や計算列を候補から消さない。
+  return !['button', 'multi-source-relation', 'chat', 'image'].includes(ptc.type || '');
 }
 
 function _kanbanStatusDefs(dbPath) {
@@ -177439,7 +177570,8 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       ? _attachmentKind(item)
       : String(item?.asset_kind || item?.media_type || '').toLowerCase();
     // thumb_url は新方式では動画にも入る（生ファイル）ので、本物の縮小画像だけを preview として扱う
-    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url);
+    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url)
+      || (mediaKind === 'video' && !!item?.path);
     if (mediaKind !== 'image' && !hasPreview) {
       const placeholder = document.createElement('div');
       placeholder.className = 'db-card-media-placeholder';
@@ -204661,19 +204793,11 @@ _chatInstallTabActivationHook();
     refreshNow({ force: true });
   }
 
-  global.GBChatRecommendations = {
-    refresh: refreshNow,
-    scheduleRefresh,
-    getRecommendations: () => filteredActions(contextSnapshot()),
-    run: runAction,
-    dismiss: dismissAction,
-  };
-
-  if (global.document.readyState === 'loading') {
-    global.document.addEventListener('DOMContentLoaded', install);
-  } else {
-    install();
-  }
+  // 「次にできること」は撤廃済み。旧版からの同一ページ再読込でも残存UIを消す。
+  global.document.getElementById(PANEL_ID)?.remove();
+  global.localStorage.removeItem(STORAGE_KEY);
+  global.localStorage.removeItem(ENABLED_STORAGE_KEY);
+  delete global.GBChatRecommendations;
 })(window);
 
 ;
@@ -206459,14 +206583,6 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
-  const showRecommendations = menu.querySelector('#chat-menu-show-recommendations');
-  if (showRecommendations) {
-    const nextValue = showRecommendations.checked ? '1' : '0';
-    if (localStorage.getItem('chat-recommendations-enabled') !== nextValue) {
-      localStorage.setItem('chat-recommendations-enabled', nextValue);
-      try { window.GBChatRecommendations?.refresh?.({ force: true }); } catch {}
-    }
-  }
   const reasoning = menu.querySelector('#chat-menu-reasoning-level');
   if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
   const preset = menu.querySelector('#chat-menu-param-preset');
@@ -206499,7 +206615,6 @@ function showChatGenerationSettingsMenu(event) {
     ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
     ${_chatGenerationCodeExecutionControlHtml()}
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-show-recommendations" type="checkbox" ${localStorage.getItem('chat-recommendations-enabled') !== '0' ? 'checked' : ''}><span>「次にできること」の提案を表示</span></label>
     <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
     ${_chatGenerationReasoningRowHtml()}
     ${_chatGenerationResponseTuningHtml()}
@@ -207441,7 +207556,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     });
   }
 
-  window.openLlmCrossReviewDialog = openLlmCrossReviewDialog;
+  // LLMレビューは撤廃済み。旧版スクリプトが先に読み込まれた場合も入口を残さない。
+  delete window.openLlmCrossReviewDialog;
 })();
 
 ;
@@ -211589,7 +211705,10 @@ let _folderVisibleItems = [];
 let _folderBulkPopupRaf = 0;
 let _folderBulkPopupTracking = false;
 // パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
-let _folderZoom = parseFloat(localStorage.getItem('folder-zoom') || '1');
+const _savedFolderThumbnailPx = parseInt(localStorage.getItem('folder-thumbnail-size-px') || '', 10);
+let _folderZoom = Number.isFinite(_savedFolderThumbnailPx)
+  ? Math.max(48, Math.min(1000, _savedFolderThumbnailPx)) / 120
+  : parseFloat(localStorage.getItem('folder-zoom') || '1');
 // ボードのリンクカード計画 Phase B-2（縮小スコープ）: フォルダの状態
 // （_folderPath/_folderItems/_folderSelected等）はシートのctxと違い、単一の
 // グローバル変数のまま（CSVの_csvRenderContainerOverrideと同じ方針）。サブパネル等の
@@ -212804,10 +212923,9 @@ function applyWaterfallLayout() {
 function applyFolderZoom() {
   const grid = _folderGridEl();
   if (!grid) return;
-  const w = Math.round(120 * _folderZoom);
-  const h = Math.round(75 * _folderZoom);
-  grid.style.setProperty('--fv-card-w', w + 'px');
-  grid.style.setProperty('--fv-card-h', h + 'px');
+  const size = Math.max(48, Math.min(1000, Math.round(120 * _folderZoom)));
+  grid.style.setProperty('--fv-card-w', size + 'px');
+  grid.style.setProperty('--fv-card-h', size + 'px');
   if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
 }
 
@@ -213178,6 +213296,7 @@ function renderFolderGrid(opts) {
       const idx = nextRenderIndex;
     const el = document.createElement('div');
     el.className = 'fv-item';
+    if (item.type === 'folder' || item.type === 'database') el.classList.add('fv-folder-list-item');
     el.dataset.idx = idx;
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
@@ -213698,10 +213817,22 @@ function showFolderItemContextMenu(e, item, options = {}) {
       onCopy: () => folderToolbarCopyItems(operationItems),
       onCut: () => folderToolbarCutItems(operationItems),
       onPaste: () => folderToolbarPasteToFolder(pasteTarget),
+      onDuplicate: async () => {
+        let count = 0;
+        for (const target of editableItems) {
+          try {
+            await apiPost('/outliner/duplicate', { path: target.path });
+            count += 1;
+          } catch {}
+        }
+        if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
+        showStatus(count > 0 ? `${count} 件を複製しました` : '複製に失敗しました', count === 0);
+      },
       onDelete: () => folderToolbarDeleteSelection(),
       copyDisabled: operationItems.length === 0,
       cutDisabled: editableItems.length === 0,
       pasteDisabled: !folderToolbarCanPasteTo(pasteTarget),
+      duplicateDisabled: editableItems.length === 0,
       deleteDisabled: editableItems.length === 0,
     });
     addSep();
@@ -214010,60 +214141,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
         });
       }
     }, null, 'pencil');
-    addItem('複製', async () => {
-      try {
-        const res = await apiPost('/outliner/duplicate', { path: item.path });
-        showStatus('複製しました: ' + (res.new_name || ''));
-        if (_folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
-      } catch { showStatus('複製に失敗しました', true); }
-    }, null, 'copy');
-    addItem('削除', async () => {
-      const targets = (_folderSelectedItems.length > 1 ? _folderSelectedItems : [item])
-        .filter(target => !_folderMenuItemLocked(target));
-      if (!targets.length) {
-        showStatus('編集ロック中の項目は削除できません', true);
-        return;
-      }
-      // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
-      // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ。
-      const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
-        ? await handleDisplayedFolderLinkDelete(targets, _folderPath, {
-          refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
-        })
-        : { handled: false, result: null };
-      if (linkedDelete.handled) {
-        if (!linkedDelete.result) return;
-        _folderSelectedItems = [];
-        _folderSelected = null;
-        _updateFolderBulkBar();
-        return;
-      }
-      const impactTargets = targets.map(target => ({
-        path: target.path,
-        kind: target.type === 'folder' ? 'folder' : 'file',
-        ...((target.assetId || target.asset_id) ? { assetId: String(target.assetId || target.asset_id) } : {}),
-      }));
-      const confirmMessage = targets.length + ' 件を削除しますか？';
-      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-        : await cfConfirm(confirmMessage);
-      if (!confirmed) return;
-      const result = await deleteOutlinerItemsWithHistory(targets, {
-        confirmation: confirmed,
-        label: targets.length + ' 件を削除',
-        refresh: async () => {
-          if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-        },
-      });
-      _folderSelectedItems = [];
-      _folderSelected = null;
-      _updateFolderBulkBar();
-      if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-      const deletedCount = result.deletedCount || result.succeeded.length;
-      if (result.failedCount > 0) showStatus(`${deletedCount} 件を削除、${result.failedCount} 件は失敗しました`, true);
-      else if (deletedCount > 0) showStatus(deletedCount + ' 件を削除しました（Undoで戻せます）');
-      else showStatus('削除対象が見つからなかったため、表示を更新しました', true);
-    }, 'red', 'trash2');
   }
 
   if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
@@ -214911,8 +214988,9 @@ let _lassoJustCompleted = false;
 document.getElementById('folder-grid').addEventListener('wheel', function(e) {
   if (!e.ctrlKey) return;
   e.preventDefault();
-  _folderZoom = Math.max(0.5, Math.min(3, _folderZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+  _folderZoom = Math.max(48 / 120, Math.min(1000 / 120, _folderZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
   localStorage.setItem('folder-zoom', _folderZoom);
+  localStorage.setItem('folder-thumbnail-size-px', String(Math.round(120 * _folderZoom)));
   applyFolderZoom();
 }, {passive: false});
 
@@ -216767,26 +216845,56 @@ function showFolderDisplaySettings(options) {
 
   _fdSep(menu);
 
-  const thumbSize = cfg.thumbnailSize || (cfg.showThumb === false ? 'none' : 'md');
   _fdSection(menu, 'サムネイルサイズ');
-  [
-    { key: 'none', label: 'なし' },
-    { key: 'sm', label: '小' },
-    { key: 'md', label: '中' },
-    { key: 'lg', label: '大' },
-  ].forEach(it => {
-    const row = document.createElement('div');
-    row.className = 'gb-context-menu-item';
-    row.innerHTML = radioMark(thumbSize === it.key) + it.label;
-    row.addEventListener('click', () => {
-      cfg.thumbnailSize = it.key;
-      cfg.showThumb = it.key !== 'none';
+  const thumbControls = document.createElement('div');
+  thumbControls.className = 'fd-thumbnail-size-controls';
+  thumbControls.style.cssText = 'display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;padding:7px 14px;min-width:260px;';
+  const showThumbLabel = document.createElement('label');
+  showThumbLabel.style.cssText = 'grid-column:1 / -1;display:flex;align-items:center;gap:8px;cursor:pointer;';
+  const showThumbInput = document.createElement('input');
+  showThumbInput.type = 'checkbox';
+  showThumbInput.checked = cfg.showThumb !== false;
+  showThumbInput.dataset.e2eId = 'folder-thumbnail-visible';
+  showThumbInput.addEventListener('change', () => {
+    cfg.showThumb = showThumbInput.checked;
+    thumbRange.disabled = !showThumbInput.checked;
+    saveFolderDisplayConfig(cfg);
+    renderFolderGrid();
+  });
+  showThumbLabel.append(showThumbInput, document.createTextNode('サムネイルを表示'));
+  const thumbRange = document.createElement('input');
+  thumbRange.type = 'range';
+  thumbRange.min = '48';
+  thumbRange.max = '1000';
+  thumbRange.step = '1';
+  thumbRange.value = String(Math.max(48, Math.min(1000, Math.round(120 * _folderZoom))));
+  thumbRange.dataset.e2eId = 'folder-thumbnail-size-slider';
+  thumbRange.setAttribute('aria-label', 'サムネイルサイズ');
+  thumbRange.disabled = !showThumbInput.checked;
+  const thumbValue = document.createElement('output');
+  thumbValue.style.cssText = 'min-width:74px;text-align:right;font-variant-numeric:tabular-nums;';
+  const applyThumbSize = (persist) => {
+    const px = Math.max(48, Math.min(1000, parseInt(thumbRange.value, 10) || 120));
+    thumbValue.textContent = `${px} × ${px}px`;
+    _folderZoom = px / 120;
+    localStorage.setItem('folder-zoom', String(_folderZoom));
+    localStorage.setItem('folder-thumbnail-size-px', String(px));
+    if (persist && cfg.showThumb === false) {
+      cfg.showThumb = true;
+      showThumbInput.checked = true;
+      thumbRange.disabled = false;
       saveFolderDisplayConfig(cfg);
       renderFolderGrid();
-      menu.remove();
-    });
-    menu.appendChild(row);
-  });
+    } else {
+      applyFolderZoom();
+    }
+    if (persist) saveFolderDisplayConfig(cfg);
+  };
+  thumbRange.addEventListener('input', () => applyThumbSize(false));
+  thumbRange.addEventListener('change', () => applyThumbSize(true));
+  thumbControls.append(showThumbLabel, thumbRange, thumbValue);
+  menu.appendChild(thumbControls);
+  thumbValue.textContent = `${thumbRange.value} × ${thumbRange.value}px`;
 
   _fdSep(menu);
 
@@ -217946,6 +218054,7 @@ function _installFolderBlankContextMenu(container) {
       ['copy', 'コピー', 'copy', options.onCopy, options.copyDisabled],
       ['cut', '切り取り', 'scissors', options.onCut, options.cutDisabled],
       ['paste', '貼り付け', 'clipboardPaste', options.onPaste, options.pasteDisabled],
+      ['duplicate', '複製', 'copyPlus', options.onDuplicate, options.duplicateDisabled],
       ['delete', '削除', 'trash2', options.onDelete, options.deleteDisabled],
     ];
     actions.forEach(([name, label, icon, handler, disabled]) => {
@@ -223499,10 +223608,19 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       onCopy: () => folderToolbarCopyItems(contextOperationItems),
       onCut: () => folderToolbarCutItems(contextOperationItems),
       onPaste: () => folderToolbarPasteToFolder(addParent),
+      onDuplicate: async () => {
+        let count = 0;
+        for (const target of editableContextItems) {
+          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
+        }
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
+      },
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
       cutDisabled: editableContextItems.length === 0,
       pasteDisabled: !folderToolbarCanPasteTo(addParent),
+      duplicateDisabled: editableContextItems.length === 0,
       deleteDisabled: editableContextItems.length === 0,
     });
     addSep();
@@ -223794,38 +223912,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       closeTreeContextMenu();
       window.GBOutlinerActivation?.startRenameForNode(nodeEl, labelEl, nodeData);
     }, null, 'pencil');
-  }
-
-  // --- 複製 ---
-  {
-    // nodeDataとnodeElをペアで保持し、フィルタ後もインデックスがずれないようにする
-    const dupPairs = isMulti
-      ? [...treeSelection.items].filter(n => n._nodeData && n._nodeData.path && !n._nodeData._isRoot).map(n => ({ data: n._nodeData, el: n }))
-      : (nodeData.path && !nodeData._isRoot ? [{ data: nodeData, el: nodeEl }] : []);
-    if (dupPairs.length > 0) {
-      const dupLabel = isMulti ? `複製（${dupPairs.length}件）` : '複製';
-      addMenuItem(dupLabel, async () => {
-        closeTreeContextMenu();
-        let count = 0;
-        for (const { data: d, el: srcEl } of dupPairs) {
-          try {
-            const res = await apiPost('/outliner/duplicate', { path: d.path });
-            count++;
-            const newItem = { ...d, name: res.new_name, path: res.new_path };
-            if (res.file_id) newItem.file_id = res.file_id;
-            else delete newItem.file_id;
-            const parentChildren = srcEl?.parentElement;
-            if (parentChildren) {
-              const rootPath = srcEl.closest('#outliner-tree > .tree-node')?._nodeData?.path;
-              const newNode = createTreeNodeFromBrowse(newItem, rootPath);
-              srcEl.nextSibling ? parentChildren.insertBefore(newNode, srcEl.nextSibling) : parentChildren.appendChild(newNode);
-            }
-          } catch {}
-        }
-        if (count > 0) showStatus(`${count}件を複製しました`);
-        else showStatus('複製に失敗しました', true);
-      }, null, 'copy');
-    }
   }
 
   // --- パスをコピー ---
@@ -225490,8 +225576,8 @@ function _setOutlinerFilterStateValues(state) {
   if (entityCb) entityCb.checked = next.includeEntities;
   const bar = document.getElementById('global-filter-bar');
   const btn = document.getElementById('btn-filter-toggle');
-  if (bar) bar.style.display = next.filterBarVisible ? '' : 'none';
-  if (btn) btn.style.color = next.filterBarVisible ? 'var(--accent)' : 'var(--fg2)';
+  if (bar) bar.style.display = 'none';
+  if (btn) btn.style.color = 'var(--fg2)';
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = next.treeSearchQuery;
   const clearBtn = document.getElementById('btn-tree-search-clear');
@@ -225513,7 +225599,7 @@ function getCurrentOutlinerFilterState() {
     try { treeSearchQuery = _treeSearchQuery || ''; } catch {}
   }
   const bar = document.getElementById('global-filter-bar');
-  const filterBarVisible = bar ? bar.style.display !== 'none' : localStorage.getItem('gb:filter-bar-visible') === '1';
+  const filterBarVisible = false;
   return {
     globalFilter: _normalizeGlobalFilter(_globalFilter),
     includeEntities: _getTreeSearchIncludeEntities(),
@@ -227557,6 +227643,23 @@ const MeldexUnifiedSearch = (() => {
       });
       row.append(input, document.createTextNode(label)); popup.appendChild(row);
     });
+    const divider = document.createElement('div');
+    divider.className = 'gb-context-menu-sep';
+    divider.setAttribute('role', 'separator');
+    popup.appendChild(divider);
+    const entityRow = document.createElement('label');
+    entityRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;cursor:pointer;';
+    const entityInput = document.createElement('input');
+    entityInput.type = 'checkbox';
+    entityInput.checked = typeof _getTreeSearchIncludeEntities === 'function'
+      ? _getTreeSearchIncludeEntities()
+      : localStorage.getItem('tree-search-include-entities') === 'true';
+    entityInput.dataset.e2eId = 'search-scope-include-entities';
+    entityInput.addEventListener('change', () => {
+      if (typeof setTreeSearchIncludeEntities === 'function') setTreeSearchIncludeEntities(entityInput.checked);
+    });
+    entityRow.append(entityInput, document.createTextNode('エントリも検索'));
+    popup.appendChild(entityRow);
     const close = document.createElement('button');
     close.type = 'button'; close.className = 'gb-btn gb-btn-sm gb-btn-icon'; close.title = '閉じる';
     close.setAttribute('aria-label', '検索対象設定を閉じる'); close.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
@@ -227579,7 +227682,9 @@ const MeldexUnifiedSearch = (() => {
     btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon'; btn.title = '検索対象'; btn.setAttribute('aria-label', '検索対象を設定');
     btn.innerHTML = typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '⚙';
     btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); show(btn); });
-    anchorParent.appendChild(btn); return btn;
+    if (options.afterElement?.parentElement === anchorParent) options.afterElement.insertAdjacentElement('afterend', btn);
+    else anchorParent.appendChild(btn);
+    return btn;
   }
 
   const TAG_BUTTON_OWNER_KEY = 'unified-search';
@@ -227625,13 +227730,15 @@ const MeldexUnifiedSearch = (() => {
         sourceFolder: typeof options.sourceFolder === 'function' ? (options.sourceFolder() || '') : String(options.sourceFolder || ''),
         tagIds: cond.tagIds,
         matchMode: cond.tagMode,
+        anchor: btn,
         onChange: (tagIds, mode) => {
           writeTagCondition({ tagIds, tagMode: mode });
           if (typeof options.onChange === 'function') options.onChange(tagIds, mode);
         },
       });
     });
-    anchorParent.appendChild(btn);
+    if (options.afterElement?.parentElement === anchorParent) options.afterElement.insertAdjacentElement('afterend', btn);
+    else anchorParent.appendChild(btn);
     return btn;
   }
 
@@ -227830,8 +227937,15 @@ function applyTreeNameSearch() {
 function _installTreeSearchScopeTrigger() {
   const input = document.getElementById('sidebar-search-input');
   if (!input?.parentElement) return;
-  MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
-  MeldexUnifiedSearch.tagButton?.(input.parentElement, { e2eId: 'tree-search-tag-trigger' });
+  const fullTextButton = document.getElementById('btn-vault-search');
+  const scopeButton = MeldexUnifiedSearch.button(input.parentElement, {
+    e2eId: 'tree-search-scope-trigger',
+    afterElement: fullTextButton,
+  }) || input.parentElement.querySelector('[data-search-scope-trigger]');
+  MeldexUnifiedSearch.tagButton?.(input.parentElement, {
+    e2eId: 'tree-search-tag-trigger',
+    afterElement: scopeButton,
+  });
   _ensureTreeSearchHintEl();
 }
 queueMicrotask(_installTreeSearchScopeTrigger);
@@ -231028,6 +231142,8 @@ _bindClipSearchResultDelegation();
     footer.className = 'dup-monitor-footer';
     footer.innerHTML = `<button type="button" class="gb-btn gb-btn-sm" data-dup-keep-all
         data-e2e-id="${options.e2eId}-keep-all" hidden>すべて残す</button>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-dup-resolve-all
+        data-e2e-id="${options.e2eId}-resolve-all" hidden>選択内容をまとめて整理</button>
       <button type="button" class="gb-btn gb-btn-sm gb-btn-warn" data-dup-cancel
         data-e2e-id="${options.e2eId}-cancel" hidden>中止</button>
       <button type="button" class="gb-btn gb-btn-sm" data-dup-close
@@ -231130,6 +231246,7 @@ _bindClipSearchResultDelegation();
     const results = overlay.querySelector('[data-dup-results]');
     const progress = overlay.querySelector('[data-dup-progress]');
     const keepAll = overlay.querySelector('[data-dup-keep-all]');
+    const resolveAll = overlay.querySelector('[data-dup-resolve-all]');
     if (progress) progress.classList.add('dup-progress-complete');
     clearProgressDetails(overlay);
     if (!groups.length) {
@@ -231142,6 +231259,7 @@ _bindClipSearchResultDelegation();
     if (status) status.textContent = `${groups.length}グループ / ${duplicateCount}件の重複を検出`;
     if (results) results.innerHTML = groups.map((group, index) => groupHtml(group, index, automatic)).join('');
     if (keepAll) keepAll.hidden = false;
+    if (resolveAll) resolveAll.hidden = groups.length < 2;
     bindResultActions(overlay);
     return groups;
   }
@@ -231251,6 +231369,69 @@ _bindClipSearchResultDelegation();
     }
   }
 
+  async function resolveAllGroups(overlay, button) {
+    const plans = [];
+    (overlay._dupGroups || []).forEach((group, groupIndex) => {
+      const groupElement = overlay.querySelector(`.dup-group[data-group="${groupIndex}"]`);
+      if (!groupElement || groupElement.classList.contains('dup-group-resolved')) return;
+      const radio = groupElement.querySelector(`input[name="dup-keep-${groupIndex}"]:checked`);
+      if (!radio) return;
+      const keepIndex = Number(radio.value);
+      const keepFile = group.files[keepIndex];
+      const replaceFiles = group.files.filter((_, index) => index !== keepIndex);
+      if (keepFile && replaceFiles.length) plans.push({ group, groupIndex, groupElement, keepFile, replaceFiles });
+    });
+    if (!plans.length) {
+      showStatus('整理する重複グループがありません');
+      return;
+    }
+    const deleteCount = plans.reduce((total, plan) => total + plan.replaceFiles.length, 0);
+    const confirmed = await cfConfirm(
+      `${plans.length}グループで選択したファイルを残し、重複${deleteCount}件をゴミ箱へ移動しますか？\n\n`
+      + '各グループの選択をまとめて実行します。自動では削除されません。'
+    );
+    if (!confirmed) return;
+    button.disabled = true;
+    let succeeded = 0;
+    let failed = 0;
+    try {
+      for (const plan of plans) {
+        const groupButton = plan.groupElement.querySelector('[data-dup-resolve]');
+        if (groupButton) groupButton.disabled = true;
+        try {
+          const res = await apiPost('/duplicate-resolve', {
+            keep: filePath(plan.keepFile),
+            replace: plan.replaceFiles.map(filePath),
+            match_type: plan.group.type,
+            threshold: 10,
+          });
+          const results = Array.isArray(res?.results) ? res.results : [];
+          const groupSucceeded = results.filter(result => result.status === 'replaced').length;
+          const groupFailed = results.filter(result => result.status !== 'replaced').length;
+          succeeded += groupSucceeded;
+          failed += groupFailed;
+          if (groupFailed === 0 && groupSucceeded === plan.replaceFiles.length) {
+            plan.groupElement.classList.add('dup-group-resolved');
+            if (groupButton) groupButton.innerHTML = lucide('check', 12) + ' 解決済み';
+          } else if (groupButton) {
+            groupButton.disabled = false;
+            groupButton.textContent = '失敗したため再試行';
+          }
+        } catch (_) {
+          failed += plan.replaceFiles.length;
+          if (groupButton) {
+            groupButton.disabled = false;
+            groupButton.textContent = '失敗したため再試行';
+          }
+        }
+      }
+      showStatus(`${succeeded}件を整理${failed ? ` / ${failed}件は整理できませんでした` : 'しました'}`, failed > 0);
+      await refreshFolder(overlay.dataset.folderPath || '');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function refreshFolder(folderPath) {
     if (typeof renderFolderGrid === 'function' && folderPath
       && typeof _folderPath !== 'undefined' && _folderPath === folderPath) {
@@ -231305,6 +231486,8 @@ _bindClipSearchResultDelegation();
     }
     overlay.querySelector('[data-dup-keep-all]')
       ?.addEventListener('click', () => close('keep-all'));
+    overlay.querySelector('[data-dup-resolve-all]')
+      ?.addEventListener('click', event => resolveAllGroups(overlay, event.currentTarget));
   }
 
   async function openManualScan(folderPath) {
@@ -237809,15 +237992,18 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
           h: _dragState.h,
         });
       };
-      const onUp = () => {
+      const finishDrag = () => {
         _dragState = null;
         _notifyDragToggle(true);
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', finishDrag, true);
+        window.removeEventListener('pointercancel', finishDrag, true);
         _saveRect();
       };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', finishDrag, true);
+      window.addEventListener('pointercancel', finishDrag, true);
+      try { _header?.setPointerCapture?.(event.pointerId); } catch {}
     }
 
     function _bindResize() {
@@ -237861,15 +238047,17 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
             }
             _applyRect({ left, top, w, h });
           };
-          const onUp = () => {
+          const finishResize = () => {
             _resizeState = null;
             _notifyDragToggle(true);
-            document.removeEventListener('pointermove', onMove);
-            document.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', finishResize, true);
+            window.removeEventListener('pointercancel', finishResize, true);
             _saveRect();
           };
-          document.addEventListener('pointermove', onMove);
-          document.addEventListener('pointerup', onUp);
+          window.addEventListener('pointermove', onMove, true);
+          window.addEventListener('pointerup', finishResize, true);
+          window.addEventListener('pointercancel', finishResize, true);
           // ポインタ捕捉は失敗しても続行する。ここで例外が出ると、操作対象を
           // 無効化したままリサイズが始まらない状態で止まってしまう。
           try { handle.setPointerCapture?.(event.pointerId); } catch {}
@@ -238343,6 +238531,7 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
     tagIds: [],
     matchMode: 'all',
     onChange: null,
+    anchor: null,
   };
   let _selected = new Set();
   let _catalog = { tags: [], groups: [] };
@@ -238661,6 +238850,7 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
       tagIds: Array.isArray(opts.tagIds) ? opts.tagIds.map(String) : [],
       matchMode: opts.matchMode === 'any' ? 'any' : 'all',
       onChange: typeof opts.onChange === 'function' ? opts.onChange : null,
+      anchor: opts.anchor instanceof Element ? opts.anchor : null,
     };
     _selected = new Set(_ctx.tagIds);
     if (_titleEl) _titleEl.textContent = _ctx.headerLabel;
@@ -238694,6 +238884,18 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
     const wasOpen = base.isOpen();
     base.open();
     _applyContext(options);
+    const anchor = options?.anchor;
+    if (anchor?.getBoundingClientRect && !base.isMobileSheetActive()) {
+      const anchorRect = anchor.getBoundingClientRect();
+      const panelRect = base.getElement()?.getBoundingClientRect();
+      const zoom = typeof _getZoom === 'function' ? Number(_getZoom()) || 1 : 1;
+      base.applyRect({
+        left: anchorRect.right / zoom + 6,
+        top: anchorRect.top / zoom,
+        w: (panelRect?.width || DEFAULT_W) / zoom,
+        h: (panelRect?.height || DEFAULT_H) / zoom,
+      });
+    }
     if (!wasOpen) base.focus();
     return base.getElement();
   }

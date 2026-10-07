@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.372",
+  "manual_version": "0.7.373",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "23706407b3861bb7cc7769c17f65c47264b3afcc34d87f0547cf55c52281c3ff",
+  "source_digest": "3155ca391125431d615b64b6b59f49d510824444887f2ac2b786f3a618ca4760",
   "document_count": 207,
-  "chunk_count": 1903,
+  "chunk_count": 1902,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -74,7 +74,7 @@
       "path": "02_ツール別ガイド/アノテート・付箋 マニュアル.md",
       "title": "アノテート・付箋",
       "category": "表示・作業支援",
-      "source_sha256": "d9477a98635ef289bd865c1cd337d3c6a46899175efcbe956563d4a27b69befa",
+      "source_sha256": "115cace28062807ac16bf4cf7cb565ce78b0a2268496f4dd85f7922ecf3bcbdd",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%82%A2%E3%83%8E%E3%83%86%E3%83%BC%E3%83%88%E3%83%BB%E4%BB%98%E7%AE%8B%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -186,7 +186,7 @@
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "表示・作業支援",
-      "source_sha256": "da297f196fce10e24d2b86975e6c0240cc736a5516315644f03b56ea49db49f5",
+      "source_sha256": "ecbdce787cd67946294f28a5b05b5b24f48c35ac5622047fe3d24c70d4215df6",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -242,7 +242,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "770caa0a11d5e73ed3af369117ef3d87b6cc478d6c7323fdc26bad419ede3238",
+      "source_sha256": "bf9901c1a51690cc15430e338ab8029497df04db7d30d9d876f865fb23bd6a40",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -291,7 +291,7 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "source_sha256": "0f3229b62b9caea5bfc6623d4fb972ba36a5ebd0d2d3a5967d14172327f9cf7c",
+      "source_sha256": "548f5a844c14d44f6e870847ab8c9cc17c54b5beaa00faf1ea37cf95cea4ea3a",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md"
     },
     {
@@ -3455,7 +3455,7 @@
       "category": "表示・作業支援",
       "heading": "アノテートツールバーを開く",
       "anchor": "_4",
-      "text": "Alt+A キーを押す\nまたは作業領域上のフローティング アノテートツール ボタンをクリック\nツールバーはフローティング表示され、ドラッグで移動できます。\nもう一度押すと閉じます。",
+      "text": "Alt+A キーを押す\nまたは作業領域上のフローティング アノテートツール ボタンをクリック\n単独アプリの Meldex Viewer では、下端ツールバーの アノテート ボタン、A キー、または画像の上の右クリックメニュー（本体と同じツール・同じカラーパレットのフロートパネルが開きます）\nツールバーはフローティング表示され、ドラッグで移動できます。\nもう一度押すと閉じます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%82%A2%E3%83%8E%E3%83%86%E3%83%BC%E3%83%88%E3%83%BB%E4%BB%98%E7%AE%8B%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_4"
     },
     {
@@ -7455,7 +7455,7 @@
       "category": "表示・作業支援",
       "heading": "操作",
       "anchor": "_5",
-      "text": "操作\nショートカット / 操作方法\n拡大 / 縮小\n+ / - キー、マウスホイール（カーソルの位置を中心に拡大縮小）\n表示倍率\n画像の原寸を 100% として表示します。拡大・縮小の途中で 100% をまたぐときは、一度 100% で止まります\nズーム範囲\nフィットした大きさの 20%（原寸より大きい場合は原寸）〜 原寸の 1600%\n全体フィット\n1\n高さフィット\n2\n幅フィット\n3\n原寸（100%）\n4\n90 度回転\nQ\n左右反転\nM（ツールバーの反転ボタンからは上下反転もできます）\nパン（移動）\nマウスドラッグ（ドラッグするとその場で即座に画像が動きます）\nボードへトピックとして送る\nCtrl を押しながらマウスドラッグ\n前後のファイルへ移動\n← / → キー、マウスの戻る / 進むボタン（対応マウスのみ）\n前後のフォルダへ移動\n↑ / ↓ キー、下端ツールバーの 前のフォルダ / 次のフォルダ ボタン（画像・動画・PDF が無いフォルダは飛ばします）\n全画面\nF、または右クリックメニューの フィット の下にある 全画面\nズーム中にパンできる範囲は、画像の端が見える位置までに制限されます。かなり縦長・横長の画像でも、上下左右の端まで移動できます。画像の外側の余白まで際限なく動かすことはできません。\nフォルダの中のファイルは、エクスプローラーと同じく名前の数字を数値として並べます（2.png の次が 10.png）。\nWindows版 Meldex Viewer では、アノテートのバージョン管理 と 既定アプリに設定 は画像の上の右クリックメニューから開きます。\nマウスホイールの動作は、既定では拡大・縮小ですが、設定ダイアログの「表示・起動」タブ内「ビューワーのマウスホイール操作」で「前後のファイルへ移動」に切り替えられます。",
+      "text": "操作\nショートカット / 操作方法\n拡大 / 縮小\n+ / - キー、マウスホイール（カーソルの位置を中心に拡大縮小）\n表示倍率\n画像の原寸を 100% として表示します。拡大・縮小の途中で 100% をまたぐときは、一度 100% で止まります\nズーム範囲\nフィットした大きさの 20%（原寸より大きい場合は原寸）〜 原寸の 1600%\n全体フィット\n1\n高さフィット\n2\n幅フィット\n3\n原寸（100%）\n4\n90 度回転\nQ\n左右反転\nM（ツールバーの反転ボタンからは上下反転もできます）\nパン（移動）\nマウスドラッグ（ドラッグするとその場で即座に画像が動きます）\nボードへトピックとして送る\nCtrl を押しながらマウスドラッグ\n前後のファイルへ移動\n← / → キー、マウスの戻る / 進むボタン（対応マウスのみ）\n前後のフォルダへ移動\n↑ / ↓ キー、下端ツールバーの 前のフォルダ / 次のフォルダ ボタン（画像・動画・PDF が無いフォルダは飛ばします）\n全画面\nF、または右クリックメニューの フィット の下にある 全画面\nズーム中にパンできる範囲は、画像の端が見える位置までに制限されます。かなり縦長・横長の画像でも、上下左右の端まで移動できます。画像の外側の余白まで際限なく動かすことはできません。\nフォルダの中のファイルは、エクスプローラーと同じく名前の数字を数値として並べます（2.png の次が 10.png）。\nWindows版 Meldex Viewer では、アノテートのバージョン管理 と 既定アプリに設定 は画像の上の右クリックメニューから開きます。\n単独アプリの Meldex Viewer には、次の違いがあります。\n項目\n動き\nアノテート\n下端ツールバーの アノテート ボタン（A キー、右クリックメニューも同じ）で、Meldex本体と同じフロートパネルが開きます。色は本体と同じカラーパレットです\nタイトルバー\n開いているファイル名と、そのフォルダのパスを表示します\n右サイドバー\n開くと表示中の画像を覆わず、表示領域を左へ押し出します。タブは プロパティ と ショートカットキー です\nマウスホイールの動作は、既定では拡大・縮小ですが、設定ダイアログの「表示・起動」タブ内「ビューワーのマウスホイール操作」で「前後のファイルへ移動」に切り替えられます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_5"
     },
     {
@@ -7465,7 +7465,7 @@
       "category": "表示・作業支援",
       "heading": "動画の操作",
       "anchor": "_6",
-      "text": "動画は上記の画像と同じ操作に加えて、以下の再生操作ができます。メインパネルのビューワーおよび右サイドバー（補助パネル）のプレビューの両方で、開いたときに自動再生され、クリックやSpaceキーで同じように再生・一時停止を切り替えられます。\n操作\nショートカット / 操作方法\n再生 / 一時停止\nクリック または Space\nシーク\nシークバーをクリック / ドラッグ\n音量\n音量スライダー",
+      "text": "動画は上記の画像と同じ操作に加えて、以下の再生操作ができます。メインパネルのビューワーおよび右サイドバー（補助パネル）のプレビューの両方で、開いたときに自動再生され、クリックやSpaceキーで同じように再生・一時停止を切り替えられます。\n操作\nショートカット / 操作方法\n再生 / 一時停止\nクリック または Space（動画の下端に出るネイティブの操作バーの上は対象外）\nシーク\n下端ツールバーのシークバー、または動画の操作バーをクリック / ドラッグ\n音量\n音量スライダー\n動画・音声を表示している間、下端ツールバーのシークバーは「フォルダ内の何枚目か」ではなく再生位置になり、隣のカウンタも 0:12 / 1:30 のように再生時間を表示します。画像・PDFに戻ると枚数表示へ戻ります。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_6"
     },
     {
@@ -7535,7 +7535,7 @@
       "category": "表示・作業支援",
       "heading": "メディア一覧",
       "anchor": "_12",
-      "text": "複数のファイルを連続して開くと、ビューワー上部に 1 / 10 のようなカウンタが出ます。\nシークバーで前後のファイルに移動できます。\nフォルダ内の画像を順に確認するのに便利です。",
+      "text": "複数のファイルを連続して開くと、ビューワー上部に 1 / 10 のようなカウンタが出ます。\nシークバーで前後のファイルに移動できます。\nフォルダ内の画像を順に確認するのに便利です。\n（動画・音声を表示している間だけ、シークバーとカウンタは再生位置・再生時間に変わります）",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_12"
     },
     {
@@ -9435,7 +9435,7 @@
       "category": "チャット・AI",
       "heading": "思考の深さ",
       "anchor": "_8",
-      "text": "Claude Code・Codex CLI・Antigravity CLI は、LLM設定ポップアップ（チャット画面の歯車アイコン）の 思考の深さ（オフ〜最大の6段階）に対応しています。深さを上げるほど、応答までの時間は長くなりますが、込み入った調査や複数手順の作業での精度が上がる傾向があります。\nClaude Codeを選んでいる間だけ、最上位の選択肢として Ultracode が追加で表示されます。「最大」よりもさらに時間をかけてでも精度を優先したいときに選んでください。\nAntigravity CLI が受け付けるのは「低・中・高」の3段階です。「最高」「最大」「Ultracode」を選んだ場合は、いちばん深い「高」として実行されます。",
+      "text": "Claude Code・Codex CLI・Antigravity CLI は、LLM設定ポップアップ（チャット画面の歯車アイコン）の 思考の深さ（オフ〜最大の6段階）に対応しています。深さを上げるほど、応答までの時間は長くなりますが、込み入った調査や複数手順の作業での精度が上がる傾向があります。\nClaude Codeを選んでいる間だけ、最上位の選択肢として Ultracode が追加で表示されます。Claude Code 2.1.203以降へ正式な --effort ultracode として渡されます。\nAntigravity CLI が受け付けるのは「低・中・高」の3段階です。「最高」「最大」「Ultracode」を選んだ場合は、いちばん深い「高」として実行されます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_8"
     },
     {
@@ -9565,7 +9565,7 @@
       "category": "チャット・AI",
       "heading": "長い会話でも送れる？",
       "anchor": "_12",
-      "text": "送れます。Antigravity CLIは依頼文をコマンドの引数として受け取る仕様のため長さの上限がありますが、\n上限を超える場合はMeldexが自動で別の渡し方（一時ファイル経由）に切り替えます。内容は省略されません。\nこの切り替えが起きたときだけ、ファイルを読むための自動承認がCLIへ渡されます。",
+      "text": "送れます。Antigravity CLI 1.2以降では依頼文を公式の stream-json 形式で標準入力へ渡すため、\nWindowsのコマンドライン長上限や一時ファイルを使わず、内容を省略せずに送信します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_12"
     },
     {
@@ -10585,7 +10585,7 @@
       "category": "チャット・AI",
       "heading": "このマニュアルで分かること",
       "anchor": "_1",
-      "text": "対応プロバイダ\nAPI キーの取得と登録\nモデルの切替\n思考の深さ（対応プロバイダとUltracode）\n「次にできること」の提案表示のオン/オフ\nCLIチャットとの違い\nプライバシー（学習に使われない設定）\nチャットでの呼び出し\n送信される情報の範囲\nチームで使う場合の API キー運用（共有禁止と推奨方法）\n外部CLI / MCP連携で料金が発生しない範囲",
+      "text": "対応プロバイダ\nAPI キーの取得と登録\nモデルの切替\n思考の深さ（対応プロバイダとUltracode）\nCLIチャットとの違い\nプライバシー（学習に使われない設定）\nチャットでの呼び出し\n送信される情報の範囲\nチームで使う場合の API キー運用（共有禁止と推奨方法）\n外部CLI / MCP連携で料金が発生しない範囲",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_1"
     },
     {
@@ -10813,23 +10813,13 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "「次にできること」の提案表示",
+      "heading": "プライバシー（学習や改善利用の扱い）",
       "anchor": "_15",
-      "text": "チャット画面の歯車アイコンから開く LLM設定 ポップアップに、「次にできること」の提案を表示 というチェックボックスがあります（既定はオン）。\n会話の流れに応じて、チャット欄の下に次にできそうな操作の候補が最大3件まで表示される機能の表示・非表示を切り替えます。\nオフにすると、そのとき表示されていた提案パネルもその場で消えます\nオンに戻すと、次の更新（最大2.5秒以内、または設定ポップアップを閉じた直後）で再び表示されます\n個別の提案を 「今は不要」 で消す操作は、このチェックボックスとは別の記憶です。互いに影響しません",
+      "text": "Meldex は API 経由で各社モデルにアクセスします。\nAPI 経由のリクエストは、プロバイダと契約区分によって扱いが変わります。下表は 2026-05-17 時点の公式情報をもとにしています。\nプロバイダ\nAPI 経由の訓練・改善利用\n注意点\nClaude（API / 商用条件）\n明示的に提供しない限り、生成モデルの訓練に使われない\nWeb版とは扱いが異なる\nChatGPT（OpenAI API）\n明示的に共有を選ばない限り、モデルの訓練・改善に使われない\n不正利用監視ログは保持される場合がある\nGemini API（有料枠）\nプロダクト改善に使われない\nCloud Billing の有効化が前提\nGemini API（無料枠）\n改善に使われ、人間レビューされる場合がある\n機密情報・個人情報は送らない\nVertex AI\n事前の許可または指示なしに訓練・微調整へ使われない\nGoogle Cloud 経由で管理する\nWeb 版（claude.ai、chatgpt.com、Gemini.google.com）と API は別扱いです。Meldex は API しか使いません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_15"
     },
     {
-      "id": "manual-chunk-23577b5076a5eed5",
-      "path": "03_設定と連携/LLM設定.md",
-      "title": "AIキーとLLM設定",
-      "category": "チャット・AI",
-      "heading": "プライバシー（学習や改善利用の扱い）",
-      "anchor": "_16",
-      "text": "Meldex は API 経由で各社モデルにアクセスします。\nAPI 経由のリクエストは、プロバイダと契約区分によって扱いが変わります。下表は 2026-05-17 時点の公式情報をもとにしています。\nプロバイダ\nAPI 経由の訓練・改善利用\n注意点\nClaude（API / 商用条件）\n明示的に提供しない限り、生成モデルの訓練に使われない\nWeb版とは扱いが異なる\nChatGPT（OpenAI API）\n明示的に共有を選ばない限り、モデルの訓練・改善に使われない\n不正利用監視ログは保持される場合がある\nGemini API（有料枠）\nプロダクト改善に使われない\nCloud Billing の有効化が前提\nGemini API（無料枠）\n改善に使われ、人間レビューされる場合がある\n機密情報・個人情報は送らない\nVertex AI\n事前の許可または指示なしに訓練・微調整へ使われない\nGoogle Cloud 経由で管理する\nWeb 版（claude.ai、chatgpt.com、Gemini.google.com）と API は別扱いです。Meldex は API しか使いません。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_16"
-    },
-    {
-      "id": "manual-chunk-22cb17d2021b0d54",
+      "id": "manual-chunk-803fd697d3f6acf0",
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
@@ -10839,13 +10829,23 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=gemini"
     },
     {
-      "id": "manual-chunk-1ac7a1bea05dceec",
+      "id": "manual-chunk-985b119b5df84c0a",
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
       "heading": "チャットでの呼び出し",
-      "anchor": "_17",
+      "anchor": "_16",
       "text": "",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_16"
+    },
+    {
+      "id": "manual-chunk-1ac7a1bea05dceec",
+      "path": "03_設定と連携/LLM設定.md",
+      "title": "AIキーとLLM設定",
+      "category": "チャット・AI",
+      "heading": "開き方",
+      "anchor": "_17",
+      "text": "右レールの チャット を開き、その中で AI タブを選びます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_17"
     },
     {
@@ -10853,9 +10853,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "開き方",
+      "heading": "機能",
       "anchor": "_18",
-      "text": "右レールの チャット を開き、その中で AI タブを選びます。",
+      "text": "機能\n内容\nプロバイダ / モデル選択\n上部ドロップダウン\nストリーミング応答\n文字単位で順次表示\n検索\n過去チャットを検索\n保存\nチャットセッションを保存\n新規セッション開始\n空のチャットから始める\n参照コンテキスト\n開いているファイル等を自動添付",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_18"
     },
     {
@@ -10863,9 +10863,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "機能",
+      "heading": "送信される情報",
       "anchor": "_19",
-      "text": "機能\n内容\nプロバイダ / モデル選択\n上部ドロップダウン\nストリーミング応答\n文字単位で順次表示\n検索\n過去チャットを検索\n保存\nチャットセッションを保存\n新規セッション開始\n空のチャットから始める\n参照コンテキスト\n開いているファイル等を自動添付",
+      "text": "",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_19"
     },
     {
@@ -10873,9 +10873,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "送信される情報",
+      "heading": "自動で添付されるもの",
       "anchor": "_20",
-      "text": "",
+      "text": "現在開いているファイルのパスと内容（ユーザーが許可した場合）\nユーザーが入力したテキスト\nシステムプロンプト（Meldex の機能説明）",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_20"
     },
     {
@@ -10883,9 +10883,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "自動で添付されるもの",
+      "heading": "添付しない設定",
       "anchor": "_21",
-      "text": "現在開いているファイルのパスと内容（ユーザーが許可した場合）\nユーザーが入力したテキスト\nシステムプロンプト（Meldex の機能説明）",
+      "text": "各チャットセッションで、参照コンテキストの添付をオフにできます。\n機密情報を扱うときは、必要最小限の情報だけを送ってください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_21"
     },
     {
@@ -10893,9 +10893,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "添付しない設定",
+      "heading": "ツール実行の挙動",
       "anchor": "_22",
-      "text": "各チャットセッションで、参照コンテキストの添付をオフにできます。\n機密情報を扱うときは、必要最小限の情報だけを送ってください。",
+      "text": "LLM が「ファイルを読んで」「シートに書き込んで」のような操作を提案した場合、\nユーザーが承認したときだけ実行されます。LLM が勝手にファイルを書き換えることはありません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_22"
     },
     {
@@ -10903,9 +10903,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "ツール実行の挙動",
+      "heading": "トラブルシューティング",
       "anchor": "_23",
-      "text": "LLM が「ファイルを読んで」「シートに書き込んで」のような操作を提案した場合、\nユーザーが承認したときだけ実行されます。LLM が勝手にファイルを書き換えることはありません。",
+      "text": "",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_23"
     },
     {
@@ -10913,9 +10913,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "トラブルシューティング",
+      "heading": "キーを入れても動かない",
       "anchor": "_24",
-      "text": "",
+      "text": "キーに余分な空白が入っていないか\nそのプロバイダの利用枠を超えていないか（無料枠の上限など）\nインターネット接続を確認",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_24"
     },
     {
@@ -10923,9 +10923,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "キーを入れても動かない",
+      "heading": "応答が途中で止まる",
       "anchor": "_25",
-      "text": "キーに余分な空白が入っていないか\nそのプロバイダの利用枠を超えていないか（無料枠の上限など）\nインターネット接続を確認",
+      "text": "長文出力時にタイムアウトする場合あり\n「続けて」とプロンプトを送って続行\nモデルを高性能版に切り替える",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_25"
     },
     {
@@ -10933,9 +10933,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "応答が途中で止まる",
+      "heading": "使用量を抑えたい",
       "anchor": "_26",
-      "text": "長文出力時にタイムアウトする場合あり\n「続けて」とプロンプトを送って続行\nモデルを高性能版に切り替える",
+      "text": "設定 → AI → AI使用量 で月次/日次/1チャット別に予算上限を設定\n上限超過時はハード停止（既定）\nチャットパネル上部に使用量バナーが常時表示される\n既定モデルを軽量モデル（Haiku / Flash / mini）にする\nコンテキスト添付を最小限にする\n大量テキスト処理や長時間対話では、必要に応じて CLIチャット（Claude Code / Codex CLI / Antigravity CLI）も検討する。利用条件と利用枠は各CLI側で確認する\n外部CLIからMCP経由でファイル検索、ファイル作成、シート更新、ナレッジ保存を行う場合、Meldex登録APIキーの料金は発生しません\nMeldexの AI タブから登録済みAPIキーで送信する通常チャットや、Meldex側の自動ナレッジ抽出を実行した場合は、Meldex登録APIキーの料金が発生します\n詳細は AI使用量と予算管理 と LLMの必要性とコスト方針 を参照",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_26"
     },
     {
@@ -10943,9 +10943,9 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "使用量を抑えたい",
+      "heading": "モデル障害時のフォールバック",
       "anchor": "_27",
-      "text": "設定 → AI → AI使用量 で月次/日次/1チャット別に予算上限を設定\n上限超過時はハード停止（既定）\nチャットパネル上部に使用量バナーが常時表示される\n既定モデルを軽量モデル（Haiku / Flash / mini）にする\nコンテキスト添付を最小限にする\n大量テキスト処理や長時間対話では、必要に応じて CLIチャット（Claude Code / Codex CLI / Antigravity CLI）も検討する。利用条件と利用枠は各CLI側で確認する\n外部CLIからMCP経由でファイル検索、ファイル作成、シート更新、ナレッジ保存を行う場合、Meldex登録APIキーの料金は発生しません\nMeldexの AI タブから登録済みAPIキーで送信する通常チャットや、Meldex側の自動ナレッジ抽出を実行した場合は、Meldex登録APIキーの料金が発生します\n詳細は AI使用量と予算管理 と LLMの必要性とコスト方針 を参照",
+      "text": "OpenAI / Gemini では、選択したモデルが利用できない場合に同じプロバイダ内の安定モデルへ切り替えて続行することがあります\n切替時はチャット上に通知が表示されます\nAPI キー未設定、課金未設定、通信障害などで送信できない場合は、別プロバイダを手動で選び直してください\nLLM チャットが使えない場合でも、ノート / シナリオ / シート / ボード / スケジュールの編集は使えます。オンラインならWebマニュアルも閲覧できます\n詳細は AI使用量と予算管理 と トラブルシューティング集 を参照してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_27"
     },
     {
@@ -10953,20 +10953,10 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "heading": "モデル障害時のフォールバック",
-      "anchor": "_28",
-      "text": "OpenAI / Gemini では、選択したモデルが利用できない場合に同じプロバイダ内の安定モデルへ切り替えて続行することがあります\n切替時はチャット上に通知が表示されます\nAPI キー未設定、課金未設定、通信障害などで送信できない場合は、別プロバイダを手動で選び直してください\nLLM チャットが使えない場合でも、ノート / シナリオ / シート / ボード / スケジュールの編集は使えます。オンラインならWebマニュアルも閲覧できます\n詳細は AI使用量と予算管理 と トラブルシューティング集 を参照してください。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_28"
-    },
-    {
-      "id": "manual-chunk-14ee01106b33008b",
-      "path": "03_設定と連携/LLM設定.md",
-      "title": "AIキーとLLM設定",
-      "category": "チャット・AI",
       "heading": "関連ページ",
-      "anchor": "_29",
+      "anchor": "_28",
       "text": "Meldex マニュアル\n設定 マニュアル\nAI使用量と予算管理\nLLMプライバシーガイド\nLLMの必要性とコスト方針\nCLIチャット連携\nCLI MCP連携\nワークスペースチャット運用\nマルチユーザー運用\nWebマニュアルの使い方\nLLM API キーを忘れた時",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_29"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_28"
     },
     {
       "id": "manual-chunk-4e69efdb5254c829",

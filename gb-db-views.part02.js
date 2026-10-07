@@ -155,9 +155,9 @@ function _dbEntityPassesAdvancedFilters(entityData, filters, filterMode) {
 
 function _isKanbanGroupableProperty(dbPath, propName) {
   const ptc = getPropertyTypes(dbPath)[propName] || {};
-  if (ptc.source) return false;
-  if (['formula', 'rollup', 'button', 'multi-source-relation', 'chat'].includes(ptc.type || '')) return false;
-  return !checkColumnEditable(dbPath, propName);
+  // グループ化は読み取り専用列でも表示できる。編集可否はカードのD&D時に
+  // checkColumnEditable()で別途判定するため、取り込み列や計算列を候補から消さない。
+  return !['button', 'multi-source-relation', 'chat', 'image'].includes(ptc.type || '');
 }
 
 function _kanbanStatusDefs(dbPath) {
@@ -295,7 +295,8 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       ? _attachmentKind(item)
       : String(item?.asset_kind || item?.media_type || '').toLowerCase();
     // thumb_url は新方式では動画にも入る（生ファイル）ので、本物の縮小画像だけを preview として扱う
-    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url);
+    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url)
+      || (mediaKind === 'video' && !!item?.path);
     if (mediaKind !== 'image' && !hasPreview) {
       const placeholder = document.createElement('div');
       placeholder.className = 'db-card-media-placeholder';

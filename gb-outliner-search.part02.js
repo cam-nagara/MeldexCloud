@@ -371,6 +371,23 @@ const MeldexUnifiedSearch = (() => {
       });
       row.append(input, document.createTextNode(label)); popup.appendChild(row);
     });
+    const divider = document.createElement('div');
+    divider.className = 'gb-context-menu-sep';
+    divider.setAttribute('role', 'separator');
+    popup.appendChild(divider);
+    const entityRow = document.createElement('label');
+    entityRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;cursor:pointer;';
+    const entityInput = document.createElement('input');
+    entityInput.type = 'checkbox';
+    entityInput.checked = typeof _getTreeSearchIncludeEntities === 'function'
+      ? _getTreeSearchIncludeEntities()
+      : localStorage.getItem('tree-search-include-entities') === 'true';
+    entityInput.dataset.e2eId = 'search-scope-include-entities';
+    entityInput.addEventListener('change', () => {
+      if (typeof setTreeSearchIncludeEntities === 'function') setTreeSearchIncludeEntities(entityInput.checked);
+    });
+    entityRow.append(entityInput, document.createTextNode('エントリも検索'));
+    popup.appendChild(entityRow);
     const close = document.createElement('button');
     close.type = 'button'; close.className = 'gb-btn gb-btn-sm gb-btn-icon'; close.title = '閉じる';
     close.setAttribute('aria-label', '検索対象設定を閉じる'); close.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
@@ -393,7 +410,9 @@ const MeldexUnifiedSearch = (() => {
     btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon'; btn.title = '検索対象'; btn.setAttribute('aria-label', '検索対象を設定');
     btn.innerHTML = typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '⚙';
     btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); show(btn); });
-    anchorParent.appendChild(btn); return btn;
+    if (options.afterElement?.parentElement === anchorParent) options.afterElement.insertAdjacentElement('afterend', btn);
+    else anchorParent.appendChild(btn);
+    return btn;
   }
 
   const TAG_BUTTON_OWNER_KEY = 'unified-search';
@@ -439,13 +458,15 @@ const MeldexUnifiedSearch = (() => {
         sourceFolder: typeof options.sourceFolder === 'function' ? (options.sourceFolder() || '') : String(options.sourceFolder || ''),
         tagIds: cond.tagIds,
         matchMode: cond.tagMode,
+        anchor: btn,
         onChange: (tagIds, mode) => {
           writeTagCondition({ tagIds, tagMode: mode });
           if (typeof options.onChange === 'function') options.onChange(tagIds, mode);
         },
       });
     });
-    anchorParent.appendChild(btn);
+    if (options.afterElement?.parentElement === anchorParent) options.afterElement.insertAdjacentElement('afterend', btn);
+    else anchorParent.appendChild(btn);
     return btn;
   }
 
@@ -644,8 +665,15 @@ function applyTreeNameSearch() {
 function _installTreeSearchScopeTrigger() {
   const input = document.getElementById('sidebar-search-input');
   if (!input?.parentElement) return;
-  MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
-  MeldexUnifiedSearch.tagButton?.(input.parentElement, { e2eId: 'tree-search-tag-trigger' });
+  const fullTextButton = document.getElementById('btn-vault-search');
+  const scopeButton = MeldexUnifiedSearch.button(input.parentElement, {
+    e2eId: 'tree-search-scope-trigger',
+    afterElement: fullTextButton,
+  }) || input.parentElement.querySelector('[data-search-scope-trigger]');
+  MeldexUnifiedSearch.tagButton?.(input.parentElement, {
+    e2eId: 'tree-search-tag-trigger',
+    afterElement: scopeButton,
+  });
   _ensureTreeSearchHintEl();
 }
 queueMicrotask(_installTreeSearchScopeTrigger);
