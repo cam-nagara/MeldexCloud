@@ -1,13 +1,19 @@
 {
   "type": "meldex-public-manual-versions",
   "schema_version": 1,
-  "latest": "0.7.371",
+  "latest": "0.7.372",
   "versions": [
     {
-      "version": "0.7.371",
-      "label": "v0.7.371（最新版）",
+      "version": "0.7.372",
+      "label": "v0.7.372（最新版）",
       "url": "manual.html",
       "latest": true
+    },
+    {
+      "version": "0.7.371",
+      "label": "v0.7.371",
+      "url": "manual-versions/v0.7.371/manual.html",
+      "latest": false
     },
     {
       "version": "0.7.370",

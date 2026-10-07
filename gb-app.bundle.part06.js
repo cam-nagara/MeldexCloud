@@ -1,5 +1,4 @@
-    if (!boardCanvas
-      && !openOpts.skipNavPush
+    if (!openOpts.skipNavPush
       && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'
       && GBPaneBridge?.initialized) {

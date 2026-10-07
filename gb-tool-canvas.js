@@ -124,6 +124,12 @@ class CanvasComponent extends ToolComponent {
     } else if (!this._boardLoadPending && !this._activatingForReload
         && this.state.boardPath && bd.path !== this.state.boardPath) {
       this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
+    } else if (!this._boardLoadPending && this.state.boardPath === bd.path
+        && bd.nodes?.length && !this.el.querySelector('[data-bd-role="nodes"]')?.children.length) {
+      // openBoard can load the model before navigation replaces the canvas shell.
+      // The matching path skips another download; mount the retained model here.
+      if (typeof bdRender === 'function') bdRender();
+      if (typeof bdTransform === 'function') bdTransform();
     }
     if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);

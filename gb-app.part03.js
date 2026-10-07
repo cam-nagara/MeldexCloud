@@ -484,11 +484,10 @@ async function openBoard(label, path, opts) {
     state.currentBoardPath = path;
     if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
     // ペインブリッジでは board はコンポーネント型なので、showView('board') 自体は
-    // DOMをマウントしない。ノート等の別型タブから開く場合は先にnavPushして
-    // CanvasComponentを作り、そのコンポーネントが開始した読込を待つ。
-    const boardCanvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
-    if (!boardCanvas
-      && !openOpts.skipNavPush
+    // DOMをマウントしない。先にnavPushして対象のCanvasComponentをマウントし、
+    // そのコンポーネントが開始した読込を待つ。既存キャンバスからの切替も同じ順序にし、
+    // 読込後のタブ再構築が取得済みモデルを古いdumpで置き換えないようにする。
+    if (!openOpts.skipNavPush
       && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'
       && GBPaneBridge?.initialized) {
