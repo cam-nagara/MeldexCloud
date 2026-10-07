@@ -13534,9 +13534,27 @@
     });
   }
 
+  async function _writeRowIfMissing(row) {
+    const db = await _openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      let retained = row;
+      const request = store.get(row.id);
+      request.onsuccess = () => {
+        if (_workspaceScope().id !== row.workspaceId) { tx.abort(); return; }
+        if (request.result) retained = request.result;
+        else store.add(row);
+      };
+      tx.oncomplete = () => resolve(retained);
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('管理者鍵の保存を中止しました。再試行してください'));
+    });
+  }
+
   async function _encryptStoredKey(value) {
+    const scope = _workspaceScope();
     const raw = _normalizeRawKey(value);
-    const salt = await _saltBytesFromText(_workspaceSaltText());
+    const salt = await _saltBytesFromText(`${KDF_SALT}:${scope.id}`);
     const iv = new Uint8Array(12);
     _webCrypto().getRandomValues(iv);
     const payload = {
@@ -13551,8 +13569,8 @@
       new TextEncoder().encode(JSON.stringify(payload))
     );
     return {
-      id: _rowId(),
-      workspaceId: _workspaceScope().id,
+      id: `${KEY_ID}:${scope.id}`,
+      workspaceId: scope.id,
       schema: ENVELOPE_SCHEMA,
       encrypted: true,
       kdf: {
@@ -13593,23 +13611,23 @@
   }
 
   async function _readStoredKey() {
+    const scope = _workspaceScope();
     const fallbackValue = _readFallbackKey();
     let db;
     let row;
     try {
       db = await _openDb();
-      row = await _readRow(db);
+      row = await _readRow(db, `${KEY_ID}:${scope.id}`);
     } catch {
       return '';
     }
     if (row) {
       const raw = await _decryptStoredKey(row);
       if (raw) {
-        if (row.schema !== ENVELOPE_SCHEMA || fallbackValue) await _writeStoredKey(raw);
+        if (row.schema !== ENVELOPE_SCHEMA || (fallbackValue && scope.allowLegacyClaim)) await _writeStoredKey(raw);
         return raw;
       }
     }
-    const scope = _workspaceScope();
     if (!row && scope.allowLegacyClaim) {
       const legacyRow = await _readRow(db, KEY_ID);
       if (legacyRow) {
@@ -13634,19 +13652,80 @@
   async function _writeStoredKey(value) {
     const row = await _encryptStoredKey(value);
     try {
+      _requireScope(row.workspaceId);
       await _writeRow(row);
-      _removeFallbackKey();
+      _requireScope(row.workspaceId);
+      if (_workspaceScope().allowLegacyClaim) _removeFallbackKey();
     } catch (err) {
       throw err || new Error('管理者鍵を保存できませんでした');
     }
     return row;
   }
 
-  async function getRawKey(options = {}) {
-    let value = await _readStoredKey();
-    if (!value && options.create !== false) {
-      value = await createRandomKey();
+  function _requireScope(id) {
+    if (_workspaceScope().id !== id) throw new Error('管理者鍵の確認中に保存先が変更されました。現在の保存先で再試行してください');
+  }
+
+  // Only old, unscoped device keys are candidates. Never search other workspace
+  // keys, create a replacement, or remove the legacy key. The caller must prove
+  // ownership by checking an existing signature in the current management root.
+  async function recoverLegacyKey(options = {}) {
+    if (typeof options.verify !== 'function') return '';
+    const scope = _workspaceScope();
+    const current = await getRawKey({ create: false });
+    _requireScope(scope.id);
+    if (current) {
+      const verified = await options.verify(current);
+      _requireScope(scope.id);
+      return verified === true ? current : '';
     }
+    const db = await _openDb();
+    const candidates = [];
+    for (const id of [KEY_ID, `${KEY_ID}:local-device`]) {
+      const row = await _readRow(db, id);
+      if (row && (!row.workspaceId || row.workspaceId === 'local-device')) {
+        candidates.push(await _decryptStoredKey(row));
+      }
+    }
+    const fallback = _readFallbackKey();
+    if (fallback) candidates.push(_normalizeRawKey(fallback));
+    for (const raw of new Set(candidates.filter(Boolean))) {
+      _requireScope(scope.id);
+      if (await options.verify(raw) !== true) continue;
+      _requireScope(scope.id);
+      // Another save may already have established this scope's key.
+      const existing = await getRawKey({ create: false });
+      _requireScope(scope.id);
+      if (existing) {
+        const verified = await options.verify(existing);
+        _requireScope(scope.id);
+        return verified === true ? existing : '';
+      }
+      const row = await _encryptStoredKey(raw);
+      _requireScope(scope.id);
+      const retained = await _writeRowIfMissing(row);
+      _requireScope(scope.id);
+      const value = await _decryptStoredKey(retained);
+      _requireScope(scope.id);
+      if (value !== raw && await options.verify(value) !== true) return '';
+      _requireScope(scope.id);
+      return value;
+    }
+    return '';
+  }
+
+  async function getRawKey(options = {}) {
+    const scope = _workspaceScope();
+    let value = await _readStoredKey();
+    _requireScope(scope.id);
+    if (!value && options.create !== false) {
+      const bytes = new Uint8Array(32);
+      _webCrypto().getRandomValues(bytes);
+      const row = await _encryptStoredKey(_bytesToBase64(bytes));
+      _requireScope(scope.id);
+      value = await _decryptStoredKey(await _writeRowIfMissing(row));
+    }
+    _requireScope(scope.id);
     return value;
   }
 
@@ -13689,19 +13768,22 @@
   }
 
   async function clear() {
+    const scope = _workspaceScope();
     try {
       const db = await _openDb();
+      _requireScope(scope.id);
       await new Promise((resolve, reject) => {
-        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(_rowId());
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(`${KEY_ID}:${scope.id}`);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
     } catch {}
-    _removeFallbackKey();
+    if (scope.allowLegacyClaim && _workspaceScope().id === scope.id) _removeFallbackKey();
   }
 
   window.MeldexOwnerKeyStore = {
     getRawKey,
+    recoverLegacyKey,
     createRandomKey,
     setRawKey,
     normalizeRawKey: _normalizeRawKey,
@@ -14181,6 +14263,36 @@
     return { ok: true, ...entry };
   }
 
+  async function _recoverLegacyRecordKey(provider, scope, record, signature, options = {}, existing = null) {
+    const store = window.MeldexOwnerKeyStore;
+    if (!store?.recoverLegacyKey) return '';
+    const matches = async (raw, row, signed) => {
+      if (!signed?.hmac || !row?.documentId
+          || signed.scope !== _normalizeScope(scope)
+          || signed.edit_document_id !== row.documentId
+          || signed.payload_revision !== String(row.revision || '')) return false;
+      return await hmac(_recordSigningPayload(scope, row), { create: false, rawKey: raw }) === signed.hmac;
+    };
+    return store.recoverLegacyKey({ verify: async raw => {
+      if (signature?.hmac) return matches(raw, record, signature);
+      if (!Array.isArray(existing)) return false;
+      const adapter = options.managementAdapter;
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.VERSIONS;
+      if (!adapter?.load || !kind) return false;
+      let verified = 0;
+      for (const entry of existing) {
+        const signed = entry?.payload;
+        if (!signed?.hmac || signed.scope !== _normalizeScope(scope) || !signed.edit_document_id) continue;
+        const row = await adapter.load(kind, signed.edit_document_id);
+        // An obsolete signature cannot prove ownership of the current record.
+        if (!row || signed.payload_revision !== String(row.revision || '')) continue;
+        if (!await matches(raw, row, signed)) return false;
+        verified += 1;
+      }
+      return verified > 0;
+    } });
+  }
+
   async function signRecord(provider, scope, record, meta = {}) {
     if (!record?.documentId) return { ok: false, skipped: true };
     const target = _recordSigningPayload(scope, record);
@@ -14195,10 +14307,15 @@
       // 既存署名がある状態で鍵だけ失われた場合、新しい鍵を黙って作ると過去の
       // 正常レコードまで改変扱いになる。復旧UIを優先し、初回署名時だけ生成する。
       if (!Array.isArray(existing) || existing.some(row => !!row?.payload?.hmac)) {
-        window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
-        return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+        rawKey = await _recoverLegacyRecordKey(provider, scope, record, null,
+          { ...meta, managementAdapter: managed.adapter }, existing);
+        if (!rawKey) {
+          window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
+          return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+        }
+      } else {
+        rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
       }
-      rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
     }
     const digest = await hmac(target, { create: false, rawKey });
     if (!digest) return { ok: false, missing_key: true, reason: 'owner-key-missing' };
@@ -14231,7 +14348,8 @@
         signature,
       };
     }
-    const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    let key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!key && !options.rawKey) key = await _recoverLegacyRecordKey(provider, scope, record, signature, options);
     if (!key) {
       window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('変更レコードの署名検証に必要な管理者鍵がこの端末にありません。');
       return { ok: false, status: 'owner-key-missing', missing_key: true, reason: 'owner-key-missing', signature };

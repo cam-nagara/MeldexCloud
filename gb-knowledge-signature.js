@@ -201,6 +201,36 @@
     return { ok: true, ...entry };
   }
 
+  async function _recoverLegacyRecordKey(provider, scope, record, signature, options = {}, existing = null) {
+    const store = window.MeldexOwnerKeyStore;
+    if (!store?.recoverLegacyKey) return '';
+    const matches = async (raw, row, signed) => {
+      if (!signed?.hmac || !row?.documentId
+          || signed.scope !== _normalizeScope(scope)
+          || signed.edit_document_id !== row.documentId
+          || signed.payload_revision !== String(row.revision || '')) return false;
+      return await hmac(_recordSigningPayload(scope, row), { create: false, rawKey: raw }) === signed.hmac;
+    };
+    return store.recoverLegacyKey({ verify: async raw => {
+      if (signature?.hmac) return matches(raw, record, signature);
+      if (!Array.isArray(existing)) return false;
+      const adapter = options.managementAdapter;
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.VERSIONS;
+      if (!adapter?.load || !kind) return false;
+      let verified = 0;
+      for (const entry of existing) {
+        const signed = entry?.payload;
+        if (!signed?.hmac || signed.scope !== _normalizeScope(scope) || !signed.edit_document_id) continue;
+        const row = await adapter.load(kind, signed.edit_document_id);
+        // An obsolete signature cannot prove ownership of the current record.
+        if (!row || signed.payload_revision !== String(row.revision || '')) continue;
+        if (!await matches(raw, row, signed)) return false;
+        verified += 1;
+      }
+      return verified > 0;
+    } });
+  }
+
   async function signRecord(provider, scope, record, meta = {}) {
     if (!record?.documentId) return { ok: false, skipped: true };
     const target = _recordSigningPayload(scope, record);
@@ -215,10 +245,15 @@
       // 既存署名がある状態で鍵だけ失われた場合、新しい鍵を黙って作ると過去の
       // 正常レコードまで改変扱いになる。復旧UIを優先し、初回署名時だけ生成する。
       if (!Array.isArray(existing) || existing.some(row => !!row?.payload?.hmac)) {
-        window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
-        return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+        rawKey = await _recoverLegacyRecordKey(provider, scope, record, null,
+          { ...meta, managementAdapter: managed.adapter }, existing);
+        if (!rawKey) {
+          window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
+          return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+        }
+      } else {
+        rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
       }
-      rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
     }
     const digest = await hmac(target, { create: false, rawKey });
     if (!digest) return { ok: false, missing_key: true, reason: 'owner-key-missing' };
@@ -251,7 +286,8 @@
         signature,
       };
     }
-    const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    let key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!key && !options.rawKey) key = await _recoverLegacyRecordKey(provider, scope, record, signature, options);
     if (!key) {
       window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('変更レコードの署名検証に必要な管理者鍵がこの端末にありません。');
       return { ok: false, status: 'owner-key-missing', missing_key: true, reason: 'owner-key-missing', signature };

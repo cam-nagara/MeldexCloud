@@ -32070,6 +32070,11 @@ async function bdSave() {
     return false;
   }
   const markdown = bdToMd();
+  const recoveryScope = () => {
+    try { return JSON.stringify(window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null); }
+    catch (_) { return undefined; }
+  };
+  const recoveryScopeAtRequest = recoveryScope();
   const prevIds = bd._lastSavedNodeIds || new Set();
   const currIds = new Set((bd.nodes || []).map(n => n.id));
   const coordinator = window.MeldexDocumentSaveCoordinator;
@@ -32155,6 +32160,11 @@ async function bdSave() {
       _bdShowConflictPending(documentKey, savePath);
       showStatus('ボードは上書きされていません。別の端末で更新されています。最新のボードを開き直してから編集内容を反映してください', true);
     } else {
+      // A signature/storage failure must retain the unsaved cards as a local
+      // recovery draft. This does not mark the Cloud document as saved.
+      if (bd.path === savePath && recoveryScopeAtRequest !== undefined && recoveryScope() === recoveryScopeAtRequest) {
+        await window.MeldexDraftRecovery?.saveDraft?.(savePath, markdown, bd.lastSavedEtag || '');
+      }
       showStatus('ボードを保存できません: ' + detail, true);
     }
     return false;
