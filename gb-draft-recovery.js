@@ -260,8 +260,19 @@
       const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
       if (!ok) return false;
     }
+    let content = item.content || '';
+    if (String(nextPath) !== String(item.path)) {
+      const identity = window.MeldexDocumentIdentity;
+      const format = identity?.formatForPath?.(nextPath, content);
+      if (format) {
+        if (!identity?.regenerateDocumentId) throw new Error('復旧コピーの文書IDを作成できません');
+        const regenerated = identity.regenerateDocumentId(content, format);
+        if (!regenerated?.documentId) throw new Error('復旧コピーの文書IDを作成できません');
+        content = regenerated.text;
+      }
+    }
     await apiPut('/file?path=' + encodeURIComponent(nextPath), {
-      content: item.content || '',
+      content,
       ...(exists ? { force_overwrite: true } : { create_only: true }),
     });
     await clearDraft(item.path, item.storageKey);
