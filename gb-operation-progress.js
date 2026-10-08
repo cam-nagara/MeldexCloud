@@ -126,6 +126,12 @@
   function _patch(record, values, reason) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
+    if (next.phase !== undefined && String(next.phase || '') !== record.state.phase) {
+      record.state.message = '';
+      record.state.currentItem = '';
+      record.state.rate = null;
+      record.state.eta = null;
+    }
     if (next.label !== undefined) record.state.label = String(next.label || '処理中');
     if (next.phase !== undefined) record.state.phase = String(next.phase || '');
     if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
@@ -136,7 +142,7 @@
     if (next.total !== undefined) {
       const total = _number(next.total, null);
       record.state.total = total != null && total > 0 ? total : null;
-      if (!record.state.total) record.state.mode = 'indeterminate';
+      record.state.mode = record.state.total ? 'determinate' : 'indeterminate';
     }
     if (next.processed !== undefined) record.state.processed = Math.max(0, _number(next.processed, 0));
     if (next.mode === 'determinate' || next.mode === 'indeterminate') record.state.mode = next.mode;
@@ -161,6 +167,7 @@
     const next = values || {};
     _clearTimer(record, 'showTimer');
     record.state.status = status;
+    record.state.cancellable = false;
     record.state.completedAt = Date.now();
     record.state.updatedAt = record.state.completedAt;
     if (next.summary !== undefined) record.state.summary = String(next.summary || '');
@@ -305,6 +312,7 @@
   async function requestCancel(id) {
     const record = records.get(String(id || ''));
     if (!record || !record.cancel || !record.state.cancellable || TERMINAL.has(record.state.status)) return false;
+    const previousStatus = record.state.status;
     record.state.status = 'cancelling';
     record.state.updatedAt = Date.now();
     _show(record);
@@ -314,7 +322,7 @@
       if (record.cancelCompletes && !TERMINAL.has(record.state.status)) _finish(record, 'cancelled', {});
       return true;
     } catch (error) {
-      _finish(record, 'failed', { error: error || '中止要求を送信できませんでした' });
+      _patch(record, { status: previousStatus, message: '中止要求を送信できませんでした。処理は続いている可能性があります。' }, 'cancel-error');
       return false;
     }
   }

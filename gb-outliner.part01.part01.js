@@ -864,7 +864,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
   if (!targetPath || !Array.isArray(items) || items.length === 0) return;
   const progress = window.MeldexImportProgress;
-  progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let processed = 0;
   let succeeded = 0;
   const failures = [];
@@ -893,10 +893,10 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
         failures.push({ source, error });
       }
       processed += 1;
-      progress?.updateOperation?.(processed);
+      progress?.updateOperation?.(processed, null, progressToken);
     }
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
   await loadOutliner({ force: true, reason: 'external-drop-move' });
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {

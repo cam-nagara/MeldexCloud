@@ -1,3 +1,5 @@
+      showAddFolderLinkModal(nodeData.path, null);
+    }, null, 'link2');
   }
 
   // --- 色設定 ---
@@ -896,4 +898,3 @@ let _outlinerKeyboardFocusSeq = 0;
 
 function _outlinerKeyboardRow(nodeEl) {
   return nodeEl?.querySelector?.(':scope > .tree-node-row') || null;
-}

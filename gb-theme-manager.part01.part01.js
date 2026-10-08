@@ -776,6 +776,8 @@
 
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
+    // Bulk colors share one resolved color across variable-backed and selector-backed UI.
+    if (/^var:--(?:bg|fg|fg2|border|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
     if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
       const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();

@@ -984,54 +984,32 @@ function _restoreTreeDisplaySettings() {
   _applyTreeLayoutMode(globalThis.localStorage?.getItem?.('tree-layout') || 'list');
 }
 
-let _treeDisplayRefreshRunning = false;
-let _treeDisplayRefreshPending = false;
-let _treeDisplayRefreshPromise = null;
-
 function _refreshTreeAfterDisplaySettingsChange(reason) {
-  _treeDisplayRefreshPending = true;
-  if (_treeDisplayRefreshRunning) return _treeDisplayRefreshPromise;
-
-  _treeDisplayRefreshRunning = true;
-  const progress = window.MeldexOperationProgress?.begin?.({
-    id: 'folder-tree-display-settings-refresh',
-    kind: 'folder-tree-display-settings',
-    label: 'フォルダツリーの表示設定を反映中…',
-    message: '一覧・サムネイル・サブフォルダの表示を更新しています',
-    mode: 'indeterminate',
-    background: false,
-    delayMs: 300,
-    showInTray: true,
-    priority: 40,
-  }) || null;
-  const fallbackLoading = !progress && typeof showLoading === 'function';
-  const loading = fallbackLoading ? showLoading('フォルダツリーの表示設定を反映中…', { key: 'outliner-display-settings' }) : null;
-
-  _treeDisplayRefreshPromise = (async () => {
-    try {
-      do {
-        _treeDisplayRefreshPending = false;
-        if (typeof loadOutliner === 'function') {
-          await loadOutliner({
-            force: true,
-            reason: reason || 'tree-display-settings',
-            suppressLoading: true,
-          });
-        }
-      } while (_treeDisplayRefreshPending);
-      progress?.succeed?.({ dismissMs: 0 });
-      return true;
-    } catch (error) {
-      progress?.fail?.({ error, dismissMs: 0 });
-      throw error;
-    } finally {
-      if (fallbackLoading && typeof hideLoading === 'function') hideLoading(loading);
-      _treeDisplayRefreshRunning = false;
-      _treeDisplayRefreshPending = false;
-      _treeDisplayRefreshPromise = null;
-    }
-  })();
-  return _treeDisplayRefreshPromise;
+  // 表示だけの変更ではルート/子項目を再取得しない。既存ノードの展開と選択を保つ。
+  const tree = document.getElementById('outliner-tree');
+  const scroller = document.getElementById('tree-scroll-container');
+  const scrollTop = scroller?.scrollTop || 0;
+  _restoreTreeDisplaySettings();
+  if (reason === 'tree-layout' && localStorage.getItem('tree-layout') === 'grid') {
+    window.GBOutlinerVirtualRender?.materializeForGrid?.(tree);
+  }
+  if (reason === 'tree-thumbnail-size') {
+    tree?.querySelectorAll('.tree-node').forEach(node => {
+      const row = node.querySelector(':scope > .tree-node-row');
+      const icon = row?.querySelector('.tree-icon');
+      if (!row || !icon || !node._nodeData) return;
+      const thumbnails = window.GBOutlinerThumbnails;
+      thumbnails?.detachRow(row);
+      row.querySelectorAll('.tree-thumb-shell').forEach(shell => shell.remove());
+      row.classList.remove('thumb-ready');
+      thumbnails?.attachToRow(row, node._nodeData, icon);
+      const height = thumbnails?.compactRowHeight?.() || 22;
+      window.GBOutlinerVirtualRender?.updateRowHeight(node, height);
+    });
+  }
+  window.GBOutlinerVirtualRender?.forceRefreshVisible?.();
+  if (scroller) scroller.scrollTop = scrollTop;
+  return Promise.resolve(true);
 }
 
 if (document.readyState === 'loading') {

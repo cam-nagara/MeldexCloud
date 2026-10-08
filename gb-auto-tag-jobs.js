@@ -18,7 +18,7 @@
 
   function activeJobIds() {
     return [...jobs.values()]
-      .filter(job => ['running', 'cancelling'].includes(job.status))
+      .filter(job => ['queued', 'running', 'cancelling'].includes(job.status))
       .map(job => job.id);
   }
 
@@ -36,7 +36,7 @@
     const processed = Number(progress.processed) || 0;
     const hasTotal = progress.total !== null
       && progress.total !== undefined
-      && Number.isFinite(Number(progress.total));
+      && Number.isFinite(Number(progress.total)) && Number(progress.total) > 0;
     const total = hasTotal ? Number(progress.total) : null;
     if (job.status === 'done') {
       const result = job.result || {};
@@ -72,12 +72,12 @@
     const processed = Number(progress.processed) || 0;
     const hasTotal = progress.total !== null
       && progress.total !== undefined
-      && Number.isFinite(Number(progress.total));
+      && Number.isFinite(Number(progress.total)) && Number(progress.total) > 0;
     const total = hasTotal ? Number(progress.total) : null;
     const percent = hasTotal && total > 0
       ? Math.max(0, Math.min(100, processed / total * 100))
       : 0;
-    const running = ['running', 'cancelling'].includes(job.status);
+    const running = ['queued', 'running', 'cancelling'].includes(job.status);
     const stats = running && hasTotal
       ? [
         `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`,
@@ -116,9 +116,9 @@
           <strong>${window.esc(job.label || 'タグ処理')}</strong>
           <span>${window.esc(phase)}</span>
         </div>
-        <div class="at-job-progress" role="progressbar"
+        <div class="at-job-progress${running && !hasTotal ? ' is-indeterminate' : ''}" role="progressbar"
           aria-valuemin="0"${hasTotal ? ` aria-valuemax="${window.esc(total)}"` : ''}
-          aria-valuenow="${window.esc(processed)}">
+          ${hasTotal ? `aria-valuenow="${window.esc(Math.min(processed, total))}"` : 'aria-valuetext="処理中（総数未確定）"'}>
           <span style="width:${percent}%"></span>
         </div>
         <p class="at-job-message" aria-live="polite">${window.esc(progressText(job))}</p>
@@ -159,7 +159,7 @@
         persistentJobId: job.id,
         background: true,
         showImmediately: true,
-        cancellable: ['running', 'cancelling'].includes(job.status),
+        cancellable: ['queued', 'running', 'cancelling'].includes(job.status),
         cancelCompletes: false,
         cancel: function () { return cancel(job.id); },
         onDispose: function () {
@@ -179,7 +179,7 @@
       details: failureSamples,
       detailCount: Number(job.result?.failed || failureSamples.length),
     };
-    if (['running', 'cancelling'].includes(job.status)) {
+    if (['queued', 'running', 'cancelling'].includes(job.status)) {
       handle.update({
         label: job.label || 'タグ処理',
         status: job.status,
@@ -191,7 +191,7 @@
         currentItem: job.progress?.current || '',
         rate: job.progress?.rate,
         eta: job.progress?.eta_seconds,
-        cancellable: job.status === 'running',
+        cancellable: job.status === 'running' || job.status === 'queued',
       });
     } else if (job.status === 'done') {
       const failed = Number(job.result?.failed || 0);
@@ -299,6 +299,7 @@
   }
 
   async function poll(jobId) {
+    let missing = 0;
     while (jobs.has(jobId)) {
       let snapshot;
       try {
@@ -310,17 +311,25 @@
           await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
           continue;
         }
-        current.status = 'error';
-        current.error = error?.userMessage || error?.message || String(error);
+        if (/404/.test(String(error?.message || '')) && ++missing >= 3) {
+          current.status = 'error';
+          current.error = '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。';
+          persist();
+          render();
+          return;
+        }
+        // A failed progress GET cannot certify that the worker failed.
+        current.progress = { ...current.progress, message: '進捗を確認できません。接続の復旧を待っています。' };
         persist();
         render();
-        notifyFinished(current);
-        return;
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        continue;
       }
+      missing = 0;
       jobs.set(jobId, { ...jobs.get(jobId), ...snapshot, id: jobId });
       persist();
       render();
-      if (!['running', 'cancelling'].includes(snapshot.status)) {
+      if (!['queued', 'running', 'cancelling'].includes(snapshot.status)) {
         notifyFinished(jobs.get(jobId));
         return;
       }
@@ -372,15 +381,16 @@
 
   async function cancel(jobId) {
     const job = jobs.get(jobId);
-    if (!job || !['running', 'cancelling'].includes(job.status)) return;
+    if (!job || !['queued', 'running', 'cancelling'].includes(job.status)) return;
+    const previousStatus = job.status;
     job.status = 'cancelling';
     job.progress = { ...job.progress, phase: '中止中', message: '安全に中止できる位置まで処理しています' };
     render();
     try {
       await apiPost('/jobs/' + encodeURIComponent(jobId) + '/cancel', {}, { silentError: true });
     } catch (error) {
-      job.status = 'error';
-      job.error = '中止要求を送信できませんでした: ' + (error?.userMessage || error?.message || error);
+      job.status = previousStatus;
+      job.progress = { ...job.progress, message: '中止要求を送信できませんでした。処理結果を確認しています。' };
       render();
     }
   }

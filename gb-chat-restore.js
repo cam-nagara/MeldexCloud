@@ -141,7 +141,11 @@
     return _save({
       mode: normalized,
       historyView: _currentHistoryView(),
-      ai: { savedPath: normalized === 'llm' ? _currentSavedPath() : (_load()?.ai?.savedPath || '') },
+      ai: {
+        savedPath: normalized === 'llm' ? _currentSavedPath() : (_load()?.ai?.savedPath || ''),
+        ...(normalized === 'llm' && window.GBChatStorageContext?.peekHistory?.()
+          ? { historySourceFolder: _chatState.historySourceFolder || window.GBChatStorageContext.peekHistory().sourceFolder } : {}),
+      },
       storage: _currentStorage(),
       target: _currentTarget(),
     });
@@ -150,7 +154,11 @@
   function _saveCurrentLlmRestore() {
     return _save({
       mode: 'llm',
-      ai: { savedPath: _currentSavedPath() },
+      ai: {
+        savedPath: _currentSavedPath(),
+        ...(window.GBChatStorageContext?.peekHistory?.()
+          ? { historySourceFolder: _chatState.historySourceFolder || window.GBChatStorageContext.peekHistory().sourceFolder } : {}),
+      },
       storage: _currentStorage(),
       target: _currentTarget(),
     });
@@ -273,7 +281,9 @@
     if (_llmContentRestored) return;
     const savedPath = String(meta?.ai?.savedPath || '');
     if (savedPath && typeof openSavedChat === 'function') {
-      if (!await _runRestoreStep(token, () => openSavedChat(savedPath, '', _currentStorage().sourceFolder))) return;
+      const legacyContext = await window.GBChatStorageContext.resolveForAi(_currentStorage());
+      const historySource = meta.ai?.historySourceFolder ?? (legacyContext.rootPath || _currentStorage().sourceFolder);
+      if (!await _runRestoreStep(token, () => openSavedChat(savedPath, '', historySource))) return;
       if (window.MeldexChatCurrentTarget?.restore) {
         if (!await _runRestoreStep(token, () => window.MeldexChatCurrentTarget.restore(meta.target))) return;
       }

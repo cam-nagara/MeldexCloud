@@ -229,6 +229,9 @@ function _themeUiCustomColor(value) {
 function _themeUiSelectOptions(value) {
   const items = _themeUiOptionItems(value);
   const current = String(value || 'none');
+  if (current.startsWith('var:') && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.resolveThemeUiColor(current)) {
+    items.push({ value: current, label: '一括設定の色', custom: true });
+  }
   return items.map(item => {
     if (item.group) return `<option value="" disabled>${esc(item.label)}</option>`;
     const customAttr = item.custom ? ' data-theme-ui-custom-option="1"' : '';
@@ -285,6 +288,10 @@ function _themeUiOptionItems(value) {
 
 function _themeUiOptionForValue(value) {
   const current = String(value || 'none');
+  if (current.startsWith('var:') && typeof MeldexThemeManager !== 'undefined') {
+    const swatch = MeldexThemeManager.resolveThemeUiColor(current);
+    if (swatch) return { value: current, label: '一括設定の色', swatch };
+  }
   const items = _themeUiOptionItems(current);
   const osAccent = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getUseOsAccentColor === 'function'
     ? MeldexThemeManager.getUseOsAccentColor()

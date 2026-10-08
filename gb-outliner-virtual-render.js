@@ -943,10 +943,59 @@
 
   function activeContainers() { return Array.from(_activeContainers); }
 
+  // Grid needs ordinary nested DOM. Reuse loaded items, including offscreen branches,
+  // rather than fetching roots again and relying on startup auto-expansion limits.
+  function materializeForGrid(root) {
+    _activeContainers.forEach(function (container) {
+      if (!root || !root.contains(container)) return;
+      var state = container._virtualState;
+      if (!state) return;
+      var lastClickedPath = typeof treeSelection !== 'undefined' ? treeSelection.lastClicked?._nodeData?.path : '';
+      var focusedPath = document.activeElement?.closest?.('.tree-node')?._nodeData?.path;
+      unmountContainer(container);
+      container.style.display = '';
+      function append(items, target) {
+        (items || []).forEach(function (item) {
+          if (item.path) _pathToContainer.delete(item.path);
+          var node = createTreeNodeFromBrowse({ ...item, _gbVirtualExpansionManaged: true }, state.rootPath);
+          // Future manually loaded children use normal expansion handling.
+          delete node._nodeData._gbVirtualExpansionManaged;
+          target.appendChild(node);
+          var children = node.querySelector(':scope > .tree-children');
+          var toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
+          var cached = state.childrenByParent.get(item.path);
+          var expanded = state.expandedIds.has(item.path);
+          if (cached) {
+            append(cached, children);
+            children.dataset.loaded = 'true';
+          }
+          if (toggle && toggle.dataset.expanded !== undefined) {
+            toggle.dataset.expanded = expanded ? 'true' : 'false';
+            toggle.classList.toggle('expanded', expanded);
+            children.classList.toggle('collapsed', !expanded);
+            if (expanded && item.type === 'folder') {
+              var icon = node.querySelector(':scope > .tree-node-row .tree-icon');
+              if (icon) {
+                icon.innerHTML = lucide(typeof getWorkFolder === 'function' && item.path === getWorkFolder() ? 'folderOpenDot' : 'folderOpen', 18);
+                if (item.linked) icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+              }
+            }
+          }
+          if (state.selectedIds.has(item.path) && typeof treeSelection !== 'undefined') treeSelection.add(node);
+          if (item.path === lastClickedPath) treeSelection.lastClicked = node;
+          if (item.path === focusedPath) node.querySelector(':scope > .tree-node-row')?.focus({ preventScroll: true });
+        });
+      }
+      append(state.allItems, container);
+    });
+    if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
+  }
+
   window.GBOutlinerVirtualRender = {
     VIRTUAL_THRESHOLD: VIRTUAL_THRESHOLD,
     OVERSCAN_ROWS: OVERSCAN_ROWS,
     mount: mount,
+    materializeForGrid: materializeForGrid,
     refresh: refresh,
     updateRowHeight: updateRowHeight,
     containerForPath: containerForPath,

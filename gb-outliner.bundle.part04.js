@@ -1,3 +1,5 @@
+  const jobs = [];
+  if (typeof loadOutliner === 'function') jobs.push(Promise.resolve(loadOutliner()).catch(() => {}));
   if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
   if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
@@ -896,5 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addMenuItem(linkLabel, () => {
       closeTreeContextMenu();
-      showAddFolderLinkModal(nodeData.path, null);
-    }, null, 'link2');

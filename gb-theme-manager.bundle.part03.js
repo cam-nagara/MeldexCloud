@@ -1,3 +1,5 @@
+
+  function setThemeColorSet(colors, options = {}) {
     const next = normalizeThemeColorSet(colors, getThemeColorSet());
     const commitOptions = {
       ...options,
@@ -61,6 +63,7 @@
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized.startsWith('var:')) return `var(${normalized.slice(4)})`;
     if (normalized.startsWith('auto-rows:')) {
       const rows = normalized.slice(10).split(',').map(Number);
       const index = options.paletteIndex || 0;
@@ -895,6 +898,3 @@
   function setThemeColorExtraSlotSettingsOnTheme(themeDef, slots) {
     if (!themeDef) return null;
     themeDef.ui = themeDef.ui || {};
-    const compact = compactThemeColorExtraSlotSettings(slots);
-    if (compact) themeDef.ui.themeColorExtraSlotSettings = compact;
-    else delete themeDef.ui.themeColorExtraSlotSettings;

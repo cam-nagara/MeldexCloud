@@ -59,9 +59,9 @@ const GB_SHORTCUTS = {
   'viewer.annotation':   { key: 'a',                label: 'アノテートの切替', scope: 'viewer' },
 
   // 常駐アプリはこの5 IDをPersonal Preferencesから取得し、OS登録へ反映する。
-  'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
-  'tray.screenshot.region': { key: 'ctrl+alt+r',   label: '範囲を撮影', scope: 'tray' },
-  'tray.screenshot.window': { key: 'ctrl+shift+w', label: 'ウィンドウを撮影', scope: 'tray' },
+  'tray.screenshot.full':   { key: 'ctrl+printscreen', label: '全画面を撮影', scope: 'tray' },
+  'tray.screenshot.region': { key: 'ctrl+shift+printscreen', label: '範囲を撮影', scope: 'tray' },
+  'tray.screenshot.window': { key: 'ctrl+alt+printscreen', label: 'ウィンドウを撮影', scope: 'tray' },
   'tray.quickMemo':         { key: 'ctrl+alt+m',   label: 'クイックメモを開く', scope: 'tray' },
   'tray.sticky.new':        { key: 'ctrl+alt+s',   label: '新規付箋を作成', scope: 'tray' },
 

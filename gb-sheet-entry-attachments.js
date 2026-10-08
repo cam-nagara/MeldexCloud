@@ -184,7 +184,7 @@
         if (typeof showStatus === 'function') showStatus('取り込めるファイルがありません', true);
         return 0;
       }
-      progress?.beginOperation?.('ファイルを取り込み中', files.length);
+      const progressToken = progress?.beginOperation?.('ファイルを取り込み中', files.length);
       try {
         for (const file of files) {
           try {
@@ -202,10 +202,10 @@
             failed += 1;
             failures.push({ name: file.name, error: err });
           }
-          progress?.updateOperation?.(ok + failed);
+          progress?.updateOperation?.(ok + failed, null, progressToken);
         }
       } finally {
-        progress?.finishOperation?.();
+        progress?.finishOperation?.(progressToken, { failed, summary: `${ok}件保存・${failed}件失敗`, details: failures });
       }
     } else {
       // Meldex内D&D
@@ -232,7 +232,7 @@
         return 0;
       }
 
-      progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
+      const progressToken = progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
       try {
         for (const item of validItems) {
           try {
@@ -249,10 +249,10 @@
             failed += 1;
             failures.push({ name: item.name || item.path, error: err });
           }
-          progress?.updateOperation?.(ok + failed);
+          progress?.updateOperation?.(ok + failed, null, progressToken);
         }
       } finally {
-        progress?.finishOperation?.();
+        progress?.finishOperation?.(progressToken, { failed, summary: `${ok}件保存・${failed}件失敗`, details: failures });
       }
       if (resolved && ok > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);

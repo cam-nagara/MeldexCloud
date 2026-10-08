@@ -3465,6 +3465,13 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
   color: var(--gb-rail-icon-color, var(--ui-fg-default));
 }
 /* テーマ設定の「左アクセントバー」を通常・ホバー・選択の各状態へ反映する。 */
+/* Explicit bulk text colors also cover the pastel/earth rail palette override. */
+:root[style*="--simple-theme-text:"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active):not(:hover) {
+  color: var(--ui-dock-button-fg, var(--ui-fg-default));
+}
+:root[style*="--simple-theme-text:"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active):hover {
+  color: var(--ui-dock-button-hover-fg, var(--ui-fg-default));
+}
 .gb-dock-icon::before {
   content: '';
   position: absolute;
@@ -26214,7 +26221,7 @@ button.gb-hp-entry:disabled { opacity: 0.5; cursor: wait; }
   cursor: pointer;
 }
 
-/* カスタムチェックボックス: アプリ全体を白チェックの同一デザインに統一 */
+/* カスタムチェックボックス: アプリ全体でテーマの選択文字色を使う同一デザイン */
 input[type=checkbox],
 .modal input[type=checkbox],
 .gb-check input[type=checkbox],
@@ -26223,7 +26230,7 @@ input[type=checkbox].gb-checkbox {
   -moz-appearance: none;
   appearance: none;
   --gb-checkbox-size: var(--gb-checkbox-size-override, 14px);
-  --gb-checkbox-check-color: #fff;
+  --gb-checkbox-check-color: var(--ui-control-active-fg, #fff);
   --gb-checkbox-mark-w: max(4px, calc(var(--gb-checkbox-size) * 0.32));
   --gb-checkbox-mark-h: max(8px, calc(var(--gb-checkbox-size) * 0.58));
   --gb-checkbox-mark-stroke: max(2px, calc(var(--gb-checkbox-size) * 0.13));
@@ -31690,6 +31697,15 @@ img.meldex-image-load-error {
   overflow: auto;
 }
 
+.gb-modal.knowledge-home-modal > .gb-modal-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .taste-principles-view .taste-enable-summary {
   display: flex;
   align-items: center;
@@ -34144,7 +34160,7 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .at-run-panel button {
   transition: width 180ms ease-out;
 }
 
-.at-job--running .at-job-progress > span[style="width:0%"] {
+.at-job-progress.is-indeterminate > span {
   width: 22% !important;
   animation: at-job-indeterminate 1.4s ease-in-out infinite alternate;
 }

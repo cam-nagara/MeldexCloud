@@ -1083,6 +1083,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function isTooltipEligible(el) {
     if (!(el instanceof HTMLElement)) return false;
     if (el.closest('.gb-tooltip')) return false;
+    // Dialog tabindex is for focus management, not a control hint. Its textContent
+    // includes all descendants (even inline CSS), so never tooltip the shell itself.
+    if (el.matches('[role="dialog"], [role="alertdialog"]')) return false;
     if (el.getAttribute(ATTR_DISABLED) === 'true') return false;
     if (isTabLike(el)) return false;
     if (isCustomLinkTooltipTarget(el)) return false;
@@ -2706,6 +2709,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (part === 'backspace') return 'BS';
       if (part === 'tab') return 'Tab';
       if (part === 'space') return 'Space';
+      if (part === 'printscreen') return 'PrintScreen';
       if (part.length === 1) return part.toUpperCase();
       return part.charAt(0).toUpperCase() + part.slice(1);
     }).join('+');
@@ -2858,11 +2862,19 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       kbd.textContent = text;
       kbd.classList.remove('is-capturing');
     };
+    const stopCapture = () => {
+      document.removeEventListener('keydown', handler, true);
+      document.removeEventListener('keyup', printScreenRelease, true);
+    };
+    // PrintScreen may be delivered only on release by the Windows browser host.
+    const printScreenRelease = event => {
+      if (event.key?.toLowerCase() === 'printscreen') handler(event);
+    };
     const handler = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (event.key === 'Escape') {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         finish(keyDisplay(effective()[kbd.dataset.id]?.key || '') || original);
         return;
       }
@@ -2871,7 +2883,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       const id = kbd.dataset.id;
       const hit = conflict(id, newKey);
       if (hit) {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         kbd.textContent = '競合: ' + hit.label;
         setTimeout(() => finish(keyDisplay(effective()[id]?.key || '')), 1500);
         return;
@@ -2881,11 +2893,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (normalizeKeyDef(definitions[id]?.key || '') === newKey) delete custom[id];
       else custom[id] = { key: newKey };
       saveCustom(custom);
-      document.removeEventListener('keydown', handler, true);
+      stopCapture();
       renderSettings(container, container._shortcutSettingsOptions || {});
       if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
     };
     document.addEventListener('keydown', handler, true);
+    document.addEventListener('keyup', printScreenRelease, true);
   }
 
   // container に一覧を描画する。

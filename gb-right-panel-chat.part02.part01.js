@@ -610,15 +610,16 @@ async function openFileChat(targetPath) {
   // _chat/llm/ 内からtargetPathが一致するチャットを検索
   let restored = false;
   try {
-    const chatItems = await apiFetch(_chatApiPath('/chat/list'));
+    const chatItems = await window.GBChatStorageContext.fetchHistory('/chat/list');
     if (!restoreStillCurrent()) return false;
     for (const item of (chatItems || [])) {
       if (item.targetPath !== targetPath || !item.path) continue;
-      const data = await apiFetch(_chatApiPath('/chat/load?path=' + encodeURIComponent(item.path)));
+      const data = await window.GBChatStorageContext.fetchHistory('/chat/load?path=' + encodeURIComponent(item.path));
       if (data.messages?.length > 0) {
         if (!restoreStillCurrent()) return false;
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
+        _chatState.historySourceFolder = window.GBChatStorageContext.peekHistory()?.sourceFolder || '';
         _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
@@ -645,19 +646,19 @@ async function openFileChat(targetPath) {
 
   if (!restored) {
     try {
-      const llmBrowsePath = _chatSourceFolderValue()
-        ? (_chatSourceFolderValue().replace(/[\\/]+$/, '') + '/_chat/llm')
-        : '_chat/llm';
+      const historyContext = await window.GBChatStorageContext.resolveForHistory();
+      const llmBrowsePath = historyContext.sourceFolder.replace(/[\\/]+$/, '') + '/_chat/llm';
       const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc');
       if (!restoreStillCurrent()) return false;
       for (const item of (items || [])) {
         try {
-          const data = await apiFetch(_chatApiPath('/chat/load?path=' + encodeURIComponent(item.path)));
+          const data = await window.GBChatStorageContext.fetchHistory('/chat/load?path=' + encodeURIComponent(item.path));
           if (data.frontmatter?.targetPath === targetPath && data.messages?.length > 0) {
             if (!restoreStillCurrent()) return false;
             // 一致するセッションを復元
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
+            _chatState.historySourceFolder = historyContext.sourceFolder;
             _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
@@ -813,12 +814,17 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     anchor = anchor || String(path).slice(hashIndex + 1);
     path = String(path).slice(0, hashIndex);
   }
-  const explicitSourceFolder = String(sourceFolder || '');
-  if (sourceFolder !== undefined && explicitSourceFolder && explicitSourceFolder !== _chatSourceFolderValue()) {
+  const rootedHistoryPath = /^(?:[a-z]:[\\/]|\/)/i.test(path)
+    || (!String(path).startsWith('_chat/') && String(path).replace(/\\/g, '/').includes('/_chat/'));
+  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath ? _detectSourceFolderFromPath(path) : '';
+  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
+  const historyContext = await window.GBChatStorageContext.resolveForHistory();
+  const legacySource = explicitSourceFolder && _chatNormalizePath(explicitSourceFolder) !== _chatNormalizePath(historyContext.sourceFolder);
+  if (legacySource && explicitSourceFolder !== _chatSourceFolderValue()) {
     const switched = await _chatSwitchSourceFolderForOpen(explicitSourceFolder, { skipSave: true });
     if (!switched) return false;
     if (!restoreStillCurrent()) return false;
-  } else {
+  } else if (legacySource) {
     const detectedSourceFolder = _detectSourceFolderFromPath(path);
     const currentTarget = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : _chatSourceFolderValue();
     if (detectedSourceFolder && detectedSourceFolder !== currentTarget) {
@@ -827,7 +833,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
       if (!restoreStillCurrent()) return false;
     }
   }
-  if (!_chatRequireSourceFolder()) return false;
+  if (legacySource && !_chatRequireSourceFolder()) return false;
   openRightPanelTab('chat');
   if (restoreGuard && typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.runInternal === 'function') {
     GBChatRestore.runInternal(() => switchChatMode('llm'));
@@ -854,8 +860,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   try {
     const user = (typeof getUsername === 'function') ? getUsername() : '';
     let url = (typeof API_BASE !== 'undefined' ? API_BASE : '/api') + '/chat/load?path=' + encodeURIComponent(path);
-    const sourceFolderParam = _chatSourceFolderValue();
-    const workspaceIdParam = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+    const sourceFolderParam = legacySource ? _chatSourceFolderValue() : historyContext.sourceFolder;
+    const workspaceIdParam = legacySource && typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
     if (workspaceIdParam) url += '&workspace_id=' + encodeURIComponent(workspaceIdParam);
     if (sourceFolderParam) url += '&source_folder=' + encodeURIComponent(sourceFolderParam);
     if (user && user !== 'anonymous') url += '&_user=' + encodeURIComponent(user);
@@ -930,6 +936,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   // セッションIDをファイル名から復元
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
+  _chatState.historySourceFolder = legacySource ? explicitSourceFolder : historyContext.sourceFolder;
   _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
@@ -1010,8 +1017,6 @@ async function chatAutoSave(options = {}) {
   const hasTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath');
   const hasProvider = Object.prototype.hasOwnProperty.call(options || {}, 'provider');
   const hasModel = Object.prototype.hasOwnProperty.call(options || {}, 'model');
-  const hasSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
-  const hasWorkspaceId = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
   if (savingCurrentSession && !hasSessionTitle) _captureChatSessionTitleFromInput();
   _ensureChatMessageIds(messages);
   let sid = hasSessionId ? String(options.sessionId || '') : String(_chatState.sessionId || '');
@@ -1026,12 +1031,13 @@ async function chatAutoSave(options = {}) {
       : String(_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || ''));
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
-  const storageOptions = {};
-  if (hasWorkspaceId) storageOptions.workspaceId = String(options.workspaceId || '');
-  if (hasSourceFolder) storageOptions.sourceFolder = String(options.sourceFolder || '');
-  const storageContext = window.GBChatStorageContext?.resolveForAi
-    ? await window.GBChatStorageContext.resolveForAi(storageOptions)
-    : null;
+  let storageContext;
+  try {
+    storageContext = await window.GBChatStorageContext.resolveForHistory();
+  } catch (error) {
+    if (!silent) throw error;
+    return false;
+  }
   const sourceFolder = String(storageContext?.sourceFolder || '');
   const workspaceId = String(storageContext?.workspaceId || '');
   if (!sourceFolder && !workspaceId) {
@@ -1058,6 +1064,7 @@ async function chatAutoSave(options = {}) {
       ...(knowledgeAutomation ? { knowledge_automation: knowledgeAutomation } : {}),
     }));
     if (savingCurrentSession) {
+      _chatState.historySourceFolder = sourceFolder;
       _chatState.versionTargetPath = String(result?.versionTargetPath || _chatState.versionTargetPath || '');
       _chatState.lastAutoVersionCreated = !!result?.autoVersionCreated;
       _chatState.lastAutoVersionName = String(result?.autoVersionName || '');
@@ -1142,7 +1149,7 @@ window.MeldexChatVersionTarget = Object.freeze({
     return !!(await openSavedChat(
       _chatSavedPathForSession(_chatState.sessionId),
       '',
-      typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : undefined,
+      _chatState.historySourceFolder || (await window.GBChatStorageContext.resolveForHistory()).sourceFolder,
     ));
   },
 });

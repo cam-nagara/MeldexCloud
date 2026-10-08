@@ -3,12 +3,27 @@ let _settingsThemeSimpleMode = (() => {
   try { return localStorage.getItem('meldex-settings-theme-mode') === 'simple' ? 'simple' : 'detail'; }
   catch { return 'detail'; }
 })();
+// Shared UI aliases consumed outside the detail editor still belong to save/cancel.
+const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
+  '--bg1': 'surface', '--bg-hover': 'hover', '--accent-light': 'hover', '--border-color': 'border',
+  '--cal-control-active-fg': 'selectedText', '--cal-hover-bg': 'hover', '--cal-today-ring': 'accent',
+  '--db-option-bg': 'control', '--db-option-fg': 'text', '--db-selected-bg': 'selected',
+  '--db-selected-fg': 'selectedText', '--db-selected-header-fg': 'selectedText',
+  '--gb-checkbox-check-color': 'selectedText', '--outliner-placeholder-fg': 'muted',
+  '--page-bg': 'surface', '--page-checklist-checked-fg': 'muted', '--panel-bg': 'surface',
+  '--ui-bg-selected': 'selected', '--ui-control-active-bg': 'selected',
+  '--ui-border-focus': 'accent', '--ui-border-subtle': 'border', '--ui-focus': 'accent', '--ui-focus-ring': 'accent',
+  '--ui-disabled-bg': 'control', '--ui-disabled-border': 'border',
+});
 const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([
+  ...Object.keys(SETTINGS_SIMPLE_THEME_EXTRA_ROLES),
   '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--border', '--selection', '--accent', '--accent2',
   '--ui-bg-app', '--ui-bg-panel', '--ui-bg-surface', '--ui-border', '--ui-border-strong', '--ui-popup-border', '--ui-fg-muted', '--ui-fg-strong',
   ...['background', 'surface', 'control', 'text', 'muted', 'border', 'hover', 'selected', 'selectedText', 'accent'].map(id => `--simple-theme-${id}`),
   '--page-link-hover-fg', '--ui-accent', '--ui-panelset-tabbar-bg',
   '--ui-bg-control', '--ui-bg-control-hover', '--ui-bg-control-active', '--ui-fg-default', '--ui-control-active-fg', '--link-fg',
+  '--btn-primary-fg', '--fg-muted', '--fg3', '--page-fg', '--ui-disabled-fg',
+  '--cloud-mobile-selection-bg', '--cloud-mobile-selection-fg', '--cloud-mobile-selection-row-bg',
 ]);
 const SETTINGS_SIMPLE_THEME_FIELDS = Object.freeze([
   { id: 'background', label: '全体の背景色', key: '--bg', fallback: '#0b0d10' },
@@ -88,11 +103,13 @@ function settingsThemeSetSimpleMode(mode, root) {
 // Resolve semantic roles from the actual property definitions, not a parallel list of apps.
 function _settingsSimpleThemeRole(key, prop = '', label = '') {
   if (key.startsWith('--simple-theme-')) return '';
-  const baseRoles = { '--bg': 'background', '--bg2': 'surface', '--bg3': 'control', '--bg4': 'hover', '--fg': 'text', '--fg2': 'muted', '--selection': 'selected' };
+  if (SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key]) return SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key];
+  if (!['fg', 'bg', 'line', 'stroke', 'accent'].includes(prop) && /(?:-(?:bold|italic|font|font-size|font-weight|font-style|line-height|line-style|left-accent|underline|spacing|tracking|indent|gap|space-before|space-after)|-(?:width|height|size|radius|opacity|alpha|style|weight|enabled|align|fit|scale))$/i.test(key)) return '';
+  const baseRoles = { '--bg': 'background', '--bg2': 'surface', '--bg3': 'control', '--bg4': 'hover', '--fg': 'text', '--fg2': 'muted', '--fg3': 'muted', '--fg-muted': 'muted', '--ui-disabled-fg': 'muted', '--btn-primary-fg': 'selectedText', '--selection': 'selected' };
   if (baseRoles[key]) return baseRoles[key];
   if (/(?:shadow|saturday|sunday)/i.test(key)) return 'semantic';
-  if (/(?:font|line-height|width|height|padding|margin|radius|opacity|alpha|space|enabled|image|shadow|align|show-grid)/i.test(key)) return '';
-  if (/^--(?:red|green|orange|blue)$/.test(key) || /(?:error|warning|danger|success|status|badge|priority|weekend|holiday)/i.test(key + ' ' + label)) return 'semantic';
+  if (!['fg', 'bg', 'line', 'stroke', 'accent'].includes(prop) && /(?:-(?:font(?:-family|-size|-weight|-style)?|line-height|width|height|padding|margin|radius|opacity|alpha|space|enabled|image|align|show-grid)(?:$|-)|shadow)/i.test(key)) return '';
+  if (/^--(?:red|green|orange|blue)$/.test(key) || /(?:error|warning|danger|success|badge|priority|weekend|holiday)|(?:^|-)status(?:-|$)/i.test(key + ' ' + label)) return 'semantic';
   if (/(?:selection|selected|select-rect|drag-select|today|active|checked|adopted)/i.test(key)) return prop === 'fg' || /(?:-fg|-text-color)$/.test(key) ? 'selectedText' : prop === 'bg' || (!prop && /(?:-bg|selection-color)$/.test(key)) ? 'selected' : 'accent';
   if (/^--page-link(?:-hover)?-bg$/.test(key)) return 'transparent';
   if (/link/.test(key) && prop === 'bg') return /hover/.test(key) ? 'hover' : 'control';
@@ -190,12 +207,10 @@ function settingsThemeApplySimpleColors(overrides = {}) {
       const rawKeys = target.vars?.[state]?.[prop];
       const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
         : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
-        : state === 'selected' ? 'accent' : 'border';
+        : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
       if (target.vars ? ![rawKeys].flat().some(key => changed.has(styleRoles[key])) : !changed.has(role)) continue;
       apps[target.id][state][prop] = target.vars ? 'none'
-        : prop === 'fg' ? selections[state === 'selected' ? 'selectedText' : 'text']
-        : prop === 'bg' ? selections[state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control']
-        : selections[state === 'selected' ? 'accent' : 'border'];
+        : `var:${SETTINGS_SIMPLE_THEME_FIELDS.find(field => field.id === role).key}`;
     }
   }
   _runSettingsWithoutLocalStorageHistory(() => {
@@ -356,7 +371,7 @@ function settingsThemeBuildSimplePreset(source, dark) {
       for (const prop of target.props) {
         const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
           : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
-          : state === 'selected' ? 'accent' : 'border';
+          : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
         applications[target.id][state][prop] = target.vars ? 'none' : `color:${colors[role]}`;
       }
     }

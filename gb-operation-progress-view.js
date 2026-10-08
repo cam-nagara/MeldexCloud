@@ -35,12 +35,14 @@
   function _detailText(operation) {
     if (operation.error) return operation.error;
     if (operation.summary) return operation.summary;
-    if (operation.message) return operation.message;
     const parts = [];
     if (operation.mode === 'determinate' && operation.total > 0) {
       parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
+    } else if (operation.processed > 0) {
+      parts.push(operation.processed + '件確認済み');
     }
     if (operation.currentItem) parts.push(operation.currentItem);
+    if (operation.message) parts.push(operation.message);
     if (operation.eta) parts.push('残り約' + _formatEta(operation.eta));
     return parts.join(' · ');
   }

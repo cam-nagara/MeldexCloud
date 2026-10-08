@@ -1029,7 +1029,8 @@ function snapshotThemeVars() {
   const keys = new Set(['--bg','--bg2','--bg3','--bg4','--fg','--fg2','--accent','--accent2','--red','--green','--orange','--blue','--border','--selection','--ui-font','--ui-font-size','--page-hr-color','--ui-accent-fg']);
   if (typeof getAllStyleKeys === 'function') getAllStyleKeys().forEach(k => keys.add(k));
   if (typeof COMMON_INTEGRATED_APP_STYLE_KEYS !== 'undefined') COMMON_INTEGRATED_APP_STYLE_KEYS.forEach(k => keys.add(k));
-  keys.forEach(k => { snap[k] = getCssVar(k); });
+  // Keep palette/OS references as expressions; computed colors would freeze them on Cancel.
+  keys.forEach(k => { snap[k] = document.documentElement.style.getPropertyValue(k) || getCssVar(k); });
   snap.__editorThemeName = localStorage.getItem('editor-theme-name');
   if (typeof MeldexThemeManager !== 'undefined') {
     const defaultKey = MeldexThemeManager.DEFAULT_THEME_KEY;

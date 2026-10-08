@@ -704,11 +704,12 @@ async function _folderImportOsDrop(event, targetItem) {
   }
   const progress = window.MeldexImportProgress;
   const result = { ok: 0, failed: 0, failures: [] };
-  progress?.beginOperation?.('ファイルを取り込み中', Math.max(1, total));
+  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
+  const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
-    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, progress);
+    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, boundProgress);
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
   if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-panel-os-drop' });
   if (_folderPath && typeof openFolder === 'function') {
@@ -772,7 +773,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     }
   }
   const progress = window.MeldexImportProgress;
-  progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let ok = 0;
   const failures = [];
   try {
@@ -800,10 +801,10 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
       } catch (error) {
         failures.push({ name: source.name || source.path, error });
       }
-      progress?.updateOperation?.(ok + failures.length);
+      progress?.updateOperation?.(ok + failures.length, null, progressToken);
     }
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
   }
   if (typeof loadOutliner === 'function') {
     await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });

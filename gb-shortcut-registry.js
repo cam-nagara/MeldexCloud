@@ -466,6 +466,7 @@
       if (part === 'backspace') return 'BS';
       if (part === 'tab') return 'Tab';
       if (part === 'space') return 'Space';
+      if (part === 'printscreen') return 'PrintScreen';
       if (part.length === 1) return part.toUpperCase();
       return part.charAt(0).toUpperCase() + part.slice(1);
     }).join('+');
@@ -618,11 +619,19 @@
       kbd.textContent = text;
       kbd.classList.remove('is-capturing');
     };
+    const stopCapture = () => {
+      document.removeEventListener('keydown', handler, true);
+      document.removeEventListener('keyup', printScreenRelease, true);
+    };
+    // PrintScreen may be delivered only on release by the Windows browser host.
+    const printScreenRelease = event => {
+      if (event.key?.toLowerCase() === 'printscreen') handler(event);
+    };
     const handler = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (event.key === 'Escape') {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         finish(keyDisplay(effective()[kbd.dataset.id]?.key || '') || original);
         return;
       }
@@ -631,7 +640,7 @@
       const id = kbd.dataset.id;
       const hit = conflict(id, newKey);
       if (hit) {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         kbd.textContent = '競合: ' + hit.label;
         setTimeout(() => finish(keyDisplay(effective()[id]?.key || '')), 1500);
         return;
@@ -641,11 +650,12 @@
       if (normalizeKeyDef(definitions[id]?.key || '') === newKey) delete custom[id];
       else custom[id] = { key: newKey };
       saveCustom(custom);
-      document.removeEventListener('keydown', handler, true);
+      stopCapture();
       renderSettings(container, container._shortcutSettingsOptions || {});
       if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
     };
     document.addEventListener('keydown', handler, true);
+    document.addEventListener('keyup', printScreenRelease, true);
   }
 
   // container に一覧を描画する。

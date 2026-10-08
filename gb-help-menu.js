@@ -24,7 +24,17 @@ function _meldexHelpItems() {
   ];
 }
 
-function _closeMeldexHelpMenu() {
+let _meldexHelpMenuState = null;
+
+function _closeMeldexHelpMenu(restoreFocus = true) {
+  const state = _meldexHelpMenuState;
+  _meldexHelpMenuState = null;
+  if (state) {
+    window.removeEventListener('keydown', state.keydown, true);
+    window.removeEventListener('pointerdown', state.outside, true);
+    state.anchor?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && state.anchor?.isConnected) state.anchor.focus({ preventScroll: true });
+  }
   document.querySelectorAll('.meldex-help-menu').forEach(el => el.remove());
 }
 
@@ -61,6 +71,10 @@ function meldexPublicManualUrl(path = '', section = '') {
   } else if (currentIsPublished) {
     try { base = new URL('manual.html', window.location.href).href; } catch {}
   }
+  // デスクトップは同梱版を開き、公開サイトの最新仕様との版ずれを防ぐ。
+  if (/^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(window.location?.hostname || '') || window.location?.protocol === 'file:') {
+    try { base = new URL('public-manual.html', window.location.href).href; } catch {}
+  }
   if (!path) return base;
   const params = new URLSearchParams();
   params.set('path', String(path).replace(/^manual\//, ''));
@@ -86,9 +100,16 @@ function _runMeldexHelpAction(item) {
     if (typeof showChatRulesDialog === 'function') showChatRulesDialog();
     else if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('rules');
   } else if (item.action === 'diagnostics') {
-    window.MeldexDiagnostics?.exportDiagnostics?.().catch(err => {
-      if (typeof showStatus === 'function') showStatus('診断情報の作成に失敗しました: ' + (err?.message || err), true);
-    });
+    saveMeldexHelpDiagnostics();
+  }
+}
+
+async function saveMeldexHelpDiagnostics() {
+  try {
+    if (typeof window.MeldexDiagnostics?.exportDiagnostics !== 'function') throw new Error('診断機能を読み込めませんでした。画面を再読み込みしてください。');
+    await window.MeldexDiagnostics.exportDiagnostics();
+  } catch (err) {
+    if (typeof showStatus === 'function') showStatus('診断情報の作成に失敗しました: ' + (err?.message || err), true);
   }
 }
 
@@ -222,6 +243,10 @@ function _positionMeldexHelpMenu(menu, anchor) {
 
 function showMeldexHelpMenu(event) {
   const anchor = _resolveMeldexHelpMenuAnchor(event?.currentTarget || event?.target);
+  if (_meldexHelpMenuState?.anchor === anchor && _meldexHelpMenuState.menu.isConnected) {
+    _closeMeldexHelpMenu();
+    return;
+  }
   _meldexHelpDialogReturnFocus = anchor;
   _closeMeldexHelpMenu();
   if (typeof window !== 'undefined') window.GBTooltip?.hide?.({ suppressUntilLeave: true });
@@ -233,13 +258,15 @@ function showMeldexHelpMenu(event) {
   _meldexHelpItems().forEach(item => {
     if (item.type === 'separator') {
       const sep = document.createElement('div');
-      sep.className = 'cm-sep';
+      sep.className = 'gb-context-menu-sep';
+      sep.setAttribute('role', 'separator');
       menu.appendChild(sep);
       return;
     }
     if (item.type === 'heading') {
       const heading = document.createElement('div');
-      heading.style.cssText = 'padding:8px 12px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;';
+      heading.className = 'gb-context-menu-label';
+      heading.style.cssText = 'padding:8px 12px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;background:transparent;cursor:default;';
       heading.textContent = item.label;
       menu.appendChild(heading);
       return;
@@ -248,7 +275,7 @@ function showMeldexHelpMenu(event) {
     row.type = 'button';
     row.className = 'gb-context-menu-item tree-ctx-item';
     row.setAttribute('role', 'menuitem');
-    row.style.cssText = 'width:100%;border:0;background:transparent;text-align:left;padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;';
+    row.style.cssText = 'padding:6px 12px;gap:8px;font-size:13px;';
     row.innerHTML = `<span style="width:16px;height:16px;display:inline-flex;">${lucide(item.icon, 15)}</span><span>${esc(item.label)}</span>`;
     row.addEventListener('click', () => {
       if (item.type === 'external') _openMeldexHelpExternal(item);
@@ -261,14 +288,30 @@ function showMeldexHelpMenu(event) {
   document.body.appendChild(menu);
   replaceIcons(menu);
   _positionMeldexHelpMenu(menu, anchor);
-  setTimeout(() => {
-    document.addEventListener('pointerdown', function closer(e) {
-      if (!menu.contains(e.target) && e.target !== anchor && !anchor?.contains?.(e.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    });
-  }, 0);
+  const outside = e => {
+    if (!menu.contains(e.target) && e.target !== anchor && !anchor?.contains?.(e.target)) _closeMeldexHelpMenu(false);
+  };
+  const keydown = e => {
+    if (!menu.isConnected) { _closeMeldexHelpMenu(false); return; }
+    if (e.key === 'Tab') { _closeMeldexHelpMenu(); return; }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape'].includes(e.key)) return;
+    // フォルダツリー等のグローバルショートカットより先に処理する。
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.key === 'Escape') { _closeMeldexHelpMenu(); return; }
+    const rows = [...menu.querySelectorAll('[role="menuitem"]')];
+    const current = rows.indexOf(document.activeElement);
+    const index = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1
+      : (current + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+    rows[index]?.focus({ preventScroll: true });
+    rows[index]?.scrollIntoView({ block: 'nearest' });
+  };
+  _meldexHelpMenuState = { menu, anchor, keydown, outside };
+  anchor?.setAttribute('aria-haspopup', 'menu');
+  anchor?.setAttribute('aria-expanded', 'true');
+  window.addEventListener('pointerdown', outside, true);
+  window.addEventListener('keydown', keydown, true);
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
 }
 
 function _meldexLegalDocUrl(filename) {
@@ -329,7 +372,7 @@ function showMeldexAboutDialog(returnFocus) {
         <button type="button" data-action="_openMeldexLegalDoc('PRIVACY.html')">プライバシーポリシー</button>
         <button type="button" data-action="_openMeldexLegalDoc('TERMS-OF-USE.html')">利用規約</button>
         <button type="button" data-action="_openMeldexLegalDoc('THIRD-PARTY.md')">OSSライセンス</button>
-        <button type="button" data-action="window.MeldexDiagnostics?.exportDiagnostics?.()">診断情報を保存</button>
+        <button type="button" data-action="saveMeldexHelpDiagnostics()">診断情報を保存</button>
       </div>
     </section>`;
   const closeButton = document.createElement('button');
@@ -393,7 +436,7 @@ async function showMeldexChangelogDialog(returnFocus) {
   _closeMeldexHelpMenu();
   const content = document.createElement('div');
   content.innerHTML = `<div id="meldex-changelog-status" role="status" aria-live="polite"></div>
-    <pre id="meldex-changelog-body" style="min-height:96px;max-height:min(60vh,480px);box-sizing:border-box;margin:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>`;
+    <div id="meldex-changelog-body" style="min-height:96px;max-height:min(60vh,480px);box-sizing:border-box;margin:0;overflow:auto;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</div>`;
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'gb-btn gb-btn-sm';
@@ -433,7 +476,25 @@ async function showMeldexChangelogDialog(returnFocus) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       if (!modalApi.isOpen()) return;
-      body.textContent = text;
+      if (typeof window.renderChatMarkdown === 'function') {
+        window.renderChatMarkdown(body, text);
+        body.querySelectorAll('a[data-chat-link-target]').forEach(link => {
+          if (link.dataset.chatLinkBare === 'true') {
+            link.replaceWith(document.createTextNode(link.textContent));
+            return;
+          }
+          const url = new URL(link.dataset.chatLinkTarget, window.location.href);
+          const native = document.createElement('a');
+          native.textContent = link.textContent;
+          if (/^https?:$/.test(url.protocol) || url.protocol === 'file:') {
+            native.href = url.href;
+            native.target = '_blank';
+            native.rel = 'noopener noreferrer';
+            native.dataset.meldexHelpLink = '1';
+          }
+          link.replaceWith(native);
+        });
+      } else body.textContent = text;
       status.textContent = '';
     } catch (error) {
       if (!modalApi.isOpen()) return;

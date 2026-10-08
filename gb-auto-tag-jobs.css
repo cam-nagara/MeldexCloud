@@ -95,7 +95,7 @@
   transition: width 180ms ease-out;
 }
 
-.at-job--running .at-job-progress > span[style="width:0%"] {
+.at-job-progress.is-indeterminate > span {
   width: 22% !important;
   animation: at-job-indeterminate 1.4s ease-in-out infinite alternate;
 }

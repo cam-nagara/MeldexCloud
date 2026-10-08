@@ -514,7 +514,7 @@ button.gb-hp-entry:disabled { opacity: 0.5; cursor: wait; }
   cursor: pointer;
 }
 
-/* カスタムチェックボックス: アプリ全体を白チェックの同一デザインに統一 */
+/* カスタムチェックボックス: アプリ全体でテーマの選択文字色を使う同一デザイン */
 input[type=checkbox],
 .modal input[type=checkbox],
 .gb-check input[type=checkbox],
@@ -523,7 +523,7 @@ input[type=checkbox].gb-checkbox {
   -moz-appearance: none;
   appearance: none;
   --gb-checkbox-size: var(--gb-checkbox-size-override, 14px);
-  --gb-checkbox-check-color: #fff;
+  --gb-checkbox-check-color: var(--ui-control-active-fg, #fff);
   --gb-checkbox-mark-w: max(4px, calc(var(--gb-checkbox-size) * 0.32));
   --gb-checkbox-mark-h: max(8px, calc(var(--gb-checkbox-size) * 0.58));
   --gb-checkbox-mark-stroke: max(2px, calc(var(--gb-checkbox-size) * 0.13));

@@ -797,7 +797,7 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     return result;
   }));
   try {
-    progress?.update?.({ phase: '表示を更新しています', currentItem: '' });
+    progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
   } catch (error) {
     progress?.fail?.({ error: error });

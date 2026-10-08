@@ -945,6 +945,13 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
   color: var(--gb-rail-icon-color, var(--ui-fg-default));
 }
 /* テーマ設定の「左アクセントバー」を通常・ホバー・選択の各状態へ反映する。 */
+/* Explicit bulk text colors also cover the pastel/earth rail palette override. */
+:root[style*="--simple-theme-text:"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active):not(:hover) {
+  color: var(--ui-dock-button-fg, var(--ui-fg-default));
+}
+:root[style*="--simple-theme-text:"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"]:not(.active):hover {
+  color: var(--ui-dock-button-hover-fg, var(--ui-fg-default));
+}
 .gb-dock-icon::before {
   content: '';
   position: absolute;

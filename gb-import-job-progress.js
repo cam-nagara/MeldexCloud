@@ -148,7 +148,7 @@
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
-    const operation = opts.operationProgress === false || !progressApi
+    let operation = opts.operationProgress === false || !progressApi
       ? null
       : progressApi.begin({
           kind: String(opts.operationKind || 'background-job'),
@@ -163,6 +163,11 @@
     const userOnProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
     const wrapped = Object.assign({}, opts, {
       onStarted: function (jobId, started) {
+        const existing = progressApi?.findByPersistentJobId(jobId);
+        if (operation && existing && existing.id !== operation.id) {
+          operation.dispose();
+          operation = existing;
+        }
         operation?.setPersistentJobId(jobId);
         operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中' });
         if (userOnStarted) userOnStarted(jobId, started);
@@ -185,11 +190,16 @@
     });
     try {
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
-      operation?.succeed({ summary: opts.successMessage || '完了しました' });
+      if (result?.ok === false) {
+        operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
+      } else if (Number(result?.failed || result?.errors || result?.media_failed || result?.author_icon_failed) > 0 || result?.folder_error) {
+        operation?.partial({ summary: result.summary || '処理が完了しました（一部失敗）', details: result.failure_samples || result.failures || [] });
+      } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
       return result;
     } catch (error) {
       if (error?.name === 'AbortError') operation?.cancelled({ summary: error.message });
-      else operation?.fail({ error: error });
+      else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
+      else operation?.update({ message: error?.name === 'LongRunningJobError' ? error.message : '進捗を確認できません。処理が終了したかは未確認です。' });
       throw error;
     }
   }
@@ -200,7 +210,6 @@
   function formatJobProgress(progress, options) {
     progress = progress || {};
     options = options || {};
-    if (progress.message) return String(progress.message);
     const unit = options.unit || '件';
     const defaultPhase = options.defaultPhase || '処理中';
     const phase = progress.phase || defaultPhase;
@@ -209,7 +218,7 @@
     const count = Number.isFinite(total) && total > 0
       ? processed + '/' + total + unit
       : processed + unit;
-    return phase + '… ' + count;
+    return phase + '… ' + count + (progress.message ? ' · ' + String(progress.message) : '');
   }
 
   // 残り時間の見込みを短い日本語にする。ジョブ進捗を出す画面で共有する。

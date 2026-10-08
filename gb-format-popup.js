@@ -714,6 +714,8 @@
     if (options.closeOnEscape !== false) {
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
+        // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
+        if (document.querySelector('.gb-palette-popup')) return;
         ev.preventDefault();
         ev.stopPropagation();
         closeAllPalettePopups();

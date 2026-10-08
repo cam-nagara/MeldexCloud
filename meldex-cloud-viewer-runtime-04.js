@@ -385,6 +385,7 @@
 .gb-palette-section-heading { font-size: 10px; color: var(--fg2); line-height: 1.4; padding: 4px 0 2px; border-top: 1px solid var(--border); margin-top: 2px; }
 .gb-palette-section-heading:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .gb-palette-custom-header-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.gb-palette-custom-header-row[hidden] { display: none; }
 .gb-palette-custom-header-row .gb-palette-section-heading-label { flex: 1; min-width: 0; }
 .gb-palette-custom-actions { display: flex; gap: 2px; flex-shrink: 0; }
 .gb-palette-custom-action-btn {
@@ -518,6 +519,7 @@
   width: 100%; display: flex; justify-content: flex-end;
   padding-top: 4px; margin-top: 2px; border-top: 1px solid var(--border);
 }
+.gb-palette-close-row .gb-palette-custom-actions { margin-right: auto; }
 .gb-palette-close-row .gb-btn-close {
   padding: 2px 12px; font-size: 12px; background: var(--bg4); color: var(--fg);
   border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
@@ -865,9 +867,11 @@ async function resolvePaletteOsAccentColor() {
   if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.refreshOsAccentColor === 'function') {
     try {
       const refreshed = await MeldexThemeManager.refreshOsAccentColor();
-      return _colorValueToHex(refreshed) || getPaletteOsAccentColor();
+      const resolved = _colorValueToHex(refreshed) || getPaletteOsAccentColor();
+      if (resolved) return resolved;
     } catch {
-      return getPaletteOsAccentColor();
+      const resolved = getPaletteOsAccentColor();
+      if (resolved) return resolved;
     }
   }
   return _computedCssColorToHex('AccentColor');
@@ -1273,8 +1277,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     if (selectedIsTransparent) return 'transparent';
     return currentHex();
   }
-  // Keep exact RGB selections in the theme editor; only slider edits need HSB conversion.
-  function currentHex() { return options.themeUi && selectedHex ? selectedHex : _hsbToHex(hsb.h, hsb.s, hsb.b); }
+  // Keep exact RGB selections; only slider edits need HSB conversion.
+  function currentHex() { return selectedHex || _hsbToHex(hsb.h, hsb.s, hsb.b); }
   function applyLive() {
     const preset = selectedPresetIdx >= 0 ? getStandardPaletteSwatches(standardAdjust)[selectedPresetIdx] : null;
     if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedOsAccentTone, preset });
@@ -1302,18 +1306,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   function renderPresetGrid(refreshHighlights) {
     presetMatrix.innerHTML = '';
     const all = getStandardPaletteSwatches(standardAdjust);
-    if (options.themeUi) {
-      const tone = options.themeUi.getTone();
-      const colors = typeof getCurrentThemeColorSet === 'function' ? getCurrentThemeColorSet() : [];
-      all.forEach(info => {
-        if ((info.row === 2 || info.row === 4) && colors[info.index]) {
-          const color = _colorValueToHex(colors[info.index]);
-          if (!color) return;
-          const amount = (info.row === 2 ? tone.light : tone.dark) / 100;
-          info.color = '#' + color.slice(1).match(/../g).map(hex => Math.round(parseInt(hex, 16) * (1 - amount) + (info.row === 2 ? 255 : 0) * amount).toString(16).padStart(2, '0')).join('');
-        }
-      });
-    }
+    // 設定ダイアログと同じ色一覧を使う。自動適用の強さは適用先の設定であり、
+    // パレットの明／暗行を別の色へ置き換えない。
     const rowKeys = [1, 2, 3, 4];
     rowKeys.forEach(rowNum => {
       const items = all.filter(s => s.row === rowNum);
@@ -1396,6 +1390,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('gb-standard-palette-adjust-change', _onStandardPaletteAdjustChange);
   }
+  const onThemeColorSetChange = () => _onStandardPaletteAdjustChange();
+  window.addEventListener('meldex-theme-color-set-change', onThemeColorSetChange);
+  window.addEventListener('meldex-theme-change', onThemeColorSetChange);
 
   // --- カスタムカラーセット ---
   const customSectionHeaderRow = document.createElement('div');
@@ -1409,7 +1406,6 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
 
   const customActionsRow = document.createElement('span');
   customActionsRow.className = 'gb-palette-custom-actions';
-  customSectionHeaderRow.appendChild(customActionsRow);
 
   const exportCustomColorsBtn = document.createElement('button');
   exportCustomColorsBtn.type = 'button';
@@ -1441,9 +1437,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   function renderCustomGrid() {
     customGrid.innerHTML = '';
     const customs = getCustomColors();
-    // 見出しテキストは色が無い間だけ隠す。書き出し/読み込みボタンは0色でも
-    // 常に使える（最初のカスタムカラーをファイルから読み込めるようにするため）。
-    customSectionHeading.hidden = customs.length === 0;
+    // 空の見出しは隠す。フッターの書き出し／読み込みは0色でも利用できる。
+    customSectionHeaderRow.hidden = customs.length === 0;
     customs.forEach((c, i) => {
       const swatch = document.createElement('div');
       swatch.className = 'gb-swatch'; swatch.dataset.type = 'custom';
@@ -1666,7 +1661,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   }
 
   function refreshOsAccentSwatches(sourceColor, options = {}) {
-    const variants = getPaletteOsAccentVariants(sourceColor);
+    const variants = getPaletteOsAccentVariants(sourceColor || getPaletteOsAccentColor() || _computedCssColorToHex('AccentColor'));
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
@@ -1699,6 +1694,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       setOsAccentSwatchesDisabled(true);
       try {
         const base = await resolvePaletteOsAccentColor();
+        if (!palette.isConnected) return;
         refreshOsAccentSwatches(base);
         const next = getPaletteOsAccentVariants(base).find(v => v.tone === info.tone);
         if (!next?.color) {
@@ -1758,7 +1754,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   closeBtn.title = 'カラーパレットを閉じる';
   closeBtn.setAttribute('aria-label', 'カラーパレットを閉じる');
   closeBtn.addEventListener('click', () => { if (typeof onClose === 'function') onClose(); });
-  closeRow.appendChild(closeBtn);
+  closeRow.append(customActionsRow, closeBtn);
   palette.appendChild(closeRow);
 
   // パレット要素が DOM から外れたら購読を解除する
@@ -1770,6 +1766,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         }
         if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
           window.removeEventListener('meldex-theme-os-accent-change', onOsAccentChange);
+          window.removeEventListener('meldex-theme-color-set-change', onThemeColorSetChange);
+          window.removeEventListener('meldex-theme-change', onThemeColorSetChange);
         }
         paletteObserver?.disconnect?.();
       }

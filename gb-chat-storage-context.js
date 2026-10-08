@@ -3,6 +3,8 @@
   'use strict';
 
   let _initializing = null;
+  let _historyInitializing = null;
+  let _historyContext = null;
 
   function _currentWorkspaceId() {
     return typeof _chatWorkspaceIdValue === 'function'
@@ -110,8 +112,40 @@
     return null;
   }
 
+  // 履歴保存と履歴閲覧だけをホームへ固定し、AIの参照・実行対象は変更しない。
+  async function resolveForHistory() {
+    if (!_historyInitializing) {
+      _historyInitializing = Promise.resolve().then(async () => {
+        const home = await apiFetch('/home-folder');
+        const path = String(home?.path || '').trim();
+        if (!path || home?.exists === false) throw new Error('AIチャット履歴の保存先を準備できませんでした。ホームフォルダ設定を確認してください');
+        _historyContext = _context('', path);
+        return _historyContext;
+      }).finally(() => { _historyInitializing = null; });
+    }
+    return _historyInitializing;
+  }
+
+  async function historyApiPath(path) {
+    const context = await resolveForHistory();
+    const url = new URL(path, 'http://local');
+    url.searchParams.delete('workspace_id');
+    url.searchParams.delete('workspaceId');
+    url.searchParams.delete('sourceFolder');
+    url.searchParams.set('source_folder', context.sourceFolder);
+    return url.pathname + url.search;
+  }
+
+  async function fetchHistory(path, options) {
+    return apiFetch(await historyApiPath(path), options);
+  }
+
   global.GBChatStorageContext = {
     resolveForAi,
     requireForAi,
+    resolveForHistory,
+    historyApiPath,
+    fetchHistory,
+    peekHistory: () => _historyContext,
   };
 })(window);

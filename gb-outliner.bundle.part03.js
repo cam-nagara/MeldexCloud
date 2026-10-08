@@ -466,20 +466,21 @@
       const moved = [];
       let movedAcrossFolders = false;
       let processed = 0;
-      window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
+      const failures = [];
+      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
           moved.push(n);
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
         if (destFolder === srcFolder) {
           moved.push(n);
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         movedAcrossFolders = true;
@@ -509,13 +510,14 @@
         } catch (err) {
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
+          failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
         } finally {
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
         }
       }
-      window.MeldexImportProgress?.finishOperation?.();
+      window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${moved.length}件移動・${failures.length}件失敗`, details: failures });
       if (moved.length === 0) return;
       // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
       // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
@@ -896,5 +898,3 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
     await refresh(phase, result);
     return;
   }
-  const jobs = [];
-  if (typeof loadOutliner === 'function') jobs.push(Promise.resolve(loadOutliner()).catch(() => {}));

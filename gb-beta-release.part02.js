@@ -78,7 +78,7 @@
     const semverEl = root.querySelector?.('#settings-about-semver');
     if (semverEl) semverEl.textContent = _extractSemver(info);
     const commitEl = root.querySelector?.('#settings-about-commit');
-    if (commitEl) commitEl.textContent = info.commit || '未取得';
+    if (commitEl) commitEl.textContent = info.commit || 'このビルドには記録されていません';
     const variantEl = root.querySelector?.('#settings-about-variant');
     if (variantEl) variantEl.textContent = info.variant || 'dev';
     const betaEl = root.querySelector?.('#settings-about-beta');

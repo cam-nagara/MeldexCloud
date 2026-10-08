@@ -81,6 +81,7 @@ function _chatResetCurrentSession(options = {}) {
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
+  _chatState.historySourceFolder = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
   _chatState.lastImplicitTargetPath = options.keepTargetPath ? (_chatState.lastImplicitTargetPath || '') : '';
   if (typeof _chatClearPendingAttachments === 'function') {
@@ -188,7 +189,55 @@ function _chatSourceOptions() {
   return options;
 }
 
+function _syncChatWorkspaceTabs() {
+  const placeholder = document.getElementById('chat-tab-team');
+  const bar = placeholder?.parentElement;
+  if (!bar) return;
+  const workspaces = (_chatWorkspacesCache || []).filter(item => item?.id);
+  const signature = JSON.stringify(workspaces.map(item => [String(item.id), String(item.name || '名称未設定')]));
+  if (bar.dataset.workspaceTabsSignature !== signature) {
+    bar.querySelectorAll('[data-chat-workspace-id]').forEach(tab => tab.remove());
+    workspaces.forEach(workspace => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'chat-mode-tab';
+      tab.dataset.chatWorkspaceId = String(workspace.id);
+      tab.textContent = String(workspace.name || '名称未設定');
+      tab.title = tab.textContent;
+      tab.style.cssText = 'padding:6px 16px;cursor:pointer;font-size:13px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--fg2);font-family:inherit;flex-shrink:0;white-space:nowrap;';
+      tab.addEventListener('click', async () => {
+        if (bar._chatWorkspaceSwitchPending) return;
+        bar._chatWorkspaceSwitchPending = true;
+        try {
+          if (await _setChatSourceFolder(_chatWorkspaceOptionValue(workspace.id))) {
+            if (_chatMode !== 'team') switchChatMode('team');
+            else _syncChatWorkspaceTabs();
+          }
+        } finally {
+          bar._chatWorkspaceSwitchPending = false;
+        }
+      });
+      bar.insertBefore(tab, placeholder);
+    });
+    bar.dataset.workspaceTabsSignature = signature;
+  }
+  placeholder.style.display = workspaces.length ? 'none' : '';
+  bar.style.overflowX = 'auto';
+  bar.querySelectorAll('.chat-mode-tab').forEach(tab => {
+    tab.style.flexShrink = '0';
+    tab.style.whiteSpace = 'nowrap';
+    if (!tab.dataset.chatWorkspaceId) return;
+    const active = _chatMode === 'team' && tab.dataset.chatWorkspaceId === _chatWorkspaceIdValue();
+    tab.classList.toggle('active', active);
+    tab.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+    tab.style.color = active ? 'var(--accent)' : 'var(--fg2)';
+    tab.style.fontWeight = active ? 'bold' : 'normal';
+    tab.setAttribute('aria-pressed', String(active));
+  });
+}
+
 function _syncChatSourceFolderUi() {
+  _syncChatWorkspaceTabs();
   const select = document.getElementById('chat-source-folder');
   const badge = document.getElementById('chat-source-badge');
   const selected = _chatFindSourceOption(_chatTargetSelectorValue(), _chatSourceOptions());

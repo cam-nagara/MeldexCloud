@@ -675,6 +675,7 @@ function _settingsThemePreviewAutoMixCss(toneColor, amount, slotIndex, fallbackC
 function _settingsThemePreviewAutoColor(value, sequentialIndex) {
   const normalized = String(value == null ? 'none' : value).trim();
   if (!normalized || normalized === 'none') return '';
+  if (normalized.startsWith('var:')) return MeldexThemeManager.resolveThemeUiColor(normalized);
   const colors = getCurrentThemeColorSet();
   const paletteLength = Math.max(1, colors.length || 0);
   const seqIndex = Math.max(0, parseInt(sequentialIndex, 10) || 0) % paletteLength;

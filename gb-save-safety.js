@@ -230,6 +230,11 @@
 
   function reportApiError(path, opts, error) {
     if (!isSaveMutation(path, opts)) return false;
+    // These operations confirm the filesystem result after a transport timeout.
+    // A missing response is not a confirmed document-save failure.
+    if (error?.isTimeout && ['/outliner/rename', '/outliner/add'].includes(_apiPathname(path))) {
+      return true;
+    }
     if (_isConflict(error)) {
       consecutiveSaveFailures = 0;
       markConflict(_extractMutationPath(path, opts), _message(error));

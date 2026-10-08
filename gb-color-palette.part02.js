@@ -28,7 +28,7 @@
   }
 
   function refreshOsAccentSwatches(sourceColor, options = {}) {
-    const variants = getPaletteOsAccentVariants(sourceColor);
+    const variants = getPaletteOsAccentVariants(sourceColor || getPaletteOsAccentColor() || _computedCssColorToHex('AccentColor'));
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
@@ -61,6 +61,7 @@
       setOsAccentSwatchesDisabled(true);
       try {
         const base = await resolvePaletteOsAccentColor();
+        if (!palette.isConnected) return;
         refreshOsAccentSwatches(base);
         const next = getPaletteOsAccentVariants(base).find(v => v.tone === info.tone);
         if (!next?.color) {
@@ -120,7 +121,7 @@
   closeBtn.title = 'カラーパレットを閉じる';
   closeBtn.setAttribute('aria-label', 'カラーパレットを閉じる');
   closeBtn.addEventListener('click', () => { if (typeof onClose === 'function') onClose(); });
-  closeRow.appendChild(closeBtn);
+  closeRow.append(customActionsRow, closeBtn);
   palette.appendChild(closeRow);
 
   // パレット要素が DOM から外れたら購読を解除する
@@ -132,6 +133,8 @@
         }
         if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
           window.removeEventListener('meldex-theme-os-accent-change', onOsAccentChange);
+          window.removeEventListener('meldex-theme-color-set-change', onThemeColorSetChange);
+          window.removeEventListener('meldex-theme-change', onThemeColorSetChange);
         }
         paletteObserver?.disconnect?.();
       }

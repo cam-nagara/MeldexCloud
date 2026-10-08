@@ -501,6 +501,15 @@
   overflow: auto;
 }
 
+.gb-modal.knowledge-home-modal > .gb-modal-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .taste-principles-view .taste-enable-summary {
   display: flex;
   align-items: center;

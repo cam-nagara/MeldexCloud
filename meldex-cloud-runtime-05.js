@@ -7,6 +7,8 @@
   'use strict';
 
   let _initializing = null;
+  let _historyInitializing = null;
+  let _historyContext = null;
 
   function _currentWorkspaceId() {
     return typeof _chatWorkspaceIdValue === 'function'
@@ -114,9 +116,41 @@
     return null;
   }
 
+  // 履歴保存と履歴閲覧だけをホームへ固定し、AIの参照・実行対象は変更しない。
+  async function resolveForHistory() {
+    if (!_historyInitializing) {
+      _historyInitializing = Promise.resolve().then(async () => {
+        const home = await apiFetch('/home-folder');
+        const path = String(home?.path || '').trim();
+        if (!path || home?.exists === false) throw new Error('AIチャット履歴の保存先を準備できませんでした。ホームフォルダ設定を確認してください');
+        _historyContext = _context('', path);
+        return _historyContext;
+      }).finally(() => { _historyInitializing = null; });
+    }
+    return _historyInitializing;
+  }
+
+  async function historyApiPath(path) {
+    const context = await resolveForHistory();
+    const url = new URL(path, 'http://local');
+    url.searchParams.delete('workspace_id');
+    url.searchParams.delete('workspaceId');
+    url.searchParams.delete('sourceFolder');
+    url.searchParams.set('source_folder', context.sourceFolder);
+    return url.pathname + url.search;
+  }
+
+  async function fetchHistory(path, options) {
+    return apiFetch(await historyApiPath(path), options);
+  }
+
   global.GBChatStorageContext = {
     resolveForAi,
     requireForAi,
+    resolveForHistory,
+    historyApiPath,
+    fetchHistory,
+    peekHistory: () => _historyContext,
   };
 })(window);
 
@@ -57373,7 +57407,7 @@ function _sn2StopSep() {
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
-    const operation = opts.operationProgress === false || !progressApi
+    let operation = opts.operationProgress === false || !progressApi
       ? null
       : progressApi.begin({
           kind: String(opts.operationKind || 'background-job'),
@@ -57388,6 +57422,11 @@ function _sn2StopSep() {
     const userOnProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
     const wrapped = Object.assign({}, opts, {
       onStarted: function (jobId, started) {
+        const existing = progressApi?.findByPersistentJobId(jobId);
+        if (operation && existing && existing.id !== operation.id) {
+          operation.dispose();
+          operation = existing;
+        }
         operation?.setPersistentJobId(jobId);
         operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中' });
         if (userOnStarted) userOnStarted(jobId, started);
@@ -57410,11 +57449,16 @@ function _sn2StopSep() {
     });
     try {
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
-      operation?.succeed({ summary: opts.successMessage || '完了しました' });
+      if (result?.ok === false) {
+        operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
+      } else if (Number(result?.failed || result?.errors || result?.media_failed || result?.author_icon_failed) > 0 || result?.folder_error) {
+        operation?.partial({ summary: result.summary || '処理が完了しました（一部失敗）', details: result.failure_samples || result.failures || [] });
+      } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
       return result;
     } catch (error) {
       if (error?.name === 'AbortError') operation?.cancelled({ summary: error.message });
-      else operation?.fail({ error: error });
+      else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
+      else operation?.update({ message: error?.name === 'LongRunningJobError' ? error.message : '進捗を確認できません。処理が終了したかは未確認です。' });
       throw error;
     }
   }
@@ -57425,7 +57469,6 @@ function _sn2StopSep() {
   function formatJobProgress(progress, options) {
     progress = progress || {};
     options = options || {};
-    if (progress.message) return String(progress.message);
     const unit = options.unit || '件';
     const defaultPhase = options.defaultPhase || '処理中';
     const phase = progress.phase || defaultPhase;
@@ -57434,7 +57477,7 @@ function _sn2StopSep() {
     const count = Number.isFinite(total) && total > 0
       ? processed + '/' + total + unit
       : processed + unit;
-    return phase + '… ' + count;
+    return phase + '… ' + count + (progress.message ? ' · ' + String(progress.message) : '');
   }
 
   // 残り時間の見込みを短い日本語にする。ジョブ進捗を出す画面で共有する。
@@ -59822,7 +59865,7 @@ function _sn2StopSep() {
 
   function activeJobIds() {
     return [...jobs.values()]
-      .filter(job => ['running', 'cancelling'].includes(job.status))
+      .filter(job => ['queued', 'running', 'cancelling'].includes(job.status))
       .map(job => job.id);
   }
 
@@ -59840,7 +59883,7 @@ function _sn2StopSep() {
     const processed = Number(progress.processed) || 0;
     const hasTotal = progress.total !== null
       && progress.total !== undefined
-      && Number.isFinite(Number(progress.total));
+      && Number.isFinite(Number(progress.total)) && Number(progress.total) > 0;
     const total = hasTotal ? Number(progress.total) : null;
     if (job.status === 'done') {
       const result = job.result || {};
@@ -59876,12 +59919,12 @@ function _sn2StopSep() {
     const processed = Number(progress.processed) || 0;
     const hasTotal = progress.total !== null
       && progress.total !== undefined
-      && Number.isFinite(Number(progress.total));
+      && Number.isFinite(Number(progress.total)) && Number(progress.total) > 0;
     const total = hasTotal ? Number(progress.total) : null;
     const percent = hasTotal && total > 0
       ? Math.max(0, Math.min(100, processed / total * 100))
       : 0;
-    const running = ['running', 'cancelling'].includes(job.status);
+    const running = ['queued', 'running', 'cancelling'].includes(job.status);
     const stats = running && hasTotal
       ? [
         `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`,
@@ -59920,9 +59963,9 @@ function _sn2StopSep() {
           <strong>${window.esc(job.label || 'タグ処理')}</strong>
           <span>${window.esc(phase)}</span>
         </div>
-        <div class="at-job-progress" role="progressbar"
+        <div class="at-job-progress${running && !hasTotal ? ' is-indeterminate' : ''}" role="progressbar"
           aria-valuemin="0"${hasTotal ? ` aria-valuemax="${window.esc(total)}"` : ''}
-          aria-valuenow="${window.esc(processed)}">
+          ${hasTotal ? `aria-valuenow="${window.esc(Math.min(processed, total))}"` : 'aria-valuetext="処理中（総数未確定）"'}>
           <span style="width:${percent}%"></span>
         </div>
         <p class="at-job-message" aria-live="polite">${window.esc(progressText(job))}</p>
@@ -59963,7 +60006,7 @@ function _sn2StopSep() {
         persistentJobId: job.id,
         background: true,
         showImmediately: true,
-        cancellable: ['running', 'cancelling'].includes(job.status),
+        cancellable: ['queued', 'running', 'cancelling'].includes(job.status),
         cancelCompletes: false,
         cancel: function () { return cancel(job.id); },
         onDispose: function () {
@@ -59983,7 +60026,7 @@ function _sn2StopSep() {
       details: failureSamples,
       detailCount: Number(job.result?.failed || failureSamples.length),
     };
-    if (['running', 'cancelling'].includes(job.status)) {
+    if (['queued', 'running', 'cancelling'].includes(job.status)) {
       handle.update({
         label: job.label || 'タグ処理',
         status: job.status,
@@ -59995,7 +60038,7 @@ function _sn2StopSep() {
         currentItem: job.progress?.current || '',
         rate: job.progress?.rate,
         eta: job.progress?.eta_seconds,
-        cancellable: job.status === 'running',
+        cancellable: job.status === 'running' || job.status === 'queued',
       });
     } else if (job.status === 'done') {
       const failed = Number(job.result?.failed || 0);
@@ -60103,6 +60146,7 @@ function _sn2StopSep() {
   }
 
   async function poll(jobId) {
+    let missing = 0;
     while (jobs.has(jobId)) {
       let snapshot;
       try {
@@ -60114,17 +60158,25 @@ function _sn2StopSep() {
           await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
           continue;
         }
-        current.status = 'error';
-        current.error = error?.userMessage || error?.message || String(error);
+        if (/404/.test(String(error?.message || '')) && ++missing >= 3) {
+          current.status = 'error';
+          current.error = '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。';
+          persist();
+          render();
+          return;
+        }
+        // A failed progress GET cannot certify that the worker failed.
+        current.progress = { ...current.progress, message: '進捗を確認できません。接続の復旧を待っています。' };
         persist();
         render();
-        notifyFinished(current);
-        return;
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        continue;
       }
+      missing = 0;
       jobs.set(jobId, { ...jobs.get(jobId), ...snapshot, id: jobId });
       persist();
       render();
-      if (!['running', 'cancelling'].includes(snapshot.status)) {
+      if (!['queued', 'running', 'cancelling'].includes(snapshot.status)) {
         notifyFinished(jobs.get(jobId));
         return;
       }
@@ -60176,15 +60228,16 @@ function _sn2StopSep() {
 
   async function cancel(jobId) {
     const job = jobs.get(jobId);
-    if (!job || !['running', 'cancelling'].includes(job.status)) return;
+    if (!job || !['queued', 'running', 'cancelling'].includes(job.status)) return;
+    const previousStatus = job.status;
     job.status = 'cancelling';
     job.progress = { ...job.progress, phase: '中止中', message: '安全に中止できる位置まで処理しています' };
     render();
     try {
       await apiPost('/jobs/' + encodeURIComponent(jobId) + '/cancel', {}, { silentError: true });
     } catch (error) {
-      job.status = 'error';
-      job.error = '中止要求を送信できませんでした: ' + (error?.userMessage || error?.message || error);
+      job.status = previousStatus;
+      job.progress = { ...job.progress, message: '中止要求を送信できませんでした。処理結果を確認しています。' };
       render();
     }
   }
@@ -79788,7 +79841,8 @@ function snapshotThemeVars() {
   const keys = new Set(['--bg','--bg2','--bg3','--bg4','--fg','--fg2','--accent','--accent2','--red','--green','--orange','--blue','--border','--selection','--ui-font','--ui-font-size','--page-hr-color','--ui-accent-fg']);
   if (typeof getAllStyleKeys === 'function') getAllStyleKeys().forEach(k => keys.add(k));
   if (typeof COMMON_INTEGRATED_APP_STYLE_KEYS !== 'undefined') COMMON_INTEGRATED_APP_STYLE_KEYS.forEach(k => keys.add(k));
-  keys.forEach(k => { snap[k] = getCssVar(k); });
+  // Keep palette/OS references as expressions; computed colors would freeze them on Cancel.
+  keys.forEach(k => { snap[k] = document.documentElement.style.getPropertyValue(k) || getCssVar(k); });
   snap.__editorThemeName = localStorage.getItem('editor-theme-name');
   if (typeof MeldexThemeManager !== 'undefined') {
     const defaultKey = MeldexThemeManager.DEFAULT_THEME_KEY;
@@ -80640,6 +80694,7 @@ function _settingsThemePreviewAutoMixCss(toneColor, amount, slotIndex, fallbackC
 function _settingsThemePreviewAutoColor(value, sequentialIndex) {
   const normalized = String(value == null ? 'none' : value).trim();
   if (!normalized || normalized === 'none') return '';
+  if (normalized.startsWith('var:')) return MeldexThemeManager.resolveThemeUiColor(normalized);
   const colors = getCurrentThemeColorSet();
   const paletteLength = Math.max(1, colors.length || 0);
   const seqIndex = Math.max(0, parseInt(sequentialIndex, 10) || 0) % paletteLength;
@@ -81202,6 +81257,9 @@ function _themeUiCustomColor(value) {
 function _themeUiSelectOptions(value) {
   const items = _themeUiOptionItems(value);
   const current = String(value || 'none');
+  if (current.startsWith('var:') && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.resolveThemeUiColor(current)) {
+    items.push({ value: current, label: '一括設定の色', custom: true });
+  }
   return items.map(item => {
     if (item.group) return `<option value="" disabled>${esc(item.label)}</option>`;
     const customAttr = item.custom ? ' data-theme-ui-custom-option="1"' : '';
@@ -81258,6 +81316,10 @@ function _themeUiOptionItems(value) {
 
 function _themeUiOptionForValue(value) {
   const current = String(value || 'none');
+  if (current.startsWith('var:') && typeof MeldexThemeManager !== 'undefined') {
+    const swatch = MeldexThemeManager.resolveThemeUiColor(current);
+    if (swatch) return { value: current, label: '一括設定の色', swatch };
+  }
   const items = _themeUiOptionItems(current);
   const osAccent = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getUseOsAccentColor === 'function'
     ? MeldexThemeManager.getUseOsAccentColor()
@@ -81728,12 +81790,27 @@ let _settingsThemeSimpleMode = (() => {
   try { return localStorage.getItem('meldex-settings-theme-mode') === 'simple' ? 'simple' : 'detail'; }
   catch { return 'detail'; }
 })();
+// Shared UI aliases consumed outside the detail editor still belong to save/cancel.
+const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
+  '--bg1': 'surface', '--bg-hover': 'hover', '--accent-light': 'hover', '--border-color': 'border',
+  '--cal-control-active-fg': 'selectedText', '--cal-hover-bg': 'hover', '--cal-today-ring': 'accent',
+  '--db-option-bg': 'control', '--db-option-fg': 'text', '--db-selected-bg': 'selected',
+  '--db-selected-fg': 'selectedText', '--db-selected-header-fg': 'selectedText',
+  '--gb-checkbox-check-color': 'selectedText', '--outliner-placeholder-fg': 'muted',
+  '--page-bg': 'surface', '--page-checklist-checked-fg': 'muted', '--panel-bg': 'surface',
+  '--ui-bg-selected': 'selected', '--ui-control-active-bg': 'selected',
+  '--ui-border-focus': 'accent', '--ui-border-subtle': 'border', '--ui-focus': 'accent', '--ui-focus-ring': 'accent',
+  '--ui-disabled-bg': 'control', '--ui-disabled-border': 'border',
+});
 const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([
+  ...Object.keys(SETTINGS_SIMPLE_THEME_EXTRA_ROLES),
   '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--border', '--selection', '--accent', '--accent2',
   '--ui-bg-app', '--ui-bg-panel', '--ui-bg-surface', '--ui-border', '--ui-border-strong', '--ui-popup-border', '--ui-fg-muted', '--ui-fg-strong',
   ...['background', 'surface', 'control', 'text', 'muted', 'border', 'hover', 'selected', 'selectedText', 'accent'].map(id => `--simple-theme-${id}`),
   '--page-link-hover-fg', '--ui-accent', '--ui-panelset-tabbar-bg',
   '--ui-bg-control', '--ui-bg-control-hover', '--ui-bg-control-active', '--ui-fg-default', '--ui-control-active-fg', '--link-fg',
+  '--btn-primary-fg', '--fg-muted', '--fg3', '--page-fg', '--ui-disabled-fg',
+  '--cloud-mobile-selection-bg', '--cloud-mobile-selection-fg', '--cloud-mobile-selection-row-bg',
 ]);
 const SETTINGS_SIMPLE_THEME_FIELDS = Object.freeze([
   { id: 'background', label: '全体の背景色', key: '--bg', fallback: '#0b0d10' },
@@ -81813,11 +81890,13 @@ function settingsThemeSetSimpleMode(mode, root) {
 // Resolve semantic roles from the actual property definitions, not a parallel list of apps.
 function _settingsSimpleThemeRole(key, prop = '', label = '') {
   if (key.startsWith('--simple-theme-')) return '';
-  const baseRoles = { '--bg': 'background', '--bg2': 'surface', '--bg3': 'control', '--bg4': 'hover', '--fg': 'text', '--fg2': 'muted', '--selection': 'selected' };
+  if (SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key]) return SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key];
+  if (!['fg', 'bg', 'line', 'stroke', 'accent'].includes(prop) && /(?:-(?:bold|italic|font|font-size|font-weight|font-style|line-height|line-style|left-accent|underline|spacing|tracking|indent|gap|space-before|space-after)|-(?:width|height|size|radius|opacity|alpha|style|weight|enabled|align|fit|scale))$/i.test(key)) return '';
+  const baseRoles = { '--bg': 'background', '--bg2': 'surface', '--bg3': 'control', '--bg4': 'hover', '--fg': 'text', '--fg2': 'muted', '--fg3': 'muted', '--fg-muted': 'muted', '--ui-disabled-fg': 'muted', '--btn-primary-fg': 'selectedText', '--selection': 'selected' };
   if (baseRoles[key]) return baseRoles[key];
   if (/(?:shadow|saturday|sunday)/i.test(key)) return 'semantic';
-  if (/(?:font|line-height|width|height|padding|margin|radius|opacity|alpha|space|enabled|image|shadow|align|show-grid)/i.test(key)) return '';
-  if (/^--(?:red|green|orange|blue)$/.test(key) || /(?:error|warning|danger|success|status|badge|priority|weekend|holiday)/i.test(key + ' ' + label)) return 'semantic';
+  if (!['fg', 'bg', 'line', 'stroke', 'accent'].includes(prop) && /(?:-(?:font(?:-family|-size|-weight|-style)?|line-height|width|height|padding|margin|radius|opacity|alpha|space|enabled|image|align|show-grid)(?:$|-)|shadow)/i.test(key)) return '';
+  if (/^--(?:red|green|orange|blue)$/.test(key) || /(?:error|warning|danger|success|badge|priority|weekend|holiday)|(?:^|-)status(?:-|$)/i.test(key + ' ' + label)) return 'semantic';
   if (/(?:selection|selected|select-rect|drag-select|today|active|checked|adopted)/i.test(key)) return prop === 'fg' || /(?:-fg|-text-color)$/.test(key) ? 'selectedText' : prop === 'bg' || (!prop && /(?:-bg|selection-color)$/.test(key)) ? 'selected' : 'accent';
   if (/^--page-link(?:-hover)?-bg$/.test(key)) return 'transparent';
   if (/link/.test(key) && prop === 'bg') return /hover/.test(key) ? 'hover' : 'control';
@@ -81915,12 +81994,10 @@ function settingsThemeApplySimpleColors(overrides = {}) {
       const rawKeys = target.vars?.[state]?.[prop];
       const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
         : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
-        : state === 'selected' ? 'accent' : 'border';
+        : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
       if (target.vars ? ![rawKeys].flat().some(key => changed.has(styleRoles[key])) : !changed.has(role)) continue;
       apps[target.id][state][prop] = target.vars ? 'none'
-        : prop === 'fg' ? selections[state === 'selected' ? 'selectedText' : 'text']
-        : prop === 'bg' ? selections[state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control']
-        : selections[state === 'selected' ? 'accent' : 'border'];
+        : `var:${SETTINGS_SIMPLE_THEME_FIELDS.find(field => field.id === role).key}`;
     }
   }
   _runSettingsWithoutLocalStorageHistory(() => {
@@ -82081,7 +82158,7 @@ function settingsThemeBuildSimplePreset(source, dark) {
       for (const prop of target.props) {
         const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
           : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
-          : state === 'selected' ? 'accent' : 'border';
+          : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
         applications[target.id][state][prop] = target.vars ? 'none' : `color:${colors[role]}`;
       }
     }
@@ -82436,10 +82513,10 @@ function _syncThemeUiNativeSelect(select, value) {
   select.querySelectorAll('option[data-theme-ui-custom-option]').forEach(opt => {
     if (opt.value !== current) opt.remove();
   });
-  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:')) && !Array.from(select.options).some(opt => opt.value === current)) {
+  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:') || current.startsWith('var:')) && !Array.from(select.options).some(opt => opt.value === current)) {
     const opt = document.createElement('option');
     opt.value = current;
-    opt.textContent = current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
+    opt.textContent = current.startsWith('var:') ? '一括設定の色' : current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
     opt.dataset.themeUiCustomOption = '1';
     select.appendChild(opt);
   }
@@ -87992,7 +88069,17 @@ function _meldexHelpItems() {
   ];
 }
 
-function _closeMeldexHelpMenu() {
+let _meldexHelpMenuState = null;
+
+function _closeMeldexHelpMenu(restoreFocus = true) {
+  const state = _meldexHelpMenuState;
+  _meldexHelpMenuState = null;
+  if (state) {
+    window.removeEventListener('keydown', state.keydown, true);
+    window.removeEventListener('pointerdown', state.outside, true);
+    state.anchor?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && state.anchor?.isConnected) state.anchor.focus({ preventScroll: true });
+  }
   document.querySelectorAll('.meldex-help-menu').forEach(el => el.remove());
 }
 
@@ -88029,6 +88116,10 @@ function meldexPublicManualUrl(path = '', section = '') {
   } else if (currentIsPublished) {
     try { base = new URL('manual.html', window.location.href).href; } catch {}
   }
+  // デスクトップは同梱版を開き、公開サイトの最新仕様との版ずれを防ぐ。
+  if (/^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(window.location?.hostname || '') || window.location?.protocol === 'file:') {
+    try { base = new URL('public-manual.html', window.location.href).href; } catch {}
+  }
   if (!path) return base;
   const params = new URLSearchParams();
   params.set('path', String(path).replace(/^manual\//, ''));
@@ -88054,9 +88145,16 @@ function _runMeldexHelpAction(item) {
     if (typeof showChatRulesDialog === 'function') showChatRulesDialog();
     else if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('rules');
   } else if (item.action === 'diagnostics') {
-    window.MeldexDiagnostics?.exportDiagnostics?.().catch(err => {
-      if (typeof showStatus === 'function') showStatus('診断情報の作成に失敗しました: ' + (err?.message || err), true);
-    });
+    saveMeldexHelpDiagnostics();
+  }
+}
+
+async function saveMeldexHelpDiagnostics() {
+  try {
+    if (typeof window.MeldexDiagnostics?.exportDiagnostics !== 'function') throw new Error('診断機能を読み込めませんでした。画面を再読み込みしてください。');
+    await window.MeldexDiagnostics.exportDiagnostics();
+  } catch (err) {
+    if (typeof showStatus === 'function') showStatus('診断情報の作成に失敗しました: ' + (err?.message || err), true);
   }
 }
 
@@ -88190,6 +88288,10 @@ function _positionMeldexHelpMenu(menu, anchor) {
 
 function showMeldexHelpMenu(event) {
   const anchor = _resolveMeldexHelpMenuAnchor(event?.currentTarget || event?.target);
+  if (_meldexHelpMenuState?.anchor === anchor && _meldexHelpMenuState.menu.isConnected) {
+    _closeMeldexHelpMenu();
+    return;
+  }
   _meldexHelpDialogReturnFocus = anchor;
   _closeMeldexHelpMenu();
   if (typeof window !== 'undefined') window.GBTooltip?.hide?.({ suppressUntilLeave: true });
@@ -88201,13 +88303,15 @@ function showMeldexHelpMenu(event) {
   _meldexHelpItems().forEach(item => {
     if (item.type === 'separator') {
       const sep = document.createElement('div');
-      sep.className = 'cm-sep';
+      sep.className = 'gb-context-menu-sep';
+      sep.setAttribute('role', 'separator');
       menu.appendChild(sep);
       return;
     }
     if (item.type === 'heading') {
       const heading = document.createElement('div');
-      heading.style.cssText = 'padding:8px 12px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;';
+      heading.className = 'gb-context-menu-label';
+      heading.style.cssText = 'padding:8px 12px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;background:transparent;cursor:default;';
       heading.textContent = item.label;
       menu.appendChild(heading);
       return;
@@ -88216,7 +88320,7 @@ function showMeldexHelpMenu(event) {
     row.type = 'button';
     row.className = 'gb-context-menu-item tree-ctx-item';
     row.setAttribute('role', 'menuitem');
-    row.style.cssText = 'width:100%;border:0;background:transparent;text-align:left;padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;';
+    row.style.cssText = 'padding:6px 12px;gap:8px;font-size:13px;';
     row.innerHTML = `<span style="width:16px;height:16px;display:inline-flex;">${lucide(item.icon, 15)}</span><span>${esc(item.label)}</span>`;
     row.addEventListener('click', () => {
       if (item.type === 'external') _openMeldexHelpExternal(item);
@@ -88229,14 +88333,30 @@ function showMeldexHelpMenu(event) {
   document.body.appendChild(menu);
   replaceIcons(menu);
   _positionMeldexHelpMenu(menu, anchor);
-  setTimeout(() => {
-    document.addEventListener('pointerdown', function closer(e) {
-      if (!menu.contains(e.target) && e.target !== anchor && !anchor?.contains?.(e.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    });
-  }, 0);
+  const outside = e => {
+    if (!menu.contains(e.target) && e.target !== anchor && !anchor?.contains?.(e.target)) _closeMeldexHelpMenu(false);
+  };
+  const keydown = e => {
+    if (!menu.isConnected) { _closeMeldexHelpMenu(false); return; }
+    if (e.key === 'Tab') { _closeMeldexHelpMenu(); return; }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape'].includes(e.key)) return;
+    // フォルダツリー等のグローバルショートカットより先に処理する。
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.key === 'Escape') { _closeMeldexHelpMenu(); return; }
+    const rows = [...menu.querySelectorAll('[role="menuitem"]')];
+    const current = rows.indexOf(document.activeElement);
+    const index = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1
+      : (current + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+    rows[index]?.focus({ preventScroll: true });
+    rows[index]?.scrollIntoView({ block: 'nearest' });
+  };
+  _meldexHelpMenuState = { menu, anchor, keydown, outside };
+  anchor?.setAttribute('aria-haspopup', 'menu');
+  anchor?.setAttribute('aria-expanded', 'true');
+  window.addEventListener('pointerdown', outside, true);
+  window.addEventListener('keydown', keydown, true);
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
 }
 
 function _meldexLegalDocUrl(filename) {
@@ -88297,7 +88417,7 @@ function showMeldexAboutDialog(returnFocus) {
         <button type="button" data-action="_openMeldexLegalDoc('PRIVACY.html')">プライバシーポリシー</button>
         <button type="button" data-action="_openMeldexLegalDoc('TERMS-OF-USE.html')">利用規約</button>
         <button type="button" data-action="_openMeldexLegalDoc('THIRD-PARTY.md')">OSSライセンス</button>
-        <button type="button" data-action="window.MeldexDiagnostics?.exportDiagnostics?.()">診断情報を保存</button>
+        <button type="button" data-action="saveMeldexHelpDiagnostics()">診断情報を保存</button>
       </div>
     </section>`;
   const closeButton = document.createElement('button');
@@ -88361,7 +88481,7 @@ async function showMeldexChangelogDialog(returnFocus) {
   _closeMeldexHelpMenu();
   const content = document.createElement('div');
   content.innerHTML = `<div id="meldex-changelog-status" role="status" aria-live="polite"></div>
-    <pre id="meldex-changelog-body" style="min-height:96px;max-height:min(60vh,480px);box-sizing:border-box;margin:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>`;
+    <div id="meldex-changelog-body" style="min-height:96px;max-height:min(60vh,480px);box-sizing:border-box;margin:0;overflow:auto;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</div>`;
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'gb-btn gb-btn-sm';
@@ -88401,7 +88521,25 @@ async function showMeldexChangelogDialog(returnFocus) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       if (!modalApi.isOpen()) return;
-      body.textContent = text;
+      if (typeof window.renderChatMarkdown === 'function') {
+        window.renderChatMarkdown(body, text);
+        body.querySelectorAll('a[data-chat-link-target]').forEach(link => {
+          if (link.dataset.chatLinkBare === 'true') {
+            link.replaceWith(document.createTextNode(link.textContent));
+            return;
+          }
+          const url = new URL(link.dataset.chatLinkTarget, window.location.href);
+          const native = document.createElement('a');
+          native.textContent = link.textContent;
+          if (/^https?:$/.test(url.protocol) || url.protocol === 'file:') {
+            native.href = url.href;
+            native.target = '_blank';
+            native.rel = 'noopener noreferrer';
+            native.dataset.meldexHelpLink = '1';
+          }
+          link.replaceWith(native);
+        });
+      } else body.textContent = text;
       status.textContent = '';
     } catch (error) {
       if (!modalApi.isOpen()) return;
@@ -95141,6 +95279,7 @@ async function resetLayoutToDefault() {
   const restoredJobs = new Map();
   const foregroundStack = [];
   let pollTimer = null;
+  let polling = false;
 
   function _progressApi() { return window.MeldexOperationProgress || null; }
   function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
@@ -95183,10 +95322,8 @@ async function resetLayoutToDefault() {
         priority: job.status === 'running' ? 20 : 10,
       });
     }
-    const previous = handle.getState();
     const rawTotal = Number(job.progress?.total);
     let processed = Math.max(0, Number(job.progress?.processed) || 0);
-    if (rawTotal > 0 && previous?.total === rawTotal) processed = Math.max(previous.processed || 0, processed);
     handle.update({
       label: _jobLabel(job),
       phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
@@ -95197,6 +95334,7 @@ async function resetLayoutToDefault() {
       currentItem: job.progress?.current_item || job.progress?.current || '',
       rate: job.progress?.rate,
       eta: job.progress?.eta_seconds ?? job.progress?.eta,
+      message: job.progress?.message || '',
       persistentJobId: jobId,
     });
     restoredJobs.set(jobId, { handle: handle, misses: 0 });
@@ -95208,7 +95346,11 @@ async function resetLayoutToDefault() {
       const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
       entry.misses = 0;
       if (job?.status === 'done') {
-        entry.handle.succeed({ summary: job.result?.summary || '取り込みが完了しました' });
+        const result = job.result || {};
+        const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
+        if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
+        else if (Number(result.failed || result.errors || result.media_failed || result.author_icon_failed) > 0 || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが完了しました（一部失敗）' });
+        else entry.handle.succeed(values);
         restoredJobs.delete(jobId);
       } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
         entry.handle.cancelled({ summary: '取り込みを中止しました' });
@@ -95226,13 +95368,14 @@ async function resetLayoutToDefault() {
       entry.misses += 1;
       if (entry.misses < 2 || !/404/.test(String(error?.message || ''))) return;
       const status = entry.handle.getState()?.status;
-      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.dispose();
+      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.fail({ error: '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。' });
       restoredJobs.delete(jobId);
     }
   }
 
   async function poll() {
-    if (!_apiAvailable()) return;
+    if (!_apiAvailable() || polling) return;
+    polling = true;
     try {
       const data = await apiFetch('/jobs?category=' + encodeURIComponent(CATEGORY) + '&active_only=1', { silentError: true });
       const active = _activeJobs(Array.isArray(data?.jobs) ? data.jobs : []);
@@ -95248,6 +95391,8 @@ async function resetLayoutToDefault() {
       await Promise.all(missing);
     } catch (_) {
       // 一時的なポーリング失敗では現役表示を消さず、次回復旧を待つ。
+    } finally {
+      polling = false;
     }
   }
 
@@ -95307,7 +95452,10 @@ async function resetLayoutToDefault() {
     if (!handle) return;
     const index = foregroundStack.indexOf(handle);
     if (index >= 0) foregroundStack.splice(index, 1);
-    handle.succeed(Object.assign({ dismissMs: 0 }, options || {}));
+    const opts = options || {};
+    if (opts.error) handle.fail(opts);
+    else if (Number(opts.failed) > 0) handle.partial(opts);
+    else handle.succeed(Object.assign({ dismissMs: 0 }, opts));
     poll();
   }
 
@@ -104844,6 +104992,7 @@ function _resolveContextLinkTarget(rawTarget) {
 
   const anchor = target.closest('a[href]');
   if (anchor && !anchor.closest('.gb-context-menu')) {
+    if (anchor.hasAttribute('download') || anchor.dataset.meldexHelpLink === '1') return null;
     const path = anchor.getAttribute('href') || '';
     if (!path || path === '#' || /^javascript:/i.test(path)) return null;
     const editableHost = anchor.closest('[contenteditable="true"]');
@@ -198046,6 +198195,7 @@ function switchChatMode(mode) {
     t.style.color = active ? 'var(--accent)' : 'var(--fg2)';
     t.style.fontWeight = active ? 'bold' : 'normal';
   });
+  if (typeof _syncChatWorkspaceTabs === 'function') _syncChatWorkspaceTabs();
   if (mode === 'team') {
     loadTeamRooms().then(() => {
       if (_chatMode !== 'team' || !_teamCurrentRoom) return;
@@ -199763,6 +199913,7 @@ function _chatResetCurrentSession(options = {}) {
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
+  _chatState.historySourceFolder = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
   _chatState.lastImplicitTargetPath = options.keepTargetPath ? (_chatState.lastImplicitTargetPath || '') : '';
   if (typeof _chatClearPendingAttachments === 'function') {
@@ -199870,7 +200021,55 @@ function _chatSourceOptions() {
   return options;
 }
 
+function _syncChatWorkspaceTabs() {
+  const placeholder = document.getElementById('chat-tab-team');
+  const bar = placeholder?.parentElement;
+  if (!bar) return;
+  const workspaces = (_chatWorkspacesCache || []).filter(item => item?.id);
+  const signature = JSON.stringify(workspaces.map(item => [String(item.id), String(item.name || '名称未設定')]));
+  if (bar.dataset.workspaceTabsSignature !== signature) {
+    bar.querySelectorAll('[data-chat-workspace-id]').forEach(tab => tab.remove());
+    workspaces.forEach(workspace => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'chat-mode-tab';
+      tab.dataset.chatWorkspaceId = String(workspace.id);
+      tab.textContent = String(workspace.name || '名称未設定');
+      tab.title = tab.textContent;
+      tab.style.cssText = 'padding:6px 16px;cursor:pointer;font-size:13px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--fg2);font-family:inherit;flex-shrink:0;white-space:nowrap;';
+      tab.addEventListener('click', async () => {
+        if (bar._chatWorkspaceSwitchPending) return;
+        bar._chatWorkspaceSwitchPending = true;
+        try {
+          if (await _setChatSourceFolder(_chatWorkspaceOptionValue(workspace.id))) {
+            if (_chatMode !== 'team') switchChatMode('team');
+            else _syncChatWorkspaceTabs();
+          }
+        } finally {
+          bar._chatWorkspaceSwitchPending = false;
+        }
+      });
+      bar.insertBefore(tab, placeholder);
+    });
+    bar.dataset.workspaceTabsSignature = signature;
+  }
+  placeholder.style.display = workspaces.length ? 'none' : '';
+  bar.style.overflowX = 'auto';
+  bar.querySelectorAll('.chat-mode-tab').forEach(tab => {
+    tab.style.flexShrink = '0';
+    tab.style.whiteSpace = 'nowrap';
+    if (!tab.dataset.chatWorkspaceId) return;
+    const active = _chatMode === 'team' && tab.dataset.chatWorkspaceId === _chatWorkspaceIdValue();
+    tab.classList.toggle('active', active);
+    tab.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+    tab.style.color = active ? 'var(--accent)' : 'var(--fg2)';
+    tab.style.fontWeight = active ? 'bold' : 'normal';
+    tab.setAttribute('aria-pressed', String(active));
+  });
+}
+
 function _syncChatSourceFolderUi() {
+  _syncChatWorkspaceTabs();
   const select = document.getElementById('chat-source-folder');
   const badge = document.getElementById('chat-source-badge');
   const selected = _chatFindSourceOption(_chatTargetSelectorValue(), _chatSourceOptions());
@@ -202229,15 +202428,16 @@ async function openFileChat(targetPath) {
   // _chat/llm/ 内からtargetPathが一致するチャットを検索
   let restored = false;
   try {
-    const chatItems = await apiFetch(_chatApiPath('/chat/list'));
+    const chatItems = await window.GBChatStorageContext.fetchHistory('/chat/list');
     if (!restoreStillCurrent()) return false;
     for (const item of (chatItems || [])) {
       if (item.targetPath !== targetPath || !item.path) continue;
-      const data = await apiFetch(_chatApiPath('/chat/load?path=' + encodeURIComponent(item.path)));
+      const data = await window.GBChatStorageContext.fetchHistory('/chat/load?path=' + encodeURIComponent(item.path));
       if (data.messages?.length > 0) {
         if (!restoreStillCurrent()) return false;
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
+        _chatState.historySourceFolder = window.GBChatStorageContext.peekHistory()?.sourceFolder || '';
         _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
@@ -202264,19 +202464,19 @@ async function openFileChat(targetPath) {
 
   if (!restored) {
     try {
-      const llmBrowsePath = _chatSourceFolderValue()
-        ? (_chatSourceFolderValue().replace(/[\\/]+$/, '') + '/_chat/llm')
-        : '_chat/llm';
+      const historyContext = await window.GBChatStorageContext.resolveForHistory();
+      const llmBrowsePath = historyContext.sourceFolder.replace(/[\\/]+$/, '') + '/_chat/llm';
       const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc');
       if (!restoreStillCurrent()) return false;
       for (const item of (items || [])) {
         try {
-          const data = await apiFetch(_chatApiPath('/chat/load?path=' + encodeURIComponent(item.path)));
+          const data = await window.GBChatStorageContext.fetchHistory('/chat/load?path=' + encodeURIComponent(item.path));
           if (data.frontmatter?.targetPath === targetPath && data.messages?.length > 0) {
             if (!restoreStillCurrent()) return false;
             // 一致するセッションを復元
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
+            _chatState.historySourceFolder = historyContext.sourceFolder;
             _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
@@ -202432,12 +202632,17 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     anchor = anchor || String(path).slice(hashIndex + 1);
     path = String(path).slice(0, hashIndex);
   }
-  const explicitSourceFolder = String(sourceFolder || '');
-  if (sourceFolder !== undefined && explicitSourceFolder && explicitSourceFolder !== _chatSourceFolderValue()) {
+  const rootedHistoryPath = /^(?:[a-z]:[\\/]|\/)/i.test(path)
+    || (!String(path).startsWith('_chat/') && String(path).replace(/\\/g, '/').includes('/_chat/'));
+  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath ? _detectSourceFolderFromPath(path) : '';
+  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
+  const historyContext = await window.GBChatStorageContext.resolveForHistory();
+  const legacySource = explicitSourceFolder && _chatNormalizePath(explicitSourceFolder) !== _chatNormalizePath(historyContext.sourceFolder);
+  if (legacySource && explicitSourceFolder !== _chatSourceFolderValue()) {
     const switched = await _chatSwitchSourceFolderForOpen(explicitSourceFolder, { skipSave: true });
     if (!switched) return false;
     if (!restoreStillCurrent()) return false;
-  } else {
+  } else if (legacySource) {
     const detectedSourceFolder = _detectSourceFolderFromPath(path);
     const currentTarget = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : _chatSourceFolderValue();
     if (detectedSourceFolder && detectedSourceFolder !== currentTarget) {
@@ -202446,7 +202651,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
       if (!restoreStillCurrent()) return false;
     }
   }
-  if (!_chatRequireSourceFolder()) return false;
+  if (legacySource && !_chatRequireSourceFolder()) return false;
   openRightPanelTab('chat');
   if (restoreGuard && typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.runInternal === 'function') {
     GBChatRestore.runInternal(() => switchChatMode('llm'));
@@ -202473,8 +202678,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   try {
     const user = (typeof getUsername === 'function') ? getUsername() : '';
     let url = (typeof API_BASE !== 'undefined' ? API_BASE : '/api') + '/chat/load?path=' + encodeURIComponent(path);
-    const sourceFolderParam = _chatSourceFolderValue();
-    const workspaceIdParam = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+    const sourceFolderParam = legacySource ? _chatSourceFolderValue() : historyContext.sourceFolder;
+    const workspaceIdParam = legacySource && typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
     if (workspaceIdParam) url += '&workspace_id=' + encodeURIComponent(workspaceIdParam);
     if (sourceFolderParam) url += '&source_folder=' + encodeURIComponent(sourceFolderParam);
     if (user && user !== 'anonymous') url += '&_user=' + encodeURIComponent(user);
@@ -202549,6 +202754,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   // セッションIDをファイル名から復元
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
+  _chatState.historySourceFolder = legacySource ? explicitSourceFolder : historyContext.sourceFolder;
   _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
@@ -202629,8 +202835,6 @@ async function chatAutoSave(options = {}) {
   const hasTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath');
   const hasProvider = Object.prototype.hasOwnProperty.call(options || {}, 'provider');
   const hasModel = Object.prototype.hasOwnProperty.call(options || {}, 'model');
-  const hasSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
-  const hasWorkspaceId = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
   if (savingCurrentSession && !hasSessionTitle) _captureChatSessionTitleFromInput();
   _ensureChatMessageIds(messages);
   let sid = hasSessionId ? String(options.sessionId || '') : String(_chatState.sessionId || '');
@@ -202645,12 +202849,13 @@ async function chatAutoSave(options = {}) {
       : String(_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || ''));
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
-  const storageOptions = {};
-  if (hasWorkspaceId) storageOptions.workspaceId = String(options.workspaceId || '');
-  if (hasSourceFolder) storageOptions.sourceFolder = String(options.sourceFolder || '');
-  const storageContext = window.GBChatStorageContext?.resolveForAi
-    ? await window.GBChatStorageContext.resolveForAi(storageOptions)
-    : null;
+  let storageContext;
+  try {
+    storageContext = await window.GBChatStorageContext.resolveForHistory();
+  } catch (error) {
+    if (!silent) throw error;
+    return false;
+  }
   const sourceFolder = String(storageContext?.sourceFolder || '');
   const workspaceId = String(storageContext?.workspaceId || '');
   if (!sourceFolder && !workspaceId) {
@@ -202677,6 +202882,7 @@ async function chatAutoSave(options = {}) {
       ...(knowledgeAutomation ? { knowledge_automation: knowledgeAutomation } : {}),
     }));
     if (savingCurrentSession) {
+      _chatState.historySourceFolder = sourceFolder;
       _chatState.versionTargetPath = String(result?.versionTargetPath || _chatState.versionTargetPath || '');
       _chatState.lastAutoVersionCreated = !!result?.autoVersionCreated;
       _chatState.lastAutoVersionName = String(result?.autoVersionName || '');
@@ -202761,7 +202967,7 @@ window.MeldexChatVersionTarget = Object.freeze({
     return !!(await openSavedChat(
       _chatSavedPathForSession(_chatState.sessionId),
       '',
-      typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : undefined,
+      _chatState.historySourceFolder || (await window.GBChatStorageContext.resolveForHistory()).sourceFolder,
     ));
   },
 });
@@ -203036,13 +203242,9 @@ function chatSave(event) {
 async function renderChatHistory() {
   const listEl = document.getElementById('chat-history-list');
   if (!listEl) return;
-  if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
-    listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">フォルダツリーで対象フォルダまたはファイルを選択してください</div>';
-    return;
-  }
   listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">読み込み中...</div>';
   try {
-    const items = await apiFetch(_chatApiPath('/chat/list'));
+    const items = await window.GBChatStorageContext.fetchHistory('/chat/list');
     if (!items || items.length === 0) {
       listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴がありません</div>';
       return;
@@ -203211,13 +203413,8 @@ function _chatSearch() {
     const results = document.getElementById('chat-search-results');
     if (!results) return;
     results.style.display = 'block';
-    if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
-      results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">フォルダツリーで対象フォルダまたはファイルを選択してください</div>';
-      if (countEl) countEl.textContent = '0件';
-      return;
-    }
     results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">検索中...</div>';
-    apiFetch(_chatApiPath('/chat/search?q=' + encodeURIComponent(q))).then(data => {
+    window.GBChatStorageContext.fetchHistory('/chat/search?q=' + encodeURIComponent(q)).then(data => {
       if (searchSerial !== _chatSearchSerial) return;
       const items = data.results || [];
       if (countEl) countEl.textContent = items.length + '件';
@@ -203560,15 +203757,7 @@ async function showChatHistoryDropdown(event) {
   };
 
   try {
-    if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
-      popup.innerHTML = '';
-      const empty = document.createElement('div');
-      empty.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
-      empty.textContent = 'フォルダツリーで対象フォルダまたはファイルを選択してください';
-      popup.appendChild(empty);
-      return;
-    }
-    const items = await apiFetch(_chatApiPath('/chat/list'));
+    const items = await window.GBChatStorageContext.fetchHistory('/chat/list');
     popup.innerHTML = '';
     if (!items || items.length === 0) {
       const empty = document.createElement('div');
@@ -210120,7 +210309,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     return _save({
       mode: normalized,
       historyView: _currentHistoryView(),
-      ai: { savedPath: normalized === 'llm' ? _currentSavedPath() : (_load()?.ai?.savedPath || '') },
+      ai: {
+        savedPath: normalized === 'llm' ? _currentSavedPath() : (_load()?.ai?.savedPath || ''),
+        ...(normalized === 'llm' && window.GBChatStorageContext?.peekHistory?.()
+          ? { historySourceFolder: _chatState.historySourceFolder || window.GBChatStorageContext.peekHistory().sourceFolder } : {}),
+      },
       storage: _currentStorage(),
       target: _currentTarget(),
     });
@@ -210129,7 +210322,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   function _saveCurrentLlmRestore() {
     return _save({
       mode: 'llm',
-      ai: { savedPath: _currentSavedPath() },
+      ai: {
+        savedPath: _currentSavedPath(),
+        ...(window.GBChatStorageContext?.peekHistory?.()
+          ? { historySourceFolder: _chatState.historySourceFolder || window.GBChatStorageContext.peekHistory().sourceFolder } : {}),
+      },
       storage: _currentStorage(),
       target: _currentTarget(),
     });
@@ -210252,7 +210449,9 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     if (_llmContentRestored) return;
     const savedPath = String(meta?.ai?.savedPath || '');
     if (savedPath && typeof openSavedChat === 'function') {
-      if (!await _runRestoreStep(token, () => openSavedChat(savedPath, '', _currentStorage().sourceFolder))) return;
+      const legacyContext = await window.GBChatStorageContext.resolveForAi(_currentStorage());
+      const historySource = meta.ai?.historySourceFolder ?? (legacyContext.rootPath || _currentStorage().sourceFolder);
+      if (!await _runRestoreStep(token, () => openSavedChat(savedPath, '', historySource))) return;
       if (window.MeldexChatCurrentTarget?.restore) {
         if (!await _runRestoreStep(token, () => window.MeldexChatCurrentTarget.restore(meta.target))) return;
       }
@@ -212343,11 +212542,12 @@ async function _folderImportOsDrop(event, targetItem) {
   }
   const progress = window.MeldexImportProgress;
   const result = { ok: 0, failed: 0, failures: [] };
-  progress?.beginOperation?.('ファイルを取り込み中', Math.max(1, total));
+  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
+  const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
-    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, progress);
+    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, boundProgress);
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
   if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-panel-os-drop' });
   if (_folderPath && typeof openFolder === 'function') {
@@ -212411,7 +212611,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     }
   }
   const progress = window.MeldexImportProgress;
-  progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let ok = 0;
   const failures = [];
   try {
@@ -212439,10 +212639,10 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
       } catch (error) {
         failures.push({ name: source.name || source.path, error });
       }
-      progress?.updateOperation?.(ok + failures.length);
+      progress?.updateOperation?.(ok + failures.length, null, progressToken);
     }
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
   }
   if (typeof loadOutliner === 'function') {
     await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
@@ -216671,54 +216871,32 @@ function _restoreTreeDisplaySettings() {
   _applyTreeLayoutMode(globalThis.localStorage?.getItem?.('tree-layout') || 'list');
 }
 
-let _treeDisplayRefreshRunning = false;
-let _treeDisplayRefreshPending = false;
-let _treeDisplayRefreshPromise = null;
-
 function _refreshTreeAfterDisplaySettingsChange(reason) {
-  _treeDisplayRefreshPending = true;
-  if (_treeDisplayRefreshRunning) return _treeDisplayRefreshPromise;
-
-  _treeDisplayRefreshRunning = true;
-  const progress = window.MeldexOperationProgress?.begin?.({
-    id: 'folder-tree-display-settings-refresh',
-    kind: 'folder-tree-display-settings',
-    label: 'フォルダツリーの表示設定を反映中…',
-    message: '一覧・サムネイル・サブフォルダの表示を更新しています',
-    mode: 'indeterminate',
-    background: false,
-    delayMs: 300,
-    showInTray: true,
-    priority: 40,
-  }) || null;
-  const fallbackLoading = !progress && typeof showLoading === 'function';
-  const loading = fallbackLoading ? showLoading('フォルダツリーの表示設定を反映中…', { key: 'outliner-display-settings' }) : null;
-
-  _treeDisplayRefreshPromise = (async () => {
-    try {
-      do {
-        _treeDisplayRefreshPending = false;
-        if (typeof loadOutliner === 'function') {
-          await loadOutliner({
-            force: true,
-            reason: reason || 'tree-display-settings',
-            suppressLoading: true,
-          });
-        }
-      } while (_treeDisplayRefreshPending);
-      progress?.succeed?.({ dismissMs: 0 });
-      return true;
-    } catch (error) {
-      progress?.fail?.({ error, dismissMs: 0 });
-      throw error;
-    } finally {
-      if (fallbackLoading && typeof hideLoading === 'function') hideLoading(loading);
-      _treeDisplayRefreshRunning = false;
-      _treeDisplayRefreshPending = false;
-      _treeDisplayRefreshPromise = null;
-    }
-  })();
-  return _treeDisplayRefreshPromise;
+  // 表示だけの変更ではルート/子項目を再取得しない。既存ノードの展開と選択を保つ。
+  const tree = document.getElementById('outliner-tree');
+  const scroller = document.getElementById('tree-scroll-container');
+  const scrollTop = scroller?.scrollTop || 0;
+  _restoreTreeDisplaySettings();
+  if (reason === 'tree-layout' && localStorage.getItem('tree-layout') === 'grid') {
+    window.GBOutlinerVirtualRender?.materializeForGrid?.(tree);
+  }
+  if (reason === 'tree-thumbnail-size') {
+    tree?.querySelectorAll('.tree-node').forEach(node => {
+      const row = node.querySelector(':scope > .tree-node-row');
+      const icon = row?.querySelector('.tree-icon');
+      if (!row || !icon || !node._nodeData) return;
+      const thumbnails = window.GBOutlinerThumbnails;
+      thumbnails?.detachRow(row);
+      row.querySelectorAll('.tree-thumb-shell').forEach(shell => shell.remove());
+      row.classList.remove('thumb-ready');
+      thumbnails?.attachToRow(row, node._nodeData, icon);
+      const height = thumbnails?.compactRowHeight?.() || 22;
+      window.GBOutlinerVirtualRender?.updateRowHeight(node, height);
+    });
+  }
+  window.GBOutlinerVirtualRender?.forceRefreshVisible?.();
+  if (scroller) scroller.scrollTop = scrollTop;
+  return Promise.resolve(true);
 }
 
 if (document.readyState === 'loading') {
@@ -221349,7 +221527,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
   if (!targetPath || !Array.isArray(items) || items.length === 0) return;
   const progress = window.MeldexImportProgress;
-  progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let processed = 0;
   let succeeded = 0;
   const failures = [];
@@ -221378,10 +221556,10 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
         failures.push({ source, error });
       }
       processed += 1;
-      progress?.updateOperation?.(processed);
+      progress?.updateOperation?.(processed, null, progressToken);
     }
   } finally {
-    progress?.finishOperation?.();
+    progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
   await loadOutliner({ force: true, reason: 'external-drop-move' });
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
@@ -222690,20 +222868,21 @@ function createTreeNodeFromBrowse(item, rootPath) {
       const moved = [];
       let movedAcrossFolders = false;
       let processed = 0;
-      window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
+      const failures = [];
+      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
           moved.push(n);
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
         if (destFolder === srcFolder) {
           moved.push(n);
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         movedAcrossFolders = true;
@@ -222733,13 +222912,14 @@ function createTreeNodeFromBrowse(item, rootPath) {
         } catch (err) {
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
+          failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
         } finally {
           processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed);
+          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
         }
       }
-      window.MeldexImportProgress?.finishOperation?.();
+      window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${moved.length}件移動・${failures.length}件失敗`, details: failures });
       if (moved.length === 0) return;
       // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
       // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
@@ -225415,7 +225595,7 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     return result;
   }));
   try {
-    progress?.update?.({ phase: '表示を更新しています', currentItem: '' });
+    progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
   } catch (error) {
     progress?.fail?.({ error: error });
@@ -229675,10 +229855,59 @@ async function doVaultReplace(all) {
 
   function activeContainers() { return Array.from(_activeContainers); }
 
+  // Grid needs ordinary nested DOM. Reuse loaded items, including offscreen branches,
+  // rather than fetching roots again and relying on startup auto-expansion limits.
+  function materializeForGrid(root) {
+    _activeContainers.forEach(function (container) {
+      if (!root || !root.contains(container)) return;
+      var state = container._virtualState;
+      if (!state) return;
+      var lastClickedPath = typeof treeSelection !== 'undefined' ? treeSelection.lastClicked?._nodeData?.path : '';
+      var focusedPath = document.activeElement?.closest?.('.tree-node')?._nodeData?.path;
+      unmountContainer(container);
+      container.style.display = '';
+      function append(items, target) {
+        (items || []).forEach(function (item) {
+          if (item.path) _pathToContainer.delete(item.path);
+          var node = createTreeNodeFromBrowse({ ...item, _gbVirtualExpansionManaged: true }, state.rootPath);
+          // Future manually loaded children use normal expansion handling.
+          delete node._nodeData._gbVirtualExpansionManaged;
+          target.appendChild(node);
+          var children = node.querySelector(':scope > .tree-children');
+          var toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
+          var cached = state.childrenByParent.get(item.path);
+          var expanded = state.expandedIds.has(item.path);
+          if (cached) {
+            append(cached, children);
+            children.dataset.loaded = 'true';
+          }
+          if (toggle && toggle.dataset.expanded !== undefined) {
+            toggle.dataset.expanded = expanded ? 'true' : 'false';
+            toggle.classList.toggle('expanded', expanded);
+            children.classList.toggle('collapsed', !expanded);
+            if (expanded && item.type === 'folder') {
+              var icon = node.querySelector(':scope > .tree-node-row .tree-icon');
+              if (icon) {
+                icon.innerHTML = lucide(typeof getWorkFolder === 'function' && item.path === getWorkFolder() ? 'folderOpenDot' : 'folderOpen', 18);
+                if (item.linked) icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+              }
+            }
+          }
+          if (state.selectedIds.has(item.path) && typeof treeSelection !== 'undefined') treeSelection.add(node);
+          if (item.path === lastClickedPath) treeSelection.lastClicked = node;
+          if (item.path === focusedPath) node.querySelector(':scope > .tree-node-row')?.focus({ preventScroll: true });
+        });
+      }
+      append(state.allItems, container);
+    });
+    if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
+  }
+
   window.GBOutlinerVirtualRender = {
     VIRTUAL_THRESHOLD: VIRTUAL_THRESHOLD,
     OVERSCAN_ROWS: OVERSCAN_ROWS,
     mount: mount,
+    materializeForGrid: materializeForGrid,
     refresh: refresh,
     updateRowHeight: updateRowHeight,
     containerForPath: containerForPath,
@@ -249302,6 +249531,7 @@ async function _exportDictFile(options = {}) {
       if (part === 'backspace') return 'BS';
       if (part === 'tab') return 'Tab';
       if (part === 'space') return 'Space';
+      if (part === 'printscreen') return 'PrintScreen';
       if (part.length === 1) return part.toUpperCase();
       return part.charAt(0).toUpperCase() + part.slice(1);
     }).join('+');
@@ -249454,11 +249684,19 @@ async function _exportDictFile(options = {}) {
       kbd.textContent = text;
       kbd.classList.remove('is-capturing');
     };
+    const stopCapture = () => {
+      document.removeEventListener('keydown', handler, true);
+      document.removeEventListener('keyup', printScreenRelease, true);
+    };
+    // PrintScreen may be delivered only on release by the Windows browser host.
+    const printScreenRelease = event => {
+      if (event.key?.toLowerCase() === 'printscreen') handler(event);
+    };
     const handler = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (event.key === 'Escape') {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         finish(keyDisplay(effective()[kbd.dataset.id]?.key || '') || original);
         return;
       }
@@ -249467,7 +249705,7 @@ async function _exportDictFile(options = {}) {
       const id = kbd.dataset.id;
       const hit = conflict(id, newKey);
       if (hit) {
-        document.removeEventListener('keydown', handler, true);
+        stopCapture();
         kbd.textContent = '競合: ' + hit.label;
         setTimeout(() => finish(keyDisplay(effective()[id]?.key || '')), 1500);
         return;
@@ -249477,11 +249715,12 @@ async function _exportDictFile(options = {}) {
       if (normalizeKeyDef(definitions[id]?.key || '') === newKey) delete custom[id];
       else custom[id] = { key: newKey };
       saveCustom(custom);
-      document.removeEventListener('keydown', handler, true);
+      stopCapture();
       renderSettings(container, container._shortcutSettingsOptions || {});
       if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
     };
     document.addEventListener('keydown', handler, true);
+    document.addEventListener('keyup', printScreenRelease, true);
   }
 
   // container に一覧を描画する。
@@ -249688,9 +249927,9 @@ const GB_SHORTCUTS = {
   'viewer.annotation':   { key: 'a',                label: 'アノテートの切替', scope: 'viewer' },
 
   // 常駐アプリはこの5 IDをPersonal Preferencesから取得し、OS登録へ反映する。
-  'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
-  'tray.screenshot.region': { key: 'ctrl+alt+r',   label: '範囲を撮影', scope: 'tray' },
-  'tray.screenshot.window': { key: 'ctrl+shift+w', label: 'ウィンドウを撮影', scope: 'tray' },
+  'tray.screenshot.full':   { key: 'ctrl+printscreen', label: '全画面を撮影', scope: 'tray' },
+  'tray.screenshot.region': { key: 'ctrl+shift+printscreen', label: '範囲を撮影', scope: 'tray' },
+  'tray.screenshot.window': { key: 'ctrl+alt+printscreen', label: 'ウィンドウを撮影', scope: 'tray' },
   'tray.quickMemo':         { key: 'ctrl+alt+m',   label: 'クイックメモを開く', scope: 'tray' },
   'tray.sticky.new':        { key: 'ctrl+alt+s',   label: '新規付箋を作成', scope: 'tray' },
 

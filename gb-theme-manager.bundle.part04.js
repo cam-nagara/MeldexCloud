@@ -1,3 +1,6 @@
+    const compact = compactThemeColorExtraSlotSettings(slots);
+    if (compact) themeDef.ui.themeColorExtraSlotSettings = compact;
+    else delete themeDef.ui.themeColorExtraSlotSettings;
     return compact;
   }
 

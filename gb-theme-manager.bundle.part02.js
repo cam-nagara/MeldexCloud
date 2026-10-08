@@ -1,3 +1,5 @@
+    if (typeof global._refreshSettingsThemePanel === 'function') global._refreshSettingsThemePanel();
+  }
 
   function _pushThemeSettingsHistory(label, beforeSnapshot, keys, detail, options = {}) {
     if (!beforeSnapshot || _themeSettingsHistorySuppressed(options)) return false;
@@ -896,5 +898,3 @@
       : (readStoredThemeColorSet() || activePalette || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
     return palette.slice();
   }
-
-  function setThemeColorSet(colors, options = {}) {

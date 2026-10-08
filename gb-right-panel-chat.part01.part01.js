@@ -969,6 +969,7 @@ function switchChatMode(mode) {
     t.style.color = active ? 'var(--accent)' : 'var(--fg2)';
     t.style.fontWeight = active ? 'bold' : 'normal';
   });
+  if (typeof _syncChatWorkspaceTabs === 'function') _syncChatWorkspaceTabs();
   if (mode === 'team') {
     loadTeamRooms().then(() => {
       if (_chatMode !== 'team' || !_teamCurrentRoom) return;

@@ -430,6 +430,9 @@
   function isTooltipEligible(el) {
     if (!(el instanceof HTMLElement)) return false;
     if (el.closest('.gb-tooltip')) return false;
+    // Dialog tabindex is for focus management, not a control hint. Its textContent
+    // includes all descendants (even inline CSS), so never tooltip the shell itself.
+    if (el.matches('[role="dialog"], [role="alertdialog"]')) return false;
     if (el.getAttribute(ATTR_DISABLED) === 'true') return false;
     if (isTabLike(el)) return false;
     if (isCustomLinkTooltipTarget(el)) return false;

@@ -16,6 +16,7 @@
   const restoredJobs = new Map();
   const foregroundStack = [];
   let pollTimer = null;
+  let polling = false;
 
   function _progressApi() { return window.MeldexOperationProgress || null; }
   function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
@@ -58,10 +59,8 @@
         priority: job.status === 'running' ? 20 : 10,
       });
     }
-    const previous = handle.getState();
     const rawTotal = Number(job.progress?.total);
     let processed = Math.max(0, Number(job.progress?.processed) || 0);
-    if (rawTotal > 0 && previous?.total === rawTotal) processed = Math.max(previous.processed || 0, processed);
     handle.update({
       label: _jobLabel(job),
       phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
@@ -72,6 +71,7 @@
       currentItem: job.progress?.current_item || job.progress?.current || '',
       rate: job.progress?.rate,
       eta: job.progress?.eta_seconds ?? job.progress?.eta,
+      message: job.progress?.message || '',
       persistentJobId: jobId,
     });
     restoredJobs.set(jobId, { handle: handle, misses: 0 });
@@ -83,7 +83,11 @@
       const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
       entry.misses = 0;
       if (job?.status === 'done') {
-        entry.handle.succeed({ summary: job.result?.summary || '取り込みが完了しました' });
+        const result = job.result || {};
+        const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
+        if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
+        else if (Number(result.failed || result.errors || result.media_failed || result.author_icon_failed) > 0 || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが完了しました（一部失敗）' });
+        else entry.handle.succeed(values);
         restoredJobs.delete(jobId);
       } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
         entry.handle.cancelled({ summary: '取り込みを中止しました' });
@@ -101,13 +105,14 @@
       entry.misses += 1;
       if (entry.misses < 2 || !/404/.test(String(error?.message || ''))) return;
       const status = entry.handle.getState()?.status;
-      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.dispose();
+      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.fail({ error: '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。' });
       restoredJobs.delete(jobId);
     }
   }
 
   async function poll() {
-    if (!_apiAvailable()) return;
+    if (!_apiAvailable() || polling) return;
+    polling = true;
     try {
       const data = await apiFetch('/jobs?category=' + encodeURIComponent(CATEGORY) + '&active_only=1', { silentError: true });
       const active = _activeJobs(Array.isArray(data?.jobs) ? data.jobs : []);
@@ -123,6 +128,8 @@
       await Promise.all(missing);
     } catch (_) {
       // 一時的なポーリング失敗では現役表示を消さず、次回復旧を待つ。
+    } finally {
+      polling = false;
     }
   }
 
@@ -182,7 +189,10 @@
     if (!handle) return;
     const index = foregroundStack.indexOf(handle);
     if (index >= 0) foregroundStack.splice(index, 1);
-    handle.succeed(Object.assign({ dismissMs: 0 }, options || {}));
+    const opts = options || {};
+    if (opts.error) handle.fail(opts);
+    else if (Number(opts.failed) > 0) handle.partial(opts);
+    else handle.succeed(Object.assign({ dismissMs: 0 }, opts));
     poll();
   }
 

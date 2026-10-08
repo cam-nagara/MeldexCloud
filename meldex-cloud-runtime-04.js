@@ -40295,7 +40295,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (typeof showStatus === 'function') showStatus('取り込めるファイルがありません', true);
         return 0;
       }
-      progress?.beginOperation?.('ファイルを取り込み中', files.length);
+      const progressToken = progress?.beginOperation?.('ファイルを取り込み中', files.length);
       try {
         for (const file of files) {
           try {
@@ -40313,10 +40313,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             failed += 1;
             failures.push({ name: file.name, error: err });
           }
-          progress?.updateOperation?.(ok + failed);
+          progress?.updateOperation?.(ok + failed, null, progressToken);
         }
       } finally {
-        progress?.finishOperation?.();
+        progress?.finishOperation?.(progressToken, { failed, summary: `${ok}件保存・${failed}件失敗`, details: failures });
       }
     } else {
       // Meldex内D&D
@@ -40343,7 +40343,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return 0;
       }
 
-      progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
+      const progressToken = progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
       try {
         for (const item of validItems) {
           try {
@@ -40360,10 +40360,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             failed += 1;
             failures.push({ name: item.name || item.path, error: err });
           }
-          progress?.updateOperation?.(ok + failed);
+          progress?.updateOperation?.(ok + failed, null, progressToken);
         }
       } finally {
-        progress?.finishOperation?.();
+        progress?.finishOperation?.(progressToken, { failed, summary: `${ok}件保存・${failed}件失敗`, details: failures });
       }
       if (resolved && ok > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);
@@ -50162,6 +50162,12 @@ document.addEventListener('DOMContentLoaded', () => {
   function _patch(record, values, reason) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
+    if (next.phase !== undefined && String(next.phase || '') !== record.state.phase) {
+      record.state.message = '';
+      record.state.currentItem = '';
+      record.state.rate = null;
+      record.state.eta = null;
+    }
     if (next.label !== undefined) record.state.label = String(next.label || '処理中');
     if (next.phase !== undefined) record.state.phase = String(next.phase || '');
     if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
@@ -50172,7 +50178,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (next.total !== undefined) {
       const total = _number(next.total, null);
       record.state.total = total != null && total > 0 ? total : null;
-      if (!record.state.total) record.state.mode = 'indeterminate';
+      record.state.mode = record.state.total ? 'determinate' : 'indeterminate';
     }
     if (next.processed !== undefined) record.state.processed = Math.max(0, _number(next.processed, 0));
     if (next.mode === 'determinate' || next.mode === 'indeterminate') record.state.mode = next.mode;
@@ -50197,6 +50203,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const next = values || {};
     _clearTimer(record, 'showTimer');
     record.state.status = status;
+    record.state.cancellable = false;
     record.state.completedAt = Date.now();
     record.state.updatedAt = record.state.completedAt;
     if (next.summary !== undefined) record.state.summary = String(next.summary || '');
@@ -50341,6 +50348,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function requestCancel(id) {
     const record = records.get(String(id || ''));
     if (!record || !record.cancel || !record.state.cancellable || TERMINAL.has(record.state.status)) return false;
+    const previousStatus = record.state.status;
     record.state.status = 'cancelling';
     record.state.updatedAt = Date.now();
     _show(record);
@@ -50350,7 +50358,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (record.cancelCompletes && !TERMINAL.has(record.state.status)) _finish(record, 'cancelled', {});
       return true;
     } catch (error) {
-      _finish(record, 'failed', { error: error || '中止要求を送信できませんでした' });
+      _patch(record, { status: previousStatus, message: '中止要求を送信できませんでした。処理は続いている可能性があります。' }, 'cancel-error');
       return false;
     }
   }
@@ -50427,12 +50435,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function _detailText(operation) {
     if (operation.error) return operation.error;
     if (operation.summary) return operation.summary;
-    if (operation.message) return operation.message;
     const parts = [];
     if (operation.mode === 'determinate' && operation.total > 0) {
       parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
+    } else if (operation.processed > 0) {
+      parts.push(operation.processed + '件確認済み');
     }
     if (operation.currentItem) parts.push(operation.currentItem);
+    if (operation.message) parts.push(operation.message);
     if (operation.eta) parts.push('残り約' + _formatEta(operation.eta));
     return parts.join(' · ');
   }
@@ -56020,6 +56030,11 @@ if (typeof window !== 'undefined') {
 
   function reportApiError(path, opts, error) {
     if (!isSaveMutation(path, opts)) return false;
+    // These operations confirm the filesystem result after a transport timeout.
+    // A missing response is not a confirmed document-save failure.
+    if (error?.isTimeout && ['/outliner/rename', '/outliner/add'].includes(_apiPathname(path))) {
+      return true;
+    }
     if (_isConflict(error)) {
       consecutiveSaveFailures = 0;
       markConflict(_extractMutationPath(path, opts), _message(error));
@@ -59242,7 +59257,7 @@ if (typeof window !== 'undefined') {
     const semverEl = root.querySelector?.('#settings-about-semver');
     if (semverEl) semverEl.textContent = _extractSemver(info);
     const commitEl = root.querySelector?.('#settings-about-commit');
-    if (commitEl) commitEl.textContent = info.commit || '未取得';
+    if (commitEl) commitEl.textContent = info.commit || 'このビルドには記録されていません';
     const variantEl = root.querySelector?.('#settings-about-variant');
     if (variantEl) variantEl.textContent = info.variant || 'dev';
     const betaEl = root.querySelector?.('#settings-about-beta');
@@ -63472,6 +63487,9 @@ ${reason.message}`
   function isTooltipEligible(el) {
     if (!(el instanceof HTMLElement)) return false;
     if (el.closest('.gb-tooltip')) return false;
+    // Dialog tabindex is for focus management, not a control hint. Its textContent
+    // includes all descendants (even inline CSS), so never tooltip the shell itself.
+    if (el.matches('[role="dialog"], [role="alertdialog"]')) return false;
     if (el.getAttribute(ATTR_DISABLED) === 'true') return false;
     if (isTabLike(el)) return false;
     if (isCustomLinkTooltipTarget(el)) return false;
@@ -66526,6 +66544,7 @@ ${reason.message}`
 .gb-palette-section-heading { font-size: 10px; color: var(--fg2); line-height: 1.4; padding: 4px 0 2px; border-top: 1px solid var(--border); margin-top: 2px; }
 .gb-palette-section-heading:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .gb-palette-custom-header-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.gb-palette-custom-header-row[hidden] { display: none; }
 .gb-palette-custom-header-row .gb-palette-section-heading-label { flex: 1; min-width: 0; }
 .gb-palette-custom-actions { display: flex; gap: 2px; flex-shrink: 0; }
 .gb-palette-custom-action-btn {
@@ -66659,6 +66678,7 @@ ${reason.message}`
   width: 100%; display: flex; justify-content: flex-end;
   padding-top: 4px; margin-top: 2px; border-top: 1px solid var(--border);
 }
+.gb-palette-close-row .gb-palette-custom-actions { margin-right: auto; }
 .gb-palette-close-row .gb-btn-close {
   padding: 2px 12px; font-size: 12px; background: var(--bg4); color: var(--fg);
   border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
@@ -67006,9 +67026,11 @@ async function resolvePaletteOsAccentColor() {
   if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.refreshOsAccentColor === 'function') {
     try {
       const refreshed = await MeldexThemeManager.refreshOsAccentColor();
-      return _colorValueToHex(refreshed) || getPaletteOsAccentColor();
+      const resolved = _colorValueToHex(refreshed) || getPaletteOsAccentColor();
+      if (resolved) return resolved;
     } catch {
-      return getPaletteOsAccentColor();
+      const resolved = getPaletteOsAccentColor();
+      if (resolved) return resolved;
     }
   }
   return _computedCssColorToHex('AccentColor');
@@ -67414,8 +67436,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     if (selectedIsTransparent) return 'transparent';
     return currentHex();
   }
-  // Keep exact RGB selections in the theme editor; only slider edits need HSB conversion.
-  function currentHex() { return options.themeUi && selectedHex ? selectedHex : _hsbToHex(hsb.h, hsb.s, hsb.b); }
+  // Keep exact RGB selections; only slider edits need HSB conversion.
+  function currentHex() { return selectedHex || _hsbToHex(hsb.h, hsb.s, hsb.b); }
   function applyLive() {
     const preset = selectedPresetIdx >= 0 ? getStandardPaletteSwatches(standardAdjust)[selectedPresetIdx] : null;
     if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedOsAccentTone, preset });
@@ -67443,18 +67465,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   function renderPresetGrid(refreshHighlights) {
     presetMatrix.innerHTML = '';
     const all = getStandardPaletteSwatches(standardAdjust);
-    if (options.themeUi) {
-      const tone = options.themeUi.getTone();
-      const colors = typeof getCurrentThemeColorSet === 'function' ? getCurrentThemeColorSet() : [];
-      all.forEach(info => {
-        if ((info.row === 2 || info.row === 4) && colors[info.index]) {
-          const color = _colorValueToHex(colors[info.index]);
-          if (!color) return;
-          const amount = (info.row === 2 ? tone.light : tone.dark) / 100;
-          info.color = '#' + color.slice(1).match(/../g).map(hex => Math.round(parseInt(hex, 16) * (1 - amount) + (info.row === 2 ? 255 : 0) * amount).toString(16).padStart(2, '0')).join('');
-        }
-      });
-    }
+    // 設定ダイアログと同じ色一覧を使う。自動適用の強さは適用先の設定であり、
+    // パレットの明／暗行を別の色へ置き換えない。
     const rowKeys = [1, 2, 3, 4];
     rowKeys.forEach(rowNum => {
       const items = all.filter(s => s.row === rowNum);
@@ -67537,6 +67549,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('gb-standard-palette-adjust-change', _onStandardPaletteAdjustChange);
   }
+  const onThemeColorSetChange = () => _onStandardPaletteAdjustChange();
+  window.addEventListener('meldex-theme-color-set-change', onThemeColorSetChange);
+  window.addEventListener('meldex-theme-change', onThemeColorSetChange);
 
   // --- カスタムカラーセット ---
   const customSectionHeaderRow = document.createElement('div');
@@ -67550,7 +67565,6 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
 
   const customActionsRow = document.createElement('span');
   customActionsRow.className = 'gb-palette-custom-actions';
-  customSectionHeaderRow.appendChild(customActionsRow);
 
   const exportCustomColorsBtn = document.createElement('button');
   exportCustomColorsBtn.type = 'button';
@@ -67582,9 +67596,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   function renderCustomGrid() {
     customGrid.innerHTML = '';
     const customs = getCustomColors();
-    // 見出しテキストは色が無い間だけ隠す。書き出し/読み込みボタンは0色でも
-    // 常に使える（最初のカスタムカラーをファイルから読み込めるようにするため）。
-    customSectionHeading.hidden = customs.length === 0;
+    // 空の見出しは隠す。フッターの書き出し／読み込みは0色でも利用できる。
+    customSectionHeaderRow.hidden = customs.length === 0;
     customs.forEach((c, i) => {
       const swatch = document.createElement('div');
       swatch.className = 'gb-swatch'; swatch.dataset.type = 'custom';
@@ -67807,7 +67820,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   }
 
   function refreshOsAccentSwatches(sourceColor, options = {}) {
-    const variants = getPaletteOsAccentVariants(sourceColor);
+    const variants = getPaletteOsAccentVariants(sourceColor || getPaletteOsAccentColor() || _computedCssColorToHex('AccentColor'));
     osAccentSwatches.forEach(btn => {
       const info = variants.find(v => v.tone === btn.dataset.osAccentTone);
       const color = info?.color || '';
@@ -67840,6 +67853,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       setOsAccentSwatchesDisabled(true);
       try {
         const base = await resolvePaletteOsAccentColor();
+        if (!palette.isConnected) return;
         refreshOsAccentSwatches(base);
         const next = getPaletteOsAccentVariants(base).find(v => v.tone === info.tone);
         if (!next?.color) {
@@ -67899,7 +67913,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   closeBtn.title = 'カラーパレットを閉じる';
   closeBtn.setAttribute('aria-label', 'カラーパレットを閉じる');
   closeBtn.addEventListener('click', () => { if (typeof onClose === 'function') onClose(); });
-  closeRow.appendChild(closeBtn);
+  closeRow.append(customActionsRow, closeBtn);
   palette.appendChild(closeRow);
 
   // パレット要素が DOM から外れたら購読を解除する
@@ -67911,6 +67925,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         }
         if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
           window.removeEventListener('meldex-theme-os-accent-change', onOsAccentChange);
+          window.removeEventListener('meldex-theme-color-set-change', onThemeColorSetChange);
+          window.removeEventListener('meldex-theme-change', onThemeColorSetChange);
         }
         paletteObserver?.disconnect?.();
       }
@@ -69456,6 +69472,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
+    // Bulk colors share one resolved color across variable-backed and selector-backed UI.
+    if (/^var:--(?:bg|fg|fg2|border|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
     if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
       const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();
@@ -70535,6 +70553,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized.startsWith('var:')) return `var(${normalized.slice(4)})`;
     if (normalized.startsWith('auto-rows:')) {
       const rows = normalized.slice(10).split(',').map(Number);
       const index = options.paletteIndex || 0;
@@ -72750,6 +72769,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (options.closeOnEscape !== false) {
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
+        // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
+        if (document.querySelector('.gb-palette-popup')) return;
         ev.preventDefault();
         ev.stopPropagation();
         closeAllPalettePopups();

@@ -325,10 +325,10 @@ function _syncThemeUiNativeSelect(select, value) {
   select.querySelectorAll('option[data-theme-ui-custom-option]').forEach(opt => {
     if (opt.value !== current) opt.remove();
   });
-  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:')) && !Array.from(select.options).some(opt => opt.value === current)) {
+  if ((_themeUiCustomColor(current) || current.startsWith('auto-rows:') || current.startsWith('var:')) && !Array.from(select.options).some(opt => opt.value === current)) {
     const opt = document.createElement('option');
     opt.value = current;
-    opt.textContent = current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
+    opt.textContent = current.startsWith('var:') ? '一括設定の色' : current.startsWith('auto-rows:') ? '自動（複数行）' : '指定カラー';
     opt.dataset.themeUiCustomOption = '1';
     select.appendChild(opt);
   }
