@@ -14,6 +14,9 @@
   const CLOUD_SPACE_BLOCK_RATIO = 0.95;
   const CLOUD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
   const CLOUD_CONFLICT_REPORT_KEY = 'meldex-cloud-conflict-report-signature';
+  const AUTH_POPUP_KEY = 'meldex:dropbox:auth-popup:v1';
+  const AUTH_POPUP_RESULT_KEY = 'meldex:dropbox:auth-popup-result:v1';
+  let _authPopup = null;
   let _cloudHealthTimer = 0;
   let _cloudReadonlyObserver = null;
   let _cloudReadonlySyncPending = false;
@@ -700,22 +703,85 @@
     }
   }
 
+  function _prepareAuthWindow(options) {
+    if (!options?.manual && _shouldUseSameTabDropboxAuth()) return null;
+    if (_authPopup && !_authPopup.closed) {
+      try { _authPopup.focus(); } catch {}
+      throw new Error('Dropboxの認証画面が既に開いています。認証を完了するか、閉じてから再試行してください。');
+    }
+    // Open only our own blank document, synchronously within the user gesture.
+    // noopener in windowFeatures returns null even for a successfully opened
+    // window, so detach the opener before navigating to the external service.
+    const popup = window.open('about:blank', '_blank', 'width=540,height=760');
+    if (!popup) throw new Error('認証画面を開けませんでした。ポップアップを許可して、もう一度接続してください。');
+    try {
+      popup.opener = null;
+      if (popup.opener !== null) throw new Error('認証画面を安全に開けませんでした。');
+      const policy = popup.document.createElement('meta');
+      policy.name = 'referrer';
+      policy.content = 'no-referrer';
+      popup.document.head.appendChild(policy);
+      _authPopup = popup;
+      return popup;
+    } catch (error) {
+      try { popup.close(); } catch {}
+      throw error;
+    }
+  }
+
   function _openAuthWindow(url, options) {
     if (!options?.manual && _shouldUseSameTabDropboxAuth()) {
       window.location.href = url;
       return;
     }
-    const popup = window.open(url, '_blank', 'width=540,height=760,noopener,noreferrer');
-    if (popup) {
-      try {
-        popup.opener = null;
-      } catch {}
-      try {
-        popup.focus();
-      } catch {}
-      return;
+    const popup = options?.popup || _prepareAuthWindow(options);
+    if (!options?.manual) {
+      if (!options?.state) throw new Error('Dropboxの接続確認を準備できませんでした。再試行してください。');
+      popup.sessionStorage.setItem(AUTH_POPUP_KEY, JSON.stringify({ state: options.state, createdAt: Date.now() }));
     }
-    window.location.href = url;
+    const link = popup.document.createElement('a');
+    link.href = url;
+    link.target = '_self';
+    link.rel = 'noreferrer';
+    link.referrerPolicy = 'no-referrer';
+    popup.document.body.appendChild(link);
+    link.click();
+    link.remove();
+    try { popup.focus(); } catch {}
+  }
+
+  function _completeAuthPopup(callback) {
+    let marker = null;
+    try { marker = JSON.parse(sessionStorage.getItem(AUTH_POPUP_KEY) || 'null'); } catch {}
+    const completed = marker?.completed === true;
+    const age = Date.now() - Number(marker?.createdAt);
+    if (typeof marker?.state !== 'string' || !marker.state || !Number.isFinite(age) || age < 0 || (!completed && age > 30 * 60 * 1000)) return false;
+    if (!completed && !callback?.handled) return false;
+    const result = { state: marker.state, ok: completed ? marker.ok === true : callback.ok === true, createdAt: Date.now() };
+    if (!completed) {
+      // Retain the terminal marker until this window is gone: a browser that
+      // refuses close must not start a second app when the user reloads it.
+      try { sessionStorage.setItem(AUTH_POPUP_KEY, JSON.stringify({ ...marker, completed: true, ok: result.ok })); } catch {}
+      try { localStorage.setItem(AUTH_POPUP_RESULT_KEY, JSON.stringify(result)); } catch {}
+    }
+    // This owned auth window never initializes editors or draft recovery.
+    // If automatic close is unavailable, show an explicit terminal screen.
+    const status = document.createElement('div');
+    status.setAttribute('role', 'status');
+    status.dataset.e2eId = 'dropbox-auth-popup-complete';
+    status.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);padding:32px;display:flex;flex-direction:column;gap:16px;justify-content:center;align-items:center;text-align:center;';
+    const message = document.createElement('p');
+    message.textContent = result.ok ? 'Dropboxに接続しました。元のMeldex画面へ戻ってください。'
+      : 'Dropbox接続を完了できませんでした。元のMeldex画面で再試行してください。';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'この認証ウィンドウを閉じる';
+    close.className = 'gb-btn gb-btn-primary';
+    close.addEventListener('click', () => { try { window.close(); } catch {} });
+    status.append(message, close);
+    document.body.appendChild(status);
+    try { window.close(); } catch {}
+    return true;
   }
 
   function _setupModalOptions() {
@@ -825,6 +891,7 @@
       let resultValue = { ok: false, cancelled: true };
       let settled = false;
       let busy = false;
+      let activeAuthState = '';
       let dialogApi = null;
       const setBusy = value => {
         busy = !!value;
@@ -848,6 +915,9 @@
         onClose: () => {
           if (settled) return;
           settled = true;
+          window.removeEventListener('storage', onAuthStorage);
+          window.removeEventListener('focus', onAuthFocus);
+          window.removeEventListener('meldex:dropbox-auth-session-changed', refreshSessionStatus);
           resolve(resultValue);
         },
       });
@@ -910,6 +980,42 @@
         }
       }
 
+      async function refreshSessionStatus() {
+        const session = await _auth().getSession().catch(() => null);
+        if (!settled) updateSessionStatus(session?.refreshToken ? 'Dropbox接続済み' : '未接続', !!session?.refreshToken);
+      }
+
+      function acceptAuthResult(raw) {
+        let result = null;
+        try { result = JSON.parse(raw || 'null'); } catch {}
+        if (!activeAuthState || result?.state !== activeAuthState) return false;
+        activeAuthState = '';
+        _authPopup = null;
+        refreshSessionStatus();
+        setError(result.ok === true ? '' : 'Dropbox接続を完了できませんでした。もう一度接続してください。');
+        return true;
+      }
+
+      function onAuthStorage(event) {
+        if (event.key === AUTH_POPUP_RESULT_KEY) acceptAuthResult(event.newValue);
+      }
+
+      function onAuthFocus() {
+        let raw = null;
+        try { raw = localStorage.getItem(AUTH_POPUP_RESULT_KEY); } catch {}
+        if (!acceptAuthResult(raw)) {
+          refreshSessionStatus();
+          if (activeAuthState && _authPopup?.closed) {
+            activeAuthState = '';
+            _authPopup = null;
+            setError('認証画面を閉じました。必要ならもう一度接続してください。');
+          }
+        }
+      }
+      window.addEventListener('storage', onAuthStorage);
+      window.addEventListener('focus', onAuthFocus);
+      window.addEventListener('meldex:dropbox-auth-session-changed', refreshSessionStatus);
+
       overlay.querySelectorAll('input[name="cloud-app-mode"]').forEach((input) => {
         input.addEventListener('change', updateAdvancedSettings);
       });
@@ -947,6 +1053,10 @@
         if (!code) return false;
         manualBox.style.display = '';
         await _auth().exchangeManualCode(code);
+        if (_authPopup) {
+          try { _authPopup.close(); } catch {}
+          _authPopup = null;
+        }
         codeInput.value = '';
         updateSessionStatus('Dropbox接続済み', true);
         setError('');
@@ -955,13 +1065,22 @@
 
       async function beginDropboxConnection(options = {}) {
         saveInputs();
-        const auth = await _auth().beginAuth({
-          manual: !!options.manual,
-          forceReapprove: !!options.switchAccount,
-          forceReauthentication: !!options.switchAccount,
-        });
-        if (options.manual) overlay.querySelector('#cloud-manual-box').style.display = '';
-        _openAuthWindow(auth.authorizationUrl, { manual: !!options.manual });
+        const popup = _prepareAuthWindow(options);
+        try {
+          const auth = await _auth().beginAuth({
+            manual: !!options.manual,
+            forceReapprove: !!options.switchAccount,
+            forceReauthentication: !!options.switchAccount,
+          });
+          activeAuthState = options.manual ? '' : String(auth.pending?.state || '');
+          if (options.manual) overlay.querySelector('#cloud-manual-box').style.display = '';
+          _openAuthWindow(auth.authorizationUrl, { manual: !!options.manual, popup, state: activeAuthState });
+        } catch (error) {
+          activeAuthState = '';
+          if (popup) { try { popup.close(); } catch {} }
+          if (_authPopup === popup) _authPopup = null;
+          throw error;
+        }
       }
 
       overlay.querySelector('#cloud-auth-redirect').addEventListener('click', async () => {
@@ -1077,7 +1196,9 @@
   }
 
   async function prepareLaunch() {
+    if (_completeAuthPopup({ handled: false })) return false;
     const callback = await _auth().handleRedirectCallback();
+    if (_completeAuthPopup(callback)) return false;
     let migrationMode = null;
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');

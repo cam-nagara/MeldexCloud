@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.386",
+  "manual_version": "0.7.387",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "9a5b91bad65e72c7798636dde03ae084038b6136794f0170ab8d3abcbda85a2a",
+  "source_digest": "bd368c8b19719594d924152e1a84376dac4281517a5cc5e68115f0b5f35de8c3",
   "document_count": 207,
   "chunk_count": 1904,
   "documents": [
@@ -263,7 +263,7 @@
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
-      "source_sha256": "e3f750e24b13ac7cb3f6645b5d2f2ddb4f8dd82eeef1605baeef70cc9d7ea90b",
+      "source_sha256": "4ad4b49300f546255be6e439b2b19fc4f5a4dc4341d7f7555c28e9f120f7da1d",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md"
     },
     {
@@ -10035,7 +10035,7 @@
       "category": "共有・データ管理",
       "heading": "4. Dropbox認証をする",
       "anchor": "4-dropbox",
-      "text": "PCで http://localhost:8001/ を開いている場合:\nDropboxに接続する をクリック\nDropboxにログインする\nMeldexへのアクセスを 許可 する\nMeldexに戻ったら この設定で開始 をクリック\nスマホやタブレットでクラウド版URL、または管理者から案内された共有URLを開いている場合:\nコードで接続 をタップ\nDropboxにログインする\n表示されたコードをコピーする\nMeldexの入力欄に貼り付ける\n接続する をタップ\nこの設定で開始 をタップ",
+      "text": "PCで http://localhost:8001/ を開いている場合:\nDropboxに接続する をクリック\nDropboxにログインする\nMeldexへのアクセスを 許可 する\nMeldexに戻ったら この設定で開始 をクリック\nPCのCloud版では、Dropbox認証だけを小さい別ウィンドウで行います。認証が完了すると小窓が閉じ、元のMeldex画面に接続状態が反映されます。認証のために元の編集画面が移動することはありません。\n「認証画面を開けませんでした」と表示された場合は、ブラウザのポップアップ設定を確認して再試行してください。認証画面を途中で閉じた場合も、元の画面から再試行できます。\nスマホやタブレットでクラウド版URL、または管理者から案内された共有URLを開いている場合:\nコードで接続 をタップ\nDropboxにログインする\n表示されたコードをコピーする\nMeldexの入力欄に貼り付ける\n接続する をタップ\nこの設定で開始 をタップ",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=4-dropbox"
     },
     {
