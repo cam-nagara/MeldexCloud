@@ -246,7 +246,7 @@ function _isOutlinerDesktopLaunch() {
 
 function _getOutlinerAutoExpandLimit() {
   if (_outlinerForceExpansionMode) return OUTLINER_AUTO_EXPAND_LIMIT;
-  return _isOutlinerDesktopLaunch() ? 0 : OUTLINER_AUTO_EXPAND_LIMIT;
+  return _isOutlinerDesktopLaunch() && !_outlinerLastLoadCompletedAt ? 0 : OUTLINER_AUTO_EXPAND_LIMIT;
 }
 
 function _outlinerAutoExpandDelay(ms) {
@@ -278,6 +278,9 @@ async function _drainOutlinerAutoExpandQueue() {
   if (_outlinerAutoExpandRunning) return;
   _outlinerAutoExpandRunning = true;
   try {
+    // createTreeNodeFromBrowse はまだ未接続のノードを返す。
+    // 呼出元が fragment / 親コンテナへ追加し終えるまで復元を始めない。
+    await _outlinerAutoExpandDelay(0);
     while (_outlinerAutoExpandQueue.length) {
       const toggle = _outlinerAutoExpandQueue.shift();
       if (toggle?.isConnected && toggle.dataset.expanded !== 'true') {
@@ -289,6 +292,10 @@ async function _drainOutlinerAutoExpandQueue() {
     }
   } finally {
     _outlinerAutoExpandRunning = false;
+    // ホーム／ワークスペースだけの更新も独立した復元として扱う。
+    // 前回の件数を持ち越すと、更新を繰り返しただけで上限に達して閉じてしまう。
+    _outlinerAutoExpandScheduled = 0;
+    _outlinerAutoExpandOverflowNotified = false;
     _outlinerForceExpansionMode = false;
   }
 }
@@ -366,6 +373,8 @@ async function loadOutliner(options) {
   }
 
   const loadGeneration = ++_outlinerLoadGeneration;
+  _outlinerAutoExpandScheduled = 0;
+  _outlinerAutoExpandOverflowNotified = false;
   const loadPromise = (async () => {
     const useLoadingIndicator = !opts.suppressLoading;
     const loading = useLoadingIndicator ? showLoading('フォルダを読み込み中...', { key: 'outliner' }) : null;
@@ -703,7 +712,13 @@ function renderOutlinerLegacy(items) {
   el.appendChild(fragment);
   window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
-  applyManualSort(el, '_root');
+  const rootSort = getSortForFolder('_root');
+  if (rootSort.sort === 'manual') applyManualSort(el, '_root');
+  else {
+    const nodes = [...el.querySelectorAll(':scope > .tree-node')];
+    nodes.sort((a, b) => compareItemsForFolderSort(a._nodeData, b._nodeData, rootSort.sort, rootSort.order));
+    nodes.forEach(node => el.appendChild(node));
+  }
 }
 
 function renderOutlinerMultiRoot(roots) {
@@ -740,7 +755,13 @@ function renderOutlinerMultiRoot(roots) {
   el.appendChild(fragment);
   window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元
-  applyManualSort(el, '_root');
+  const rootSort = getSortForFolder('_root');
+  if (rootSort.sort === 'manual') applyManualSort(el, '_root');
+  else {
+    const nodes = [...el.querySelectorAll(':scope > .tree-node')];
+    nodes.sort((a, b) => compareItemsForFolderSort(a._nodeData, b._nodeData, rootSort.sort, rootSort.order));
+    nodes.forEach(node => el.appendChild(node));
+  }
 }
 
 let draggedNode = null;
@@ -877,24 +898,3 @@ const treeSelection = {
   },
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
-
-function _treeNodeIsAncestor(parentNode, childNode) {
-  if (!parentNode || !childNode || parentNode === childNode) return false;
-  const normalize = path => {
-    const segments = [];
-    String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/').forEach(segment => {
-      if (!segment || segment === '.') return;
-      if (segment === '..') { if (segments.length) segments.pop(); return; }
-      segments.push(segment);
-    });
-    return segments.join('/').toLowerCase();
-  };
-  const parentKey = normalize(parentNode._nodeData?.path);
-  const childKey = normalize(childNode._nodeData?.path);
-  return !!parentKey && !!childKey && childKey.startsWith(parentKey + '/');
-}
-
-function _outlinerExternalDragItems(event, payloadOverride) {
-  let payload = payloadOverride || null;
-  try {
-    if (!payload) {

@@ -257,9 +257,9 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   const content = document.createElement('div');
   content.innerHTML = `<div id="sh-status" role="status" aria-live="polite"></div>
 <div class="field"><label>ユーザー</label><input id="sh-user" class="sh-user" list="sh-user-candidates" value="${esc(user||existing?.user||this._getUser())}"><datalist id="sh-user-candidates"></datalist></div>
-<div class="field"><label>日付</label><input id="sh-date" class="sh-date" type="date" value="${shiftDate}"></div>
-<div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input id="sh-start" class="sh-start" type="time" value="${startValue}"></div>
-<div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${endValue}"></div></div>
+<div class="field"><label>日付</label><input id="sh-date" class="sh-date" type="date" value="${esc(shiftDate)}"></div>
+<div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input id="sh-start" class="sh-start" type="time" value="${esc(startValue)}"></div>
+<div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${esc(endValue)}"></div></div>
 <div class="field"><label>種別</label><select id="sh-type" class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
 <div class="field"><label>メモ</label><textarea id="sh-note" class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>`;
   const cancelButton = document.createElement('button');

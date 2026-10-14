@@ -1,3 +1,42 @@
+  if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
+  const navState = _getNavState(paneId);
+  if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
+  const nextIndex = navState.index + 1;
+  const entry = navState.history[nextIndex];
+  if (!entry) return false;
+  try {
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
+  } catch (e) {
+    navNavigating = false;
+    throw e;
+  }
+}
+
+function showPaneNavHistoryDropdown(e, paneId, direction) {
+  e.preventDefault();
+  e.stopPropagation();
+  document.querySelectorAll('.nav-history-dropdown').forEach(el => el.remove());
+  const navState = _getNavState(paneId);
+  const items = [];
+  if (direction === 'back') {
+    for (let i = navState.index - 1; i >= Math.max(0, navState.index - 15); i--) items.push({ index: i, entry: navState.history[i] });
+  } else {
+    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
+  }
+  if (items.length === 0) return;
+
+  const dd = document.createElement('div');
+  dd.className = 'ab-dropdown nav-history-dropdown';
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
+  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
+  items.forEach(({ index, entry }) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
     item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
     item.title = entry.path || '';
     item.addEventListener('click', async () => {
@@ -333,7 +372,8 @@ function _gbAppApiFetchBrowseCacheKey(path, opts) {
   if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
-    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
+    return (url.pathname === '/browse' || (url.pathname === '/pivot' && url.searchParams.get('tree_only') === 'true'))
+      ? _gbAppApiFetchCanonicalGetPath(path) : '';
   } catch {
     return '';
   }
@@ -347,6 +387,7 @@ function _gbAppApiFetchInvalidateReadCaches() {
 }
 
 function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
+  if (cacheKey.startsWith('/pivot?') && payload?.tree_only !== true) return;
   _gbAppApiFetchBrowseCache.set(cacheKey, {
     at: Date.now(),
     payload: _gbAppApiFetchClonePayload(payload),
@@ -427,6 +468,49 @@ async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
   }
 }
 
+// Leave HTTP/1 connection slots for saves and the newly opened document.
+// Startup/background reads must not queue a user mutation behind all six
+// browser connections. Do not cancel these reads or change their results.
+let _gbAppRegularRequests = 0;
+const _gbAppRegularRequestQueue = [];
+function _gbAppApiFetchAcquireLane(path, opts) {
+  const endpoint = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  const backgroundWrite = ['/beta/consent', '/beta/feedback-template', '/staff-registry/upsert', '/debugger/flush'].includes(endpoint);
+  const visibleRead = opts?.background !== true && (opts?.foreground === true || ['/file', '/browse', '/outliner-roots'].includes(endpoint));
+  const regular = (_gbAppApiFetchMethod(opts) === 'GET' && !visibleRead) || backgroundWrite;
+  const signal = opts?.signal;
+  const abortError = () => Object.assign(new Error('リクエストが中断されました'), {name:'AbortError'});
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!regular) return Promise.resolve(() => {});
+  return new Promise((resolve, reject) => {
+    const entry = {
+      start() {
+        signal?.removeEventListener('abort', entry.abort);
+        _gbAppRegularRequests++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          _gbAppRegularRequests--;
+          _gbAppRegularRequestQueue.shift()?.start();
+        });
+      },
+      abort() {
+        const index = _gbAppRegularRequestQueue.indexOf(entry);
+        if (index < 0) return;
+        _gbAppRegularRequestQueue.splice(index, 1);
+        signal?.removeEventListener('abort', entry.abort);
+        reject(abortError());
+      },
+    };
+    if (_gbAppRegularRequests < 3) entry.start();
+    else {
+      _gbAppRegularRequestQueue.push(entry);
+      signal?.addEventListener('abort', entry.abort, {once:true});
+    }
+  });
+}
+
 async function apiFetch(path, opts) {
   const method = _gbAppApiFetchMethod(opts);
   const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
@@ -445,7 +529,9 @@ async function apiFetch(path, opts) {
   const perfInfo = _apiFetchPerfInfo(path);
   const perfStartedAt = perfInfo ? _perfNowMs() : 0;
   const requestPromise = (async () => {
+    let releaseLane;
     try {
+      releaseLane = await _gbAppApiFetchAcquireLane(path, opts);
       let requestOpts = opts;
       let retriedAfterMutation = false;
       while (true) {
@@ -533,6 +619,8 @@ async function apiFetch(path, opts) {
         }
       }
       throw e;
+    } finally {
+      releaseLane?.();
     }
   })();
   if (inFlightKey) {
@@ -720,7 +808,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('old_path');
     const oldPath = String(body?.old_path || '');
     const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) {
+    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
       const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
       _apiLockAddPath(paths, destinationBase);
       const extension = _apiLockRenameExtension(oldPath);
@@ -792,6 +880,9 @@ apiFetch = async function(path, opts) {
   const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
     ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
     : null;
+  const deferredCreateUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/add';
+  let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
       opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
@@ -807,94 +898,3 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     const result = await _origApiFetch(path, opts);
-    if (result?.history_sync_pending) {
-      if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
-    } else if (result?.history_recorded === false) {
-      if (typeof showStatus === 'function') showStatus('本文は保存しましたが、変更履歴を記録できませんでした', true);
-    }
-    return result;
-  } finally {
-    await transientLease?.release?.();
-  }
-};
-
-// チームプロフィール同期（起動時に型付き管理領域へ自分を登録。source folderは変更しない）
-// フォルダ別ロールを保持（DB列ロック等で参照）
-let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
-const _myTeamRoles = {};     // { folderPath: role }
-
-async function _syncMyTeamProfile() {
-  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
-  const name = getUsername();
-  if (!name || name === 'anonymous') return;
-  const avatar = localStorage.getItem('meldex-avatar') || '';
-  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
-  const syncWorkspaceProfiles = async () => {
-    try {
-      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
-        ? await window.MeldexWorkspaces.load({ force: true })
-        : [];
-      for (const workspace of workspaces || []) {
-        if (!workspace?.id) continue;
-        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
-      }
-      await window.MeldexWorkspaces?.load?.({ force: true });
-    } catch {}
-  };
-  // 全ソースフォルダに対応する管理レコードへ同期
-  try {
-    const roots = await apiFetch('/outliner-roots').catch(() => []);
-    const visibleRoots = roots.filter(r => r.visible && r.path);
-    if (visibleRoots.length === 0) {
-      // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
-      try {
-        await apiPost('/team/sync', teamPayload());
-        const members = await apiFetch('/team');
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRole = me.role || 'editor';
-      } catch {}
-      await syncWorkspaceProfiles();
-      return;
-    }
-    for (const root of visibleRoots) {
-      try {
-        await apiPost('/team/sync', teamPayload({ folder: root.path }));
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRoles[root.path] = me.role || 'editor';
-      } catch {}
-    }
-    // デフォルトロール = 最初の可視ソースフォルダのロール
-    const firstRole = _myTeamRoles[visibleRoots[0].path];
-    if (firstRole) _myTeamRole = firstRole;
-    await syncWorkspaceProfiles();
-  } catch {}
-}
-
-let _startupSplashHidden = false;
-function _notifyStartupReady() {
-  if (typeof apiPost !== 'function') return;
-  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
-}
-
-function _hideStartupSplash() {
-  if (_startupSplashHidden) return;
-  _startupSplashHidden = true;
-  _notifyStartupReady();
-  const splash = document.getElementById('gb-splash');
-  if (!splash) return;
-  splash.style.pointerEvents = 'none';
-  splash.style.transition = 'opacity 0.3s';
-  splash.style.opacity = '0';
-  setTimeout(() => splash.remove(), 300);
-}
-
-function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
-  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
-  if (!timeout) return Promise.resolve(promise);
-  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;

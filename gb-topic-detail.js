@@ -24,12 +24,19 @@
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     if (Array.isArray(value)) return value.map(valueText).filter(Boolean).join(', ');
+    if (isCandidate(value)) return valueText(value.value);
     return JSON.stringify(value);
   }
 
+  function isCandidate(value) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      && Object.prototype.hasOwnProperty.call(value, 'value');
+  }
+
   function commonTagIds(value) {
-    const values = Array.isArray(value) ? value : String(value || '').split(',');
-    return [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
+    if (isCandidate(value)) return commonTagIds(value.value);
+    if (Array.isArray(value)) return [...new Set(value.flatMap(commonTagIds))];
+    return [...new Set(String(value ?? '').split(',').map(item => item.trim()).filter(Boolean))];
   }
 
   function normalizePropertyValue(value) {
@@ -40,7 +47,7 @@
   function currentValueRows(propertyValues, columns) {
     if (PropertyFamily?.valuesForColumns) {
       return PropertyFamily.valuesForColumns(propertyValues, columns).map((item) => ({
-        id: item.value?.propertyFamilyId || item.column.propertyFamilyId || item.column.columnId,
+        id: item.propertyValue?.propertyFamilyId || item.column.propertyFamilyId || item.column.columnId,
         columnId: item.column.columnId,
         label: item.column.name,
         type: item.column.columnType,
@@ -131,22 +138,34 @@
       item.append(element(document, 'dt', 'topic-detail-value-label', label));
       const content = element(document, 'dd', 'topic-detail-value-content');
       if (row.type === 'common-tags' && typeof globalThis.renderInlineTagEditor === 'function') {
-        globalThis.renderInlineTagEditor(content, {
-          getIds: () => commonTagIds(row.value),
-          async setIds(ids) {
-            if (settings?.readOnly === true) throw new Error('このトピックは読み取り専用です');
-            if (typeof settings?.onUpdateValue !== 'function') {
-              throw new Error('トピックのタグ保存機能を利用できません');
-            }
-            const nextValue = commonTagIds(ids).join(', ');
-            await settings.onUpdateValue(clone(row), nextValue);
-            row.value = nextValue;
-            settings.onValueStored?.(row.id, nextValue);
-          },
-          readOnly: settings?.readOnly === true,
-          sourceFolder: settings?.sourceFolder || '',
-          compact: true,
-          boxed: false,
+        const candidateList = Array.isArray(row.value) && row.value.length > 0 && row.value.every(isCandidate);
+        const candidates = candidateList ? row.value : [null];
+        candidates.forEach((candidate, index) => {
+          const host = candidateList ? element(document, 'div', 'topic-detail-tag-candidate') : content;
+          if (candidateList) content.append(host);
+          globalThis.renderInlineTagEditor(host, {
+            getIds: () => commonTagIds(candidateList ? row.value[index].value : row.value),
+            async setIds(ids) {
+              if (settings?.readOnly === true) throw new Error('このトピックは読み取り専用です');
+              if (typeof settings?.onUpdateValue !== 'function') {
+                throw new Error('トピックのタグ保存機能を利用できません');
+              }
+              const nextValue = commonTagIds(ids).join(', ');
+              const editRow = candidateList ? { ...clone(row), value: clone(row.value[index].value),
+                candidate_index: index, _topicCandidateList: true,
+                _topicCandidateOriginal: clone(row.value[index]) } : clone(row);
+              const saved = await settings.onUpdateValue(editRow, nextValue);
+              const storedValue = saved?.record?.propertyValuesByFamilyId?.[row.id]?.value;
+              if (storedValue !== undefined) row.value = clone(storedValue);
+              else if (candidateList) row.value[index] = { ...row.value[index], value: nextValue };
+              else row.value = nextValue;
+              settings.onValueStored?.(row.id, clone(row.value));
+            },
+            readOnly: settings?.readOnly === true,
+            sourceFolder: settings?.sourceFolder || '',
+            compact: true,
+            boxed: false,
+          });
         });
       } else {
         content.textContent = valueText(row.value);
@@ -263,5 +282,5 @@
     });
   }
 
-  return Object.freeze({ TABS, createViewModel, commonTagIds, mount });
+  return Object.freeze({ TABS, createViewModel, commonTagIds, valueText, mount });
 }));

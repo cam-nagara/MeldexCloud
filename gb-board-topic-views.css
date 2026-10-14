@@ -48,6 +48,21 @@
   display: none;
 }
 
+.bd-topic-view-overflow-menu[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  color: var(--fg);
+}
+
+.bd-topic-view-overflow-menu[popover]:not(:popover-open) {
+  display: none;
+}
+
+.bd-topic-view-overflow-menu[popover]:popover-open {
+  display: grid;
+}
+
 .bd-group-options {
   display: grid;
   gap: 8px;
@@ -118,11 +133,19 @@
   bottom: calc(100% + 4px);
   top: auto;
 }
+#cloud-mobile-boardbar > .bd-topic-view-controls .bd-topic-view-overflow-menu[popover] {
+  bottom: auto;
+}
 .bd-mixed-sheet-host {
   flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; overflow: hidden;
   display: flex; flex-direction: column; background: var(--content-bg, var(--bg));
 }
 .bd-mixed-sheet-mount { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+.bd-mixed-sheet-table { border-collapse: collapse; width: 100%; color: var(--fg); }
+.bd-mixed-sheet-table th, .bd-mixed-sheet-table td { padding: 8px; border-bottom: 1px solid var(--border); text-align: start; }
+.bd-mixed-sheet-table th { position: sticky; top: 0; background: var(--bg2); }
+.bd-mixed-sheet-table textarea { min-width: 120px; width: 100%; box-sizing: border-box; resize: vertical; color: inherit; background: transparent; border: 1px solid transparent; font: inherit; }
+.bd-mixed-sheet-table textarea:focus { border-color: var(--accent); outline: none; }
 .bd-mixed-sheet-status { padding: 12px; color: var(--ui-fg-muted, var(--fg2)); }
 .bd-mixed-sheet-host .db-view-tabs { display: none; }
 .bd-mixed-view-empty-host {

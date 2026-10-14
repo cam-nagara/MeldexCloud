@@ -21,12 +21,12 @@
 .modal h3 { margin-bottom: var(--ui-space-5); color: var(--ui-accent); flex-shrink: 0; }
 .modal .btn-row { display: flex; gap: var(--ui-space-4); margin-top: var(--ui-space-5); justify-content: flex-end; flex-shrink: 0; }
 .modal .modal-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
-.modal button {
+.modal button:where(:not([data-style-preview-native="1"])) {
   padding: var(--ui-space-2) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-control); color: var(--ui-fg-default); cursor: pointer; font-size: var(--ui-font-13);
 }
 .modal button.primary { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
-.modal button:hover { opacity: 0.9; }
+.modal button:where(:not([data-style-preview-native="1"])):hover { opacity: 0.9; }
 .modal input, .modal textarea, .modal select {
   background: var(--ui-bg-app); color: var(--ui-fg-default); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
   padding: var(--ui-space-2) var(--ui-space-4); font-size: var(--ui-font-13); width: 100%; box-sizing: border-box;
@@ -883,6 +883,7 @@ body:has(> .modal-overlay[data-settings-modal="1"]) > :is(.gb-context-menu,.gb-p
 
 .tree-node { user-select: none; }
 .tree-node-row {
+  position: relative;
   --tree-row-height: 22px;
   display: flex; align-items: center; gap: 4px;
   height: auto; min-height: var(--tree-row-height); box-sizing: border-box;
@@ -899,7 +900,7 @@ body:has(> .modal-overlay[data-settings-modal="1"]) > :is(.gb-context-menu,.gb-p
   outline-style: var(--outliner-item-hover-outline-style, none);
   outline-width: var(--outliner-item-hover-outline-width, 1px);
   outline-offset: -1px;
-  line-height: var(--outliner-item-hover-line-height, var(--outliner-item-line-height, 115%));
+  line-height: var(--outliner-item-line-height, 115%);
 }
 .tree-node-row.active {
   background: var(--outliner-item-selected-bg);
@@ -915,6 +916,10 @@ body:has(> .modal-overlay[data-settings-modal="1"]) > :is(.gb-context-menu,.gb-p
   display: none; margin-left: auto; flex-shrink: 0; gap: 1px; align-items: center;
 }
 .tree-node-row:hover .tree-hover-btns { display: flex; }
+@media (hover: hover) and (pointer: fine) {
+  .tree-hover-btns { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
+  .tree-node-row:has(.tree-hover-btns) .tree-label { padding-right: 40px; }
+}
 .tree-hover-btn {
   width: 18px; height: 18px; border-radius: 3px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; color: var(--outliner-muted-fg);
@@ -1442,6 +1447,10 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   #sidebar-search-bar {
     gap: 6px !important;
     padding: 6px 8px !important;
+    flex-wrap: wrap;
+  }
+  #sidebar-search-input {
+    flex-basis: 100% !important;
   }
   #sidebar-search-input,
   #search-panel .sp-input-row input[type="text"] {
@@ -1471,6 +1480,15 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   }
   #search-panel .sp-opts label {
     min-height: 44px;
+  }
+  .meldex-search-scope-popup label,
+  .meldex-search-scope-popup > button {
+    box-sizing: border-box;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  .meldex-search-scope-popup > button {
+    min-width: 44px;
   }
   #search-panel .sp-btn-label {
     width: auto !important;

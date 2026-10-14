@@ -485,13 +485,8 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
     creatingRelationEntry = true;
     try {
       const sanitized = trimmed.replace(/[\\/:*?"<>|]/g, '_');
-      await apiPost('/entity/create', { parent_path: relDb, name: sanitized });
-      // 名前解決とロールアップの参照先キャッシュを同時に無効化する
-      if (typeof _invalidateRelationTargetCaches === 'function') _invalidateRelationTargetCaches(relDb);
-      else _relationCache[relDb] = null;
-      const map = await _getRelationMap(relDb);
-      const newId = (map?.nameToId && map.nameToId[sanitized]) || sanitized;
-      const newEntry = { name: sanitized, id: newId };
+      const created = await apiPost('/entity/create', { parent_path: relDb, name: sanitized, include_relation_metadata: true });
+      const newEntry = await _relationEntryFromCreate(relDb, sanitized, created);
       entryList.push(newEntry);
       entryList.sort((a, b) => a.name.localeCompare(b.name));
       await selectRelationEntry(newEntry);

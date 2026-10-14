@@ -1,3 +1,64 @@
+    const resolvedCurrent = current === 'OSに合わせる' ? current : resolveThemeId(current);
+    html += getAllThemes().map(t => `<option value="${escAttr(t.id)}"${t.id === resolvedCurrent || t.id === current ? ' selected' : ''}>${escHtml(t.name)}</option>`).join('');
+    // Keep a legacy file's current choice visible without offering retired starters to new files.
+    if (!getAllThemes().some(theme => theme.id === current)) {
+      const legacy = getCustomThemes().find(theme => theme.id === current);
+      if (legacy) html += `<option value="${escAttr(legacy.id)}" selected>${escHtml(legacy.name)}（旧テーマ）</option>`;
+    }
+    return html;
+  }
+
+  function escHtml(value) {
+    return MeldexEscape.html(value);
+  }
+
+  function escAttr(value) {
+    return MeldexEscape.attr(value);
+  }
+
+  function collectCurrentCssVars() {
+    const keys = new Set(Object.keys(DARK_VARS).concat(Object.keys(LIGHT_VARS)));
+    if (typeof global.getAllStyleKeys === 'function') global.getAllStyleKeys().forEach(k => keys.add(k));
+    const cssVars = {};
+    keys.forEach(k => {
+      const v = document.documentElement.style.getPropertyValue(k) || getComputedStyle(document.documentElement).getPropertyValue(k);
+      if (v) cssVars[k] = v.trim();
+    });
+    return cssVars;
+  }
+
+  function newCustomThemeId(prefix = 'custom') {
+    return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function setThemeColorSetOnTheme(themeDef, colorSet) {
+    const next = normalizeThemeColorSet(colorSet, resolveThemeColorSet(themeDef));
+    themeDef.themeColorSet = next;
+    themeDef[THEME_COLOR_SET_THEME_KEY] = next;
+    themeDef.ui = themeDef.ui || {};
+    themeDef.ui.themeColorSet = next;
+    themeDef.ui[THEME_COLOR_SET_THEME_KEY] = next;
+    themeDef.ui.colorSet = next;
+    themeDef.ui.palette = next;
+    if (themeDef.board?.coloringRule) {
+      themeDef.board.coloringRule.palette = next;
+      themeDef.board.coloringRule.colorPalette = next;
+    }
+    return next;
+  }
+
+  function setThemeColorSlotSettingsOnTheme(themeDef, slots) {
+    if (!themeDef) return null;
+    themeDef.ui = themeDef.ui || {};
+    const compact = compactThemeColorSlotSettings(slots);
+    if (compact) themeDef.ui.themeColorSlotSettings = compact;
+    else delete themeDef.ui.themeColorSlotSettings;
+    return compact;
+  }
+
+  function setThemeColorExtraSlotSettingsOnTheme(themeDef, slots) {
+    if (!themeDef) return null;
+    themeDef.ui = themeDef.ui || {};
     const compact = compactThemeColorExtraSlotSettings(slots);
     if (compact) themeDef.ui.themeColorExtraSlotSettings = compact;
     else delete themeDef.ui.themeColorExtraSlotSettings;
@@ -196,7 +257,7 @@
   }
 
   function updateCustomThemeFromCurrent(id, name) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const index = list.findIndex(t => t.id === normalized);
     if (index < 0) return null;
@@ -225,7 +286,7 @@
   function renameCustomTheme(id, name) {
     const label = String(name || '').trim();
     if (!label) return null;
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const item = list.find(t => t.id === normalized);
     if (!item) return null;
@@ -254,7 +315,7 @@
   }
 
   function deleteCustomTheme(id) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const next = list.filter(t => t.id !== normalized);
     if (next.length === list.length) return false;
@@ -334,6 +395,7 @@
     saveCustomThemes,
     getAllThemes,
     getThemeById,
+    getThemeStyleVars: themeDef => withDerivedUiStyleVars(themeDef?.ui?.cssVars || {}),
     getDefaultThemeId,
     setDefaultThemeId,
     applyThemeToDocument,

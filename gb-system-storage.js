@@ -280,11 +280,17 @@
     }
   }
 
+  function retentionNow(value) {
+    // iframe/別realmのDateも内部時刻を使う。instanceofは別realmでfalseになる。
+    try { return new Date(Date.prototype.getTime.call(value)); }
+    catch { return new Date(); }
+  }
+
   function selectDocumentsExceedingRetention(records, options) {
     const opts = options || {};
     if (!records || !records.length) return [];
     const policy = opts.policy || retentionPolicyFor(records[0].kind);
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const ordered = [...records].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     const doomed = new Set();
     if (policy.maxGenerations != null && ordered.length > policy.maxGenerations) {
@@ -320,7 +326,7 @@
   async function runRetentionCleanup(adapter, options) {
     const opts = options || {};
     const kinds = opts.kinds || RETENTION_CLEANUP_KINDS;
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const deletedByKind = {};
     for (const kind of kinds) {
       let records = [];

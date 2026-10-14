@@ -449,13 +449,13 @@ function bdInitBoardShell(root) {
         }
         break;
       case 'manage-card-styles':
-        bdOpenCardStyleManager();
+        bdOpenCardStyleManager(btn);
         break;
       case 'pick-card-style':
         bdOpenToolbarStylePicker('card', btn);
         break;
       case 'manage-line-styles':
-        bdOpenLineStyleManager();
+        bdOpenLineStyleManager(btn);
         break;
       case 'pick-line-style':
         bdOpenToolbarStylePicker('line', btn);

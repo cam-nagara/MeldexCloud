@@ -244,6 +244,8 @@ function _railTargetStyleContext(target) {
 }
 
 function _railNormalizeTargetPath(value) {
+  const fileId = typeof _pathToFileId === 'function' ? _pathToFileId(value) : '';
+  if (fileId) return fileId;
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').toLocaleLowerCase();
 }
 
@@ -252,6 +254,7 @@ function _railActiveStylePath(ctx) {
   if (ctx === 'page') return appState?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
   if (ctx === 'folder') return typeof _folderPath !== 'undefined' ? _folderPath : '';
   if (ctx === 'board') return (typeof bd !== 'undefined' && bd?.path) || appState?.currentBoardPath || '';
+  if (ctx === 'db') return appState?.currentDbPath || '';
   if (ctx === 'scriptnote') return typeof _getScriptNoteEditorForFileStyle === 'function'
     ? (_getScriptNoteEditorForFileStyle()?._path || '') : '';
   return '';
@@ -260,7 +263,8 @@ function _railActiveStylePath(ctx) {
 function _railStyleIsReadOnly(ctx) {
   if (ctx === 'board' && typeof bd !== 'undefined') return bd?.readOnly === true;
   if (ctx === 'scriptnote' && typeof _getScriptNoteEditorForFileStyle === 'function') {
-    return _getScriptNoteEditorForFileStyle()?.readOnly === true;
+    const editor = _getScriptNoteEditorForFileStyle();
+    return editor?.readOnly === true || editor?._readOnly === true;
   }
   return false;
 }
@@ -384,32 +388,42 @@ class FileThemeComponent extends ContextRailComponent {
   renderTarget() {
     if (!this.el) return;
     const snapshot = _railContextSnapshot();
-    this._renderTargetHeader(snapshot);
-    const target = snapshot.targets[0];
+    const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined'
+      ? GBTabs.getActiveTab?.(GBLayout.activePane) : null;
+    const calendarScope = (window.isCalendarStyleContextActive?.() || activeTab?.type === 'calendar') && !snapshot.targets.length;
+    this._renderTargetHeader(snapshot, calendarScope ? { scopeLabel: 'スケジュール全体' } : undefined);
+    const target = calendarScope ? { kind: 'calendar', path: '' } : snapshot.targets[0];
     this.el.dataset.fileThemeState = 'empty';
     this.el.dataset.fileThemeTargetPath = target?.contextPath || target?.path || '';
     this.el.dataset.fileThemeTargetKind = target?.kind || '';
-    if (snapshot.targets.length > 1) return this._empty('テーマを編集する対象を1件だけ選択してください');
+    if (!calendarScope && snapshot.targets.length > 1) return this._empty('テーマを編集する対象を1件だけ選択してください');
     if (!target) return this._empty('テーマを設定するファイルまたはフォルダを選択してください');
     const ctx = _railTargetStyleContext(target);
     if (!ctx) return this._empty('この種類はファイル別テーマに対応していません。対応するノート、シート、ボード、シナリオ、カレンダー、フォルダを開いてください');
-    const targetPath = target.path || target.contextPath || '';
+    const targetPath = target.contextPath || target.path || '';
     const activePath = _railActiveStylePath(ctx);
     if (activePath && targetPath && _railNormalizeTargetPath(activePath) !== _railNormalizeTargetPath(targetPath)) {
       this.el.dataset.fileThemeState = 'target-mismatch';
       return this._empty('選択対象が現在の編集画面と一致しません。対象を開いてからテーマを編集してください');
     }
     if (typeof window.renderFileStyleTab !== 'function') return this._empty('テーマ設定を読み込めませんでした。画面を再読み込みしてください');
+    const readOnly = _railStyleIsReadOnly(ctx);
+    const renderKey = `${ctx}:${_railNormalizeTargetPath(activePath || targetPath)}:${readOnly}`;
+    if (this._fileThemeRenderKey === renderKey && this.bodyEl.querySelector(`[data-file-theme-panel="${ctx}"]`)) {
+      this.el.dataset.fileThemeState = readOnly ? 'read-only' : 'ready';
+      return;
+    }
     try {
       window.renderFileStyleTab(ctx, this.bodyEl);
-      if (!snapshot.targets.length || window.GBOptionTargetContext?.isCurrentRevision?.(snapshot.selectionRevision) === false) return;
+      if ((!calendarScope && !snapshot.targets.length) || window.GBOptionTargetContext?.isCurrentRevision?.(snapshot.selectionRevision) === false) return;
       const hasThemePanel = !!this.bodyEl.querySelector('[data-file-theme-panel]');
       const hasStyleFields = !!this.bodyEl.querySelector('.gb-section--detail, [data-fs-theme-select]');
       if (!hasThemePanel && !hasStyleFields) {
         this.el.dataset.fileThemeState = 'unavailable';
         return this._empty('現在の対象のテーマ設定を読み込めませんでした。対象を開き直すか、画面を再読み込みしてください');
       }
-      if (_railStyleIsReadOnly(ctx)) {
+      this._fileThemeRenderKey = renderKey;
+      if (readOnly) {
         const notice = document.createElement('div'); notice.className = 'gb-section-desc';
         notice.dataset.fileThemeReadOnly = '1'; notice.textContent = '読み取り専用のため、テーマ設定は表示のみです';
         this.bodyEl.firstElementChild?.prepend?.(notice);
@@ -1039,8 +1053,8 @@ class VersionComponent extends ToolComponent {
           const badge = v.auto ? '<span class="gb-badge gb-badge-auto">自動</span>' : '<span class="gb-badge gb-badge-manual">手動</span>';
           folderListHtml += `<div class="gb-history-row gb-history-row-compact">
             ${badge}
-            <span class="gb-history-label">${dt}${label}</span>
-            <span class="gb-history-size">${fileCount}ファイル${totalSize ? ', ' + totalSize : ''}</span>
+            <span class="gb-history-label">${esc(dt)}${label}</span>
+            <span class="gb-history-size">${esc(fileCount)}ファイル${totalSize ? ', ' + esc(totalSize) : ''}</span>
             <div class="gb-history-actions">
               <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('showFolderFiles', folderPath, v.name, 'folder')} title="一覧">一覧</button>
               ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="手動復元ポイントとして保存">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
@@ -1071,8 +1085,8 @@ class VersionComponent extends ToolComponent {
         const badge = v.auto ? '<span class="gb-badge gb-badge-auto">自動</span>' : '<span class="gb-badge gb-badge-manual">手動</span>';
         const label = v.label ? ' — ' + esc(v.label) : '';
         fileListHtml += `<div class="gb-history-row gb-history-row-compact">
-          ${badge}<span class="gb-history-label">${dt}${label}</span>
-          <span class="gb-history-size">${formatFileSize(v.size)}</span>
+          ${badge}<span class="gb-history-label">${esc(dt)}${label}</span>
+          <span class="gb-history-size">${esc(formatFileSize(v.size))}</span>
           <div class="gb-history-actions">
             <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('preview', path, v.name, vType)}>表示</button>
             <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('compare', path, v.name, vType)}>比較</button>

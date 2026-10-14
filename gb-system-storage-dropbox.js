@@ -147,14 +147,14 @@
     });
   }
 
-  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false) {
+  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false, expectedAccountId) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
     const location = await _resolveApiLocation(arg?.path, namespaceKind);
     return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, {
-      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck,
+      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck, expectedAccountId,
     });
   }
 
@@ -476,7 +476,7 @@
         .reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     }
 
-    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing) {
+    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing, options) {
       const contract = _contract();
       const backupId = `${documentId}-conflict-${Math.random().toString(16).slice(2, 14)}${Date.now().toString(36)}`;
       const backupPayload = {
@@ -487,7 +487,8 @@
         attempted_at: contract.nowIso(),
       };
       try {
-        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload);
+        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload,
+          options?.expectedAccountId ? { expectedAccountId: options.expectedAccountId } : undefined);
         return backupId;
       } catch {
         this._audit('error', 'conflict_backup_failed', kind, documentId, { message: '競合バックアップの保全に失敗しました' });
@@ -512,7 +513,7 @@
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
       if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
-        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
         this._audit('warning', 'save_conflict', kind, docId, {
           message: 'revisionが一致しないため書込を中止しました',
           detail: { expected_revision: expectedRevision, current_revision: currentRevision },
@@ -553,13 +554,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: bytes,
-        }, this._namespaceKind);
+        }, this._namespaceKind, false, opts.expectedAccountId);
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
-          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
           const refreshedRevision = refreshed ? refreshed.rev : currentRevision;
           this._audit('warning', 'save_conflict', kind, docId, {
             message: 'Dropbox側で更新競合を検出しました',

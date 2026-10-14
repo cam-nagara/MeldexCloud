@@ -1753,7 +1753,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .kanban-card-prop { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* タイムラインビュー */
-#timeline-view, .timeline-view { flex: 1; overflow: auto; padding: 0; }
+#timeline-view, .timeline-view { flex: 1; flex-direction: column; min-width: 0; overflow: auto; padding: 0; }
 /* チャートビュー */
 #chart-view, .chart-view { flex: 1; overflow: auto; padding: 0; flex-direction: column; }
 .chart-settings-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; flex-wrap: wrap; }

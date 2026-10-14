@@ -124,8 +124,8 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray {
   position: fixed;
-  /* 操作中のメニュー・ダイアログを覆わず、通常のアプリ面より手前に置く。 */
-  z-index: calc(var(--ui-z-modal, 300) - 1);
+  /* 設定などのダイアログ表示中も、進捗を暗転背景より手前で読めるようにする。 */
+  z-index: var(--ui-z-toast, 400);
   /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
   right: calc(14px + var(--gb-rail-width, 38px) + 8px);
   bottom: calc(34px + env(safe-area-inset-bottom, 0px));

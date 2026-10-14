@@ -1,3 +1,100 @@
+    mutationSucceeded = true;
+    if (result?.history_sync_pending) {
+      if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
+    } else if (result?.history_recorded === false) {
+      if (typeof showStatus === 'function') showStatus('本文は保存しましたが、変更履歴を記録できませんでした', true);
+    }
+    return result;
+  } finally {
+    const release = transientLease?.release?.();
+    if (deferredCreateUnlock && mutationSucceeded) {
+      // The new item is durable. Show it while the short-lived parent lease
+      // is released; the lock store waits for that release before reacquiring.
+      void Promise.resolve(release).catch(error => console.warn('新規追加後のロック解除に失敗:', error));
+    } else await release;
+  }
+};
+
+// チームプロフィール同期（起動時に型付き管理領域へ自分を登録。source folderは変更しない）
+// フォルダ別ロールを保持（DB列ロック等で参照）
+let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
+const _myTeamRoles = {};     // { folderPath: role }
+
+async function _syncMyTeamProfile() {
+  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
+  const name = getUsername();
+  if (!name || name === 'anonymous') return;
+  const avatar = localStorage.getItem('meldex-avatar') || '';
+  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncWorkspaceProfiles = async () => {
+    try {
+      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
+        ? await window.MeldexWorkspaces.load({ force: true })
+        : [];
+      for (const workspace of workspaces || []) {
+        if (!workspace?.id) continue;
+        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+      }
+      await window.MeldexWorkspaces?.load?.({ force: true });
+    } catch {}
+  };
+  // 全ソースフォルダに対応する管理レコードへ同期
+  try {
+    const roots = await apiFetch('/outliner-roots').catch(() => []);
+    const visibleRoots = roots.filter(r => r.visible && r.path);
+    if (visibleRoots.length === 0) {
+      // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
+      try {
+        await apiPost('/team/sync', teamPayload());
+        const members = await apiFetch('/team');
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRole = me.role || 'editor';
+      } catch {}
+      await syncWorkspaceProfiles();
+      return;
+    }
+    for (const root of visibleRoots) {
+      try {
+        await apiPost('/team/sync', teamPayload({ folder: root.path }));
+        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRoles[root.path] = me.role || 'editor';
+      } catch {}
+    }
+    // デフォルトロール = 最初の可視ソースフォルダのロール
+    const firstRole = _myTeamRoles[visibleRoots[0].path];
+    if (firstRole) _myTeamRole = firstRole;
+    await syncWorkspaceProfiles();
+  } catch {}
+}
+
+let _startupSplashHidden = false;
+function _notifyStartupReady() {
+  if (typeof apiPost !== 'function') return;
+  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
+}
+
+function _hideStartupSplash() {
+  if (_startupSplashHidden) return;
+  _startupSplashHidden = true;
+  _notifyStartupReady();
+  const splash = document.getElementById('gb-splash');
+  if (!splash) return;
+  splash.style.pointerEvents = 'none';
+  splash.style.transition = 'opacity 0.3s';
+  splash.style.opacity = '0';
+  setTimeout(() => splash.remove(), 300);
+}
+
+function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
+  if (!timeout) return Promise.resolve(promise);
+  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
       if (typeof _logPerfEvent === 'function') {
         _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
@@ -801,100 +898,3 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       };
     };
     function onKeyDown(ev) {
-      if (ev.key === 'Enter') {
-        const region = canvasRegion();
-        if (region) cleanup(region, 'submit');
-      }
-    }
-    stage.addEventListener('pointerdown', (ev) => {
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      stage.focus?.();
-      activePointerId = ev.pointerId;
-      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
-      start = pointFromEvent(ev);
-      current = start;
-      updateSelection();
-    });
-    stage.addEventListener('pointermove', (ev) => {
-      if (activePointerId == null || ev.pointerId !== activePointerId) return;
-      current = pointFromEvent(ev);
-      updateSelection();
-    });
-    stage.addEventListener('pointerup', (ev) => {
-      if (activePointerId == null || ev.pointerId !== activePointerId) return;
-      current = pointFromEvent(ev);
-      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
-      activePointerId = null;
-      updateSelection();
-    });
-    stage.addEventListener('pointercancel', (ev) => {
-      if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
-    });
-    cancel.addEventListener('click', () => cleanup(null, 'cancel'));
-    ok.addEventListener('click', () => {
-      const region = canvasRegion();
-      if (!region) {
-        showStatus('範囲を選択してください', true);
-        return;
-      }
-      cleanup(region, 'submit');
-    });
-    document.addEventListener('keydown', onKeyDown);
-    modalApi = window.GBUI.createModal({
-      id: 'screenshot-region-selector',
-      title: 'スクリーンショット撮影対象を選択',
-      body: stage,
-      footer: actions,
-      variant: 'full-bleed',
-      extraClass: 'screenshot-region-shell',
-      geometryKey: 'screenshot-region-selector',
-      minWidth: '0',
-      initialFocus: stage,
-      returnFocus: restoreFocusTo || undefined,
-      closeLabel: '範囲選択を閉じる',
-      closeOnEsc: true,
-      closeOnOverlay: true,
-      onClose: () => {
-        if (cleaned) return;
-        cleaned = true;
-        document.removeEventListener('keydown', onKeyDown);
-        resolve(result);
-      },
-    });
-    const overlay = modalApi.overlay;
-    overlay.classList.add('modal-overlay', 'screenshot-region-overlay');
-    overlay.dataset.e2eId = 'screenshot-region-overlay';
-    overlay.style.zIndex = '5000';
-    overlay._screenshotRegionModalApi = modalApi;
-    modalApi.modal.dataset.e2eId = 'screenshot-region-shell';
-    modalApi.footer.classList.add('screenshot-region-actions');
-    modalApi.open();
-  });
-}
-
-async function captureScreenshot(mode) {
-  let stream = null;
-  let hideState = null;
-  try {
-    const hideFirst = mode.includes('hide');
-    if (hideFirst) hideState = await _hideMeldexWindowForScreenshot();
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'monitor' } });
-    const video = document.createElement('video');
-    const loaded = new Promise((resolve, reject) => {
-      video.onloadeddata = resolve;
-      video.onerror = () => reject(new Error('画面キャプチャ映像を読み込めませんでした'));
-    });
-    video.srcObject = stream;
-    await video.play();
-    await loaded;
-    await new Promise(r => setTimeout(r, 200));
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-    if (hideFirst) {
-      await _restoreMeldexWindowForScreenshot(hideState);
-      hideState = null;
-    }

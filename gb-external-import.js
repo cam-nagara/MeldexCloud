@@ -8,7 +8,10 @@
       || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
   const runningSetIds = new Set();
-  const _scheduleWidgets = {};   // setId → widget
+  const connectingServices = new Set();
+  const pendingConnections = new Set();
+  let lastConfig = null;
+  let refreshSequence = 0;
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
   const ENEX_MAX_BYTES = 32 * 1024 * 1024;
   const PUREREF_WARN_BYTES = 64 * 1024 * 1024;
@@ -24,17 +27,25 @@
     return typeof apiFetch === 'function' && typeof apiPost === 'function';
   }
 
-  function setStatus(message, isError) {
+  function setStatus(message, isError, service) {
     const el = document.getElementById('external-import-status');
     if (!el) return;
     el.textContent = message || '';
     el.style.color = isError ? 'var(--danger)' : 'var(--fg2)';
+    el.dataset.error = isError ? '1' : '0';
+    if (service) {
+      const local = document.getElementById(`external-import-${service}-message`);
+      if (local) {
+        local.textContent = message || '';
+        local.dataset.error = isError ? '1' : '0';
+      }
+    }
   }
 
-  function openUrl(url) {
-    if (!url) return;
+  async function openUrl(url) {
+    if (!url) throw new Error('接続先のURLを取得できませんでした。もう一度お試しください。');
     if (typeof apiPost === 'function') {
-      apiPost('/open-external-url', { url }, { silentError: true }).catch(() => window.open(url, '_blank', 'noopener'));
+      await apiPost('/open-external-url', { url }, { silentError: true });
       return;
     }
     window.open(url, '_blank', 'noopener');
@@ -91,7 +102,9 @@
       card.appendChild(title);
       card.appendChild(textEl('div', `保存先: ${item.save_dir || ''}`, 'gb-section-desc'));
       const result = item.last_result;
-      card.appendChild(textEl('div', result ? `前回: 新規${result.created || 0} / 更新${result.updated || 0} / スキップ${result.skipped || 0}` : '前回: なし', 'gb-section-desc'));
+      const issues = (result?.errors || 0) + (result?.failed_assets || 0) + (result?.warnings?.length || 0);
+      card.appendChild(textEl('div', result ? `前回: 新規${result.created || 0} / 更新${result.updated || 0} / スキップ${result.skipped || 0}${issues ? ' / 要確認' + issues + '件' : ''}` : '前回: なし', 'gb-section-desc'));
+      if (item.service === 'notion') card.appendChild(textEl('div', item.source_ids?.length ? `対象: 指定した${item.source_ids.length}ページ` : '対象: 接続に共有した全ページ', 'gb-section-desc'));
       if (!result && item.service === 'eagle-reference') {
         card.appendChild(textEl('div', '「更新を反映」を押すと参照用フォルダを作成し、ソースフォルダとして追加します。', 'gb-section-desc'));
       } else if (!result && item.service === 'eagle-copy') {
@@ -144,13 +157,11 @@
       // ここでは周期を選ばせて保存し、確定した次回予定・前回結果を表示するだけ
       // にする（ブラウザータイマーでの自己実行はしない）。
       if (window.MeldexScheduler && item.id) {
-        let widget = _scheduleWidgets[item.id];
-        if (!widget) {
-          widget = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
-            _saveSetSchedule(item.id, cfg);
-          });
-          if (widget) _scheduleWidgets[item.id] = widget;
-        }
+        // Each refresh creates new cards; a cached widget still points to the
+        // detached previous card and would leave the current schedule blank.
+        const widget = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
+          _saveSetSchedule(item.id, cfg);
+        });
         widget?.setStatusText(_formatScheduleState(item.schedule_state));
       }
 
@@ -176,35 +187,140 @@
       await apiPost(`/external-import/sets/${encodeURIComponent(setId)}`, { schedule: cfg }, { method: 'PATCH', silentError: true });
       await refresh();
     } catch (e) {
-      console.warn('Failed to save external import schedule:', e);
+      setStatus('定期実行を保存できませんでした: ' + (e.userMessage || e.message || e), true);
     }
   }
 
   async function refresh() {
+    const sequence = ++refreshSequence;
     try {
-      setStatus('取り込み設定を確認しています...', false);
       const data = await loadConfig();
+      if (sequence !== refreshSequence || !document.getElementById(rootId)) return;
+      if (!data) throw new Error('取り込みAPIを利用できません');
+      lastConfig = data;
       const notionConn = data?.connections?.notion || {};
       const evernoteConn = data?.connections?.evernote || {};
       const notion = notionConn.connected ? `取り込み接続済み${notionConn.name ? ': ' + notionConn.name : ''}` : '取り込み未接続';
       const evernote = evernoteConn.connected ? `接続済み${evernoteConn.name ? ': ' + evernoteConn.name : ''}` : '未接続';
       document.getElementById('external-import-notion-state').textContent = notion;
-      document.getElementById('external-import-evernote-state').textContent = evernote;
+      document.getElementById('external-import-evernote-state').textContent = evernoteConn.reason || evernote;
+      const evernoteButton = document.getElementById('external-import-evernote-connect');
+      if (evernoteButton) evernoteButton.disabled = evernoteConn.can_connect === false || connectingServices.has('evernote');
+      const evernoteMessage = document.getElementById('external-import-evernote-message');
+      if (evernoteMessage && !evernoteMessage.textContent && evernoteConn.reason) evernoteMessage.textContent = evernoteConn.reason;
+      for (const service of ['notion', 'evernote']) {
+        const connection = data.connections?.[service] || {};
+        const add = document.getElementById(`external-import-${service}-add`);
+        if (add) add.disabled = !connection.connected;
+        if (pendingConnections.has(service) && connection.connected) {
+          pendingConnections.delete(service);
+          setStatus(`${serviceLabel(service)}に接続しました。取り込む範囲を指定してください。`, false, service);
+        }
+      }
+      const relayButton = document.getElementById('external-import-notion-relay');
+      if (relayButton) relayButton.hidden = !notionConn.relay_available;
+      const disconnectButton = document.getElementById('external-import-notion-disconnect');
+      if (disconnectButton) disconnectButton.hidden = !notionConn.connected;
       renderSetList(data || {});
-      setStatus('外部サービス側は変更しません。Meldex内へ読み取り専用コピーを作ります。', false);
     } catch (err) {
+      if (sequence !== refreshSequence) return;
       setStatus('取り込み設定を取得できませんでした: ' + (err.userMessage || err.message || err), true);
     }
   }
 
   async function connect(service) {
+    if (connectingServices.has(service)) return;
+    connectingServices.add(service);
+    const button = document.getElementById(`external-import-${service}-connect`);
+    const relayButton = service === 'notion' ? document.getElementById('external-import-notion-relay') : null;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    if (relayButton) relayButton.disabled = true;
     try {
-      setStatus(`${serviceLabel(service)}の接続画面を開いています...`, false);
+      setStatus(`${serviceLabel(service)}の接続画面を開いています...`, false, service);
       const data = await apiPost(`/external-import/${service}/auth/start`, {}, { silentError: true });
-      openUrl(data.auth_url);
+      await openUrl(data.auth_url);
+      pendingConnections.add(service);
+      setStatus('ブラウザで接続を許可してからMeldexへ戻ってください。', false, service);
     } catch (err) {
-      setStatus(err.userMessage || err.message || String(err), true);
+      setStatus(err.userMessage || err.message || String(err), true, service);
+    } finally {
+      connectingServices.delete(service);
+      if (button) { button.disabled = lastConfig?.connections?.[service]?.can_connect === false; button.removeAttribute('aria-busy'); }
+      if (relayButton) relayButton.disabled = false;
     }
+  }
+
+  function revealNotionConnection() {
+    const details = document.getElementById('external-import-notion-details');
+    const toggle = document.getElementById('external-import-notion-toggle');
+    if (details) details.hidden = false;
+    toggle?.setAttribute('aria-expanded', 'true');
+    toggle?.setAttribute('aria-label', '詳細を閉じる');
+    const form = document.getElementById('external-import-notion-token-form');
+    if (form) form.hidden = false;
+    document.getElementById('external-import-notion-token')?.focus();
+  }
+
+  async function connectNotionToken(event) {
+    event.preventDefault();
+    if (connectingServices.has('notion')) return;
+    const input = document.getElementById('external-import-notion-token');
+    const token = input?.value.trim();
+    if (!token) { setStatus('インテグレーショントークンを入力してください。', true, 'notion'); input?.focus(); return; }
+    connectingServices.add('notion');
+    const button = document.getElementById('external-import-notion-token-save');
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    setStatus('Notionの接続を確認しています...', false, 'notion');
+    try {
+      await apiPost('/external-import/notion/connect', { token }, { silentError: true });
+      await refresh();
+      document.getElementById('external-import-notion-token-form').hidden = true;
+      setStatus('Notionに接続しました。取り込むページを指定してください。', false, 'notion');
+    } catch (err) {
+      setStatus(err.userMessage || err.message || String(err), true, 'notion');
+    } finally {
+      input.value = '';
+      connectingServices.delete('notion');
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
+
+  async function addNotionSet() {
+    const name = document.getElementById('external-import-notion-name').value.trim();
+    const all = document.getElementById('external-import-notion-all').checked;
+    const sources = document.getElementById('external-import-notion-sources').value.trim().split(/[\n,]+/).map(value => value.trim()).filter(Boolean);
+    if (!name || (!all && !sources.length)) {
+      setStatus(!name ? '取り込みセット名を入力してください。' : '取り込むページのURLまたはIDを入力してください。', true, 'notion');
+      return;
+    }
+    const button = document.getElementById('external-import-notion-add');
+    button.disabled = true;
+    try {
+      await createSet('notion', { name, source_urls: all ? [] : sources, all_accessible_pages: all,
+        include_children: document.getElementById('external-import-notion-children').checked,
+        copy_attachments: document.getElementById('external-import-notion-assets').checked },
+      { promptForName: false, nextActionMessage: 'Notion取り込みセットを追加しました。一覧の「更新を反映」で取り込みます。', throwOnError: true });
+    } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+    finally { button.disabled = !lastConfig?.connections?.notion?.connected; }
+  }
+
+  async function disconnectNotion() {
+    if (!await confirmAction('Notionの取り込み接続を解除しますか？取り込み済みファイルとNotion同期の接続は保持されます。', false)) return;
+    try {
+      await apiPost('/external-import/notion/disconnect', {}, { silentError: true });
+      pendingConnections.delete('notion');
+      await refresh();
+      setStatus('Notionの取り込み接続を解除しました。', false, 'notion');
+    } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+  }
+
+  function resultStatus(message, data) {
+    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+    const failures = (data?.errors || 0) + (data?.failed || 0) + (data?.failed_assets || 0);
+    const suffix = [failures ? `要確認${failures}件` : '', ...warnings].filter(Boolean).join(' / ');
+    setStatus(message + (suffix ? ' / ' + suffix : ''), failures > 0 || warnings.length > 0);
   }
 
   async function createSet(service, extra, options = {}) {
@@ -566,10 +682,11 @@
       const job = await apiFetch(`/external-import/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
       if (job.status === 'done') {
         const r = job.result || {};
-        setStatus(`取り込み完了: 新規${r.created || 0} / 更新${r.updated || 0} / スキップ${r.skipped || 0}`, false);
+        resultStatus(`取り込み完了: 新規${r.created || 0} / 更新${r.updated || 0} / スキップ${r.skipped || 0}`, r);
         return r;
       }
       if (job.status === 'error') throw new Error(job.error || '取り込みに失敗しました');
+      if (job.status === 'cancelled') throw new Error('取り込みをキャンセルしました');
       if (i > 0 && i % 15 === 0) {
         setStatus('取り込み処理中です。大きいデータでは時間がかかります...', false);
       }
@@ -614,7 +731,7 @@
           onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件取り込み済み', defaultPhase: '取り込み中' }), false),
         }
       );
-      setStatus(`ENEX取り込み完了: 新規${data.created || 0} / 更新${data.updated || 0}`, false);
+      resultStatus(`ENEX取り込み完了: 新規${data.created || 0} / 更新${data.updated || 0}`, data);
     } catch (err) {
       setStatus('ENEXを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
     } finally {
@@ -664,7 +781,8 @@
         startTimeoutMs: 300000,
         onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件', defaultPhase: '画像を取り込み中' }), false),
       });
-      setStatus(`PureRef取り込み完了: 画像${data.image_count || 0}件 / ${data.board_path || ''}`, false);
+      if (!data.image_count) throw new Error('画像を検出できませんでした。PureRefで画像を書き出してから取り込んでください。');
+      resultStatus(`PureRef取り込み完了: 画像${data.image_count}件 / ${data.board_path || ''}`, data);
       if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     } catch (err) {
       setStatus('PureRefを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
@@ -674,8 +792,20 @@
   }
 
   function bind() {
-    document.getElementById('external-import-notion-connect')?.addEventListener('click', () => connect('notion'));
-    document.getElementById('external-import-notion-add')?.addEventListener('click', () => createSet('notion'));
+    document.getElementById('external-import-notion-connect')?.addEventListener('click', revealNotionConnection);
+    document.getElementById('external-import-notion-relay')?.addEventListener('click', () => connect('notion'));
+    document.getElementById('external-import-notion-token-form')?.addEventListener('submit', connectNotionToken);
+    document.getElementById('external-import-notion-disconnect')?.addEventListener('click', disconnectNotion);
+    document.getElementById('external-import-notion-token-help-link')?.addEventListener('click', async event => {
+      event.preventDefault();
+      try { await openUrl(event.currentTarget.href); }
+      catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+    });
+    document.getElementById('external-import-notion-add')?.addEventListener('click', addNotionSet);
+    document.getElementById('external-import-notion-all')?.addEventListener('change', event => {
+      document.getElementById('external-import-notion-sources').disabled = event.target.checked;
+    });
+    document.getElementById('external-import-refresh')?.addEventListener('click', () => refresh());
     document.getElementById('external-import-obsidian-add')?.addEventListener('click', addObsidianSet);
     document.getElementById('external-import-evernote-connect')?.addEventListener('click', () => connect('evernote'));
     document.getElementById('external-import-evernote-add')?.addEventListener('click', () => createSet('evernote'));
@@ -716,9 +846,10 @@
     container.dataset.rendered = '1';
     container.innerHTML = `
       <section class="external-import-heading">
-        <div class="gb-section-title">${icon('download', 14)} 外部データ取り込み</div>
-        <div class="gb-section-desc">サービスごとに必要な設定だけを開けます。</div>
+        <div class="external-import-heading-row"><div class="gb-section-title">${icon('download', 14)} 外部データ取り込み</div><button type="button" id="external-import-refresh" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('refreshCw', 14)} 接続状態を更新</button></div>
+        <div class="gb-section-desc">サービスごとに接続またはファイルを選び、取り込む範囲を確認してください。元のデータは変更・削除しません。</div>
       </section>
+      <div id="external-import-status" class="external-import-feedback" role="status" aria-live="polite" aria-atomic="true">サービスごとに接続またはファイルを選択してください。</div>
       <div id="google-import-provider-slot"></div>
       <div id="external-import-local-providers" class="external-import-provider-list"${cloudSurface ? ' hidden' : ''}>
         <section class="external-import-provider" data-provider="notion">
@@ -727,7 +858,26 @@
             <span class="external-import-provider-last">ノート</span>
             <div class="external-import-provider-actions"><button type="button" id="external-import-notion-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Notionに接続</button><button type="button" id="external-import-notion-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-notion-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
-          <div id="external-import-notion-details" class="external-import-provider-details" hidden><div class="gb-section-desc">接続後、取り込む範囲をセットとして追加します。</div><button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button></div>
+          <div id="external-import-notion-message" class="external-import-inline-message" role="status" aria-live="polite"></div>
+          <div id="external-import-notion-details" class="external-import-provider-details" hidden>
+            <div class="gb-section-desc">NotionからMeldexへコピーします。「Notion同期」（Meldexから送る）の接続とは別です。</div>
+            <form id="external-import-notion-token-form" class="external-import-form" hidden>
+              <label for="external-import-notion-token">インテグレーショントークン</label>
+              <div class="external-import-input-row"><input id="external-import-notion-token" class="gb-input" type="password" autocomplete="off" spellcheck="false" placeholder="Notionのトークンを貼り付け" aria-describedby="external-import-notion-token-help"><button type="submit" id="external-import-notion-token-save" class="gb-btn gb-btn-sm">接続を確認して保存</button></div>
+              <div id="external-import-notion-token-help" class="gb-section-desc">Notionのインテグレーションでトークンを取得し、取り込むページの「コネクト」から共有してください。トークンはOSの資格情報保管に保存します。</div>
+              <a id="external-import-notion-token-help-link" href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener noreferrer">Notionのインテグレーション設定を開く</a>
+            </form>
+            <div class="external-import-provider-detail-actions"><button type="button" id="external-import-notion-relay" class="gb-btn gb-btn-sm" hidden>${icon('externalLink', 14)} ブラウザで接続</button><button type="button" id="external-import-notion-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>取り込み接続を解除</button></div>
+            <div class="external-import-form">
+              <label for="external-import-notion-name">取り込みセット名</label><input id="external-import-notion-name" class="gb-input" value="Notion" maxlength="120">
+              <label for="external-import-notion-sources">取り込むページのURLまたはID（1行に1件）</label><textarea id="external-import-notion-sources" class="gb-input" rows="3" placeholder="https://www.notion.so/..." spellcheck="false"></textarea>
+              <label class="external-import-check"><input type="checkbox" id="external-import-notion-all">接続に共有した全ページを取り込む</label>
+              <div class="gb-section-desc">ページ指定は最大100件、全ページの取り込みは1回最大1,000件です。</div>
+              <label class="external-import-check"><input type="checkbox" id="external-import-notion-children" checked>ページ内のブロックも取り込む</label>
+              <label class="external-import-check"><input type="checkbox" id="external-import-notion-assets">添付ファイルをコピーする</label>
+              <button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm" disabled>${icon('plus', 14)} 取り込みセットを追加</button>
+            </div>
+          </div>
         </section>
         <section class="external-import-provider" data-provider="obsidian">
           <div class="external-import-provider-row">
@@ -743,7 +893,8 @@
             <span class="external-import-provider-last">ノート / ENEX</span>
             <div class="external-import-provider-actions"><button type="button" id="external-import-evernote-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Evernoteに接続</button><button type="button" id="external-import-evernote-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-evernote-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
-          <div id="external-import-evernote-details" class="external-import-provider-details" hidden><div class="external-import-provider-detail-actions"><button type="button" id="external-import-evernote-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button><button type="button" id="external-import-enex-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} ENEXファイルを選ぶ</button><input id="external-import-enex-input" type="file" accept=".enex" aria-label="ENEXファイル" hidden></div></div>
+          <div id="external-import-evernote-message" class="external-import-inline-message" role="status" aria-live="polite"></div>
+          <div id="external-import-evernote-details" class="external-import-provider-details" hidden><div class="gb-section-desc">オンライン接続を利用できない場合も、Evernoteから書き出したENEXファイルを取り込めます。</div><div class="external-import-provider-detail-actions"><button type="button" id="external-import-evernote-add" class="gb-btn gb-btn-sm" disabled>${icon('plus', 14)} 取り込みセットを追加</button><button type="button" id="external-import-enex-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} ENEXファイルを選ぶ</button><input id="external-import-enex-input" type="file" accept=".enex" aria-label="ENEXファイル" hidden></div></div>
         </section>
         <section class="external-import-provider" data-provider="eagle">
           <div class="external-import-provider-row">
@@ -759,14 +910,13 @@
             <span class="external-import-provider-last">.pur</span>
             <div class="external-import-provider-actions"><button type="button" id="external-import-pureref-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} PureRefファイルを選ぶ</button><button type="button" id="external-import-pureref-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-pureref-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
-          <div id="external-import-pureref-details" class="external-import-provider-details" hidden><div class="gb-section-desc">PureRefファイルから画像ボードを作成します。</div><input id="external-import-pureref-input" type="file" accept=".pur" aria-label="PureRefファイル" hidden></div>
+          <div id="external-import-pureref-details" class="external-import-provider-details" hidden><div class="gb-section-desc">検出できた画像からボードを作成します。読み込めない形式はPureRefで画像を書き出してから取り込んでください。元の配置は引き継ぎません。</div><input id="external-import-pureref-input" type="file" accept=".pur" aria-label="PureRefファイル" hidden></div>
         </section>
       </div>
       <section id="external-import-set-section" class="gb-section gb-section--boxed"${cloudSurface ? ' hidden' : ''}>
         <div class="gb-section-title">${icon('listChecks', 14)} 取り込みセット</div>
         <div id="external-import-set-list"><div class="gb-section-desc">読み込み中...</div></div>
       </section>
-      <div id="external-import-status" class="gb-section-desc" role="status" aria-live="polite" aria-atomic="true"></div>
     `;
     bind();
     window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
@@ -778,6 +928,12 @@
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;
+  const refreshPendingConnections = () => {
+    const root = document.getElementById(rootId);
+    if (pendingConnections.size && root?.offsetParent && !document.hidden) refresh();
+  };
+  window.addEventListener('focus', refreshPendingConnections);
+  document.addEventListener('visibilitychange', refreshPendingConnections);
   // gb-settings-x-bookmarks.js 等、他の設定パネルからも同じ「Cloud静的版では
   // 成立しないデスクトップ専用操作を隠す」判定を再利用できるよう公開する
   // （新しい判定を作らず、既存のこの判定へ揃えるため。インポート・機能生成

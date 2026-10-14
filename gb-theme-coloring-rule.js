@@ -169,6 +169,17 @@
     return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
   }
 
+  function automaticTextColor(color) {
+    const rgb = hexToRgb(color);
+    if (!rgb) return '';
+    const linear = value => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+    };
+    const luminance = 0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b);
+    return luminance > 0.179 ? '#000000' : '#ffffff';
+  }
+
   function resolveNodeStyle(args) {
     const board = args?.board;
     const node = args?.node;
@@ -182,7 +193,12 @@
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;
     else if (!hasOwn(node, 'bgColor') && !base.bgColor && boardTheme.nodeBgColor) base.bgColor = boardTheme.nodeBgColor;
 
-    if (!hasOwn(node, 'textColor') && !base.textColor && boardTheme.nodeTextColor) base.textColor = boardTheme.nodeTextColor;
+    if (!hasOwn(node, 'textColor') && !base.textColor) {
+      // Starter palettes contain both light and dark fills. Preserve explicit text,
+      // but keep an automatically colored card readable without a custom style.
+      base.textColor = (theme?.builtIn && !hasOwn(node, 'bgColor') && color && applyTo !== 'border' ? automaticTextColor(color) : '')
+        || boardTheme.nodeTextColor || '';
+    }
 
     if (!hasOwn(node, 'borderColor')) {
       if (color && (applyTo === 'border' || applyTo === 'background-border')) base.borderColor = normalizeHex(color) || color;

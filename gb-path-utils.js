@@ -79,6 +79,69 @@
     return left + '/' + right;
   }
 
+  function isDisplayTitleRename(route, body) {
+    const managed = route === '/entity/rename' || (route === '/outliner/rename'
+      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer'].includes(body?.type));
+    return managed && (body?.title_only === true || /[\\/:?*"<>|]/.test(String(body?.new_name || '')));
+  }
+
+  function validateDisplayTitle(value) {
+    const title = String(value ?? '').trim();
+    if (!title || /[\x00-\x1f\x7f]/.test(title)) throw new Error('タイトルには空文字や制御文字を使えません');
+    if (new TextEncoder().encode(title).length > 1000) throw new Error('タイトルが長すぎます');
+    return title;
+  }
+
+  function titleStorageName(value) {
+    let name = validateDisplayTitle(value).replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/^[. ]+|[. ]+$/g, '').replace(/\.\./g, '_').replace(/^[._]+/, '') || '無題';
+    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)) name = name.includes('.') ? name.replace('.', '_.') : name + '_';
+    const chars = [...name];
+    while (new TextEncoder().encode(chars.join('')).length > 200) chars.pop();
+    return chars.join('').replace(/[. ]+$/g, '') || '無題';
+  }
+
+  function readDisplayTitle(text, path) {
+    const raw = String(text || '');
+    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+      try { const doc = JSON.parse(raw); return typeof doc?.display_title === 'string' ? doc.display_title : ''; }
+      catch { return ''; }
+    }
+    const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
+    const field = (fm?.[1] || '').match(/^display_title: *([^\r\n]*)(?:\r?\n([ \t]+[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*))?/m);
+    if (!field) return '';
+    let scalar = field[1].trim();
+    if (field[2]) scalar += ' ' + field[2].split(/\r?\n/).map(line => line.trim()).join(' ');
+    try { if (scalar.startsWith('"')) return JSON.parse(scalar); } catch { return ''; }
+    if (scalar.startsWith("'") && scalar.endsWith("'")) return scalar.slice(1, -1).replace(/''/g, "'");
+    return /^[|>]/.test(scalar) ? '' : scalar;
+  }
+
+  function writeDisplayTitle(text, title, path, type) {
+    title = validateDisplayTitle(title);
+    const raw = String(text || '');
+    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+      const doc = JSON.parse(raw);
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('文書の形式が不正です');
+      doc.display_title = title;
+      if (['scenario', 'scriptnote'].includes(type)) doc.title = title;
+      return JSON.stringify(doc, null, 2);
+    }
+    const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
+    const line = 'display_title: ' + JSON.stringify(title);
+    if (!fm) {
+      if (/^\uFEFF?---(?:\r?\n|$)/.test(raw)) throw new Error('メタデータを読み取れません');
+      return '---\n' + line + '\n---\n' + raw;
+    }
+    const sourceMetadata = fm[1] || '';
+    const fields = sourceMetadata.match(/^display_title:/gm) || [];
+    if (fields.length > 1) throw new Error('表示タイトルのメタデータが重複しています');
+    const metadata = fields.length
+      ? sourceMetadata.replace(/^display_title:[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/m, line)
+      : sourceMetadata + '\n' + line;
+    return '---\n' + metadata + '\n---\n' + raw.slice(fm[0].length);
+  }
+
   // Windows形式（ドライブレター/UNC）のときだけ / を \ に正規化する。
   // 先頭/の仮想パス（Dropboxクラウドモード等）はそのまま返す。
   // ドライブレターの直後は \ と / の両方があり得る（vaultPath は \ 形式、サーバーの相対パスは / 形式のため、
@@ -405,6 +468,8 @@
   }
 
   global.GBPathUtils = {
+    isDisplayTitleRename,
+    displayTitle: { validate: validateDisplayTitle, storageName: titleStorageName, read: readDisplayTitle, write: writeDisplayTitle },
     isAbsolute,
     join,
     toNativeClipboard,

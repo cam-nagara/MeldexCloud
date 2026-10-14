@@ -1,3 +1,42 @@
+        const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
+          ? editor.host.closest('.gb-scriptnote-root')
+          : null;
+        const titleInput = scriptNoteRoot ? scriptNoteRoot.querySelector('#title-input') : null;
+        // プログラムによる value 代入は change イベントを発火しないため、
+        // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
+        if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
+      }
+      if (editor && mapped === newPath && (options.etag || options.transport_revision)) {
+        editor._lastSavedEtag = options.etag || options.transport_revision;
+        if (editor._lastSavedTransportRevision) {
+          editor._lastSavedTransportRevision = options.transport_revision || options.etag;
+        }
+      }
+    });
+  }
+
+  if (legacyTabsChanged) renderTabs();
+  if (layoutChanged && typeof GBLayout !== 'undefined') {
+    // Title-only updates must not remount an editor or interrupt a Sheet load.
+    if ((oldPath === newPath || options.preserveMountedViews) && typeof GBLayout.refreshPaneTabs === 'function') {
+      GBLayout.getAllPanes(GBLayout.root).forEach(pane => GBLayout.refreshPaneTabs(pane.id));
+    } else if (typeof GBLayout.render === 'function') GBLayout.render();
+    if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
+  }
+  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
+}
+
+function purgeAppPathReferences(paths) {
+  const deletedPaths = (Array.isArray(paths) ? paths : [paths])
+    .map(path => String(path || '').trim())
+    .filter(Boolean);
+  if (!deletedPaths.length) return;
+  let recentChanged = false;
+  let layoutChanged = false;
+  let legacyTabsChanged = false;
+  let clearedCurrentView = false;
+  _cancelDeletedPathAutosaves(deletedPaths);
+  const activePathKey = {
     pivot: 'currentDbPath',
     gallery: 'currentDbPath',
     kanban: 'currentDbPath',
@@ -786,7 +825,7 @@ function _applyNavEntryToBoundTab(navState, entry) {
       ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
       ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
     };
-    if (typeChanged) GBLayout.render();
+    if (typeChanged) GBTabs.updateTab(navState.paneId, tab.id, {});
     else {
       const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
       if (labelEl) labelEl.textContent = tab.label;
@@ -859,42 +898,3 @@ function navForward(paneId) {
   const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
     ? GBPanelSet.rightRailNavigationState(paneId)
     : null;
-  if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
-  const navState = _getNavState(paneId);
-  if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
-  const nextIndex = navState.index + 1;
-  const entry = navState.history[nextIndex];
-  if (!entry) return false;
-  try {
-    return _continuePaneHistoryAfterFlush(
-      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
-    );
-  } catch (e) {
-    navNavigating = false;
-    throw e;
-  }
-}
-
-function showPaneNavHistoryDropdown(e, paneId, direction) {
-  e.preventDefault();
-  e.stopPropagation();
-  document.querySelectorAll('.nav-history-dropdown').forEach(el => el.remove());
-  const navState = _getNavState(paneId);
-  const items = [];
-  if (direction === 'back') {
-    for (let i = navState.index - 1; i >= Math.max(0, navState.index - 15); i--) items.push({ index: i, entry: navState.history[i] });
-  } else {
-    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
-  }
-  if (items.length === 0) return;
-
-  const dd = document.createElement('div');
-  dd.className = 'ab-dropdown nav-history-dropdown';
-  dd.setAttribute('role', 'menu');
-  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
-  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
-  items.forEach(({ index, entry }) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'ab-dropdown-item';
-    item.setAttribute('role', 'menuitem');

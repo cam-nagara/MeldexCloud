@@ -1,3 +1,56 @@
+    collectPaletteTargets({ force: options.force === true }).forEach(({ el, index, target }) => {
+      const normalizedTarget = target === 'pane-tab' || target === 'panelset-tab'
+        ? 'panel-tab'
+        : (target === 'detail-tab' ? 'inner-tab' : target);
+      el.dataset.themePaletteTarget = normalizedTarget;
+      el.dataset.themePaletteIndex = String(index % colorSet.length);
+    });
+    if (options.apply === false) return;
+    applyThemeUiApplications(null, { bindTargets: false });
+  }
+
+  function ensureThemeUiPaletteTargets(options = {}) {
+    if (options.bindTargets === false) return;
+    const palette = _activeThemeColorSet
+      || readStoredThemeColorSet()
+      || resolveThemeColorSet(getThemeById(getDefaultThemeId()));
+    if (!palette) return;
+    _activeThemeColorSet = _effectiveThemeColorSet(palette, RAINBOW_PALETTE);
+    bindPaletteTargets(_activeThemeColorSet, { apply: false, force: options.forceTargets === true });
+  }
+
+  function paintThemeColorSet(colors, options = {}) {
+    ensurePaletteRuntimeStyle();
+    const palette = _effectiveThemeColorSet(colors, RAINBOW_PALETTE, options.themeDef);
+    const root = document.documentElement;
+    for (let i = 0; i < 10; i += 1) {
+      const key = `--theme-palette-${i}`;
+      const value = palette[i % palette.length];
+      if (root.style.getPropertyValue(key).trim() !== value) root.style.setProperty(key, value);
+      root.style.setProperty(`--theme-palette-text-${i}`, getAccentTextColor(value));
+    }
+    if (options.bindTargets !== false) bindPaletteTargets(palette);
+    else applyThemeUiApplications(null, { bindTargets: false });
+    return palette;
+  }
+
+  function applyPaletteTargets(themeDef) {
+    const themePalette = resolveThemeColorSet(themeDef);
+    const storedPalette = readStoredThemeColorSet();
+    const palette = paintThemeColorSet(storedPalette || themePalette, { themeDef });
+    _activeThemeColorSet = palette;
+    if (storedPalette && themeColorSetsEqual(storedPalette, themePalette)) {
+      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
+    }
+  }
+
+  function getThemeColorSet(themeDef, options = {}) {
+    const activePalette = _activeThemeColorSet;
+    const palette = themeDef
+      ? resolveThemeColorSet(themeDef)
+      : (readStoredThemeColorSet() || activePalette || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
+    return palette.slice();
+  }
 
   function setThemeColorSet(colors, options = {}) {
     const next = normalizeThemeColorSet(colors, getThemeColorSet());
@@ -63,6 +116,7 @@
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized === 'var:--theme-slot-text-color' && options.rootVars === true) return 'var(--theme-palette-text-0)';
     if (normalized.startsWith('var:')) return `var(${normalized.slice(4)})`;
     if (normalized.startsWith('auto-rows:')) {
       const rows = normalized.slice(10).split(',').map(Number);
@@ -125,14 +179,14 @@
     return bases.flatMap(base => [base, ...children.map(child => `${base} ${child}`)]).join(',');
   }
 
-  function _themeUiVarRule(target, stateId, propId, colorCss) {
+  function _themeUiVarRule(target, stateId, propId, colorCss, selector = ':root') {
     const raw = target?.vars?.[stateId]?.[propId];
     const keys = Array.isArray(raw) ? raw : (raw ? [raw] : []);
     const declarations = keys
       .filter(key => /^--[a-z0-9-]+$/i.test(String(key || '')))
       .map(key => `${key}:${colorCss}!important`)
       .join(';');
-    return declarations ? `:root{${declarations}}` : '';
+    return declarations ? `${selector}{${declarations}}` : '';
   }
 
   function _themeUiNoteHeadingAccentRule(selector, colorCss) {
@@ -184,28 +238,25 @@
     const autoTone = getThemeUiAutoTone();
     document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
     document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
-    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
-    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
       _themeUiStatesForTarget(target).forEach(state => {
         const selector = _themeUiStateSelector(target.id, state.id);
         _themeUiPropsForTarget(target, state.id).forEach(prop => {
           const value = config[target.id]?.[state.id]?.[prop.id];
-          const backgroundValue = config[target.id]?.[state.id]?.bg;
-          const autoForegroundOnAccent = singleAccentPolicy
-            && prop.id === 'fg'
-            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
-            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
-          const colorCss = autoForegroundOnAccent
-            ? singleAccentText
-            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
+          const colorCss = _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
-          if (!target.vars && String(value).startsWith('auto-rows:')) {
+          // Variable-backed controls also need per-element colors, not root slot 0.
+          if (target.vars && THEME_UI_AUTO_VALUES.has(value)) {
+            rules.push(_themeUiVarRule(target, state.id, prop.id, _themeUiColorCss(value, autoTone), selector));
+          }
+          if (String(value).startsWith('auto-rows:')) {
             for (let index = 0; index < THEME_COLOR_SET_SIZE; index++) {
               const indexedSelector = selector.split(',').map(base => `${base}[data-theme-palette-index="${index}"]`).join(',');
-              rules.push(_themeUiRuleForProp(indexedSelector, target, state.id, prop.id,
-                _themeUiColorCss(value, autoTone, { paletteIndex: index })));
+              const indexedColor = _themeUiColorCss(value, autoTone, { paletteIndex: index });
+              rules.push(target.vars
+                ? _themeUiVarRule(target, state.id, prop.id, indexedColor, indexedSelector)
+                : _themeUiRuleForProp(indexedSelector, target, state.id, prop.id, indexedColor));
             }
           }
         });
@@ -234,6 +285,9 @@
 [data-theme-palette-index="8"]{--theme-slot-color:var(--theme-palette-8)}
 [data-theme-palette-index="9"]{--theme-slot-color:var(--theme-palette-9)}
 `;
+    style.textContent += Array.from({ length: 10 }, (_, index) =>
+      `[data-theme-palette-index="${index}"]{--theme-slot-text-color:var(--theme-palette-text-${index})}`
+    ).join('\n');
     document.head.appendChild(style);
   }
 
@@ -631,9 +685,10 @@
     fallback('--chat-muted-fg', '--fg2', '#969696');
     fallback('--chat-border', '--border', '#333333');
     fallback('--chat-hover-bg', '--ui-hover-bg', '#3e3e3e');
-    fallback('--chat-active-bg', '--ui-accent', '#2563eb');
-    fallback('--chat-active-fg', '--ui-fg-strong', '#ffffff');
-    fallback('--chat-accent', '--accent', '#569cd6');
+    // Keep derived chat controls live when the common accent changes (OS or theme).
+    if (!next['--chat-active-bg']) next['--chat-active-bg'] = 'var(--ui-accent)';
+    if (!next['--chat-active-fg']) next['--chat-active-fg'] = 'var(--ui-accent-fg, #ffffff)';
+    if (!next['--chat-accent']) next['--chat-accent'] = 'var(--ui-accent)';
     fallback('--history-bg', '--content-bg', '#1e1e1e');
     fallback('--history-row-bg', '--bg2', '#252525');
     fallback('--history-fg', '--fg', '#d4d4d4');
@@ -681,11 +736,12 @@
     const root = document.documentElement;
     trackExistingThemeVars(root);
     const cssVars = withDerivedUiStyleVars(themeDef.ui?.cssVars || {});
-    const computed = getComputedStyle(root);
     Object.entries(cssVars).forEach(([key, value]) => {
       const next = String(value || '').trim();
       if (!next) return;
-      const cur = root.style.getPropertyValue(key).trim() || computed.getPropertyValue(key).trim();
+      // A matching stylesheet fallback can still change after accent/application
+      // rules are applied. Pin every preset value, including matching fallbacks.
+      const cur = root.style.getPropertyValue(key).trim();
       if (cur !== next) root.style.setProperty(key, next);
       _appliedThemeVarKeys.add(key);
     });
@@ -842,59 +898,3 @@
     const current = _normalizeThemeIdWithPromotedCustom(currentId || '');
     const includeSystem = options.includeSystem !== false;
     let html = includeSystem ? `<option value="OSに合わせる"${current === 'OSに合わせる' ? ' selected' : ''}>OSに合わせる</option>` : '';
-    const resolvedCurrent = current === 'OSに合わせる' ? current : resolveThemeId(current);
-    html += getAllThemes().map(t => `<option value="${escAttr(t.id)}"${t.id === resolvedCurrent || t.id === current ? ' selected' : ''}>${escHtml(t.name)}</option>`).join('');
-    return html;
-  }
-
-  function escHtml(value) {
-    return MeldexEscape.html(value);
-  }
-
-  function escAttr(value) {
-    return MeldexEscape.attr(value);
-  }
-
-  function collectCurrentCssVars() {
-    const keys = new Set(Object.keys(DARK_VARS).concat(Object.keys(LIGHT_VARS)));
-    if (typeof global.getAllStyleKeys === 'function') global.getAllStyleKeys().forEach(k => keys.add(k));
-    const cssVars = {};
-    keys.forEach(k => {
-      const v = document.documentElement.style.getPropertyValue(k) || getComputedStyle(document.documentElement).getPropertyValue(k);
-      if (v) cssVars[k] = v.trim();
-    });
-    return cssVars;
-  }
-
-  function newCustomThemeId(prefix = 'custom') {
-    return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
-  }
-
-  function setThemeColorSetOnTheme(themeDef, colorSet) {
-    const next = normalizeThemeColorSet(colorSet, resolveThemeColorSet(themeDef));
-    themeDef.themeColorSet = next;
-    themeDef[THEME_COLOR_SET_THEME_KEY] = next;
-    themeDef.ui = themeDef.ui || {};
-    themeDef.ui.themeColorSet = next;
-    themeDef.ui[THEME_COLOR_SET_THEME_KEY] = next;
-    themeDef.ui.colorSet = next;
-    themeDef.ui.palette = next;
-    if (themeDef.board?.coloringRule) {
-      themeDef.board.coloringRule.palette = next;
-      themeDef.board.coloringRule.colorPalette = next;
-    }
-    return next;
-  }
-
-  function setThemeColorSlotSettingsOnTheme(themeDef, slots) {
-    if (!themeDef) return null;
-    themeDef.ui = themeDef.ui || {};
-    const compact = compactThemeColorSlotSettings(slots);
-    if (compact) themeDef.ui.themeColorSlotSettings = compact;
-    else delete themeDef.ui.themeColorSlotSettings;
-    return compact;
-  }
-
-  function setThemeColorExtraSlotSettingsOnTheme(themeDef, slots) {
-    if (!themeDef) return null;
-    themeDef.ui = themeDef.ui || {};

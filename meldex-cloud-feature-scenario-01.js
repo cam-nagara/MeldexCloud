@@ -900,7 +900,12 @@ class ScriptNoteEditor {
       const ccSize = el.dataset.ccSize || '';
       const align = el.style.textAlign;
       el.style.background = ccBg || r.bgColor || pageBg;
-      el.style.color = ccColor || r.textColor || baseTextColor;
+      // Older documents can retain an explicit dark type background. Keep that
+      // background and any chosen text color, but make inherited text readable.
+      const explicitBg = ccBg || r.bgColor || '';
+      const backgroundText = /^#[0-9a-f]{6}$/i.test(explicitBg)
+        ? globalThis.MeldexThemeManager?.getAccentTextColor?.(explicitBg) : '';
+      el.style.color = ccColor || r.textColor || backgroundText || baseTextColor;
       el.style.fontWeight = ccWeight || (r.fontWeight === 'bold' ? 'bold' : '');
       el.style.fontStyle = r.fontStyle === 'italic' ? 'italic' : '';
       el.style.fontSize = ccSize ? ccSize + 'px' : (r.fontSize ? r.fontSize + 'px' : '');
@@ -1248,7 +1253,9 @@ class ScriptNoteEditor {
     { const bw = String(this.doc.editor?.borderWidth || '1px');
       editor.style.setProperty('--sn2-border-width', /^\d+(\.\d+)?$/.test(bw) ? bw + 'px' : bw);
     }
-    if (this.doc.editor?.themeId && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function') {
+    if (typeof applyFileStyleToElement === 'function') {
+      [this.host, scroll, editor].forEach(target => applyFileStyleToElement(this.doc.editor || {}, target, 'scriptnote'));
+    } else if (this.doc.editor?.themeId && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function') {
       const themeVars = MeldexThemeManager.getThemeById(this.doc.editor.themeId)?.ui?.cssVars || {};
       [this.host, scroll, editor].forEach(target => {
         if (!target) return;
@@ -2363,6 +2370,13 @@ class ScriptNoteEditor {
 
   _wrapTcy(el, tcyCls = 'sn2-tcy') {
     const walk = (node) => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        // ルビ親文字やリンクの中も同じ文字組みにする。既存の縦中横は
+        // 再装飾時に二重に囲まず、ルビ・リンクの属性と保存表記を保つ。
+        if (node.classList.contains('sn2-tcy') || node.classList.contains('sn2-tcy-wide')) return;
+        [...node.childNodes].forEach(walk);
+        return;
+      }
       if (node.nodeType !== 3) return; // テキストノードのみ
       const text = node.textContent;
       // 連続する半角英数字・記号（スペース除く）を検出
@@ -2380,7 +2394,14 @@ class ScriptNoteEditor {
         if (p.tcy) {
           const span = document.createElement('span');
           span.className = tcyCls;
-          span.textContent = p.text;
+          if (tcyCls === 'sn2-tcy') {
+            const glyph = document.createElement('span');
+            glyph.className = 'sn2-tcy-glyph';
+            glyph.textContent = p.text;
+            span.appendChild(glyph);
+          } else {
+            span.textContent = p.text;
+          }
           frag.appendChild(span);
         } else {
           frag.appendChild(document.createTextNode(p.text));
@@ -2388,8 +2409,28 @@ class ScriptNoteEditor {
       });
       node.parentNode.replaceChild(frag, node);
     };
-    // 直接の子テキストノードのみ処理（span[data-ruby]等の中は触らない）
+    // 要素は保持したまま、その中のテキストノードを処理する。
     [...el.childNodes].forEach(walk);
+    if (el.isConnected) this._adjustTcyAlignment(el);
+  }
+
+  _adjustTcyAlignment(root = this.host) {
+    if (!root?.isConnected || this.doc?.editor?.viewMode !== 'vertical') return;
+    const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+    root.querySelectorAll('.sn2-tcy > .sn2-tcy-glyph').forEach(glyph => {
+      // Chromiumの縦中横は、圧縮する文字列によって字形の中心が枠から
+      // ずれる。文字・フォントごとの固定値ではなく、実際の描画位置を測る。
+      // inline要素の矩形は子の相対位置を含むことがある。補正前の枠を
+      // 基準に測り直し、再描画やフォント変更で補正が累積しないようにする。
+      glyph.style.removeProperty('--sn2-tcy-center-shift');
+      const box = glyph.parentElement.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(glyph);
+      const text = range.getBoundingClientRect();
+      if (!(box.width > 0) || !(text.width > 0)) return;
+      const delta = ((text.left + text.right) - (box.left + box.right)) / (2 * z);
+      if (Math.abs(delta) > 0.01) glyph.style.setProperty('--sn2-tcy-center-shift', -delta + 'px');
+    });
   }
 
   // === 行タイプ判定 ===
@@ -4233,16 +4274,18 @@ class ScriptNoteEditor {
   // B-MANGA と同じJIS系配置・隣接衝突解決をCSS座標へ反映する。
   _adjustRubySpacing() {
     if (!this.host) return;
+    this._adjustTcyAlignment(this.host);
     const model = typeof MeldexRubyPresentation !== 'undefined' ? MeldexRubyPresentation : null;
     if (!model) return;
     model.refreshRubyNodes(this);
     const presentation = model.ensureDocument(this.doc);
     const isVertical = this.doc?.editor?.viewMode === 'vertical';
-    const spans = this.host.querySelectorAll('.sn2-text [data-ruby]');
+    const spans = this.host.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
     if (!spans.length) return;
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
     const rows = new Map();
     const spanToInfo = new Map();
+    const cells = new Map();
     spans.forEach((span, index) => {
       const rect = span.getBoundingClientRect();
       const parentStart = (isVertical ? rect.top : rect.left) / z;
@@ -4260,7 +4303,9 @@ class ScriptNoteEditor {
       info.span = span;
       info.groupId = span.dataset.rubyGroupId || `span-${index}`;
       const crossStart = (isVertical ? rect.left : rect.top) / z;
-      const lineKey = Math.round(crossStart * 2) / 2;
+      const cell = span.closest('.sn2-text, .sn2-custom-text');
+      if (!cells.has(cell)) cells.set(cell, cells.size);
+      const lineKey = `${cells.get(cell)}:${Math.round(crossStart * 2) / 2}`;
       info._lineKey = lineKey;
       if (!rows.has(lineKey)) rows.set(lineKey, []);
       rows.get(lineKey).push(info);
@@ -4920,6 +4965,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
       if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
+      this._rebindRoleFilters?.(
+        [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
+        [...data.scenarioTypes, ...data.characters],
+      );
       this.doc.fileType = data.fileType;
       this.doc.version = data.version;
       this.doc.title = data.title;
@@ -4968,6 +5017,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _refreshDetailPanel() {
+    if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="scriptnote"]')
+      && typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('scriptnote');
     const container = document.getElementById('detail-tab-sn2-main');
     if (!container) return;
     const panel = container.querySelector('.sn2-detail-wrap');
@@ -7384,6 +7435,38 @@ Object.assign(ScriptNoteEditor.prototype, {
 
 Object.assign(ScriptNoteEditor.prototype, {
 
+  _setFilterPresetSelection(value) {
+    const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
+    if (filterPreset) {
+      if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
+        const opt = document.createElement('option');
+        opt.value = '__custom__';
+        opt.textContent = 'カスタム';
+        filterPreset.insertBefore(opt, filterPreset.options[1] || null);
+      }
+      filterPreset.value = value;
+    }
+    const comp = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent() : null;
+    if (comp?._editor === this) comp._activeFilterPreset = value;
+    this._activeFilterPreset = value;
+  },
+
+  _rebindRoleFilters(beforeRoles, afterRoles) {
+    const namesById = new Map(afterRoles.filter(item => item?.id).map(item => [item.id, item.name]));
+    const renamed = new Map(beforeRoles
+      .filter(item => namesById.has(item?.id) && namesById.get(item.id) !== item.name)
+      .map(item => [item.name, namesById.get(item.id)]));
+    let changed = false;
+    for (const key of ['_filterRoles', '_hideRoles']) {
+      const values = this[key];
+      if (!(values instanceof Set) || ![...values].some(name => renamed.has(name))) continue;
+      this[key] = new Set([...values].map(name => renamed.get(name) ?? name));
+      changed = true;
+    }
+    // 保存済みプリセットは他文書でも使う名前ベースの条件なので書き換えない。
+    if (changed) this._setFilterPresetSelection('__custom__');
+  },
+
   _isRoleVisible(roleOrRow, statusValue = '') {
     const row = roleOrRow && typeof roleOrRow === 'object' ? roleOrRow : null;
     const role = row ? String(row.role || '') : String(roleOrRow || '');
@@ -7425,21 +7508,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       anchorBtn?.classList?.toggle('active', hasAnyFilter());
     };
 
-    const setPresetSelection = (value) => {
-      const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
-      if (filterPreset) {
-        if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
-          const opt = document.createElement('option');
-          opt.value = '__custom__';
-          opt.textContent = 'カスタム';
-          filterPreset.insertBefore(opt, filterPreset.options[1] || null);
-        }
-        filterPreset.value = value;
-      }
-      const comp = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent() : null;
-      if (comp?._editor === this) comp._activeFilterPreset = value;
-      this._activeFilterPreset = value;
-    };
+    const setPresetSelection = value => this._setFilterPresetSelection(value);
 
     const markCustomFilter = () => setPresetSelection('__custom__');
 
@@ -8893,6 +8962,15 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._markDirty();
       this._render();
     };
+    const rename = (method, item, name) => {
+      if (this._readOnly) throw new Error('編集ロック中のため変更できません');
+      const before = { id: item.id, name: item.name };
+      const result = invoke(method,
+        [doc, item.id, String(name || '').trim()],
+        () => { item.name = checkedName(name, item); return item; });
+      this._rebindRoleFilters?.([before], [item]);
+      return result;
+    };
     return {
       model,
       types: doc.scenarioTypes,
@@ -8945,16 +9023,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         );
         return character;
       },
-      renameType: (type, name) => invoke(
-        'renameType',
-        [doc, type.id, String(name || '').trim()],
-        () => { type.name = checkedName(name, type); return type; },
-      ),
-      renameCharacter: (character, name) => invoke(
-        'renameCharacter',
-        [doc, character.id, String(name || '').trim()],
-        () => { character.name = checkedName(name, character); return character; },
-      ),
+      renameType: (type, name) => rename('renameType', type, name),
+      renameCharacter: (character, name) => rename('renameCharacter', character, name),
       setCharacterType: (character, typeId) => invoke(
         'setCharacterType',
         [doc, character.id, typeId || null],
@@ -9457,6 +9527,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       openColorPalette(color, character.nameColor || 'transparent', nextColor => {
         this._pushUndo('キャラ名前色変更');
         character.nameColor = nextColor || 'transparent';
+        if (!character.typeId && character.legacyAppearance) {
+          character.legacyAppearance.roleStyle = {
+            ...(character.legacyAppearance.roleStyle || {}), textColor: character.nameColor,
+          };
+        }
         color.dataset.color = character.nameColor;
         color.style.background = character.nameColor;
         adapter.touch();
@@ -10635,11 +10710,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       };
       const scanFolder = async (folder, depth = 0) => {
         const path = String(folder?.path || '');
-        if (!path || visited.has(path) || depth > 4) return;
+        if (visited.has(path) || depth > 4) return;
         visited.add(path);
         const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true');
         if ((folder.type === 'database' || folder.type === 'folder') && isCharacterDbFolder(folder)) {
-          const pages = (entries || []).filter(it => it.type === 'page' || it.type === 'entity');
+          // browseの物理ファイル一覧ではSQLite内のエントリを取得できない。
+          // 新旧シート共通のpivotから名前を読み、説明ファイルを候補に含めない。
+          const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(path) + '&tree_only=true');
+          if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) {
+            throw new Error('シートのエントリを取得できませんでした');
+          }
+          const pages = Object.keys(pivot.entities).filter(name => name.trim()).map(name => ({ name }));
           if (pages.length) addPageGroup(folder, pages);
         }
         const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
@@ -10649,9 +10730,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const roots = await apiFetch('/outliner-roots');
         if (!Array.isArray(roots) || !roots.length) throw new Error('フォルダツリーがありません');
         for (const root of roots) {
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true');
-          const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
-          for (const folder of dbFolders) await scanFolder(folder, 0);
+          await scanFolder({ ...root, type: root.type || 'folder' }, -1);
         }
         if (!treeHost.children.length) {
           const empty = document.createElement('div');
@@ -11719,7 +11798,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!this.doc.editor) this.doc.editor = {};
     if (!this.doc.editor.columnStyles) this.doc.editor.columnStyles = {};
     const style = this.doc.editor.columnStyles[colId] = { ...(this.doc.editor.columnStyles[colId] || {}) };
-    const resetStyle = colId === '_gutter2' ? { bgColor: '#333333' } : {};
+    const resetStyle = colId === '_gutter2' ? { bgColor: SCRIPTNOTE_DEFAULT_TYPE_BG } : {};
     const fields = [
       'textColor', 'fontSize', 'fontFamily', 'bold', 'italic',
       'textStrokeColor', 'textStrokeWidth', 'bgColor', 'leftAccent', 'underline', 'accentColor',
@@ -12735,8 +12814,12 @@ function _snRubyConfirmDelete(message) {
 Object.assign(ScriptNoteEditor.prototype, {
 
   _refreshAutoRubyDisplay() {
-    this.host?.querySelectorAll('.sn2-text').forEach((textEl) => {
+    this.host?.querySelectorAll('.sn2-text, .sn2-custom-text').forEach((textEl) => {
+      textEl.querySelectorAll('.sn2-tcy, .sn2-tcy-wide').forEach(span => {
+        span.replaceWith(document.createTextNode(span.textContent));
+      });
       if (typeof this._applyAutoRuby === 'function') this._applyAutoRuby(textEl);
+      if (this.doc.editor?.viewMode === 'vertical') this._wrapTcy(textEl);
     });
     if (typeof this._adjustRubySpacing === 'function') this._adjustRubySpacing();
   },
@@ -12959,8 +13042,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       textInp.title = '自動ルビ対象';
       textInp.className = 'gb-input-sm sn2-ruby-rule-input';
       textInp.addEventListener('change', () => {
+        if (this._readOnly || !this.doc.rubyRules?.[i]) return;
         this._pushUndo('ルビルール編集');
-        rule.text = textInp.value.trim();
+        // 保存・タイプ正規化で配列が置き換わるため、描画時のruleを
+        // 更新せず、操作時の文書から対象を引き直す。
+        this.doc.rubyRules[i].text = textInp.value.trim();
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
       });
@@ -12980,8 +13066,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       rubyInp.title = '自動ルビ';
       rubyInp.className = 'gb-input-sm sn2-ruby-rule-input';
       rubyInp.addEventListener('change', () => {
+        if (this._readOnly || !this.doc.rubyRules?.[i]) return;
         this._pushUndo('ルビルール編集');
-        rule.ruby = rubyInp.value.trim();
+        this.doc.rubyRules[i].ruby = rubyInp.value.trim();
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
       });
@@ -12996,10 +13083,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       delBtn.setAttribute('aria-label', '自動ルビルールを解除 ' + (i + 1));
       delBtn.innerHTML = _snRubyIcon('trash2', 13, '解除');
       delBtn.addEventListener('click', async () => {
-        const ok = await _snRubyConfirmDelete(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を解除しますか？`);
+        const current = this.doc.rubyRules?.[i];
+        if (this._readOnly || !current) return;
+        const path = this._path;
+        const expected = { text: current.text, ruby: current.ruby };
+        const ok = await _snRubyConfirmDelete(`ルビルール「${current.text || '(空)'}→${current.ruby || '(空)'}」を解除しますか？`);
         if (!ok) return;
+        const target = this.doc.rubyRules?.[i];
+        if (this._readOnly || this._path !== path || !item.isConnected
+          || !target || target.text !== expected.text || target.ruby !== expected.ruby) return;
         this._pushUndo('ルビルール解除');
-        autoRules.splice(i, 1);
+        this.doc.rubyRules.splice(i, 1);
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
         this.renderRubyPanel(container);

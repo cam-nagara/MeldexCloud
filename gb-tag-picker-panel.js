@@ -341,12 +341,15 @@
       buildHeader: _buildHeader,
       buildBody: _buildBody,
       onClose: () => {
+        document.removeEventListener('pointerdown', _closeOnOutside, true);
+        const trigger = _ctx.anchor;
         _loadRevision += 1;
         _ctx.ownerKey = '';
         _listEl = null;
         _toolbarEl = null;
         _titleEl = null;
         _statusEl = null;
+        syncTriggerButton(trigger, '');
       },
     });
     return _base;
@@ -363,6 +366,7 @@
       matchMode: opts.matchMode === 'any' ? 'any' : 'all',
       onChange: typeof opts.onChange === 'function' ? opts.onChange : null,
       anchor: opts.anchor instanceof Element ? opts.anchor : null,
+      closeOnOutside: opts.closeOnOutside === true,
     };
     _selected = new Set(_ctx.tagIds);
     if (_titleEl) _titleEl.textContent = _ctx.headerLabel;
@@ -390,12 +394,22 @@
     return isOpen() ? _ctx.ownerKey : '';
   }
 
+  function _closeOnOutside(event) {
+    if (!_ctx.closeOnOutside || !isOpen()) return;
+    if (_base.getElement()?.contains(event.target) || _ctx.anchor?.contains(event.target)) return;
+    close();
+  }
+
   // 同時に開くのは1つ。別の入口から開いたら対象を差し替えて開き直す。
   function open(options) {
     const base = _base_();
     const wasOpen = base.isOpen();
+    const previousAnchor = _ctx.anchor;
     base.open();
     _applyContext(options);
+    if (previousAnchor && previousAnchor !== _ctx.anchor) syncTriggerButton(previousAnchor, '');
+    document.removeEventListener('pointerdown', _closeOnOutside, true);
+    if (_ctx.closeOnOutside) document.addEventListener('pointerdown', _closeOnOutside, true);
     const anchor = options?.anchor;
     if (anchor?.getBoundingClientRect && !base.isMobileSheetActive()) {
       const anchorRect = anchor.getBoundingClientRect();
@@ -409,6 +423,7 @@
       });
     }
     if (!wasOpen) base.focus();
+    syncTriggerButton(_ctx.anchor, _ctx.ownerKey);
     return base.getElement();
   }
 
@@ -417,7 +432,8 @@
   }
 
   function toggle(options) {
-    if (isOpen() && currentOwnerKey() === String(options?.ownerKey || '')) {
+    if (isOpen() && currentOwnerKey() === String(options?.ownerKey || '')
+        && (!options?.anchor || options.anchor === _ctx.anchor)) {
       close();
       return false;
     }

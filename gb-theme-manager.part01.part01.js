@@ -315,6 +315,7 @@
     { id: THEME_UI_PROP_ACCENT, label: '線/アクセント色' },
   ]);
   const PALETTE_TARGET_SPECS = Object.freeze([
+    ['.gb-btn, .tb-btn, #chat-send-btn, #team-send-btn', 'button'],
     ['.left-chrome-command-trigger, .left-chrome-user, .left-chrome-help, .left-chrome-trash, .left-chrome-settings, .left-chrome-floating-btn', 'left-chrome'],
     ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'panel-tab'],
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
@@ -475,7 +476,7 @@
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#51813d', '--ui-accent-fg': '#000000',
+    '--ui-accent': '#6fa85a', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
@@ -777,7 +778,7 @@
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
     // Bulk colors share one resolved color across variable-backed and selector-backed UI.
-    if (/^var:--(?:bg|fg|fg2|border|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
+    if (/^var:--(?:bg|fg|fg2|border|theme-slot-text-color|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
     if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
       const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();
@@ -834,6 +835,8 @@
     DEFAULT_THEME_KEY,
     'editor-theme-name',
     CUSTOM_THEMES_KEY,
+    PROMOTED_INITIAL_THEMES_KEY,
+    THEME_CUSTOM_CLEANUP_VERSION_KEY,
     THEME_COLOR_SET_KEY,
     THEME_COLOR_SLOT_SETTINGS_KEY,
     THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY,
@@ -871,7 +874,10 @@
 
   function _refreshThemeSettingsAfterHistory(keys) {
     const changed = new Set(keys || THEME_SETTINGS_HISTORY_KEYS);
-    if (changed.has(DEFAULT_THEME_KEY) || changed.has('editor-theme-name') || changed.has(CUSTOM_THEMES_KEY)) {
+    if (changed.has(CUSTOM_THEMES_KEY) || changed.has(PROMOTED_INITIAL_THEMES_KEY) || changed.has(THEME_CUSTOM_CLEANUP_VERSION_KEY)) {
+      _initialThemeCleanupDone = false;
+    }
+    if (changed.has(DEFAULT_THEME_KEY) || changed.has('editor-theme-name') || changed.has(CUSTOM_THEMES_KEY) || changed.has(PROMOTED_INITIAL_THEMES_KEY)) {
       const themeDef = getThemeById(getDefaultThemeId());
       _withThemeSettingsHistorySuppressed(() => applyThemeToDocument(themeDef, { preserveStoredThemeUi: true }));
       scheduleBoardRender();
@@ -951,6 +957,15 @@
     const nextSectionBar = src?.['section-bar']?.normal?.underline;
     if (legacySectionBar !== undefined && nextSectionBar === undefined) {
       base['section-bar'].normal.underline = _normalizeThemeUiValue(legacySectionBar);
+    }
+    // Older bulk settings could pin identical literal foreground/background
+    // colors on headings. They conceal the text even after the preset changes.
+    // Remove only that unusable pair; retain distinct custom backgrounds.
+    const heading = base['note-heading']?.normal;
+    if (heading && /^color:#[0-9a-f]{6}$/i.test(heading.fg)
+      && heading.fg.toLowerCase() === heading.bg.toLowerCase()) {
+      heading.fg = THEME_UI_VALUE_NONE;
+      heading.bg = THEME_UI_VALUE_NONE;
     }
     return base;
   }

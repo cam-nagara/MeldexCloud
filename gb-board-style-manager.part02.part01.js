@@ -1148,7 +1148,8 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
 // 旧モーダルは廃止し、オプションパネルの階層別スタイルタブに切り替える (コミットC)。
 // window._bdPendingDepthStyleIndex が明示的に指定されていればそのインデックスを初期選択として
 // タブを再描画する。未指定の場合は現在の描画状態を尊重し、強制的にインデックス 0 へリセットしない。
-function bdOpenDepthStyleManager() {
+function bdOpenDepthStyleManager(source) {
+  if (typeof _openDetailRightPanel === 'function' && _openDetailRightPanel(source) === false) return;
   if (typeof bdEnsureDepthStyles === 'function') bdEnsureDepthStyles();
   if (typeof _bdEnsureBoardStyleManagerTabs === 'function') _bdEnsureBoardStyleManagerTabs();
   if (typeof showBoardTabs === 'function') showBoardTabs({ depthStyle: true });

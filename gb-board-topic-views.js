@@ -187,7 +187,11 @@
     const { document: result, view } = findMixedView(document, ref);
     if (!view) throw new RangeError('View was not found');
     const makeId = settings.idFactory || (() => defaultIdFactory('sheet-view'));
-    const duplicate = { ...clone(view), viewId: makeId('sheet-view'), name: `${view.name} のコピー` };
+    const used = new Set(result.sheetViews.map(item => item.name));
+    const baseName = `${view.name} のコピー`;
+    let name = baseName; let suffix = 2;
+    while (used.has(name)) { name = `${baseName} ${suffix}`; suffix += 1; }
+    const duplicate = { ...clone(view), viewId: makeId('sheet-view'), name };
     result.sheetViews.push(duplicate);
     const sourceIndex = result.viewOrder.findIndex(item => item.surface === 'sheet' && item.viewId === ref.viewId);
     result.viewOrder.splice(sourceIndex + 1, 0, { surface: 'sheet', viewId: duplicate.viewId });
@@ -269,6 +273,7 @@
     result.boardViews.splice(index + 1, 0, duplicate);
     result.viewOrder.push({ surface: 'board', viewId: duplicate.boardViewId });
     result.activeViewRef = { surface: 'board', viewId: duplicate.boardViewId };
+    result.activeBoardViewId = duplicate.boardViewId;
     return { document: result, activeBoardViewId: duplicate.boardViewId, boardView: clone(duplicate) };
   }
 
@@ -384,6 +389,21 @@
       const icon = surface === 'board' ? icons.board : (icons[viewMode] || icons.pivot);
       return typeof global.lucide === 'function' ? global.lucide(icon, 12) : '';
     };
+    // タブの横スクロール領域からメニューをtop layerへ出して、切り取りを防ぐ。
+    const bindMenu = (menu, panel) => {
+      if (typeof panel.showPopover !== 'function') return;
+      panel.setAttribute('popover', 'auto');
+      menu.addEventListener('toggle', () => {
+        if (!menu.isConnected) return;
+        if (menu.open) {
+          if (!panel.matches(':popover-open')) panel.showPopover();
+          global.positionPopup?.(panel, menu.querySelector('summary').getBoundingClientRect(), { gap: 4 });
+        } else if (panel.matches(':popover-open')) panel.hidePopover();
+      });
+      panel.addEventListener('toggle', () => {
+        if (!panel.matches(':popover-open')) menu.open = false;
+      });
+    };
     const beginRename = (tab, ref, name) => {
       if (settings.readOnly) return;
       const input = document.createElement('input'); input.type = 'text'; input.value = name;
@@ -403,7 +423,10 @@
       input.addEventListener('blur', () => finish(false));
       tab.replaceChildren(input); input.focus?.(); input.select?.();
     };
+    let lastLabelClick = null;
+    let addElement = null;
     const refresh = () => {
+      addElement?.remove();
       const doc = normalizeDocument(settings.getDocument());
       const current = activeRef();
       tabs.replaceChildren();
@@ -431,8 +454,17 @@
         const labelText = document.createElement('span');
         labelText.textContent = String(entry.name || (ref.surface === 'board' ? 'ボード' : 'シート'));
         label.appendChild(labelText);
-        label.disabled = false; label.addEventListener('click', () => activate(ref));
-        label.addEventListener('dblclick', event => { event.preventDefault(); beginRename(tab, ref, entry.name); });
+        label.disabled = false;
+        label.addEventListener('click', () => {
+          const now = Date.now();
+          const repeated = lastLabelClick?.surface === ref.surface && lastLabelClick?.viewId === ref.viewId
+            && now - lastLabelClick.time < 350;
+          lastLabelClick = { ...ref, time: now };
+          // 1回目の切替でタブDOMが再描画されるため、native dblclickでは判定できない。
+          if (repeated && !settings.readOnly) {
+            lastLabelClick = null; beginRename(tab, ref, entry.name);
+          } else activate(ref);
+        });
         const menu = document.createElement('details'); menu.className = 'bd-topic-view-overflow bd-common-view-menu';
         menu.dataset.e2eId = `board-common-view-menu-${refToken}`;
         const summary = document.createElement('summary'); summary.className = 'view-tab-more';
@@ -440,6 +472,7 @@
         summary.dataset.e2eId = `board-common-view-menu-trigger-${refToken}`;
         summary.setAttribute('aria-label', `${entry.name}のビュー操作`); menu.appendChild(summary);
         const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; menu.appendChild(panel);
+        bindMenu(menu, panel);
         const action = (text, run, disabled, actionId, refreshAfter = true) => {
           const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
           button.dataset.bdTopicViewMutation = actionId;
@@ -480,6 +513,7 @@
       addSummary.dataset.e2eId = 'board-common-view-add-trigger';
       addSummary.setAttribute('aria-label', 'ビューを追加'); add.appendChild(addSummary);
       const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu'; add.appendChild(addMenu);
+      bindMenu(add, addMenu);
       [['board', 'ボード', () => controller.add()], ['pivot', 'テーブル', () => controller.addSheet({ viewMode: 'pivot', name: 'テーブル' })],
         ['tree', 'ツリー', () => controller.addSheet({ viewMode: 'tree', name: 'ツリー' })]].forEach(([kind, text, run]) => {
         const button = document.createElement('button'); button.type = 'button'; button.disabled = settings.readOnly === true;
@@ -488,7 +522,8 @@
         button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
         button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
       });
-      tabs.appendChild(add);
+      root.appendChild(add);
+      addElement = add;
     };
     select.addEventListener('change', () => {
       const entry = orderedViews(normalizeDocument(settings.getDocument()))[Number(select.value)];

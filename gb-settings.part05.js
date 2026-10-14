@@ -192,15 +192,9 @@ function _settingsThemeApplyAccentColor(color) {
   const keys = typeof MeldexThemeManager !== 'undefined'
     ? MeldexThemeManager.THEME_OS_ACCENT_STYLE_KEYS || []
     : ['--accent', '--accent2', '--blue', '--ui-accent'];
-  const textKeys = typeof MeldexThemeManager !== 'undefined'
-    ? MeldexThemeManager.THEME_OS_ACCENT_TEXT_STYLE_KEYS || []
-    : ['--ui-selection-fg', '--ui-accent-fg'];
-  const textColor = typeof MeldexThemeManager?.getAccentTextColor === 'function'
-    ? MeldexThemeManager.getAccentTextColor(value)
-    : '#ffffff';
   const explicitKeys = typeof settingsThemeExplicitColorKeys === 'function' ? settingsThemeExplicitColorKeys() : new Set();
   keys.forEach(key => { if (!explicitKeys.has(key)) root.style.setProperty(key, value.toLowerCase()); });
-  textKeys.forEach(key => { if (!explicitKeys.has(key)) root.style.setProperty(key, textColor); });
+  // アクセントの変更で、別途設定した選択文字やボタン文字の色を上書きしない。
   if (!explicitKeys.has('--ui-accent')) root.style.setProperty('--ui-accent', value.toLowerCase());
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
   if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
@@ -658,8 +652,21 @@ function _settingsThemePreviewSupplement(appId) {
   const auto = (MeldexThemeManager.THEME_UI_TARGETS || []).filter(target =>
     target.app ? ownSections.has(target.app)
       : appId === 'main' || !windowOnly.has(target.id)
-  ).map(target => `<button type="button" class="settings-theme-preview-target" data-style-id="palette/${esc(target.id)}" data-style-label="${esc(target.label)}" data-theme-ui-target-id="${esc(target.id)}" data-theme-ui-state-id="normal" data-action="openStylePreviewPopup(this)" aria-label="${esc(target.label)}の状態別配色">${esc(target.label)}</button>`).join('');
+  ).map(_settingsThemePreviewPaletteTarget).join('');
   return `<details class="settings-theme-extra-elements"><summary data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+}
+
+function _settingsThemePreviewPaletteTarget(target) {
+  const native = {
+    'collapse-button': ['gb-dock-icon', 'panelLeftClose'],
+    'left-chrome': ['left-chrome-floating-btn', 'settings'],
+    'folder': ['tree-node-row file-row', 'fileText'],
+    'folder-tree-folder': ['tree-node-row folder-row', 'folder'],
+  }[target.id];
+  const classes = native ? `${native[0]} settings-theme-preview-hotspot` : 'settings-theme-preview-target';
+  const content = native ? lucide(native[1], 20) + (target.id.startsWith('folder') ? `<span class="tree-label">${esc(target.label)}</span>` : '') : esc(target.label);
+  const tag = native && target.id.startsWith('folder') ? 'div' : 'button';
+  return `<${tag}${tag === 'button' ? ' type="button"' : ' role="button" tabindex="0"'} class="${classes}"${native ? ' data-style-preview-native="1"' : ''} data-style-id="palette/${esc(target.id)}" data-style-label="${esc(target.label)}" data-theme-ui-target-id="${esc(target.id)}" data-theme-ui-state-id="normal" data-action="openStylePreviewPopup(this)" title="${esc(target.label)}の状態別配色" aria-label="${esc(target.label)}の状態別配色">${content}</${tag}>`;
 }
 
 function settingsThemePreviewExtraControls(def, previewEl) {
@@ -713,6 +720,7 @@ const SETTINGS_THEME_PREVIEW_RIGHT_RAIL = Object.freeze([
 function _settingsThemePreviewThemeUiTarget(stableId, section, label) {
   const id = String(stableId || '');
   if (/^folder\/(card|border|hover|selected)$/.test(id)) return 'folder-panel-folder';
+  if (id.startsWith('chrome/global/')) return 'left-chrome';
   if (id.startsWith('chrome/rail/')) return 'collapse-button';
   if (id.startsWith('chrome/pane/tab/')) return 'panel-tab';
   if (id.startsWith('chrome/sheet/view/')) return 'inner-tab';
@@ -796,7 +804,7 @@ function _settingsThemePreviewTree() {
     ${sectionHeader('source', 'ソースフォルダ', true)}
     <div class="sidebar-section-body" role="tree" aria-label="ソースフォルダ">
       ${treeRow('Meldex プロジェクト', 'folderOpen', { folder: true })}
-      <div class="tree-children">${treeRow('原稿', 'folderOpen', { folder: true, child: true })}${treeRow('第一話.md', 'fileText', { child: true, selected: true })}${treeRow('資料', 'folder', { folder: true, child: true })}</div>
+      <div class="tree-children">${treeRow('原稿', 'folderOpen', { folder: true, child: true })}${treeRow('第一話.md', 'fileText', { child: true, selected: true })}${treeRow('メモ.md', 'fileText', { child: true })}${treeRow('資料', 'folder', { folder: true, child: true })}</div>
     </div>
   </div>`;
 }
@@ -857,8 +865,14 @@ function _settingsThemePreviewRail(side, activeId) {
   return `<aside class="settings-theme-preview-rail settings-theme-preview-rail--${side} settings-theme-preview-panel-surface gb-dock-bar gb-dock-bar-fixed gb-dock-bar-${side}" aria-label="${isLeft ? 'アプリ切替' : '補助パネル切替'}"${_settingsThemePreviewSurfaceAttributes(`surface/rail/${side}`, `${isLeft ? '左' : '右'}レールの背景`, '--ui-dockbar-bg', 'surface-dock')}>
     <div class="gb-rail-shell-top"><button type="button" class="gb-dock-icon gb-dock-rail-toggle" data-preview-panel-toggle="${side}"${_settingsThemePreviewInteractiveAttributes(`chrome/rail/${side}/toggle`, '共通', 'ボタン', `settingsThemePreviewPanelToggle('${side}',this)`)} title="${isLeft ? '左サイドバー' : '右サイドバー'}を閉じる／クリックで書式設定" aria-label="${isLeft ? '左サイドバー' : '右サイドバー'}を閉じる" aria-expanded="true">${toggleIcon}</button><div class="gb-dock-rail-separator"></div></div>
     <div class="gb-rail-shell-scroll">${topButtons.map(([id, label, icon]) => _settingsThemePreviewRailButton(side, id, label, icon, activeId)).join('')}</div>
-    <div class="gb-rail-shell-bottom">${bottomButtons.map(([id, label, icon]) => _settingsThemePreviewRailButton(side, id, label, icon, activeId)).join('')}</div>
+    <div class="gb-rail-shell-bottom">${isLeft ? _settingsThemePreviewGlobalActions() : bottomButtons.map(([id, label, icon]) => _settingsThemePreviewRailButton(side, id, label, icon, activeId)).join('')}</div>
   </aside>`;
+}
+
+function _settingsThemePreviewGlobalActions() {
+  return [['user', 'ユーザー設定', 'user'], ['command', 'コマンドパレット', 'command'], ['help', 'ヘルプ', 'helpCircle'], ['trash', 'ゴミ箱', 'trash2'], ['settings', '設定', 'settings']].map(([id, label, icon]) =>
+    `<button type="button" class="left-chrome-floating-btn settings-theme-preview-hotspot"${_settingsThemePreviewInteractiveAttributes(`chrome/global/${id}`, '共通', 'ボタン')} title="${esc(label)}／クリックで書式設定" aria-label="${esc(label)}の書式設定">${lucide(icon, 20)}</button>`
+  ).join('');
 }
 
 function _settingsThemePreviewShell(appId, leftId = _settingsThemePreviewLeftRailId) {

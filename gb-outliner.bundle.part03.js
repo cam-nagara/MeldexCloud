@@ -1,3 +1,32 @@
+      childrenDiv._virtualOwnerContainer = parentVirtualContainer;
+      childrenDiv._virtualParentPath = item.path;
+    }
+    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
+    const currentIsFolder = item.type === 'folder';
+    const currentIsDB = item.type === 'database';
+    if (!currentIsFolder && !currentIsDB) {
+      row.click();
+      return;
+    }
+    const expanded = toggle.dataset.expanded === 'true';
+    if (!expanded) {
+      toggle.classList.add('expanded');
+      toggle.dataset.expanded = 'true';
+      // 作品フォルダ動的アイコン切替（icon-implementation-plan §D）
+      if (currentIsFolder) {
+        const iconEl = row.querySelector('.tree-icon');
+        if (iconEl) {
+          const isWork = item.path === getWorkFolder();
+          iconEl.innerHTML = lucide(isWork ? 'folderOpenDot' : 'folderOpen', 18);
+          if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+        }
+      }
+      // 展開前に既存子ノードにフィルタを適用（チラつき防止）
+      childrenDiv.querySelectorAll(':scope > .tree-node').forEach(cn => {
+        const d = cn._nodeData;
+        if (!d || d._isRoot || d.type === 'folder') return;
+        if (d.type === 'database') { cn.style.display = _showDatabaseByGlobalFilter() ? '' : 'none'; return; }
+        if (d.type === 'entity') { cn.style.display = _showEntityByGlobalFilter() ? '' : 'none'; return; }
         cn.style.display = _showRegularNodeByGlobalFilter(d) ? '' : 'none';
       });
       childrenDiv.classList.remove('collapsed');
@@ -14,28 +43,20 @@
         const spinner = document.createElement('div');
         spinner.className = 'tree-spinner';
         spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
-        childrenDiv.appendChild(spinner);
+        const spinnerTimer = setTimeout(() => {
+          if (childrenDiv.isConnected && childrenDiv.dataset.loading === 'true') childrenDiv.appendChild(spinner);
+        }, 150);
+        const loadToken = {};
+        childrenDiv._outlinerLoadToken = loadToken;
+        let warmItems = [];
         try {
           if (currentIsDB) {
-            const [pivotData] = await Promise.all([
-              apiFetch('/pivot?path=' + encodeURIComponent(item.path)),
-              window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, {
-                reason: 'outliner-expand',
-              }) || Promise.resolve(null),
-            ]);
+            const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true', { foreground: true });
             window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
-            // entities が undefined でも TypeError にならないようガード
-            const entityNames = Object.keys(pivotData?.entities || {}).sort();
-            const entityItems = entityNames.map(name => ({
-              name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
-              entityData: pivotData.entities[name],
-            }));
-            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
-            const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
-            if (attachmentFolder) {
-              entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
-            }
+            const entityItems = _outlinerSheetTreeItems(item, pivotData);
+            warmItems = entityItems;
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
+            _scheduleOutlinerSheetProjection(childrenDiv, item, pivotData, rootPath, loadToken);
           } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
             const serverSorts = new Set(['name', 'modified', 'created']);
@@ -60,9 +81,11 @@
             if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
             else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
+            warmItems = visibleChildren;
           }
           delete childrenDiv.dataset.loadError;
           childrenDiv.dataset.loaded = 'true';
+          _scheduleOutlinerChildWarmup(childrenDiv, warmItems, rootPath);
           // グローバルフィルタを新規読み込みノードに適用（常時）
           childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
             const d = node._nodeData;
@@ -123,6 +146,7 @@
           delete childrenDiv._outlinerPendingArrowRightFocusNode;
         }
         finally {
+          clearTimeout(spinnerTimer);
           delete childrenDiv.dataset.loading;
           spinner.remove();
         }
@@ -165,6 +189,12 @@
       // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
+      return;
+    }
+
+    if (e.detail < 2 && e.target.closest('.tree-label') === label && treeSelection.has(div)
+        && window.GBOutlinerActivation?.startRenameForNode(div, label, item)) {
+      e.stopPropagation();
       return;
     }
 
@@ -621,6 +651,128 @@ function clearDragIndicators() {
   });
 }
 
+function _outlinerSheetTreeItems(item, pivotData) {
+  const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
+    name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+    entityData: pivotData.entities[name],
+  }));
+  const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+  if (attachmentFolder) items.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+  return items;
+}
+
+const _outlinerWarmQueue = [];
+const _outlinerWarmKeys = new Set();
+let _outlinerWarmRunning = false;
+
+function _scheduleOutlinerChildWarmup(container, items, rootPath) {
+  // Warm one level, at most four visible branches, one local read at a time.
+  // Never initiate Dropbox API downloads/migrations while merely listing rows.
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+  const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
+  let added = 0;
+  for (const item of items) {
+    if (added >= 4 || _outlinerWarmQueue.length >= 12) break;
+    const node = nodes.get(item.path);
+    if (!node || node.style.display === 'none' || item.needsMapping === true || !['folder', 'database'].includes(item.type)) continue;
+    let path;
+    if (item.type === 'database') path = '/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true';
+    else {
+      const sortCfg = getSortForFolder(item.path);
+      const serverSorts = new Set(['name', 'modified', 'created']);
+      const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+      const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+      path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
+        + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
+        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true';
+    }
+    if (_outlinerWarmKeys.has(path)) continue;
+    _outlinerWarmKeys.add(path);
+    _outlinerWarmQueue.push({ path, node });
+    added++;
+  }
+  if (_outlinerWarmRunning) return;
+  _outlinerWarmRunning = true;
+  setTimeout(async () => {
+    try {
+      while (_outlinerWarmQueue.length) {
+        const next = _outlinerWarmQueue.shift();
+        try {
+          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
+            background: true, silentError: true,
+            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
+          });
+        } catch (_) { /* A foreground click retries through the normal error path. */ }
+        finally { _outlinerWarmKeys.delete(next.path); }
+      }
+    } finally { _outlinerWarmRunning = false; }
+  }, 0);
+}
+
+function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
+  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
+    child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
+  const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
+  // Navigation must paint before a migration reads/writes the entire Topic store.
+  setTimeout(async () => {
+    if (!container.isConnected || container._outlinerLoadToken !== loadToken) return;
+    try {
+      const result = await window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, { reason: 'outliner-expand' });
+      const refresh = () => {
+      if (result?.ok === false || !container.isConnected || container._outlinerLoadToken !== loadToken
+          || container.dataset.loaded !== 'true') return;
+      if (container.querySelector('input, [contenteditable="true"]')) {
+        container.addEventListener('focusout', () => setTimeout(refresh, 0), { once: true });
+        return;
+      }
+      const lastClickedPath = treeSelection.lastClicked?._nodeData?.path;
+      const restoreFocus = container.contains(document.activeElement);
+      const vr = window.GBOutlinerVirtualRender;
+      const currentItems = vr?.stateChildItemsFor?.(container, item.path)
+        || Array.from(container.querySelectorAll(':scope > .tree-node'), node => node._nodeData).filter(Boolean);
+      // A user rename/add/delete while migration was pending takes precedence.
+      if (signature(currentItems) !== initialSignature) return;
+      window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
+      const nextItems = _outlinerSheetTreeItems(item, pivotData);
+      const byPath = new Map(currentItems.map(child => [child.path, child]));
+      const nextPaths = new Set(nextItems.map(child => child.path));
+      const merged = nextItems.map(child => {
+        const existing = byPath.get(child.path);
+        if (existing) { Object.assign(existing, child); return existing; }
+        return child;
+      });
+      if (vr?.isVirtualContainer?.(container)) {
+        currentItems.forEach(child => {
+          if (!nextPaths.has(child.path)) vr.removeFromContainer(container, child.path);
+        });
+        vr.dropInto(container, merged);
+      } else {
+        const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
+        nodes.forEach((node, path) => {
+          if (nextPaths.has(path)) return;
+          treeSelection.remove(node);
+          if (treeSelection.lastClicked === node) treeSelection.lastClicked = container.parentElement;
+          _unregisterTreeSubtree(node);
+          node.remove();
+        });
+        merged.forEach(child => container.appendChild(nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath)));
+      }
+      applyGlobalFilter();
+      _snapshotBaseTreeVisibility();
+      if (typeof applyTreeNameSearch === 'function') applyTreeNameSearch();
+      const selectedNode = Array.from(container.querySelectorAll(':scope > .tree-node')).find(node => node._nodeData?.path === lastClickedPath);
+      if (selectedNode) {
+        treeSelection.lastClicked = selectedNode;
+        if (restoreFocus) selectedNode.querySelector(':scope > .tree-node-row')?.focus({ preventScroll: true });
+      }
+      };
+      refresh();
+    } catch (error) {
+      console.warn('[フォルダツリー] トピック情報の後追い読込に失敗:', item.path, error);
+    }
+  }, 0);
+}
+
 // DOMからツリー構造をJSON化
 function domToTree(container) {
   const tree = [];
@@ -746,155 +898,3 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
     try {
       const payload = await apiPost('/outliner/delete-batch', {
         items: batchTargets.map(item => ({
-          path: item.path,
-          kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
-          ...(item.assetId ? { assetId: item.assetId } : {}),
-        })),
-        ...confirmationPayload,
-      });
-      const batchResults = Array.isArray(payload?.results) ? payload.results : [];
-      if (batchResults.length === batchTargets.length) {
-        return batchResults.map((entry, index) => {
-          const item = batchTargets[index];
-          if (entry?.ok) {
-            const value = entry.value || { ok: true };
-            const trashRef = _outlinerTrashRefFromResponse(value);
-            if (trashRef && typeof options.onSuccess === 'function') {
-              try { options.onSuccess(item, value); } catch {}
-            }
-            return { status: 'fulfilled', value };
-          }
-          const reason = entry?.detail || entry?.error || '削除に失敗しました';
-          if (typeof options.onFailure === 'function') {
-            try { options.onFailure(item, reason); } catch {}
-          }
-          return { status: 'rejected', reason };
-        });
-      }
-    } catch {}
-  }
-  const results = [];
-  for (const item of targets) {
-    try {
-      const value = await apiPost('/outliner/delete', {
-        path: item.path,
-        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
-        ...(item.assetId ? { assetId: item.assetId } : {}),
-        ...confirmationPayload,
-      });
-      results.push({ status: 'fulfilled', value });
-      const trashRef = _outlinerTrashRefFromResponse(value);
-      if (trashRef && typeof options.onSuccess === 'function') {
-        try { options.onSuccess(item, value); } catch {}
-      }
-    } catch (reason) {
-      results.push({ status: 'rejected', reason });
-      if (typeof options.onFailure === 'function') {
-        try { options.onFailure(item, reason); } catch {}
-      }
-    }
-  }
-  return results;
-}
-
-function _removeOutlinerNodesForPaths(paths) {
-  const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
-  if (!deletedPaths.length) return;
-  // 同じ項目はホーム、ワークスペース、固定ソース、仮想化ツリーなど複数面に
-  // 現れ得る。コンテナIDを限定すると削除中の複製だけが残るため、安定pathを
-  // 持つ全ツリーノードを同時に隠す。
-  const allTreeNodes = document.querySelectorAll('.tree-node');
-  allTreeNodes.forEach(nodeEl => {
-    const path = nodeEl?._nodeData?.path || nodeEl?.dataset?.path || nodeEl?._virtualPath || '';
-    if (!path) return;
-    const normalizedPath = _normalizeOutlinerPathForCompare(path);
-    if (deletedPaths.some(dp => (
-      _isOutlinerPathWithin(normalizedPath, dp)
-      || normalizedPath.endsWith('/' + dp)
-      || normalizedPath.includes('/' + dp + '/')
-    ))) {
-      if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(nodeEl);
-      nodeEl.remove();
-    }
-  });
-}
-
-function _removeFolderItemsForPaths(paths) {
-  const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
-  if (!deletedPaths.length) return;
-  const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(path, dp));
-
-  document.querySelectorAll('#folder-grid .fv-item').forEach(itemEl => {
-    const path = itemEl?.dataset?.path || '';
-    if (path && matches(path)) itemEl.remove();
-  });
-
-  if (typeof _folderItems !== 'undefined' && Array.isArray(_folderItems)) {
-    _folderItems = _folderItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderVisibleItems !== 'undefined' && Array.isArray(_folderVisibleItems)) {
-    _folderVisibleItems = _folderVisibleItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderSelectedItems !== 'undefined' && Array.isArray(_folderSelectedItems)) {
-    _folderSelectedItems = _folderSelectedItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderSelected !== 'undefined' && _folderSelected && matches(_folderSelected.path)) {
-    _folderSelected = _folderSelectedItems?.[_folderSelectedItems.length - 1] || null;
-  }
-
-  const countEl = document.getElementById('folder-item-count');
-  if (countEl && typeof _folderVisibleItems !== 'undefined' && typeof _folderItems !== 'undefined') {
-    countEl.textContent = _folderVisibleItems.length + (_folderItems.length !== _folderVisibleItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
-  }
-  if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
-  if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
-  if (typeof _scheduleWaterfallLayout === 'function') _scheduleWaterfallLayout();
-}
-
-function _markOutlinerDeletePending(paths) {
-  const pendingPaths = _setOutlinerDeletePending(paths, true);
-  if (!pendingPaths.length) return pendingPaths;
-  _removeOutlinerNodesForPaths(pendingPaths);
-  _removeFolderItemsForPaths(pendingPaths);
-  if (typeof purgeAppPathReferences === 'function') {
-    purgeAppPathReferences(pendingPaths);
-  }
-  return pendingPaths;
-}
-
-function _clearOutlinerDeletePending(paths) {
-  return _setOutlinerDeletePending(paths, false);
-}
-
-function _outlinerTrashRefFromResponse(response) {
-  if (!response?.trash_name) return null;
-  return { trash_name: response.trash_name, trash_root: response.trash_root || '' };
-}
-
-function _outlinerTrashRefsToNames(refs) {
-  return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
-}
-
-async function _restoreOutlinerTrashRefs(refs) {
-  const restored = [];
-  for (const ref of refs || []) {
-    if (!ref?.trash_name) continue;
-    try {
-      const result = await apiPost('/outliner/restore', {
-        trash_name: ref.trash_name,
-        ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
-      });
-      restored.push(result);
-    } catch (error) {
-      const message = error?.message ? String(error.message) : '復元に失敗しました';
-      throw new Error(ref.trash_name + ' の復元に失敗しました: ' + message);
-    }
-  }
-  return restored;
-}
-
-async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
-  if (typeof refresh === 'function') {
-    await refresh(phase, result);
-    return;
-  }

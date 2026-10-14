@@ -1492,7 +1492,7 @@
 
   internals._rejectImportLockedPropertyEdit = _rejectImportLockedPropertyEdit;
 
-  async function _ensureFolderNote(provider, folderPath, type) {
+  async function _ensureFolderNote(provider, folderPath, type, displayTitle) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
     if (!name) throw new Error('フォルダパスが不正です');
@@ -1501,6 +1501,7 @@
     const existing = await _readFrontmatterFile(provider, note);
     const frontmatter = { ...(existing.frontmatter || {}) };
     if (!frontmatter.type) frontmatter.type = type || 'settings-db';
+    if (displayTitle) frontmatter.display_title = displayTitle;
     // 制作管理シート（制作管理/シート/*）は「物理.md＝正」が全ロジック（Cloud/Desktopの
     // 一覧・重複チェック・再計算・同期フック）の不変条件のため、sheet-store化しない
     // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 1）。
@@ -2187,7 +2188,7 @@
       }));
     });
     return {
-      entity: _sheetStoreEntityName(path),
+      entity: parsed.frontmatter.display_title || _sheetStoreEntityName(path),
       path,
       properties,
       page_content: String(parsed.body || '').trim(),
@@ -2206,7 +2207,7 @@
       if (String(fm.type || '') !== 'settings-entry') return;
       const fileName = _sheetStoreFileName(row.file_name || row.path || row.name);
       const filePath = _joinPath(base, fileName);
-      const entityName = _sheetStoreEntityName(row.name || fileName);
+      const entityName = typeof fm.display_title === "string" && fm.display_title ? fm.display_title : _sheetStoreEntityName(row.name || fileName);
       const pivotRow = _entityRowFromEntry(filePath, entityName, fm, filters);
       Object.keys(pivotRow).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
       entities[entityName] = pivotRow;
@@ -2223,7 +2224,7 @@
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
-    const entity = {};
+    const entity = { _entry_path: entryPath };
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
     if (frontmatter.modified_by) entity._modified_by = String(frontmatter.modified_by);
@@ -2297,7 +2298,7 @@
       if (type === 'settings-entry') {
         const row = _entityRowFromEntry(filePath, item.name.replace(/\.md$/i, ''), parsed.frontmatter, filters);
         Object.keys(row).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
-        entities[item.name.replace(/\.md$/i, '')] = row;
+        entities[parsed.frontmatter.display_title || item.name.replace(/\.md$/i, '')] = row;
       } else if (type === 'calendar-event') {
         const row = {};
         CALENDAR_DB_FIELDS.forEach((field) => {
@@ -2316,7 +2317,7 @@
             candidate_index: 0,
           }];
         });
-        entities[item.name.replace(/\.md$/i, '')] = row;
+        entities[parsed.frontmatter.display_title || item.name.replace(/\.md$/i, '')] = row;
       }
     }
     const result = {
@@ -2698,7 +2699,8 @@
 
   async function _createEntity(provider, body) {
     const parent = _normalizeFolderPath(body?.parent_path || '');
-    const name = _safeFileStem(body?.name || '', '無題');
+    const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
+    const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
     if (!parent || !name) throw new Error('parent_path, name は必須です');
     _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
@@ -2707,6 +2709,9 @@
     // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
     await _repairProductionSheetStoreIfNeeded(provider, parent);
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
+    if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
+      const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
+    }
     const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
@@ -2714,6 +2719,7 @@
     const frontmatter = {
       type: 'settings-entry',
       id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
+      ...(rawTitle !== name ? {display_title:rawTitle} : {}),
       category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
@@ -2748,11 +2754,37 @@
 
   async function _renameEntity(provider, body) {
     const path = _normalizeFolderPath(body?.path || '');
-    const newName = _safeFileStem(body?.new_name || '', '');
+    const newName = window.GBPathUtils?.displayTitle?.validate(body?.new_name || '') || _safeFileStem(body?.new_name || '', '');
     const expectedEntryId = String(body?.expected_entry_id || '');
     const operationId = String(body?.operation_id || '');
     if (!path || !newName) throw new Error('path, new_name は必須です');
     _rejectProductionStructureMutation(path, '名前変更');
+    const titleHelperAvailable = window.GBPathUtils?.displayTitle;
+    const previousTitleEntry = titleHelperAvailable ? await _readSheetStoreEntry(provider,path).catch(() => null) : null;
+    const previousTitleParsed = previousTitleEntry || (titleHelperAvailable ? await _readFrontmatterFile(provider,path).catch(() => null) : null);
+    if (window.GBPathUtils?.isDisplayTitleRename('/entity/rename',body) || typeof previousTitleParsed?.frontmatter?.display_title === 'string') {
+      const storedTitleEntry = previousTitleEntry;
+      const parsed = previousTitleParsed || await _readFrontmatterFile(provider,path);
+      const fm = {...parsed.frontmatter};
+      if (fm.type !== 'settings-entry') throw new Error('settings-entry ではありません');
+      if (expectedEntryId && fm.id && expectedEntryId !== fm.id) {
+        const error=new Error('別のエントリへ変更されています'); error.status=409; error.code='ENTRY_ID_CONFLICT'; throw error;
+      }
+      const pivot = await _readPivot(provider,_dirname(path));
+      const other = pivot.entities?.[newName];
+      if (other && other._entry_path !== path) { const error=new Error('同じ名前のトピックが既にあります'); error.status=409; throw error; }
+      await _requireUnlocked(provider,path,{action:'rename-entity-title'});
+      fm.display_title=newName;
+      const history=_sharedEditHistory();
+      return _trackSharedEdit(history,provider,{
+        path,currentContent:{frontmatter:parsed.frontmatter,body:parsed.body||''},nextContent:{frontmatter:fm,body:parsed.body||''},
+        actor:history?.actor?.(null,body||{})||null,exists:true,snapshotPath:_dirname(path),snapshotKind:'folder',fileKind:'settings-entry',
+      },async () => {
+        if (storedTitleEntry) await _writeSheetStoreEntryOnly(provider,path,fm,parsed.body||'');
+        else await _writeEntity(provider,path,fm,parsed.body||'');
+        return {ok:true,new_path:path,new_name:newName,title_only:true,entry_id:fm.id||expectedEntryId,operation_id:operationId};
+      });
+    }
     const requestedDest = _joinPath(
       _dirname(path),
       newName + (_basename(path).toLowerCase().endsWith('.md') ? '.md' : '')
@@ -6172,22 +6204,23 @@
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
+      const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.label || '無題') || String(body?.label || '無題');
+      const label = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _validateItemName(rawTitle,'label');
       const type = String(body?.type || '');
       await _requireUnlocked(provider, parent, { action: 'outliner-add-parent' });
       if (type === 'database') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-database' });
-        await _ensureFolderNote(provider, path, 'settings-db');
-        return { ok: true, node: { type: 'database', label: name, path } };
+        await _ensureFolderNote(provider, path, 'settings-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'database', label: rawTitle !== label ? rawTitle : name, path } };
       }
       if (type === 'calendar') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-calendar' });
-        await _ensureFolderNote(provider, path, 'calendar-db');
-        return { ok: true, node: { type: 'calendar', label: name, path } };
+        await _ensureFolderNote(provider, path, 'calendar-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'calendar', label: rawTitle !== label ? rawTitle : name, path } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }

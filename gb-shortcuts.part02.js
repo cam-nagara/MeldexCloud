@@ -166,21 +166,10 @@
       openFolderItem(_folderSelected);
     }
   },
-  'explorer.rename': async () => {
+  'explorer.rename': () => {
     if (state.view !== 'folder') return false;
-    if (typeof _folderSelected === 'undefined' || !_folderSelected) return;
-    const newName = await cfPrompt('新しい名前:', _folderSelected.name);
-    if (newName && newName !== _folderSelected.name) {
-      const oldPath = _folderSelected.path;
-      try {
-        const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: _folderSelected.type || 'page' });
-        if (typeof showStatus === 'function') showStatus('リネーム: ' + newName);
-        if (res?.new_path && typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newName);
-        if (typeof _folderPath !== 'undefined' && _folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
-      } catch (err) {
-        if (typeof showStatus === 'function') showStatus('リネームに失敗', true);
-      }
-    }
+    if (typeof _folderSelected === 'undefined' || !_folderSelected) return false;
+    return typeof _folderStartRename === 'function' && _folderStartRename(_folderSelected);
   },
   // パネルセット: アクティブペインが属する panelset の N 番目のドックに切替
   'panelset.group1': () => _switchPanelsetGroupByIndex(1),

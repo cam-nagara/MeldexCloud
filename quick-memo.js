@@ -18,13 +18,12 @@
     flushRequested: false,
     share: null,
     currentMode: 'text',
-    allTags: [],
     selectedTags: [],
     selectedTagIds: [],
     tagIdsByName: {},
     commonTagColors: {}, // 共通タグ由来の候補: 名前 → 色（#rrggbb、無ければ空文字）。スウォッチ表示用
     tagCatalog: { tags: [], groups: [] },
-    defaultPresetTagNames: [], // 既定プリセット（標準）に属するタグ名。候補帯の並び順3段目に使う
+    tagCatalogError: '',
     voiceTimerInterval: null,
     voiceStartTime: 0,
     voicePausing: false,
@@ -90,6 +89,7 @@
     applyHostUi();
     const controllerErrors = setupControllers();
     await hydrateDurableRecords();
+    await hydrateQuickMemoTags();
     restoreDraft();
     const shareAccepted = await applyIncomingShare();
     bindEvents();
@@ -315,7 +315,23 @@
     on(els.voiceResumeBtn, 'click', resumeVoiceRecording);
     on(els.voiceStopBtn, 'click', stopVoiceRecording);
     window.addEventListener('online', flushPendingQueue);
+    window.addEventListener('online', () => syncQuickMemoTags());
+    window.addEventListener('focus', () => syncQuickMemoTags());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') syncQuickMemoTags();
+    });
+    ['meldex:standalone-cloud-ready', 'meldex:standalone-auth-changed', 'meldex:dropbox-auth-session-changed']
+      .forEach(type => window.addEventListener(type, () => {
+        quickMemoTagSyncGeneration += 1;
+        syncQuickMemoTags();
+      }));
     window.addEventListener('meldex:tag-dictionary-changed', () => loadTags());
+    window.addEventListener('storage', (event) => {
+      if (event.key !== QUICK_MEMO_TAG_SYNC_KEY && event.key !== quickMemoTagStorageKey()) return;
+      failedLocalWrites.delete(event.key);
+      renderTagChips();
+      syncQuickMemoTags();
+    });
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
     // フロートパネルのリサイズ（本体埋め込み時）でも横スクロールのフェード表示を
     // 追随させる。iframeの表示領域が変わればcontentWindowのresizeが発火する。
@@ -1323,20 +1339,225 @@
 
   // --- タグチップ ---------------------------------------------------------
   //
-  // 候補帯は辞書の全件（同梱標準プリセットだけで1,000件）を並び順のまま描画すると
-  // 上下が見切れて中央付近しか見えなくなる問題があった。1行・横スクロールへ直した
-  // 上で（gb-quick-memo-panel/quick-memo.css側）、候補の選出基準を持たせる:
-  //   1. 現在このメモに付いているタグ（常に先頭・常に表示）
-  //   2. 最近このユーザーが付けたタグ（この端末のlocalStorageで管理）
-  //   3. 2が無い新規環境では、既定プリセット（標準）に属するタグ
-  //   4. 残りは辞書の並び順
-  // 選択状態は背景色の変化だけでなく、色に依存しないチェック印も併用する。
-  // （2026-08-14 画像以外の自動タグ付け／タグ候補帯の仕様是正 計画書 Phase 1-3）
+  // 上部の候補は、Dropbox個人設定で同期するクイックメモタグだけに限定する。
+  // 共通タグの選択と専用一覧への登録は別操作とし、共通辞書へ書き込まない。
 
+  const QUICK_MEMO_TAGS_KEY = 'meldex:quick-memo:tag-catalog:v1';
+  const QUICK_MEMO_TAG_SYNC_KEY = 'meldex:quick-memo:tag-sync:v1';
+  const QUICK_MEMO_TAG_PREFERENCE = '/personal-preferences/quick-memo-tags';
   const RECENT_TAG_NAMES_KEY = 'meldex:quick-memo:recent-tags:v1';
   const RECENT_TAG_NAMES_LIMIT = 24;
   const TAG_RAIL_DISPLAY_LIMIT = 16;
-  const DEFAULT_TAG_PRESET_NAME = '標準';
+  let quickMemoTagSavePromise = Promise.resolve();
+  let quickMemoTagSyncPromise = null;
+  let quickMemoTagSyncAgain = false;
+  let quickMemoTagSyncGeneration = 0;
+  let quickMemoTagSyncMessage = 'Dropboxに接続すると登録一覧を同期します';
+  let quickMemoTagSyncRetry = false;
+
+  function normalizeQuickMemoTags(value) {
+    const seen = new Set();
+    return (Array.isArray(value) ? value : []).flatMap((item) => {
+      const name = String(item?.name || '').trim();
+      if (!name || seen.has(name)) return [];
+      seen.add(name);
+      const color = /^#[0-9a-f]{6}$/i.test(String(item?.color || '')) ? item.color : '';
+      return [{ name, color }];
+    });
+  }
+
+  function quickMemoTags() {
+    return normalizeQuickMemoTags(readJson(quickMemoTagStorageKey(), []));
+  }
+
+  function quickMemoTagStorageKey(scope = readJson(QUICK_MEMO_TAG_SYNC_KEY, {})?.activeScope) {
+    return scope ? `${QUICK_MEMO_TAGS_KEY}:account:${encodeURIComponent(scope)}` : QUICK_MEMO_TAGS_KEY;
+  }
+
+  async function persistQuickMemoTagRecord(key, value) {
+    let localOk = false;
+    let previousLocal = null;
+    try { previousLocal = localStorage.getItem(key); } catch {}
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      localOk = true;
+    } catch {}
+    const store = window.MeldexStandaloneLocalDrafts;
+    const durable = store?.putRaw ? Promise.resolve().then(async () => {
+      await store.putRaw(`quick-memo:${key}`, value);
+      if (key === QUICK_MEMO_TAG_SYNC_KEY) {
+        await store.putRaw(`quick-memo:recovery:${key}`, localOk ? null : { value, previousLocal });
+      }
+    }) : null;
+    if (!localOk) {
+      if (!durable) throw new Error('クイックメモタグを端末に保存できませんでした');
+      await durable;
+      failedLocalWrites.add(key);
+    } else {
+      failedLocalWrites.delete(key);
+      durable?.catch(() => {});
+    }
+    durableMemory.set(key, structuredClone(value));
+  }
+
+  function mutateQuickMemoTags(action) {
+    const save = quickMemoTagSavePromise.then(action);
+    quickMemoTagSavePromise = save.catch(() => {});
+    return save;
+  }
+
+  async function readDurableQuickMemoTags(key) {
+    const local = normalizeQuickMemoTags(readJson(key, []));
+    const store = window.MeldexStandaloneLocalDrafts;
+    if (!store?.getRaw) return local;
+    const saved = await Promise.race([
+      store.getRaw(`quick-memo:${key}`, null),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('端末のタグを読み込めないため同期を保留しています')), 1500)),
+    ]);
+    if (saved != null && !Array.isArray(saved)) throw new Error('端末のタグ形式を読み込めませんでした');
+    return normalizeQuickMemoTags([...local, ...normalizeQuickMemoTags(saved)]);
+  }
+
+  async function hydrateQuickMemoTags() {
+    const store = window.MeldexStandaloneLocalDrafts;
+    if (!store?.getRaw) return;
+    for (const key of new Set([QUICK_MEMO_TAGS_KEY, quickMemoTagStorageKey()])) {
+      const saved = await Promise.race([
+        store.getRaw(`quick-memo:${key}`, null).catch(() => null),
+        new Promise(resolve => setTimeout(() => resolve(null), 1500)),
+      ]);
+      if (!Array.isArray(saved)) continue;
+      const merged = normalizeQuickMemoTags([...normalizeQuickMemoTags(readJson(key, [])), ...saved]);
+      durableMemory.set(key, merged);
+      try {
+        localStorage.setItem(key, JSON.stringify(merged));
+        failedLocalWrites.delete(key);
+      } catch {
+        failedLocalWrites.add(key);
+      }
+    }
+  }
+
+  function registerQuickMemoTag(name, color = '') {
+    const save = mutateQuickMemoTags(async () => {
+      const existing = quickMemoTags();
+      const next = normalizeQuickMemoTags([...existing, { name, color }]);
+      if (next.length === existing.length) return;
+      await persistQuickMemoTagRecord(quickMemoTagStorageKey(), next);
+      renderTagChips();
+    });
+    save.then(() => { syncQuickMemoTags(); }, () => {});
+    return save;
+  }
+
+  async function requestQuickMemoTagPreference(options = {}) {
+    if (isCloudMode() && !cloudConnected()) return { available: false };
+    let fetcher = null;
+    try {
+      if (window.parent !== window && window.parent?.location?.origin === location.origin
+        && typeof window.parent.apiFetch === 'function') fetcher = window.parent.apiFetch;
+    } catch {}
+    if (!fetcher && typeof window.apiFetch === 'function') fetcher = window.apiFetch;
+    if (fetcher) return fetcher(QUICK_MEMO_TAG_PREFERENCE, { silentError: true, ...options });
+    if (typeof fetch !== 'function') return { available: false };
+    const response = await fetch(API_BASE + '/api' + QUICK_MEMO_TAG_PREFERENCE, options);
+    const data = await response.json();
+    if (!response.ok) throw Object.assign(new Error(data?.detail || data?.error || `HTTP ${response.status}`), { status: response.status });
+    return data;
+  }
+
+  function notifyQuickMemoTagSync(message, retry = false) {
+    quickMemoTagSyncMessage = message;
+    quickMemoTagSyncRetry = retry;
+    window.dispatchEvent?.(new CustomEvent('meldex:quick-memo-tag-sync'));
+  }
+
+  function mergeQuickMemoTags(remote, local) {
+    return normalizeQuickMemoTags([...remote, ...local])
+      .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  }
+
+  async function syncQuickMemoTagsNow(generation) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const remote = await requestQuickMemoTagPreference();
+      if (generation !== quickMemoTagSyncGeneration) return { stale: true };
+      if (remote?.available !== true) {
+        notifyQuickMemoTagSync('Dropbox未接続です。登録一覧は端末に保存しています');
+        return { available: false };
+      }
+      const scope = String(remote.scopeId || '');
+      if (!scope) throw new Error('Dropboxアカウントの保存先を確認できませんでした');
+      const payload = remote.exists ? remote.payload : { schemaVersion: 1, tags: [] };
+      if (payload?.schemaVersion !== 1 || !Array.isArray(payload?.tags)
+        || payload.tags.some(tag => typeof tag?.name !== 'string' || !tag.name.trim()
+          || (tag.color != null && tag.color !== '' && !/^#[0-9a-f]{6}$/i.test(tag.color)))) {
+        await mutateQuickMemoTags(async () => {
+          if (generation !== quickMemoTagSyncGeneration) return;
+          const previous = readJson(QUICK_MEMO_TAG_SYNC_KEY, {}) || {};
+          await persistQuickMemoTagRecord(QUICK_MEMO_TAG_SYNC_KEY, { ...previous, activeScope: scope });
+          renderTagChips();
+        });
+        throw new Error('同期先のタグ形式を読み込めないため、上書きしていません');
+      }
+      const merged = await mutateQuickMemoTags(async () => {
+        if (generation !== quickMemoTagSyncGeneration) return null;
+        const syncState = readJson(QUICK_MEMO_TAG_SYNC_KEY, {}) || {};
+        const key = quickMemoTagStorageKey(scope);
+        // アカウント未所属の旧登録は、最初に接続したアカウントにだけ引き継ぐ。
+        const legacy = syncState.migrationScope ? [] : await readDurableQuickMemoTags(QUICK_MEMO_TAGS_KEY);
+        const local = await readDurableQuickMemoTags(key);
+        const next = mergeQuickMemoTags(payload.tags, [...local, ...legacy]);
+        await persistQuickMemoTagRecord(key, next);
+        if (generation !== quickMemoTagSyncGeneration) return null;
+        await persistQuickMemoTagRecord(QUICK_MEMO_TAG_SYNC_KEY, {
+          ...syncState, activeScope: scope, migrationScope: syncState.migrationScope || scope,
+        });
+        renderTagChips();
+        return next;
+      });
+      if (!merged || generation !== quickMemoTagSyncGeneration) return { stale: true };
+      if (JSON.stringify(mergeQuickMemoTags(payload.tags, [])) === JSON.stringify(merged)) {
+        notifyQuickMemoTagSync('Dropboxの同期領域に保存済みです');
+        return { available: true, pushed: false };
+      }
+      try {
+        const result = await requestQuickMemoTagPreference({
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload: { ...payload, tags: merged },
+            expectedRevision: remote.revision || null, expectedScopeId: scope }),
+        });
+        if (generation !== quickMemoTagSyncGeneration) return { stale: true };
+        if (result?.available !== true || result?.ok !== true || result.scopeId !== scope) {
+          throw new Error('Dropboxへ保存できませんでした');
+        }
+        notifyQuickMemoTagSync('Dropboxの同期領域に保存済みです');
+        return { available: true, pushed: true };
+      } catch (error) {
+        const conflict = Number(error?.status || error?.response?.status) === 409
+          || error?.name === 'SystemStorageConflictError' || error?.code === 'system_storage_conflict';
+        if (!conflict || attempt === 2) throw error;
+      }
+    }
+  }
+
+  function syncQuickMemoTags() {
+    if (quickMemoTagSyncPromise) {
+      quickMemoTagSyncAgain = true;
+      return quickMemoTagSyncPromise;
+    }
+    quickMemoTagSyncPromise = syncQuickMemoTagsNow(quickMemoTagSyncGeneration)
+      .catch(error => {
+        notifyQuickMemoTagSync('タグの同期待ちです: ' + (error?.message || error), true);
+        return { pending: true, error };
+      }).finally(() => {
+        quickMemoTagSyncPromise = null;
+        if (quickMemoTagSyncAgain) {
+          quickMemoTagSyncAgain = false;
+          syncQuickMemoTags();
+        }
+      });
+    return quickMemoTagSyncPromise;
+  }
 
   function _loadRecentTagNames() {
     try {
@@ -1360,7 +1581,8 @@
 
   // 選出基準に沿って候補の並び順を作る（重複なし・存在するタグのみ）。
   function _tagRailCandidateOrder() {
-    const known = new Set([...state.allTags, ...state.selectedTags]);
+    const registered = quickMemoTags().map(tag => tag.name);
+    const known = new Set(registered);
     const seen = new Set();
     const ordered = [];
     const push = (name) => {
@@ -1371,8 +1593,7 @@
     };
     state.selectedTags.forEach(push);
     _loadRecentTagNames().forEach(push);
-    (state.defaultPresetTagNames || []).forEach(push);
-    state.allTags.forEach(push);
+    registered.forEach(push);
     return ordered;
   }
 
@@ -1388,46 +1609,23 @@
     return response.json();
   }
 
-  async function _createUnifiedTag(name) {
-    const payload = { name, presets: ['標準'], auto_assign: false };
-    if (window.MeldexGlobalTags?.createTag) {
-      return window.MeldexGlobalTags.createTag(payload);
-    }
-    if (typeof window.apiPost === 'function') {
-      return window.apiPost('/global-tags', payload, { silentError: true });
-    }
-    const response = await fetch(API_BASE + '/api/global-tags', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) throw new Error('タグを追加できませんでした');
-    return response.json();
-  }
-
   function _applyUnifiedTagCatalog(data) {
     const tags = Array.isArray(data?.tags) ? data.tags : [];
     const groups = Array.isArray(data?.groups) ? data.groups : [];
     const groupsById = Object.fromEntries(groups.map(group => [group.id, group]));
     const nextColors = {};
     const nextIds = {};
-    const names = [];
-    const defaultPresetNames = [];
     tags.forEach((tag) => {
       const name = String(tag?.name || '').trim();
       if (!name) return;
       const groupColor = String(groupsById[tag.group_id]?.color || '').trim();
-      names.push(name);
       nextColors[name] = groupColor || String(tag?.color || '').trim();
       nextIds[name] = String(tag?.id || '');
-      const presets = Array.isArray(tag?.presets) ? tag.presets.map(preset => String(preset || '')) : [];
-      if (!presets.length || presets.includes(DEFAULT_TAG_PRESET_NAME)) defaultPresetNames.push(name);
     });
-    state.allTags = [...new Set(names)];
     state.tagCatalog = { tags: [...tags], groups: [...groups] };
     state.commonTagColors = nextColors;
     state.tagIdsByName = nextIds;
-    state.defaultPresetTagNames = [...new Set(defaultPresetNames)];
+    state.tagCatalogError = '';
     state.selectedTagIds = state.selectedTags
       .map(name => nextIds[name])
       .filter(Boolean);
@@ -1435,26 +1633,17 @@
   }
 
   async function _loadTagsNow() {
+    renderTagChips();
+    syncQuickMemoTags();
     if (isCloudMode() && !cloudConnected()) return;
     try {
-      let data = await _loadUnifiedTagCatalog();
-      const existing = new Set((data?.tags || []).map(tag => String(tag?.name || '').trim()).filter(Boolean));
-      const missing = [...new Set(state.selectedTags.map(tag => String(tag || '').trim()).filter(Boolean))]
-        .filter(tag => !existing.has(tag));
-      for (const name of missing) {
-        try {
-          await _createUnifiedTag(name);
-        } catch (error) {
-          if (!String(error?.message || error).includes('重複')) throw error;
-        }
-      }
-      if (missing.length) data = await _loadUnifiedTagCatalog();
-      _applyUnifiedTagCatalog(data);
+      _applyUnifiedTagCatalog(await _loadUnifiedTagCatalog());
     } catch (error) {
       const detail = String(error?.userMessage || error?.message || error);
       const message = /404|file not found|failed to fetch|network/i.test(detail)
-        ? 'タグ辞書はMeldexへ接続すると利用できます'
-        : 'タグ辞書を読み込めませんでした: ' + detail.slice(0, 160);
+        ? '共通タグはMeldexへ接続すると利用できます'
+        : '共通タグを読み込めませんでした: ' + detail.slice(0, 160);
+      state.tagCatalogError = message;
       setStatus(message, !/接続すると利用できます/.test(message));
     }
   }
@@ -1467,22 +1656,17 @@
 
   function _buildTagChip(tag) {
     const isSelected = state.selectedTags.includes(tag);
-    const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
-    const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
-    const record = (state.tagCatalog?.tags || []).find(item => String(item?.name || '') === tag)
-      || { name: tag, color: commonColor || '' };
-    const groupsById = Object.fromEntries((state.tagCatalog?.groups || []).map(group => [group.id, group]));
+    const record = quickMemoTags().find(item => item.name === tag) || { name: tag, color: '' };
     const chip = window.MeldexGlobalTags?.createTagChip
       ? window.MeldexGlobalTags.createTagChip(record, {
-          groupsById,
-          className: 'qm-tag-chip' + (isSelected ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : ''),
-          title: isCommonTag ? `${tag}（統一タグ辞書）` : tag,
+          className: 'qm-tag-chip' + (isSelected ? ' is-selected' : ''),
+          title: `${tag}（クイックメモタグ）`,
           ariaLabel: `${tag}${isSelected ? '、選択中' : '、未選択'}`,
           onActivate: () => toggleTag(tag),
         })
       : document.createElement('span');
     if (!chip.classList.contains('gb-tag-chip')) {
-      chip.className = 'gb-tag-chip qm-tag-chip' + (isSelected ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : '');
+      chip.className = 'gb-tag-chip qm-tag-chip' + (isSelected ? ' is-selected' : '');
       chip.textContent = tag;
       chip.tabIndex = 0;
       chip.setAttribute('role', 'button');
@@ -1504,8 +1688,8 @@
     chip.setAttribute('role', 'button');
     chip.setAttribute('tabindex', '0');
     chip.textContent = `+${hiddenCount}`;
-    chip.title = `すべてのタグ（${allNames.length}件）\n${allNames.join('、')}`;
-    chip.setAttribute('aria-label', `残り${hiddenCount}件のタグを含むすべてのタグから選ぶ`);
+    chip.title = `クイックメモタグ（${allNames.length}件）\n${allNames.join('、')}`;
+    chip.setAttribute('aria-label', `残り${hiddenCount}件を含むクイックメモタグから選ぶ`);
     const openAll = () => { addNewTag(); };
     chip.addEventListener('click', openAll);
     chip.addEventListener('keydown', (event) => {
@@ -1529,7 +1713,7 @@
     if (!label || label.dataset.helpAttached === '1' || typeof window.fieldHelp !== 'function') return;
     label.dataset.helpAttached = '1';
     label.insertAdjacentHTML('beforeend', window.fieldHelp(
-      '付いているタグ→最近使ったタグ→よく使うタグの順に並びます。横スクロールで続きを見られます',
+      '登録したクイックメモタグだけを表示します。＋から専用タグの追加や共通タグの登録ができます',
     ));
   }
 
@@ -1882,13 +2066,49 @@
       dialog.setAttribute('aria-labelledby', 'qm-tag-picker-title');
       const title = document.createElement('h2');
       title.id = 'qm-tag-picker-title';
-      title.textContent = 'タグツリー';
+      title.textContent = 'タグ';
       const selectedCount = document.createElement('span');
       selectedCount.className = 'qm-tag-picker-count';
       selectedCount.setAttribute('aria-live', 'polite');
       const heading = document.createElement('div');
       heading.className = 'qm-tag-picker-heading';
       heading.append(title, selectedCount);
+      let source = 'quick-memo';
+      const sources = document.createElement('div');
+      sources.className = 'qm-tag-picker-sources';
+      sources.setAttribute('aria-label', '表示するタグ');
+      const quickMemoSource = document.createElement('button');
+      quickMemoSource.type = 'button';
+      quickMemoSource.textContent = 'クイックメモタグ';
+      const commonSource = document.createElement('button');
+      commonSource.type = 'button';
+      commonSource.textContent = '共通タグ';
+      sources.append(quickMemoSource, commonSource);
+      const hint = document.createElement('p');
+      hint.className = 'qm-tag-picker-hint';
+      const syncStatus = document.createElement('div');
+      syncStatus.className = 'qm-tag-sync-status';
+      syncStatus.setAttribute('role', 'status');
+      syncStatus.setAttribute('aria-live', 'polite');
+      const syncText = document.createElement('span');
+      const syncRetry = document.createElement('button');
+      syncRetry.type = 'button';
+      syncRetry.textContent = '同期を再試行';
+      syncStatus.append(syncText, syncRetry);
+      const updateSyncStatus = () => {
+        syncText.textContent = quickMemoTagSyncMessage;
+        syncRetry.hidden = !quickMemoTagSyncRetry;
+      };
+      syncRetry.addEventListener('click', () => {
+        syncRetry.disabled = true;
+        syncQuickMemoTags().finally(() => { syncRetry.disabled = false; });
+      });
+      updateSyncStatus();
+      window.addEventListener('meldex:quick-memo-tag-sync', updateSyncStatus);
+      const errorMessage = document.createElement('p');
+      errorMessage.className = 'qm-tag-picker-error';
+      errorMessage.setAttribute('role', 'alert');
+      errorMessage.hidden = true;
       const search = document.createElement('input');
       search.type = 'search';
       search.placeholder = 'タグを検索';
@@ -1901,8 +2121,8 @@
       createRow.className = 'qm-tag-picker-create';
       const createInput = document.createElement('input');
       createInput.type = 'text';
-      createInput.placeholder = '新しいタグ名';
-      createInput.setAttribute('aria-label', '新しいタグ名');
+      createInput.placeholder = '新しいクイックメモタグ名';
+      createInput.setAttribute('aria-label', '新しいクイックメモタグ名');
       const createButton = document.createElement('button');
       createButton.type = 'button';
       createButton.textContent = '追加';
@@ -1918,7 +2138,7 @@
       close.className = 'qm-primary';
       close.textContent = '閉じる';
       actions.append(clear, close);
-      dialog.append(heading, search, tree, createRow, actions);
+      dialog.append(heading, sources, hint, syncStatus, search, tree, createRow, errorMessage, actions);
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
       let finished = false;
@@ -1927,6 +2147,7 @@
         finished = true;
         overlay.remove();
         document.removeEventListener('keydown', onKeydown, true);
+        window.removeEventListener('meldex:quick-memo-tag-sync', updateSyncStatus);
         els.addTagBtn?.focus?.();
         resolve();
       };
@@ -1935,11 +2156,17 @@
       const updateCount = () => {
         selectedCount.textContent = `${state.selectedTags.length}件選択中`;
       };
-      const tagRow = (tag, depth) => {
+      const showError = error => {
+        errorMessage.textContent = '登録できませんでした: ' + (error?.message || error);
+        errorMessage.hidden = false;
+      };
+      const tagRow = (tag, depth, allowRegistration = false) => {
         const name = String(tag?.name || '').trim();
+        const row = document.createElement('div');
+        row.className = 'qm-tag-picker-row';
+        row.setAttribute('role', 'treeitem');
         const label = document.createElement('label');
         label.className = 'qm-tag-picker-tag';
-        label.setAttribute('role', 'treeitem');
         label.style.setProperty('--qm-tag-depth', String(depth));
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
@@ -1947,7 +2174,9 @@
         checkbox.setAttribute('aria-label', `${name}を${checkbox.checked ? '解除' : '選択'}`);
         const swatch = document.createElement('span');
         swatch.className = 'qm-tag-picker-swatch';
-        swatch.style.background = state.commonTagColors[name] || 'var(--qm-accent)';
+        const color = source === 'common' || allowRegistration
+          ? state.commonTagColors[name] || '' : tag.color || '';
+        swatch.style.background = color || 'var(--qm-accent)';
         const text = document.createElement('span');
         text.textContent = name;
         checkbox.addEventListener('change', () => {
@@ -1957,11 +2186,67 @@
           updateCount();
         });
         label.append(checkbox, swatch, text);
-        return label;
+        row.appendChild(label);
+        if (allowRegistration) {
+          const register = document.createElement('button');
+          register.type = 'button';
+          register.className = 'qm-tag-picker-register';
+          const registered = quickMemoTags().some(item => item.name === name);
+          register.textContent = registered ? '登録済み' : '登録';
+          register.disabled = registered;
+          register.setAttribute('aria-label', `${name}をクイックメモタグに登録`);
+          register.title = 'クイックメモタグに登録';
+          register.addEventListener('click', async () => {
+            register.disabled = true;
+            errorMessage.hidden = true;
+            try {
+              await registerQuickMemoTag(name, color);
+              register.textContent = '登録済み';
+            } catch (error) {
+              register.disabled = false;
+              showError(error);
+            }
+          });
+          row.appendChild(register);
+        }
+        return row;
       };
       const renderTree = () => {
         tree.innerHTML = '';
         const filter = search.value.trim().toLocaleLowerCase('ja');
+        const matches = tag => !filter || String(tag?.name || '').toLocaleLowerCase('ja').includes(filter);
+        quickMemoSource.setAttribute('aria-pressed', source === 'quick-memo' ? 'true' : 'false');
+        commonSource.setAttribute('aria-pressed', source === 'common' ? 'true' : 'false');
+        createRow.hidden = source !== 'quick-memo';
+        hint.textContent = source === 'quick-memo'
+          ? '上部には登録したクイックメモタグだけを表示します。'
+          : '共通タグはこのメモに選択できます。「登録」でクイックメモタグにも追加できます。';
+        if (source === 'quick-memo') {
+          const registered = quickMemoTags();
+          registered.filter(matches).forEach(tag => tree.appendChild(tagRow(tag, 0)));
+          const unregistered = state.selectedTags
+            .filter(name => !registered.some(tag => tag.name === name))
+            .map(name => ({ name }))
+            .filter(matches);
+          if (unregistered.length) {
+            const group = document.createElement('details');
+            group.className = 'qm-tag-picker-group';
+            group.open = true;
+            group.setAttribute('role', 'group');
+            const summary = document.createElement('summary');
+            summary.textContent = 'このメモだけのタグ';
+            group.append(summary, ...unregistered.map(tag => tagRow(tag, 1, true)));
+            tree.appendChild(group);
+          }
+          if (!tree.children.length) {
+            const empty = document.createElement('div');
+            empty.className = 'qm-tag-picker-empty';
+            empty.textContent = filter ? '一致するタグがありません' : 'クイックメモタグを追加するか、共通タグから登録してください';
+            tree.appendChild(empty);
+          }
+          updateCount();
+          return;
+        }
         const groups = [...(state.tagCatalog.groups || [])].sort(compare);
         const tags = [...(state.tagCatalog.tags || [])].sort(compare);
         const groupsByParent = new Map();
@@ -1988,7 +2273,7 @@
             .filter(Boolean);
           const tagNodes = (tagsByGroup.get(id) || [])
             .filter(tag => includeAll || String(tag?.name || '').toLocaleLowerCase('ja').includes(filter))
-            .map(tag => tagRow(tag, depth + 1));
+            .map(tag => tagRow(tag, depth + 1, true));
           if (filter && !ownMatched && !childNodes.length && !tagNodes.length) return null;
           const details = document.createElement('details');
           details.className = 'qm-tag-picker-group';
@@ -2006,7 +2291,7 @@
           .map(group => buildGroup(group, 0, false))
           .filter(Boolean)
           .forEach(node => tree.appendChild(node));
-        const ungrouped = (tagsByGroup.get('') || [])
+        const ungrouped = tags.filter(tag => !tag?.group_id || !rootIds.has(String(tag.group_id)))
           .filter(tag => !filter || String(tag?.name || '').toLocaleLowerCase('ja').includes(filter));
         if (ungrouped.length) {
           const details = document.createElement('details');
@@ -2014,13 +2299,13 @@
           details.open = true;
           const summary = document.createElement('summary');
           summary.textContent = '未分類';
-          details.append(summary, ...ungrouped.map(tag => tagRow(tag, 1)));
+          details.append(summary, ...ungrouped.map(tag => tagRow(tag, 1, true)));
           tree.appendChild(details);
         }
         if (!tree.children.length) {
           const empty = document.createElement('div');
           empty.className = 'qm-tag-picker-empty';
-          empty.textContent = '一致するタグがありません';
+          empty.textContent = state.tagCatalogError || (filter ? '一致するタグがありません' : '共通タグがありません');
           tree.appendChild(empty);
         }
         updateCount();
@@ -2029,16 +2314,16 @@
         const name = createInput.value.trim();
         if (!name) return;
         createButton.disabled = true;
+        errorMessage.hidden = true;
         try {
-          if (!state.allTags.includes(name)) await _createUnifiedTag(name);
-          await loadTags();
+          await registerQuickMemoTag(name);
           if (!state.selectedTags.includes(name)) toggleTag(name);
           _recordRecentTagName(name);
           createInput.value = '';
           search.value = name;
           renderTree();
         } catch (error) {
-          setStatus('タグを追加できませんでした: ' + (error?.message || error), true);
+          showError(error);
         } finally {
           createButton.disabled = false;
         }
@@ -2051,7 +2336,8 @@
           event.preventDefault();
           createTag();
         } else if (event.key === 'Tab') {
-          const focusable = Array.from(dialog.querySelectorAll('input, button, summary')).filter(item => !item.disabled);
+          const focusable = Array.from(dialog.querySelectorAll('input, button, summary'))
+            .filter(item => !item.disabled && item.getClientRects().length);
           const first = focusable[0];
           const last = focusable[focusable.length - 1];
           if (event.shiftKey && document.activeElement === first) {
@@ -2063,6 +2349,13 @@
           }
         }
       };
+      const setSource = next => {
+        source = next;
+        errorMessage.hidden = true;
+        renderTree();
+      };
+      quickMemoSource.addEventListener('click', () => setSource('quick-memo'));
+      commonSource.addEventListener('click', () => setSource('common'));
       search.addEventListener('input', renderTree);
       createButton.addEventListener('click', createTag);
       clear.addEventListener('click', () => {
@@ -2133,7 +2426,7 @@
   async function hydrateDurableRecords() {
     const store = window.MeldexStandaloneLocalDrafts;
     if (!store?.getRaw) return;
-    for (const key of [CURRENT_KEY, QUEUE_KEY]) {
+    for (const key of [CURRENT_KEY, QUEUE_KEY, QUICK_MEMO_TAG_SYNC_KEY]) {
       // IndexedDB の open/transaction がブラウザ側で応答しない場合でも、localStorage の
       // 下書きで編集UIを起動できるようにする。未完了のPromiseは後から解決してもここでは
       // 状態へ書き戻さないため、起動後の入力を古い値で上書きしない。

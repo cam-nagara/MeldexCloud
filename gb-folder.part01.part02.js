@@ -109,28 +109,7 @@
   }, null, 'clipboardList');
   const lockedForEdit = _folderMenuItemLocked(item);
   if (!blankTarget && !lockedForEdit) {
-    addItem('リネーム', async () => {
-      const newName = await cfPrompt('新しい名前:', item.name);
-      if (newName && newName !== item.name) {
-        apiPost('/outliner/rename', { old_path: item.path, new_name: newName, type: item.type || 'page' }).then((res) => {
-          showStatus('リネーム: ' + newName);
-          if (res?.new_path && typeof _renameTreeNode === 'function') _renameTreeNode(item.path, res.new_path, newName);
-          if (res?.new_path && typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(item.path, res.new_path, { label: newName, fileId: res.file_id, type: item.type || 'page' });
-          }
-          // 開いているフォルダ自体をリネームした場合は_folderPathを更新
-          if (_folderPath && item.type === 'folder' && item.path === _folderPath && res?.new_path) {
-            _folderPath = res.new_path;
-          }
-          if (_folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-        }).catch((e) => {
-          // 失敗理由（使用中・ロック中・タイムアウト等）を握りつぶさず表示する
-          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
-          showStatus('リネームに失敗' + (reason ? `（${reason}）` : ''), true);
-        });
-      }
-    }, null, 'pencil');
+    addItem('リネーム', () => _folderStartRename(item), null, 'pencil');
   }
 
   if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
@@ -920,7 +899,7 @@ let _lassoJustCompleted = false;
     _lassoStartX = e.clientX - gr.left + grid.scrollLeft;
     _lassoStartY = e.clientY - gr.top + grid.scrollTop;
     _lassoRect = document.createElement('div');
-    _lassoRect.style.cssText = 'position:absolute;border:1px solid var(--accent);background:rgba(86,156,214,0.15);pointer-events:none;z-index:10;';
+    _lassoRect.style.cssText = 'position:absolute;border:1px solid var(--accent);background:color-mix(in srgb,var(--ui-selection-bg,var(--selection)) 15%,transparent);pointer-events:none;z-index:10;';
     grid.style.position = 'relative';
     grid.appendChild(_lassoRect);
     try { grid.setPointerCapture(e.pointerId); } catch {}

@@ -343,7 +343,7 @@ async function selectDatabase(dbPath, ctx, opts) {
           if (newName !== curName && state.currentDbPath) {
             try {
               const oldPath = state.currentDbPath;
-              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database' });
+              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database', title_only: true });
               const newPath = res?.new_path || oldPath.replace(/[^/]+$/, newName);
               if (typeof renameAppPathReferences === 'function') {
                 renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
@@ -409,6 +409,11 @@ async function selectDatabase(dbPath, ctx, opts) {
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
+    if (dbMetadata.display_title) {
+      const titleEl = !openOpts.skipGlobalUi && document.getElementById("toolbar-category");
+      if (titleEl) titleEl.textContent = dbMetadata.display_title;
+      renameAppPathReferences(dbPath, dbPath, { label: dbMetadata.display_title, type: "database" });
+    }
     if (syncGlobalState) state.dbMetadata = dbMetadata;
     const backendViewConfig = ctx.dbMetadata?.view_config;
     let backendViewConfigApplied = false;
@@ -581,7 +586,11 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     return completeLoad({ ok: false, error: e });
   }
-  if (!openOpts.skipGlobalUi) _syncDetailPanel(dbName, dbPath, 'database');
+  if (!openOpts.skipGlobalUi) {
+    const dbHost = _paneElById(ctx, 'db-view-container') || document.getElementById('db-view-container');
+    if (dbHost) dbHost.dataset.path = dbPath;
+    _syncDetailPanel(dbName, dbPath, 'database');
+  }
   // エンティティ追加/削除/リネーム後にリンク辞書を更新
   if (typeof MeldexAutoLink !== 'undefined') MeldexAutoLink.scheduleReload(3000);
   return completeLoad({ ok: true, stale: false, destroyed: false, dbPath });

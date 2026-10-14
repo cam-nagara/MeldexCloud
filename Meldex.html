@@ -116,7 +116,9 @@ html[data-desktop-launch="1"] #gb-layout-root{
     }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
-  const timer = setTimeout(fail, 15000);
+  // Cold WebView startup and network folder restoration can exceed 15 seconds.
+  // Give pending initialization the same deadline as the packaged startup gate.
+  const timer = setTimeout(fail, 90000);
   window.MeldexDesktopStartupRecovery = {
     fail,
     ready() {
@@ -248,7 +250,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=d3f6084eb8b0cc0e"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=b954aa6ff72927fd"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=cadffe16176e7f69"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=26b72175af509ab0"></script>
 
 
 
@@ -320,7 +322,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
-<link rel="stylesheet" href="meldex-cloud-core.css?v=ee4f2be3f914e937">
+<link rel="stylesheet" href="meldex-cloud-core.css?v=3eac5c5018d8b586">
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:#1e1e1e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -338,6 +340,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <input type="search" id="sidebar-search-input" aria-label="フォルダツリーを検索" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
     <button type="button" id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" aria-label="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="ソースフォルダを全文検索" aria-label="ソースフォルダを全文検索" aria-controls="search-panel" aria-expanded="false" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-tree-sort" class="tree-search-icon-button" title="並べ替え" aria-label="フォルダツリーの並べ替え" data-action="showOutlinerSortMenu(event)"><span class="ico ico-arrowUpDown" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-tree-display" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="表示設定" aria-label="フォルダツリーの表示設定" data-action="showTreeDisplaySettings(event)"><span class="ico ico-layoutGrid" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ" aria-label="フィルタ表示を切り替える" data-action="toggleGlobalFilterPopup(event)"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
@@ -882,7 +885,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-05.js?v=5062638be8b62642"></script>
+<script src="meldex-cloud-runtime-05.js?v=89df0258fe8299a3"></script>
 
 
 
@@ -956,7 +959,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   const bootWatchdog = setTimeout(() => {
     if (window.MeldexDesktopStartupRecovery) window.MeldexDesktopStartupRecovery.fail();
     else if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
-  }, 12000);
+  }, 90000);
   try {
     // デスクトップ付箋の小窓は付箋1枚だけを描画する。フォルダツリー・ワークスペース・
     // 前回の表示復元まで走らせると、付箋の数だけ本体の起動処理が重複して起動が詰まる。
@@ -996,7 +999,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-06.js?v=fcf9aa42ba5811ea"></script>
+<script src="meldex-cloud-runtime-06.js?v=fc371d5c914b34e7"></script>
 
 
 

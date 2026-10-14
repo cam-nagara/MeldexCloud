@@ -896,7 +896,12 @@ class ScriptNoteEditor {
       const ccSize = el.dataset.ccSize || '';
       const align = el.style.textAlign;
       el.style.background = ccBg || r.bgColor || pageBg;
-      el.style.color = ccColor || r.textColor || baseTextColor;
+      // Older documents can retain an explicit dark type background. Keep that
+      // background and any chosen text color, but make inherited text readable.
+      const explicitBg = ccBg || r.bgColor || '';
+      const backgroundText = /^#[0-9a-f]{6}$/i.test(explicitBg)
+        ? globalThis.MeldexThemeManager?.getAccentTextColor?.(explicitBg) : '';
+      el.style.color = ccColor || r.textColor || backgroundText || baseTextColor;
       el.style.fontWeight = ccWeight || (r.fontWeight === 'bold' ? 'bold' : '');
       el.style.fontStyle = r.fontStyle === 'italic' ? 'italic' : '';
       el.style.fontSize = ccSize ? ccSize + 'px' : (r.fontSize ? r.fontSize + 'px' : '');
@@ -1244,7 +1249,9 @@ class ScriptNoteEditor {
     { const bw = String(this.doc.editor?.borderWidth || '1px');
       editor.style.setProperty('--sn2-border-width', /^\d+(\.\d+)?$/.test(bw) ? bw + 'px' : bw);
     }
-    if (this.doc.editor?.themeId && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function') {
+    if (typeof applyFileStyleToElement === 'function') {
+      [this.host, scroll, editor].forEach(target => applyFileStyleToElement(this.doc.editor || {}, target, 'scriptnote'));
+    } else if (this.doc.editor?.themeId && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function') {
       const themeVars = MeldexThemeManager.getThemeById(this.doc.editor.themeId)?.ui?.cssVars || {};
       [this.host, scroll, editor].forEach(target => {
         if (!target) return;

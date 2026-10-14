@@ -32,7 +32,7 @@ function _saveFileTheme(theme) {
   if (view === 'folder') {
     _saveFolderFileStyle(theme);
   } else if (view === 'page') {
-    _saveFileThemeToNoteFrontmatter(theme);
+    return _saveFileThemeToNoteFrontmatter(theme);
   } else if (view === 'board') {
     // キャンバスのフロントマター保存はbdSave()に委ねる（bd._fileStyleを設定）
     if (typeof bd !== 'undefined') {
@@ -47,20 +47,29 @@ function _saveFileTheme(theme) {
 
 let _dbFolderNoteStyleSaveQueue = Promise.resolve();
 
-function _syncDbMetadataFileStyle(theme) {
-  if (!state?.dbMetadata) return;
-  if (theme && Object.keys(theme).length > 0) {
-    state.dbMetadata.style = _cloneFileStyleObject(theme);
-    delete state.dbMetadata.theme;
-  } else {
-    delete state.dbMetadata.style;
-    delete state.dbMetadata.theme;
+function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
+  const normalize = value => String(value || '').replace(/\\/g, '/').toLocaleLowerCase();
+  const path = normalize(dbPath);
+  if (!path) return;
+  const metadata = new Set();
+  if (normalize(state?.currentDbPath) === path && state?.dbMetadata) metadata.add(state.dbMetadata);
+  if (typeof _dbPaneContextsForPath === 'function') {
+    _dbPaneContextsForPath(dbPath).forEach(ctx => {
+      if (!ctx.destroyed && normalize(ctx.dbPath) === path && ctx.dbMetadata) metadata.add(ctx.dbMetadata);
+    });
   }
+  metadata.forEach(meta => {
+    if (theme && Object.keys(theme).length > 0) meta.style = _cloneFileStyleObject(theme);
+    else delete meta.style;
+    delete meta.theme;
+  });
+  if (typeof _invalidateDbMetadataCache === 'function') _invalidateDbMetadataCache(dbPath);
 }
 
-function _saveFileThemeToNoteFrontmatter(theme) {
+async function _saveFileThemeToNoteFrontmatter(theme) {
   const pc = document.getElementById('page-content');
-  if (!pc) return;
+  if (!pc || pc.contentEditable === 'false' || !pc.dataset.path) return false;
+  const path = pc.dataset.path;
   let fmStr = pc.dataset.frontmatter || '';
   // 書込時は必ず style: に統一し、旧 theme: ブロックは除去する（同ファイル内の重複防止）
   fmStr = fmStr.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
@@ -79,6 +88,11 @@ function _saveFileThemeToNoteFrontmatter(theme) {
   }
   pc.dataset.frontmatter = fmStr;
   pc.dispatchEvent(new Event('input'));
+  if (typeof _runNoteAutoSave === 'function') {
+    await _runNoteAutoSave(pc, path, { skipHistory: true });
+    return pc.dataset.path === path && _noteMarkdownFromEditor(pc) === pc.dataset.lastSavedMd;
+  }
+  return true;
 }
 
 function _saveFileThemeToDbFolderNote(theme) {
@@ -86,36 +100,18 @@ function _saveFileThemeToDbFolderNote(theme) {
   if (!dbPath) return Promise.resolve();
   const themeSnapshot = _cloneFileStyleObject(theme);
   const saveTask = async () => {
-  // フォルダノートのフロントマターをAPI経由で更新
-    const folderName = dbPath.split('/').pop();
-    const notePath = dbPath + '/' + folderName + '.md';
     try {
-      const data = await apiFetch('/file?path=' + encodeURIComponent(notePath));
-      let content = data.content || '';
-      const styleYaml = _fileStyleToYaml(themeSnapshot);
-      // フロントマター部分のみ操作（本文の style:/theme: と誤マッチ防止）
-      const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?)/);
-      if (fmMatch) {
-        let fm = fmMatch[1];
-        // 旧 theme: ブロックは必ず除去
-        fm = fm.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
-        if (_fileStyleBlockRegex().test(fm)) {
-          fm = fm.replace(_fileStyleBlockRegex(), styleYaml);
-        } else if (styleYaml) {
-          fm = fm.replace(/\r?\n---\r?\n?$/, '\n' + styleYaml + '---\n');
-        }
-        content = fm + content.substring(fmMatch[1].length);
-      } else if (styleYaml) {
-        content = '---\n' + styleYaml + '---\n' + content;
-      }
-      await apiPut('/file?path=' + encodeURIComponent(notePath), {
-        content,
-        if_match_etag: data.etag || '',
-        transport_revision: data.transport_revision || '',
+      // テーマだけを原子的に更新し、並行する表示設定や本文の保存を保全する。
+      await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
+        style: Object.keys(themeSnapshot).length ? themeSnapshot : null,
+        theme: null,
       });
-      if (state?.currentDbPath === dbPath) _syncDbMetadataFileStyle(themeSnapshot);
+      _syncDbMetadataFileStyle(themeSnapshot, dbPath);
       showStatus('DBテーマを保存しました');
-    } catch (e) { showStatus('テーマ保存に失敗しました', true); }
+    } catch (e) {
+      showStatus('テーマ保存に失敗しました', true);
+      throw e;
+    }
   };
   _dbFolderNoteStyleSaveQueue = _dbFolderNoteStyleSaveQueue.catch(() => {}).then(saveTask);
   return _dbFolderNoteStyleSaveQueue;
@@ -241,7 +237,8 @@ function _fileStyleThemeVars(style) {
   }
   if (typeof MeldexThemeManager === 'undefined') return {};
   const themeDef = themeId && typeof MeldexThemeManager.getThemeById === 'function' ? MeldexThemeManager.getThemeById(themeId) : null;
-  const vars = { ...(themeDef?.ui?.cssVars || {}) };
+  const vars = typeof MeldexThemeManager.getThemeStyleVars === 'function' && themeDef
+    ? MeldexThemeManager.getThemeStyleVars(themeDef) : { ...(themeDef?.ui?.cssVars || {}) };
   if (useOsAccent) {
     _applyFileStyleOsAccentVars(vars);
   }
@@ -281,6 +278,8 @@ function _expandFileStyleVars(style, panelId) {
   const themeVars = _fileStyleCssVars(_fileStyleThemeVars(style));
   const styleVars = _fileStyleCssVars(style);
   const vars = { ...themeVars, ...styleVars };
+  const bodyKey = { 'page-content': '--page-text-bg', 'folder-view': '--fv-panel-bg', 'db-view-container': '--db-row-bg', scriptnote: '--sn2-page-bg' }[panelId];
+  if (bodyKey && vars['--content-bg']) vars[bodyKey] = 'var(--content-bg)';
   if (_fileStyleUsesOsAccent(style) && typeof _applyFileStyleOsAccentVars === 'function') {
     _applyFileStyleOsAccentVars(vars);
   }

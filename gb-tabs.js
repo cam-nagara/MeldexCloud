@@ -37,11 +37,12 @@ const GBTabs = (() => {
     };
   }
 
-  function _ensurePaneVisible(paneId, options) {
+  function _ensurePaneVisible(paneId) {
     if (!paneId || typeof GBLayout === 'undefined') return false;
     if (typeof GBLayout.revealPane === 'function') {
-      const activate = options?.activate !== false;
-      return !!GBLayout.revealPane(paneId, { deferRender: true, activate });
+      // フォーカス変更は各操作のsetActivePaneで行う。revealPaneの返値に
+      // フォーカス変更が混ざると、表示寸法が同じでも全画面再描画してしまう。
+      return !!GBLayout.revealPane(paneId, { deferRender: true, activate: false });
     }
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
     if (paneInfo?.node?.collapsed) {
@@ -237,7 +238,7 @@ const GBTabs = (() => {
     pane.tabs.push(tab);
     pane.activeTabIndex = pane.tabs.length - 1;
     const previousActivePane = GBLayout.activePane;
-    const revealed = _ensurePaneVisible(targetPaneId, { activate: !opts.preserveActivePane });
+    const revealed = _ensurePaneVisible(targetPaneId);
     const fastAdded = !revealed && _refreshPaneTabsFast(targetPaneId);
     if (!fastAdded) GBLayout.render();
     GBLayout.saveLayout({ immediate: true });
@@ -272,7 +273,8 @@ const GBTabs = (() => {
 
     const idx = pane.tabs.indexOf(tab);
     if (opts.activate && idx >= 0) pane.activeTabIndex = idx;
-    const fastUpdated = _refreshPaneTabsFast(paneId);
+    const revealed = opts.activate && _ensurePaneVisible(paneId);
+    const fastUpdated = !revealed && _refreshPaneTabsFast(paneId);
     if (!fastUpdated) GBLayout.render();
     else if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
       GBPaneBridge.refreshPaneAfterTabSwitch(paneId);
@@ -295,7 +297,7 @@ const GBTabs = (() => {
       GBPanelSet.recordRightRailSwitch(paneId, tabId);
     }
     pane.activeTabIndex = idx;
-    const revealed = _ensurePaneVisible(paneId, { activate: !opts.preserveActivePane });
+    const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
 
     if (alreadyActive) {
@@ -488,7 +490,8 @@ const GBTabs = (() => {
 
     // 移動先でアクティブに
     toPane.activeTabIndex = toPane.tabs.indexOf(tab);
-    _ensurePaneVisible(toPaneId);
+    const previousActivePane = GBLayout.activePane;
+    const revealed = _ensurePaneVisible(toPaneId);
 
     // 移動元が空になった場合
     if (fromPane.tabs.length === 0) {
@@ -508,8 +511,8 @@ const GBTabs = (() => {
       }
     }
 
-    const previousActivePane = GBLayout.activePane;
-    const fastMoved = _refreshPaneTabsFast([fromPaneId, toPaneId]);
+    // 展開時は親splitの寸法も変わるため、タブバーだけの更新では反映できない。
+    const fastMoved = !revealed && _refreshPaneTabsFast([fromPaneId, toPaneId]);
     GBLayout.setActivePane(toPaneId, fastMoved ? { skipCallback: true } : undefined);
     if (!fastMoved) GBLayout.render();
     else if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {

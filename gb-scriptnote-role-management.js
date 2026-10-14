@@ -73,6 +73,15 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._markDirty();
       this._render();
     };
+    const rename = (method, item, name) => {
+      if (this._readOnly) throw new Error('編集ロック中のため変更できません');
+      const before = { id: item.id, name: item.name };
+      const result = invoke(method,
+        [doc, item.id, String(name || '').trim()],
+        () => { item.name = checkedName(name, item); return item; });
+      this._rebindRoleFilters?.([before], [item]);
+      return result;
+    };
     return {
       model,
       types: doc.scenarioTypes,
@@ -125,16 +134,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         );
         return character;
       },
-      renameType: (type, name) => invoke(
-        'renameType',
-        [doc, type.id, String(name || '').trim()],
-        () => { type.name = checkedName(name, type); return type; },
-      ),
-      renameCharacter: (character, name) => invoke(
-        'renameCharacter',
-        [doc, character.id, String(name || '').trim()],
-        () => { character.name = checkedName(name, character); return character; },
-      ),
+      renameType: (type, name) => rename('renameType', type, name),
+      renameCharacter: (character, name) => rename('renameCharacter', character, name),
       setCharacterType: (character, typeId) => invoke(
         'setCharacterType',
         [doc, character.id, typeId || null],
@@ -637,6 +638,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       openColorPalette(color, character.nameColor || 'transparent', nextColor => {
         this._pushUndo('キャラ名前色変更');
         character.nameColor = nextColor || 'transparent';
+        if (!character.typeId && character.legacyAppearance) {
+          character.legacyAppearance.roleStyle = {
+            ...(character.legacyAppearance.roleStyle || {}), textColor: character.nameColor,
+          };
+        }
         color.dataset.color = character.nameColor;
         color.style.background = character.nameColor;
         adapter.touch();

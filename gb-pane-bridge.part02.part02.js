@@ -146,6 +146,18 @@
 
     navPush = async function(entry, paneId) {
       const targetPaneId = paneId || _getFileOpenPane(GBLayout.activePane);
+      const historyReplayAtRequest = navNavigating;
+      // Legacy loads keep the bridge guard active across awaits. A user action
+      // during that load is a new navigation, not a recursive history-only push.
+      // Internal reloads already use skipNavPush. Bind deferred work to its tab
+      // so switching tabs while waiting never overwrites the newly selected one.
+      if (targetPaneId && _initialized && entry?.type && entry.type !== 'welcome' && _bridgeUpdating) {
+        const pane = GBLayout.findNode(GBLayout.root, targetPaneId)?.node;
+        const requestedTabId = pane?.tabs?.[pane.activeTabIndex]?.id || null;
+        while (_bridgeUpdating) await new Promise(resolve => _bridgeIdleWaiters.add(resolve));
+        const current = GBLayout.findNode(GBLayout.root, targetPaneId)?.node;
+        if (!current || (current.tabs?.[current.activeTabIndex]?.id || null) !== requestedTabId) return false;
+      }
       const shouldUpdateTab = !!targetPaneId && !_bridgeUpdating && _initialized
         && !!entry && !!entry.type && entry.type !== 'welcome';
 
@@ -201,7 +213,7 @@
             tab.path = path;
             tab.state = {};
             tab.icon = GBTabs.tabIcon(type);
-            GBLayout.render();
+            GBTabs.updateTab(targetPaneId, tab.id, {});
             GBLayout.saveLayout({ immediate: true });
           } else {
             GBTabs.addTab(targetPaneId, label, type, path, null, { preferTargetPane: true });
@@ -224,7 +236,7 @@
             if (tabEl) tabEl.textContent = label;
             GBLayout.saveLayout({ immediate: true });
           } else {
-            // 別タイプへのナビゲーション: コンポーネントを破棄して置換、full render
+            // 別タイプでも対象パネルだけを更新し、ツリーや他パネルを再マウントしない。
             if (typeof removeComponentInstanceSafely === 'function') {
               if (!await removeComponentInstanceSafely(tab.id)) return false;
             } else if (typeof removeComponentInstance === 'function'
@@ -236,7 +248,7 @@
             tab.label = label;
             tab.path = path;
             tab.icon = GBTabs.tabIcon(type);
-            GBLayout.render();
+            GBTabs.updateTab(targetPaneId, tab.id, {});
             GBLayout.saveLayout({ immediate: true });
           }
         } else {
@@ -251,7 +263,7 @@
         // 直前にアクティブだったタブ側へ誤って積まれていた（タブ複数時に履歴が混線するバグの一因）。
         // pane.activeTabIndex が確定した後に push することで、_getNavState が解決する
         // 「今アクティブなタブ」に必ず一致させる。
-        _prevNavPush(entry, targetPaneId);
+        if (!historyReplayAtRequest) _prevNavPush(entry, targetPaneId);
 
         // 追従バージョン管理タブの同期。
         // 同一タブ内で別ファイルを開いた場合（例: ノート内リンクから別ノートへ）は

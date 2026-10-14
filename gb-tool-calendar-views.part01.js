@@ -1106,8 +1106,8 @@ CalendarComponent.prototype._renderTodayTasks = function() {
     el.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));">ToDoなし</div>';
   } else {
     el.innerHTML = tasks.slice(0, 10).map(t =>
-      `<div class="gb-cal-today-task-item" data-task-id="${t.id}" style="padding:4px 0;border-bottom:1px solid var(--cal-grid-line, var(--border));cursor:pointer;">` +
-      `<span class="gb-cal-task-priority ${t.priority||'medium'}" style="margin-right:4px;">${(t.priority||'M')[0].toUpperCase()}</span>${esc(t.title)}</div>`
+      `<div class="gb-cal-today-task-item" data-task-id="${esc(t.id)}" style="padding:4px 0;border-bottom:1px solid var(--cal-grid-line, var(--border));cursor:pointer;">` +
+      `<span class="gb-cal-task-priority ${esc(t.priority||'medium')}" style="margin-right:4px;">${esc((t.priority||'M')[0].toUpperCase())}</span>${esc(t.title)}</div>`
     ).join('');
     el.querySelectorAll('.gb-cal-today-task-item').forEach(item => {
       item.addEventListener('click', () => this._showTaskModal(item.dataset.taskId));
@@ -1302,13 +1302,13 @@ CalendarComponent.prototype._openEventInPanel = function(editId, defaultStart, d
   const sVal = ev ? ev.start.substring(0,16) : (defaultStart || this._localDateTimeStr(now));
   const eVal = ev ? (ev.end||'').substring(0,16) : (defaultEnd || this._localDateTimeStr(new Date(now.getTime()+3600000)));
   const isAllDay = ev ? ev.all_day : !!defaultAllDay;
-  const calOpts = this._calendars.map(c => `<option value="${c.id}" ${ev?.calendar_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('');
+  const calOpts = this._calendars.map(c => `<option value="${esc(c.id)}" ${ev?.calendar_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('');
   const _rp = CalendarComponent._recParse;
   panel.innerHTML = `<h3>${ev?'イベント編集':'新規イベント'}</h3>
 <div class="field"><label>タイトル</label><input class="rp-ev-title" type="text" value="${esc(ev?.title||'')}" placeholder="イベント名"></div>
 <div class="field"><label><input class="rp-ev-allday" type="checkbox" ${isAllDay?'checked':''}> 終日</label></div>
-<div class="field"><label>開始</label><input class="rp-ev-start" type="datetime-local" value="${sVal}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
-<div class="field"><label>終了</label><input class="rp-ev-end" type="datetime-local" value="${eVal}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
+<div class="field"><label>開始</label><input class="rp-ev-start" type="datetime-local" value="${esc(sVal)}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
+<div class="field"><label>終了</label><input class="rp-ev-end" type="datetime-local" value="${esc(eVal)}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
 <div class="field"><label>カレンダー</label><select class="rp-ev-calendar gb-select" style="width:100%;">${calOpts}</select></div>
 <div class="field"><label>色</label><button type="button" class="rp-ev-color gb-color-swatch gb-color-swatch--field" data-color="${esc(ev?.color||'#569cd6')}" title="イベント色"></button></div>
 <div class="field"><label>場所</label><input class="rp-ev-location" type="text" value="${esc(ev?.location||'')}"></div>

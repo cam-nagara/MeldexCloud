@@ -717,8 +717,8 @@ function _bdBindNodeDetailPanel(nodeId) {
       rerenderNodeDetail();
       showStatus(`トピックスタイル「${style.name}」の個別設定をクリアしました`);
     });
-    root.querySelector('[data-bd-action="manage-card-styles"]')?.addEventListener('click', () => {
-      bdOpenCardStyleManager();
+    root.querySelector('[data-bd-action="manage-card-styles"]')?.addEventListener('click', e => {
+      bdOpenCardStyleManager(e.currentTarget);
     });
     root.querySelector('[data-bd-action="reset-style"]')?.addEventListener('click', () => {
       const target = bd.nodes.find(item => item.id === nodeId);
@@ -735,8 +735,8 @@ function _bdBindNodeDetailPanel(nodeId) {
     root.querySelector('[data-bd-action="manage-statuses"]')?.addEventListener('click', () => {
       if (typeof bdManageStatuses === 'function') bdManageStatuses();
     });
-    root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
-      if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
+    root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', e => {
+      if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager(e.currentTarget);
     });
   });
 }
@@ -849,8 +849,8 @@ function _bdBindConnectionDetailPanel(connId) {
       rerenderConnDetail();
       showStatus(`ラインスタイル「${style.name}」の個別設定をクリアしました`);
     });
-    root.querySelector('[data-bd-action="manage-line-styles"]')?.addEventListener('click', () => {
-      bdOpenLineStyleManager();
+    root.querySelector('[data-bd-action="manage-line-styles"]')?.addEventListener('click', e => {
+      bdOpenLineStyleManager(e.currentTarget);
     });
   });
 }

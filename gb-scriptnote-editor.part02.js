@@ -583,6 +583,13 @@
 
   _wrapTcy(el, tcyCls = 'sn2-tcy') {
     const walk = (node) => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        // ルビ親文字やリンクの中も同じ文字組みにする。既存の縦中横は
+        // 再装飾時に二重に囲まず、ルビ・リンクの属性と保存表記を保つ。
+        if (node.classList.contains('sn2-tcy') || node.classList.contains('sn2-tcy-wide')) return;
+        [...node.childNodes].forEach(walk);
+        return;
+      }
       if (node.nodeType !== 3) return; // テキストノードのみ
       const text = node.textContent;
       // 連続する半角英数字・記号（スペース除く）を検出
@@ -600,7 +607,14 @@
         if (p.tcy) {
           const span = document.createElement('span');
           span.className = tcyCls;
-          span.textContent = p.text;
+          if (tcyCls === 'sn2-tcy') {
+            const glyph = document.createElement('span');
+            glyph.className = 'sn2-tcy-glyph';
+            glyph.textContent = p.text;
+            span.appendChild(glyph);
+          } else {
+            span.textContent = p.text;
+          }
           frag.appendChild(span);
         } else {
           frag.appendChild(document.createTextNode(p.text));
@@ -608,8 +622,28 @@
       });
       node.parentNode.replaceChild(frag, node);
     };
-    // 直接の子テキストノードのみ処理（span[data-ruby]等の中は触らない）
+    // 要素は保持したまま、その中のテキストノードを処理する。
     [...el.childNodes].forEach(walk);
+    if (el.isConnected) this._adjustTcyAlignment(el);
+  }
+
+  _adjustTcyAlignment(root = this.host) {
+    if (!root?.isConnected || this.doc?.editor?.viewMode !== 'vertical') return;
+    const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+    root.querySelectorAll('.sn2-tcy > .sn2-tcy-glyph').forEach(glyph => {
+      // Chromiumの縦中横は、圧縮する文字列によって字形の中心が枠から
+      // ずれる。文字・フォントごとの固定値ではなく、実際の描画位置を測る。
+      // inline要素の矩形は子の相対位置を含むことがある。補正前の枠を
+      // 基準に測り直し、再描画やフォント変更で補正が累積しないようにする。
+      glyph.style.removeProperty('--sn2-tcy-center-shift');
+      const box = glyph.parentElement.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(glyph);
+      const text = range.getBoundingClientRect();
+      if (!(box.width > 0) || !(text.width > 0)) return;
+      const delta = ((text.left + text.right) - (box.left + box.right)) / (2 * z);
+      if (Math.abs(delta) > 0.01) glyph.style.setProperty('--sn2-tcy-center-shift', -delta + 'px');
+    });
   }
 
   // === 行タイプ判定 ===

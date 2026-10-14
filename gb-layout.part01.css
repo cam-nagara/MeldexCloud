@@ -249,6 +249,13 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   text-transform: uppercase; letter-spacing: 0.03em;
 }
 .sidebar-section-header:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
+#sidebar-search-bar .tree-search-icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; flex-shrink: 0;
+  background: transparent !important; border: 0 !important; box-shadow: none !important;
+  color: var(--fg2); cursor: pointer;
+}
+#sidebar-search-bar .tree-search-icon-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sidebar-section-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; border-radius: 3px; cursor: pointer; opacity: 0;
@@ -274,7 +281,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .sidebar-section-body .fav-item svg { flex-shrink: 0; }
-.sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); line-height: var(--outliner-item-hover-line-height, var(--outliner-item-line-height, 115%)); }
+.sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
 .sidebar-section-body .fav-item.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); line-height: var(--outliner-item-selected-line-height, var(--outliner-item-line-height, 115%)); }
 @media (pointer: coarse), (max-width: 640px) {
   .sidebar-section-body button.fav-item {
@@ -568,7 +575,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   max-width: 100%;
   overflow-x: hidden;
   overflow-y: auto;
-  background: #111;
+  background: var(--ui-bg-control, var(--bg3));
   border: 1px solid var(--border);
   border-radius: 6px;
   line-height: 1.45;
@@ -585,7 +592,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  color: #e6e6e6;
+  color: var(--chat-fg, var(--fg));
 }
 .chat-code-copy-btn {
   position: absolute;
@@ -598,17 +605,37 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   align-items: center;
   justify-content: center;
   padding: 0;
-  background: rgba(255, 255, 255, 0.08);
-  color: #f1f1f1;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: var(--ui-button-bg, var(--bg3));
+  color: var(--ui-button-fg, var(--fg));
+  border: 1px solid var(--ui-button-border, var(--border));
   border-radius: 4px;
   cursor: pointer;
 }
 .chat-code-copy-btn:hover,
 .chat-code-copy-btn:focus-visible {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.38);
+  background: var(--ui-button-hover-bg, var(--ui-hover-bg));
+  color: var(--ui-button-hover-fg, var(--fg));
+  border-color: var(--ui-button-hover-border, var(--border));
   outline: none;
+}
+/* Message editing uses shared control colors without changing bubble geometry. */
+.chat-message-edit-cancel,
+.chat-message-edit-save {
+  background: var(--ui-button-bg, var(--bg3));
+  color: var(--ui-button-fg, var(--fg));
+  border: 1px solid var(--ui-button-border, var(--border));
+}
+.chat-message-edit-cancel:hover,
+.chat-message-edit-save:hover {
+  background: var(--ui-button-hover-bg, var(--ui-hover-bg));
+  color: var(--ui-button-hover-fg, var(--fg));
+  border-color: var(--ui-button-hover-border, var(--border));
+}
+.chat-message-edit-textarea:focus-visible,
+.chat-message-edit-cancel:focus-visible,
+.chat-message-edit-save:focus-visible {
+  outline: 2px solid var(--ui-focus-ring, var(--accent));
+  outline-offset: 1px;
 }
 .chat-markdown table {
   width: 100%;

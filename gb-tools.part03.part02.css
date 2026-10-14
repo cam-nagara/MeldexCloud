@@ -103,7 +103,7 @@
 /* === Note styling: toolbar file name edit ===
    ツールバー上のファイル名欄は UI 部品として扱い、本文の「タイトル」書式は適用しない。 */
 #page-rt-toolbar #page-title {
-  color: inherit;
+  color: var(--ui-toolbar-fg, var(--fg));
   font-family: inherit;
   font-weight: inherit;
   font-style: normal;

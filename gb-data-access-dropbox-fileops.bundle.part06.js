@@ -1,3 +1,33 @@
+      const split = _splitNameAndExt(sourceName);
+      const nextPath = _joinPath(parentPath, newName + split.ext);
+      if (nextPath !== oldPath && await _pathExists(provider, nextPath)) throw new Error(`既に存在: ${newName + split.ext}`);
+      const annotationPlan = nextPath !== oldPath
+        ? await _prepareAnnotationsForPathMutation(provider, {
+          action: 'rename', oldPath, newPath: nextPath, isFolder: false,
+        }) : [];
+      if (split.ext === '.md' && String(body?.type || '') === 'page') {
+        const original = await provider.readText(oldPath);
+        await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
+      }
+      if (nextPath !== oldPath) {
+        await _moveEntry(provider, oldPath, nextPath);
+      }
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, nextPath, false));
+      await _runPostMutationStep(warnings, 'csv-sidecar', () => (
+        _relocateCsvSidecars(provider, oldPath, nextPath, false, false)
+      ));
+      await _runPostMutationStep(warnings, 'stored-paths', () => (
+        typeof _rewriteStoredPathsForProvider === 'function'
+          ? _rewriteStoredPathsForProvider(provider, oldPath, nextPath, false)
+          : Promise.resolve(_rewriteStoredPaths(oldPath, nextPath, false))
+      ));
+      await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath: nextPath, isFolder: false }, warnings);
+      await _updateAnnotationsForPathMutation(provider, {
+        action: 'rename', oldPath, newPath: nextPath, isFolder: false, annotationPlan,
+      });
+      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+      await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };

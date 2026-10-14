@@ -116,5 +116,6 @@
     };
     _updatePaneNavButtons(paneId);
     if (typeof replaceIcons === 'function') replaceIcons(currentPaneEl);
+    if (typeof GBPanelSet !== 'undefined') GBPanelSet.syncLeftRailActiveApp?.();
     return true;
   }

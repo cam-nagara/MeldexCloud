@@ -119,7 +119,7 @@ function buildToolMenuItems(toolType) {
   const specific = {
     page: [
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('page', { trigger: context?.trigger }); }, disabled: !hasFile },
-      { label: 'オプションを表示', action: () => { if (typeof toggleOptionPanel === 'function') toggleOptionPanel(); else if (typeof toggleDetailPanel === 'function') toggleDetailPanel(); }, disabled: !hasFile },
+      { label: 'オプションを表示', action: context => { if (typeof _openDetailRightPanel === 'function') _openDetailRightPanel(context?.trigger); else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', context?.trigger); }, disabled: !hasFile },
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
     ],

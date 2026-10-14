@@ -237,10 +237,8 @@
       if (value === null || value === undefined || value === '') return;
       clean[key] = value;
     });
-    try {
-      if (Object.keys(clean).length) localStorage.setItem(CALENDAR_STYLE_KEY, JSON.stringify(clean));
-      else localStorage.removeItem(CALENDAR_STYLE_KEY);
-    } catch {}
+    if (Object.keys(clean).length) localStorage.setItem(CALENDAR_STYLE_KEY, JSON.stringify(clean));
+    else localStorage.removeItem(CALENDAR_STYLE_KEY);
     return clean;
   }
 
@@ -296,10 +294,34 @@
     const keys = Object.keys(next);
     keys.forEach(key => root.style.setProperty(key, next[key]));
     root.__meldexCalendarStyleVarKeys = keys;
+    document.querySelectorAll('.gb-cal-root').forEach(calendar => {
+      ['bg', 'fg'].forEach(prop => {
+        const value = next[`--cal-toolbar-${prop}`];
+        if (value) calendar.style.setProperty(`--ui-toolbar-${prop}`, value);
+        else calendar.style.removeProperty(`--ui-toolbar-${prop}`);
+      });
+    });
+    // Event colors belong to individual calendars and can be lighter or darker
+    // than the application theme. Explicit event text settings still win.
+    const eventFg = next['--cal-event-fg'] || document.documentElement.style.getPropertyValue('--cal-event-fg');
+    document.querySelectorAll('.gb-cal-day-event, .gb-cal-shift-cell').forEach(el => {
+      // Resolve the automatic variable at the card, rather than at :root where
+      // inherited custom properties would already have consumed the fallback.
+      if (String(eventFg).includes('--cal-event-auto-fg')) el.style.setProperty('--cal-event-fg', eventFg);
+      else el.style.removeProperty('--cal-event-fg');
+      const rgb = getComputedStyle(el).backgroundColor.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+      if (!rgb || typeof window.MeldexThemeManager?.getAccentTextColor !== 'function') {
+        el.style.removeProperty('--cal-event-auto-fg');
+        return;
+      }
+      const hex = '#' + rgb.slice(1).map(value => Number(value).toString(16).padStart(2, '0')).join('');
+      el.style.setProperty('--cal-event-auto-fg', window.MeldexThemeManager.getAccentTextColor(hex));
+    });
   }
 
   function _calGetAdapter() {
     return {
+      isCurrent: () => _calIsActiveContext(),
       kind: CALENDAR_CTX,
       ctx: CALENDAR_CTX,
       get(field) {
@@ -341,8 +363,12 @@
   function _calActiveComponent() {
     if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined' || typeof getComponentInstance !== 'function') return null;
     const activeTab = GBTabs.getActiveTab?.(GBLayout.activePane);
-    if (activeTab?.type !== CALENDAR_CTX) return null;
-    const comp = getComponentInstance(activeTab.id);
+    const calendarTab = activeTab?.type === CALENDAR_CTX ? activeTab
+      : GBLayout.isPassivePaneType?.(activeTab?.type)
+        ? (GBLayout.getAllPanes?.(GBLayout.root, { activeOnly: true }) || [])
+          .map(pane => GBTabs.getActiveTab?.(pane.id)).find(tab => tab?.type === CALENDAR_CTX) : null;
+    if (!calendarTab) return null;
+    const comp = getComponentInstance(calendarTab.id);
     return comp instanceof CalendarComponent ? comp : null;
   }
 
@@ -463,40 +489,24 @@
       const original = fileThemeSelect;
       fileThemeSelect = function(ctx, id) {
         if (ctx !== CALENDAR_CTX) {
-          original(ctx, id);
-          return;
+          return original(ctx, id);
         }
         const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(CALENDAR_CTX) : _calGetAdapter();
         if (!adapter) return;
         const nextId = String(id || '');
         if (!nextId) {
-          if (typeof _fsPersistStyleViaAdapter === 'function') _fsPersistStyleViaAdapter(CALENDAR_CTX, adapter, null, { label: 'テーマ解除' });
-          else adapter.saveStyle?.(null);
-          applyCalendarPanelStyle();
-          _calRenderFileStyleTab();
-          return;
+          return _fsCommitThemeStyle(CALENDAR_CTX, adapter, null, { label: 'テーマ解除' });
         }
         const nextStyle = _calLocalCustomStyleFromThemeId(nextId);
         if (!nextStyle) return;
-        if (typeof _fsPersistStyleViaAdapter === 'function') _fsPersistStyleViaAdapter(CALENDAR_CTX, adapter, nextStyle, { label: 'テーマ変更' });
-        else adapter.saveStyle?.(nextStyle);
-        applyCalendarPanelStyle();
-        _calRenderFileStyleTab();
+        return _fsCommitThemeStyle(CALENDAR_CTX, adapter, nextStyle, { label: 'テーマ変更' });
       };
     }
 
     if (typeof fileThemeReset === 'function') {
       const original = fileThemeReset;
       fileThemeReset = function(ctx) {
-        if (ctx !== CALENDAR_CTX) {
-          original(ctx);
-          return;
-        }
-        const id = _calReadStyle().__themeId || '';
-        _calWriteStyle(id && !_calIsLocalCustomThemeId(id) ? { __themeId: id } : {});
-        applyCalendarPanelStyle();
-        _calRenderFileStyleTab();
-        if (typeof showStatus === 'function') showStatus('デフォルトに戻しました');
+        return original(ctx);
       };
     }
 
@@ -513,6 +523,7 @@
     if (typeof CalendarComponent === 'undefined') return;
 
     CalendarComponent.prototype._syncDetailPanel = function() {
+      window.GBOptionTargetContext?.clear?.('calendar-open');
       const detailEl = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
       if (!detailEl) return;
       detailEl.style.display = '';
@@ -550,6 +561,7 @@
 
   window.applyCalendarPanelStyle = applyCalendarPanelStyle;
   window.readCalendarPanelStyle = _calReadStyle;
+  window.isCalendarStyleContextActive = _calIsActiveContext;
 
   window.addEventListener('meldex-theme-change', () => applyCalendarPanelStyle());
   window.addEventListener('meldex-theme-os-accent-change', () => applyCalendarPanelStyle());

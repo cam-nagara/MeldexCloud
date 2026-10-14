@@ -186,8 +186,88 @@ async function _getRelationEntityId(dbPath, entityPath) {
   const entityName = typeof _getPivotEntityName === 'function'
     ? _getPivotEntityName(entityPath)
     : (entityPath.split('/').pop() || '').replace(/\.md$/, '');
-  const map = await _getRelationMap(dbPath);
+  const ctx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+  const pivot = ctx?.pivotData || (typeof state !== 'undefined' && state.currentDbPath === dbPath ? state.pivotData : null);
+  const liveId = pivot?.entities?.[entityName]?._id;
+  if (liveId) return liveId;
+  let map = await _getRelationMap(dbPath);
+  if (!map.nameToId[entityName] && map.new_format) {
+    _invalidateRelationTargetCaches(dbPath);
+    map = await _getRelationMap(dbPath);
+  }
   return map.nameToId[entityName] || entityName;
+}
+
+function _prepareBidirectionalRemoteState(sourceDbPath, propName, ptc, createdTargets) {
+  const cfg = _getBidirectionalRelationConfig(sourceDbPath, propName, ptc);
+  if (!cfg) return null;
+  // Read independent target data together, while the source value is saved.
+  // Handle rejection here even if source saving fails before consuming it.
+  let mapPromise;
+  let metadataPromise;
+  if (createdTargets?.dbPath === cfg.remoteDbPath && createdTargets.entries?.length
+      && createdTargets.entries.every(entry => entry?.id && entry.properties && entry.path)) {
+    // Creation returns the committed defaults. Only these newly created
+    // targets are needed; other selections still read a fresh full map.
+    const map = {new_format:true,idToName:{},entities:{}};
+    for (const entry of createdTargets.entries) {
+      map.idToName[entry.id] = entry.name;
+      const entity = {_id:entry.id};
+      for (const [prop, values] of Object.entries(entry.properties)) {
+        entity[prop] = (Array.isArray(values) ? values : []).map((candidate,index) => ({
+          ...candidate, file:entry.path, entry_path:entry.path, property:prop, candidate_index:index,
+        }));
+      }
+      map.entities[entry.name] = entity;
+    }
+    mapPromise = Promise.resolve(map);
+    const latest = createdTargets.entries.at(-1).dbMetadata;
+    if (latest?.property_types && createdTargets.entries.every(entry =>
+        entry.dbMetadata && entry.dbMetadata.schema_revision === latest.schema_revision)) {
+      metadataPromise = Promise.resolve(latest);
+    }
+  } else mapPromise = _getRelationMap(cfg.remoteDbPath);
+  return Promise.all([mapPromise, metadataPromise || _getDbMetadataCached(cfg.remoteDbPath, true)])
+    .then(([map, meta]) => ({map, meta}), error => ({error}));
+}
+
+async function _createBidirectionalRelationValue({sourceDbPath, entityPath, propName, ptc, value, status, preparedRemoteState}) {
+  const sourceId = await _getRelationEntityId(sourceDbPath, entityPath);
+  const sourceWrite = _apiPostValue(entityPath, propName, value, status, '');
+  const remoteWrite = sourceId
+    ? _applyBidirectionalRelationSync({sourceDbPath, entityPath, propName, ptc,
+        oldValue:'', newValue:value, sourceEntryId:sourceId, preparedRemoteState})
+    : sourceWrite.then(result => _applyBidirectionalRelationSync({sourceDbPath, entityPath, propName, ptc,
+        oldValue:'', newValue:value, sourceEntryId:result?.entry_id, preparedRemoteState}));
+  // Settle both writes before compensating: a late successful write must not
+  // recreate a backlink after the other side has already been rolled back.
+  const [source, remote] = await Promise.allSettled([sourceWrite, remoteWrite]);
+  const result = source.status === 'fulfilled' ? source.value : null;
+  const operation = remote.status === 'fulfilled' ? remote.value : null;
+  const error = source.status === 'rejected' ? source.reason
+    : remote.status === 'rejected' ? remote.reason
+    : sourceId && result?.entry_id && result.entry_id !== sourceId
+      ? new Error('保存中に参照元トピックのIDが変更されました') : null;
+  if (!error) return {result, operation};
+  if (operation?.undo) {
+    try { await operation.undo(); } catch (rollbackError) {
+      console.error('双方向リレーション追加失敗後の復旧に失敗:', rollbackError, error);
+    }
+  }
+  if (result) {
+    try {
+      const file = result.path || result.file || '';
+      if (result.candidate_index != null) {
+        await _apiPutValue({file, entry_path:entityPath,
+          property:result.property || propName, candidate_index:result.candidate_index}, {_delete:true});
+      } else if (file) {
+        await apiPost('/outliner/delete', {path:file});
+      }
+    } catch (rollbackError) {
+      console.error('双方向リレーション追加失敗後の候補値復旧に失敗:', rollbackError, error);
+    }
+  }
+  throw error;
 }
 
 function _relationEntityPathFromMap(dbPath, entityName, map) {
@@ -247,15 +327,15 @@ async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot
   }
 }
 
-async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropName, sourceId, adding) {
-  const map = await _getRelationMap(remoteDbPath);
+async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropName, sourceId, adding, prepared) {
+  const [map, meta] = prepared ? [prepared.map, prepared.meta]
+    : await Promise.all([_getRelationMap(remoteDbPath), _getDbMetadataCached(remoteDbPath, true)]);
   const targetName = map.idToName[targetId] || (map.entities?.[targetId] ? targetId : '');
   const entData = map.entities?.[targetName];
   if (!targetName || !entData) {
     if (!adding) return null;
     throw new Error('参照先トピックが見つかりません: ' + targetId);
   }
-  const meta = await _getDbMetadataCached(remoteDbPath, true);
   const remotePtc = meta.property_types?.[remotePropName] || {};
   const isSingle = remotePtc.type === 'relation';
   const targetPath = _relationEntityPathFromMap(remoteDbPath, targetName, map);
@@ -313,12 +393,12 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   };
 }
 
-async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propName, ptc, oldValue, newValue }) {
+async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propName, ptc, oldValue, newValue, sourceEntryId, preparedRemoteState }) {
   const cfg = _getBidirectionalRelationConfig(sourceDbPath, propName, ptc);
   if (!cfg || oldValue === newValue) {
     return null;
   }
-  const sourceId = await _getRelationEntityId(sourceDbPath, entityPath);
+  const sourceId = sourceEntryId || await _getRelationEntityId(sourceDbPath, entityPath);
   if (!sourceId) {
     return null;
   }
@@ -328,12 +408,14 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
   const added = newIds.filter(id => !oldIds.includes(id));
   const rollbackOps = [];
   try {
+    const prepared = preparedRemoteState ? await preparedRemoteState : null;
+    if (prepared?.error) throw prepared.error;
     for (const targetId of removed) {
-      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, false);
+      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, false, prepared);
       if (op?.undo) rollbackOps.push(op.undo);
     }
     for (const targetId of added) {
-      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, true);
+      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, true, prepared);
       if (op?.undo) rollbackOps.push(op.undo);
     }
   } catch (err) {

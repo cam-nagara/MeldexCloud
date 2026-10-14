@@ -15,6 +15,7 @@
   const localLocks = new Map();
   const lastUsedAt = new Map();
   const mutationLockRefs = new Map();
+  const pendingReleases = new Map();
   let heartbeatTimer = 0;
   let fallbackToken = '';
   let tabHolderId = '';
@@ -215,6 +216,9 @@
     const normalized = _normalizePath(path);
     if (!normalized) return null;
     if (_isLockExemptPath(normalized)) return null;
+    // A previous completed creation can release in the background. Its DELETE
+    // must finish before this operation acquires a new lease on the same path.
+    if (pendingReleases.has(normalized)) await pendingReleases.get(normalized);
     lastUsedAt.set(normalized, Date.now());
     const current = localLocks.get(normalized);
     const needsDescendantCheck = options?.includeDescendants === true || options?.include_descendants === true;
@@ -325,7 +329,11 @@
     lastUsedAt.delete(normalized);
     mutationLockRefs.delete(normalized);
     _stopHeartbeatIfIdle();
-    await _releaseLock(normalized, !!options?.keepalive);
+    const release = _releaseLock(normalized, !!options?.keepalive);
+    pendingReleases.set(normalized, release);
+    try { await release; } finally {
+      if (pendingReleases.get(normalized) === release) pendingReleases.delete(normalized);
+    }
     return { ok: true, removed };
   }
 

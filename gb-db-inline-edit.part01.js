@@ -299,6 +299,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     }
     const stableEntryId = _renEntities?.[oldName]?._id || _renEntities?.[oldName]?.entry_id || '';
     const projectedEntity = _renEntities?.[oldName];
+    const originalEntryPath = projectedEntity?._entry_path || null;
     // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
     // 保存に失敗したら catch で旧名へ戻す。
     _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
@@ -308,9 +309,9 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
         return;
       }
-      const renamePath = typeof _dbResolveEntityPathForRename === 'function'
+      const renamePath = originalEntryPath || (typeof _dbResolveEntityPathForRename === 'function'
         ? await _dbResolveEntityPathForRename(dbPath, oldName)
-        : _entityPath(dbPath, oldName);
+        : _entityPath(dbPath, oldName));
       await window.GbDbEntryIdentity.rename({
         dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
         entryId: stableEntryId,
@@ -347,6 +348,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       }
       const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';
       const projectedEntity = _renEntitiesTab?.[oldName];
+      const originalEntryPath = projectedEntity?._entry_path || null;
       // 楽観的更新: 先に新名を表示してからサーバ保存
       _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
@@ -359,7 +361,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           });
         return;
       }
-      const renamePathPromise = typeof _dbResolveEntityPathForRename === 'function'
+      const renamePathPromise = originalEntryPath ? Promise.resolve(originalEntryPath) : typeof _dbResolveEntityPathForRename === 'function'
         ? _dbResolveEntityPathForRename(dbPath, oldName)
         : Promise.resolve(_entityPath(dbPath, oldName));
       renamePathPromise.then(renamePath => window.GbDbEntryIdentity.rename({

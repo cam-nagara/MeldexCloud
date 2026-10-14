@@ -729,7 +729,8 @@ function _settingsThemePreviewStyle(d) {
   }
   const autoStyle = _settingsThemePreviewAutoStyleForRow(d);
   const pvBg = d.bg === null ? 'transparent' : autoStyle.bg || (d.previewBg ? `var(${d.previewBg})` : (d.bg ? `var(${d.bg})` : 'transparent'));
-  const pvFg = autoStyle.fg || (d.fg ? `var(${d.fg})` : d.line ? `var(${d.line})` : 'var(--fg)');
+  const lineOnly = /^[━─—―]+$/.test(String(d.text || '').trim());
+  const pvFg = autoStyle.fg || (d.fg ? `var(${d.fg})` : d.line && lineOnly ? `var(${d.line})` : 'var(--fg)');
   const strokeKey = _settingsThemePreviewExtraKey(d, 'stroke', '-stroke-color');
   const strokeWidthKey = _settingsThemePreviewExtraKey(d, 'strokeWidth', '-stroke-width');
   const leftAccentKey = _settingsThemePreviewExtraKey(d, 'leftAccent', '-left-accent');
@@ -812,6 +813,9 @@ function _bindSettingsThemeStylePreviewRefreshEvents() {
     const editor = document.getElementById('settings-theme-editor');
     if (editor && typeof refreshSettingsThemeStylePreviews === 'function') {
       refreshSettingsThemeStylePreviews(editor);
+    }
+    if (typeof refreshSettingsThemePreview === 'function') {
+      refreshSettingsThemePreview();
     }
   };
   window.addEventListener('meldex-theme-ui-applications-change', refreshOpenEditor);

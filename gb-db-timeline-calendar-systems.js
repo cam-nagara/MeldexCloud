@@ -351,7 +351,8 @@ function _timelineCalendarDateValueFromParts(system, year, monthIndex, day, time
 }
 
 function _timelineCalendarMonthOptionsHtml(system, selectedIndex = 0) {
-  const months = Array.isArray(system?.months) && system.months.length ? system.months : _timelineDefaultCustomCalendarSystem().months;
+  const sourceMonths = Array.isArray(system) ? system : system?.months;
+  const months = Array.isArray(sourceMonths) && sourceMonths.length ? sourceMonths : _timelineDefaultCustomCalendarSystem().months;
   return months.map((month, index) => {
     const name = String(month?.name || month?.label || (index + 1) + '月').trim() || ((index + 1) + '月');
     return `<option value="${index}" ${Number(selectedIndex) === index ? 'selected' : ''}>${esc(name)}</option>`;
@@ -612,15 +613,6 @@ function _timelineCalendarReadLengthRows(overlay, listName, fallback, keyName) {
     })
     .filter(Boolean);
   return rows.length ? rows : fallback.map((row, index) => ({ ...row, index }));
-}
-
-function _timelineCalendarMonthOptionsHtml(months, selectedIndex = 0) {
-  const rows = (Array.isArray(months) && months.length ? months : _timelineDefaultCustomCalendarSystem().months)
-    .map((month, index) => {
-      const name = String(month?.name || month?.label || (index + 1) + '月').trim() || ((index + 1) + '月');
-      return `<option value="${index}" ${Number(selectedIndex) === index ? 'selected' : ''}>${esc(name)}</option>`;
-    });
-  return rows.join('');
 }
 
 function _timelineCalendarRefreshLeapMonthOptions(overlay, selectedIndex = null) {

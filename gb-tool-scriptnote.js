@@ -391,18 +391,33 @@ class ScriptNoteComponent extends ToolComponent {
   }
 
   _syncDetailPanel() {
+    const scenarioPath = this._editor?._path || this.state.scenarioPath || '';
+    if (this._editor) window._detailScriptNoteTabId = this.tabId;
+    if (scenarioPath) {
+      const revision = window.GBOptionTargetContext?.set({ path: scenarioPath, kind: 'scriptnote' }, 'scriptnote-open');
+      if (this._editor?.doc
+        && document.querySelector('.gb-tool-file-theme')
+        && !document.querySelector('.gb-tool-file-theme [data-file-theme-panel="scriptnote"]')) {
+        // 初回activate中はcomponent registryへの登録がまだ終わっていない。
+        // 登録後のフレームで、同じ対象の読込完了を独立パネルへ通知する。
+        requestAnimationFrame(() => {
+          if (window.GBOptionTargetContext?.isCurrentRevision?.(revision)
+            && !document.querySelector('.gb-tool-file-theme [data-file-theme-panel="scriptnote"]')) {
+            document.dispatchEvent(new CustomEvent('meldex:option-target-changed', { detail: window.GBOptionTargetContext.get() }));
+          }
+        });
+      }
+    }
     // タブシェルが未生成の場合は確保する（初回起動時の保険）
     const rpDetail = document.getElementById('rp-detail');
     if (rpDetail && typeof _ensureDetailTabShell === 'function') _ensureDetailTabShell(rpDetail);
     const container = document.getElementById('detail-tab-sn2-main');
     if (!container) return;
-    if (this._editor) window._detailScriptNoteTabId = this.tabId;
     // 他エディタのタブを非表示
     if (typeof showBoardTabs === 'function') showBoardTabs(false);
     if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
     if (typeof showNoteTabs === 'function') showNoteTabs(false);
     if (typeof showFileInfoTab === 'function') showFileInfoTab(true);
-    const scenarioPath = this._editor?._path || this.state.scenarioPath || '';
     if (scenarioPath && typeof renderFileInfoDetailTab === 'function') {
       void renderFileInfoDetailTab(scenarioPath, null, { type: 'scriptnote', typeLabel: 'シナリオ' });
     }
@@ -503,32 +518,9 @@ class ScriptNoteComponent extends ToolComponent {
   }
 
   _openDetailPanel() {
-    // 詳細パネルが閉じている場合のみ開く（toggleで閉じてしまうのを防ぐ）
-    let isHidden = true;
-    try {
-      const cfg = JSON.parse(localStorage.getItem('detail-panel-cfg') || '{}');
-      isHidden = !cfg.visible;
-    } catch (e) {}
-    const rpDetail = document.getElementById('rp-detail');
-    const paneContent = rpDetail?.closest?.('.gb-pane-content') || null;
-    const paneRect = paneContent?.getBoundingClientRect?.() || null;
-    const paneStyle = paneContent && window.getComputedStyle ? getComputedStyle(paneContent) : null;
-    const hasVisibleDetailPane = !!(paneContent
-      && paneRect
-      && paneRect.width > 0
-      && paneRect.height > 0
-      && paneStyle?.display !== 'none'
-      && paneStyle?.visibility !== 'hidden');
-    if (isHidden || !hasVisibleDetailPane) {
-      try {
-        const cfg = JSON.parse(localStorage.getItem('detail-panel-cfg') || '{}');
-        cfg.visible = true;
-        localStorage.setItem('detail-panel-cfg', JSON.stringify(cfg));
-      } catch (e) {}
-      if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', this.paneId);
-      else if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
-      else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
-    }
+    if (typeof _openDetailRightPanel === 'function') {
+      if (_openDetailRightPanel(this.paneId) === false) return;
+    } else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', this.paneId);
     this._syncDetailPanel();
   }
 
@@ -657,6 +649,9 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor._render();
         this._editor._markDirty();
         this._syncEditorToggleButtons();
+        window.dispatchEvent(new CustomEvent('meldex:ruby-presentation-change', {
+          detail: { doc: this._editor.doc, field: 'writingMode' },
+        }));
         return;
       }
       if (action === 'wrap') {
@@ -698,28 +693,35 @@ class ScriptNoteComponent extends ToolComponent {
       }
       if (action === 'reload') {
         if (!this._editor?._path) return;
-        const savedDetailTab = this._editor._detailActiveTab;
-        const reloadPath = this._editor._path;
+        const reloadEditor = this._editor;
+        const savedDetailTab = reloadEditor._detailActiveTab;
+        const reloadPath = reloadEditor._path;
+        const reloadLoadSeq = this._loadSeq;
+        const isCurrentReload = () => this._editor === reloadEditor
+          && reloadEditor._path === reloadPath && this._loadSeq === reloadLoadSeq;
         (async () => {
           const coordinator = window.MeldexDocumentSaveCoordinator;
           const documentKey = coordinator?.documentKeyForPath?.(reloadPath) || reloadPath;
           if (coordinator?.isConflictPending?.(documentKey)) {
-            await this._editor._reviewConflict?.(reloadPath, documentKey);
+            await reloadEditor._reviewConflict?.(reloadPath, documentKey);
             return;
           }
-          if (this._editor?._saveTimer) {
-            clearTimeout(this._editor._saveTimer);
-            this._editor._saveTimer = null;
+          if (reloadEditor._saveTimer) {
+            clearTimeout(reloadEditor._saveTimer);
+            reloadEditor._saveTimer = null;
           }
-          if (this._editor?._dirty && typeof this._editor.save === 'function') {
-            const saved = await this._editor.save();
-            if (!saved || this._editor?._dirty) {
+          if (reloadEditor._dirty && typeof reloadEditor.save === 'function') {
+            const saved = await reloadEditor.save();
+            if (!isCurrentReload()) return;
+            if (!saved || reloadEditor._dirty) {
               showStatus('未保存の変更があるため再読込を中止しました', true);
               return;
             }
           }
-          await this._loadScenario(reloadPath, { skipNavPush: true, skipRecent: true, skipAutoVersion: true });
-          if (savedDetailTab && this._editor) this._editor._detailActiveTab = savedDetailTab;
+          if (!isCurrentReload()) return;
+          const loaded = await this._loadScenario(reloadPath, { skipNavPush: true, skipRecent: true, skipAutoVersion: true });
+          if (loaded !== false && savedDetailTab && this._editor === reloadEditor
+            && reloadEditor._path === reloadPath) reloadEditor._detailActiveTab = savedDetailTab;
         })();
         return;
       }
@@ -788,7 +790,7 @@ class ScriptNoteComponent extends ToolComponent {
         const oldPath = this._editor._path;
         if (newTitle && oldPath) {
           try {
-            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote' });
+            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true });
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
               if (typeof _sn2Editors !== 'undefined') {
@@ -803,7 +805,7 @@ class ScriptNoteComponent extends ToolComponent {
               }));
               window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
               if (typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, type: 'scriptnote' });
+                renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, etag:res.etag, titleOnly:res.title_only, type: 'scriptnote' });
               }
               // タブ名を更新
               if (typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);

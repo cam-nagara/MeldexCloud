@@ -1755,22 +1755,23 @@
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
+      const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.label || '無題') || String(body?.label || '無題');
+      const label = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _validateItemName(rawTitle,'label');
       const type = String(body?.type || '');
       await _requireUnlocked(provider, parent, { action: 'outliner-add-parent' });
       if (type === 'database') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-database' });
-        await _ensureFolderNote(provider, path, 'settings-db');
-        return { ok: true, node: { type: 'database', label: name, path } };
+        await _ensureFolderNote(provider, path, 'settings-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'database', label: rawTitle !== label ? rawTitle : name, path } };
       }
       if (type === 'calendar') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-calendar' });
-        await _ensureFolderNote(provider, path, 'calendar-db');
-        return { ok: true, node: { type: 'calendar', label: name, path } };
+        await _ensureFolderNote(provider, path, 'calendar-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'calendar', label: rawTitle !== label ? rawTitle : name, path } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }

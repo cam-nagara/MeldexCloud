@@ -1415,7 +1415,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
       'file-info-panel-multi'
     );
   } else {
-    window.GBOptionTargetContext?.set({ path: normalizedPath, kind: 'file' }, 'file-info-panel');
+    window.GBOptionTargetContext?.set({ path: normalizedPath, kind: options?.kind || 'file' }, 'file-info-panel');
   }
   if (options?.contextOnly === true) return Promise.resolve();
   const detailRoot = document.getElementById('rp-detail') || document;

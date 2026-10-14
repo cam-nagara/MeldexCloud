@@ -695,7 +695,7 @@ function chatEditUserMessage(index) {
   textarea.className = 'chat-message-edit-textarea';
   textarea.value = original;
   textarea.rows = Math.min(10, Math.max(3, original.split('\n').length + 1));
-  textarea.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:6px;padding:6px;font:inherit;resize:vertical;';
+  textarea.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;background:var(--ui-input-bg,var(--bg3));color:var(--ui-input-fg,var(--fg));border:1px solid var(--ui-input-border,var(--border));border-radius:6px;padding:6px;font:inherit;resize:vertical;';
   const actions = document.createElement('div');
   actions.className = 'chat-message-edit-actions';
   actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap;';
@@ -703,12 +703,12 @@ function chatEditUserMessage(index) {
   cancel.type = 'button';
   cancel.className = 'chat-message-edit-cancel';
   cancel.textContent = 'キャンセル';
-  cancel.style.cssText = 'font-size:11px;padding:2px 8px;background:transparent;color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:4px;cursor:pointer;';
+  cancel.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;';
   const save = document.createElement('button');
   save.type = 'button';
   save.className = 'chat-message-edit-save';
   save.textContent = '保存して再送';
-  save.style.cssText = 'font-size:11px;padding:2px 8px;background:rgba(255,255,255,0.18);color:inherit;border:1px solid rgba(255,255,255,0.45);border-radius:4px;cursor:pointer;';
+  save.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;';
   actions.append(cancel, save);
   bubble.innerHTML = '';
   bubble.append(textarea, actions);

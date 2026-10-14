@@ -24,11 +24,8 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
   ],
   antigravity_cli: [
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
-    { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
-    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
     { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
   ],
 };
@@ -123,6 +120,15 @@ async function renderCliChatSettingsForSettings(root) {
     const config = await apiFetch('/cli-chat/config');
     if (!container.isConnected) return;
     _renderCliChatSettingsContainer(container, config);
+    // 設定画面で確認できた状態を、起動時の取得失敗が残るチャットにも反映する。
+    if (typeof _chatRefreshProviderAvailability === 'function'
+      && typeof _chatCliProviderReadyStatus === 'function') {
+      const statuses = {};
+      for (const key of ['codex', 'claude_code', 'antigravity_cli']) {
+        statuses[key] = await _chatCliProviderReadyStatus(key, config);
+      }
+      await _chatRefreshProviderAvailability(statuses);
+    }
   } catch (e) {
     container.innerHTML = `<div class="gb-section-desc" style="color:var(--red);">CLIチャット設定を読み込めませんでした: ${_settingsCliEsc(e?.message || e)}</div>`;
   }

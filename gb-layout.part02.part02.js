@@ -310,6 +310,7 @@
     if (_paneMap[paneId]) {
       _paneMap[paneId].el.classList.add('gb-pane-active');
     }
+    if (typeof GBPanelSet !== 'undefined') GBPanelSet.syncLeftRailActiveApp?.();
     if (opts && opts.skipCallback) return;
 
     // _onActivePaneChange → _mountAllPanes がスクロール位置を壊す可能性があるため、

@@ -235,6 +235,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         path: filePath,
         content,
+        display_title: window.GBPathUtils?.displayTitle?.read(content, filePath) || "",
         ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
       };
     }
@@ -288,6 +289,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
       }
       const currentContent = entry ? await provider.readText(filePath) : '';
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const storedTitle = titleHelper?.read(currentContent, filePath);
+      if (titleHelper && (body?.display_title || storedTitle)) {
+        content = titleHelper.write(content, body?.display_title || storedTitle, filePath);
+      }
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
       let docIdentityFmt = incomingIdentityFmt;
@@ -757,8 +763,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
       const type = String(body?.type || '');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
+      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
+      const shown = name => title !== null && title !== label ? title : name;
+      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -768,20 +779,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
-        return { ok: true, node: { type: 'folder', label: labelName, path: targetPath, children: [] } };
+        return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
       }
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, `# ${labelName}\n\n`);
-        return { ok: true, node: { type: 'page', label: labelName, path: targetPath } };
+        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
         const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
@@ -790,7 +801,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
-          title: labelName,
+          title: shown(labelName),
+          ...(title !== null && title !== label ? {display_title:title} : {}),
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
           scenarioTypes: [],
@@ -800,22 +812,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
         });
-        return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
+        return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
+        boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
         await provider.writeText(targetPath, boardContent);
-        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'calendar') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: shown(labelName), path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -827,9 +840,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
         throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
-      const newName = _validateItemName(body?.new_name || '', 'new_name');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
+      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+        }
+      }
+      if (titleOnly) {
+        const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
+        const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
+        const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
+          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+        });
+        return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
+      }
       const parentPath = _dirname(oldPath);
       const sourceName = _basename(oldPath);
       if (source.kind === 'directory') {
@@ -868,33 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         });
         return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
       }
-      const split = _splitNameAndExt(sourceName);
-      const nextPath = _joinPath(parentPath, newName + split.ext);
-      if (nextPath !== oldPath && await _pathExists(provider, nextPath)) throw new Error(`既に存在: ${newName + split.ext}`);
-      const annotationPlan = nextPath !== oldPath
-        ? await _prepareAnnotationsForPathMutation(provider, {
-          action: 'rename', oldPath, newPath: nextPath, isFolder: false,
-        }) : [];
-      if (split.ext === '.md' && String(body?.type || '') === 'page') {
-        const original = await provider.readText(oldPath);
-        await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
-      }
-      if (nextPath !== oldPath) {
-        await _moveEntry(provider, oldPath, nextPath);
-      }
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, nextPath, false));
-      await _runPostMutationStep(warnings, 'csv-sidecar', () => (
-        _relocateCsvSidecars(provider, oldPath, nextPath, false, false)
-      ));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, oldPath, nextPath, false)
-          : Promise.resolve(_rewriteStoredPaths(oldPath, nextPath, false))
-      ));
-      await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath: nextPath, isFolder: false }, warnings);
-      await _updateAnnotationsForPathMutation(provider, {
-        action: 'rename', oldPath, newPath: nextPath, isFolder: false, annotationPlan,
-      });
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {

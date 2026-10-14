@@ -20,8 +20,12 @@ function _snRubyConfirmDelete(message) {
 Object.assign(ScriptNoteEditor.prototype, {
 
   _refreshAutoRubyDisplay() {
-    this.host?.querySelectorAll('.sn2-text').forEach((textEl) => {
+    this.host?.querySelectorAll('.sn2-text, .sn2-custom-text').forEach((textEl) => {
+      textEl.querySelectorAll('.sn2-tcy, .sn2-tcy-wide').forEach(span => {
+        span.replaceWith(document.createTextNode(span.textContent));
+      });
       if (typeof this._applyAutoRuby === 'function') this._applyAutoRuby(textEl);
+      if (this.doc.editor?.viewMode === 'vertical') this._wrapTcy(textEl);
     });
     if (typeof this._adjustRubySpacing === 'function') this._adjustRubySpacing();
   },
@@ -244,8 +248,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       textInp.title = '自動ルビ対象';
       textInp.className = 'gb-input-sm sn2-ruby-rule-input';
       textInp.addEventListener('change', () => {
+        if (this._readOnly || !this.doc.rubyRules?.[i]) return;
         this._pushUndo('ルビルール編集');
-        rule.text = textInp.value.trim();
+        // 保存・タイプ正規化で配列が置き換わるため、描画時のruleを
+        // 更新せず、操作時の文書から対象を引き直す。
+        this.doc.rubyRules[i].text = textInp.value.trim();
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
       });
@@ -265,8 +272,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       rubyInp.title = '自動ルビ';
       rubyInp.className = 'gb-input-sm sn2-ruby-rule-input';
       rubyInp.addEventListener('change', () => {
+        if (this._readOnly || !this.doc.rubyRules?.[i]) return;
         this._pushUndo('ルビルール編集');
-        rule.ruby = rubyInp.value.trim();
+        this.doc.rubyRules[i].ruby = rubyInp.value.trim();
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
       });
@@ -281,10 +289,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       delBtn.setAttribute('aria-label', '自動ルビルールを解除 ' + (i + 1));
       delBtn.innerHTML = _snRubyIcon('trash2', 13, '解除');
       delBtn.addEventListener('click', async () => {
-        const ok = await _snRubyConfirmDelete(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を解除しますか？`);
+        const current = this.doc.rubyRules?.[i];
+        if (this._readOnly || !current) return;
+        const path = this._path;
+        const expected = { text: current.text, ruby: current.ruby };
+        const ok = await _snRubyConfirmDelete(`ルビルール「${current.text || '(空)'}→${current.ruby || '(空)'}」を解除しますか？`);
         if (!ok) return;
+        const target = this.doc.rubyRules?.[i];
+        if (this._readOnly || this._path !== path || !item.isConnected
+          || !target || target.text !== expected.text || target.ruby !== expected.ruby) return;
         this._pushUndo('ルビルール解除');
-        autoRules.splice(i, 1);
+        this.doc.rubyRules.splice(i, 1);
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });
         this.renderRubyPanel(container);

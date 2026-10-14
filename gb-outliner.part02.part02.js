@@ -204,7 +204,7 @@ function _outlinerPostTimeoutConfirmDelays() {
 }
 
 // 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
-async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl) {
+async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, options = {}) {
   const sourceId = contextNodeEl?._nodeData?.sourceId || '';
   let rootPath = '';
   let cur = contextNodeEl || null;
@@ -215,7 +215,7 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl) 
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true',
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true' + (options.detail ? '&detail=true' : ''),
       { skipBrowseCache: true, cache: 'reload' });
   } catch {
     return null;
@@ -224,8 +224,13 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl) 
 
 // 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
 // oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
-function _outlinerFindRenamedItem(items, oldDisplayName, newName) {
+function _outlinerFindRenamedItem(items, oldDisplayName, newName, originalPath) {
   if (!Array.isArray(items)) return null;
+  // Title-only edits keep their path; another item may have the same display name.
+  if (originalPath) {
+    const original = items.find(it => it && it.path === originalPath);
+    if (original) return original.name === newName ? original : null;
+  }
   if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
   return items.find(it => it && it.name === newName) || null;
 }
@@ -261,12 +266,17 @@ function _resolveOutlinerCreateInsertTarget(parentPath, options) {
   return { container, deferTreeInsert };
 }
 
-function _insertOutlinerCreateNode(container, newNode) {
+function _insertOutlinerCreateNode(container, newNode, anchorNode) {
   if (!container || !newNode) return;
-  const sel = treeSelection.lastClicked;
+  if (anchorNode && (container.parentElement === anchorNode
+      || anchorNode._nodeData?.path === container.closest('.tree-node')?._nodeData?.path)) {
+    container.insertBefore(newNode, container.firstChild);
+    return;
+  }
+  const sel = anchorNode || treeSelection.lastClicked;
   if (sel && sel._nodeData && sel.parentElement === container) {
     const selType = sel._nodeData.type;
-    if (selType !== 'folder' && selType !== 'database') {
+    if (anchorNode || (selType !== 'folder' && selType !== 'database')) {
       container.insertBefore(newNode, sel.nextSibling);
       return;
     }
@@ -367,7 +377,7 @@ async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
 }
 
 // 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
-async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames) {
+async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, onConfirmed) {
   const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
   if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
   _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
@@ -388,6 +398,7 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindNewItemInListing(items, type, existingNames);
       if (found) {
+        if (onConfirmed) await onConfirmed(found);
         _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
         progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
         return;
@@ -399,6 +410,7 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
     const found = _outlinerFindNewItemInListing(items, type, existingNames);
     if (pendingNode && pendingNode.parentNode) pendingNode.remove();
     if (found) {
+      if (onConfirmed) await onConfirmed(found);
       if (progress) progress.succeed({ summary: `「${found.name}」を作成しました` });
       else showStatus(`「${found.name}」を作成しました`);
     } else {
@@ -415,24 +427,70 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
 }
 
 // アイテムを指定パス配下に追加（部分更新、チラつき防止）
-async function addItemAt(parentPath, type) {
+async function addItemAt(parentPath, type, options = {}) {
   if (_isCloudPhase1BlockedCreateType(type)) {
     _showCloudPhase1BlockedCreate(type);
     return;
   }
   const label = '無題';
+  // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
+  const anchorNode = options.anchorNode;
   const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
+  const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
+  const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
   let pendingNode = null;
   let existingNames = null;
-  if (!target.deferTreeInsert && target.container) {
+  let siblingNames = null;
+  if (!target.deferTreeInsert && target.container && !needsReload) {
     existingNames = _outlinerSnapshotChildNames(target.container);
+    siblingNames = [...target.container.querySelectorAll(':scope > .tree-node')]
+      .map(node => node._nodeData?.path).filter(Boolean);
     pendingNode = _createOutlinerPendingCreateNode(type, label);
-    _insertOutlinerCreateNode(target.container, pendingNode);
+    _insertOutlinerCreateNode(target.container, pendingNode, anchorNode);
   }
+  const saveCreateOrder = async (node) => {
+    if (!anchorNode || !siblingNames) return;
+    const names = siblingNames.slice();
+    const anchorIndex = anchorNode._nodeData?.path === parentPath
+      ? -1 : names.indexOf(anchorNode._nodeData?.path);
+    names.splice(anchorIndex + 1, 0, node.path);
+    setManualOrder(parentPath || '_root', names);
+    setSortSetting(parentPath || '_root', 'manual', 'asc');
+    if (needsReload) {
+      if (virtualTarget) {
+        const vr = window.GBOutlinerVirtualRender;
+        const inside = anchorNode._nodeData?.path === parentPath;
+        const referencePath = inside ? siblingNames[0] : anchorNode._nodeData?.path;
+        vr.dropInto(target.container, [node]);
+        if (referencePath) vr.reorderAround(target.container, [node.path], referencePath, inside ? 'above' : 'below');
+      }
+      _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+    }
+  };
   try {
+    if (needsReload) {
+      const sortCfg = getSortForFolder(parentPath);
+      const virtualItems = window.GBOutlinerVirtualRender?.stateChildItemsFor(target.container, parentPath);
+      const items = virtualItems || await _outlinerFetchFolderListingForConfirm(parentPath, anchorNode, {
+        detail: !['manual', 'name'].includes(sortCfg.sort),
+      });
+      if (!Array.isArray(items)) throw new Error('追加先の並び順を取得できませんでした。もう一度お試しください');
+      existingNames = new Set(items.map(item => _outlinerCreateItemIdentity(item.type, item.name)).filter(Boolean));
+      const ordered = virtualItems || (sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, parentPath)
+        : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order)));
+      siblingNames = ordered.map(item => item.path).filter(Boolean);
+    }
     const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
+    await saveCreateOrder(res.node);
+    if (needsReload) {
+      // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
+      const createdNode = _findTreeNodeByPath(res.node.path);
+      _selectOutlinerCreateNode(createdNode);
+      _openOutlinerCreatedNode(res.node, res.node.name);
+      return;
+    }
 
     let insertTarget = target.deferTreeInsert
       ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true })
@@ -453,7 +511,7 @@ async function addItemAt(parentPath, type) {
 
     if (!insertTarget.deferTreeInsert && newNode) {
       if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
-      else _insertOutlinerCreateNode(insertTarget.container, newNode);
+      else _insertOutlinerCreateNode(insertTarget.container, newNode, anchorNode);
       // 挿入直後に切断されている場合の軽い保険
       if (!newNode.isConnected) loadOutliner();
     }
@@ -464,7 +522,7 @@ async function addItemAt(parentPath, type) {
     _openOutlinerCreatedNode(nd, name);
   } catch (e) {
     if (e && e.isTimeout) {
-      await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames);
+      await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, saveCreateOrder);
     } else {
       if (pendingNode && pendingNode.parentNode) pendingNode.remove();
       showStatus((e && e.message) || '追加に失敗しました', true);

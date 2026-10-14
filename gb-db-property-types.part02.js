@@ -610,6 +610,10 @@ function _ptBindFormulaEditor(root) {
 
 function showDbPropertySettingsForColumn(dbPath, propName, opts) {
   if (!dbPath) return;
+  const shouldSwitch = !opts || opts.switchTab !== false;
+  const ctx = _ptContextForDbPath(dbPath, opts?.ctx);
+  if (shouldSwitch && opts?.openPanel !== false && typeof _openDetailRightPanel === 'function'
+      && _openDetailRightPanel(opts?.source || ctx?.paneId) === false) return;
   const selected = typeof _getSelectedColumns === 'function' ? _getSelectedColumns(dbPath) : [];
   const effectiveProp = propName || (selected.length === 1 ? selected[0] : '');
   if (typeof state !== 'undefined') state.selectedColumn = effectiveProp ? { dbPath, propName: effectiveProp } : { dbPath, propName: '' };
@@ -621,19 +625,18 @@ function showDbPropertySettingsForColumn(dbPath, propName, opts) {
   const container = detailEl.querySelector('#detail-tab-db-property-settings');
   if (!container) return;
 
-  const shouldSwitch = !opts || opts.switchTab !== false;
   if (shouldSwitch && typeof switchDetailTab === 'function') switchDetailTab('db-property-settings');
-  renderDbPropertySettingsPanel(dbPath, effectiveProp, container);
+  renderDbPropertySettingsPanel(dbPath, effectiveProp, container, ctx);
 }
 
-function renderDbPropertySettingsPanel(dbPath, propName, container) {
+function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride) {
   const target = container || document.getElementById('detail-tab-db-property-settings');
   if (!target) return;
   if (!propName) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
   }
-  const ctx = _ptContextForDbPath(dbPath);
+  const ctx = _ptContextForDbPath(dbPath, ctxOverride);
   const pivotData = ctx?.pivotData || _ptPivotDataForDbPath(dbPath);
   if (propName === '__entity__') {
     const entityColumnLabel = typeof _dbEntityColumnDisplayLabel === 'function'
@@ -698,7 +701,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     });
     return;
   }
-  const types = getPropertyTypes(dbPath);
+  const types = getPropertyTypes(dbPath, ctx);
   if (typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(dbPath)) {
     const current = types[propName] || { type: 'text' };
     const typeLabel = typeof getPropertyTypeMenuItems === 'function'

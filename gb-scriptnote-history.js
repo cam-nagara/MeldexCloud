@@ -130,6 +130,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
       if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
+      this._rebindRoleFilters?.(
+        [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
+        [...data.scenarioTypes, ...data.characters],
+      );
       this.doc.fileType = data.fileType;
       this.doc.version = data.version;
       this.doc.title = data.title;
@@ -178,6 +182,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _refreshDetailPanel() {
+    if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="scriptnote"]')
+      && typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('scriptnote');
     const container = document.getElementById('detail-tab-sn2-main');
     if (!container) return;
     const panel = container.querySelector('.sn2-detail-wrap');

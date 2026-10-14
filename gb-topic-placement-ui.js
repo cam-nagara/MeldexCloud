@@ -164,8 +164,15 @@
         const columnName = String(column?.name || column?.columnId || '');
         const value = propertyForColumn(record, placement, column);
         if (!columnName) return;
-        entity[columnName] = [{
-          value: value === undefined ? '' : clone(value), status: '採用', note: '',
+        // Legacy sheet values are candidate records, not a single cell value.
+        const candidates = Array.isArray(value) && value.every(candidate =>
+          candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+          && Object.prototype.hasOwnProperty.call(candidate, 'value'))
+          ? value : [{ value: value === undefined ? '' : value, status: '採用', note: '' }];
+        entity[columnName] = candidates.map((candidate, candidateIndex) => ({
+          ...clone(candidate),
+          ...(candidates === value ? { candidate_index: candidateIndex, _topicCandidateList: true,
+            _topicCandidateOriginal: clone(candidate) } : {}),
           topicRef: clone(ref), _topicCanonicalOnly: !legacyName,
           _topicDbPath: normalizePath(dbPath),
           _topicReadOnly: view.readOnly === true,
@@ -173,7 +180,7 @@
           _topicColumnId: column.columnId || column.id || columnName,
           _topicColumnName: columnName,
           _topicColumnType: column.columnType || column.type || 'text',
-        }];
+        }));
       });
       pivotData.entities[name] = entity;
     });
@@ -663,13 +670,43 @@
     const order = [...(record.propertyValueOrder || [])];
     const properties = clone(record.properties || {});
     const columnName = String(valueRef.property || valueRef._topicColumnName || valueRef._topicColumnId || '');
-    if (updates?._delete) {
+    let nextValue = updates?.new_value !== undefined ? updates.new_value : valueRef.value;
+    const candidateList = valueRef._topicCandidateList === true;
+    if (candidateList) {
+      const stored = typed[familyId]?.value;
+      const index = valueRef.candidate_index;
+      if (!Array.isArray(stored) || !Number.isInteger(index) || !stored[index]
+          || JSON.stringify(stored[index]) !== JSON.stringify(valueRef._topicCandidateOriginal)) {
+        throw new Error('候補値が更新されています。シートを再読込してから編集してください');
+      }
+      nextValue = clone(stored);
+      if (updates?._delete) nextValue.splice(index, 1);
+      else {
+        const candidate = nextValue[index];
+        if (updates?.new_value !== undefined) {
+          candidate.value = clone(updates.new_value);
+          if (updates?.new_rich_html === undefined) delete candidate.rich_html;
+        }
+        for (const field of ['status', 'note']) {
+          const update = updates?.['new_' + field] ?? updates?.[field];
+          if (update !== undefined && update !== null) candidate[field] = clone(update);
+        }
+        if (updates?.new_rich_html !== undefined) {
+          if (updates.new_rich_html) candidate.rich_html = updates.new_rich_html;
+          else delete candidate.rich_html;
+        }
+        if (updates?.new_link !== undefined) {
+          if (updates.new_link && typeof updates.new_link === 'object') candidate.link = clone(updates.new_link);
+          else delete candidate.link;
+        }
+      }
+    }
+    if (updates?._delete && (!candidateList || !nextValue.length)) {
       delete typed[familyId];
       delete properties[columnName];
       const index = order.indexOf(familyId);
       if (index >= 0) order.splice(index, 1);
     } else {
-      const nextValue = updates?.new_value !== undefined ? updates.new_value : valueRef.value;
       typed[familyId] = {
         ...(typed[familyId] || {}), propertyFamilyId: familyId,
         displayName: columnName, columnType: valueRef._topicColumnType || 'text',
@@ -691,6 +728,9 @@
           changes: { propertyValuesByFamilyId: typed, propertyValueOrder: order, properties } }),
       },
     );
+    if (candidateList && !updates?._delete) {
+      valueRef._topicCandidateOriginal = clone(nextValue[valueRef.candidate_index]);
+    }
     const affected = [];
     for (const [path, cached] of viewsByPath.entries()) {
       if (!(cached.document?.placements || []).some(item => topicKey(item.topicRef) === topicKey(ref))) continue;
@@ -901,6 +941,9 @@
       readOnly: source.readOnly === true,
       sourceFolder: global.MeldexAutoTagSourceFolder?.(source.path) || '',
       onUpdateValue: async (row, nextValue) => updateProjectedValue({
+        candidate_index: row.candidate_index,
+        _topicCandidateList: row._topicCandidateList,
+        _topicCandidateOriginal: clone(row._topicCandidateOriginal),
         topicRef: ref,
         _topicDbPath: source.path,
         _topicPropertyFamilyId: row.id,

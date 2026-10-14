@@ -301,6 +301,7 @@ function bdSetBoardBackgroundColor(color) {
   _bdApplyCurrentBoardBackground();
   if (typeof bdDirty === 'function') bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+  if (typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('board');
   if (typeof bdMarkExtrasDirty === 'function') {
     bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-color');
     if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
@@ -411,6 +412,7 @@ function bdSetBoardBackgroundImage(url, fit, scale) {
   if (!refreshedTheme) _bdApplyCurrentBoardBackground();
   if (typeof bdDirty === 'function') bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+  if (typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('board');
   if (typeof bdMarkExtrasDirty === 'function') {
     bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-image');
     if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
@@ -444,6 +446,7 @@ function bdClearBoardBackground() {
   if (!_bdRefreshBoardBackgroundThemeRuntime()) _bdApplyCurrentBoardBackground();
   if (typeof bdDirty === 'function') bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+  if (typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('board');
   if (typeof bdMarkExtrasDirty === 'function') {
     bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-clear');
     if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();

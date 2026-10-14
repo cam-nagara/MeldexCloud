@@ -699,6 +699,8 @@ function openExtensionInstallGuide(key) {
   window.MeldexPublicManual?.open?.(guide.path);
 }
 
+const MELDEX_EXTENSION_INSTALL_ERRORS = {};
+
 async function _loadExtensionStatus() {
   const el = document.getElementById('ext-status');
   if (!el) return;
@@ -725,7 +727,10 @@ async function _loadExtensionStatus() {
     ];
     el.innerHTML = exts.map(ext => {
       let action;
-      if (ext.installed) {
+      const pending = (status.pending_extensions || []).includes(ext.key);
+      if (pending) {
+        action = '<span style="color:var(--green);font-size:12px;">導入完了・Meldexを終了してもう一度起動してください</span>';
+      } else if (ext.installed) {
         action = `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`;
       } else if (frozen) {
         action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
@@ -736,13 +741,16 @@ async function _loadExtensionStatus() {
         const note = externalPythonNote
           ? `<span style="font-size:11px;color:var(--fg2);text-align:right;">${externalPythonNote}</span>`
           : '';
-        action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">${note}<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button></div>`;
+        const label = MELDEX_EXTENSION_INSTALL_ERRORS[ext.key] ? '再試行'
+          : (ext.key === 'clip' && externalPython.installed_here ? '修復' : 'インストール');
+        action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">${note}<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">${label}</button><button data-action="openExtensionInstallGuide('${ext.key}')" style="padding:4px 14px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;">導入手順を見る</button></div>`;
       }
-      return `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
+      return `<div data-extension-key="${ext.key}" style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
       <div style="flex:1;">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);">${ext.name}</div>
         <div style="font-size:11px;color:var(--fg2);">${ext.desc}</div>
               <div style="font-size:11px;color:var(--fg2);">ファイルサイズ: ${ext.size}</div>
+        <div data-extension-message role="status" style="font-size:12px;color:var(--red);" ${!pending && MELDEX_EXTENSION_INSTALL_ERRORS[ext.key] ? '' : 'hidden'}>${!pending ? esc(MELDEX_EXTENSION_INSTALL_ERRORS[ext.key] || '') : ''}</div>
       </div>
       ${action}
     </div>`;
@@ -771,6 +779,9 @@ async function _loadExtensionStatus() {
 }
 
 async function _installExtension(key, btn) {
+  delete MELDEX_EXTENSION_INSTALL_ERRORS[key];
+  const message = btn.closest('[data-extension-key]')?.querySelector('[data-extension-message]');
+  if (message) { message.hidden = true; message.textContent = ''; }
   btn.disabled = true;
   btn.textContent = 'インストール中...';
   btn.style.background = 'var(--bg4)';
@@ -786,19 +797,33 @@ async function _installExtension(key, btn) {
       btn.innerHTML = lucide('check', 12) + ' 完了（再起動で有効）';
       btn.style.background = 'var(--green)';
       btn.style.color = '#fff';
+      if (message) {
+        message.textContent = res.message || 'Meldexを終了して、もう一度起動すると使えるようになります。';
+        message.style.color = 'var(--green)';
+        message.hidden = false;
+      }
       showStatus(res.message);
     } else {
-      btn.textContent = '失敗';
-      btn.style.background = 'var(--red)';
-      btn.style.color = '#fff';
-      showStatus('インストール失敗: ' + res.error, true);
+      _extensionInstallFailed(key, btn, message, res.error);
     }
   } catch (e) {
-    btn.textContent = 'エラー';
-    btn.style.background = 'var(--red)';
-    btn.style.color = '#fff';
-    showStatus('インストールエラー: ' + (e.message || e), true);
+    _extensionInstallFailed(key, btn, message, '処理を完了できませんでした。接続を確認して「再試行」を押してください。');
   }
+}
+
+function _extensionInstallFailed(key, btn, message, error) {
+  const text = error || 'インストールできませんでした。「再試行」を押してください。';
+  MELDEX_EXTENSION_INSTALL_ERRORS[key] = text;
+  btn.disabled = false;
+  btn.textContent = '再試行';
+  btn.style.background = 'var(--accent)';
+  btn.style.color = 'var(--ui-accent-fg, var(--ui-fg-strong))';
+  if (message) {
+    message.textContent = text;
+    message.style.color = 'var(--red)';
+    message.hidden = false;
+  }
+  showStatus(text, true);
 }
 
 const SETTINGS_RESET_HISTORY_SESSION_KEY = 'meldex:settings-reset-history';

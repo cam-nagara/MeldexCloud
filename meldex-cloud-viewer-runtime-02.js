@@ -804,8 +804,11 @@
     return session;
   }
 
-  async function getValidAccessToken() {
+  async function getValidAccessToken(expectedAccountId) {
     const session = await getValidSession();
+    if (expectedAccountId && String(session?.accountId || session?.account?.account_id || '') !== expectedAccountId) {
+      throw Object.assign(new Error('Dropboxアカウントが変わりました。読み直してください'), { status: 409 });
+    }
     return session?.accessToken || '';
   }
 
@@ -1050,7 +1053,7 @@
   async function apiContent(route, arg, init, options) {
     if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const token = await getValidAccessToken();
+      const token = await getValidAccessToken(options?.expectedAccountId);
       if (!token) throw new Error('Dropboxへもう一度接続してください');
       const requestInit = init ? { ...init } : {};
       requestInit.method = requestInit.method || 'POST';
@@ -1447,11 +1450,17 @@
     }
   }
 
+  function retentionNow(value) {
+    // iframe/別realmのDateも内部時刻を使う。instanceofは別realmでfalseになる。
+    try { return new Date(Date.prototype.getTime.call(value)); }
+    catch { return new Date(); }
+  }
+
   function selectDocumentsExceedingRetention(records, options) {
     const opts = options || {};
     if (!records || !records.length) return [];
     const policy = opts.policy || retentionPolicyFor(records[0].kind);
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const ordered = [...records].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     const doomed = new Set();
     if (policy.maxGenerations != null && ordered.length > policy.maxGenerations) {
@@ -1487,7 +1496,7 @@
   async function runRetentionCleanup(adapter, options) {
     const opts = options || {};
     const kinds = opts.kinds || RETENTION_CLEANUP_KINDS;
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const deletedByKind = {};
     for (const kind of kinds) {
       let records = [];
@@ -1988,14 +1997,14 @@
     });
   }
 
-  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false) {
+  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false, expectedAccountId) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
     const location = await _resolveApiLocation(arg?.path, namespaceKind);
     return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, {
-      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck,
+      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck, expectedAccountId,
     });
   }
 
@@ -2317,7 +2326,7 @@
         .reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     }
 
-    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing) {
+    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing, options) {
       const contract = _contract();
       const backupId = `${documentId}-conflict-${Math.random().toString(16).slice(2, 14)}${Date.now().toString(36)}`;
       const backupPayload = {
@@ -2328,7 +2337,8 @@
         attempted_at: contract.nowIso(),
       };
       try {
-        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload);
+        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload,
+          options?.expectedAccountId ? { expectedAccountId: options.expectedAccountId } : undefined);
         return backupId;
       } catch {
         this._audit('error', 'conflict_backup_failed', kind, documentId, { message: '競合バックアップの保全に失敗しました' });
@@ -2353,7 +2363,7 @@
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
       if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
-        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
         this._audit('warning', 'save_conflict', kind, docId, {
           message: 'revisionが一致しないため書込を中止しました',
           detail: { expected_revision: expectedRevision, current_revision: currentRevision },
@@ -2394,13 +2404,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: bytes,
-        }, this._namespaceKind);
+        }, this._namespaceKind, false, opts.expectedAccountId);
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
-          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
           const refreshedRevision = refreshed ? refreshed.rev : currentRevision;
           this._audit('warning', 'save_conflict', kind, docId, {
             message: 'Dropbox側で更新競合を検出しました',
@@ -7601,6 +7611,10 @@
         })) || 'folder'
         : 'folder';
       const folderItem = { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
+      if (window.GBPathUtils?.displayTitle) {
+        try { const title = window.GBPathUtils.displayTitle.read(await provider.readText(_joinPath(relativePath,name+'.md')));
+          if (title) folderItem.name=title; } catch {}
+      }
       if (safeOptions.detail) folderItem.os_type = _fallbackOsTypeLabel(name, type, true);
       return folderItem;
     }
@@ -7613,6 +7627,10 @@
       sourceId: sourceId || undefined,
       file_id: _fnvFileId(_normalizeFolderPath(relativePath)),
     };
+    if (['page','board','database','scenario','scriptnote','timer','calendar'].includes(fileType) && window.GBPathUtils?.displayTitle) {
+      try { const title=window.GBPathUtils.displayTitle.read(await provider.readText(relativePath),relativePath);
+        if (title) item.name=title; } catch {}
+    }
     if (safeOptions.allFiles && fileType === 'unknown') {
       item.ext = _splitNameAndExt(name).ext.toLowerCase();
       item.name = name;
@@ -8419,7 +8437,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -8429,14 +8447,14 @@
   }
 
   async function _personalPreferenceAdapter() {
+    const provider = await _requirePwaProvider('read');
     if (_runtime()?.isBrowserMode?.()) {
-      const provider = await _requirePwaProvider('read');
       return provider?.getSystemStorageAdapter?.() || null;
     }
     const factory = window.MeldexSystemStorageDropbox;
     const resolver = window.MeldexDropboxManagementRootResolver;
     if (!factory || !resolver?.resolveAdapterForProvider) return null;
-    return resolver.resolveAdapterForProvider('dropbox', { personalOnly: true });
+    return resolver.resolveAdapterForProvider(provider, { personalOnly: true });
   }
 
   function _assertPersonalPreferenceName(name) {
@@ -8445,8 +8463,24 @@
     return doc;
   }
 
+  async function _quickMemoPreferenceScope(doc) {
+    if (doc !== 'quick-memo-tags') return {};
+    const session = await window.MeldexDropboxAuth?.getSession?.();
+    const accountId = String(session?.accountId || session?.account?.account_id || '').trim();
+    return accountId ? { scopeId: `dropbox-account:${accountId}` } : null;
+  }
+
+  async function _checkQuickMemoPreferenceScope(doc, scope) {
+    if (doc !== 'quick-memo-tags') return;
+    if ((await _quickMemoPreferenceScope(doc))?.scopeId !== scope?.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+  }
+
   async function _readPersonalPreference(name) {
     const doc = _assertPersonalPreferenceName(name);
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, exists: false, payload: null, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -8455,14 +8489,17 @@
     }
     if (!adapter) return { available: false, exists: false, payload: null, revision: null };
     const record = await adapter.load(_personalPreferenceKind(), doc);
-    if (!record) return { available: true, exists: false, payload: null, revision: null };
-    return { available: true, exists: true, payload: record.payload, revision: record.revision };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    if (!record) return { available: true, exists: false, payload: null, revision: null, ...scope };
+    return { available: true, exists: true, payload: record.payload, revision: record.revision, ...scope };
   }
 
   async function _writePersonalPreference(name, body) {
     const doc = _assertPersonalPreferenceName(name);
     const payload = body?.payload;
     if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, ok: false, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -8470,12 +8507,21 @@
       adapter = null;
     }
     if (!adapter) return { available: false, ok: false, revision: null };
+    if (doc === 'quick-memo-tags' && body?.expectedScopeId !== scope.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+    if (doc === 'quick-memo-tags' && !Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      throw _httpError(400, 'expectedRevision が必要です');
+    }
     const options = {};
+    if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
+    await _checkQuickMemoPreferenceScope(doc, scope);
     const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
-    return { available: true, ok: true, revision: record?.revision || null };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    return { available: true, ok: true, revision: record?.revision || null, ...scope };
   }
 
   function _assertWorkspacePreferenceName(name) {
@@ -13398,6 +13444,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         path: filePath,
         content,
+        display_title: window.GBPathUtils?.displayTitle?.read(content, filePath) || "",
         ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
       };
     }
@@ -13451,6 +13498,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
       }
       const currentContent = entry ? await provider.readText(filePath) : '';
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const storedTitle = titleHelper?.read(currentContent, filePath);
+      if (titleHelper && (body?.display_title || storedTitle)) {
+        content = titleHelper.write(content, body?.display_title || storedTitle, filePath);
+      }
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
       let docIdentityFmt = incomingIdentityFmt;
@@ -13920,8 +13972,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
       const type = String(body?.type || '');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
+      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
+      const shown = name => title !== null && title !== label ? title : name;
+      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -13931,20 +13988,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
-        return { ok: true, node: { type: 'folder', label: labelName, path: targetPath, children: [] } };
+        return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
       }
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, `# ${labelName}\n\n`);
-        return { ok: true, node: { type: 'page', label: labelName, path: targetPath } };
+        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
         const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
@@ -13953,7 +14010,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
-          title: labelName,
+          title: shown(labelName),
+          ...(title !== null && title !== label ? {display_title:title} : {}),
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
           scenarioTypes: [],
@@ -13963,22 +14021,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
         });
-        return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
+        return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
+        boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
         await provider.writeText(targetPath, boardContent);
-        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'calendar') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: shown(labelName), path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -13990,9 +14049,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
         throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
-      const newName = _validateItemName(body?.new_name || '', 'new_name');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
+      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+        }
+      }
+      if (titleOnly) {
+        const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
+        const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
+        const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
+          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+        });
+        return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
+      }
       const parentPath = _dirname(oldPath);
       const sourceName = _basename(oldPath);
       if (source.kind === 'directory') {

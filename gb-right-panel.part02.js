@@ -248,7 +248,7 @@ function openCalendar() {
     const label = mainCalPath.split('/').pop().replace(/\.json$/, '');
     openCalendarFile(label, mainCalPath);
   } else {
-    toggleRightPanelTab('calendar');
+    openRightPanelTab('calendar');
   }
 }
 

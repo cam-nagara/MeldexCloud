@@ -589,7 +589,7 @@
     if (!this.doc.editor) this.doc.editor = {};
     if (!this.doc.editor.columnStyles) this.doc.editor.columnStyles = {};
     const style = this.doc.editor.columnStyles[colId] = { ...(this.doc.editor.columnStyles[colId] || {}) };
-    const resetStyle = colId === '_gutter2' ? { bgColor: '#333333' } : {};
+    const resetStyle = colId === '_gutter2' ? { bgColor: SCRIPTNOTE_DEFAULT_TYPE_BG } : {};
     const fields = [
       'textColor', 'fontSize', 'fontFamily', 'bold', 'italic',
       'textStrokeColor', 'textStrokeWidth', 'bgColor', 'leftAccent', 'underline', 'accentColor',

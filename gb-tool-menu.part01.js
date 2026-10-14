@@ -428,7 +428,7 @@ function openScenarioInScriptNote(path, label = '', opts) {
           activeTab.icon = GBTabs.tabIcon('scriptnote');
           activeTab.state = tabState;
           tabId = activeTab.id;
-          GBLayout.render();
+          GBTabs.updateTab(paneId, activeTab.id, {});
         }
       } else {
         tabId = GBTabs.addTab(paneId, tabLabel, 'scriptnote', target.path, tabState);
@@ -443,7 +443,6 @@ function openScenarioInScriptNote(path, label = '', opts) {
       tab.state = { ...(tab.state || {}), ...tabState };
       GBLayout.saveLayout?.();
     }
-    if (_openOpts.fromExplorer && typeof GBLayout.render === 'function') GBLayout.render();
     // navPush はタブ内 _loadScenario → openScenarioInScriptNote 内で呼ばれるため、ここでは不要
     const loadIntoTab = (attempt = 0) => {
       const comp = getComponentInstance(tabId);

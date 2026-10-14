@@ -116,6 +116,9 @@ function switchDetailTab(tab) {
     renderPublishDetailTab();
   }
   if (tab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
+  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.rememberDetailTab === 'function') {
+    GBPaneBridge.rememberDetailTab(tab);
+  }
   try {
     document.dispatchEvent(new CustomEvent('meldex:detail-tab-switched', { detail: { tab } }));
   } catch {}
@@ -223,15 +226,17 @@ function _bindDetailTabBarClicks(bar) {
   });
 }
 
-function _openDetailRightPanel() {
+function _openDetailRightPanel(source) {
+  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.guardRightSidebarTool === 'function'
+      && !GBPaneBridge.guardRightSidebarTool('detail', source)) return false;
   const rpDetail = document.getElementById('rp-detail');
   if (!rpDetail) return false;
   _ensureDetailTabShell(rpDetail);
   const cfg = _getDetailPanelCfg();
   cfg.visible = true;
   _saveDetailPanelCfg(cfg);
-  if (typeof openRightPanelTab === 'function') openRightPanelTab('detail');
-  else if (typeof switchRightTab === 'function') switchRightTab('detail');
+  if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', source);
+  else if (typeof switchRightTab === 'function') switchRightTab('detail', source);
   return true;
 }
 
@@ -862,7 +867,8 @@ function _fsRestoreStyleSnapshot(ctx, style) {
       _fsResetBoardRuntimeFileStyle();
     }
     if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
-    if (typeof renderFileStyleTab === 'function') renderFileStyleTab(ctx);
+    if (typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels(ctx);
+    else if (typeof renderFileStyleTab === 'function') renderFileStyleTab(ctx);
   };
   if (result && typeof result.then === 'function') return result.finally(refresh);
   refresh();
@@ -884,6 +890,7 @@ function _fsPushStyleHistory(ctx, before, after, label, detail) {
 }
 
 function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail) {
+  if (typeof _fsThemeAdapterIsCurrent === 'function' && !_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
   const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
   const next = _fsStyleSnapshot(style);
   if (_fsStyleSnapshotsEqual(before, next)) return null;
@@ -894,7 +901,9 @@ function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail) {
     bdPushUndo();
   }
   const result = _fsWithStyleHistorySuppressed(() => _fsPersistStyleDirect(ctx, adapter, next, { skipUndo: true }));
-  const finish = () => {
+  const finish = saved => {
+    if (saved === false) return false;
+    if (adapter?.isCurrent && !adapter.isCurrent()) return next;
     if (ctx === 'board' && Object.keys(next).length === 0 && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
     if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
     const after = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
@@ -902,7 +911,7 @@ function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail) {
     return after;
   };
   if (result && typeof result.then === 'function') return result.then(finish);
-  return finish();
+  return finish(result);
 }
 
 function _fsFormatCss(field, raw) {
@@ -921,8 +930,11 @@ function _fsGetScriptnoteAdapter() {
   if (!ed || !ed.doc) return null;
   return {
     kind: 'scriptnote',
+    ctx: 'scriptnote',
+    isCurrent: () => !ed.readOnly && !ed._readOnly && _getScriptNoteEditorForFileStyle?.() === ed,
     get: (field) => ed.doc.editor?.[field.key],
     saveStyle: (style, options = {}) => {
+      if (ed.readOnly || ed._readOnly || _getScriptNoteEditorForFileStyle?.() !== ed) return false;
       if (!ed.doc.editor) ed.doc.editor = {};
       const next = _filterScriptnoteFileStyle(style || {});
       Object.keys(ed.doc.editor).forEach((key) => {
@@ -940,6 +952,7 @@ function _fsGetScriptnoteAdapter() {
       if (typeof ed._render === 'function') ed._render();
     },
     set: (field, val) => {
+      if (ed.readOnly || ed._readOnly || _getScriptNoteEditorForFileStyle?.() !== ed) return false;
       const pushedUndo = typeof ed._pushUndo === 'function';
       if (pushedUndo) ed._pushUndo('スタイル設定変更');
       if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
@@ -1006,7 +1019,6 @@ function _fsSaveStyleForContext(ctx, style) {
     return result;
   }
   if (ctx === 'db') {
-    if (typeof _syncDbMetadataFileStyle === 'function') _syncDbMetadataFileStyle(saved);
     result = typeof _saveFileThemeToDbFolderNote === 'function' ? _saveFileThemeToDbFolderNote(saved) : undefined;
     _fsMarkStyleVersionDirty(ctx);
     return result;
@@ -1021,26 +1033,36 @@ function _fsGetFrontmatterAdapter(ctx) {
     : ctx === 'page' ? 'page-content'
     : ctx === 'board' ? 'bd-canvas'
     : 'db-view-container';
+  const scope = _fsStyleHistoryScope(ctx);
+  const boardPath = ctx === 'board' && typeof bd !== 'undefined' ? bd.path : '';
+  const isCurrent = () => _fsStyleHistoryScope(ctx) === scope
+    && (ctx !== 'board' || (typeof bd !== 'undefined' && bd.path === boardPath));
   return {
     kind: 'frontmatter',
     ctx,
+    isCurrent,
     get: (field) => {
       const cur = _fsGetStyleForContext(ctx);
       return cur[field.key];
     },
     set: (field, val) => {
+      if (!isCurrent()) return false;
       const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
       const boardUndoPushed = ctx === 'board' && typeof bdPushUndo === 'function' && !_fsStyleHistorySuppressed;
       if (boardUndoPushed) bdPushUndo();
-      if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
-        _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, field, null, { skipHistory: true, skipUndo: true });
-      }
-      const cur = _fsGetStyleForContext(ctx);
+      const current = _fsGetStyleForContext(ctx);
+      const cur = typeof _fsBuildLocalCustomThemeStyle === 'function' && !_fsIsLocalCustomThemeStyle(current)
+        ? _fsBuildLocalCustomThemeStyle(ctx, { adapter: _fsGetFrontmatterAdapter(ctx) }) : current;
       const next = { ...cur };
       if (val === null || val === undefined || val === '') delete next[field.key];
       else next[field.key] = val;
-      _fsSaveStyleForContext(ctx, next);
-      _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
+      const result = _fsSaveStyleForContext(ctx, next);
+      const finish = saved => {
+        if (saved === false || !isCurrent()) return false;
+        _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
+        return true;
+      };
+      return result?.then ? result.then(finish) : finish(result);
     },
     applyCss: (field, raw) => {
       const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'

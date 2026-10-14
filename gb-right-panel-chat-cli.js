@@ -174,7 +174,7 @@
 
   function cliChatSessionContinuitySettingEnabled() {
     try {
-      return localStorage.getItem(CLI_CHAT_SESSION_CONTINUITY_KEY) === '1';
+      return localStorage.getItem(CLI_CHAT_SESSION_CONTINUITY_KEY) !== '0';
     } catch {
       return false;
     }

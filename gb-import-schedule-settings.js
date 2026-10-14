@@ -5,6 +5,7 @@
 // 周期を編集できる（gb-notion-sync.js / gb-settings-x-bookmarks.js /
 // gb-external-import.js。いずれも /api/import-schedules へ書き込みが委譲される）。
 // 本モジュールは、それらを横断する「インポート予定」一覧を1画面にまとめ、
+// Xブックマークは予定・結果の確認と専用設定への移動だけを提供する。
 // 他の設定画面にUIを持たないXアカウント投稿の定期実行もここから登録できるように
 // する（Meldex.html の編集はレーン外のため、既存の外部取り込み設定画面の末尾へ
 // ランタイムでマウントする）。
@@ -88,6 +89,30 @@
     const status = textEl('div', statusLine(entry), 'gb-section-desc');
     status.dataset.e2eId = `import-schedule-status-${stableId}`;
     card.appendChild(status);
+
+    if (entry.category === 'x-bookmarks') {
+      card.appendChild(textEl('div', '接続・取り込み・自動実行の設定は専用画面で変更できます。', 'gb-section-desc'));
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'gb-btn gb-btn-sm';
+      link.innerHTML = icon('arrowRight', 14) + ' Xブックマークの設定を開く';
+      link.dataset.e2eId = `import-schedule-settings-${stableId}`;
+      link.addEventListener('click', async () => {
+        try {
+          if (typeof _openSettingsSection === 'function') {
+            _openSettingsSection('Xブックマーク', card, { forcePage: true });
+          } else if (typeof showSettingsModal === 'function') {
+            await showSettingsModal({ panel: 'Xブックマーク' });
+          } else {
+            throw new Error('設定画面を利用できません');
+          }
+        } catch (err) {
+          status.textContent = '設定画面を開けませんでした: ' + (err.userMessage || err.message || err);
+        }
+      });
+      card.appendChild(link);
+      return card;
+    }
 
     const schedContainer = document.createElement('div');
     schedContainer.className = 'gb-section gb-section--boxed';
@@ -280,7 +305,7 @@
     section.style.marginTop = '12px';
     section.innerHTML = `
       <div class="gb-section-title">${icon('calendarClock', 14)} インポート予定（定期実行）</div>
-      <div class="gb-section-desc">Notion同期・Xブックマーク・外部取り込みの定期実行をまとめて確認・変更できます。定期実行は既定で無効です。</div>
+      <div class="gb-section-desc">取り込みの予定と前回結果をまとめて確認できます。Xブックマークの設定は専用画面で変更します。定期実行は既定で無効です。</div>
     `;
     container.appendChild(section);
 

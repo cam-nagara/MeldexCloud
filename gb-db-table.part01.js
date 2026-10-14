@@ -374,7 +374,21 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
   const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
   setTimeout(async () => {
     try {
-      const pivotData = await apiFetch(_dbPivotFetchUrl(dbPath));
+      let pivotData;
+      // A value can start saving while the background read is in flight.
+      // Never replace the current pivot with a snapshot older than that save.
+      const staleAfterWrite = () => Object.entries(pivotData?.entities || {}).some(([name, entity]) => {
+        const path = typeof _entityPath === 'function' ? _entityPath(dbPath, name, pivotData) : `${dbPath}/${name}.md`;
+        const known = typeof _dbLatestEntryRevision === 'function' ? _dbLatestEntryRevision(path) : null;
+        return known != null && Number(entity?._revision || 0) < known;
+      });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        pivotData = await apiFetch(_dbPivotFetchUrl(dbPath), {skipBrowseCache:true,cache:'no-store'});
+        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        if (!staleAfterWrite()) break;
+        if (attempt === 2) return;
+      }
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
       // サーバー作成が未確定の楽観的エントリは取得データに含まれないため、行が消えないよう再マージする
       if (typeof _dbMergePendingEntityCreates === 'function') _dbMergePendingEntityCreates(dbPath, pivotData);
@@ -457,6 +471,8 @@ async function _handleNewEntryClick(ctx) {
   _dbKeepNewEntryRowVisible(renderCtx);
   try {
     const saved = await created.promise;
+    const savedEntity = renderCtx?.pivotData?.entities?.[created.name];
+    if (savedEntity && saved.path) savedEntity._entry_path = saved.path;
     // サーバーが仮名と異なる名前を付けた場合は、並び順・manualOrder を実際の名前へ揃える
     if (saved.name !== created.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, created.name, saved.name);
     _dbScheduleEntityCreatePostSync(dbPath, [{ name: saved.name, path: saved.path, response: saved.response }], renderCtx);

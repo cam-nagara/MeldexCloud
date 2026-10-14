@@ -124,7 +124,7 @@ function _applyNavEntryToBoundTab(navState, entry) {
       ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
       ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
     };
-    if (typeChanged) GBLayout.render();
+    if (typeChanged) GBTabs.updateTab(navState.paneId, tab.id, {});
     else {
       const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
       if (labelEl) labelEl.textContent = tab.label;
@@ -571,7 +571,8 @@ function _gbAppApiFetchBrowseCacheKey(path, opts) {
   if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
-    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
+    return (url.pathname === '/browse' || (url.pathname === '/pivot' && url.searchParams.get('tree_only') === 'true'))
+      ? _gbAppApiFetchCanonicalGetPath(path) : '';
   } catch {
     return '';
   }
@@ -585,6 +586,7 @@ function _gbAppApiFetchInvalidateReadCaches() {
 }
 
 function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
+  if (cacheKey.startsWith('/pivot?') && payload?.tree_only !== true) return;
   _gbAppApiFetchBrowseCache.set(cacheKey, {
     at: Date.now(),
     payload: _gbAppApiFetchClonePayload(payload),
@@ -665,6 +667,49 @@ async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
   }
 }
 
+// Leave HTTP/1 connection slots for saves and the newly opened document.
+// Startup/background reads must not queue a user mutation behind all six
+// browser connections. Do not cancel these reads or change their results.
+let _gbAppRegularRequests = 0;
+const _gbAppRegularRequestQueue = [];
+function _gbAppApiFetchAcquireLane(path, opts) {
+  const endpoint = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  const backgroundWrite = ['/beta/consent', '/beta/feedback-template', '/staff-registry/upsert', '/debugger/flush'].includes(endpoint);
+  const visibleRead = opts?.background !== true && (opts?.foreground === true || ['/file', '/browse', '/outliner-roots'].includes(endpoint));
+  const regular = (_gbAppApiFetchMethod(opts) === 'GET' && !visibleRead) || backgroundWrite;
+  const signal = opts?.signal;
+  const abortError = () => Object.assign(new Error('リクエストが中断されました'), {name:'AbortError'});
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!regular) return Promise.resolve(() => {});
+  return new Promise((resolve, reject) => {
+    const entry = {
+      start() {
+        signal?.removeEventListener('abort', entry.abort);
+        _gbAppRegularRequests++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          _gbAppRegularRequests--;
+          _gbAppRegularRequestQueue.shift()?.start();
+        });
+      },
+      abort() {
+        const index = _gbAppRegularRequestQueue.indexOf(entry);
+        if (index < 0) return;
+        _gbAppRegularRequestQueue.splice(index, 1);
+        signal?.removeEventListener('abort', entry.abort);
+        reject(abortError());
+      },
+    };
+    if (_gbAppRegularRequests < 3) entry.start();
+    else {
+      _gbAppRegularRequestQueue.push(entry);
+      signal?.addEventListener('abort', entry.abort, {once:true});
+    }
+  });
+}
+
 async function apiFetch(path, opts) {
   const method = _gbAppApiFetchMethod(opts);
   const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
@@ -683,7 +728,9 @@ async function apiFetch(path, opts) {
   const perfInfo = _apiFetchPerfInfo(path);
   const perfStartedAt = perfInfo ? _perfNowMs() : 0;
   const requestPromise = (async () => {
+    let releaseLane;
     try {
+      releaseLane = await _gbAppApiFetchAcquireLane(path, opts);
       let requestOpts = opts;
       let retriedAfterMutation = false;
       while (true) {
@@ -771,6 +818,8 @@ async function apiFetch(path, opts) {
         }
       }
       throw e;
+    } finally {
+      releaseLane?.();
     }
   })();
   if (inFlightKey) {
@@ -958,7 +1007,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('old_path');
     const oldPath = String(body?.old_path || '');
     const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) {
+    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
       const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
       _apiLockAddPath(paths, destinationBase);
       const extension = _apiLockRenameExtension(oldPath);
@@ -1030,6 +1079,9 @@ apiFetch = async function(path, opts) {
   const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
     ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
     : null;
+  const deferredCreateUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/add';
+  let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
       opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
@@ -1045,6 +1097,7 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     const result = await _origApiFetch(path, opts);
+    mutationSucceeded = true;
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
     } else if (result?.history_recorded === false) {
@@ -1052,7 +1105,12 @@ apiFetch = async function(path, opts) {
     }
     return result;
   } finally {
-    await transientLease?.release?.();
+    const release = transientLease?.release?.();
+    if (deferredCreateUnlock && mutationSucceeded) {
+      // The new item is durable. Show it while the short-lived parent lease
+      // is released; the lock store waits for that release before reacquiring.
+      void Promise.resolve(release).catch(error => console.warn('新規追加後のロック解除に失敗:', error));
+    } else await release;
   }
 };
 

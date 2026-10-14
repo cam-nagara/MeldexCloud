@@ -366,8 +366,13 @@
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
     const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
     const preserveWorkActive = !mobileSinglePane && _isPassiveToolPaneTab(toolType, { type: toolType, path: '' });
-    if (typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.activateTabType === 'function') {
-      if (GBDockPopup.activateTabType(popupToolType, '')) return;
+    if (typeof GBDockPopup !== 'undefined') {
+      if (openOpts.userIntent && typeof GBDockPopup.close === 'function') {
+        // 明示的な表示コマンドは、一時ポップアップから本体へ戻して展開する。
+        GBDockPopup.close();
+      } else if (typeof GBDockPopup.activateTabType === 'function') {
+        if (GBDockPopup.activateTabType(popupToolType, '')) return;
+      }
     }
 
     // 既に開いているか確認
@@ -703,6 +708,7 @@
   // ================================================================
   return {
     init,
+    rememberDetailTab: _rememberDetailTab,
     mountAllPanes: _mountAllPanes,
     mountFloatingAnnotationUi: _mountFloatingAnnotationUi,
     mountVirtualPane: _mountVirtualPane,

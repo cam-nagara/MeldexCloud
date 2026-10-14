@@ -347,7 +347,7 @@ function showGridBorderModal(ctxOrDbPath) {
             ${makeSelect('grid-h-width', gridH.width)}
           </select>
           <label class="gbm-small-label">色:</label>
-          <button type="button" id="grid-h-color" class="gb-color-swatch gb-color-swatch--field" data-color="${gridH.color || '#333333'}" title="横線の色"></button>
+          <button type="button" id="grid-h-color" class="gb-color-swatch gb-color-swatch--field" data-color="${esc(gridH.color || '#333333')}" title="横線の色"></button>
           <button id="grid-h-color-reset" class="gbm-reset-btn">リセット</button>
         </div>
       </div>
@@ -358,7 +358,7 @@ function showGridBorderModal(ctxOrDbPath) {
             ${makeSelect('grid-v-width', gridV.width)}
           </select>
           <label class="gbm-small-label">色:</label>
-          <button type="button" id="grid-v-color" class="gb-color-swatch gb-color-swatch--field" data-color="${gridV.color || '#333333'}" title="縦線の色"></button>
+          <button type="button" id="grid-v-color" class="gb-color-swatch gb-color-swatch--field" data-color="${esc(gridV.color || '#333333')}" title="縦線の色"></button>
           <button id="grid-v-color-reset" class="gbm-reset-btn">リセット</button>
         </div>
       </div>

@@ -352,6 +352,8 @@ const MeldexUnifiedSearch = (() => {
   }
 
   function show(anchor) {
+    const existing = document.querySelector('.meldex-search-scope-popup');
+    if (existing?._searchScopeAnchor === anchor) { existing._removeSearchScope(); return null; }
     document.querySelectorAll('.meldex-search-scope-popup').forEach(node => node._removeSearchScope?.() || node.remove());
     const popup = document.createElement('div');
     popup.className = 'meldex-search-scope-popup';
@@ -393,7 +395,8 @@ const MeldexUnifiedSearch = (() => {
     close.setAttribute('aria-label', '検索対象設定を閉じる'); close.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
     const remove = () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true); popup.remove(); };
     popup._removeSearchScope = remove;
-    const outside = event => { if (!popup.contains(event.target) && event.target !== anchor) remove(); };
+    popup._searchScopeAnchor = anchor;
+    const outside = event => { if (!popup.contains(event.target) && !anchor?.contains(event.target)) remove(); };
     const escape = event => { if (event.key === 'Escape') remove(); };
     close.style.cssText = 'display:block;margin:6px 4px 0 auto;'; close.addEventListener('click', remove);
     popup.appendChild(close); document.body.appendChild(popup);
@@ -450,15 +453,16 @@ const MeldexUnifiedSearch = (() => {
     btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!window.GBTagPickerPanel?.open) return;
+      if (!window.GBTagPickerPanel?.toggle) return;
       const cond = readTagCondition();
-      window.GBTagPickerPanel.open({
+      window.GBTagPickerPanel.toggle({
         ownerKey: TAG_BUTTON_OWNER_KEY,
         headerLabel: '検索に使うタグ',
         sourceFolder: typeof options.sourceFolder === 'function' ? (options.sourceFolder() || '') : String(options.sourceFolder || ''),
         tagIds: cond.tagIds,
         matchMode: cond.tagMode,
         anchor: btn,
+        closeOnOutside: true,
         onChange: (tagIds, mode) => {
           writeTagCondition({ tagIds, tagMode: mode });
           if (typeof options.onChange === 'function') options.onChange(tagIds, mode);
@@ -669,10 +673,12 @@ function _installTreeSearchScopeTrigger() {
   const scopeButton = MeldexUnifiedSearch.button(input.parentElement, {
     e2eId: 'tree-search-scope-trigger',
     afterElement: fullTextButton,
+    className: 'tree-search-icon-button',
   }) || input.parentElement.querySelector('[data-search-scope-trigger]');
   MeldexUnifiedSearch.tagButton?.(input.parentElement, {
     e2eId: 'tree-search-tag-trigger',
     afterElement: scopeButton,
+    className: 'tree-search-icon-button',
   });
   _ensureTreeSearchHintEl();
 }

@@ -162,28 +162,20 @@
         const spinner = document.createElement('div');
         spinner.className = 'tree-spinner';
         spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
-        childrenDiv.appendChild(spinner);
+        const spinnerTimer = setTimeout(() => {
+          if (childrenDiv.isConnected && childrenDiv.dataset.loading === 'true') childrenDiv.appendChild(spinner);
+        }, 150);
+        const loadToken = {};
+        childrenDiv._outlinerLoadToken = loadToken;
+        let warmItems = [];
         try {
           if (currentIsDB) {
-            const [pivotData] = await Promise.all([
-              apiFetch('/pivot?path=' + encodeURIComponent(item.path)),
-              window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, {
-                reason: 'outliner-expand',
-              }) || Promise.resolve(null),
-            ]);
+            const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true', { foreground: true });
             window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
-            // entities が undefined でも TypeError にならないようガード
-            const entityNames = Object.keys(pivotData?.entities || {}).sort();
-            const entityItems = entityNames.map(name => ({
-              name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
-              entityData: pivotData.entities[name],
-            }));
-            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
-            const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
-            if (attachmentFolder) {
-              entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
-            }
+            const entityItems = _outlinerSheetTreeItems(item, pivotData);
+            warmItems = entityItems;
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
+            _scheduleOutlinerSheetProjection(childrenDiv, item, pivotData, rootPath, loadToken);
           } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
             const serverSorts = new Set(['name', 'modified', 'created']);
@@ -208,9 +200,11 @@
             if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
             else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
+            warmItems = visibleChildren;
           }
           delete childrenDiv.dataset.loadError;
           childrenDiv.dataset.loaded = 'true';
+          _scheduleOutlinerChildWarmup(childrenDiv, warmItems, rootPath);
           // グローバルフィルタを新規読み込みノードに適用（常時）
           childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
             const d = node._nodeData;
@@ -271,6 +265,7 @@
           delete childrenDiv._outlinerPendingArrowRightFocusNode;
         }
         finally {
+          clearTimeout(spinnerTimer);
           delete childrenDiv.dataset.loading;
           spinner.remove();
         }
@@ -313,6 +308,12 @@
       // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
+      return;
+    }
+
+    if (e.detail < 2 && e.target.closest('.tree-label') === label && treeSelection.has(div)
+        && window.GBOutlinerActivation?.startRenameForNode(div, label, item)) {
+      e.stopPropagation();
       return;
     }
 
@@ -767,6 +768,128 @@ function clearDragIndicators() {
   document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
     el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
+}
+
+function _outlinerSheetTreeItems(item, pivotData) {
+  const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
+    name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+    entityData: pivotData.entities[name],
+  }));
+  const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+  if (attachmentFolder) items.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+  return items;
+}
+
+const _outlinerWarmQueue = [];
+const _outlinerWarmKeys = new Set();
+let _outlinerWarmRunning = false;
+
+function _scheduleOutlinerChildWarmup(container, items, rootPath) {
+  // Warm one level, at most four visible branches, one local read at a time.
+  // Never initiate Dropbox API downloads/migrations while merely listing rows.
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+  const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
+  let added = 0;
+  for (const item of items) {
+    if (added >= 4 || _outlinerWarmQueue.length >= 12) break;
+    const node = nodes.get(item.path);
+    if (!node || node.style.display === 'none' || item.needsMapping === true || !['folder', 'database'].includes(item.type)) continue;
+    let path;
+    if (item.type === 'database') path = '/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true';
+    else {
+      const sortCfg = getSortForFolder(item.path);
+      const serverSorts = new Set(['name', 'modified', 'created']);
+      const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+      const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+      path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
+        + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
+        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true';
+    }
+    if (_outlinerWarmKeys.has(path)) continue;
+    _outlinerWarmKeys.add(path);
+    _outlinerWarmQueue.push({ path, node });
+    added++;
+  }
+  if (_outlinerWarmRunning) return;
+  _outlinerWarmRunning = true;
+  setTimeout(async () => {
+    try {
+      while (_outlinerWarmQueue.length) {
+        const next = _outlinerWarmQueue.shift();
+        try {
+          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
+            background: true, silentError: true,
+            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
+          });
+        } catch (_) { /* A foreground click retries through the normal error path. */ }
+        finally { _outlinerWarmKeys.delete(next.path); }
+      }
+    } finally { _outlinerWarmRunning = false; }
+  }, 0);
+}
+
+function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
+  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
+    child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
+  const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
+  // Navigation must paint before a migration reads/writes the entire Topic store.
+  setTimeout(async () => {
+    if (!container.isConnected || container._outlinerLoadToken !== loadToken) return;
+    try {
+      const result = await window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, { reason: 'outliner-expand' });
+      const refresh = () => {
+      if (result?.ok === false || !container.isConnected || container._outlinerLoadToken !== loadToken
+          || container.dataset.loaded !== 'true') return;
+      if (container.querySelector('input, [contenteditable="true"]')) {
+        container.addEventListener('focusout', () => setTimeout(refresh, 0), { once: true });
+        return;
+      }
+      const lastClickedPath = treeSelection.lastClicked?._nodeData?.path;
+      const restoreFocus = container.contains(document.activeElement);
+      const vr = window.GBOutlinerVirtualRender;
+      const currentItems = vr?.stateChildItemsFor?.(container, item.path)
+        || Array.from(container.querySelectorAll(':scope > .tree-node'), node => node._nodeData).filter(Boolean);
+      // A user rename/add/delete while migration was pending takes precedence.
+      if (signature(currentItems) !== initialSignature) return;
+      window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
+      const nextItems = _outlinerSheetTreeItems(item, pivotData);
+      const byPath = new Map(currentItems.map(child => [child.path, child]));
+      const nextPaths = new Set(nextItems.map(child => child.path));
+      const merged = nextItems.map(child => {
+        const existing = byPath.get(child.path);
+        if (existing) { Object.assign(existing, child); return existing; }
+        return child;
+      });
+      if (vr?.isVirtualContainer?.(container)) {
+        currentItems.forEach(child => {
+          if (!nextPaths.has(child.path)) vr.removeFromContainer(container, child.path);
+        });
+        vr.dropInto(container, merged);
+      } else {
+        const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
+        nodes.forEach((node, path) => {
+          if (nextPaths.has(path)) return;
+          treeSelection.remove(node);
+          if (treeSelection.lastClicked === node) treeSelection.lastClicked = container.parentElement;
+          _unregisterTreeSubtree(node);
+          node.remove();
+        });
+        merged.forEach(child => container.appendChild(nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath)));
+      }
+      applyGlobalFilter();
+      _snapshotBaseTreeVisibility();
+      if (typeof applyTreeNameSearch === 'function') applyTreeNameSearch();
+      const selectedNode = Array.from(container.querySelectorAll(':scope > .tree-node')).find(node => node._nodeData?.path === lastClickedPath);
+      if (selectedNode) {
+        treeSelection.lastClicked = selectedNode;
+        if (restoreFocus) selectedNode.querySelector(':scope > .tree-node-row')?.focus({ preventScroll: true });
+      }
+      };
+      refresh();
+    } catch (error) {
+      console.warn('[フォルダツリー] トピック情報の後追い読込に失敗:', item.path, error);
+    }
+  }, 0);
 }
 
 // DOMからツリー構造をJSON化

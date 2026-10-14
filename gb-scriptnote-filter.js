@@ -2,6 +2,38 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
+  _setFilterPresetSelection(value) {
+    const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
+    if (filterPreset) {
+      if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
+        const opt = document.createElement('option');
+        opt.value = '__custom__';
+        opt.textContent = 'カスタム';
+        filterPreset.insertBefore(opt, filterPreset.options[1] || null);
+      }
+      filterPreset.value = value;
+    }
+    const comp = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent() : null;
+    if (comp?._editor === this) comp._activeFilterPreset = value;
+    this._activeFilterPreset = value;
+  },
+
+  _rebindRoleFilters(beforeRoles, afterRoles) {
+    const namesById = new Map(afterRoles.filter(item => item?.id).map(item => [item.id, item.name]));
+    const renamed = new Map(beforeRoles
+      .filter(item => namesById.has(item?.id) && namesById.get(item.id) !== item.name)
+      .map(item => [item.name, namesById.get(item.id)]));
+    let changed = false;
+    for (const key of ['_filterRoles', '_hideRoles']) {
+      const values = this[key];
+      if (!(values instanceof Set) || ![...values].some(name => renamed.has(name))) continue;
+      this[key] = new Set([...values].map(name => renamed.get(name) ?? name));
+      changed = true;
+    }
+    // 保存済みプリセットは他文書でも使う名前ベースの条件なので書き換えない。
+    if (changed) this._setFilterPresetSelection('__custom__');
+  },
+
   _isRoleVisible(roleOrRow, statusValue = '') {
     const row = roleOrRow && typeof roleOrRow === 'object' ? roleOrRow : null;
     const role = row ? String(row.role || '') : String(roleOrRow || '');
@@ -43,21 +75,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       anchorBtn?.classList?.toggle('active', hasAnyFilter());
     };
 
-    const setPresetSelection = (value) => {
-      const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
-      if (filterPreset) {
-        if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
-          const opt = document.createElement('option');
-          opt.value = '__custom__';
-          opt.textContent = 'カスタム';
-          filterPreset.insertBefore(opt, filterPreset.options[1] || null);
-        }
-        filterPreset.value = value;
-      }
-      const comp = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent() : null;
-      if (comp?._editor === this) comp._activeFilterPreset = value;
-      this._activeFilterPreset = value;
-    };
+    const setPresetSelection = value => this._setFilterPresetSelection(value);
 
     const markCustomFilter = () => setPresetSelection('__custom__');
 

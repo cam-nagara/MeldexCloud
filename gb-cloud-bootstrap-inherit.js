@@ -103,11 +103,11 @@
     const items = shown.map((name) => `<li>${_esc(name)}</li>`).join('');
     const moreItem = restCount > 0 ? `<li>ほか${restCount}件</li>` : '';
     return `
-      <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:#d4d4d4;">デスクトップ版で使っているソースフォルダが見つかりました（${roots.length}件）</div>
-      <ul style="margin:0 0 12px;padding-left:20px;font-size:13px;color:#bdbdbd;line-height:1.7;">${items}${moreItem}</ul>
+      <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--fg);">デスクトップ版で使っているソースフォルダが見つかりました（${roots.length}件）</div>
+      <ul style="margin:0 0 12px;padding-left:20px;font-size:13px;color:var(--fg2);line-height:1.7;">${items}${moreItem}</ul>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
-        <button id="cloud-inherit-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">このフォルダを引き継いで開始</button>
-        <a id="cloud-inherit-dismiss" href="#" style="font-size:12px;color:#9dbfae;text-decoration:underline;">別のフォルダを選ぶ</a>
+        <button id="cloud-inherit-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">このフォルダを引き継いで開始</button>
+        <a id="cloud-inherit-dismiss" href="#" style="font-size:12px;color:var(--link-fg,var(--accent));text-decoration:underline;">別のフォルダを選ぶ</a>
       </div>
     `;
   }
@@ -132,7 +132,7 @@
     const section = document.createElement('section');
     section.id = 'cloud-inherit-section';
     section.className = 'meldex-cloud-setup-section';
-    section.style.cssText = 'border:1px solid #356b4d;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#182620;';
+    section.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:var(--ui-bg-surface,var(--bg2));';
     section.innerHTML = _buildSectionHtml(roots);
     anchor.parentNode.insertBefore(section, anchor);
     anchor.style.display = 'none';

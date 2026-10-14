@@ -659,7 +659,7 @@
         includeDescendants: sourceKind === 'directory',
         purpose: 'source',
       });
-      _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
+      if (!window.GBPathUtils?.isDisplayTitleRename?.(pathname, body)) _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
         includeDescendants: false,
         purpose: 'destination',
       });

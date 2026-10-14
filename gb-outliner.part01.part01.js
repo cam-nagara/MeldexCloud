@@ -185,7 +185,7 @@ function _isOutlinerDesktopLaunch() {
 
 function _getOutlinerAutoExpandLimit() {
   if (_outlinerForceExpansionMode) return OUTLINER_AUTO_EXPAND_LIMIT;
-  return _isOutlinerDesktopLaunch() ? 0 : OUTLINER_AUTO_EXPAND_LIMIT;
+  return _isOutlinerDesktopLaunch() && !_outlinerLastLoadCompletedAt ? 0 : OUTLINER_AUTO_EXPAND_LIMIT;
 }
 
 function _outlinerAutoExpandDelay(ms) {
@@ -217,6 +217,9 @@ async function _drainOutlinerAutoExpandQueue() {
   if (_outlinerAutoExpandRunning) return;
   _outlinerAutoExpandRunning = true;
   try {
+    // createTreeNodeFromBrowse はまだ未接続のノードを返す。
+    // 呼出元が fragment / 親コンテナへ追加し終えるまで復元を始めない。
+    await _outlinerAutoExpandDelay(0);
     while (_outlinerAutoExpandQueue.length) {
       const toggle = _outlinerAutoExpandQueue.shift();
       if (toggle?.isConnected && toggle.dataset.expanded !== 'true') {
@@ -228,6 +231,10 @@ async function _drainOutlinerAutoExpandQueue() {
     }
   } finally {
     _outlinerAutoExpandRunning = false;
+    // ホーム／ワークスペースだけの更新も独立した復元として扱う。
+    // 前回の件数を持ち越すと、更新を繰り返しただけで上限に達して閉じてしまう。
+    _outlinerAutoExpandScheduled = 0;
+    _outlinerAutoExpandOverflowNotified = false;
     _outlinerForceExpansionMode = false;
   }
 }
@@ -305,6 +312,8 @@ async function loadOutliner(options) {
   }
 
   const loadGeneration = ++_outlinerLoadGeneration;
+  _outlinerAutoExpandScheduled = 0;
+  _outlinerAutoExpandOverflowNotified = false;
   const loadPromise = (async () => {
     const useLoadingIndicator = !opts.suppressLoading;
     const loading = useLoadingIndicator ? showLoading('フォルダを読み込み中...', { key: 'outliner' }) : null;
@@ -642,7 +651,13 @@ function renderOutlinerLegacy(items) {
   el.appendChild(fragment);
   window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
-  applyManualSort(el, '_root');
+  const rootSort = getSortForFolder('_root');
+  if (rootSort.sort === 'manual') applyManualSort(el, '_root');
+  else {
+    const nodes = [...el.querySelectorAll(':scope > .tree-node')];
+    nodes.sort((a, b) => compareItemsForFolderSort(a._nodeData, b._nodeData, rootSort.sort, rootSort.order));
+    nodes.forEach(node => el.appendChild(node));
+  }
 }
 
 function renderOutlinerMultiRoot(roots) {
@@ -679,7 +694,13 @@ function renderOutlinerMultiRoot(roots) {
   el.appendChild(fragment);
   window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元
-  applyManualSort(el, '_root');
+  const rootSort = getSortForFolder('_root');
+  if (rootSort.sort === 'manual') applyManualSort(el, '_root');
+  else {
+    const nodes = [...el.querySelectorAll(':scope > .tree-node')];
+    nodes.sort((a, b) => compareItemsForFolderSort(a._nodeData, b._nodeData, rootSort.sort, rootSort.order));
+    nodes.forEach(node => el.appendChild(node));
+  }
 }
 
 let draggedNode = null;
@@ -949,14 +970,13 @@ function getSortSettings() {
 function setSortSetting(folderPath, sort, order) {
   const s = getSortSettings();
   const key = _pathToFileId(folderPath) || folderPath;
-  if (sort === 'name' && order === 'asc') delete s[key]; // デフォルトなら削除
-  else s[key] = { sort, order };
+  s[key] = { sort, order };
   try { localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(s)); } catch {}
 }
 function getSortForFolder(folderPath) {
   const s = getSortSettings();
   const fid = _pathToFileId(folderPath);
-  return (fid && s[fid]) || s[folderPath] || { sort: 'name', order: 'asc' };
+  return (fid && s[fid]) || s[folderPath] || s._tree || { sort: 'manual', order: 'asc' };
 }
 // マニュアルソート順の保存/読込
 const MANUAL_ORDER_KEY = 'outliner-manual-order';
@@ -992,11 +1012,14 @@ function applyManualSort(container, folderPath) {
   const order = getManualOrder(folderPath);
   if (order.length === 0) return;
   const nodes = [...container.querySelectorAll(':scope > .tree-node')];
-  const map = new Map(nodes.map(n => [n._nodeData?.name, n]));
+  const remaining = nodes.slice();
   // 保存順にソート、未知のアイテムは末尾
   const sorted = [];
-  order.forEach(name => { const n = map.get(name); if (n) { sorted.push(n); map.delete(name); } });
-  map.forEach(n => sorted.push(n));
+  order.forEach(key => {
+    const index = remaining.findIndex(n => n._nodeData?.path === key || n._nodeData?.name === key);
+    if (index >= 0) sorted.push(...remaining.splice(index, 1));
+  });
+  sorted.push(...remaining);
   sorted.forEach(n => container.appendChild(n));
 }
 function saveManualOrderFromDOM(container, folderPath) {
@@ -1009,10 +1032,13 @@ function saveManualOrderFromDOM(container, folderPath) {
 function _sortItemsByManualOrder(items, folderPath) {
   const order = getManualOrder(folderPath);
   if (!Array.isArray(items) || !items.length || !order.length) return items;
-  const map = new Map(items.map(it => [it?.name, it]));
+  const remaining = items.slice();
   const sorted = [];
-  order.forEach(name => { const it = map.get(name); if (it) { sorted.push(it); map.delete(name); } });
-  map.forEach(it => sorted.push(it));
+  order.forEach(key => {
+    const index = remaining.findIndex(it => it?.path === key || it?.name === key);
+    if (index >= 0) sorted.push(...remaining.splice(index, 1));
+  });
+  sorted.push(...remaining);
   return sorted;
 }
 
@@ -1482,7 +1508,10 @@ async function refreshOutliner(options) {
 
 let _topicRecordsOutlinerRefreshTimer = null;
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('meldex:topic-records-updated', () => {
+  window.addEventListener('meldex:topic-records-updated', (event) => {
+    // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
+    // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
+    if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
     clearTimeout(_topicRecordsOutlinerRefreshTimer);
     _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
       const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });

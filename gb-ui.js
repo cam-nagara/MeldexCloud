@@ -12,6 +12,7 @@
 (function() {
   'use strict';
   let modalIdSeq = 0;
+  let modalFocusGeneration = 0;
 
   // ============================================================
   // 内部ユーティリティ
@@ -702,7 +703,8 @@
       closeBtn = el('button', {
         cls: ['gb-modal-close'],
         title: '閉じる',
-        attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
+        attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる',
+          'data-e2e-id': modalId + '-close' }
       });
       if (typeof lucide === 'function') closeBtn.innerHTML = lucide('x', 20);
       else closeBtn.textContent = '\u00D7';
@@ -766,6 +768,7 @@
       closed = true;
       document.removeEventListener('keydown', onEscKey, true);
       if (overlay.parentNode) overlay.remove();
+      const focusGeneration = modalFocusGeneration;
       let interactionClaimed = false;
       let trackingInteraction = false;
       let focusRestorationFinished = false;
@@ -792,7 +795,7 @@
         }
         // レイアウト監視やブラウザ自身による自動focus移動では復帰を打ち切らない。
         // 閉鎖後に実際のpointer／keyboard入力があった時だけ利用者の選択を優先する。
-        if (interactionClaimed) {
+        if (interactionClaimed || focusGeneration !== modalFocusGeneration) {
           stopTrackingInteraction();
           return;
         }
@@ -852,6 +855,9 @@
     function _activate() {
       if (activated || !overlay.isConnected) return;
       activated = true;
+      // 一度でも次のダイアログが開いたら、旧ダイアログの遅延復帰は終了する。
+      // 次のダイアログが素早く閉じられても、旧openerへfocusを戻さない。
+      modalFocusGeneration += 1;
       window.GBModalShell?.enhanceOverlay?.(overlay);
       const focusWhenCurrent = () => {
         if (!overlay.isConnected || closed || !_isTopmostModal(modal)) return;

@@ -1,3 +1,100 @@
+        ann.opacity = prevOpacity;
+      });
+      return;
+    }
+    const annClientId = msg.annClientId || ('pending-note-' + Date.now().toString(36));
+    const noteData = { x: msg.x, y: msg.y, width: 180, height: 100, text: '', html: '', user: getUsername() };
+    if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+      _dispatchEmbeddedAnnotationMessage({
+        type: 'ann-add-note',
+        item: {
+          id: annClientId,
+          type: 'comment',
+          shape: 'sticky',
+          data: noteData,
+          color: msg.color || ann.color,
+          opacity: 1,
+          user: getUsername(),
+          created: new Date().toISOString(),
+        },
+      });
+    }
+    apiPost('/annotations', {
+      target_path: msg.targetPath || ann.targetPath,
+      type: 'comment', shape: 'sticky',
+      data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
+    }).then(res => {
+      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
+        _pushAnnotationCreateHistory(res.id, 'アノテート: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
+      }
+      if (embedded) reloadEmbeddedAnnotations();
+      else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
+    }).catch(() => {
+      if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+        _dispatchEmbeddedAnnotationMessage({ type: 'ann-remove-note', annId: annClientId });
+      }
+    });
+  }
+});
+
+// Phase C: bdToMd/bdSave等のスタブは廃止 → gb-canvas-engine.js + gb-canvas-features.js に実装済み
+
+function bdOpenBgPalette(event) {
+  if (typeof openColorPalette !== 'function') return;
+  const swatch = document.getElementById('bd-bg-swatch');
+  const canvas = document.getElementById('bd-canvas');
+  if (!swatch || !canvas) return;
+  openColorPalette(swatch, (typeof bd !== 'undefined' && bd._bgColor) || '', function(v) {
+    canvas.style.background = v;
+    setColorSwatchValue(swatch, v);
+    if (typeof bd !== 'undefined') bd._bgColor = v || '';
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-palette');
+      if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
+    }
+  });
+}
+
+async function openBoard(label, path, opts) {
+  const openOpts = opts || {};
+  let navPushedBeforeLoad = false;
+  let mountedBoardLoad = null;
+  let requestedPane = null;
+  let requestedPaneId = null;
+  let requestedTab = null;
+  let requestedTabIndex = -1;
+  let requestedTabSnapshot = null;
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  const prevView = state.view;
+  const prevBoardPath = state.currentBoardPath;
+  const currentTitleEl = document.getElementById('current-title');
+  const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
+  const restorePreviousView = () => {
+    if (navPushedBeforeLoad && requestedPane && requestedTab && requestedTabSnapshot) {
+      Object.assign(requestedTab, requestedTabSnapshot.fields);
+      requestedTab.navHistory = requestedTabSnapshot.navHistory;
+      requestedTab.navIndex = requestedTabSnapshot.navIndex;
+      requestedPane.activeTabIndex = requestedTabIndex;
+      if (typeof GBLayout !== 'undefined' && typeof GBLayout.render === 'function') GBLayout.render();
+      if (typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
+    }
+    state.currentBoardPath = prevBoardPath || null;
+    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
+    if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
+    else if (!openOpts.skipStateView) state.view = prevView || '';
+  };
+  const loading = showOpenLoading ? showLoading('ボードを読み込み中...', { key: 'board:' + path }) : null;
+  try {
+    if (!openOpts.skipStateView) state.view = 'board';
+    state.currentBoardPath = path;
+    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
+    // ペインブリッジでは board はコンポーネント型なので、showView('board') 自体は
+    // DOMをマウントしない。先にnavPushして対象のCanvasComponentをマウントし、
+    // そのコンポーネントが開始した読込を待つ。既存キャンバスからの切替も同じ順序にし、
+    // 読込後のタブ再構築が取得済みモデルを古いdumpで置き換えないようにする。
     if (!openOpts.skipNavPush
       && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'

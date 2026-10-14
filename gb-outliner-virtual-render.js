@@ -677,15 +677,37 @@
   }
 
   function renamePath(oldPath, newPath, newName, fileId) {
-    if (!oldPath || !newPath || oldPath === newPath) return false;
-    var oldPrefix = oldPath + '/';
+    if (!oldPath || !newPath) return false;
     var containers = new Set(_activeContainers);
     var mapped = _pathToContainer.get(oldPath);
     if (mapped && mapped.childrenDiv) containers.add(mapped.childrenDiv);
+    if (oldPath === newPath) {
+      containers.forEach(function (container) {
+        var state = container._virtualState;
+        if (!state) return;
+        function update(item) {
+          if (item.path !== oldPath) return;
+          item.name = newName;
+          if (fileId) item.file_id = fileId;
+        }
+        state.allItems.forEach(update);
+        state.childrenByParent.forEach(function (items) { items.forEach(update); });
+        refresh(container);
+      });
+      return true;
+    }
+    var oldPrefix = oldPath + '/';
     _pathToContainer.delete(oldPath);
     containers.forEach(function (childrenDiv) {
       var state = childrenDiv._virtualState;
       if (!state) return;
+      function mapParent(path) {
+        if (path === oldPath) return newPath;
+        return path && path.startsWith(oldPrefix) ? newPath + path.substring(oldPath.length) : path;
+      }
+      state.rootPath = mapParent(state.rootPath);
+      state.lastOrderParentPath = mapParent(state.lastOrderParentPath);
+      childrenDiv._virtualParentPath = mapParent(childrenDiv._virtualParentPath);
       if (state.heightsByPath && state.heightsByPath.has(oldPath)) {
         state.heightsByPath.set(newPath, state.heightsByPath.get(oldPath));
         state.heightsByPath.delete(oldPath);
@@ -715,7 +737,7 @@
         }
         if (!alreadyRenamedRoot) _pathToContainer.delete(previous);
         _pathToContainer.set(item.path, { childrenDiv: childrenDiv, state: state });
-        if (state.heightsByPath && state.heightsByPath.has(previous)) {
+        if (previous !== item.path && state.heightsByPath && state.heightsByPath.has(previous)) {
           state.heightsByPath.set(item.path, state.heightsByPath.get(previous));
           state.heightsByPath.delete(previous);
         }

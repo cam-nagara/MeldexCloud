@@ -777,12 +777,19 @@
             global.CommentBadges.openPanelForFileComments(path);
             return;
           }
-        } else if (feature === 'file_info' && typeof global._showFileInfoInDetailPanel === 'function') {
-          global._showFileInfoInDetailPanel(basename(path), path);
+        } else if (feature === 'file_info' && targetIsActive()
+            && typeof global._showFileInfoInDetailPanel === 'function') {
+          if (typeof global._openDetailRightPanel === 'function') {
+            if (global._openDetailRightPanel({ surface: 'main' }) === false) return;
+          } else if (typeof global.openRightPanelTab === 'function') global.openRightPanelTab('detail', { surface: 'main' });
+          global._showFileInfoInDetailPanel(path);
           return;
         } else if (['publish', 'backlinks'].includes(feature)
             && targetIsActive()
             && typeof global.switchDetailTab === 'function') {
+          if (typeof global._openDetailRightPanel === 'function') {
+            if (global._openDetailRightPanel({ surface: 'main' }) === false) return;
+          } else if (typeof global.openRightPanelTab === 'function') global.openRightPanelTab('detail', { surface: 'main' });
           global.switchDetailTab(feature);
           return;
         }

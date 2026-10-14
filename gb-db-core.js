@@ -282,6 +282,9 @@ function _dbIsNewFormat(dbPath, pivotData) {
 }
 
 function _entityPath(dbPath, entityName, pivotData) {
+  const pivot = pivotData || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || (typeof state !== 'undefined' && state.currentDbPath === dbPath ? state.pivotData : null);
+  const storedPath = pivot?.entities?.[entityName]?._entry_path;
+  if (storedPath) return storedPath;
   return _dbIsNewFormat(dbPath, pivotData) ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 
@@ -351,6 +354,7 @@ function _dbEntityNameFromPath(entityPath) {
 
 function _dbRewriteEntityValuePaths(entityData, oldPath, newPath) {
   if (!entityData || !oldPath || !newPath || oldPath === newPath) return;
+  if (String(entityData._entry_path || '').replace(/\\/g, '/') === oldPath) entityData._entry_path = newPath;
   Object.values(entityData).forEach(values => {
     if (!Array.isArray(values)) return;
     values.forEach(value => {
@@ -639,6 +643,9 @@ function _syncValueRefAfterSave(saveRef, target) {
   if (saveRef.property !== undefined) target.property = saveRef.property;
   if (saveRef.candidate_index !== undefined) target.candidate_index = saveRef.candidate_index;
   if (saveRef.entry_revision !== undefined) target.entry_revision = saveRef.entry_revision;
+  if (saveRef._topicCandidateOriginal !== undefined) {
+    target._topicCandidateOriginal = JSON.parse(JSON.stringify(saveRef._topicCandidateOriginal));
+  }
 }
 
 async function _apiPostValue(entityPath, propName, value, status, note, richHtml, extra) {

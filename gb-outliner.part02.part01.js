@@ -484,6 +484,7 @@ function _outlinerCreateSubmenu(label) {
 function _outlinerAppendMenuItem(menu, options) {
   const item = document.createElement('button');
   item.type = 'button';
+  item.dataset.e2eId = options?.e2eId || ('outliner-menu-' + encodeURIComponent(String(options?.label || options?.title || options?.icon || 'item')));
   item.className = 'gb-context-menu-item' + (options?.danger ? ' danger' : '') + (options?.className ? ' ' + options.className : '');
   item.setAttribute('role', options?.role || 'menuitem');
   if (options?.disabled) {
@@ -581,6 +582,51 @@ function _outlinerBindContextMenuClose(menu) {
   document.addEventListener('pointerdown', pointerHandler, true);
 }
 
+async function _refreshOutlinerSort() {
+  const results = await refreshOutliner({ force: true, reason: 'outliner-sort' });
+  if (results?.some(result => result.status === 'rejected')) showStatus('並び順を保存しましたが、ツリーの一部を更新できませんでした', true);
+  if (typeof renderFolderGrid === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
+    await renderFolderGrid({ preserveSelectedPaths: _folderSelectedItems.map(item => item?.path).filter(Boolean) });
+  }
+}
+
+function showOutlinerSortMenu(event) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  closeTreeContextMenu();
+  const trigger = document.getElementById('btn-tree-sort');
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+  const menu = _outlinerCreateContextMenu('フォルダツリーの並べ替え', rect.left / zoom, rect.bottom / zoom);
+  menu.dataset.e2eId = 'outliner-sort-menu';
+  const current = getSortSettings()._tree || { sort: 'manual', order: 'asc' };
+  getFolderSortOptions().forEach(option => {
+    const active = current.sort === option.sort && current.order === option.order;
+    const button = _outlinerAppendMenuItem(menu, {
+      label: option.label, checked: active, role: 'menuitemradio',
+      action: async () => {
+        closeTreeContextMenu();
+        const keys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(keys);
+        const settings = getSortSettings();
+        Object.keys(settings).forEach(key => { settings[key] = { sort: option.sort, order: option.order }; });
+        settings._tree = { sort: option.sort, order: option.order };
+        localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(settings));
+        if (typeof pushLocalStorageSettingsHistory === 'function') {
+          pushLocalStorageSettingsHistory('フォルダツリー: 並べ替え設定', before,
+            captureOutlinerSettingsHistory(keys), option.label, _refreshOutlinerSort);
+        }
+        await _refreshOutlinerSort();
+      },
+    });
+    button.dataset.sort = option.sort;
+    button.dataset.order = option.order;
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  _outlinerPlaceContextMenu(menu);
+}
+
 function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   closeTreeContextMenu();
   const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
@@ -600,7 +646,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
       icon,
       action: async () => {
         closeTreeContextMenu();
-        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type);
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type, { anchorNode: nodeEl });
       },
     });
   });

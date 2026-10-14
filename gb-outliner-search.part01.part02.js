@@ -32,7 +32,11 @@ function _homeFolderSectionExpanded() {
 
 async function _browseHomeFolderChildren(homePath, renderSeq) {
   let lastError = null;
-  const url = '/browse?path=' + encodeURIComponent(homePath) + '&root=' + encodeURIComponent(homePath) + '&all_files=true';
+  const sortCfg = getSortForFolder(homePath);
+  const serverSort = ['name', 'modified', 'created'].includes(sortCfg.sort) ? sortCfg.sort : 'name';
+  const url = '/browse?path=' + encodeURIComponent(homePath) + '&root=' + encodeURIComponent(homePath)
+    + '&all_files=true&sort=' + serverSort + '&order=' + sortCfg.order
+    + (!['name', 'manual'].includes(sortCfg.sort) ? '&detail=true' : '');
   for (let attempt = 0; attempt <= _HOME_FOLDER_BROWSE_RETRY_DELAYS.length; attempt++) {
     if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return null;
     try {
@@ -98,7 +102,10 @@ async function renderHomeFolderTree(options = {}) {
     registerFileTypes(children);
     if (typeof _registerFileIds === 'function') _registerFileIds(children);
     if (typeof _registerOutlinerConflictPaths === 'function') _registerOutlinerConflictPaths(children);
-    children.forEach(child => {
+    const sortCfg = getSortForFolder(homePath);
+    const sortedChildren = sortCfg.sort === 'manual' ? _sortItemsByManualOrder(children, homePath)
+      : [...children].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
+    sortedChildren.forEach(child => {
       container.appendChild(createTreeNodeFromBrowse(child, homePath));
     });
     if (typeof applyGlobalFilter === 'function') applyGlobalFilter();

@@ -148,6 +148,11 @@
   text-combine-upright: all;
   text-orientation: mixed;
 }
+/* 圧縮時の字形の中心を補正し、縦中横の占有枠とルビ位置は保つ。 */
+.sn2-tcy-glyph {
+  position: relative;
+  left: var(--sn2-tcy-center-shift, 0px);
+}
 /* 縦中横（幅圧縮なし）: 横書きブロックとして配置し元の文字幅を維持 */
 .sn2-tcy-wide {
   display: inline-block;
@@ -983,9 +988,10 @@
   text-decoration: none;
   /* 縦書きでは inline-block をやめて inline に戻す。inline-block だと
      span のベースラインが周囲テキストのベースラインに合わされる過程で
-     セル先頭の文字が 1 文字分上へズレる現象が発生する。折返し時のルビ
-     分断問題は縦書きでは起きにくいので影響は許容 */
+     セル先頭の文字が 1 文字分上へズレる現象が発生する。親文字内の
+     折返しだけを禁止し、ルビと親文字が別の列へ分断されるのを防ぐ。 */
   display: inline !important;
+  white-space: nowrap;
 }
 .sn2-scroll.sn2-vertical .sn2-text span[data-ruby]::after,
 .sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby]::after {

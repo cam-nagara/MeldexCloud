@@ -12,6 +12,7 @@
 const GBPaneBridge = (() => {
   let _initialized = false;
   let _bridgeUpdating = 0; // 再帰防止（入れ子対応）
+  const _bridgeIdleWaiters = new Set();
   let _outlinerLoaded = false; // loadOutliner初回のみフラグ
   let _chatModeInitDone = false; // チャットのモード決定（復元/team既定）は初回ライブマウント時のみフラグ
   let _stickyTypeInitDone = false; // 付箋タブの種類フィルタ既定値適用は初回ライブマウント時のみフラグ
@@ -191,6 +192,11 @@ const GBPaneBridge = (() => {
 
   function _endBridgeUpdate() {
     _bridgeUpdating = Math.max(0, _bridgeUpdating - 1);
+    if (!_bridgeUpdating) {
+      const waiters = [..._bridgeIdleWaiters];
+      _bridgeIdleWaiters.clear();
+      waiters.forEach(resolve => resolve());
+    }
   }
 
   function _isPathScopedLegacyType(type) {
@@ -436,6 +442,15 @@ const GBPaneBridge = (() => {
     if (!tab || !data) return;
     if (!tab.state) tab.state = {};
     tab.state._legacyPaneUi = data;
+  }
+
+  function _rememberDetailTab(tabName) {
+    const binding = _legacyLiveBindings.get(PANEL_CONTAINERS.detail);
+    const tab = binding ? _findTabById(binding.tabId) : null;
+    if (!tab) return;
+    // 再選択時の新しい復元ジョブも、最後に表示したタブを使う。
+    // スナップショットが不要な単一パネルでも保存状態を陳腐化させない。
+    _setLegacyUiState(tab, { ..._getLegacyUiState(tab), detailTab: tabName });
   }
 
   const _detailTabIds = ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'];
@@ -807,14 +822,25 @@ const GBPaneBridge = (() => {
   }
 
   function _scheduleLegacyStateRestore(tab, viewName, containerId) {
+    const binding = _legacyLiveBindings.get(containerId);
+    if (!binding || binding.tabId !== tab.id) return;
+    const token = {};
+    binding.restoreToken = token;
     const savedState = _getLegacyUiState(tab);
     if (!savedState) return;
+    const restoresDetail = viewName === 'detail' || viewName === 'scriptnote';
+    let detailSeq = typeof _detailSyncSeq !== 'undefined' ? _detailSyncSeq : null;
     [0, 80, 220].forEach(delay => {
       setTimeout(() => {
-        const binding = _legacyLiveBindings.get(containerId);
-        if (!binding || binding.tabId !== tab.id) return;
+        // 同じタブでも再マウント前の復元は失効させる。新しい設定操作や
+        // コンテンツ同期で選んだタブを、遅れた復元が上書きしてはならない。
+        if (_legacyLiveBindings.get(containerId) !== binding || binding.restoreToken !== token) return;
+        if (restoresDetail && detailSeq !== null && detailSeq !== _detailSyncSeq) return;
         const root = document.getElementById(containerId);
-        if (root) _applyLegacyDomState(viewName, root, savedState, { live: true });
+        if (root) {
+          _applyLegacyDomState(viewName, root, savedState, { live: true });
+          if (restoresDetail && detailSeq !== null) detailSeq = _detailSyncSeq;
+        }
       }, delay);
     });
   }
@@ -838,7 +864,7 @@ const GBPaneBridge = (() => {
     else if (viewName === 'folder' && typeof _folderPath !== 'undefined') currentPath = _folderPath;
     else if (viewName === 'csv' && typeof _csvPath !== 'undefined') currentPath = _csvPath;
     if (_normalizeLegacyLivePath(currentPath) !== expected) return false;
-    if (state.view !== viewName && !(viewName === 'database' && state.view === 'database')) return false;
+    if (_normalizeDbPaneView(state.view) !== _normalizeDbPaneView(viewName)) return false;
     const candidates = [viewEl, ...viewEl.querySelectorAll('[data-path]')];
     return candidates.some(el => _normalizeLegacyLivePath(el?.dataset?.path) === expected);
   }
@@ -873,7 +899,8 @@ const GBPaneBridge = (() => {
     const livePath = viewEl?.dataset?.gbLegacyPath || '';
     const adoptsUnmarkedLiveContent = !liveView && !livePath
       && _hasMatchingUnmarkedLiveContent(viewEl, viewName, path);
-    const needsLiveReload = !adoptsUnmarkedLiveContent && (liveView !== viewName || livePath !== path);
+    const needsLiveReload = !adoptsUnmarkedLiveContent
+      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path);
     const resolvedViewName = typeof _resolveDbPaneDisplayView === 'function'
       ? _resolveDbPaneDisplayView(viewName, tab)
       : viewName;
@@ -903,7 +930,9 @@ const GBPaneBridge = (() => {
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
-        const needsDisplayReload = resolvedViewName !== viewName || prevView !== resolvedViewName;
+        // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
+        const needsDisplayReload = !_isPassiveToolPaneTab(prevView, { type: prevView, path: '' })
+          && _normalizeDbPaneView(prevView) !== resolvedViewName;
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
@@ -935,7 +964,7 @@ const GBPaneBridge = (() => {
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
           else if (typeof openHtmlFile === 'function') openHtmlFile(label, path, scopedBridgeOpts);

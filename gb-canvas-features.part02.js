@@ -1229,7 +1229,7 @@ function bdConnContextMenu(e, conn) {
       _bdContextMenuSep(stylePanel);
     }
     _bdContextMenuItem(stylePanel, 'スタイル管理...', () => {
-      if (typeof bdOpenLineStyleManager === 'function') bdOpenLineStyleManager();
+      if (typeof bdOpenLineStyleManager === 'function') bdOpenLineStyleManager(e?.target);
     });
   }
   // 表示 サブ (非表示/表示 + 前面/背面)

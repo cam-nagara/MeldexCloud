@@ -146,6 +146,11 @@
   text-combine-upright: all;
   text-orientation: mixed;
 }
+/* 圧縮時の字形の中心を補正し、縦中横の占有枠とルビ位置は保つ。 */
+.sn2-tcy-glyph {
+  position: relative;
+  left: var(--sn2-tcy-center-shift, 0px);
+}
 /* 縦中横（幅圧縮なし）: 横書きブロックとして配置し元の文字幅を維持 */
 .sn2-tcy-wide {
   display: inline-block;

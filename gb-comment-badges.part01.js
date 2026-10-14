@@ -661,12 +661,9 @@
 
   // バッジクリック時: アノテートタブを開いて該当コメントを絞り込む
   function _openPanelForTarget(filePath, targetKind, targetRef) {
-    const panel = document.getElementById('right-panel');
-    const activeTab = document.querySelector('.rp-tab.active')?.dataset.rpTab;
-    if (!panel?.classList.contains('open') || activeTab !== 'annotation') {
-      if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
-      else if (typeof switchRightTab === 'function') switchRightTab('annotation');
-    }
+    if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
+    else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
+    else if (typeof switchRightTab === 'function') switchRightTab('annotation');
     const typeSel = document.getElementById('rp-ann-type'); if (typeSel) typeSel.value = 'comment';
     const scopeSel = document.getElementById('rp-ann-scope'); if (scopeSel) scopeSel.value = 'current';
     const statusSel = document.getElementById('rp-ann-status'); if (statusSel) statusSel.value = 'all';
@@ -679,13 +676,9 @@
   }
 
   function openPanelForFileComments(filePath) {
-    const panel = document.getElementById('right-panel');
-    const activeTab = document.querySelector('.rp-tab.active')?.dataset.rpTab;
-    if (!panel?.classList.contains('open') || activeTab !== 'annotation') {
-      if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
-      else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
-      else if (typeof switchRightTab === 'function') switchRightTab('annotation');
-    }
+    if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
+    else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
+    else if (typeof switchRightTab === 'function') switchRightTab('annotation');
     const typeSel = document.getElementById('rp-ann-type'); if (typeSel) typeSel.value = 'comment';
     const scopeSel = document.getElementById('rp-ann-scope'); if (scopeSel) scopeSel.value = 'current';
     const statusSel = document.getElementById('rp-ann-status'); if (statusSel) statusSel.value = 'open';

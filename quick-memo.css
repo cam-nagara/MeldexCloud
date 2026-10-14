@@ -286,20 +286,8 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   user-select: none;
   cursor: pointer;
 }
-/* 選択中は背景色だけでなく、色に依存しないチェック印(::before)も併用する
-   (グループ色の文字色と「選択中」の塗りつぶしが混ざって見える問題への対処。
-   2026-08-14 自動タグ付け計画 Phase 3)。 ::beforeの生成内容はDOMのtextContent
-   に含まれないため、E2Eの選択判定(el.textContent === タグ名)を壊さない。 */
 .qm-tag-chip.is-selected { background: color-mix(in srgb, var(--qm-accent) 25%, var(--qm-panel-2)); border-color: var(--qm-accent); color: var(--qm-strong); }
-.qm-tag-chip.is-selected::before {
-  content: '✓';
-  display: inline-flex;
-  flex: 0 0 auto;
-  color: var(--qm-accent);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-}
+.qm-tag-chip.is-selected .gb-tag-chip__label { font-weight: 700; }
 .qm-tag-chip .gb-tag-chip__label { cursor: pointer; }
 .qm-tag-chip-swatch { flex-shrink: 0; }
 .qm-tag-chip-more {
@@ -501,6 +489,14 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 
 .qm-tag-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .qm-tag-picker-count { color: var(--qm-muted); font-size: 11px; white-space: nowrap; }
+.qm-tag-picker-sources { display: flex; flex-wrap: wrap; gap: 6px; }
+.qm-tag-picker-sources button { min-height: 32px; padding: 4px 10px; }
+.qm-tag-picker-sources button[aria-pressed="true"] { border-color: var(--qm-accent); color: var(--qm-strong); background: var(--qm-panel-2); }
+.qm-tag-picker-hint { margin: 8px 0; color: var(--qm-muted); font-size: 12px; line-height: 1.5; }
+.qm-tag-picker-error { margin: 8px 0; color: var(--qm-danger, #f48771); font-size: 12px; }
+.qm-tag-sync-status { display: flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--qm-muted); font-size: 11px; overflow-wrap: anywhere; }
+.qm-tag-sync-status > span { flex: 1; min-width: 0; }
+.qm-tag-sync-status > button { flex: 0 0 auto; padding: 3px 6px; font-size: 11px; }
 
 .qm-tag-picker input {
   width: 100%;
@@ -531,7 +527,10 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   font-size: 12px;
   cursor: pointer;
 }
+.qm-tag-picker-row { display: flex; align-items: center; gap: 4px; }
 .qm-tag-picker-tag {
+  flex: 1;
+  min-width: 0;
   min-height: 30px;
   display: flex;
   align-items: center;
@@ -544,10 +543,13 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 }
 .qm-tag-picker-tag:hover { background: var(--qm-panel-2); }
 .qm-tag-picker-tag input { width: 16px; min-height: 16px; margin: 0; }
+.qm-tag-picker-tag > span:last-child { overflow-wrap: anywhere; }
+.qm-tag-picker-register { flex: 0 0 auto; min-height: 28px; padding: 3px 7px; font-size: 11px; }
 .qm-tag-picker-swatch { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; }
 .qm-tag-picker-empty { padding: 18px 8px; color: var(--qm-muted); text-align: center; font-size: 12px; }
 .qm-tag-picker-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 8px; }
 .qm-tag-picker-create input { min-width: 0; }
+.qm-tag-picker-create[hidden] { display: none; }
 
 .qm-tag-picker-actions {
   display: flex;

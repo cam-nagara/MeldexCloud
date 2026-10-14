@@ -40,14 +40,28 @@ function closeSettingsModalWithReason(reason = 'settings-transition', targetOver
     ? targetOverlay
     : document.querySelector('.modal-overlay[data-settings-modal="1"]');
   if (!overlay) return false;
+  const finishTransition = result => {
+    if (result?.then) return result.then(finishTransition);
+    if (!result || !String(reason).startsWith('settings-transition') || !overlay.isConnected) return result;
+    // Mobile removal completes after its closing animation. Opening the destination
+    // before removal leaves its input behind the old modal's focus/inert boundary.
+    return new Promise(resolve => {
+      const observer = new MutationObserver(() => {
+        if (overlay.isConnected) return;
+        observer.disconnect();
+        resolve(result);
+      });
+      observer.observe(document.body, {childList:true, subtree:true});
+    });
+  };
   const bridge = overlay.__meldexRequestSettingsClose;
-  if (typeof bridge === 'function') return bridge(reason);
+  if (typeof bridge === 'function') return finishTransition(bridge(reason));
   const controller = overlay.__meldexSettingsModalController || _settingsModalController;
-  if (controller?.isOpen?.()) return controller.close(reason);
+  if (controller?.isOpen?.()) return finishTransition(controller.close(reason));
   const rawRemove = overlay.__meldexSettingsRawRemove;
   if (typeof rawRemove === 'function' && overlay.isConnected) {
     rawRemove();
-    return true;
+    return finishTransition(true);
   }
   return false;
 }
@@ -217,8 +231,6 @@ async function showSettingsModal(opts) {
     : (typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle');
   const defaultSettingsTab = typeof _settingsDefaultTabId === 'function' ? _settingsDefaultTabId() : (settingsTabs[0] || '全般');
   const requestedPanel = opts.panel ? (typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(opts.panel).tabId : _settingsCanonicalPanelName(opts.panel || '')) : '';
-  // Register starter copies before capturing Cancel's theme snapshot.
-  if (typeof settingsThemeEnsureInitialSimplePresets === 'function') settingsThemeEnsureInitialSimplePresets();
   _settingsThemeSetDirty(false);
   window._settingsOutlinerRootsDirty = false;
   // テーマ変更のキャンセル用にスナップショットを保存
@@ -826,7 +838,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="extensions">
-        <div class="gb-section-title">拡張機能 ${fieldHelp('追加機能に必要なパッケージをインストールします。すべての処理はPC上で完結し、画像がAIに学習されることはありません')}</div>
+        <div class="gb-section-title">拡張機能 ${fieldHelp('追加機能に必要なパッケージをインストールします。すべての処理はPC上で完結し、画像がAIに学習されることはありません', { e2eId: 'settings-extensions-help' })}</div>
         <div id="ext-status"></div>
       </section>
     </div>

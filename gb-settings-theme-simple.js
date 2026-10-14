@@ -5,6 +5,7 @@ let _settingsThemeSimpleMode = (() => {
 })();
 // Shared UI aliases consumed outside the detail editor still belong to save/cancel.
 const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
+  '--accent-bg': 'surface', '--ui-accent-fg': 'accentText', '--cal-accent-fg': 'accentText',
   '--bg1': 'surface', '--bg-hover': 'hover', '--accent-light': 'hover', '--border-color': 'border',
   '--cal-control-active-fg': 'selectedText', '--cal-hover-bg': 'hover', '--cal-today-ring': 'accent',
   '--db-option-bg': 'control', '--db-option-fg': 'text', '--db-selected-bg': 'selected',
@@ -14,6 +15,7 @@ const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
   '--ui-bg-selected': 'selected', '--ui-control-active-bg': 'selected',
   '--ui-border-focus': 'accent', '--ui-border-subtle': 'border', '--ui-focus': 'accent', '--ui-focus-ring': 'accent',
   '--ui-disabled-bg': 'control', '--ui-disabled-border': 'border',
+  '--ui-scrollbar-track-bg': 'surface', '--ui-scrollbar-thumb-bg': 'muted', '--ui-scrollbar-thumb-hover-bg': 'hover',
 });
 const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([
   ...Object.keys(SETTINGS_SIMPLE_THEME_EXTRA_ROLES),
@@ -102,6 +104,7 @@ function settingsThemeSetSimpleMode(mode, root) {
 
 // Resolve semantic roles from the actual property definitions, not a parallel list of apps.
 function _settingsSimpleThemeRole(key, prop = '', label = '') {
+  if (['--ui-dock-button-bg', '--outliner-item-bg'].includes(key)) return 'transparent';
   if (key.startsWith('--simple-theme-')) return '';
   if (SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key]) return SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key];
   if (!['fg', 'bg', 'line', 'stroke', 'accent'].includes(prop) && /(?:-(?:bold|italic|font|font-size|font-weight|font-style|line-height|line-style|left-accent|underline|spacing|tracking|indent|gap|space-before|space-after)|-(?:width|height|size|radius|opacity|alpha|style|weight|enabled|align|fit|scale))$/i.test(key)) return '';
@@ -126,7 +129,7 @@ function _settingsSimpleThemeRole(key, prop = '', label = '') {
 function settingsThemeBuildSimpleStyles(colors, definitions, targets, base) {
   const styles = {};
   const selectedText = colors.selectedText;
-  const values = { ...colors, transparent: 'transparent' };
+  const values = { ...colors, accentText: colors.accentText || colors.selectedText, transparent: 'transparent' };
   const assign = (key, prop, label) => {
     if (!key) return;
     const role = _settingsSimpleThemeRole(key, prop, label);
@@ -147,7 +150,7 @@ function settingsThemeBuildSimpleStyles(colors, definitions, targets, base) {
     '--bg': colors.background, '--bg2': colors.surface, '--bg3': colors.control, '--bg4': colors.hover,
     '--fg': colors.text, '--fg2': colors.muted, '--border': colors.border,
     '--accent': colors.accent, '--accent2': colors.accent, '--ui-accent': colors.accent,
-    '--ui-accent-fg': selectedText, '--ui-selection-fg': selectedText, '--ui-selection-bg': colors.selected,
+    '--ui-accent-fg': values.accentText, '--ui-selection-fg': selectedText, '--ui-selection-bg': colors.selected,
     '--selection': colors.selected, '--ui-hover-bg': colors.hover, '--ui-button-bg': colors.control,
     '--ui-popup-bg': colors.surface, '--ui-modal-bg': colors.surface, '--content-bg': colors.surface,
     '--ui-bg-control': colors.control, '--ui-bg-control-hover': colors.hover, '--ui-bg-control-active': colors.selected,
@@ -162,19 +165,14 @@ function settingsThemeBuildSimpleStyles(colors, definitions, targets, base) {
   return styles;
 }
 
-function settingsThemeSimpleDecorationStyles(dark) {
-  const decoration = /(?:font|bold|italic|line-height|line-style|stroke-(?:color|width)|left-accent|underline|width|height|radius|padding|margin|opacity|indent|space-before|space-after|gap|shadow|spacing|tracking|align)/i;
-  return Object.fromEntries(getAllStyleKeys().filter(key => !key.startsWith('--simple-theme-') && decoration.test(key))
-    .map(key => [key, dark.ui.cssVars[key] || '']));
-}
-
 // Explicit bulk edits remain independent of the palette's shared accent control.
 function settingsThemeExplicitColorKeys() {
   const root = document.documentElement;
-  const roles = Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id]));
+  const roles = { ...Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id])), accentText: 'accentText' };
   const edited = new Set(['selected', 'selectedText', 'accent'].filter(id =>
     root.style.getPropertyValue(`--simple-theme-${id}`).trim()));
   if (!edited.size) return new Set();
+  if (edited.has('selectedText')) edited.add('accentText');
   const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), MeldexThemeManager.getThemeById('builtin-dark').ui.cssVars);
   const mapping = settingsThemeBuildSimpleStyles(roles, UI_STYLE_SECTIONS, MeldexThemeManager.THEME_UI_TARGETS, base);
   return new Set(Object.entries(mapping).filter(([,role]) => edited.has(role)).map(([key]) => key));
@@ -191,7 +189,9 @@ function settingsThemeApplySimpleColors(overrides = {}) {
   const manager = MeldexThemeManager;
   const changed = new Set(Object.keys(overrides));
   if (!changed.size) return true;
-  const roles = Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id]));
+  colors.accentText = colors.selectedText;
+  if (changed.has('selectedText')) changed.add('accentText');
+  const roles = { ...Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => [field.id, field.id])), accentText: 'accentText' };
   const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), manager.getThemeById('builtin-dark').ui.cssVars);
   const styleRoles = settingsThemeBuildSimpleStyles(roles, UI_STYLE_SECTIONS, manager.THEME_UI_TARGETS, base);
   // Inline links keep the surrounding surface instead of taking the control background.
@@ -205,6 +205,10 @@ function settingsThemeApplySimpleColors(overrides = {}) {
     for (const prop of target.props) {
       if (!(prop in (apps[target.id]?.[state] || {}))) continue;
       const rawKeys = target.vars?.[state]?.[prop];
+      if (state === 'normal' && prop === 'bg' && ['left-chrome', 'collapse-button', 'folder', 'folder-tree-folder'].includes(target.id)) {
+        if (changed.has('control')) apps[target.id][state][prop] = 'none';
+        continue;
+      }
       const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
         : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
         : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
@@ -221,6 +225,7 @@ function settingsThemeApplySimpleColors(overrides = {}) {
   if (Object.prototype.hasOwnProperty.call(styles, '--bd-bg') && typeof _bdApplyCurrentBoardBackground === 'function') {
     _bdApplyCurrentBoardBackground();
   }
+  if (typeof applyCalendarPanelStyle === 'function') applyCalendarPanelStyle();
   _settingsThemeMarkDirty();
   refreshSettingsThemePreview();
   syncSettingsSimpleThemeSwatches(document);
@@ -238,7 +243,7 @@ function syncSettingsSimpleThemeSwatches(root) {
 function settingsThemeBulkDecorationKeys(prop) {
   return [...new Set(Object.values(UI_STYLE_SECTIONS).flatMap(defs => defs.flatMap(def => {
     const map = window.getSettingsThemePreviewPropertyMap(def);
-    return map[prop] ? [map[prop]] : [];
+    return map[prop] && !(prop === 'borderWidth' && /^--ui-dock-button(?:-hover|-active)?-border-width$/.test(map[prop])) ? [map[prop]] : [];
   })))];
 }
 
@@ -338,64 +343,4 @@ function settingsThemeRefreshSimpleReferences() {
 }
 for (const event of ['meldex-theme-change', 'meldex-theme-color-set-change', 'meldex-theme-os-accent-change', 'meldex-theme-ui-auto-tone-change', 'meldex-theme-ui-applications-change']) {
   window.addEventListener(event, settingsThemeRefreshSimpleReferences);
-}
-
-// Seed ordinary editable themes once, without changing the selected theme or live colors.
-const SETTINGS_SIMPLE_PRESETS_SEEDED_KEY = 'meldex-simple-theme-presets-seeded-v1';
-function settingsThemeBuildSimplePreset(source, dark) {
-  const vars = source.ui.cssVars;
-  const colors = {
-    background: vars['--bg'], surface: vars['--content-bg'] || vars['--bg2'], control: vars['--bg3'],
-    text: vars['--fg'], muted: vars['--fg2'], border: vars['--border'],
-    hover: vars['--ui-hover-bg'] || vars['--bg4'], selected: vars['--ui-selection-bg'] || vars['--selection'],
-    selectedText: vars['--ui-selection-fg'] || vars['--fg'], accent: vars['--ui-accent'] || vars['--accent'],
-  };
-  const theme = JSON.parse(JSON.stringify(dark));
-  theme.id = `custom-simple-${source.id.replace(/^builtin-/, '')}`;
-  theme.name = `${source.name}（シンプル）`;
-  theme.builtIn = false;
-  const base = Object.assign(Object.fromEntries(getAllStyleKeys().map(key => [key, ''])), dark.ui.cssVars);
-  theme.ui.cssVars = { ...dark.ui.cssVars, ...settingsThemeBuildSimpleStyles(colors, UI_STYLE_SECTIONS, MeldexThemeManager.THEME_UI_TARGETS, base) };
-  for (const [key, value] of Object.entries(settingsThemeSimpleDecorationStyles(dark))) {
-    if (value) theme.ui.cssVars[key] = value; else delete theme.ui.cssVars[key];
-  }
-  for (const [id, color] of Object.entries(colors)) theme.ui.cssVars[`--simple-theme-${id}`] = `color:${color}`;
-  theme.ui.useOsAccentColor = false;
-  theme.ui['_theme-use-os-accent'] = false;
-  theme['_theme-use-os-accent'] = false;
-  const applications = theme.ui.themeUiApplications = {};
-  for (const target of MeldexThemeManager.THEME_UI_TARGETS) {
-    applications[target.id] = {};
-    for (const state of target.states) {
-      applications[target.id][state] = {};
-      for (const prop of target.props) {
-        const role = prop === 'fg' ? (state === 'selected' ? 'selectedText' : 'text')
-          : prop === 'bg' ? (state === 'selected' ? 'selected' : state === 'hover' ? 'hover' : 'control')
-          : state === 'selected' || ['section-bar', 'note-heading'].includes(target.id) ? 'accent' : 'border';
-        applications[target.id][state][prop] = target.vars ? 'none' : `color:${colors[role]}`;
-      }
-    }
-  }
-  return theme;
-}
-
-function settingsThemeEnsureInitialSimplePresets() {
-  if (typeof MeldexThemeManager === 'undefined') return false;
-  const manager = MeldexThemeManager;
-  if (!manager.THEME_SETTINGS_KEYS.includes(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY)) manager.THEME_SETTINGS_KEYS.push(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY);
-  try {
-    if (localStorage.getItem(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY) === '1') return true;
-    // A malformed saved list must be preserved, not replaced with the seed themes.
-    const raw = localStorage.getItem(manager.CUSTOM_THEMES_KEY);
-    if (raw != null && !Array.isArray(JSON.parse(raw))) return false;
-    const existing = manager.getCustomThemes();
-    const dark = manager.getThemeById('builtin-dark');
-    const presets = ['dark', 'light', 'pastel', 'earth'].map(id => settingsThemeBuildSimplePreset(manager.getThemeById(`builtin-${id}`), dark));
-    const additions = presets.filter(theme => !existing.some(item => item.id === theme.id));
-    if (additions.length) manager.saveCustomThemes([...existing, ...additions], { skipHistory: true });
-    localStorage.setItem(SETTINGS_SIMPLE_PRESETS_SEEDED_KEY, '1');
-    return true;
-  } catch {
-    return false;
-  }
 }

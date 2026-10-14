@@ -181,11 +181,8 @@ const CHAT_CLI_MODEL_CATALOG = {
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
-    { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
-    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
     { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
   ],
 };
@@ -613,6 +610,18 @@ function _chatCodeExecOutput(block) {
   return out.join('\n').trim();
 }
 
+function _chatCodeExecArtifactUrl(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  try {
+    // URL parsing also normalizes embedded tabs/newlines in scheme names.
+    const protocol = new URL(url, 'https://localhost/').protocol;
+    if (['http:', 'https:', 'file:'].includes(protocol)) return url;
+    if (protocol === 'data:' && /^data:(?:image\/(?:png|jpeg|webp|gif|avif|bmp)|text\/(?:plain|csv)|application\/(?:pdf|json|zip|octet-stream));base64,/i.test(url)) return url;
+  } catch {}
+  return '';
+}
+
 function _chatAttachPreCopyButton(pre, text, okMessage = 'コードをコピーしました') {
   if (!pre || !String(text || '')) return;
   if (!pre.style.position) pre.style.position = 'relative';
@@ -659,9 +668,17 @@ function _chatRenderCodeExecBlock(block, parent) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;';
     artifacts.forEach(artifact => {
-      const url = String(artifact?.url || artifact?.data_url || artifact?.path || '').trim();
+      const rawUrl = String(artifact?.url || artifact?.data_url || artifact?.path || '').trim();
+      const url = _chatCodeExecArtifactUrl(rawUrl);
       const name = String(artifact?.name || artifact?.path || 'artifact').split(/[\\/]/).pop();
-      if (!url) return;
+      if (!url) {
+        if (rawUrl) {
+          const unavailable = document.createElement('span');
+          unavailable.textContent = name + '（このファイルを開けません）';
+          row.appendChild(unavailable);
+        }
+        return;
+      }
       if (/^data:image\//i.test(url) || /\.(png|jpe?g|webp|gif)$/i.test(name)) {
         const img = document.createElement('img');
         img.src = url;
@@ -810,6 +827,9 @@ function _renderChatModelOptions(models, options = {}) {
 (function _bindChatProviderChange() {
   const el = document.getElementById('chat-provider');
   if (!el) return;
+  const refreshAvailability = () => _chatRefreshProviderAvailability().catch(() => {});
+  el.addEventListener('focus', refreshAvailability);
+  el.addEventListener('pointerdown', refreshAvailability);
   el.onchange = function() {
     _chatState.provider = this.value;
     localStorage.setItem('chat-provider', this.value);

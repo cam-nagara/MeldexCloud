@@ -96,7 +96,7 @@
   }
 
   function updateCustomThemeFromCurrent(id, name) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const index = list.findIndex(t => t.id === normalized);
     if (index < 0) return null;
@@ -125,7 +125,7 @@
   function renameCustomTheme(id, name) {
     const label = String(name || '').trim();
     if (!label) return null;
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const item = list.find(t => t.id === normalized);
     if (!item) return null;
@@ -154,7 +154,7 @@
   }
 
   function deleteCustomTheme(id) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const next = list.filter(t => t.id !== normalized);
     if (next.length === list.length) return false;
@@ -234,6 +234,7 @@
     saveCustomThemes,
     getAllThemes,
     getThemeById,
+    getThemeStyleVars: themeDef => withDerivedUiStyleVars(themeDef?.ui?.cssVars || {}),
     getDefaultThemeId,
     setDefaultThemeId,
     applyThemeToDocument,

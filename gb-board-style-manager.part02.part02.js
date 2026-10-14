@@ -8,14 +8,16 @@
 
 // 旧モーダルは廃止し、オプションパネルのカードスタイルタブに切り替える (コミットC)。
 // タブコンテンツは _bdEnsureBoardStyleManagerTabs() 経由で _bdRenderStyleManagerInPanel が描画する。
-function bdOpenCardStyleManager() {
+function bdOpenCardStyleManager(source) {
+  if (typeof _openDetailRightPanel === 'function' && _openDetailRightPanel(source) === false) return;
   bdEnsureBoardUiState();
   if (typeof _bdEnsureBoardStyleManagerTabs === 'function') _bdEnsureBoardStyleManagerTabs();
   if (typeof showBoardTabs === 'function') showBoardTabs({ cardStyle: true });
   if (typeof switchDetailTab === 'function') switchDetailTab('board-card-style');
 }
 
-function bdOpenLineStyleManager() {
+function bdOpenLineStyleManager(source) {
+  if (typeof _openDetailRightPanel === 'function' && _openDetailRightPanel(source) === false) return;
   bdEnsureBoardUiState();
   if (typeof _bdEnsureBoardStyleManagerTabs === 'function') _bdEnsureBoardStyleManagerTabs();
   if (typeof showBoardTabs === 'function') showBoardTabs({ lineStyle: true });

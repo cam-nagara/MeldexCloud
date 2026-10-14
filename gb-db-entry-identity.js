@@ -167,6 +167,7 @@
     }
     const entityData = entities[newName];
     if (entityData) {
+      entityData._entry_path = newPath;
       if (entryId) entityData._id = entryId;
       if (Number.isInteger(Number(revision))) entityData._revision = Number(revision);
       if (typeof _dbRewriteEntityValuePaths === 'function') {
@@ -746,6 +747,7 @@
       const body = {
         path: latestPath || request.oldPath,
         new_name: request.newName,
+        title_only: true,
         expected_entry_id: request.entryId || undefined,
         operation_id: request.operationId,
       };

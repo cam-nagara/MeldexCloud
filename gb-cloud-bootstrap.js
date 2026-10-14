@@ -109,9 +109,8 @@
         ? 'meldex-cloud-banner-action meldex-cloud-banner-action-primary'
         : 'meldex-cloud-banner-action';
       button.textContent = action.label || '';
-      button.style.cssText = action.primary
-        ? 'border:1px solid rgba(255,255,255,.65);background:#fff;color:#333;border-radius:5px;padding:4px 10px;min-height:32px;cursor:pointer;font:inherit;'
-        : 'border:1px solid rgba(255,255,255,.45);background:rgba(0,0,0,.18);color:#fff;border-radius:5px;padding:4px 10px;min-height:32px;cursor:pointer;font:inherit;';
+      button.classList.add('gb-btn');
+      button.style.cssText = 'border-radius:5px;padding:4px 10px;min-height:32px;font:inherit;';
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -584,16 +583,16 @@
       body.className = 'meldex-cloud-mode-body';
       body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">現在のデータは自動で移動・削除されません。別の保存先へ切り替えた後も、元の保存先へ戻せます。</div>
         <div class="meldex-cloud-choice-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
-          <button id="choose-dropbox" data-e2e-id="cloud-mode-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-dropbox" data-e2e-id="cloud-mode-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid var(--border);background:var(--ui-bg-control,var(--bg3));color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--fg2);">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
-          <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid var(--border);background:var(--ui-bg-control,var(--bg3));color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
-            <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--fg2);">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
-        <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
+        <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--ui-bg-control,var(--bg3));font-size:12px;line-height:1.7;color:var(--fg2);">
           <div><strong>共同作業:</strong> メンバー、権限、スケジュールを同じワークスペースで使う場合はDropboxを選びます。NAS内のファイルは、デスクトップ版でソースフォルダとして参照できます。</div>
         </div>`;
       const cancelButton = document.createElement('button');
@@ -747,50 +746,50 @@
     return new Promise((resolve) => {
       const body = document.createElement('div');
       body.className = 'meldex-dropbox-setup-body';
-      body.innerHTML = `<div class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
+      body.innerHTML = `<div class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:var(--ui-bg-surface,var(--bg2));">
           <div style="font-size:15px;font-weight:700;margin-bottom:8px;">同じデータを複数端末で使います</div>
-          <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
+          <div style="font-size:13px;color:var(--fg2);line-height:1.7;">
             Dropboxに接続し、Meldexで使うフォルダを選ぶと、スマホ、タブレット、PCから同じソースフォルダを開けます。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
+          <div style="font-size:12px;color:var(--fg2);line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
         </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
-        <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:#bdbdbd;">
-          <div style="border:1px solid #356b4d;border-radius:8px;padding:8px 10px;background:#18261e;">1. Dropboxに接続</div>
-          <div style="border:1px solid #333;border-radius:8px;padding:8px 10px;background:#252525;">2. フォルダを選ぶ</div>
-          <div style="border:1px solid #333;border-radius:8px;padding:8px 10px;background:#252525;">3. 開始する</div>
+        <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:var(--fg2);">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">1. Dropboxに接続</div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">2. フォルダを選ぶ</div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">3. 開始する</div>
         </div>
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+        <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">1. Dropboxに接続する</div>
-          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : '#d4d4d4'};">
+          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : 'var(--fg)'};">
             ${sessionLabel}
           </div>
-          <div id="cloud-session-help" style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">${sessionHelp}</div>
+          <div id="cloud-session-help" style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:6px;">${sessionHelp}</div>
           <div class="meldex-cloud-action-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-            <button id="cloud-auth-redirect" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">Dropboxに接続する</button>
-            <button id="cloud-auth-switch-account" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#5a4770;color:#fff;cursor:pointer;">別のアカウントで接続</button>
-            <button id="cloud-auth-manual" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">コードで接続</button>
-            <button id="cloud-clear-session" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">接続を解除</button>
+            <button id="cloud-auth-redirect" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">Dropboxに接続する</button>
+            <button id="cloud-auth-switch-account" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">別のアカウントで接続</button>
+            <button id="cloud-auth-manual" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">コードで接続</button>
+            <button id="cloud-clear-session" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border-radius:6px;cursor:pointer;">接続を解除</button>
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:8px;">DropboxのパスワードはMeldexには渡りません。</div>
+          <div style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:8px;">DropboxのパスワードはMeldexには渡りません。</div>
           <div id="cloud-manual-box" style="display:${showManualBox ? '' : 'none'};margin-top:12px;">
-            <div style="font-size:12px;color:#969696;line-height:1.6;margin-bottom:6px;">Dropboxで表示されたコードを貼り付けてください。</div>
+            <div style="font-size:12px;color:var(--fg2);line-height:1.6;margin-bottom:6px;">Dropboxで表示されたコードを貼り付けてください。</div>
             <div class="meldex-cloud-input-row" style="display:flex;gap:8px;flex-wrap:wrap;">
-              <input id="cloud-manual-code" class="gb-input" type="text" placeholder="Dropboxのコード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-              <button id="cloud-manual-submit" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">接続する</button>
+              <input id="cloud-manual-code" class="gb-input" type="text" placeholder="Dropboxのコード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;">
+              <button id="cloud-manual-submit" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">接続する</button>
             </div>
           </div>
         </section>
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+        <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">2. 使うフォルダを選ぶ</div>
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox内の最初に使うフォルダ</label>
+          <label style="display:block;font-size:12px;color:var(--fg2);margin-bottom:4px;">Dropbox内の最初に使うフォルダ</label>
           <div class="meldex-cloud-input-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <input id="cloud-vault-path" class="gb-input" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="flex:1;min-width:min(280px,100%);padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <button id="cloud-vault-pick" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">Dropboxから選ぶ</button>
+            <input id="cloud-vault-path" class="gb-input" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="flex:1;min-width:min(280px,100%);padding:8px 10px;border-radius:6px;">
+            <button id="cloud-vault-pick" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border-radius:6px;cursor:pointer;">Dropboxから選ぶ</button>
           </div>
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">デスクトップ版と同じDropbox内フォルダを使う場合は「Dropboxから選ぶ」で <code>/Share</code> などの共有フォルダまで開いて選択してください。</div>
+          <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">デスクトップ版と同じDropbox内フォルダを使う場合は「Dropboxから選ぶ」で <code>/Share</code> などの共有フォルダまで開いて選択してください。</div>
         </section>
-        <details id="cloud-advanced-dropbox-settings" class="meldex-cloud-setup-section"${initial.appMode === 'custom' || !initial.defaultAppKey ? ' open' : ''} style="border:1px solid #333;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
+        <details id="cloud-advanced-dropbox-settings" class="meldex-cloud-setup-section"${initial.appMode === 'custom' || !initial.defaultAppKey ? ' open' : ''} style="border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:14px;">
           <summary style="font-size:15px;font-weight:700;cursor:pointer;">詳細設定（通常は変更不要）</summary>
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:8px;">
             <input type="radio" name="cloud-app-mode" value="developer" ${initial.appMode !== 'custom' ? 'checked' : ''}>
@@ -800,13 +799,13 @@
             <input type="radio" name="cloud-app-mode" value="custom" ${initial.appMode === 'custom' ? 'checked' : ''}>
             <span>自分で登録したDropbox OAuthアプリを使う</span>
           </label>
-          <div id="cloud-custom-dropbox-settings" style="display:${initial.appMode === 'custom' ? '' : 'none'};margin-top:12px;border-top:1px solid #333;padding-top:12px;">
-            <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox App key</label>
-            <input id="cloud-custom-app-key" class="gb-input" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
-            <input id="cloud-redirect-override" class="gb-input" type="text" data-gb-path-input value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
-            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
+          <div id="cloud-custom-dropbox-settings" style="display:${initial.appMode === 'custom' ? '' : 'none'};margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+            <label style="display:block;font-size:12px;color:var(--fg2);margin-bottom:4px;">Dropbox App key</label>
+            <input id="cloud-custom-app-key" class="gb-input" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;">
+            <label style="display:block;font-size:12px;color:var(--fg2);margin:12px 0 4px;">redirect URI 上書き（任意）</label>
+            <input id="cloud-redirect-override" class="gb-input" type="text" data-gb-path-input value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;">
+            <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
+            <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
         </details>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
@@ -903,7 +902,7 @@
         const status = overlay.querySelector('#cloud-session-status');
         const help = overlay.querySelector('#cloud-session-help');
         status.textContent = text;
-        status.style.color = authenticated ? '#9dd6a5' : '#d4d4d4';
+        status.style.color = authenticated ? '#9dd6a5' : 'var(--fg)';
         if (help) {
           help.textContent = helpText || (authenticated
             ? '接続できています。使うDropbox内フォルダを確認し、「この設定で開始」を押してください。'

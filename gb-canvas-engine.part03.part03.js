@@ -13,6 +13,57 @@
 // で自ノードを見失い、確定処理 (bdPushUndo/text 反映) が丸ごと skip される実害があるため、
 // 実行中フラグで多重実行そのものを防ぐ。
 let _bdFinishEditRunning = false;
+const _bdPendingNodeTextWrites = new WeakMap();
+function bdHasPendingNodeTextWrite(node) {
+  return _bdPendingNodeTextWrites.has(node);
+}
+function bdWaitPendingNodeTextWrites(nodes) {
+  const writes = (nodes || []).map(node => _bdPendingNodeTextWrites.get(node)?.promise).filter(Boolean);
+  return writes.length ? Promise.all(writes).then(results => results.every(result => result !== false)) : null;
+}
+function bdRestoreSnapshotNodeTextWrites(previousNodes, restoredNodes) {
+  const previous = new Map((previousNodes || []).map(node => [node.id, node]));
+  for (const node of restoredNodes || []) {
+    const before = previous.get(node.id);
+    if (!before?.topicRef || !node?._topicCanonicalOnly || !node?.topicRef
+      || before.topicRef.sourceId !== node.topicRef.sourceId
+      || before.topicRef.topicId !== node.topicRef.topicId) continue;
+    const pending = _bdPendingNodeTextWrites.get(before);
+    if (pending) {
+      _bdPendingNodeTextWrites.delete(before);
+      pending.node = node;
+      _bdPendingNodeTextWrites.set(node, pending);
+    }
+    if (node.text !== before.text) void bdPersistEditedNodeText(node, before.text);
+  }
+}
+function bdPersistEditedNodeText(node, beforeText, onFailure) {
+  if (!node?._topicCanonicalOnly || !node?.topicRef) {
+    bdDirty();
+    return;
+  }
+  const attemptedText = node.text;
+  const state = _bdPendingNodeTextWrites.get(node)
+    || { promise: Promise.resolve(), committedText: beforeText, node };
+  const write = state.promise
+    .then(() => window.MeldexTopicPlacementUI.updateProjectedBoardText(node, attemptedText))
+    .then(() => { state.committedText = attemptedText; return true; })
+    .catch((error) => {
+      const currentNode = state.node;
+      if (state.promise === write && currentNode.text === attemptedText) currentNode.text = state.committedText;
+      if (typeof showStatus === 'function') showStatus(error?.message || 'トピックの保存に失敗しました', true);
+      if (typeof onFailure === 'function') onFailure(currentNode);
+      else if (typeof bdRender === 'function' && bd.nodes?.includes(currentNode)) bdRender();
+      if (bd.nodes?.includes(currentNode)) window.MeldexBoardTopicIntegration?.mountToolbar?.(bd);
+      return false;
+    });
+  state.promise = write;
+  _bdPendingNodeTextWrites.set(node, state);
+  void write.then(() => {
+    if (_bdPendingNodeTextWrites.get(state.node)?.promise === write) _bdPendingNodeTextWrites.delete(state.node);
+  });
+  return write;
+}
 function bdFinishEdit() {
   if (!bd.editing || _bdFinishEditRunning) return;
   _bdFinishEditRunning = true;
@@ -42,15 +93,7 @@ function bdFinishEdit() {
       if (caret) caret.remove();
     }
     bd.editing = null;
-    if (changed && editedNode?._topicCanonicalOnly && editedNode?.topicRef) {
-      const attemptedText = editedNode.text;
-      void window.MeldexTopicPlacementUI.updateProjectedBoardText(editedNode, attemptedText)
-        .catch((error) => {
-          if (editedNode.text === attemptedText) editedNode.text = beforeText;
-          if (typeof showStatus === 'function') showStatus(error?.message || 'トピックの保存に失敗しました', true);
-          if (typeof bdRender === 'function') bdRender();
-        });
-    } else if (changed) bdDirty();
+    if (changed) void bdPersistEditedNodeText(editedNode, beforeText);
     // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
     if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
     if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');

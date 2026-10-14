@@ -474,6 +474,7 @@
       GBPaneKeepAlive.pruneStale((paneId) => !!findNode(_root, paneId));
     }
     if (_postRender) _postRender();
+    if (typeof GBPanelSet !== 'undefined') GBPanelSet.syncLeftRailActiveApp?.();
     _restoreAllScrollPositions(scrollSnap);
     queueMicrotask(() => _restoreAllScrollPositions(scrollSnap));
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => _restoreAllScrollPositions(scrollSnap));
@@ -672,6 +673,7 @@
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'gb-context-menu-item';
+    item.dataset.e2eId = options?.e2eId || ('layout-menu-' + encodeURIComponent(String(label || '')));
     if (options?.submenu) {
       item.classList.add('has-submenu');
       item.setAttribute('aria-haspopup', 'menu');

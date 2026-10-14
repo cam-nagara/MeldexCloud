@@ -147,7 +147,7 @@ function _chatGenerationCliSessionControlsHtml() {
   const provider = _chatGenerationCurrentProvider();
   const cli = window.GBChatCli;
   if (!cli?.isCliChatProvider?.(provider) || !cli?.sessionContinuitySupported?.(provider)) return '';
-  const checked = localStorage.getItem('chat-cli-session-continuity') === '1' ? 'checked' : '';
+  const checked = cli.sessionContinuityEnabled(provider) ? 'checked' : '';
   const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 13) : '';
   return `
     <div data-chat-cli-session-controls style="display:flex;align-items:center;justify-content:space-between;gap:8px;">

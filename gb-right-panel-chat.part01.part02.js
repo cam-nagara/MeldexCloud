@@ -1317,7 +1317,7 @@ function _chatRenderStructuredMessage(div, content, isUser) {
       imgWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-top:4px;';
       if (part.name) {
         const caption = document.createElement('div');
-        caption.style.cssText = `font-size:12px;display:flex;align-items:center;gap:4px;${isUser ? 'color:rgba(255,255,255,0.92);' : 'color:var(--fg2);'}`;
+        caption.style.cssText = `font-size:12px;display:flex;align-items:center;gap:4px;${isUser ? 'color:inherit;' : 'color:var(--fg2);'}`;
         caption.innerHTML = `${lucide('image', 14)} <span>${esc(String(part.name))}</span>`;
         imgWrap.appendChild(caption);
       }
@@ -1325,7 +1325,7 @@ function _chatRenderStructuredMessage(div, content, isUser) {
         const img = document.createElement('img');
         img.src = imgUrl;
         img.alt = String(part.name || storedPath || 'image');
-        img.style.cssText = 'max-width:min(320px, 100%);max-height:220px;border-radius:8px;display:block;cursor:pointer;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.08);';
+        img.style.cssText = 'max-width:min(320px, 100%);max-height:220px;border-radius:8px;display:block;cursor:pointer;border:1px solid var(--border);background:var(--ui-bg-control,var(--bg3));';
         if (!window.MeldexChatViewerAssets?.bind?.(img, imgWrap, storedPath)) {
           img.addEventListener('click', () => {
             if (typeof openViewer === 'function') openViewer(imgUrl);
@@ -1342,7 +1342,7 @@ function _chatRenderStructuredMessage(div, content, isUser) {
     if (part.type === 'document') {
       const storedPath = _chatNormalizeStoredPath(part.path || part.url || '');
       const row = document.createElement('div');
-      row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px;${isUser ? 'color:rgba(255,255,255,0.92);' : 'color:var(--fg2);'}`;
+      row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px;${isUser ? 'color:inherit;' : 'color:var(--fg2);'}`;
       row.innerHTML = `${lucide('fileText', 14)} <span style="text-decoration:underline;cursor:pointer;">${esc(String(part.name || storedPath || 'PDF'))}</span>`;
       row.querySelector('span')?.addEventListener('click', () => {
         if (storedPath && !window.MeldexChatViewerAssets?.open?.(storedPath) && typeof openViewer === 'function') {
@@ -1452,8 +1452,10 @@ function _chatApplyProviderOptionStatus(option, status) {
   const provider = _chatProviderKey(option.value);
   if (!option.dataset.baseLabel) option.dataset.baseLabel = option.textContent.replace(/（(?:APIキー未設定|未設定|無効|未検出|確認不可|接続先確認)）$/, '');
   const configured = _chatProviderStatusConfigured(status);
-  option.disabled = !configured;
-  option.setAttribute('aria-disabled', configured ? 'false' : 'true');
+  // 一時的な取得失敗で選択まで塞ぐと、選び直して再確認できなくなる。
+  // 送信可否は別途 _chatRefreshApiKeyState / 送信前確認で判定する。
+  option.disabled = !configured && status?.availabilityUnknown !== true;
+  option.setAttribute('aria-disabled', option.disabled ? 'true' : 'false');
   option.title = configured ? '' : (status?.message || '送信設定を確認してください。');
   option.textContent = option.dataset.baseLabel + _chatProviderUnavailableSuffix(provider, status);
 }
@@ -1492,6 +1494,7 @@ async function _chatProviderReadyStatus(provider) {
   } catch {
     return {
       configured: false,
+      availabilityUnknown: true,
       message: 'APIキー設定を確認できませんでした。Meldexを再起動してからもう一度試してください。',
     };
   }
@@ -1518,11 +1521,11 @@ function _chatLocalLlmReadyStatus() {
   }
 }
 
-async function _chatCliProviderReadyStatus(provider) {
+async function _chatCliProviderReadyStatus(provider, config) {
   const key = _chatProviderKey(provider);
   const meta = CHAT_CLI_PROVIDERS[key] || { label: key || 'CLI', command: key || 'CLI' };
   try {
-    const cfg = await apiFetch('/cli-chat/config', { silentError: true });
+    const cfg = config || await apiFetch('/cli-chat/config', { silentError: true });
     if (cfg?.enabled === false) {
       return { configured: false, message: 'CLIチャット機能が無効です。設定 > LLM > CLIチャットで有効にしてください。' };
     }
@@ -1539,7 +1542,7 @@ async function _chatCliProviderReadyStatus(provider) {
     }
     return { configured: true, message: '' };
   } catch {
-    return { configured: false, message: 'CLIチャット設定を読み込めませんでした。Meldexを再起動してからもう一度試してください。' };
+    return { configured: false, availabilityUnknown: true, message: 'CLIチャット設定を読み込めませんでした。プロバイダを選び直して再確認してください。' };
   }
 }
 

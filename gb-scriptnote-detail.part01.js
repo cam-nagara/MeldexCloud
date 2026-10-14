@@ -819,11 +819,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       };
       const scanFolder = async (folder, depth = 0) => {
         const path = String(folder?.path || '');
-        if (!path || visited.has(path) || depth > 4) return;
+        if (visited.has(path) || depth > 4) return;
         visited.add(path);
         const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true');
         if ((folder.type === 'database' || folder.type === 'folder') && isCharacterDbFolder(folder)) {
-          const pages = (entries || []).filter(it => it.type === 'page' || it.type === 'entity');
+          // browseの物理ファイル一覧ではSQLite内のエントリを取得できない。
+          // 新旧シート共通のpivotから名前を読み、説明ファイルを候補に含めない。
+          const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(path) + '&tree_only=true');
+          if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) {
+            throw new Error('シートのエントリを取得できませんでした');
+          }
+          const pages = Object.keys(pivot.entities).filter(name => name.trim()).map(name => ({ name }));
           if (pages.length) addPageGroup(folder, pages);
         }
         const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
@@ -833,9 +839,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const roots = await apiFetch('/outliner-roots');
         if (!Array.isArray(roots) || !roots.length) throw new Error('フォルダツリーがありません');
         for (const root of roots) {
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true');
-          const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
-          for (const folder of dbFolders) await scanFolder(folder, 0);
+          await scanFolder({ ...root, type: root.type || 'folder' }, -1);
         }
         if (!treeHost.children.length) {
           const empty = document.createElement('div');

@@ -709,7 +709,7 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
 }
 
 function renameAppPathReferences(oldPath, newPath, opts) {
-  if (!oldPath || !newPath || oldPath === newPath) return;
+  if (!oldPath || !newPath || (oldPath === newPath && !Object.prototype.hasOwnProperty.call(opts || {}, 'label'))) return;
   // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
   // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
   window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
@@ -747,6 +747,22 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   _rewriteStoredPathSettingForRename('outliner-work-folder', 'outliner-work-folder-id', oldPath, newPath, fileId);
   _rewriteStoredPathSettingForRename('main-calendar-path', 'main-calendar-id', oldPath, newPath, fileId);
   _rewritePublishStorageForRename(oldPath, newPath);
+  // 新規作成位置をパスで保存した手動順も、改名・フォルダ移動へ追従させる。
+  try {
+    const manual = JSON.parse(localStorage.getItem('outliner-manual-order') || '{}');
+    let changed = false;
+    Object.keys(manual).forEach(key => {
+      if (!Array.isArray(manual[key])) return;
+      const mappedKey = _mapRenamedPath(key, oldPath, newPath);
+      const mappedOrder = manual[key].map(path => _mapRenamedPath(path, oldPath, newPath));
+      if (mappedKey !== key || mappedOrder.some((path, index) => path !== manual[key][index])) {
+        delete manual[key];
+        manual[mappedKey] = mappedOrder;
+        changed = true;
+      }
+    });
+    if (changed) localStorage.setItem('outliner-manual-order', JSON.stringify(manual));
+  } catch {}
   let recentChanged = false;
   let layoutChanged = false;
   let legacyTabsChanged = false;
@@ -838,15 +854,35 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   });
   _renameRuntimePathReferences(oldPath, newPath, exactLabel);
 
-  const pageContent = document.getElementById('page-content');
-  if (pageContent?.dataset?.path) {
-    pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
+  if (options.titleOnly && options.etag && exactLabel != null) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const key = coordinator?.documentKeyForPath?.(newPath);
+    const hosts = new Set([document.getElementById('page-content'), ...(key ? coordinator.getParticipants?.(key) || [] : [])]);
+    hosts.forEach(host => {
+      if (host?.dataset?.path !== newPath || host.dataset.lastSavedMd == null) return;
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const savedMd = titleHelper ? titleHelper.write(host.dataset.lastSavedMd,exactLabel,newPath) : host.dataset.lastSavedMd;
+      const fm = savedMd.match(/^(---\n[\s\S]*?\n---\n?)/);
+      if (fm) host.dataset.frontmatter = fm[1];
+      window.MeldexNoteSaveAdapter?.syncResolvedBaseline?.(newPath,host,savedMd,options.etag);
+    });
+    if (typeof bd !== 'undefined' && bd.path === newPath) {
+      bd.lastSavedEtag = options.etag;
+      bd.lastSavedTransportRevision = coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName(),options.etag) || options.etag;
+    }
   }
+
+  // ペインを再マウントしない改名でも、各ノートの次回保存先を追従させる。
+  document.querySelectorAll('[id="page-content"]').forEach(pageContent => {
+    if (pageContent.dataset.path) {
+      pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
+    }
+  });
 
   if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
     Object.keys(_sn2Editors).forEach(path => {
       const mapped = _mapRenamedPath(path, oldPath, newPath);
-      if (mapped === path) return;
+      if (mapped === path && !(path === oldPath && exactLabel != null)) return;
       const editor = _sn2Editors[path];
       delete _sn2Editors[path];
       if (editor) editor._path = mapped;
@@ -877,7 +913,10 @@ function renameAppPathReferences(oldPath, newPath, opts) {
 
   if (legacyTabsChanged) renderTabs();
   if (layoutChanged && typeof GBLayout !== 'undefined') {
-    if (typeof GBLayout.render === 'function') GBLayout.render();
+    // Title-only updates must not remount an editor or interrupt a Sheet load.
+    if ((oldPath === newPath || options.preserveMountedViews) && typeof GBLayout.refreshPaneTabs === 'function') {
+      GBLayout.getAllPanes(GBLayout.root).forEach(pane => GBLayout.refreshPaneTabs(pane.id));
+    } else if (typeof GBLayout.render === 'function') GBLayout.render();
     if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
   }
   _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);

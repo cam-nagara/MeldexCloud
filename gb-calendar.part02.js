@@ -181,8 +181,8 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
         <option value="yearly" ${recType==='yearly'?'selected':''}>毎年</option>
       </select>
       <div id="cal-detail-rec-opts" style="${recType?'':'display:none;'}margin-top:6px;">
-        <label style="font-size:11px;">間隔: <input id="cal-detail-rec-interval" type="number" min="1" value="${rec.interval||1}" style="width:56px;"></label>
-        <label style="font-size:11px;margin-left:8px;">終了日: <input id="cal-detail-rec-end" type="date" value="${rec.endDate||''}"></label>
+        <label style="font-size:11px;">間隔: <input id="cal-detail-rec-interval" type="number" min="1" value="${esc(rec.interval||1)}" style="width:56px;"></label>
+        <label style="font-size:11px;margin-left:8px;">終了日: <input id="cal-detail-rec-end" type="date" value="${esc(rec.endDate||'')}"></label>
         <div id="cal-detail-rec-days" style="margin-top:6px;font-size:11px;${recType==='weekly'?'':'display:none;'}">
           ${['日','月','火','水','木','金','土'].map((d,i)=>`<label style="margin-right:4px;"><input type="checkbox" class="cal-detail-rec-dow" value="${i}" ${(rec.daysOfWeek||[]).includes(i)?'checked':''}> ${d}</label>`).join('')}
         </div>
@@ -360,8 +360,8 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
         <option value="">なし</option><option value="daily" ${recType==='daily'?'selected':''}>毎日</option><option value="weekly" ${recType==='weekly'?'selected':''}>毎週</option><option value="monthly" ${recType==='monthly'?'selected':''}>毎月</option><option value="yearly" ${recType==='yearly'?'selected':''}>毎年</option>
       </select>
       <div id="ep-rec-opts" style="${recType?'':'display:none;'}margin-top:4px;">
-        <label style="font-size:11px;">間隔: <input id="ep-rec-interval" type="number" min="1" value="${rec.interval||1}" style="width:50px;"></label>
-        <label style="font-size:11px;margin-left:8px;">終了日: <input id="ep-rec-end" type="date" value="${rec.endDate||''}"></label>
+        <label style="font-size:11px;">間隔: <input id="ep-rec-interval" type="number" min="1" value="${esc(rec.interval||1)}" style="width:50px;"></label>
+        <label style="font-size:11px;margin-left:8px;">終了日: <input id="ep-rec-end" type="date" value="${esc(rec.endDate||'')}"></label>
         <div id="ep-rec-days" style="margin-top:4px;font-size:11px;${recType==='weekly'?'':'display:none;'}">
           ${['日','月','火','水','木','金','土'].map((d,i)=>`<label style="margin-right:4px;"><input type="checkbox" class="ep-rec-dow" value="${i}" ${(rec.daysOfWeek||[]).includes(i)?'checked':''}> ${d}</label>`).join('')}
         </div>
@@ -814,7 +814,7 @@ async function _showTemplateModal(dbPath) {
   const render=()=>{
     if(!templates.length){list.innerHTML='<div style="color:var(--fg2);font-size:12px;padding:8px;">テンプレートがありません</div>';return;}
     list.innerHTML=templates.map(t=>{
-      const entries=(t.entries||[]).map(e=>`<div style="font-size:11px;color:var(--fg2);padding:1px 0;">${_dayLabels[e.dayOfWeek]} ${e.startTime}〜${_addMinutes(e.startTime||'09:00',e.duration||60)} ${esc(e.title||'')}</div>`).join('');
+      const entries=(t.entries||[]).map(e=>`<div style="font-size:11px;color:var(--fg2);padding:1px 0;">${esc(_dayLabels[e.dayOfWeek] || '')} ${esc(e.startTime || '')}〜${esc(_addMinutes(e.startTime||'09:00',e.duration||60))} ${esc(e.title||'')}</div>`).join('');
       return `<div style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div><button type="button" class="gb-btn gb-btn-sm" data-action="edit" data-tid="${esc(t.id)}">編集</button><button type="button" class="gb-btn gb-btn-sm" data-action="delete" data-tid="${esc(t.id)}" style="color:var(--red);">削除</button><button type="button" data-action="generate" data-tid="${esc(t.id)}" class="gb-btn gb-btn-sm gb-btn-primary primary">一括生成</button></div></div>${entries}</div>`;
     }).join('');
   };
@@ -920,8 +920,8 @@ function _templateEntryRow(entry) {
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">
       ${_dayLabels.map((d,i) => `<option value="${i}" ${(entry?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}
     </select>
-    <input type="time" data-field="startTime" value="${entry?.startTime||'09:00'}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-    <input type="number" data-field="duration" value="${entry?.duration||60}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
+    <input type="time" data-field="startTime" value="${esc(entry?.startTime||'09:00')}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+    <input type="number" data-field="duration" value="${esc(entry?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
     <span style="color:var(--fg2);">分</span>
     <input type="text" data-field="title" value="${esc(entry?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
     <button data-action="this.closest('.tmpl-entry').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>

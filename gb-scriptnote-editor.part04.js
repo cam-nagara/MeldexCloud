@@ -344,16 +344,18 @@
   // B-MANGA と同じJIS系配置・隣接衝突解決をCSS座標へ反映する。
   _adjustRubySpacing() {
     if (!this.host) return;
+    this._adjustTcyAlignment(this.host);
     const model = typeof MeldexRubyPresentation !== 'undefined' ? MeldexRubyPresentation : null;
     if (!model) return;
     model.refreshRubyNodes(this);
     const presentation = model.ensureDocument(this.doc);
     const isVertical = this.doc?.editor?.viewMode === 'vertical';
-    const spans = this.host.querySelectorAll('.sn2-text [data-ruby]');
+    const spans = this.host.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
     if (!spans.length) return;
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
     const rows = new Map();
     const spanToInfo = new Map();
+    const cells = new Map();
     spans.forEach((span, index) => {
       const rect = span.getBoundingClientRect();
       const parentStart = (isVertical ? rect.top : rect.left) / z;
@@ -371,7 +373,9 @@
       info.span = span;
       info.groupId = span.dataset.rubyGroupId || `span-${index}`;
       const crossStart = (isVertical ? rect.left : rect.top) / z;
-      const lineKey = Math.round(crossStart * 2) / 2;
+      const cell = span.closest('.sn2-text, .sn2-custom-text');
+      if (!cells.has(cell)) cells.set(cell, cells.size);
+      const lineKey = `${cells.get(cell)}:${Math.round(crossStart * 2) / 2}`;
       info._lineKey = lineKey;
       if (!rows.has(lineKey)) rows.set(lineKey, []);
       rows.get(lineKey).push(info);

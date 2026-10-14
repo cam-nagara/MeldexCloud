@@ -107,7 +107,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (['note-editor', 'file-style', 'backlinks', 'shortcuts'].includes(_currentDetailTab)) switchDetailTab(null);
   if (type === 'page') {
     if (typeof _showFileInfoInDetailPanel === 'function') {
-      _showFileInfoInDetailPanel(path, opts?.fileMeta, { contextOnly: true });
+      _showFileInfoInDetailPanel(path, opts?.fileMeta, { kind: 'page', contextOnly: true });
     } else {
       window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'page-open');
     }

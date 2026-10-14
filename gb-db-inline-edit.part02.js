@@ -199,7 +199,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (typeof showStatus === 'function') showStatus('選択セルへの反映に失敗しました', true);
     });
   };
-  const saveAndRestore = async (value, moveTo) => {
+  const saveAndRestore = async (value, moveTo, createdTargets) => {
     if (!value && value !== 'false') { cancel(); return; }
     let optimisticValue = null;
     let restoredOptimistic = false;
@@ -230,7 +230,15 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _restoreCellPos(pos, moveTo);
         restoredOptimistic = true;
       }
-      const result = await _apiPostValue(entityPath, propName, value, writeStatus, '');
+      const preparedRemoteState = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional
+        && typeof _prepareBidirectionalRemoteState === 'function')
+        ? _prepareBidirectionalRemoteState(dbPath, propName, ptc, createdTargets) : null;
+      const parallelRelation = preparedRemoteState && typeof _createBidirectionalRelationValue === 'function';
+      const saved = parallelRelation ? await _createBidirectionalRelationValue({
+        sourceDbPath:dbPath, entityPath, propName, ptc, value, status:writeStatus, preparedRemoteState,
+      }) : {result:await _apiPostValue(entityPath, propName, value, writeStatus, '')};
+      const result = saved.result;
+      bidirectionalOp = saved.operation || null;
       resolvePendingCreate?.(result);
       const filePath = result?.path || '';
       createdValueRef = {
@@ -243,7 +251,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       const bidirectionalCtx = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional)
         ? { entityPath, propName, ptc }
         : null;
-      if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+      if (bidirectionalCtx && !parallelRelation && typeof _applyBidirectionalRelationSync === 'function') {
         bidirectionalOp = await _applyBidirectionalRelationSync({
           sourceDbPath: dbPath,
           entityPath,
@@ -251,6 +259,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           ptc,
           oldValue: '',
           newValue: value,
+          sourceEntryId: result?.entry_id,
+          preparedRemoteState,
         });
       }
       if ((type === 'relation' || type === 'multi-relation')
@@ -1157,6 +1167,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       dd.appendChild(search);
       const listDiv = document.createElement('div');
       const selected = []; // 選択済みID配列
+      const createdEntries = [];
+      const createdTargetsFor = ids => {
+        const entries = ids.map(id => createdEntries.find(entry => entry.id === id));
+        return entries.length && entries.every(Boolean) ? {dbPath:relDb,entries} : null;
+      };
       let closer = null;
       const closeDropdown = () => {
         if (dd.parentNode) dd.remove();
@@ -1164,7 +1179,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       };
       const commitRelationDropdown = () => {
         closeDropdown();
-        if (selected.length) saveAndRestore(selected.join(', '), null);
+        if (selected.length) saveAndRestore(selected.join(', '), null, createdTargetsFor(selected));
         else cancel();
       };
       const toggleRelationEntry = (entry) => {
@@ -1184,7 +1199,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           toggleRelationEntry(entry);
         } else {
           closeDropdown();
-          saveAndRestore(entry.id, null);
+          saveAndRestore(entry.id, null, createdTargetsFor([entry.id]));
         }
       };
       // 検索欄に完全一致が無い文字列を参照先シートへ新規エントリとして作成し、そのまま選択する
@@ -1196,13 +1211,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         creatingRelationEntry = true;
         try {
           const sanitized = trimmed.replace(/[\\/:*?"<>|]/g, '_');
-          await apiPost('/entity/create', { parent_path: relDb, name: sanitized });
-          // 名前解決とロールアップの参照先キャッシュを同時に無効化する
-          if (typeof _invalidateRelationTargetCaches === 'function') _invalidateRelationTargetCaches(relDb);
-          else _relationCache[relDb] = null;
-          const map = typeof _getRelationMap === 'function' ? await _getRelationMap(relDb) : null;
-          const newId = (map?.nameToId && map.nameToId[sanitized]) || sanitized;
-          const newEntry = { name: sanitized, id: newId };
+          const created = await apiPost('/entity/create', { parent_path: relDb, name: sanitized, include_relation_metadata: true });
+          const newEntry = await _relationEntryFromCreate(relDb, sanitized, created);
+          if (newEntry.properties) createdEntries.push(newEntry);
           entryList.push(newEntry);
           entryList.sort((a, b) => a.name.localeCompare(b.name));
           selectRelationEntry(newEntry);

@@ -622,7 +622,9 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   const preserveActivePane = options?.preserveActivePane === true;
   if (!preserveActivePane) {
     if (typeof GBLayout.revealPane === 'function') {
-      GBLayout.revealPane(targetPaneId, { activate: true, deferRender: true });
+      // ここで展開を済ませる。後続のactivateTabは展開済みとして高速更新するため、
+      // deferRenderだけでは親splitが折りたたみ時の寸法に残ってしまう。
+      GBLayout.revealPane(targetPaneId, { activate: true });
     }
     if (typeof GBLayout.setActivePane === 'function' && GBLayout.activePane !== targetPaneId) {
       GBLayout.setActivePane(targetPaneId, { sync: true });

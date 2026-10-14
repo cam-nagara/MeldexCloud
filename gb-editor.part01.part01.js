@@ -18,7 +18,7 @@ function initPageTitle() {
     if (!path || nv === _pageTitleOld) return;
     if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = _pageTitleOld; return; }
     try {
-      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page' });
+      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page', title_only: true });
       if (!res || !res.ok) throw new Error('rename failed');
       const newPath = res.new_path || (() => {
         const dir = path.substring(0, path.lastIndexOf('/'));
@@ -26,6 +26,8 @@ function initPageTitle() {
         return dir + '/' + nv + ext;
       })();
       _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
+      const contentHost = document.getElementById("page-content");
+      if (res.title_only && res.etag) renameAppPathReferences(path,newPath,{label:nv,etag:res.etag,titleOnly:true,type:"page"});
       if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
     } catch (e) {
       if (e && e.isTimeout) {
@@ -69,7 +71,7 @@ function initPageTitle() {
 // ノートタイトルのリネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
 function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId, options) {
   // 自動保存タイマーをキャンセル（旧パスへの保存を防止）
-  clearTimeout(window._noteAutoSaveTimer);
+  if (oldPath !== newPath) clearTimeout(window._noteAutoSaveTimer);
   state.currentPagePath = newPath;
   document.getElementById('page-content').dataset.path = newPath;
   window.MeldexFileLockBadge?.apply?.(el, newPath);
@@ -108,7 +110,7 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
     for (const delay of delays) {
       await new Promise(r => setTimeout(r, delay));
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-      const found = _outlinerFindRenamedItem(items, oldName, nv);
+      const found = _outlinerFindRenamedItem(items, oldName, nv, path);
       if (found) {
         if (state.currentPagePath === path) {
           _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id, { skipStatus: !!progress });
@@ -386,6 +388,7 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
 }
 
 async function _runNoteAutoSave(pc, expectedPath) {
+  const skipHistory = arguments[2]?.skipHistory === true;
   const currentPath = pc?.dataset?.path;
   if (!currentPath || pc.dataset.loadFailed === '1') return;
   // 修正3（誤PUTの防止・二重防御）: 呼び出し元がタイマー設定時点のパスを
@@ -429,7 +432,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
       pc.dataset.lastSavedEtag = (res && res.etag) || '';
     }
     await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md);
-    if (!res?.joined) {
+    if (!res?.joined && !skipHistory) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(_prevSavedForDiff, md)
         : '内容を更新';
@@ -948,6 +951,7 @@ async function openPage(label, path, opts) {
         preloadedFileData = null;
       }
     }
+  if (preloadedFileData?.display_title) label = preloadedFileData.display_title;
   if (!openOpts.skipStateView) state.view = 'page';
   // ボードのリンクカード計画 Phase B-2（縮小スコープ）: 独立した描画先
   // （サブパネル等、opts.containerEl）へ開く場合、メイン画面の「現在開いているページ」
@@ -1037,6 +1041,14 @@ async function openPage(label, path, opts) {
     const data = preloadedFileData || await apiFetch('/file?path=' + encodeURIComponent(path));
     _openPageFileData = data;
     if (isStalePageLoad()) return;
+    if (data.display_title) {
+      label = data.display_title;
+      if (!openOpts.skipGlobalUi) {
+        const titleEl = document.getElementById("page-title");
+        if (titleEl) titleEl.textContent = label;
+        renameAppPathReferences(path, path, { label, type: "page" });
+      }
+    }
     const raw = data.content || '';
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {

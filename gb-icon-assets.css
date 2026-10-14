@@ -111,9 +111,9 @@
 }
 
 .gb-icon-picker-tab.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+  background: var(--ui-inner-tab-active-bg, var(--ui-selection-bg));
+  color: var(--ui-inner-tab-active-fg, var(--ui-selection-fg));
+  border-color: var(--ui-inner-tab-active-border, var(--border));
 }
 
 .gb-icon-picker-search {

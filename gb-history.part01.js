@@ -451,8 +451,8 @@ async function showVersionsModal(path, type) {
       const label = v.label ? ' — ' + esc(v.label) : '';
       listHtml += `<div class="gb-history-row">
         ${badge}
-        <span style="flex:1;">${dt}${label}</span>
-        <span class="gb-history-size">${formatFileSize(v.size)}</span>
+        <span style="flex:1;">${esc(dt)}${label}</span>
+        <span class="gb-history-size">${esc(formatFileSize(v.size))}</span>
         <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('previewVersion', [path, v.name, type])}>表示</button>
         <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('compareVersion', [path, v.name, type])}>比較</button>
         <button class="gb-btn gb-btn-xs gb-btn-warn" ${_historyActionAttrs('restoreVersion', [path, v.name, type])}>復元</button>
@@ -967,8 +967,8 @@ function _buildVersionsPanelHtml(path, type, versions) {
       const badge = v.auto ? '<span class="gb-badge gb-badge-auto">自動</span>' : '<span class="gb-badge gb-badge-manual">手動</span>';
       const label = v.label ? ' — ' + esc(v.label) : '';
       listHtml += `<div class="gb-history-row gb-history-row-compact">
-        ${badge}<span class="gb-history-label">${dt}${label}</span>
-        <span class="gb-history-size">${formatFileSize(v.size)}</span>
+        ${badge}<span class="gb-history-label">${esc(dt)}${label}</span>
+        <span class="gb-history-size">${esc(formatFileSize(v.size))}</span>
         <div class="gb-history-actions">
           <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('previewVersion', [path, v.name, type])}>表示</button>
           <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('compareVersion', [path, v.name, type])}>比較</button>

@@ -218,13 +218,9 @@ class CalendarComponent extends ToolComponent {
   }
 
   _openDetailPanel() {
-    const panel = document.getElementById('right-panel');
-    const activeTab = document.querySelector('.rp-tab.active')?.dataset.rpTab;
-    const detailOpen = !!(panel?.classList.contains('open') && activeTab === 'detail');
-    if (!detailOpen) {
-      if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
-      else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
-    }
+    if (typeof _openDetailRightPanel === 'function') {
+      if (_openDetailRightPanel(this.paneId) === false) return;
+    } else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', this.paneId);
     if (typeof this._syncDetailPanel === 'function') this._syncDetailPanel();
   }
 

@@ -925,8 +925,11 @@
     return session;
   }
 
-  async function getValidAccessToken() {
+  async function getValidAccessToken(expectedAccountId) {
     const session = await getValidSession();
+    if (expectedAccountId && String(session?.accountId || session?.account?.account_id || '') !== expectedAccountId) {
+      throw Object.assign(new Error('Dropboxアカウントが変わりました。読み直してください'), { status: 409 });
+    }
     return session?.accessToken || '';
   }
 
@@ -1171,7 +1174,7 @@
   async function apiContent(route, arg, init, options) {
     if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const token = await getValidAccessToken();
+      const token = await getValidAccessToken(options?.expectedAccountId);
       if (!token) throw new Error('Dropboxへもう一度接続してください');
       const requestInit = init ? { ...init } : {};
       requestInit.method = requestInit.method || 'POST';
@@ -8643,6 +8646,10 @@
         })) || 'folder'
         : 'folder';
       const folderItem = { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
+      if (window.GBPathUtils?.displayTitle) {
+        try { const title = window.GBPathUtils.displayTitle.read(await provider.readText(_joinPath(relativePath,name+'.md')));
+          if (title) folderItem.name=title; } catch {}
+      }
       if (safeOptions.detail) folderItem.os_type = _fallbackOsTypeLabel(name, type, true);
       return folderItem;
     }
@@ -8655,6 +8662,10 @@
       sourceId: sourceId || undefined,
       file_id: _fnvFileId(_normalizeFolderPath(relativePath)),
     };
+    if (['page','board','database','scenario','scriptnote','timer','calendar'].includes(fileType) && window.GBPathUtils?.displayTitle) {
+      try { const title=window.GBPathUtils.displayTitle.read(await provider.readText(relativePath),relativePath);
+        if (title) item.name=title; } catch {}
+    }
     if (safeOptions.allFiles && fileType === 'unknown') {
       item.ext = _splitNameAndExt(name).ext.toLowerCase();
       item.name = name;
@@ -9461,7 +9472,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -9471,14 +9482,14 @@
   }
 
   async function _personalPreferenceAdapter() {
+    const provider = await _requirePwaProvider('read');
     if (_runtime()?.isBrowserMode?.()) {
-      const provider = await _requirePwaProvider('read');
       return provider?.getSystemStorageAdapter?.() || null;
     }
     const factory = window.MeldexSystemStorageDropbox;
     const resolver = window.MeldexDropboxManagementRootResolver;
     if (!factory || !resolver?.resolveAdapterForProvider) return null;
-    return resolver.resolveAdapterForProvider('dropbox', { personalOnly: true });
+    return resolver.resolveAdapterForProvider(provider, { personalOnly: true });
   }
 
   function _assertPersonalPreferenceName(name) {
@@ -9487,8 +9498,24 @@
     return doc;
   }
 
+  async function _quickMemoPreferenceScope(doc) {
+    if (doc !== 'quick-memo-tags') return {};
+    const session = await window.MeldexDropboxAuth?.getSession?.();
+    const accountId = String(session?.accountId || session?.account?.account_id || '').trim();
+    return accountId ? { scopeId: `dropbox-account:${accountId}` } : null;
+  }
+
+  async function _checkQuickMemoPreferenceScope(doc, scope) {
+    if (doc !== 'quick-memo-tags') return;
+    if ((await _quickMemoPreferenceScope(doc))?.scopeId !== scope?.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+  }
+
   async function _readPersonalPreference(name) {
     const doc = _assertPersonalPreferenceName(name);
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, exists: false, payload: null, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -9497,14 +9524,17 @@
     }
     if (!adapter) return { available: false, exists: false, payload: null, revision: null };
     const record = await adapter.load(_personalPreferenceKind(), doc);
-    if (!record) return { available: true, exists: false, payload: null, revision: null };
-    return { available: true, exists: true, payload: record.payload, revision: record.revision };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    if (!record) return { available: true, exists: false, payload: null, revision: null, ...scope };
+    return { available: true, exists: true, payload: record.payload, revision: record.revision, ...scope };
   }
 
   async function _writePersonalPreference(name, body) {
     const doc = _assertPersonalPreferenceName(name);
     const payload = body?.payload;
     if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, ok: false, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -9512,12 +9542,21 @@
       adapter = null;
     }
     if (!adapter) return { available: false, ok: false, revision: null };
+    if (doc === 'quick-memo-tags' && body?.expectedScopeId !== scope.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+    if (doc === 'quick-memo-tags' && !Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      throw _httpError(400, 'expectedRevision が必要です');
+    }
     const options = {};
+    if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
+    await _checkQuickMemoPreferenceScope(doc, scope);
     const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
-    return { available: true, ok: true, revision: record?.revision || null };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    return { available: true, ok: true, revision: record?.revision || null, ...scope };
   }
 
   function _assertWorkspacePreferenceName(name) {
@@ -10503,11 +10542,17 @@
     }
   }
 
+  function retentionNow(value) {
+    // iframe/別realmのDateも内部時刻を使う。instanceofは別realmでfalseになる。
+    try { return new Date(Date.prototype.getTime.call(value)); }
+    catch { return new Date(); }
+  }
+
   function selectDocumentsExceedingRetention(records, options) {
     const opts = options || {};
     if (!records || !records.length) return [];
     const policy = opts.policy || retentionPolicyFor(records[0].kind);
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const ordered = [...records].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     const doomed = new Set();
     if (policy.maxGenerations != null && ordered.length > policy.maxGenerations) {
@@ -10543,7 +10588,7 @@
   async function runRetentionCleanup(adapter, options) {
     const opts = options || {};
     const kinds = opts.kinds || RETENTION_CLEANUP_KINDS;
-    const now = opts.now instanceof Date ? opts.now : new Date();
+    const now = retentionNow(opts.now);
     const deletedByKind = {};
     for (const kind of kinds) {
       let records = [];
@@ -11044,14 +11089,14 @@
     });
   }
 
-  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false) {
+  async function _content(route, arg, init, namespaceKind, freshMissingCheck = false, expectedAccountId) {
     const auth = window.MeldexDropboxAuth;
     if (!auth || typeof auth.apiContent !== 'function') {
       throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
     }
     const location = await _resolveApiLocation(arg?.path, namespaceKind);
     return auth.apiContent(route, arg?.path ? { ...arg, path: location.path } : arg, init, {
-      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck,
+      namespaceKind: location.namespaceKind, checkMissing: route === 'files/download', freshMissingCheck, expectedAccountId,
     });
   }
 
@@ -11373,7 +11418,7 @@
         .reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     }
 
-    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing) {
+    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing, options) {
       const contract = _contract();
       const backupId = `${documentId}-conflict-${Math.random().toString(16).slice(2, 14)}${Date.now().toString(36)}`;
       const backupPayload = {
@@ -11384,7 +11429,8 @@
         attempted_at: contract.nowIso(),
       };
       try {
-        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload);
+        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload,
+          options?.expectedAccountId ? { expectedAccountId: options.expectedAccountId } : undefined);
         return backupId;
       } catch {
         this._audit('error', 'conflict_backup_failed', kind, documentId, { message: '競合バックアップの保全に失敗しました' });
@@ -11409,7 +11455,7 @@
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
       if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
-        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
         this._audit('warning', 'save_conflict', kind, docId, {
           message: 'revisionが一致しないため書込を中止しました',
           detail: { expected_revision: expectedRevision, current_revision: currentRevision },
@@ -11450,13 +11496,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: bytes,
-        }, this._namespaceKind);
+        }, this._namespaceKind, false, opts.expectedAccountId);
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
-          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
           const refreshedRevision = refreshed ? refreshed.rev : currentRevision;
           this._audit('warning', 'save_conflict', kind, docId, {
             message: 'Dropbox側で更新競合を検出しました',
@@ -15963,7 +16009,7 @@
         includeDescendants: sourceKind === 'directory',
         purpose: 'source',
       });
-      _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
+      if (!window.GBPathUtils?.isDisplayTitleRename?.(pathname, body)) _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
         includeDescendants: false,
         purpose: 'destination',
       });
@@ -16146,6 +16192,7 @@
   const localLocks = new Map();
   const lastUsedAt = new Map();
   const mutationLockRefs = new Map();
+  const pendingReleases = new Map();
   let heartbeatTimer = 0;
   let fallbackToken = '';
   let tabHolderId = '';
@@ -16346,6 +16393,9 @@
     const normalized = _normalizePath(path);
     if (!normalized) return null;
     if (_isLockExemptPath(normalized)) return null;
+    // A previous completed creation can release in the background. Its DELETE
+    // must finish before this operation acquires a new lease on the same path.
+    if (pendingReleases.has(normalized)) await pendingReleases.get(normalized);
     lastUsedAt.set(normalized, Date.now());
     const current = localLocks.get(normalized);
     const needsDescendantCheck = options?.includeDescendants === true || options?.include_descendants === true;
@@ -16456,7 +16506,11 @@
     lastUsedAt.delete(normalized);
     mutationLockRefs.delete(normalized);
     _stopHeartbeatIfIdle();
-    await _releaseLock(normalized, !!options?.keepalive);
+    const release = _releaseLock(normalized, !!options?.keepalive);
+    pendingReleases.set(normalized, release);
+    try { await release; } finally {
+      if (pendingReleases.get(normalized) === release) pendingReleases.delete(normalized);
+    }
     return { ok: true, removed };
   }
 
@@ -25173,7 +25227,7 @@
 
   internals._rejectImportLockedPropertyEdit = _rejectImportLockedPropertyEdit;
 
-  async function _ensureFolderNote(provider, folderPath, type) {
+  async function _ensureFolderNote(provider, folderPath, type, displayTitle) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
     if (!name) throw new Error('フォルダパスが不正です');
@@ -25182,6 +25236,7 @@
     const existing = await _readFrontmatterFile(provider, note);
     const frontmatter = { ...(existing.frontmatter || {}) };
     if (!frontmatter.type) frontmatter.type = type || 'settings-db';
+    if (displayTitle) frontmatter.display_title = displayTitle;
     // 制作管理シート（制作管理/シート/*）は「物理.md＝正」が全ロジック（Cloud/Desktopの
     // 一覧・重複チェック・再計算・同期フック）の不変条件のため、sheet-store化しない
     // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 1）。
@@ -25868,7 +25923,7 @@
       }));
     });
     return {
-      entity: _sheetStoreEntityName(path),
+      entity: parsed.frontmatter.display_title || _sheetStoreEntityName(path),
       path,
       properties,
       page_content: String(parsed.body || '').trim(),
@@ -25887,7 +25942,7 @@
       if (String(fm.type || '') !== 'settings-entry') return;
       const fileName = _sheetStoreFileName(row.file_name || row.path || row.name);
       const filePath = _joinPath(base, fileName);
-      const entityName = _sheetStoreEntityName(row.name || fileName);
+      const entityName = typeof fm.display_title === "string" && fm.display_title ? fm.display_title : _sheetStoreEntityName(row.name || fileName);
       const pivotRow = _entityRowFromEntry(filePath, entityName, fm, filters);
       Object.keys(pivotRow).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
       entities[entityName] = pivotRow;
@@ -25904,7 +25959,7 @@
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
-    const entity = {};
+    const entity = { _entry_path: entryPath };
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
     if (frontmatter.modified_by) entity._modified_by = String(frontmatter.modified_by);
@@ -25978,7 +26033,7 @@
       if (type === 'settings-entry') {
         const row = _entityRowFromEntry(filePath, item.name.replace(/\.md$/i, ''), parsed.frontmatter, filters);
         Object.keys(row).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
-        entities[item.name.replace(/\.md$/i, '')] = row;
+        entities[parsed.frontmatter.display_title || item.name.replace(/\.md$/i, '')] = row;
       } else if (type === 'calendar-event') {
         const row = {};
         CALENDAR_DB_FIELDS.forEach((field) => {
@@ -25997,7 +26052,7 @@
             candidate_index: 0,
           }];
         });
-        entities[item.name.replace(/\.md$/i, '')] = row;
+        entities[parsed.frontmatter.display_title || item.name.replace(/\.md$/i, '')] = row;
       }
     }
     const result = {
@@ -26379,7 +26434,8 @@
 
   async function _createEntity(provider, body) {
     const parent = _normalizeFolderPath(body?.parent_path || '');
-    const name = _safeFileStem(body?.name || '', '無題');
+    const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
+    const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
     if (!parent || !name) throw new Error('parent_path, name は必須です');
     _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
@@ -26388,6 +26444,9 @@
     // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
     await _repairProductionSheetStoreIfNeeded(provider, parent);
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
+    if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
+      const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
+    }
     const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
@@ -26395,6 +26454,7 @@
     const frontmatter = {
       type: 'settings-entry',
       id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
+      ...(rawTitle !== name ? {display_title:rawTitle} : {}),
       category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
@@ -26429,11 +26489,37 @@
 
   async function _renameEntity(provider, body) {
     const path = _normalizeFolderPath(body?.path || '');
-    const newName = _safeFileStem(body?.new_name || '', '');
+    const newName = window.GBPathUtils?.displayTitle?.validate(body?.new_name || '') || _safeFileStem(body?.new_name || '', '');
     const expectedEntryId = String(body?.expected_entry_id || '');
     const operationId = String(body?.operation_id || '');
     if (!path || !newName) throw new Error('path, new_name は必須です');
     _rejectProductionStructureMutation(path, '名前変更');
+    const titleHelperAvailable = window.GBPathUtils?.displayTitle;
+    const previousTitleEntry = titleHelperAvailable ? await _readSheetStoreEntry(provider,path).catch(() => null) : null;
+    const previousTitleParsed = previousTitleEntry || (titleHelperAvailable ? await _readFrontmatterFile(provider,path).catch(() => null) : null);
+    if (window.GBPathUtils?.isDisplayTitleRename('/entity/rename',body) || typeof previousTitleParsed?.frontmatter?.display_title === 'string') {
+      const storedTitleEntry = previousTitleEntry;
+      const parsed = previousTitleParsed || await _readFrontmatterFile(provider,path);
+      const fm = {...parsed.frontmatter};
+      if (fm.type !== 'settings-entry') throw new Error('settings-entry ではありません');
+      if (expectedEntryId && fm.id && expectedEntryId !== fm.id) {
+        const error=new Error('別のエントリへ変更されています'); error.status=409; error.code='ENTRY_ID_CONFLICT'; throw error;
+      }
+      const pivot = await _readPivot(provider,_dirname(path));
+      const other = pivot.entities?.[newName];
+      if (other && other._entry_path !== path) { const error=new Error('同じ名前のトピックが既にあります'); error.status=409; throw error; }
+      await _requireUnlocked(provider,path,{action:'rename-entity-title'});
+      fm.display_title=newName;
+      const history=_sharedEditHistory();
+      return _trackSharedEdit(history,provider,{
+        path,currentContent:{frontmatter:parsed.frontmatter,body:parsed.body||''},nextContent:{frontmatter:fm,body:parsed.body||''},
+        actor:history?.actor?.(null,body||{})||null,exists:true,snapshotPath:_dirname(path),snapshotKind:'folder',fileKind:'settings-entry',
+      },async () => {
+        if (storedTitleEntry) await _writeSheetStoreEntryOnly(provider,path,fm,parsed.body||'');
+        else await _writeEntity(provider,path,fm,parsed.body||'');
+        return {ok:true,new_path:path,new_name:newName,title_only:true,entry_id:fm.id||expectedEntryId,operation_id:operationId};
+      });
+    }
     const requestedDest = _joinPath(
       _dirname(path),
       newName + (_basename(path).toLowerCase().endsWith('.md') ? '.md' : '')
@@ -29853,22 +29939,23 @@
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
+      const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.label || '無題') || String(body?.label || '無題');
+      const label = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _validateItemName(rawTitle,'label');
       const type = String(body?.type || '');
       await _requireUnlocked(provider, parent, { action: 'outliner-add-parent' });
       if (type === 'database') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-database' });
-        await _ensureFolderNote(provider, path, 'settings-db');
-        return { ok: true, node: { type: 'database', label: name, path } };
+        await _ensureFolderNote(provider, path, 'settings-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'database', label: rawTitle !== label ? rawTitle : name, path } };
       }
       if (type === 'calendar') {
         const name = await _uniqueName(provider, parent, label, '');
         const path = _joinPath(parent, name);
         await _requireUnlocked(provider, path, { action: 'outliner-add-calendar' });
-        await _ensureFolderNote(provider, path, 'calendar-db');
-        return { ok: true, node: { type: 'calendar', label: name, path } };
+        await _ensureFolderNote(provider, path, 'calendar-db',rawTitle !== label ? rawTitle : '');
+        return { ok: true, node: { type: 'calendar', label: rawTitle !== label ? rawTitle : name, path } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -34205,6 +34292,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         path: filePath,
         content,
+        display_title: window.GBPathUtils?.displayTitle?.read(content, filePath) || "",
         ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
       };
     }
@@ -34258,6 +34346,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
       }
       const currentContent = entry ? await provider.readText(filePath) : '';
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const storedTitle = titleHelper?.read(currentContent, filePath);
+      if (titleHelper && (body?.display_title || storedTitle)) {
+        content = titleHelper.write(content, body?.display_title || storedTitle, filePath);
+      }
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
       let docIdentityFmt = incomingIdentityFmt;
@@ -34727,8 +34820,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
-      const label = _validateItemName(body?.label || '無題', 'label');
       const type = String(body?.type || '');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
+      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
+      const shown = name => title !== null && title !== label ? title : name;
+      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -34738,20 +34836,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
-        return { ok: true, node: { type: 'folder', label: labelName, path: targetPath, children: [] } };
+        return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
       }
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, `# ${labelName}\n\n`);
-        return { ok: true, node: { type: 'page', label: labelName, path: targetPath } };
+        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
         const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
@@ -34760,7 +34858,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
-          title: labelName,
+          title: shown(labelName),
+          ...(title !== null && title !== label ? {display_title:title} : {}),
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
           scenarioTypes: [],
@@ -34770,22 +34869,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
         });
-        return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
+        return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
+        boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
         await provider.writeText(targetPath, boardContent);
-        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'calendar') {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
+        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: shown(labelName), path: targetPath } };
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
@@ -34797,9 +34897,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
         throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
-      const newName = _validateItemName(body?.new_name || '', 'new_name');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
+      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+        }
+      }
+      if (titleOnly) {
+        const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
+        const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
+        const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
+          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+        });
+        return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
+      }
       const parentPath = _dirname(oldPath);
       const sourceName = _basename(oldPath);
       if (source.kind === 'directory') {
@@ -43072,9 +43189,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ? 'meldex-cloud-banner-action meldex-cloud-banner-action-primary'
         : 'meldex-cloud-banner-action';
       button.textContent = action.label || '';
-      button.style.cssText = action.primary
-        ? 'border:1px solid rgba(255,255,255,.65);background:#fff;color:#333;border-radius:5px;padding:4px 10px;min-height:32px;cursor:pointer;font:inherit;'
-        : 'border:1px solid rgba(255,255,255,.45);background:rgba(0,0,0,.18);color:#fff;border-radius:5px;padding:4px 10px;min-height:32px;cursor:pointer;font:inherit;';
+      button.classList.add('gb-btn');
+      button.style.cssText = 'border-radius:5px;padding:4px 10px;min-height:32px;font:inherit;';
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -43547,16 +43663,16 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       body.className = 'meldex-cloud-mode-body';
       body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">現在のデータは自動で移動・削除されません。別の保存先へ切り替えた後も、元の保存先へ戻せます。</div>
         <div class="meldex-cloud-choice-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
-          <button id="choose-dropbox" data-e2e-id="cloud-mode-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-dropbox" data-e2e-id="cloud-mode-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid var(--border);background:var(--ui-bg-control,var(--bg3));color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--fg2);">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
-          <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid var(--border);background:var(--ui-bg-control,var(--bg3));color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
-            <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--fg2);">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
-        <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
+        <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--ui-bg-control,var(--bg3));font-size:12px;line-height:1.7;color:var(--fg2);">
           <div><strong>共同作業:</strong> メンバー、権限、スケジュールを同じワークスペースで使う場合はDropboxを選びます。NAS内のファイルは、デスクトップ版でソースフォルダとして参照できます。</div>
         </div>`;
       const cancelButton = document.createElement('button');
@@ -43710,50 +43826,50 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return new Promise((resolve) => {
       const body = document.createElement('div');
       body.className = 'meldex-dropbox-setup-body';
-      body.innerHTML = `<div class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
+      body.innerHTML = `<div class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:var(--ui-bg-surface,var(--bg2));">
           <div style="font-size:15px;font-weight:700;margin-bottom:8px;">同じデータを複数端末で使います</div>
-          <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
+          <div style="font-size:13px;color:var(--fg2);line-height:1.7;">
             Dropboxに接続し、Meldexで使うフォルダを選ぶと、スマホ、タブレット、PCから同じソースフォルダを開けます。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
+          <div style="font-size:12px;color:var(--fg2);line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
         </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
-        <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:#bdbdbd;">
-          <div style="border:1px solid #356b4d;border-radius:8px;padding:8px 10px;background:#18261e;">1. Dropboxに接続</div>
-          <div style="border:1px solid #333;border-radius:8px;padding:8px 10px;background:#252525;">2. フォルダを選ぶ</div>
-          <div style="border:1px solid #333;border-radius:8px;padding:8px 10px;background:#252525;">3. 開始する</div>
+        <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:var(--fg2);">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">1. Dropboxに接続</div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">2. フォルダを選ぶ</div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">3. 開始する</div>
         </div>
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+        <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">1. Dropboxに接続する</div>
-          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : '#d4d4d4'};">
+          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : 'var(--fg)'};">
             ${sessionLabel}
           </div>
-          <div id="cloud-session-help" style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">${sessionHelp}</div>
+          <div id="cloud-session-help" style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:6px;">${sessionHelp}</div>
           <div class="meldex-cloud-action-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-            <button id="cloud-auth-redirect" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">Dropboxに接続する</button>
-            <button id="cloud-auth-switch-account" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#5a4770;color:#fff;cursor:pointer;">別のアカウントで接続</button>
-            <button id="cloud-auth-manual" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">コードで接続</button>
-            <button id="cloud-clear-session" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">接続を解除</button>
+            <button id="cloud-auth-redirect" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">Dropboxに接続する</button>
+            <button id="cloud-auth-switch-account" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">別のアカウントで接続</button>
+            <button id="cloud-auth-manual" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">コードで接続</button>
+            <button id="cloud-clear-session" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border-radius:6px;cursor:pointer;">接続を解除</button>
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:8px;">DropboxのパスワードはMeldexには渡りません。</div>
+          <div style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:8px;">DropboxのパスワードはMeldexには渡りません。</div>
           <div id="cloud-manual-box" style="display:${showManualBox ? '' : 'none'};margin-top:12px;">
-            <div style="font-size:12px;color:#969696;line-height:1.6;margin-bottom:6px;">Dropboxで表示されたコードを貼り付けてください。</div>
+            <div style="font-size:12px;color:var(--fg2);line-height:1.6;margin-bottom:6px;">Dropboxで表示されたコードを貼り付けてください。</div>
             <div class="meldex-cloud-input-row" style="display:flex;gap:8px;flex-wrap:wrap;">
-              <input id="cloud-manual-code" class="gb-input" type="text" placeholder="Dropboxのコード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-              <button id="cloud-manual-submit" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">接続する</button>
+              <input id="cloud-manual-code" class="gb-input" type="text" placeholder="Dropboxのコード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;">
+              <button id="cloud-manual-submit" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">接続する</button>
             </div>
           </div>
         </section>
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+        <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">2. 使うフォルダを選ぶ</div>
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox内の最初に使うフォルダ</label>
+          <label style="display:block;font-size:12px;color:var(--fg2);margin-bottom:4px;">Dropbox内の最初に使うフォルダ</label>
           <div class="meldex-cloud-input-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <input id="cloud-vault-path" class="gb-input" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="flex:1;min-width:min(280px,100%);padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <button id="cloud-vault-pick" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">Dropboxから選ぶ</button>
+            <input id="cloud-vault-path" class="gb-input" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="flex:1;min-width:min(280px,100%);padding:8px 10px;border-radius:6px;">
+            <button id="cloud-vault-pick" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border-radius:6px;cursor:pointer;">Dropboxから選ぶ</button>
           </div>
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">デスクトップ版と同じDropbox内フォルダを使う場合は「Dropboxから選ぶ」で <code>/Share</code> などの共有フォルダまで開いて選択してください。</div>
+          <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">デスクトップ版と同じDropbox内フォルダを使う場合は「Dropboxから選ぶ」で <code>/Share</code> などの共有フォルダまで開いて選択してください。</div>
         </section>
-        <details id="cloud-advanced-dropbox-settings" class="meldex-cloud-setup-section"${initial.appMode === 'custom' || !initial.defaultAppKey ? ' open' : ''} style="border:1px solid #333;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
+        <details id="cloud-advanced-dropbox-settings" class="meldex-cloud-setup-section"${initial.appMode === 'custom' || !initial.defaultAppKey ? ' open' : ''} style="border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:14px;">
           <summary style="font-size:15px;font-weight:700;cursor:pointer;">詳細設定（通常は変更不要）</summary>
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:8px;">
             <input type="radio" name="cloud-app-mode" value="developer" ${initial.appMode !== 'custom' ? 'checked' : ''}>
@@ -43763,13 +43879,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             <input type="radio" name="cloud-app-mode" value="custom" ${initial.appMode === 'custom' ? 'checked' : ''}>
             <span>自分で登録したDropbox OAuthアプリを使う</span>
           </label>
-          <div id="cloud-custom-dropbox-settings" style="display:${initial.appMode === 'custom' ? '' : 'none'};margin-top:12px;border-top:1px solid #333;padding-top:12px;">
-            <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox App key</label>
-            <input id="cloud-custom-app-key" class="gb-input" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
-            <input id="cloud-redirect-override" class="gb-input" type="text" data-gb-path-input value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
-            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
+          <div id="cloud-custom-dropbox-settings" style="display:${initial.appMode === 'custom' ? '' : 'none'};margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+            <label style="display:block;font-size:12px;color:var(--fg2);margin-bottom:4px;">Dropbox App key</label>
+            <input id="cloud-custom-app-key" class="gb-input" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;">
+            <label style="display:block;font-size:12px;color:var(--fg2);margin:12px 0 4px;">redirect URI 上書き（任意）</label>
+            <input id="cloud-redirect-override" class="gb-input" type="text" data-gb-path-input value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;">
+            <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
+            <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
         </details>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
@@ -43866,7 +43982,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const status = overlay.querySelector('#cloud-session-status');
         const help = overlay.querySelector('#cloud-session-help');
         status.textContent = text;
-        status.style.color = authenticated ? '#9dd6a5' : '#d4d4d4';
+        status.style.color = authenticated ? '#9dd6a5' : 'var(--fg)';
         if (help) {
           help.textContent = helpText || (authenticated
             ? '接続できています。使うDropbox内フォルダを確認し、「この設定で開始」を押してください。'
@@ -44310,11 +44426,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const items = shown.map((name) => `<li>${_esc(name)}</li>`).join('');
     const moreItem = restCount > 0 ? `<li>ほか${restCount}件</li>` : '';
     return `
-      <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:#d4d4d4;">デスクトップ版で使っているソースフォルダが見つかりました（${roots.length}件）</div>
-      <ul style="margin:0 0 12px;padding-left:20px;font-size:13px;color:#bdbdbd;line-height:1.7;">${items}${moreItem}</ul>
+      <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--fg);">デスクトップ版で使っているソースフォルダが見つかりました（${roots.length}件）</div>
+      <ul style="margin:0 0 12px;padding-left:20px;font-size:13px;color:var(--fg2);line-height:1.7;">${items}${moreItem}</ul>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
-        <button id="cloud-inherit-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">このフォルダを引き継いで開始</button>
-        <a id="cloud-inherit-dismiss" href="#" style="font-size:12px;color:#9dbfae;text-decoration:underline;">別のフォルダを選ぶ</a>
+        <button id="cloud-inherit-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border-radius:6px;cursor:pointer;">このフォルダを引き継いで開始</button>
+        <a id="cloud-inherit-dismiss" href="#" style="font-size:12px;color:var(--link-fg,var(--accent));text-decoration:underline;">別のフォルダを選ぶ</a>
       </div>
     `;
   }
@@ -44339,7 +44455,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const section = document.createElement('section');
     section.id = 'cloud-inherit-section';
     section.className = 'meldex-cloud-setup-section';
-    section.style.cssText = 'border:1px solid #356b4d;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#182620;';
+    section.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:var(--ui-bg-surface,var(--bg2));';
     section.innerHTML = _buildSectionHtml(roots);
     anchor.parentNode.insertBefore(section, anchor);
     anchor.style.display = 'none';
@@ -51515,6 +51631,69 @@ document.addEventListener('DOMContentLoaded', () => {
     return left + '/' + right;
   }
 
+  function isDisplayTitleRename(route, body) {
+    const managed = route === '/entity/rename' || (route === '/outliner/rename'
+      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer'].includes(body?.type));
+    return managed && (body?.title_only === true || /[\\/:?*"<>|]/.test(String(body?.new_name || '')));
+  }
+
+  function validateDisplayTitle(value) {
+    const title = String(value ?? '').trim();
+    if (!title || /[\x00-\x1f\x7f]/.test(title)) throw new Error('タイトルには空文字や制御文字を使えません');
+    if (new TextEncoder().encode(title).length > 1000) throw new Error('タイトルが長すぎます');
+    return title;
+  }
+
+  function titleStorageName(value) {
+    let name = validateDisplayTitle(value).replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/^[. ]+|[. ]+$/g, '').replace(/\.\./g, '_').replace(/^[._]+/, '') || '無題';
+    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)) name = name.includes('.') ? name.replace('.', '_.') : name + '_';
+    const chars = [...name];
+    while (new TextEncoder().encode(chars.join('')).length > 200) chars.pop();
+    return chars.join('').replace(/[. ]+$/g, '') || '無題';
+  }
+
+  function readDisplayTitle(text, path) {
+    const raw = String(text || '');
+    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+      try { const doc = JSON.parse(raw); return typeof doc?.display_title === 'string' ? doc.display_title : ''; }
+      catch { return ''; }
+    }
+    const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
+    const field = (fm?.[1] || '').match(/^display_title: *([^\r\n]*)(?:\r?\n([ \t]+[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*))?/m);
+    if (!field) return '';
+    let scalar = field[1].trim();
+    if (field[2]) scalar += ' ' + field[2].split(/\r?\n/).map(line => line.trim()).join(' ');
+    try { if (scalar.startsWith('"')) return JSON.parse(scalar); } catch { return ''; }
+    if (scalar.startsWith("'") && scalar.endsWith("'")) return scalar.slice(1, -1).replace(/''/g, "'");
+    return /^[|>]/.test(scalar) ? '' : scalar;
+  }
+
+  function writeDisplayTitle(text, title, path, type) {
+    title = validateDisplayTitle(title);
+    const raw = String(text || '');
+    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+      const doc = JSON.parse(raw);
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('文書の形式が不正です');
+      doc.display_title = title;
+      if (['scenario', 'scriptnote'].includes(type)) doc.title = title;
+      return JSON.stringify(doc, null, 2);
+    }
+    const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
+    const line = 'display_title: ' + JSON.stringify(title);
+    if (!fm) {
+      if (/^\uFEFF?---(?:\r?\n|$)/.test(raw)) throw new Error('メタデータを読み取れません');
+      return '---\n' + line + '\n---\n' + raw;
+    }
+    const sourceMetadata = fm[1] || '';
+    const fields = sourceMetadata.match(/^display_title:/gm) || [];
+    if (fields.length > 1) throw new Error('表示タイトルのメタデータが重複しています');
+    const metadata = fields.length
+      ? sourceMetadata.replace(/^display_title:[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/m, line)
+      : sourceMetadata + '\n' + line;
+    return '---\n' + metadata + '\n---\n' + raw.slice(fm[0].length);
+  }
+
   // Windows形式（ドライブレター/UNC）のときだけ / を \ に正規化する。
   // 先頭/の仮想パス（Dropboxクラウドモード等）はそのまま返す。
   // ドライブレターの直後は \ と / の両方があり得る（vaultPath は \ 形式、サーバーの相対パスは / 形式のため、
@@ -51841,6 +52020,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   global.GBPathUtils = {
+    isDisplayTitleRename,
+    displayTitle: { validate: validateDisplayTitle, storageName: titleStorageName, read: readDisplayTitle, write: writeDisplayTitle },
     isAbsolute,
     join,
     toNativeClipboard,
@@ -54575,6 +54756,7 @@ if (typeof window !== 'undefined') {
 (function() {
   'use strict';
   let modalIdSeq = 0;
+  let modalFocusGeneration = 0;
 
   // ============================================================
   // 内部ユーティリティ
@@ -55265,7 +55447,8 @@ if (typeof window !== 'undefined') {
       closeBtn = el('button', {
         cls: ['gb-modal-close'],
         title: '閉じる',
-        attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
+        attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる',
+          'data-e2e-id': modalId + '-close' }
       });
       if (typeof lucide === 'function') closeBtn.innerHTML = lucide('x', 20);
       else closeBtn.textContent = '\u00D7';
@@ -55329,6 +55512,7 @@ if (typeof window !== 'undefined') {
       closed = true;
       document.removeEventListener('keydown', onEscKey, true);
       if (overlay.parentNode) overlay.remove();
+      const focusGeneration = modalFocusGeneration;
       let interactionClaimed = false;
       let trackingInteraction = false;
       let focusRestorationFinished = false;
@@ -55355,7 +55539,7 @@ if (typeof window !== 'undefined') {
         }
         // レイアウト監視やブラウザ自身による自動focus移動では復帰を打ち切らない。
         // 閉鎖後に実際のpointer／keyboard入力があった時だけ利用者の選択を優先する。
-        if (interactionClaimed) {
+        if (interactionClaimed || focusGeneration !== modalFocusGeneration) {
           stopTrackingInteraction();
           return;
         }
@@ -55415,6 +55599,9 @@ if (typeof window !== 'undefined') {
     function _activate() {
       if (activated || !overlay.isConnected) return;
       activated = true;
+      // 一度でも次のダイアログが開いたら、旧ダイアログの遅延復帰は終了する。
+      // 次のダイアログが素早く閉じられても、旧openerへfocusを戻さない。
+      modalFocusGeneration += 1;
       window.GBModalShell?.enhanceOverlay?.(overlay);
       const focusWhenCurrent = () => {
         if (!overlay.isConnected || closed || !_isTopmostModal(modal)) return;
@@ -68517,6 +68704,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
   }
 
+  function automaticTextColor(color) {
+    const rgb = hexToRgb(color);
+    if (!rgb) return '';
+    const linear = value => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+    };
+    const luminance = 0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b);
+    return luminance > 0.179 ? '#000000' : '#ffffff';
+  }
+
   function resolveNodeStyle(args) {
     const board = args?.board;
     const node = args?.node;
@@ -68530,7 +68728,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;
     else if (!hasOwn(node, 'bgColor') && !base.bgColor && boardTheme.nodeBgColor) base.bgColor = boardTheme.nodeBgColor;
 
-    if (!hasOwn(node, 'textColor') && !base.textColor && boardTheme.nodeTextColor) base.textColor = boardTheme.nodeTextColor;
+    if (!hasOwn(node, 'textColor') && !base.textColor) {
+      // Starter palettes contain both light and dark fills. Preserve explicit text,
+      // but keep an automatically colored card readable without a custom style.
+      base.textColor = (theme?.builtIn && !hasOwn(node, 'bgColor') && color && applyTo !== 'border' ? automaticTextColor(color) : '')
+        || boardTheme.nodeTextColor || '';
+    }
 
     if (!hasOwn(node, 'borderColor')) {
       if (color && (applyTo === 'border' || applyTo === 'background-border')) base.borderColor = normalizeHex(color) || color;
@@ -69011,6 +69214,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     { id: THEME_UI_PROP_ACCENT, label: '線/アクセント色' },
   ]);
   const PALETTE_TARGET_SPECS = Object.freeze([
+    ['.gb-btn, .tb-btn, #chat-send-btn, #team-send-btn', 'button'],
     ['.left-chrome-command-trigger, .left-chrome-user, .left-chrome-help, .left-chrome-trash, .left-chrome-settings, .left-chrome-floating-btn', 'left-chrome'],
     ['.gb-pane-tabs > .gb-pane-tabs-scroll > .gb-tab', 'panel-tab'],
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
@@ -69171,7 +69375,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     '--ui-header-fg': '#aab3aa', '--ui-header-bg': '#242824',
     '--ui-toolbar-fg': '#d9ddd8', '--ui-toolbar-bg': '#181b19',
     '--ui-hover-fg': '#d9ddd8', '--ui-hover-bg': '#333a34',
-    '--ui-accent': '#51813d', '--ui-accent-fg': '#000000',
+    '--ui-accent': '#6fa85a', '--ui-accent-fg': '#000000',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#f2f6f1', '--ui-selection-bg': '#2d472b',
     '--ui-range-fill-bg': '#6fa85a', '--ui-range-track-bg': '#252b26',
@@ -69473,7 +69677,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _normalizeThemeUiValue(value) {
     const raw = String(value ?? THEME_UI_VALUE_NONE).trim();
     // Bulk colors share one resolved color across variable-backed and selector-backed UI.
-    if (/^var:--(?:bg|fg|fg2|border|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
+    if (/^var:--(?:bg|fg|fg2|border|theme-slot-text-color|ui-(?:popup-bg|button-bg|hover-bg|selection-bg|selection-fg|accent))$/.test(raw)) return raw;
     if (THEME_UI_AUTO_VALUES.has(raw)) return raw;
     if (/^auto-rows:[1-4](?:,[1-4])*$/.test(raw)) {
       const rows = [...new Set(raw.slice(10).split(',').map(Number))].sort();
@@ -69530,6 +69734,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     DEFAULT_THEME_KEY,
     'editor-theme-name',
     CUSTOM_THEMES_KEY,
+    PROMOTED_INITIAL_THEMES_KEY,
+    THEME_CUSTOM_CLEANUP_VERSION_KEY,
     THEME_COLOR_SET_KEY,
     THEME_COLOR_SLOT_SETTINGS_KEY,
     THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY,
@@ -69567,7 +69773,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _refreshThemeSettingsAfterHistory(keys) {
     const changed = new Set(keys || THEME_SETTINGS_HISTORY_KEYS);
-    if (changed.has(DEFAULT_THEME_KEY) || changed.has('editor-theme-name') || changed.has(CUSTOM_THEMES_KEY)) {
+    if (changed.has(CUSTOM_THEMES_KEY) || changed.has(PROMOTED_INITIAL_THEMES_KEY) || changed.has(THEME_CUSTOM_CLEANUP_VERSION_KEY)) {
+      _initialThemeCleanupDone = false;
+    }
+    if (changed.has(DEFAULT_THEME_KEY) || changed.has('editor-theme-name') || changed.has(CUSTOM_THEMES_KEY) || changed.has(PROMOTED_INITIAL_THEMES_KEY)) {
       const themeDef = getThemeById(getDefaultThemeId());
       _withThemeSettingsHistorySuppressed(() => applyThemeToDocument(themeDef, { preserveStoredThemeUi: true }));
       scheduleBoardRender();
@@ -69647,6 +69856,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const nextSectionBar = src?.['section-bar']?.normal?.underline;
     if (legacySectionBar !== undefined && nextSectionBar === undefined) {
       base['section-bar'].normal.underline = _normalizeThemeUiValue(legacySectionBar);
+    }
+    // Older bulk settings could pin identical literal foreground/background
+    // colors on headings. They conceal the text even after the preset changes.
+    // Remove only that unusable pair; retain distinct custom backgrounds.
+    const heading = base['note-heading']?.normal;
+    if (heading && /^color:#[0-9a-f]{6}$/i.test(heading.fg)
+      && heading.fg.toLowerCase() === heading.bg.toLowerCase()) {
+      heading.fg = THEME_UI_VALUE_NONE;
+      heading.bg = THEME_UI_VALUE_NONE;
     }
     return base;
   }
@@ -69763,11 +69981,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function getOsAccentTextColor() {
     const color = getOsAccentColor();
-    if (!color) return 'AccentColorText';
-    const r = parseInt(color.slice(1, 3), 16);
-    const g = parseInt(color.slice(3, 5), 16);
-    const b = parseInt(color.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
+    if (!color) return '#ffffff';
+    return getAccentTextColor(color);
   }
 
   function getOsAccentThemeColorSet() {
@@ -69867,7 +70082,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
-        root.style.setProperty(key, useAvailableOsAccent ? THEME_OS_ACCENT_TEXT_CSS : getAccentTextColor(effectiveAccent));
+        root.style.setProperty(key, getAccentTextColor(effectiveAccent));
       } else if (options.restorePrevious === false) {
         _clearOsAccentStyleValue(root, key);
       } else {
@@ -69875,23 +70090,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
     });
     if (!shouldApplyAccent) _osAccentPreviousStyleValues.clear();
-    if (shouldApplyAccent) {
-      const accentSet = [appliedAccent];
-      _activeThemeColorSet = paintThemeColorSet(accentSet, { themeDef });
-      if (typeof global.syncThemeColorSetSwatches === 'function') global.syncThemeColorSetSwatches(document, accentSet);
-    } else {
-      _activeThemeColorSet = paintThemeColorSet(readStoredThemeColorSet() || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
-    }
+    // Accent controls and automatic series colors are independent contracts.
+    _activeThemeColorSet = paintThemeColorSet(readStoredThemeColorSet() || resolveThemeColorSet(themeDef), { themeDef });
     applyThemeUiApplications(getThemeUiApplications(), { forceTargets: true });
   }
 
-  function getAccentTextColor(color) {
-    if (!/^#[0-9a-f]{6}$/i.test(String(color || ''))) return THEME_OS_ACCENT_TEXT_CSS;
-    const value = String(color);
-    const r = parseInt(value.slice(1, 3), 16);
-    const g = parseInt(value.slice(3, 5), 16);
-    const b = parseInt(value.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
+  function getAccentTextColor(_color) {
+    // Foregrounds are user-controlled; never infer black/white from the background.
+    return '#ffffff';
   }
 
   function setUseOsAccentColor(enabled) {
@@ -69909,13 +70115,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _builtinAccentThemeUiApplications(id, applications) {
     const cfg = normalizeThemeUiApplications(applications);
-    const accent = BUILTIN_ACCENT_POLICIES[id]?.defaultColor;
-    if (!accent) return cfg;
-    // Dark/light presets use their default accent rather than sequential palette tones.
-    for (const states of Object.values(cfg)) for (const props of Object.values(states)) {
-      for (const [prop, value] of Object.entries(props)) {
-        if (THEME_UI_AUTO_VALUES.has(value) || /^auto-rows:/.test(value)) {
-          props[prop] = `${THEME_UI_VALUE_COLOR_PREFIX}${accent}`;
+    // Common controls include selector-backed chrome and tree files.
+    // Sequential folders, headings and section bars retain their eight colors.
+    const commonTargets = THEME_UI_TARGETS.filter(target => target.group === 'ui'
+      && (target.vars || target.id === 'left-chrome' || target.id === 'folder'));
+    for (const target of commonTargets) {
+      for (const props of Object.values(cfg[target.id] || {})) {
+        for (const [prop, value] of Object.entries(props)) {
+          if (THEME_UI_AUTO_VALUES.has(value)) props[prop] = 'var:--ui-accent';
         }
       }
     }
@@ -69927,7 +70134,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const standardPaletteAdjust = themeStandardPaletteAdjustFromTheme({ ui: { standardPaletteAdjust: options.standardPaletteAdjust } }, null);
     const coloringRule = board.coloringRule
       ? { ...board.coloringRule, palette: colorSet, colorPalette: normalizeThemeColorSet(board.coloringRule.colorPalette || colorSet, colorSet) }
-      : { enabled: false, palette: colorSet, colorPalette: colorSet };
+      : { enabled: true, startDepth: 0, siblingShift: true, depthShift: 'paletteLoop', applyTo: 'background', palette: colorSet, colorPalette: colorSet };
     const ui = {
       cssVars: vars,
       themeColorSet: colorSet,
@@ -70077,6 +70284,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _isObsoleteInitialCustomTheme(theme, options = {}) {
+    // A user's saved preset must survive even when its name matches a builtin.
+    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
     if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
     const label = _themeNameKey(theme?.name);
     return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
@@ -70085,6 +70294,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
+    if (_readRawCustomThemes().some(theme => String(theme.id) === rawId)) return '';
     const promotedSource = _readPromotedInitialThemeSources().find(entry => String(entry.theme?.id || '') === rawId);
     if (promotedSource) return promotedSource.targetId;
     if (_initialCustomThemeCleanupVersionApplied()) return '';
@@ -70105,6 +70315,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _normalizeThemeIdWithPromotedCustom(id) {
+    if (_readRawCustomThemes().some(theme => String(theme.id) === String(id))) return String(id);
     return _promotedInitialThemeIdFromCustomId(id) || normalizeThemeId(id) || '';
   }
 
@@ -70208,12 +70419,19 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
 
       const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // Older releases moved named custom presets into this archive. Restore
+      // their original identity without replacing any currently saved preset.
+      sourceByTarget.forEach(theme => {
+        if (!String(theme.id).startsWith('promoted-source-') && !nextThemes.some(item => item.id === theme.id)) {
+          nextThemes.push({ ...clone(theme), builtIn: false });
+        }
+      });
       const hasCleanupVersion = localStorage.getItem(THEME_CUSTOM_CLEANUP_VERSION_KEY) === THEME_CUSTOM_CLEANUP_VERSION;
       if (!hasCleanupVersion || nextThemes.length !== rawThemes.length) {
         localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(nextThemes));
         localStorage.setItem(THEME_CUSTOM_CLEANUP_VERSION_KEY, THEME_CUSTOM_CLEANUP_VERSION);
       }
-      if (promotedDefault) {
+      if (promotedDefault && !nextThemes.some(theme => theme.id === storedDefault)) {
         localStorage.setItem(DEFAULT_THEME_KEY, promotedDefault);
         localStorage.setItem('editor-theme-name', promotedDefault);
       }
@@ -70282,7 +70500,29 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function getBuiltInThemes() {
-    return clone(_promotedInitialBuiltInThemes());
+    // All four starter themes use the current shipped defaults.
+    return clone(BUILT_IN_THEMES).map(theme => {
+      Object.assign(theme.ui.cssVars, {
+        '--ui-dock-button-bg': 'transparent', '--outliner-item-bg': 'transparent',
+        '--ui-dock-button-border-width': '0px', '--ui-dock-button-hover-border-width': '0px',
+        '--ui-dock-button-active-border-width': '0px',
+        '--cal-event-fg': 'var(--cal-event-auto-fg, var(--ui-accent-fg))',
+        '--cal-accent-fg': 'var(--ui-accent-fg)', '--cal-mini-selected-fg': 'var(--ui-accent-fg)',
+        '--chat-active-fg': 'var(--ui-accent-fg)', '--version-active-fg': 'var(--ui-accent-fg)',
+      });
+      // Builtins always start with current defaults, not archived custom CSS.
+      for (const [key] of Object.entries(theme.ui.cssVars)) {
+        if (/-(?:selected|selection|active)-fg$/.test(key)) theme.ui.cssVars[key] = '#ffffff';
+      }
+      theme.ui.cssVars['--ui-accent-fg'] = '#ffffff';
+      for (const states of Object.values(theme.ui.themeUiApplications || {})) {
+        if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
+      }
+      for (const id of ['left-chrome', 'collapse-button', 'folder', 'folder-tree-folder']) {
+        if (theme.ui.themeUiApplications?.[id]?.normal) theme.ui.themeUiApplications[id].normal.bg = THEME_UI_VALUE_NONE;
+      }
+      return theme;
+    });
   }
 
   function getCustomThemes() {
@@ -70291,19 +70531,33 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function saveCustomThemes(themes, options = {}) {
-    const before = _captureThemeSettingsStorage([CUSTOM_THEMES_KEY]);
+    const keys = [CUSTOM_THEMES_KEY, PROMOTED_INITIAL_THEMES_KEY];
+    const before = _captureThemeSettingsStorage(keys);
     _ensureInitialCustomThemeCleanup();
     const nextThemes = (themes || []).filter(t => t && t.id && t.name);
+    const removedIds = new Set(_readRawCustomThemes()
+      .filter(theme => !nextThemes.some(item => item.id === theme.id)).map(theme => theme.id));
+    // An explicit deletion must not be undone by archive recovery on reopening.
+    // Keep the builtin's palette source, but remove its former custom identity.
+    const sources = _readPromotedInitialThemeSources();
+    if (sources.some(entry => removedIds.has(entry.theme.id))) {
+      _writePromotedInitialThemeSources(sources.map(entry => removedIds.has(entry.theme.id)
+        ? { ...entry, theme: { ...entry.theme, id: `promoted-source-${entry.targetId}` } }
+        : entry));
+    }
     localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(nextThemes));
-    _pushThemeSettingsHistory('設定: カスタムテーマ変更', before, [CUSTOM_THEMES_KEY], options.detail || '', options);
+    _pushThemeSettingsHistory('設定: カスタムテーマ変更', before, keys, options.detail || '', options);
   }
 
   function getAllThemes() {
-    return [...getBuiltInThemes(), ...getCustomThemes()];
+    // Retired starter copies stay in storage for existing file references and recovery.
+    return [...getBuiltInThemes(), ...getCustomThemes().filter(theme => !/^custom-simple-(dark|light|pastel|earth)$/.test(theme.id) && !_readPromotedInitialThemeSources().some(entry => entry.theme.id === theme.id))];
   }
 
   function getThemeById(id) {
     const resolved = resolveThemeId(id);
+    const legacy = getCustomThemes().find(theme => theme.id === resolved);
+    if (legacy) return clone(legacy);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -70312,7 +70566,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _ensureInitialCustomThemeCleanup();
     const migrated = global.MeldexThemeMigration?.migrateEditorThemeStorage?.(DEFAULT_THEME_KEY) || '';
     const stored = localStorage.getItem(DEFAULT_THEME_KEY) || migrated || 'builtin-dark';
-    const next = _normalizeDefaultThemeId(stored);
+    const archivedTarget = _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
+    const next = _normalizeDefaultThemeId(archivedTarget || stored.replace(/^custom-simple-(dark|light|pastel|earth)$/, 'builtin-$1'));
     if (stored && next !== stored) {
       try { localStorage.setItem(DEFAULT_THEME_KEY, next); } catch {}
     }
@@ -70467,6 +70722,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const key = `--theme-palette-${i}`;
       const value = palette[i % palette.length];
       if (root.style.getPropertyValue(key).trim() !== value) root.style.setProperty(key, value);
+      root.style.setProperty(`--theme-palette-text-${i}`, getAccentTextColor(value));
     }
     if (options.bindTargets !== false) bindPaletteTargets(palette);
     else applyThemeUiApplications(null, { bindTargets: false });
@@ -70553,6 +70809,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _themeUiColorCss(value, autoTone, options = {}) {
     const normalized = _normalizeThemeUiValue(value);
     if (normalized === THEME_UI_VALUE_NONE) return '';
+    if (normalized === 'var:--theme-slot-text-color' && options.rootVars === true) return 'var(--theme-palette-text-0)';
     if (normalized.startsWith('var:')) return `var(${normalized.slice(4)})`;
     if (normalized.startsWith('auto-rows:')) {
       const rows = normalized.slice(10).split(',').map(Number);
@@ -70615,14 +70872,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return bases.flatMap(base => [base, ...children.map(child => `${base} ${child}`)]).join(',');
   }
 
-  function _themeUiVarRule(target, stateId, propId, colorCss) {
+  function _themeUiVarRule(target, stateId, propId, colorCss, selector = ':root') {
     const raw = target?.vars?.[stateId]?.[propId];
     const keys = Array.isArray(raw) ? raw : (raw ? [raw] : []);
     const declarations = keys
       .filter(key => /^--[a-z0-9-]+$/i.test(String(key || '')))
       .map(key => `${key}:${colorCss}!important`)
       .join(';');
-    return declarations ? `:root{${declarations}}` : '';
+    return declarations ? `${selector}{${declarations}}` : '';
   }
 
   function _themeUiNoteHeadingAccentRule(selector, colorCss) {
@@ -70674,28 +70931,25 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const autoTone = getThemeUiAutoTone();
     document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
     document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
-    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
-    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
       _themeUiStatesForTarget(target).forEach(state => {
         const selector = _themeUiStateSelector(target.id, state.id);
         _themeUiPropsForTarget(target, state.id).forEach(prop => {
           const value = config[target.id]?.[state.id]?.[prop.id];
-          const backgroundValue = config[target.id]?.[state.id]?.bg;
-          const autoForegroundOnAccent = singleAccentPolicy
-            && prop.id === 'fg'
-            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
-            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
-          const colorCss = autoForegroundOnAccent
-            ? singleAccentText
-            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
+          const colorCss = _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
-          if (!target.vars && String(value).startsWith('auto-rows:')) {
+          // Variable-backed controls also need per-element colors, not root slot 0.
+          if (target.vars && THEME_UI_AUTO_VALUES.has(value)) {
+            rules.push(_themeUiVarRule(target, state.id, prop.id, _themeUiColorCss(value, autoTone), selector));
+          }
+          if (String(value).startsWith('auto-rows:')) {
             for (let index = 0; index < THEME_COLOR_SET_SIZE; index++) {
               const indexedSelector = selector.split(',').map(base => `${base}[data-theme-palette-index="${index}"]`).join(',');
-              rules.push(_themeUiRuleForProp(indexedSelector, target, state.id, prop.id,
-                _themeUiColorCss(value, autoTone, { paletteIndex: index })));
+              const indexedColor = _themeUiColorCss(value, autoTone, { paletteIndex: index });
+              rules.push(target.vars
+                ? _themeUiVarRule(target, state.id, prop.id, indexedColor, indexedSelector)
+                : _themeUiRuleForProp(indexedSelector, target, state.id, prop.id, indexedColor));
             }
           }
         });
@@ -70724,6 +70978,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
 [data-theme-palette-index="8"]{--theme-slot-color:var(--theme-palette-8)}
 [data-theme-palette-index="9"]{--theme-slot-color:var(--theme-palette-9)}
 `;
+    style.textContent += Array.from({ length: 10 }, (_, index) =>
+      `[data-theme-palette-index="${index}"]{--theme-slot-text-color:var(--theme-palette-text-${index})}`
+    ).join('\n');
     document.head.appendChild(style);
   }
 
@@ -71121,9 +71378,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     fallback('--chat-muted-fg', '--fg2', '#969696');
     fallback('--chat-border', '--border', '#333333');
     fallback('--chat-hover-bg', '--ui-hover-bg', '#3e3e3e');
-    fallback('--chat-active-bg', '--ui-accent', '#2563eb');
-    fallback('--chat-active-fg', '--ui-fg-strong', '#ffffff');
-    fallback('--chat-accent', '--accent', '#569cd6');
+    // Keep derived chat controls live when the common accent changes (OS or theme).
+    if (!next['--chat-active-bg']) next['--chat-active-bg'] = 'var(--ui-accent)';
+    if (!next['--chat-active-fg']) next['--chat-active-fg'] = 'var(--ui-accent-fg, #ffffff)';
+    if (!next['--chat-accent']) next['--chat-accent'] = 'var(--ui-accent)';
     fallback('--history-bg', '--content-bg', '#1e1e1e');
     fallback('--history-row-bg', '--bg2', '#252525');
     fallback('--history-fg', '--fg', '#d4d4d4');
@@ -71171,11 +71429,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const root = document.documentElement;
     trackExistingThemeVars(root);
     const cssVars = withDerivedUiStyleVars(themeDef.ui?.cssVars || {});
-    const computed = getComputedStyle(root);
     Object.entries(cssVars).forEach(([key, value]) => {
       const next = String(value || '').trim();
       if (!next) return;
-      const cur = root.style.getPropertyValue(key).trim() || computed.getPropertyValue(key).trim();
+      // A matching stylesheet fallback can still change after accent/application
+      // rules are applied. Pin every preset value, including matching fallbacks.
+      const cur = root.style.getPropertyValue(key).trim();
       if (cur !== next) root.style.setProperty(key, next);
       _appliedThemeVarKeys.add(key);
     });
@@ -71334,6 +71593,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
     let html = includeSystem ? `<option value="OSに合わせる"${current === 'OSに合わせる' ? ' selected' : ''}>OSに合わせる</option>` : '';
     const resolvedCurrent = current === 'OSに合わせる' ? current : resolveThemeId(current);
     html += getAllThemes().map(t => `<option value="${escAttr(t.id)}"${t.id === resolvedCurrent || t.id === current ? ' selected' : ''}>${escHtml(t.name)}</option>`).join('');
+    // Keep a legacy file's current choice visible without offering retired starters to new files.
+    if (!getAllThemes().some(theme => theme.id === current)) {
+      const legacy = getCustomThemes().find(theme => theme.id === current);
+      if (legacy) html += `<option value="${escAttr(legacy.id)}" selected>${escHtml(legacy.name)}（旧テーマ）</option>`;
+    }
     return html;
   }
 
@@ -71586,7 +71850,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function updateCustomThemeFromCurrent(id, name) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const index = list.findIndex(t => t.id === normalized);
     if (index < 0) return null;
@@ -71615,7 +71879,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function renameCustomTheme(id, name) {
     const label = String(name || '').trim();
     if (!label) return null;
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const item = list.find(t => t.id === normalized);
     if (!item) return null;
@@ -71644,7 +71908,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function deleteCustomTheme(id) {
-    const normalized = normalizeThemeId(id);
+    const normalized = _normalizeThemeIdWithPromotedCustom(id);
     const list = getCustomThemes();
     const next = list.filter(t => t.id !== normalized);
     if (next.length === list.length) return false;
@@ -71724,6 +71988,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     saveCustomThemes,
     getAllThemes,
     getThemeById,
+    getThemeStyleVars: themeDef => withDerivedUiStyleVars(themeDef?.ui?.cssVars || {}),
     getDefaultThemeId,
     setDefaultThemeId,
     applyThemeToDocument,
@@ -71904,6 +72169,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _applyingRemote = true;
     try {
       keys.forEach((key) => {
+        // Older versions did not sync the migration archive. Its absence in
+        // those records must not erase the only remaining custom theme copy.
+        if (['meldex-promoted-initial-theme-sources', 'meldex-custom-theme-cleanup-version'].includes(key)
+            && !Object.prototype.hasOwnProperty.call(values || {}, key)) return;
         const next = Object.prototype.hasOwnProperty.call(values || {}, key) ? values[key] : null;
         let current = null;
         try { current = localStorage.getItem(key); } catch { current = null; }
@@ -77540,12 +77809,19 @@ async function _applyImportedCustomColors(rawColors, mode) {
             global.CommentBadges.openPanelForFileComments(path);
             return;
           }
-        } else if (feature === 'file_info' && typeof global._showFileInfoInDetailPanel === 'function') {
-          global._showFileInfoInDetailPanel(basename(path), path);
+        } else if (feature === 'file_info' && targetIsActive()
+            && typeof global._showFileInfoInDetailPanel === 'function') {
+          if (typeof global._openDetailRightPanel === 'function') {
+            if (global._openDetailRightPanel({ surface: 'main' }) === false) return;
+          } else if (typeof global.openRightPanelTab === 'function') global.openRightPanelTab('detail', { surface: 'main' });
+          global._showFileInfoInDetailPanel(path);
           return;
         } else if (['publish', 'backlinks'].includes(feature)
             && targetIsActive()
             && typeof global.switchDetailTab === 'function') {
+          if (typeof global._openDetailRightPanel === 'function') {
+            if (global._openDetailRightPanel({ surface: 'main' }) === false) return;
+          } else if (typeof global.openRightPanelTab === 'function') global.openRightPanelTab('detail', { surface: 'main' });
           global.switchDetailTab(feature);
           return;
         }

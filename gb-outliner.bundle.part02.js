@@ -1,3 +1,24 @@
+
+function _treeNodeIsAncestor(parentNode, childNode) {
+  if (!parentNode || !childNode || parentNode === childNode) return false;
+  const normalize = path => {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/').forEach(segment => {
+      if (!segment || segment === '.') return;
+      if (segment === '..') { if (segments.length) segments.pop(); return; }
+      segments.push(segment);
+    });
+    return segments.join('/').toLowerCase();
+  };
+  const parentKey = normalize(parentNode._nodeData?.path);
+  const childKey = normalize(childNode._nodeData?.path);
+  return !!parentKey && !!childKey && childKey.startsWith(parentKey + '/');
+}
+
+function _outlinerExternalDragItems(event, payloadOverride) {
+  let payload = payloadOverride || null;
+  try {
+    if (!payload) {
       const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
       payload = raw ? JSON.parse(raw) : null;
     }
@@ -110,14 +131,13 @@ function getSortSettings() {
 function setSortSetting(folderPath, sort, order) {
   const s = getSortSettings();
   const key = _pathToFileId(folderPath) || folderPath;
-  if (sort === 'name' && order === 'asc') delete s[key]; // デフォルトなら削除
-  else s[key] = { sort, order };
+  s[key] = { sort, order };
   try { localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(s)); } catch {}
 }
 function getSortForFolder(folderPath) {
   const s = getSortSettings();
   const fid = _pathToFileId(folderPath);
-  return (fid && s[fid]) || s[folderPath] || { sort: 'name', order: 'asc' };
+  return (fid && s[fid]) || s[folderPath] || s._tree || { sort: 'manual', order: 'asc' };
 }
 // マニュアルソート順の保存/読込
 const MANUAL_ORDER_KEY = 'outliner-manual-order';
@@ -153,11 +173,14 @@ function applyManualSort(container, folderPath) {
   const order = getManualOrder(folderPath);
   if (order.length === 0) return;
   const nodes = [...container.querySelectorAll(':scope > .tree-node')];
-  const map = new Map(nodes.map(n => [n._nodeData?.name, n]));
+  const remaining = nodes.slice();
   // 保存順にソート、未知のアイテムは末尾
   const sorted = [];
-  order.forEach(name => { const n = map.get(name); if (n) { sorted.push(n); map.delete(name); } });
-  map.forEach(n => sorted.push(n));
+  order.forEach(key => {
+    const index = remaining.findIndex(n => n._nodeData?.path === key || n._nodeData?.name === key);
+    if (index >= 0) sorted.push(...remaining.splice(index, 1));
+  });
+  sorted.push(...remaining);
   sorted.forEach(n => container.appendChild(n));
 }
 function saveManualOrderFromDOM(container, folderPath) {
@@ -170,10 +193,13 @@ function saveManualOrderFromDOM(container, folderPath) {
 function _sortItemsByManualOrder(items, folderPath) {
   const order = getManualOrder(folderPath);
   if (!Array.isArray(items) || !items.length || !order.length) return items;
-  const map = new Map(items.map(it => [it?.name, it]));
+  const remaining = items.slice();
   const sorted = [];
-  order.forEach(name => { const it = map.get(name); if (it) { sorted.push(it); map.delete(name); } });
-  map.forEach(it => sorted.push(it));
+  order.forEach(key => {
+    const index = remaining.findIndex(it => it?.path === key || it?.name === key);
+    if (index >= 0) sorted.push(...remaining.splice(index, 1));
+  });
+  sorted.push(...remaining);
   return sorted;
 }
 
@@ -643,7 +669,10 @@ async function refreshOutliner(options) {
 
 let _topicRecordsOutlinerRefreshTimer = null;
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('meldex:topic-records-updated', () => {
+  window.addEventListener('meldex:topic-records-updated', (event) => {
+    // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
+    // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
+    if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
     clearTimeout(_topicRecordsOutlinerRefreshTimer);
     _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
       const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
@@ -869,32 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
     const parentVirtualContainer = div.parentElement && div.parentElement.dataset && div.parentElement.dataset.virtual === 'true'
       ? div.parentElement : null;
     if (parentVirtualContainer) {
-      childrenDiv._virtualOwnerContainer = parentVirtualContainer;
-      childrenDiv._virtualParentPath = item.path;
-    }
-    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
-    const currentIsFolder = item.type === 'folder';
-    const currentIsDB = item.type === 'database';
-    if (!currentIsFolder && !currentIsDB) {
-      row.click();
-      return;
-    }
-    const expanded = toggle.dataset.expanded === 'true';
-    if (!expanded) {
-      toggle.classList.add('expanded');
-      toggle.dataset.expanded = 'true';
-      // 作品フォルダ動的アイコン切替（icon-implementation-plan §D）
-      if (currentIsFolder) {
-        const iconEl = row.querySelector('.tree-icon');
-        if (iconEl) {
-          const isWork = item.path === getWorkFolder();
-          iconEl.innerHTML = lucide(isWork ? 'folderOpenDot' : 'folderOpen', 18);
-          if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
-        }
-      }
-      // 展開前に既存子ノードにフィルタを適用（チラつき防止）
-      childrenDiv.querySelectorAll(':scope > .tree-node').forEach(cn => {
-        const d = cn._nodeData;
-        if (!d || d._isRoot || d.type === 'folder') return;
-        if (d.type === 'database') { cn.style.display = _showDatabaseByGlobalFilter() ? '' : 'none'; return; }
-        if (d.type === 'entity') { cn.style.display = _showEntityByGlobalFilter() ? '' : 'none'; return; }

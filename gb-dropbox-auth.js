@@ -704,8 +704,11 @@
     return session;
   }
 
-  async function getValidAccessToken() {
+  async function getValidAccessToken(expectedAccountId) {
     const session = await getValidSession();
+    if (expectedAccountId && String(session?.accountId || session?.account?.account_id || '') !== expectedAccountId) {
+      throw Object.assign(new Error('Dropboxアカウントが変わりました。読み直してください'), { status: 409 });
+    }
     return session?.accessToken || '';
   }
 
@@ -950,7 +953,7 @@
   async function apiContent(route, arg, init, options) {
     if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const token = await getValidAccessToken();
+      const token = await getValidAccessToken(options?.expectedAccountId);
       if (!token) throw new Error('Dropboxへもう一度接続してください');
       const requestInit = init ? { ...init } : {};
       requestInit.method = requestInit.method || 'POST';

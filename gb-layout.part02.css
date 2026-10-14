@@ -775,6 +775,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
    同じ値を参照する（以前は 38px が3箇所にベタ書きされていた）。 */
 :root {
   --gb-rail-width: 38px;
+  --gb-rail-button-size: 34px;
 }
 
 /* ドックバー本体: 各 panelset ノードの端に常設される縦バー（単独ペインのカラムでは非表示） */
@@ -884,9 +885,9 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 
 /* ドックバー内のパネルアイコンボタン */
 .gb-dock-icon {
-  width: 34px;
-  height: 34px;
-  min-height: 34px;
+  width: var(--gb-rail-button-size, 34px);
+  height: var(--gb-rail-button-size, 34px);
+  min-height: var(--gb-rail-button-size, 34px);
   margin: 2px 0;
   display: flex;
   align-items: center;
@@ -902,7 +903,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   font-style: var(--ui-dock-button-font-style, normal);
   box-shadow: inset 0 calc(-1 * var(--ui-dock-button-underline, 0px)) 0 var(--ui-dock-button-accent-color, var(--ui-accent));
   cursor: pointer;
-  flex: 0 0 34px;
+  flex: 0 0 var(--gb-rail-button-size, 34px);
   padding: 0;
   position: relative;
 }

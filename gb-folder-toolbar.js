@@ -135,12 +135,17 @@
     if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 
-  async function _folderToolbarRefresh(preservePaths = []) {
+  async function _folderToolbarRefresh(preservePaths = [], options = {}) {
     const folderPath = _folderToolbarCurrentPath();
-    const refreshJobs = [];
-    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
-    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
-    if (refreshJobs.length) await Promise.allSettled(refreshJobs);
+    const refreshTrees = () => {
+      const refreshJobs = [];
+      if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
+      if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+      return Promise.allSettled(refreshJobs);
+    };
+    // Creation is already durable. Display its folder contents immediately;
+    // refreshing other roots must not hold the new item behind a full scan.
+    if (!options.backgroundTrees) await refreshTrees();
     if (folderPath && typeof openFolder === 'function') {
       await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
         skipShowView: true,
@@ -153,6 +158,7 @@
         renderFolderGrid({ preserveSelectedPaths: preservePaths });
       }
     }
+    if (options.backgroundTrees) void refreshTrees();
     _folderToolbarScheduleUpdate();
   }
 
@@ -190,7 +196,7 @@
         const res = await apiPost('/outliner/add', { type, label: '無題', parent });
         const node = res?.node || {};
         const name = node.name || node.label || '無題';
-        await _folderToolbarRefresh(node.path ? [node.path] : []);
+        await _folderToolbarRefresh(node.path ? [node.path] : [], { backgroundTrees: true });
         showStatus((node.type === 'folder' ? 'フォルダ' : 'ファイル') + 'を作成しました: ' + name);
       } catch (e) {
         showStatus('作成に失敗しました: ' + (e?.message || e || ''), true);

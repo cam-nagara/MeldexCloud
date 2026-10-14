@@ -2,10 +2,6 @@
 (function initRenderListSettings(global) {
   'use strict';
 
-  function escapeHtml(value) {
-    return global.MeldexEscape?.html?.(String(value ?? '')) ?? String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-  }
-
   function notify(message, error = false) {
     if (typeof global.showStatus === 'function') global.showStatus(String(message || ''), error);
   }

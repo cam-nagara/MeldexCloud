@@ -498,7 +498,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -508,14 +508,14 @@
   }
 
   async function _personalPreferenceAdapter() {
+    const provider = await _requirePwaProvider('read');
     if (_runtime()?.isBrowserMode?.()) {
-      const provider = await _requirePwaProvider('read');
       return provider?.getSystemStorageAdapter?.() || null;
     }
     const factory = window.MeldexSystemStorageDropbox;
     const resolver = window.MeldexDropboxManagementRootResolver;
     if (!factory || !resolver?.resolveAdapterForProvider) return null;
-    return resolver.resolveAdapterForProvider('dropbox', { personalOnly: true });
+    return resolver.resolveAdapterForProvider(provider, { personalOnly: true });
   }
 
   function _assertPersonalPreferenceName(name) {
@@ -524,8 +524,24 @@
     return doc;
   }
 
+  async function _quickMemoPreferenceScope(doc) {
+    if (doc !== 'quick-memo-tags') return {};
+    const session = await window.MeldexDropboxAuth?.getSession?.();
+    const accountId = String(session?.accountId || session?.account?.account_id || '').trim();
+    return accountId ? { scopeId: `dropbox-account:${accountId}` } : null;
+  }
+
+  async function _checkQuickMemoPreferenceScope(doc, scope) {
+    if (doc !== 'quick-memo-tags') return;
+    if ((await _quickMemoPreferenceScope(doc))?.scopeId !== scope?.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+  }
+
   async function _readPersonalPreference(name) {
     const doc = _assertPersonalPreferenceName(name);
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, exists: false, payload: null, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -534,14 +550,17 @@
     }
     if (!adapter) return { available: false, exists: false, payload: null, revision: null };
     const record = await adapter.load(_personalPreferenceKind(), doc);
-    if (!record) return { available: true, exists: false, payload: null, revision: null };
-    return { available: true, exists: true, payload: record.payload, revision: record.revision };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    if (!record) return { available: true, exists: false, payload: null, revision: null, ...scope };
+    return { available: true, exists: true, payload: record.payload, revision: record.revision, ...scope };
   }
 
   async function _writePersonalPreference(name, body) {
     const doc = _assertPersonalPreferenceName(name);
     const payload = body?.payload;
     if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    const scope = await _quickMemoPreferenceScope(doc);
+    if (!scope) return { available: false, ok: false, revision: null };
     let adapter = null;
     try {
       adapter = await _personalPreferenceAdapter();
@@ -549,12 +568,21 @@
       adapter = null;
     }
     if (!adapter) return { available: false, ok: false, revision: null };
+    if (doc === 'quick-memo-tags' && body?.expectedScopeId !== scope.scopeId) {
+      throw _httpError(409, 'Dropboxアカウントが変わりました。読み直してください');
+    }
+    if (doc === 'quick-memo-tags' && !Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      throw _httpError(400, 'expectedRevision が必要です');
+    }
     const options = {};
+    if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
+    await _checkQuickMemoPreferenceScope(doc, scope);
     const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
-    return { available: true, ok: true, revision: record?.revision || null };
+    await _checkQuickMemoPreferenceScope(doc, scope);
+    return { available: true, ok: true, revision: record?.revision || null, ...scope };
   }
 
   function _assertWorkspacePreferenceName(name) {

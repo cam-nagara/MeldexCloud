@@ -15,7 +15,7 @@
     const workspaceId = String(workspace?.id || global.MeldexWorkspaces?.getActiveId?.() || '');
     if (!workspaceId) return { id: 'personal', kind: 'personal', path: `/personal-preferences/${DOCUMENT_NAME}`, readOnly: false, role: 'owner' };
     const user = String(typeof getUsername === 'function' ? getUsername() : '').trim().toLowerCase();
-    const member = (Array.isArray(workspace.members) ? workspace.members : []).find(row =>
+    const member = (Array.isArray(workspace?.members) ? workspace.members : []).find(row =>
       user && String(row?.name || '').trim().toLowerCase() === user);
     const role = String(member?.role || 'viewer').trim().toLowerCase();
     return {

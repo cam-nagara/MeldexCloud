@@ -1,3 +1,100 @@
+      if (ev.key === 'Enter') {
+        const region = canvasRegion();
+        if (region) cleanup(region, 'submit');
+      }
+    }
+    stage.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      stage.focus?.();
+      activePointerId = ev.pointerId;
+      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
+      start = pointFromEvent(ev);
+      current = start;
+      updateSelection();
+    });
+    stage.addEventListener('pointermove', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      updateSelection();
+    });
+    stage.addEventListener('pointerup', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
+      activePointerId = null;
+      updateSelection();
+    });
+    stage.addEventListener('pointercancel', (ev) => {
+      if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
+    });
+    cancel.addEventListener('click', () => cleanup(null, 'cancel'));
+    ok.addEventListener('click', () => {
+      const region = canvasRegion();
+      if (!region) {
+        showStatus('範囲を選択してください', true);
+        return;
+      }
+      cleanup(region, 'submit');
+    });
+    document.addEventListener('keydown', onKeyDown);
+    modalApi = window.GBUI.createModal({
+      id: 'screenshot-region-selector',
+      title: 'スクリーンショット撮影対象を選択',
+      body: stage,
+      footer: actions,
+      variant: 'full-bleed',
+      extraClass: 'screenshot-region-shell',
+      geometryKey: 'screenshot-region-selector',
+      minWidth: '0',
+      initialFocus: stage,
+      returnFocus: restoreFocusTo || undefined,
+      closeLabel: '範囲選択を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (cleaned) return;
+        cleaned = true;
+        document.removeEventListener('keydown', onKeyDown);
+        resolve(result);
+      },
+    });
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay', 'screenshot-region-overlay');
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
+    overlay.style.zIndex = '5000';
+    overlay._screenshotRegionModalApi = modalApi;
+    modalApi.modal.dataset.e2eId = 'screenshot-region-shell';
+    modalApi.footer.classList.add('screenshot-region-actions');
+    modalApi.open();
+  });
+}
+
+async function captureScreenshot(mode) {
+  let stream = null;
+  let hideState = null;
+  try {
+    const hideFirst = mode.includes('hide');
+    if (hideFirst) hideState = await _hideMeldexWindowForScreenshot();
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'monitor' } });
+    const video = document.createElement('video');
+    const loaded = new Promise((resolve, reject) => {
+      video.onloadeddata = resolve;
+      video.onerror = () => reject(new Error('画面キャプチャ映像を読み込めませんでした'));
+    });
+    video.srcObject = stream;
+    await video.play();
+    await loaded;
+    await new Promise(r => setTimeout(r, 200));
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    if (hideFirst) {
+      await _restoreMeldexWindowForScreenshot(hideState);
+      hideState = null;
+    }
     let outputCanvas = canvas;
     if (_screenshotModeIsRegion(mode)) {
       const region = await _selectScreenshotRegionFromCanvas(canvas);
@@ -801,100 +898,3 @@ window.addEventListener('message', (e) => {
       ann.opacity = 1;
       Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
         ann.color = prevColor;
-        ann.opacity = prevOpacity;
-      });
-      return;
-    }
-    const annClientId = msg.annClientId || ('pending-note-' + Date.now().toString(36));
-    const noteData = { x: msg.x, y: msg.y, width: 180, height: 100, text: '', html: '', user: getUsername() };
-    if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-      _dispatchEmbeddedAnnotationMessage({
-        type: 'ann-add-note',
-        item: {
-          id: annClientId,
-          type: 'comment',
-          shape: 'sticky',
-          data: noteData,
-          color: msg.color || ann.color,
-          opacity: 1,
-          user: getUsername(),
-          created: new Date().toISOString(),
-        },
-      });
-    }
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath,
-      type: 'comment', shape: 'sticky',
-      data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, 'アノテート: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (embedded) reloadEmbeddedAnnotations();
-      else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
-    }).catch(() => {
-      if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-remove-note', annId: annClientId });
-      }
-    });
-  }
-});
-
-// Phase C: bdToMd/bdSave等のスタブは廃止 → gb-canvas-engine.js + gb-canvas-features.js に実装済み
-
-function bdOpenBgPalette(event) {
-  if (typeof openColorPalette !== 'function') return;
-  const swatch = document.getElementById('bd-bg-swatch');
-  const canvas = document.getElementById('bd-canvas');
-  if (!swatch || !canvas) return;
-  openColorPalette(swatch, (typeof bd !== 'undefined' && bd._bgColor) || '', function(v) {
-    canvas.style.background = v;
-    setColorSwatchValue(swatch, v);
-    if (typeof bd !== 'undefined') bd._bgColor = v || '';
-    if (typeof bdMarkExtrasDirty === 'function') {
-      bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-palette');
-      if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-    }
-  });
-}
-
-async function openBoard(label, path, opts) {
-  const openOpts = opts || {};
-  let navPushedBeforeLoad = false;
-  let mountedBoardLoad = null;
-  let requestedPane = null;
-  let requestedPaneId = null;
-  let requestedTab = null;
-  let requestedTabIndex = -1;
-  let requestedTabSnapshot = null;
-  const showOpenLoading = !openOpts.silent
-    && !openOpts.skipGlobalUi
-    && typeof showLoading === 'function'
-    && typeof hideLoading === 'function';
-  const prevView = state.view;
-  const prevBoardPath = state.currentBoardPath;
-  const currentTitleEl = document.getElementById('current-title');
-  const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
-  const restorePreviousView = () => {
-    if (navPushedBeforeLoad && requestedPane && requestedTab && requestedTabSnapshot) {
-      Object.assign(requestedTab, requestedTabSnapshot.fields);
-      requestedTab.navHistory = requestedTabSnapshot.navHistory;
-      requestedTab.navIndex = requestedTabSnapshot.navIndex;
-      requestedPane.activeTabIndex = requestedTabIndex;
-      if (typeof GBLayout !== 'undefined' && typeof GBLayout.render === 'function') GBLayout.render();
-      if (typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
-    }
-    state.currentBoardPath = prevBoardPath || null;
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
-    if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
-    else if (!openOpts.skipStateView) state.view = prevView || '';
-  };
-  const loading = showOpenLoading ? showLoading('ボードを読み込み中...', { key: 'board:' + path }) : null;
-  try {
-    if (!openOpts.skipStateView) state.view = 'board';
-    state.currentBoardPath = path;
-    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
-    // ペインブリッジでは board はコンポーネント型なので、showView('board') 自体は
-    // DOMをマウントしない。先にnavPushして対象のCanvasComponentをマウントし、
-    // そのコンポーネントが開始した読込を待つ。既存キャンバスからの切替も同じ順序にし、
-    // 読込後のタブ再構築が取得済みモデルを古いdumpで置き換えないようにする。

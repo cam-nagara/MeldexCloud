@@ -463,7 +463,7 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
       }))
     },
     // 列の詳細設定は右オプションパネルへ一本化する。
-    { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, propName, { switchTab: true }) },
+    { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, propName, { switchTab: true, ctx, source: e?.target || e?.currentTarget }) },
     { type: 'sep' },
     // 左/右に列を挿入（トップレベル。各サブメニューで挿入する列タイプを選ぶ）
     ...(!productionWriteBlocked ? [

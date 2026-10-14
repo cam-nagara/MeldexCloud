@@ -51,6 +51,29 @@ function _getCachedRelationMap(relationDbPath) {
   return cached && cached.idToName && cached.nameToId ? cached : null;
 }
 
+async function _relationEntryFromCreate(relationDbPath, name, created) {
+  const previous = _getCachedRelationMap(relationDbPath);
+  _invalidateRelationTargetCaches(relationDbPath);
+  const id = created?.entry_id;
+  if (!id) {
+    const map = await _getRelationMap(relationDbPath);
+    return {name, id:map?.nameToId?.[name] || name};
+  }
+  name = String(created.path || '').replace(/\\/g,'/').split('/').pop().replace(/\.md$/i,'') || name;
+  // The response already identifies the committed row. Resolve its label
+  // locally instead of rereading the whole target sheet before saving a value.
+  // Keep the map stale so rollups/defaults are fetched from the durable sheet.
+  _relationCache[relationDbPath] = {
+    idToName:{...previous?.idToName,[id]:name},
+    nameToId:{...previous?.nameToId,[name]:id},
+    entities:{...previous?.entities,[name]:{_id:id}},
+    new_format:true, timestamp:0,
+  };
+  return created.properties && typeof created.properties === 'object'
+    ? {name,id,properties:created.properties,path:created.path,
+       ...(created.relation_metadata ? {dbMetadata:created.relation_metadata} : {})} : {name,id};
+}
+
 function _refreshRelationMapSoon(relationDbPath) {
   if (!relationDbPath || _relationMapPromises[relationDbPath]) return;
   setTimeout(() => {

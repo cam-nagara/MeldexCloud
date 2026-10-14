@@ -9,7 +9,7 @@ const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
   stage: ['第一幕', '第二幕', '第三幕', '場', '柱'],
 };
 const SCRIPTNOTE_LEGACY_SUMMARY_NAMES = ['プロット'];
-const SCRIPTNOTE_DEFAULT_TYPE_BG = '#333333';
+const SCRIPTNOTE_DEFAULT_TYPE_BG = 'var(--bg3)';
 
 function _scriptNotePlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};

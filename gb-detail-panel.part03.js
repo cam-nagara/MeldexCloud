@@ -55,8 +55,8 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   body.innerHTML = `
     <div class="dp-field"><label for="dp-cal-title">タイトル</label><input id="dp-cal-title" class="gb-input" data-e2e-id="dp-cal-title" type="text" value="${esc(ev?.title || '')}" placeholder="イベント名"></div>
     <div class="dp-field"><label class="gb-check dp-event-check" for="dp-cal-allday"><input id="dp-cal-allday" class="gb-checkbox" data-e2e-id="dp-cal-allday" type="checkbox" ${isAllDay?'checked':''}><span>終日</span></label></div>
-    <div class="dp-field"><label for="dp-cal-start">開始</label><input id="dp-cal-start" class="gb-input" data-e2e-id="dp-cal-start" type="datetime-local" value="${startVal}" ${isAllDay?'disabled':''}></div>
-    <div class="dp-field"><label for="dp-cal-end">終了</label><input id="dp-cal-end" class="gb-input" data-e2e-id="dp-cal-end" type="datetime-local" value="${endVal}" ${isAllDay?'disabled':''}></div>
+    <div class="dp-field"><label for="dp-cal-start">開始</label><input id="dp-cal-start" class="gb-input" data-e2e-id="dp-cal-start" type="datetime-local" value="${esc(startVal)}" ${isAllDay?'disabled':''}></div>
+    <div class="dp-field"><label for="dp-cal-end">終了</label><input id="dp-cal-end" class="gb-input" data-e2e-id="dp-cal-end" type="datetime-local" value="${esc(endVal)}" ${isAllDay?'disabled':''}></div>
     ${calOpts ? `<div class="dp-field"><label for="dp-cal-calendar">カレンダー</label><select id="dp-cal-calendar" class="gb-select" data-e2e-id="dp-cal-calendar">${calOpts}</select></div>` : ''}
     <div class="dp-field"><span class="dp-field-label">色</span><button type="button" id="dp-cal-color" class="gb-color-swatch gb-color-swatch--field" data-e2e-id="dp-cal-color" data-color="${esc(ev?.color || '#569cd6')}" title="イベント色" aria-label="イベント色"></button></div>
     <div class="dp-field"><label for="dp-cal-location">場所</label><input id="dp-cal-location" class="gb-input" data-e2e-id="dp-cal-location" type="text" value="${esc(ev?.location || '')}"></div>

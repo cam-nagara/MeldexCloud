@@ -6,7 +6,10 @@
   input.addEventListener('click', (e) => e.stopPropagation());
   input.addEventListener('dblclick', (e) => e.stopPropagation());
 
+  let finished = false;
   const finish = async () => {
+    if (finished) return;
+    finished = true;
     const nv = input.value.trim() || '無題';
     labelEl.textContent = nv;
 
@@ -17,10 +20,11 @@
         const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
-          type: nodeData.type || 'page'
+          type: nodeData.type || 'page',
+          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
         });
         if (!res || !res.new_path) throw new Error('rename failed');
-        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old);
+        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
         if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
       } catch (e) {
         if (e && e.isTimeout) {
@@ -38,28 +42,32 @@
 
   input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.isComposing) return;
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-    if (e.key === 'Escape') { input.value = old; input.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); input.value = old; input.blur(); }
   });
 }
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
   _renameTreeNode(oldPath, newPath, newName, fileId);
+  nodeData.path = newPath;
+  nodeData.name = newName;
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page' });
+      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(newPath, oldPath, { label: oldName, fileId: r2?.file_id, type: nodeData.type || 'page' });
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(newPath, oldPath, { preserveMountedViews: true, label: oldName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
     },
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page' });
+      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { label: newName, fileId: r2?.file_id, type: nodeData.type || 'page' });
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
     }
   );
   if (typeof renameAppPathReferences === 'function') {
-    renameAppPathReferences(oldPath, newPath, { label: newName, fileId, type: nodeData.type || 'page' });
+    renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId, type: nodeData.type || 'page', etag:options?.etag, titleOnly:options?.titleOnly });
   }
   if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
@@ -87,7 +95,7 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
     for (const delay of delays) {
       await new Promise(r => setTimeout(r, delay));
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-      const found = _outlinerFindRenamedItem(items, oldName, newName);
+      const found = _outlinerFindRenamedItem(items, oldName, newName, oldPath);
       if (found) {
         _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName, { skipStatus: !!progress });
         progress?.succeed?.({ summary: `「${oldName}」→「${newName}」にリネームしました` });
@@ -122,6 +130,7 @@ function backToPivot() {
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
+  window.GBOutlinerVirtualRender?.renamePath?.(oldPath, newPath, newName, fileId);
   const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
   const oldPrefix = oldPath + '/';
   const expanded = getExpandedPaths();
@@ -164,6 +173,8 @@ function _renameTreeNode(oldPath, newPath, newName, fileId) {
       continue;
     }
   }
+
+  if (typeof _folderApplyRename === 'function') _folderApplyRename(oldPath, newPath, newName, fileId);
 
   // localStorage展開状態: 旧パスキーを新パスキーに変換（file_idキーは不変なのでスキップ）
   let expChanged = false;

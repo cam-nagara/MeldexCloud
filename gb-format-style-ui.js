@@ -1182,8 +1182,29 @@
     el.dataset.e2eId = _filePreviewE2eId(rowData);
     el.dataset.stylePreviewLabel = _rowLabel(rowData) || rowData.label || '';
     el.textContent = isCaret ? '\u00a0' : (lineOnly ? '━━' : (rowData.label || 'Aa1'));
-    el.style.background = _isTransparent(values.bgColor) ? PAGE_BG : values.bgColor;
-    el.style.color = values.textColor || values.borderColor || values.caretColor || 'var(--fg)';
+    const fileStyle = typeof _fsGetStyleForContext === 'function' ? _fsGetStyleForContext(adapter.ctx || adapter.kind) : {};
+    const previewVars = typeof _expandFileStyleVars === 'function' ? _expandFileStyleVars(fileStyle, adapter.ctx || adapter.kind) : {};
+    const referenced = new Set();
+    const bindReferences = value => {
+      for (const match of String(value || '').matchAll(/var\(\s*(--[\w-]+)/g)) {
+        const key = match[1];
+        if (referenced.has(key) || !Object.prototype.hasOwnProperty.call(previewVars, key)) continue;
+        referenced.add(key);
+        bindReferences(previewVars[key]);
+        el.style.setProperty(key, previewVars[key]);
+      }
+    };
+    Object.values(values).forEach(bindReferences);
+    const calendarPreview = (adapter.ctx || adapter.kind) === 'calendar';
+    const previewBg = fileStyle?.['--content-bg'] || (calendarPreview && fileStyle?.['--cal-bg']) || PAGE_BG;
+    const previewFg = values.textColor || (lineOnly ? values.borderColor : '') || (calendarPreview ? 'var(--cal-fg)' : 'var(--fg)');
+    bindReferences(previewBg);
+    bindReferences(previewFg);
+    el.style.background = _isTransparent(values.bgColor) ? previewBg : values.bgColor;
+    if (values.bgColor && /^(rgba|hsla)\(/i.test(values.bgColor)) {
+      el.style.background = `linear-gradient(${values.bgColor}, ${values.bgColor}), ${previewBg}`;
+    }
+    el.style.color = previewFg;
     if (values.fontWeight === 'bold') el.style.fontWeight = 'bold';
     if (values.fontStyle === 'italic') el.style.fontStyle = 'italic';
     const previewSize = values.fontSize || _previewFontSize(rowData.label);
@@ -1239,8 +1260,13 @@
     if (!field || !adapter) return;
     const raw = _rawForField(field, prop, value);
     const normalized = typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
-    adapter.set(field, normalized || '');
-    adapter.applyCss(field, normalized || '');
+    const result = adapter.set(field, normalized || '');
+    const apply = saved => {
+      if (saved === false || adapter.isCurrent?.() === false) return false;
+      adapter.applyCss(field, normalized || '');
+      return true;
+    };
+    return result?.then ? result.then(apply) : apply(result);
   }
 
   function _replaceFilePreview(anchorEl, rowData, adapter) {
@@ -1260,12 +1286,26 @@
         const key = prop === 'bold' ? 'fontWeight'
           : prop === 'italic' ? 'fontStyle'
           : prop;
-        _setFileField(map[key], key, value, adapter);
-        anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+        const result = _setFileField(map[key], key, value, adapter);
+        const refresh = saved => {
+          if (saved !== false && adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+        };
+        if (result?.then) result.then(refresh).catch(error => {
+          console.warn('テーマ書式の保存に失敗:', error);
+          if (typeof showStatus === 'function') showStatus('テーマ書式を保存できませんでした', true);
+        });
+        else refresh(result);
       },
-      onReset: () => {
-        Object.entries(map).forEach(([prop, field]) => _setFileField(field, prop, '', adapter));
-        anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+      onReset: async () => {
+        try {
+          for (const [prop, field] of Object.entries(map)) {
+            if (await _setFileField(field, prop, '', adapter) === false) return;
+          }
+          if (adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+        } catch (error) {
+          console.warn('テーマ書式のリセットに失敗:', error);
+          if (typeof showStatus === 'function') showStatus('テーマ書式をリセットできませんでした', true);
+        }
       },
     });
   }
@@ -1345,6 +1385,18 @@
   }
 
   window.renderStyleRow = renderStyleRowUnified;
+  // File style previews resolve CSS values when rendered; refresh them when the
+  // application theme changes so an already open panel shows the current theme.
+  const refreshFilePreviews = () => {
+    document.querySelectorAll('.gb-fmt-popup-row--wrap').forEach(row => {
+      const preview = row.querySelector('.cs-row-preview--clickable');
+      if (preview && row._fsRowData && row._fsAdapter) {
+        _replaceFilePreview(preview, row._fsRowData, row._fsAdapter);
+      }
+    });
+  };
+  ['meldex-theme-change', 'meldex-theme-color-set-change', 'meldex-theme-ui-applications-change', 'meldex-theme-ui-auto-tone-change']
+    .forEach(event => window.addEventListener(event, refreshFilePreviews));
   window.openStylePreviewPopup = openStylePreviewPopupUnified;
   window.getSettingsThemePreviewPropertyMap = def => ({ ..._mapSettingsDef(def).map });
   window.getSettingsThemePreviewMappedFields = def => _mapSettingsDef(def).fields;

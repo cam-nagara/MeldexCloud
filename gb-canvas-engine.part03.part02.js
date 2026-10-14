@@ -564,12 +564,21 @@ async function bdSave() {
     showStatus('ボード保存を中止しました: ボードとして開いたMarkdownファイルではありません', true);
     return false;
   }
-  const markdown = bdToMd();
   const recoveryScope = () => {
     try { return JSON.stringify(window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null); }
     catch (_) { return undefined; }
   };
   const recoveryScopeAtRequest = recoveryScope();
+  let markdown = bdToMd();
+  let pendingNodeTextWrites = typeof bdWaitPendingNodeTextWrites === 'function'
+    ? bdWaitPendingNodeTextWrites(bd.nodes) : null;
+  while (pendingNodeTextWrites) {
+    if (!await pendingNodeTextWrites) return false;
+    if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+    markdown = bdToMd();
+    pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
+  }
+  if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
   const prevIds = bd._lastSavedNodeIds || new Set();
   const currIds = new Set((bd.nodes || []).map(n => n.id));
   const coordinator = window.MeldexDocumentSaveCoordinator;

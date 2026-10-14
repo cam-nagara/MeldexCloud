@@ -453,7 +453,7 @@ function bdContextMenu(e, nodeId) {
         });
       }
       _bdContextMenuItem(cardStylePanel, 'スタイル管理...', () => {
-        if (typeof bdOpenCardStyleManager === 'function') bdOpenCardStyleManager();
+        if (typeof bdOpenCardStyleManager === 'function') bdOpenCardStyleManager(e?.target);
       });
     }
 

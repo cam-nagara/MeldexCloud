@@ -222,31 +222,32 @@ function _fsUseOsAccent(ctx, adapter) {
   return value === true || value === 1 || value === '1' || value === 'true';
 }
 
-function _fsSetUseOsAccent(ctx, enabled) {
+async function _fsSetUseOsAccent(ctx, enabled) {
   const getAdapter = typeof window !== 'undefined' && typeof window._fsGetAdapter === 'function'
     ? window._fsGetAdapter
     : _fsGetAdapter;
   const adapter = getAdapter(ctx);
-  if (!adapter) return false;
-  adapter.set(_fsUseOsAccentField(), enabled ? '1' : '');
-  return true;
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+  return await adapter.set(_fsUseOsAccentField(), enabled ? '1' : '') !== false;
 }
 
-function fileThemeToggleOsAccent(ctx) {
+async function fileThemeToggleOsAccent(ctx) {
   const getAdapter = typeof window !== 'undefined' && typeof window._fsGetAdapter === 'function'
     ? window._fsGetAdapter
     : _fsGetAdapter;
   const adapter = getAdapter(ctx);
   const next = !_fsUseOsAccent(ctx, adapter);
-  if (!_fsSetUseOsAccent(ctx, next)) return;
+  if (!await _fsSetUseOsAccent(ctx, next)) return false;
   const finish = () => {
+    if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
     _fsApplyCurrentStyleRuntime(ctx);
     _fsRefreshThemePanels(ctx);
   };
   if (next && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.refreshOsAccentColor === 'function') {
-    MeldexThemeManager.refreshOsAccentColor().finally(finish);
+    await MeldexThemeManager.refreshOsAccentColor();
+    return finish();
   } else {
-    finish();
+    return finish();
   }
 }
 
@@ -318,6 +319,7 @@ function _fsOpenThemeMenu(anchor, ctx) {
     item.addEventListener('click', () => {
       if (item.disabled) return;
       close();
+      if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return;
       _fsRunThemeAction(ctx, action);
     });
     menu.appendChild(item);
@@ -346,7 +348,7 @@ function _fsOpenThemeMenu(anchor, ctx) {
   }, 0);
 }
 
-function _fsRunThemeAction(ctx, action) {
+async function _fsRunThemeAction(ctx, action) {
   const handlers = {
     create: fileThemeCreate,
     duplicate: fileThemeDuplicate,
@@ -355,16 +357,10 @@ function _fsRunThemeAction(ctx, action) {
     save: fileThemeSave,
     delete: fileThemeDelete,
   };
-  const handler = handlers[action];
+  const handler = typeof action === 'function' ? action : handlers[action];
   if (typeof handler !== 'function') return;
   try {
-    const result = handler(ctx);
-    if (result && typeof result.catch === 'function') {
-      result.catch(error => {
-        console.error(error);
-        if (typeof showStatus === 'function') showStatus('テーマ操作に失敗しました', true);
-      });
-    }
+    return await handler(ctx);
   } catch (error) {
     console.error(error);
     if (typeof showStatus === 'function') showStatus('テーマ操作に失敗しました', true);
@@ -545,7 +541,8 @@ function _fsStyleStorageKeyForField(ctx, field) {
 }
 
 function _fsReadSourceThemeVar(sourceTheme, key, useDocumentValue) {
-  const sourceVars = sourceTheme?.ui?.cssVars || {};
+  const sourceVars = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeStyleVars === 'function'
+    ? MeldexThemeManager.getThemeStyleVars(sourceTheme) : sourceTheme?.ui?.cssVars || {};
   if (useDocumentValue && typeof document !== 'undefined' && typeof getComputedStyle === 'function') {
     const root = document.documentElement;
     const value = (root?.style?.getPropertyValue?.(key) || getComputedStyle(root).getPropertyValue(key) || '').trim();
@@ -571,18 +568,22 @@ function _fsBuildLocalCustomThemeStyle(ctx, options = {}) {
   const sourceTheme = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
     ? MeldexThemeManager.getThemeById(sourceId || defaultThemeId)
     : null;
-  const next = {};
-  Object.keys(sourceTheme?.ui?.cssVars || {}).forEach(key => {
+  const sourceVars = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeStyleVars === 'function'
+    ? MeldexThemeManager.getThemeStyleVars(sourceTheme) : sourceTheme?.ui?.cssVars || {};
+  const next = explicitSource ? {} : { ...current };
+  Object.keys(sourceVars).forEach(key => {
     if (!key.startsWith('--')) return;
     const value = _fsReadSourceThemeVar(sourceTheme, key, useDocumentSourceValues);
-    if (value) next[key] = value;
+    if (value && !Object.prototype.hasOwnProperty.call(next, key)) next[key] = value;
   });
   _fsRenderableThemeFields(ctx).forEach(field => {
     const key = _fsStyleStorageKeyForField(ctx, field);
     if (!key || key === _fsThemeIdField(ctx).key) return;
     let value = '';
-    if (explicitSource && key.startsWith('--')) {
-      value = _fsReadSourceThemeVar(sourceTheme, key, false);
+    const sourceKey = key.startsWith('--') ? key : field.cssVar;
+    if (explicitSource && sourceKey) {
+      value = _fsReadSourceThemeVar(sourceTheme, sourceKey, false);
+      if (field.type === 'number' && value !== '') value = parseFloat(value);
     }
     if (!value) value = _fsReadFieldValue(field, adapter);
     if (!value && !useDocumentSourceValues && key.startsWith('--')) value = _fsReadSourceThemeVar(sourceTheme, key, false);
@@ -692,7 +693,7 @@ function _fsBindThemePanel(root, ctx) {
   const adapter = _fsGetAdapter(ctx);
   if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
   const select = section.querySelector('[data-fs-theme-select]');
-  select?.addEventListener('change', () => fileThemeSelect(ctx, select.value));
+  select?.addEventListener('change', () => _fsRunThemeAction(ctx, () => fileThemeSelect(ctx, select.value)));
   section.querySelector('[data-fs-theme-menu]')?.addEventListener('click', event => {
     event.preventDefault();
     event.stopPropagation();
@@ -738,7 +739,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
   const isLocalCustom = _fsIsLocalCustomThemeId(id);
   const isCustom = isLocalCustom || !!(id && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
   const currentColors = () => _fsPendingThemeColorSets[key]?.slice() || _fsThemeColorSetForCurrent(ctx, adapter) || [];
-  const saveLocalPalette = (colors) => {
+  const saveLocalPalette = async (colors) => {
     const current = _fsGetStyleForContext(ctx) || {};
     const source = _fsIsLocalCustomThemeStyle(current)
       ? current
@@ -751,12 +752,10 @@ function _fsBindThemeColorSetEditor(root, ctx) {
     for (let i = 0; i < 10; i += 1) next[`--theme-palette-${i}`] = normalized[i % normalized.length];
     next[_fsThemeIdField(ctx).key] = _fsLocalCustomThemeId();
     next[_fsLocalCustomThemeNameKey()] = next[_fsLocalCustomThemeNameKey()] || 'カスタムテーマ';
-    _fsPersistStyleViaAdapter(ctx, adapter, next, { label: 'テーマカラー変更' });
-    _fsApplyCurrentStyleRuntime(ctx);
-    _fsRefreshThemePanels(ctx);
+    return _fsCommitThemeStyle(ctx, adapter, next, { label: 'テーマカラー変更' });
   };
   root.querySelector('[data-theme-os-accent-toggle]')?.addEventListener('click', () => {
-    fileThemeToggleOsAccent(ctx);
+    _fsRunThemeAction(ctx, () => fileThemeToggleOsAccent(ctx));
   });
   root.querySelectorAll('[data-theme-color-slot]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -767,7 +766,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
         const next = currentColors();
         next[index] = color;
         if (!id || !isCustom || isLocalCustom) {
-          saveLocalPalette(next);
+          _fsRunThemeAction(ctx, () => saveLocalPalette(next));
           return;
         }
         _fsPendingThemeColorSets[key] = next;
@@ -779,7 +778,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
     if (!id || !isCustom || isLocalCustom) {
       const sourceId = (_fsGetStyleForContext(ctx) || {})[_fsLocalCustomThemeSourceKey()] || MeldexThemeManager.getDefaultThemeId?.();
       const colors = _fsThemeColorSetForThemeId(sourceId);
-      if (Array.isArray(colors) && colors.length) saveLocalPalette(colors);
+      if (Array.isArray(colors) && colors.length) _fsRunThemeAction(ctx, () => saveLocalPalette(colors));
       return;
     }
     delete _fsPendingThemeColorSets[key];
@@ -793,26 +792,40 @@ function fileThemeSelect(ctx, id) {
   const nextId = String(id || '');
   if (!nextId) {
     if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = '';
-    _fsPersistStyleViaAdapter(ctx, adapter, null, { label: 'テーマ解除' });
-    _fsApplyCurrentStyleRuntime(ctx);
-    _fsRefreshThemePanels(ctx);
-    return;
+    return _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマ解除' });
   }
   if (_fsIsLocalCustomThemeId(nextId)) return;
-  _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, sourceId: nextId, name: 'カスタムテーマ' });
+  const next = _fsBuildLocalCustomThemeStyle(ctx, { adapter, sourceId: nextId, name: 'カスタムテーマ' });
+  return _fsCommitThemeStyle(ctx, adapter, next);
+}
+
+function _fsThemeAdapterIsCurrent(ctx, adapter) {
+  if (!adapter || adapter.isCurrent?.() === false || (typeof _railStyleIsReadOnly === 'function' && _railStyleIsReadOnly(ctx))) return false;
+  const targets = typeof window !== 'undefined' ? window.GBOptionTargetContext?.get?.().targets : null;
+  if (ctx !== 'calendar' && targets && typeof _railTargetStyleContext === 'function'
+    && (targets.length !== 1 || _railTargetStyleContext(targets[0]) !== ctx)) return false;
+  return true;
+}
+
+async function _fsCommitThemeStyle(ctx, adapter, style, options = {}) {
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+  const saved = await _fsPersistStyleViaAdapter(ctx, adapter, style, options);
+  if (saved === false) return false;
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
   _fsApplyCurrentStyleRuntime(ctx);
   _fsRefreshThemePanels(ctx);
+  return true;
 }
 
 async function fileThemeCreate(ctx) {
+  const adapter = _fsGetAdapter(ctx);
   const name = await cfPrompt('カスタムテーマ名', 'カスタムテーマ');
   if (name === null) return;
   const label = String(name || '').trim();
   if (!label) { showStatus('テーマ名を入力してください', true); return; }
-  const adapter = _fsGetAdapter(ctx);
-  _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, name: label });
-  _fsApplyCurrentStyleRuntime(ctx);
-  _fsRefreshThemePanels(ctx);
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+  const next = _fsBuildLocalCustomThemeStyle(ctx, { adapter, name: label });
+  if (!await _fsCommitThemeStyle(ctx, adapter, next)) return false;
   showStatus('カスタムテーマを作成しました');
 }
 
@@ -822,9 +835,13 @@ async function fileThemeDuplicate(ctx) {
   const sourceId = _fsCurrentThemeId(ctx, adapter) || MeldexThemeManager.getDefaultThemeId();
   const name = await cfPrompt('複製後のテーマ名', 'カスタムテーマ');
   if (name === null) return;
-  _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, _fsThemeIdField(ctx), adapter, { force: true, sourceId, name: String(name || '').trim() || 'カスタムテーマ' });
-  _fsApplyCurrentStyleRuntime(ctx);
-  _fsRefreshThemePanels(ctx);
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+  const current = _fsGetStyleForContext(ctx) || {};
+  const label = String(name || '').trim() || 'カスタムテーマ';
+  const next = _fsIsLocalCustomThemeStyle(current)
+    ? { ...current, [_fsLocalCustomThemeNameKey()]: label }
+    : _fsBuildLocalCustomThemeStyle(ctx, { adapter, sourceId, name: label });
+  if (!await _fsCommitThemeStyle(ctx, adapter, next)) return false;
   showStatus('カスタムテーマを複製しました');
 }
 
@@ -837,36 +854,36 @@ async function fileThemeRename(ctx) {
     if (name === null) return;
     const label = String(name || '').trim();
     if (!label) { showStatus('テーマ名を入力してください', true); return; }
+    if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
     const next = { ...(_fsGetStyleForContext(ctx) || {}) };
     next[_fsLocalCustomThemeNameKey()] = label;
-    _fsPersistStyleViaAdapter(ctx, adapter, next, { label: 'テーマ名変更' });
-    _fsRefreshThemePanels(ctx);
-    return;
+    return _fsCommitThemeStyle(ctx, adapter, next, { label: 'テーマ名変更' });
   }
   const theme = MeldexThemeManager.getCustomThemes().find(t => t.id === id);
   if (!theme) { showStatus('組み込みテーマは名前を変更できません', true); return; }
   const name = await cfPrompt('テーマ名', theme.name);
   if (name === null) return;
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
   const renamed = MeldexThemeManager.renameCustomTheme(id, name);
   if (!renamed) { showStatus('テーマ名を入力してください', true); return; }
   _fsRefreshThemePanels(ctx);
 }
 
-function fileThemeReset(ctx) {
+async function fileThemeReset(ctx) {
   const adapter = _fsGetAdapter(ctx);
   if (!adapter) return;
   const id = _fsCurrentThemeId(ctx, adapter);
   if (_fsIsLocalCustomThemeId(id)) {
-    fileThemeSelect(ctx, '');
+    if (!await fileThemeSelect(ctx, '')) return false;
     showStatus('デフォルトに戻しました');
     return;
   }
   if (ctx === 'board' && typeof bd !== 'undefined') {
-    _fsPersistStyleViaAdapter(ctx, adapter, null, { label: 'テーマリセット' });
+    if (!await _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマリセット' })) return false;
   } else if (ctx === 'scriptnote') {
-    _fsPersistStyleViaAdapter(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' });
+    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
   } else {
-    _fsPersistStyleViaAdapter(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' });
+    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
   }
   if (ctx !== 'scriptnote') {
     const panelId = _fsThemePanelId(ctx);
@@ -897,13 +914,27 @@ function _fsResetBoardRuntimeFileStyle() {
   if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
 }
 
-function fileThemeSave(ctx) {
+async function fileThemeSave(ctx) {
   if (typeof MeldexThemeManager === 'undefined') return;
   const adapter = _fsGetAdapter(ctx);
   const id = _fsCurrentThemeId(ctx, adapter);
   if (_fsIsLocalCustomThemeId(id)) {
+    if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+    let saved = true;
+    if (ctx === 'scriptnote') saved = await _getScriptNoteEditorForFileStyle?.()?.save?.();
+    else if (ctx === 'board' && typeof bdSave === 'function') saved = await bdSave();
+    else if (ctx === 'db' && typeof _dbFolderNoteStyleSaveQueue !== 'undefined') await _dbFolderNoteStyleSaveQueue;
+    else if (ctx === 'page' && typeof _runNoteAutoSave === 'function') {
+      const pc = document.getElementById('page-content');
+      await _runNoteAutoSave(pc, pc?.dataset?.path);
+      saved = !!pc && _noteMarkdownFromEditor(pc) === pc.dataset.lastSavedMd;
+    }
+    if (saved === false || !_fsThemeAdapterIsCurrent(ctx, adapter)) {
+      showStatus('テーマを保存できませんでした。未保存の設定は保持しています', true);
+      return false;
+    }
     showStatus('カスタムテーマはファイル内に保存済みです', false, { showSaveDialog: true });
-    return;
+    return true;
   }
   const list = MeldexThemeManager.getCustomThemes();
   const index = list.findIndex(t => t.id === id);
@@ -930,16 +961,17 @@ async function fileThemeDelete(ctx) {
   const id = _fsCurrentThemeId(ctx, adapter);
   if (_fsIsLocalCustomThemeId(id)) {
     if (!await cfConfirm('ファイル内のカスタムテーマを削除して、アプリ設定に戻しますか？')) return;
-    fileThemeSelect(ctx, '');
+    if (!_fsThemeAdapterIsCurrent(ctx, adapter) || !await fileThemeSelect(ctx, '')) return false;
     showStatus('カスタムテーマを削除しました');
     return;
   }
   const theme = MeldexThemeManager.getCustomThemes().find(t => t.id === id);
   if (!theme) { showStatus('削除できるカスタムテーマが選択されていません', true); return; }
   if (!await cfConfirm('カスタムテーマ「' + theme.name + '」を削除しますか？')) return;
+  if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
   delete _fsPendingThemeColorSets[_fsThemeColorSetKey(ctx, id)];
   MeldexThemeManager.deleteCustomTheme(id);
-  fileThemeSelect(ctx, '');
+  if (!await fileThemeSelect(ctx, '')) return false;
   showStatus('カスタムテーマを削除しました');
 }
 

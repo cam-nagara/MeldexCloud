@@ -713,6 +713,7 @@ function renderFolderGrid(opts) {
     const el = document.createElement('div');
     el.className = 'fv-item';
     if (item.type === 'folder' || item.type === 'database') el.classList.add('fv-folder-list-item');
+    el._folderItem = item;
     el.dataset.idx = idx;
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
@@ -874,6 +875,9 @@ function renderFolderGrid(opts) {
     // クリック: 選択（Ctrl=トグル追加、Shift=範囲選択）
     el.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.detail < 2
+          && e.target.closest('.fv-name') && el.classList.contains('selected')
+          && _folderStartRename(item, el)) return;
       if (e.ctrlKey || e.metaKey) {
         // Ctrl+クリック: トグル
         el.classList.toggle('selected');
@@ -1122,6 +1126,58 @@ function refreshVisibleFolderLockState() {
       : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
     lockBadge.dataset.gbTooltip = lockBadge.title;
     el.appendChild(lockBadge);
+  });
+}
+
+// ツリーとパネルで同じインライン編集・保存・失敗回復経路を使う。
+function _folderStartRename(item, card) {
+  if (!item?.path || item.type === 'entity' || item._isRoot || _folderMenuItemLocked(item)) return false;
+  card = card || [...(_folderGridEl()?.querySelectorAll('.fv-item') || [])].find(el => el.dataset.path === item.path);
+  if (!card) return false;
+  let label = card.querySelector('.fv-list-name-text, .fv-name');
+  if (!label) {
+    label = document.createElement('div');
+    label.className = 'fv-name';
+    label.textContent = item.name;
+    card.appendChild(label);
+  }
+  if (label.querySelector('input') || typeof startTreeLabelEdit !== 'function') return false;
+  startTreeLabelEdit(label, item);
+  return true;
+}
+
+// DOMを作り直さず、選択・スクロール・プレビューを保って改名結果を反映する。
+function _folderApplyRename(oldPath, newPath, newName, fileId) {
+  const seen = new Set();
+  const update = item => {
+    if (!item?.path || seen.has(item)) return;
+    seen.add(item);
+    if (item.path === oldPath || item.path === newPath) {
+      item.path = newPath;
+      item.name = newName;
+      if (fileId) item.file_id = fileId;
+    } else if (item.path.startsWith(oldPath + '/')) {
+      item.path = newPath + item.path.slice(oldPath.length);
+    }
+  };
+  _folderItems.forEach(update);
+  _folderSelectedItems.forEach(update);
+  update(_folderSelected);
+  document.querySelectorAll('.fv-item').forEach(card => {
+    update(card._folderItem);
+    const path = card.dataset.path;
+    if (path === oldPath || path === newPath) {
+      card.dataset.path = newPath;
+      card.dataset.itemName = newName;
+      const label = card.querySelector('.fv-list-name-text, .fv-name');
+      if (label) {
+        label.textContent = newName;
+        label.title = newName;
+        label.dataset.gbTooltip = newName;
+      }
+    } else if (path?.startsWith(oldPath + '/')) {
+      card.dataset.path = newPath + path.slice(oldPath.length);
+    }
   });
 }
 

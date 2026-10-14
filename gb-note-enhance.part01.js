@@ -188,6 +188,8 @@ function applyFileStyleToPanel(style, panelId) {
   if (!el) return;
   applyFileStyleToElement(style, el, panelId);
   if (panelId === 'page-content') {
+    const pageView = el.closest?.('#page-view');
+    if (pageView) applyFileStyleToElement(style, pageView, panelId);
     const titleEl = document.getElementById('page-title');
     if (typeof applyPageTitleStyleToElement === 'function') {
       applyPageTitleStyleToElement(style, titleEl);
@@ -252,6 +254,8 @@ function clearFileStyleForPanel(panelId) {
     if (el.dataset) delete el.dataset.fileStyleAppliedVars;
   }
   if (panelId === 'page-content') {
+    const pageView = el?.closest?.('#page-view');
+    if (pageView) clearFileStyleFromElement(pageView);
     const titleEl = document.getElementById('page-title');
     if (titleEl && typeof clearFileStyleFromElement === 'function') clearFileStyleFromElement(titleEl);
     const dp = document.getElementById('dp-editable');

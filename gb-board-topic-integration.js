@@ -29,25 +29,38 @@
   }
 
   function parseScalar(raw) {
-    const value = typeof global.bdYamlScalar === 'function' ? global.bdYamlScalar(raw) : String(raw || '').trim();
-    if (value && typeof value === 'object') return value;
-    try { return JSON.parse(String(value || '')); } catch (_) { return null; }
+    // 保存側のYAML整形はJSONを単一引用符と継続行へ変換することがある。
+    // 単一引用符内のJSONエスケープ（\\nなど）はYAMLでは展開しない。
+    let value = String(raw || '').trim().replace(/\n[ \t]+/g, ' ');
+    try {
+      if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1).replace(/''/g, "'");
+      for (let depth = 0; depth < 2 && typeof value === 'string'; depth += 1) value = JSON.parse(value);
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      try {
+        const fallback = global.bdYamlScalar?.(String(raw || '').trim());
+        return fallback && typeof fallback === 'object' ? fallback : null;
+      } catch (_) { return null; }
+    }
   }
 
   function parseFrontmatter(frontmatter) {
     const text = String(frontmatter || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const documentMatch = text.match(/^topicViewDocument:\s*(.+)$/m);
+    const documentMatch = text.match(/^topicViewDocument:[ \t]*(.+(?:\n[ \t]+[^\n]*)*)/m);
     const topicViewDocument = documentMatch ? parseScalar(documentMatch[1]) : null;
     const topicRefsByNodeKey = {};
     const lines = typeof global.bdYamlTopLevelBlock === 'function'
       ? global.bdYamlTopLevelBlock(text, REFS_FIELD)
       : [];
-    lines.forEach((line) => {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
       const match = line.match(/^\s+(n\d+):\s*(.*)$/);
-      if (!match) return;
-      const parsed = parseScalar(match[2]);
+      if (!match) continue;
+      let raw = match[2];
+      while (index + 1 < lines.length && /^\s{4,}\S/.test(lines[index + 1])) raw += '\n' + lines[++index];
+      const parsed = parseScalar(raw);
       if (parsed?.sourceId && parsed?.topicId) topicRefsByNodeKey[match[1]] = parsed;
-    });
+    }
     return { topicViewDocument, topicRefsByNodeKey };
   }
 
@@ -235,7 +248,16 @@
       || document?.boardViews?.[0] || null;
   }
 
+  const pendingSheetEditors = new WeakMap();
+
+  function commitPendingEdits(board) {
+    // 保存・ビュー操作はblurの発生順序に依存させない。
+    if (board?.editing) global.bdFinishEdit?.();
+    (pendingSheetEditors.get(board) || []).forEach(commit => commit());
+  }
+
   function captureRuntime(board) {
+    commitPendingEdits(board);
     // hydrate後に追加されたカードにも、ビューとラインを保存する前に安定TopicRefを付与する。
     // これが無いと初回保存だけ端点targetRefが一時的なnode idのまま残り、再読込時に
     // viewLinesToLegacyが接続元・接続先を解決できない。
@@ -250,8 +272,12 @@
       board.activeBoardViewId = null;
       return null;
     }
-    const index = document.boardViews.findIndex((view) => view.boardViewId === board.activeBoardViewId);
-    const targetIndex = index >= 0 ? index : 0;
+    const targetIndex = document.boardViews.findIndex((view) => view.boardViewId === board.activeBoardViewId);
+    // 削除したビューの実行時配置を、残った別ビューへ書き込まない。
+    if (targetIndex < 0) {
+      board.topicViewDocument = document;
+      return null;
+    }
     document.boardViews[targetIndex] = global.MeldexBoardTopicViews.captureViewState(
       document.boardViews[targetIndex], runtimeForCapture(board),
     );
@@ -314,6 +340,9 @@
       view.hiddenTopicRefs = (view.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       view.collapsedTopicRefs = (view.collapsedTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
     });
+    (next.sheetViews || []).forEach(view => {
+      if (Array.isArray(view.collapsedTopicRefs)) view.collapsedTopicRefs = view.collapsedTopicRefs.map(ref => replaceTopicRef(ref, replacements));
+    });
     (next.relationSets || []).forEach((relationSet) => {
       (relationSet.edges || []).forEach((edge) => {
         if (edge.parentTopicRef) edge.parentTopicRef = replaceTopicRef(edge.parentTopicRef, replacements);
@@ -339,6 +368,7 @@
     (board.nodes || []).forEach((node) => {
       const record = byRef.get(topicKey(node.topicRef));
       if (!record) return;
+      if (global.bdHasPendingNodeTextWrite?.(node)) return;
       const nextText = recordText(record);
       if (node.text !== nextText) { node.text = nextText; changed = true; }
     });
@@ -377,7 +407,7 @@
             topicRef: clone(placement.topicRef) };
       } else {
         node.topicRef = clone(placement.topicRef);
-        if (record) node.text = recordText(record);
+        if (record && !global.bdHasPendingNodeTextWrite?.(node)) node.text = recordText(record);
         if (Number.isFinite(+position.x)) node.x = +position.x;
         if (Number.isFinite(+position.y)) node.y = +position.y;
       }
@@ -395,6 +425,7 @@
   }
 
   function canonicalizeBoard(board, detail) {
+    commitPendingEdits(board);
     const sourceId = String(detail?.sourceId || '');
     const mapping = detail?.legacyNodeTopicIds || {};
     const replacements = new Map();
@@ -411,7 +442,13 @@
     }
     const placementsChanged = reconcileBoardPlacements(board, detail);
     const displayChanged = updateBoardRecordDisplays(board, detail);
-    if (replacements.size || placementsChanged || displayChanged) redraw();
+    if (replacements.size || placementsChanged || displayChanged) {
+      redraw();
+      const active = board.topicViewDocument?.activeViewRef;
+      const mountPoint = global._bdToolbarRoot?.()?.querySelector?.('.bd-mixed-sheet-mount');
+      if (active?.surface === 'sheet' && mountPoint) renderMixedSheet(board, active.viewId, mountPoint,
+        !!(board.readOnly || board.readonly || board.isReadOnly));
+    }
     return { replacementCount: replacements.size, placementsChanged, displayChanged };
   }
 
@@ -497,6 +534,8 @@
     board.groups = viewGroupsToLegacy(board, view.groups);
     board.connections = viewLinesToLegacy(board, view.lines);
     board.hiddenTopicRefs = clone(view.hiddenTopicRefs || []);
+    const collapsed = new Set((view.collapsedTopicRefs || []).map(topicKey));
+    board.nodes.forEach(node => { node.collapsed = !!node.topicRef && collapsed.has(topicKey(node.topicRef)); });
     board.topicStyleOverrides = clone(view.styleOverrides || {});
     board.panX = Number(view.camera?.pan?.x) || 0;
     board.panY = Number(view.camera?.pan?.y) || 0;
@@ -516,7 +555,7 @@
       ? normalizeTopicDocument(parsed.topicRuntime.topicViewDocument, board, path)
       : createDocument(board, path);
     board.activeBoardViewId = board.topicViewDocument.activeBoardViewId
-      || board.topicViewDocument.boardViews[0].boardViewId;
+      || board.topicViewDocument.boardViews[0]?.boardViewId || null;
     applyView(board, activeView(board));
     const bridge = global.GbTopicLiveBridge;
     if (bridge?.migrateOpenedSheet) {
@@ -570,12 +609,15 @@
   }
 
   function switchView(board, boardViewId, options) {
+    commitPendingEdits(board);
     const readOnly = !!(board?.readOnly || board?.readonly || board?.isReadOnly);
-    if (!readOnly) captureRuntime(board);
+    if (!readOnly && !options?.skipCapture) captureRuntime(board);
     const target = board.topicViewDocument.boardViews.find((view) => view.boardViewId === boardViewId);
     if (!target) return false;
     if (!readOnly && !options?.skipUndo) global.bdPushUndo?.('ボードビューを切り替え');
     applyView(board, target);
+    board.topicViewDocument.activeViewRef = { surface: 'board', viewId: boardViewId };
+    board.topicViewDocument.activeBoardViewId = boardViewId;
     if (!readOnly) global.bdDirty?.();
     redraw();
     return true;
@@ -1043,7 +1085,10 @@
 
   function teardownMixedSheetView(board) {
     try { board?._mixedSheetViewHost?.destroy?.(); } catch {}
-    if (board) board._mixedSheetViewHost = null;
+    if (board) {
+      board._mixedSheetViewHost = null;
+      pendingSheetEditors.delete(board);
+    }
     const root = global._bdToolbarRoot?.();
     root?.querySelector?.('[data-bd-mixed-sheet-host]')?.remove();
     root?.querySelector?.('[data-bd-mixed-view-empty]')?.remove();
@@ -1066,20 +1111,23 @@
 
   function switchMixedView(board, ref, options) {
     if (!board?.topicViewDocument || !ref?.surface || !ref?.viewId) return false;
+    commitPendingEdits(board);
     const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
     const documentValue = normalizeTopicDocument(board.topicViewDocument, board, board.path);
     const exists = ref.surface === 'board'
       ? documentValue.boardViews.some(view => view.boardViewId === ref.viewId)
       : documentValue.sheetViews.some(view => view.viewId === ref.viewId);
     if (!exists) return false;
+    if (!readOnly && !options?.skipUndo) global.bdPushUndo?.('ビューを切り替え');
     if (ref.surface === 'board') {
       teardownMixedSheetView(board);
       documentValue.activeViewRef = { surface: 'board', viewId: ref.viewId };
       documentValue.activeBoardViewId = ref.viewId;
       board.topicViewDocument = documentValue;
-      return switchView(board, ref.viewId, options);
+      return switchView(board, ref.viewId, { ...options, skipUndo: true });
     }
-    if (!readOnly && board.activeBoardViewId && documentValue.boardViews.length) captureRuntime(board);
+    if (!readOnly && !options?.skipCapture && board.activeBoardViewId && documentValue.boardViews.length
+      && board.topicViewDocument.activeViewRef?.surface !== 'sheet') captureRuntime(board);
     board.topicViewDocument.activeViewRef = { surface: 'sheet', viewId: ref.viewId };
     board.topicViewDocument.activeSheetViewId = ref.viewId;
     const root = global._bdToolbarRoot?.();
@@ -1093,31 +1141,129 @@
     const status = document.createElement('div'); status.className = 'bd-mixed-sheet-status'; status.textContent = 'シートビューを読み込んでいます';
     const mountPoint = document.createElement('div'); mountPoint.className = 'bd-mixed-sheet-mount';
     hostElement.append(status, mountPoint); root.appendChild(hostElement);
-    if (!global.MeldexTopicViewHost?.TopicViewHost) {
-      status.textContent = 'シート表示ホストを利用できません'; return false;
-    }
-    const runtimeId = `mixed-view:${board.topicViewDocument.documentId}:${ref.viewId}`;
-    const host = new global.MeldexTopicViewHost.TopicViewHost({
-      root: hostElement,
-      onStatus: (_block, state, reason) => {
-        status.dataset.status = state;
-        status.textContent = state === 'ready' ? '' : (reason || (state === 'loading' ? 'シートビューを読み込んでいます' : 'シートビューを表示できません'));
-        status.hidden = state === 'ready';
-      },
-    });
-    board._mixedSheetViewHost = host;
-    const sourceId = board.topicViewDocument.membership?.manualTopicRefs?.[0]?.sourceId || 'local-vault';
-    host.register({
-      blockId: runtimeId, resourceType: 'sheet', sourceId,
-      documentId: board.topicViewDocument.documentId, viewId: ref.viewId,
-      legacyPath: board.path || '', display: { interaction: readOnly ? 'read-only' : 'editable' },
-    }, hostElement, { runtimeBlockId: runtimeId, mountPoint });
-    host.setVisibilityForTest?.(runtimeId, true);
+    // 同じボード文書の未保存カード・ビューを表示する。サーバーsnapshotや
+    // selectDatabase(board.path)では、新規ビュー未登録／ボードはシートでないため失敗する。
+    renderMixedSheet(board, ref.viewId, mountPoint, readOnly);
+    status.dataset.status = 'ready'; status.hidden = true;
     if (!readOnly) global.bdDirty?.();
     return true;
   }
 
+  function mixedSheetRows(board, view) {
+    const nodes = board.nodes || [];
+    if (view.viewMode !== 'tree') return nodes.map(node => ({ node, depth: 0, hasChildren: false }));
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const children = new Map();
+    nodes.forEach(node => {
+      const parent = byId.has(node.parent) && node.parent !== node.id ? node.parent : '';
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(node);
+    });
+    const collapsed = new Set((view.collapsedTopicRefs || []).map(topicKey));
+    const rows = []; const seen = new Set();
+    const visit = root => {
+      const stack = [{ node: root, depth: 0, hidden: false }];
+      while (stack.length) {
+        const item = stack.pop(); const { node, depth, hidden } = item;
+        if (seen.has(node.id)) continue;
+        seen.add(node.id);
+        if (!hidden) rows.push({ node, depth, hasChildren: !!children.get(node.id)?.length });
+        const hideChildren = hidden || collapsed.has(topicKey(node.topicRef));
+        [...(children.get(node.id) || [])].reverse().forEach(child => stack.push({ node: child, depth: depth + 1, hidden: hideChildren }));
+      }
+    };
+    (children.get('') || []).forEach(visit);
+    // 循環だけからなる旧データでもカードを失わずに表示する。
+    nodes.forEach(node => { if (!seen.has(node.id)) visit(node); });
+    return rows;
+  }
+
+  function renderMixedSheet(board, viewId, mountPoint, readOnly) {
+    commitPendingEdits(board);
+    const editors = [];
+    pendingSheetEditors.set(board, editors);
+    const documentId = board.topicViewDocument.documentId;
+    const path = board.path;
+    const view = board.topicViewDocument.sheetViews.find(item => item.viewId === viewId);
+    const table = document.createElement('table'); table.className = 'bd-mixed-sheet-table';
+    const columns = view.columns.length ? view.columns : [
+      { columnId: 'title', name: 'カード' }, { columnId: 'note', name: '本文' },
+    ];
+    const head = document.createElement('thead'); const header = document.createElement('tr');
+    columns.forEach(column => { const cell = document.createElement('th'); cell.textContent = column.name || column.columnId || column.id; header.appendChild(cell); });
+    head.appendChild(header); table.appendChild(head);
+    const body = document.createElement('tbody');
+    mixedSheetRows(board, view).forEach(({ node, depth, hasChildren }) => {
+      const row = document.createElement('tr'); row.dataset.topicId = node.topicRef?.topicId || node.id;
+      columns.forEach((column, index) => {
+        const key = column.columnId || column.id || column.name;
+        const cell = document.createElement('td');
+        if (index === 0 && view.viewMode === 'tree') {
+          cell.style.paddingInlineStart = `${8 + depth * 20}px`;
+          if (hasChildren) {
+            const toggle = document.createElement('button'); toggle.type = 'button';
+            const collapsed = (view.collapsedTopicRefs || []).some(item => topicKey(item) === topicKey(node.topicRef));
+            toggle.textContent = collapsed ? '▸' : '▾'; toggle.setAttribute('aria-label', collapsed ? '展開' : '折りたたむ');
+            toggle.setAttribute('aria-expanded', String(!collapsed)); toggle.disabled = readOnly;
+            toggle.addEventListener('click', () => {
+              if (board.readOnly || board.readonly || board.isReadOnly || global.isItemLocked?.(board.path)) return;
+              global.bdPushUndo?.('シートの階層表示を変更');
+              const current = board.topicViewDocument.sheetViews.find(item => item.viewId === viewId);
+              if (!current) return;
+              current.collapsedTopicRefs = (current.collapsedTopicRefs || []).filter(item => topicKey(item) !== topicKey(node.topicRef));
+              if (!collapsed) current.collapsedTopicRefs.push(clone(node.topicRef));
+              global.bdDirty?.(); renderMixedSheet(board, viewId, mountPoint, readOnly);
+            }); cell.appendChild(toggle);
+          }
+        }
+        const text = String(node.text || ''); const separator = text.indexOf('\n');
+        const title = separator < 0 ? text : text.slice(0, separator);
+        const note = separator < 0 ? '' : text.slice(separator + 1);
+        const value = key === 'title' ? title : key === 'note' ? note : key === 'status' ? node.status : node.properties?.[key];
+        const input = document.createElement('textarea'); input.rows = 1;
+        input.setAttribute('aria-label', `${column.name || key}: ${title}`);
+        const scalar = value == null || ['string', 'number', 'boolean'].includes(typeof value);
+        input.value = global.MeldexTopicDetail?.valueText
+          ? global.MeldexTopicDetail.valueText(value)
+          : scalar ? String(value ?? '') : JSON.stringify(value);
+        const blocked = () => readOnly || board.readOnly || board.readonly || board.isReadOnly
+          || node.readOnly || node._topicReadOnly || node.locked || global.isItemLocked?.(board.path);
+        input.readOnly = !!blocked() || !scalar || !['title', 'note'].includes(key);
+        let committedValue = String(value ?? '');
+        const commit = () => {
+          if (!input.isConnected || board.path !== path || board.topicViewDocument?.documentId !== documentId) return false;
+          const currentNode = board.nodes.find(item => item.id === node.id);
+          if (!currentNode || input.readOnly || blocked() || currentNode._topicReadOnly || currentNode.locked
+            || input.value === committedValue) return false;
+          global.bdPushUndo?.('シートからカードを編集');
+          const currentText = String(currentNode.text || ''); const currentSeparator = currentText.indexOf('\n');
+          const currentTitle = currentSeparator < 0 ? currentText : currentText.slice(0, currentSeparator);
+          if (key === 'title') currentNode.text = input.value + (currentSeparator < 0 ? '' : currentText.slice(currentSeparator));
+          else if (key === 'note') currentNode.text = currentTitle + (input.value ? '\n' + input.value : '');
+          committedValue = input.value;
+          if (typeof global.bdPersistEditedNodeText === 'function') {
+            void global.bdPersistEditedNodeText(currentNode, currentText, (failedNode = currentNode) => {
+              if (board.path === path && board.topicViewDocument?.documentId === documentId
+                && board.nodes.includes(failedNode)) global.bdRender?.();
+            });
+          } else global.bdDirty?.();
+          return true;
+        };
+        editors.push(commit);
+        input.addEventListener('change', () => {
+          if (commit()) renderMixedSheet(board, viewId, mountPoint, readOnly);
+        });
+        cell.appendChild(input); row.appendChild(cell);
+      }); body.appendChild(row);
+    });
+    table.appendChild(body); mountPoint.replaceChildren(table);
+    if (!board.nodes?.length) {
+      const empty = document.createElement('p'); empty.textContent = 'カードがありません'; mountPoint.appendChild(empty);
+    }
+  }
+
   function mountToolbar(board) {
+    commitPendingEdits(board);
     const boardRoot = global._bdToolbarRoot?.();
     const desktopRoot = boardRoot?.nodeType === 1
       ? (boardRoot.querySelector?.('[data-bd-role="toolbar-top"]') || boardRoot)
@@ -1134,13 +1280,16 @@
     const refreshToolbars = () => toolbars.forEach((item) => item?.refresh?.());
     const controller = views.createController({
       readOnly,
-      getDocument: () => board.topicViewDocument,
+      getDocument: () => {
+        if (board.topicViewDocument.activeViewRef?.surface !== 'sheet') captureRuntime(board);
+        return board.topicViewDocument;
+      },
       setDocument: (document) => { board.topicViewDocument = document; },
       pushUndo: (label) => global.bdPushUndo?.(label),
       onChange: (_document, result) => {
         const nextRef = result?.activeViewRef
           || (result?.activeBoardViewId ? { surface: 'board', viewId: result.activeBoardViewId } : board.topicViewDocument.activeViewRef);
-        if (nextRef) switchMixedView(board, nextRef, { skipUndo: true });
+        if (nextRef) switchMixedView(board, nextRef, { skipUndo: true, skipCapture: true });
         else showMixedViewEmptyState(board);
         global.bdDirty?.();
         refreshToolbars();
@@ -1171,12 +1320,15 @@
     toolbar.groupControls = groupPanel ? mountGroupControls(groupPanel, board, { panel: true }) : null;
     global.showBoardTabs?.({ groupStyle: !readOnly });
     toolbar.toolbars = toolbars;
+    const active = board.topicViewDocument.activeViewRef;
+    if (active?.surface === 'sheet') switchMixedView(board, active, { skipCapture: true, skipUndo: true });
+    else if (!active) showMixedViewEmptyState(board);
     return toolbar;
   }
 
   global.MeldexBoardTopicIntegration = Object.freeze({
     parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, serializeFrontmatter,
-    switchView, switchMixedView, teardownMixedSheetView, showMixedViewEmptyState, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
+    switchView, switchMixedView, mixedSheetRows, teardownMixedSheetView, showMixedViewEmptyState, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
     installSaveHook, destroy,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));

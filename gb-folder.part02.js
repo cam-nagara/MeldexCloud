@@ -413,7 +413,7 @@ async function loadFileFolderTags(filePath, container) {
     container.innerHTML = '';
     folders.forEach(f => {
       const tag = document.createElement('span');
-      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:11px;background:rgba(255,255,255,0.08);color:var(--fg);cursor:pointer;';
+      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:11px;background:var(--ui-bg-control,var(--bg3));color:var(--fg);cursor:pointer;';
       const name = f.folder.split('/').pop() || f.folder;
       tag.textContent = (f.type === 'link' ? '\u2197 ' : '') + name;
       tag.title = f.folder + '（クリックで開く）';
@@ -436,7 +436,7 @@ async function loadFileFolderTags(filePath, container) {
 
     // +ボタン
     const addBtn = document.createElement('span');
-    addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:rgba(255,255,255,0.05);color:var(--fg2);cursor:pointer;';
+    addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:var(--ui-bg-control,var(--bg3));color:var(--fg2);cursor:pointer;';
     addBtn.textContent = '+';
     addBtn.title = 'フォルダにリンク登録';
     addBtn.dataset.gbTooltip = 'このファイルを別フォルダにもリンク登録します';

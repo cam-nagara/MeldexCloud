@@ -1,3 +1,9 @@
+      const apps = getThemeUiApplications();
+      const tone = getThemeUiAutoTone();
+      applyThemeUiApplications(apps, { forceTargets: true });
+      dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
+      dispatchThemeUiAutoToneChange({ tone, fromHistory: true });
+    }
     if (typeof global._refreshSettingsThemePanel === 'function') global._refreshSettingsThemePanel();
   }
 
@@ -55,6 +61,15 @@
     const nextSectionBar = src?.['section-bar']?.normal?.underline;
     if (legacySectionBar !== undefined && nextSectionBar === undefined) {
       base['section-bar'].normal.underline = _normalizeThemeUiValue(legacySectionBar);
+    }
+    // Older bulk settings could pin identical literal foreground/background
+    // colors on headings. They conceal the text even after the preset changes.
+    // Remove only that unusable pair; retain distinct custom backgrounds.
+    const heading = base['note-heading']?.normal;
+    if (heading && /^color:#[0-9a-f]{6}$/i.test(heading.fg)
+      && heading.fg.toLowerCase() === heading.bg.toLowerCase()) {
+      heading.fg = THEME_UI_VALUE_NONE;
+      heading.bg = THEME_UI_VALUE_NONE;
     }
     return base;
   }
@@ -171,11 +186,8 @@
 
   function getOsAccentTextColor() {
     const color = getOsAccentColor();
-    if (!color) return 'AccentColorText';
-    const r = parseInt(color.slice(1, 3), 16);
-    const g = parseInt(color.slice(3, 5), 16);
-    const b = parseInt(color.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
+    if (!color) return '#ffffff';
+    return getAccentTextColor(color);
   }
 
   function getOsAccentThemeColorSet() {
@@ -275,7 +287,7 @@
       if (explicitKeys.has(key)) return;
       if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
-        root.style.setProperty(key, useAvailableOsAccent ? THEME_OS_ACCENT_TEXT_CSS : getAccentTextColor(effectiveAccent));
+        root.style.setProperty(key, getAccentTextColor(effectiveAccent));
       } else if (options.restorePrevious === false) {
         _clearOsAccentStyleValue(root, key);
       } else {
@@ -283,23 +295,14 @@
       }
     });
     if (!shouldApplyAccent) _osAccentPreviousStyleValues.clear();
-    if (shouldApplyAccent) {
-      const accentSet = [appliedAccent];
-      _activeThemeColorSet = paintThemeColorSet(accentSet, { themeDef });
-      if (typeof global.syncThemeColorSetSwatches === 'function') global.syncThemeColorSetSwatches(document, accentSet);
-    } else {
-      _activeThemeColorSet = paintThemeColorSet(readStoredThemeColorSet() || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
-    }
+    // Accent controls and automatic series colors are independent contracts.
+    _activeThemeColorSet = paintThemeColorSet(readStoredThemeColorSet() || resolveThemeColorSet(themeDef), { themeDef });
     applyThemeUiApplications(getThemeUiApplications(), { forceTargets: true });
   }
 
-  function getAccentTextColor(color) {
-    if (!/^#[0-9a-f]{6}$/i.test(String(color || ''))) return THEME_OS_ACCENT_TEXT_CSS;
-    const value = String(color);
-    const r = parseInt(value.slice(1, 3), 16);
-    const g = parseInt(value.slice(3, 5), 16);
-    const b = parseInt(value.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
+  function getAccentTextColor(_color) {
+    // Foregrounds are user-controlled; never infer black/white from the background.
+    return '#ffffff';
   }
 
   function setUseOsAccentColor(enabled) {
@@ -317,13 +320,14 @@
 
   function _builtinAccentThemeUiApplications(id, applications) {
     const cfg = normalizeThemeUiApplications(applications);
-    const accent = BUILTIN_ACCENT_POLICIES[id]?.defaultColor;
-    if (!accent) return cfg;
-    // Dark/light presets use their default accent rather than sequential palette tones.
-    for (const states of Object.values(cfg)) for (const props of Object.values(states)) {
-      for (const [prop, value] of Object.entries(props)) {
-        if (THEME_UI_AUTO_VALUES.has(value) || /^auto-rows:/.test(value)) {
-          props[prop] = `${THEME_UI_VALUE_COLOR_PREFIX}${accent}`;
+    // Common controls include selector-backed chrome and tree files.
+    // Sequential folders, headings and section bars retain their eight colors.
+    const commonTargets = THEME_UI_TARGETS.filter(target => target.group === 'ui'
+      && (target.vars || target.id === 'left-chrome' || target.id === 'folder'));
+    for (const target of commonTargets) {
+      for (const props of Object.values(cfg[target.id] || {})) {
+        for (const [prop, value] of Object.entries(props)) {
+          if (THEME_UI_AUTO_VALUES.has(value)) props[prop] = 'var:--ui-accent';
         }
       }
     }
@@ -335,7 +339,7 @@
     const standardPaletteAdjust = themeStandardPaletteAdjustFromTheme({ ui: { standardPaletteAdjust: options.standardPaletteAdjust } }, null);
     const coloringRule = board.coloringRule
       ? { ...board.coloringRule, palette: colorSet, colorPalette: normalizeThemeColorSet(board.coloringRule.colorPalette || colorSet, colorSet) }
-      : { enabled: false, palette: colorSet, colorPalette: colorSet };
+      : { enabled: true, startDepth: 0, siblingShift: true, depthShift: 'paletteLoop', applyTo: 'background', palette: colorSet, colorPalette: colorSet };
     const ui = {
       cssVars: vars,
       themeColorSet: colorSet,
@@ -485,6 +489,8 @@
   }
 
   function _isObsoleteInitialCustomTheme(theme, options = {}) {
+    // A user's saved preset must survive even when its name matches a builtin.
+    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
     if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
     const label = _themeNameKey(theme?.name);
     return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
@@ -493,6 +499,7 @@
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
+    if (_readRawCustomThemes().some(theme => String(theme.id) === rawId)) return '';
     const promotedSource = _readPromotedInitialThemeSources().find(entry => String(entry.theme?.id || '') === rawId);
     if (promotedSource) return promotedSource.targetId;
     if (_initialCustomThemeCleanupVersionApplied()) return '';
@@ -513,6 +520,7 @@
   }
 
   function _normalizeThemeIdWithPromotedCustom(id) {
+    if (_readRawCustomThemes().some(theme => String(theme.id) === String(id))) return String(id);
     return _promotedInitialThemeIdFromCustomId(id) || normalizeThemeId(id) || '';
   }
 
@@ -616,12 +624,19 @@
       }
 
       const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // Older releases moved named custom presets into this archive. Restore
+      // their original identity without replacing any currently saved preset.
+      sourceByTarget.forEach(theme => {
+        if (!String(theme.id).startsWith('promoted-source-') && !nextThemes.some(item => item.id === theme.id)) {
+          nextThemes.push({ ...clone(theme), builtIn: false });
+        }
+      });
       const hasCleanupVersion = localStorage.getItem(THEME_CUSTOM_CLEANUP_VERSION_KEY) === THEME_CUSTOM_CLEANUP_VERSION;
       if (!hasCleanupVersion || nextThemes.length !== rawThemes.length) {
         localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(nextThemes));
         localStorage.setItem(THEME_CUSTOM_CLEANUP_VERSION_KEY, THEME_CUSTOM_CLEANUP_VERSION);
       }
-      if (promotedDefault) {
+      if (promotedDefault && !nextThemes.some(theme => theme.id === storedDefault)) {
         localStorage.setItem(DEFAULT_THEME_KEY, promotedDefault);
         localStorage.setItem('editor-theme-name', promotedDefault);
       }
@@ -690,7 +705,29 @@
   }
 
   function getBuiltInThemes() {
-    return clone(_promotedInitialBuiltInThemes());
+    // All four starter themes use the current shipped defaults.
+    return clone(BUILT_IN_THEMES).map(theme => {
+      Object.assign(theme.ui.cssVars, {
+        '--ui-dock-button-bg': 'transparent', '--outliner-item-bg': 'transparent',
+        '--ui-dock-button-border-width': '0px', '--ui-dock-button-hover-border-width': '0px',
+        '--ui-dock-button-active-border-width': '0px',
+        '--cal-event-fg': 'var(--cal-event-auto-fg, var(--ui-accent-fg))',
+        '--cal-accent-fg': 'var(--ui-accent-fg)', '--cal-mini-selected-fg': 'var(--ui-accent-fg)',
+        '--chat-active-fg': 'var(--ui-accent-fg)', '--version-active-fg': 'var(--ui-accent-fg)',
+      });
+      // Builtins always start with current defaults, not archived custom CSS.
+      for (const [key] of Object.entries(theme.ui.cssVars)) {
+        if (/-(?:selected|selection|active)-fg$/.test(key)) theme.ui.cssVars[key] = '#ffffff';
+      }
+      theme.ui.cssVars['--ui-accent-fg'] = '#ffffff';
+      for (const states of Object.values(theme.ui.themeUiApplications || {})) {
+        if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
+      }
+      for (const id of ['left-chrome', 'collapse-button', 'folder', 'folder-tree-folder']) {
+        if (theme.ui.themeUiApplications?.[id]?.normal) theme.ui.themeUiApplications[id].normal.bg = THEME_UI_VALUE_NONE;
+      }
+      return theme;
+    });
   }
 
   function getCustomThemes() {
@@ -699,19 +736,33 @@
   }
 
   function saveCustomThemes(themes, options = {}) {
-    const before = _captureThemeSettingsStorage([CUSTOM_THEMES_KEY]);
+    const keys = [CUSTOM_THEMES_KEY, PROMOTED_INITIAL_THEMES_KEY];
+    const before = _captureThemeSettingsStorage(keys);
     _ensureInitialCustomThemeCleanup();
     const nextThemes = (themes || []).filter(t => t && t.id && t.name);
+    const removedIds = new Set(_readRawCustomThemes()
+      .filter(theme => !nextThemes.some(item => item.id === theme.id)).map(theme => theme.id));
+    // An explicit deletion must not be undone by archive recovery on reopening.
+    // Keep the builtin's palette source, but remove its former custom identity.
+    const sources = _readPromotedInitialThemeSources();
+    if (sources.some(entry => removedIds.has(entry.theme.id))) {
+      _writePromotedInitialThemeSources(sources.map(entry => removedIds.has(entry.theme.id)
+        ? { ...entry, theme: { ...entry.theme, id: `promoted-source-${entry.targetId}` } }
+        : entry));
+    }
     localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(nextThemes));
-    _pushThemeSettingsHistory('設定: カスタムテーマ変更', before, [CUSTOM_THEMES_KEY], options.detail || '', options);
+    _pushThemeSettingsHistory('設定: カスタムテーマ変更', before, keys, options.detail || '', options);
   }
 
   function getAllThemes() {
-    return [...getBuiltInThemes(), ...getCustomThemes()];
+    // Retired starter copies stay in storage for existing file references and recovery.
+    return [...getBuiltInThemes(), ...getCustomThemes().filter(theme => !/^custom-simple-(dark|light|pastel|earth)$/.test(theme.id) && !_readPromotedInitialThemeSources().some(entry => entry.theme.id === theme.id))];
   }
 
   function getThemeById(id) {
     const resolved = resolveThemeId(id);
+    const legacy = getCustomThemes().find(theme => theme.id === resolved);
+    if (legacy) return clone(legacy);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -720,7 +771,8 @@
     _ensureInitialCustomThemeCleanup();
     const migrated = global.MeldexThemeMigration?.migrateEditorThemeStorage?.(DEFAULT_THEME_KEY) || '';
     const stored = localStorage.getItem(DEFAULT_THEME_KEY) || migrated || 'builtin-dark';
-    const next = _normalizeDefaultThemeId(stored);
+    const archivedTarget = _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
+    const next = _normalizeDefaultThemeId(archivedTarget || stored.replace(/^custom-simple-(dark|light|pastel|earth)$/, 'builtin-$1'));
     if (stored && next !== stored) {
       try { localStorage.setItem(DEFAULT_THEME_KEY, next); } catch {}
     }
@@ -846,55 +898,3 @@
 
   function bindPaletteTargets(palette, options = {}) {
     const colorSet = _effectiveThemeColorSet(palette, RAINBOW_PALETTE);
-    collectPaletteTargets({ force: options.force === true }).forEach(({ el, index, target }) => {
-      const normalizedTarget = target === 'pane-tab' || target === 'panelset-tab'
-        ? 'panel-tab'
-        : (target === 'detail-tab' ? 'inner-tab' : target);
-      el.dataset.themePaletteTarget = normalizedTarget;
-      el.dataset.themePaletteIndex = String(index % colorSet.length);
-    });
-    if (options.apply === false) return;
-    applyThemeUiApplications(null, { bindTargets: false });
-  }
-
-  function ensureThemeUiPaletteTargets(options = {}) {
-    if (options.bindTargets === false) return;
-    const palette = _activeThemeColorSet
-      || readStoredThemeColorSet()
-      || resolveThemeColorSet(getThemeById(getDefaultThemeId()));
-    if (!palette) return;
-    _activeThemeColorSet = _effectiveThemeColorSet(palette, RAINBOW_PALETTE);
-    bindPaletteTargets(_activeThemeColorSet, { apply: false, force: options.forceTargets === true });
-  }
-
-  function paintThemeColorSet(colors, options = {}) {
-    ensurePaletteRuntimeStyle();
-    const palette = _effectiveThemeColorSet(colors, RAINBOW_PALETTE, options.themeDef);
-    const root = document.documentElement;
-    for (let i = 0; i < 10; i += 1) {
-      const key = `--theme-palette-${i}`;
-      const value = palette[i % palette.length];
-      if (root.style.getPropertyValue(key).trim() !== value) root.style.setProperty(key, value);
-    }
-    if (options.bindTargets !== false) bindPaletteTargets(palette);
-    else applyThemeUiApplications(null, { bindTargets: false });
-    return palette;
-  }
-
-  function applyPaletteTargets(themeDef) {
-    const themePalette = resolveThemeColorSet(themeDef);
-    const storedPalette = readStoredThemeColorSet();
-    const palette = paintThemeColorSet(storedPalette || themePalette, { themeDef });
-    _activeThemeColorSet = palette;
-    if (storedPalette && themeColorSetsEqual(storedPalette, themePalette)) {
-      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
-    }
-  }
-
-  function getThemeColorSet(themeDef, options = {}) {
-    const activePalette = _activeThemeColorSet;
-    const palette = themeDef
-      ? resolveThemeColorSet(themeDef)
-      : (readStoredThemeColorSet() || activePalette || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
-    return palette.slice();
-  }

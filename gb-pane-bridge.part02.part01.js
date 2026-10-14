@@ -817,6 +817,9 @@
     'version',
   ]);
   const PASSIVE_TOOL_PANE_TYPES = new Set([
+    'information',
+    'backlinks',
+    'file-theme',
     'chat',
     'annotation',
     'sticky',

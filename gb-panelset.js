@@ -152,8 +152,9 @@
         state.index = nextIndex;
         context.panelsetNode.activeGroupId = resolved.group.id;
         resolved.pane.activeTabIndex = resolved.tabIndex;
-        context.panelsetNode.collapsed = false;
-        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (context.panelsetNode.collapsed) {
+          _setPanelsetCollapsed(context.panelsetNode, false, { skipActivePaneCallback: true, skipSave: true });
+        } else if (typeof GBLayout?.render === 'function') GBLayout.render();
         if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
         return true;
       }
@@ -1077,12 +1078,27 @@
         _openRailAppInMain(item.type);
       });
       btn.dataset.e2eId = `fixed-left-rail-app-${item.type}`;
+      btn.dataset.railAppType = item.type;
       btn.setAttribute('aria-haspopup', 'menu');
       btn.addEventListener('contextmenu', (e) => _showRailAppMenu(e, item));
       if (typeof addLongPressHandler === 'function') {
         addLongPressHandler(btn, (e) => _showRailAppMenu(e, item));
       }
       dockBar.appendChild(btn);
+    });
+    syncLeftRailActiveApp(dockBar);
+  }
+
+  function syncLeftRailActiveApp(root = document) {
+    const paneId = _mainPaneIdForRailApp();
+    const pane = GBLayout?.findNode?.(GBLayout.root, paneId)?.node;
+    const tabType = pane?.tabs?.[pane.activeTabIndex]?.type || '';
+    const type = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(tabType)
+      ? 'database' : tabType;
+    root.querySelectorAll('.gb-dock-rail-app[data-rail-app-type]').forEach(btn => {
+      const active = btn.dataset.railAppType === type;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
     });
   }
 
@@ -1263,11 +1279,21 @@
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
-          // 固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
+          // 展開中の固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
           // DOM・選択・スクロールを保持したまま、右サイドバー本体だけ差し替える。
           const switchFixedRightRailContent = () => {
+            if (panelsetNode.collapsed) {
+              panelsetNode.activeGroupId = g.id;
+              pane.activeTabIndex = tabIdx;
+              // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
+              // collapsedだけを書き換えると本体がレール幅のままになる。
+              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
+              return;
+            }
             const previousGroup = groups.find(item => item?.id === panelsetNode.activeGroupId);
-            if (previousGroup?.root && previousGroup.id !== g.id) {
+            // 同じアイコンの再選択でも本体DOMを作り直すため、現在の
+            // ライブコンテナを先に退避する。省略すると設定欄自体が消失する。
+            if (previousGroup?.root) {
               _collectPanesInGroup(previousGroup.root).forEach(previousPane => {
                 if (typeof GBPaneBridge?.retractPaneContent === 'function') {
                   GBPaneBridge.retractPaneContent(previousPane.id);
@@ -1278,6 +1304,7 @@
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
             panelsetNode.collapsed = false;
+            delete panelsetNode._userCollapsed;
             col.classList.remove('gb-dock-collapsed');
             body.style.display = 'flex';
             body.replaceChildren();
@@ -1444,6 +1471,7 @@
     renderActiveGroupContent,
     renderGroupIconButton,
     renderDock,
+    syncLeftRailActiveApp,
     collectGroupTabTypes,
     switchGroup,
     closeGroup,

@@ -698,7 +698,7 @@ function renderPivot(ctx) {
         _setSelectedColumns(dbPath, ['__entity__'], '__entity__');
         _applySelectedColumnClasses(ctx, dbPath);
         if (typeof showDbPropertySettingsForColumn === 'function') {
-          showDbPropertySettingsForColumn(dbPath, '__entity__');
+          showDbPropertySettingsForColumn(dbPath, '__entity__', { ctx, openPanel: false });
         }
       });
       // リサイズハンドル
@@ -882,7 +882,7 @@ function renderPivot(ctx) {
         }
         _applySelectedColumnClasses(ctx, dbPath);
         if (typeof showDbPropertySettingsForColumn === 'function') {
-          showDbPropertySettingsForColumn(dbPath, nextSelected.length === 1 ? nextSelected[0] : '', { switchTab: true });
+          showDbPropertySettingsForColumn(dbPath, nextSelected.length === 1 ? nextSelected[0] : '', { switchTab: true, ctx, openPanel: false });
         }
         return;
       }
@@ -892,7 +892,7 @@ function renderPivot(ctx) {
         _setSelectedColumns(dbPath, nextSelected, p);
       }
       if (typeof showDbPropertySettingsForColumn === 'function') {
-        showDbPropertySettingsForColumn(dbPath, p);
+        showDbPropertySettingsForColumn(dbPath, p, { ctx, openPanel: false });
       }
       _applySelectedColumnClasses(ctx, dbPath);
     });

@@ -154,7 +154,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 32px;
+  width: var(--gb-rail-width, 38px);
   gap: 2px;
   padding: 2px 0 4px;
   border: 0;
@@ -180,11 +180,19 @@ html[data-single-window="1"] .left-chrome-floating {
 }
 
 .left-chrome-floating-btn {
-  width: 28px;
-  height: 28px;
+  width: var(--gb-rail-button-size, 34px);
+  height: var(--gb-rail-button-size, 34px);
+  min-height: var(--gb-rail-button-size, 34px);
+  border: 0;
   border-radius: var(--ui-radius-sm, 4px);
-  flex: 0 0 28px;
+  flex: 0 0 var(--gb-rail-button-size, 34px);
   padding: 0;
+}
+
+.left-chrome-floating-btn .ico {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
 }
 
 .left-chrome-floating.is-docked {
@@ -194,22 +202,10 @@ html[data-single-window="1"] .left-chrome-floating {
   flex: 0 0 auto;
   align-self: center;
   width: 100%;
-  max-width: 32px;
+  max-width: var(--gb-rail-width, 38px);
   box-sizing: border-box;
   margin-top: auto;
   background: transparent;
-}
-
-.gb-split-collapsed-horizontal > .left-chrome-floating.is-docked {
-  width: 24px;
-  max-width: 24px;
-  padding: 2px 0 3px;
-}
-
-.gb-split-collapsed-horizontal > .left-chrome-floating.is-docked .left-chrome-floating-btn {
-  width: 24px;
-  height: 24px;
-  flex-basis: 24px;
 }
 
 .left-chrome-floating.is-docked .left-chrome-avatar {

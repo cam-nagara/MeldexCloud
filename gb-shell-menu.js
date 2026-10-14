@@ -23,6 +23,7 @@ function _shellMenuIconHtml(icon, size = 14) {
 function _shellMenuAppendItem(menu, label, action, options = {}) {
   const item = document.createElement('button');
   item.type = 'button';
+  item.dataset.e2eId = options.e2eId || ('shell-menu-' + encodeURIComponent(String(label || 'item')));
   item.className = 'gb-context-menu-item' + (options.className ? ' ' + options.className : '');
   item.setAttribute('role', options.role || 'menuitem');
   if (options.e2eId) item.dataset.e2eId = options.e2eId;

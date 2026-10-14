@@ -65,6 +65,7 @@ function _bdSnapshot() {
     groups: bd.groups,
     topicViewDocument: bd.topicViewDocument,
     activeBoardViewId: bd.activeBoardViewId,
+    camera: { panX: bd.panX, panY: bd.panY, zoom: bd.zoom, rotation: bd.rotation },
     hiddenTopicRefs: bd.hiddenTopicRefs,
     topicStyleOverrides: bd.topicStyleOverrides,
     // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
@@ -122,9 +123,14 @@ function _bdApplySnapshot(s) {
   // スナップショット適用前に確定しておく（gb-board-find.js の
   // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
+  const previousNodes = bd.nodes;
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
+  if (typeof bdRestoreSnapshotNodeTextWrites === 'function') {
+    bdRestoreSnapshotNodeTextWrites(previousNodes, bd.nodes);
+  }
   if (s.topicViewDocument !== undefined) bd.topicViewDocument = s.topicViewDocument;
   if (s.activeBoardViewId !== undefined) bd.activeBoardViewId = s.activeBoardViewId || '';
+  if (s.camera) Object.assign(bd, s.camera);
   if (s.hiddenTopicRefs !== undefined) bd.hiddenTopicRefs = s.hiddenTopicRefs || [];
   if (s.topicStyleOverrides !== undefined) bd.topicStyleOverrides = s.topicStyleOverrides || {};
   bd.cardStyles = s.cardStyles || bd.cardStyles;
@@ -173,6 +179,13 @@ function _bdApplySnapshot(s) {
   } else {
     bdClearConnectionSelection();
   }
+  if (typeof MeldexBoardTopicIntegration !== 'undefined' && bd.topicViewDocument) {
+    MeldexBoardTopicIntegration.teardownMixedSheetView(bd);
+    MeldexBoardTopicIntegration.mountToolbar(bd);
+  }
+  if (typeof bdTransform === 'function') bdTransform();
+  if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="board"]')
+    && typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('board');
 }
 function bdUndo() {
   if (_bdHasCommonHistory()) { return historyUndo(_bdHistoryScope()); }
@@ -318,6 +331,9 @@ async function bdOpenBoard(label, path, opts) {
     if (coordinator) {
       documentKeyAtOpen = coordinator.bindDocumentIdentity(nextPath, data) || documentKeyAtOpen;
       coordinator.registerParticipant(documentKeyAtOpen, bd);
+    }
+    if (data.display_title && typeof renameAppPathReferences === 'function') {
+      renameAppPathReferences(nextPath, nextPath, { label: data.display_title, type: 'board' });
     }
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {

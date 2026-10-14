@@ -86,6 +86,10 @@
 
   function renderBuiltinPresets(options) {
     const { state, textButton, safeKeyPart, onInstall } = options;
+    const availablePresets = (state.builtinPresets || []).filter(
+      item => item.available && Number(item.bundled_tag_count) > 0,
+    );
+    if (!availablePresets.length) return document.createDocumentFragment();
     const section = document.createElement('section');
     section.className = 'gb-tag-management-builtins';
     const toggle = document.createElement('button');
@@ -103,7 +107,7 @@
       toggle.setAttribute('aria-expanded', state.builtinPresetsOpen ? 'true' : 'false');
     };
     toggle.addEventListener('click', () => setOpen(!state.builtinPresetsOpen));
-    (state.builtinPresets || []).forEach(item => {
+    availablePresets.forEach(item => {
       const row = document.createElement('div');
       row.className = 'gb-section gb-section--boxed';
       row.style.cssText = 'padding:7px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;';
