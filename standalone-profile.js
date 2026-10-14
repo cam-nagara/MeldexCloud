@@ -206,7 +206,7 @@
     if (boardToolbar) {
       badgeEl = _createBadge();
       badgeEl.classList.add('tb-icon-btn');
-      const moreButton = boardToolbar.querySelector('.sa-mtb-more-btn');
+      const moreButton = boardToolbar.querySelector('.gb-toolbar-overflow-button') || boardToolbar.querySelector('.sa-mtb-more-btn');
       if (moreButton) boardToolbar.insertBefore(badgeEl, moreButton);
       else boardToolbar.appendChild(badgeEl);
       _renderBadgeContent();

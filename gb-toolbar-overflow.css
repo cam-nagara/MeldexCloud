@@ -1,0 +1,69 @@
+/* Every horizontal application toolbar reserves space for the overflow trigger. */
+.gb-toolbar-overflow-host {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap !important;
+  overflow: visible !important;
+}
+.gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
+.gb-toolbar-overflow-host > :is(.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title) {
+  flex: 1 1 auto;
+  min-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-toolbar-overflow-host > #sidebar-search-input { flex: 1 1 auto !important; min-width: 48px !important; }
+.gb-toolbar-overflow-host > .gb-tbo-hidden { display: none !important; }
+.gb-toolbar-overflow-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px !important;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 !important;
+  margin-left: auto;
+  font-size: 11px;
+}
+.gb-toolbar-overflow-button[hidden] { display: none !important; }
+.gb-toolbar-overflow-popup {
+  position: fixed;
+  z-index: 10050;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  padding: 6px;
+  color: var(--fg);
+  background: var(--ui-popup-bg, var(--bg2));
+  border: 1px solid var(--ui-border-strong, var(--border));
+  border-radius: var(--ui-radius-md, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px #0008);
+}
+.gb-toolbar-overflow-popup .gb-tbo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 32px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: normal;
+}
+.gb-tbo-row > :is(svg, .ico) { flex: 0 0 16px; width: 16px; height: 16px; }
+.gb-tbo-row > span { overflow-wrap: anywhere; }
+.gb-tbo-row > :is(input, select) { min-width: 0; max-width: 55%; margin-left: auto; }
+.gb-tbo-row:hover:not(:disabled), .gb-tbo-row.active { background: var(--ui-hover-bg, var(--bg3)); }
+.gb-tbo-row:disabled { opacity: .45; }
+.gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
+@media (pointer: coarse) {
+  .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
+  .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
+}

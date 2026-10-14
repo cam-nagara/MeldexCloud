@@ -2,6 +2,32 @@
 const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'tasks', 'shifts', 'chart', 'graph', 'form']);
 const _CHAT_TARGET_MODES = new Set(['follow-main', 'manual', 'detached']);
 
+// Capture at creation time. Existing/manual room titles never follow tab changes.
+function _chatNewRoomBaseName(now = new Date()) {
+  let path = '';
+  try {
+    const paneId = typeof GBPaneDefaultLayout !== 'undefined'
+      ? GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true, allowLocked: true }) : '';
+    if (paneId && typeof GBTabs !== 'undefined') {
+      const tab = GBTabs.getActiveTab(paneId);
+      path = _chatCurrentTargetFromTab(tab).path;
+    } else if (typeof GBLayout === 'undefined') {
+      path = _chatCurrentOpenTarget().path;
+    }
+  } catch {}
+  const filename = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '無題';
+  const safeName = filename.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100) || '無題';
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+  return safeName + ' ' + date;
+}
+
+function _chatUniqueNewRoomName(base, rooms) {
+  const names = new Set((rooms || []).map(room => room.name));
+  let name = base;
+  for (let i = 2; names.has(name); i++) name = base + ' (' + i + ')';
+  return name;
+}
+
 function _chatRuntimeState() {
   return typeof _chatState === 'undefined' ? null : _chatState;
 }

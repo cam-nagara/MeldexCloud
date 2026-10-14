@@ -1603,7 +1603,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
 .team-room-toolbar { min-width:0; flex-wrap:wrap; }
 .team-room-select { flex:1 1 120px; min-width:0 !important; }
 .team-room-toolbar-actions { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
-.team-room-toolbar-btn { font-size:12px; padding:2px 8px; background:var(--bg3); color:var(--fg2); border:1px solid var(--border); border-radius:3px; cursor:pointer; display:flex; align-items:center; gap:3px; white-space:nowrap; }
+.team-room-toolbar-btn { font-size:12px; padding:2px 8px; background:var(--bg3); color:var(--fg2); border:1px solid var(--border); border-radius:3px; cursor:pointer; display:flex; align-items:center; gap:3px; white-space:nowrap; flex-shrink:0; }
 @media (max-width: 380px) {
   .team-room-toolbar { align-items:stretch !important; flex-wrap:wrap; }
   .team-room-select { flex:1 1 100% !important; min-width:0 !important; }

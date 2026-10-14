@@ -1076,15 +1076,16 @@ _chatBindImeCompositionGuard('chat-input');
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
+let _teamRoomCreationPending = false;
+
 async function showCreateRoomModal() {
-  if (!_chatRequireSourceFolder()) return;
-  // ダイアログなしで即座に「無題」ルームを作成（連番を自動付与）
+  if (!_chatRequireSourceFolder() || _teamRoomCreationPending) return;
+  // メインパネルのファイル名と日付を、作成時点で初期タイトルにする。
+  const baseName = _chatNewRoomBaseName();
+  _teamRoomCreationPending = true;
   try {
-    const existing = await apiFetch(_chatApiPath('/collab/rooms')).catch(() => []);
-    const names = new Set((existing || []).map(r => r.name));
-    let name = '無題';
-    let i = 2;
-    while (names.has(name)) { name = '無題' + i; i++; }
+    const existing = await apiFetch(_chatApiPath('/collab/rooms'));
+    const name = _chatUniqueNewRoomName(baseName, existing);
     const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'general' }));
     await loadTeamRooms();
     const roomName = name;
@@ -1097,6 +1098,8 @@ async function showCreateRoomModal() {
     }, 50);
   } catch (e) {
     showStatus('ルーム作成に失敗: ' + (e.message || ''), true);
+  } finally {
+    _teamRoomCreationPending = false;
   }
 }
 
@@ -1105,13 +1108,12 @@ async function showCreateRoomModal() {
 // ルームを作成する。実体はグループルーム(参加者名簿を持つ既存の仕組み)で、後から
 // 参加者を追加すればワークスペース全員が見えるルームへ育てられる。
 async function createSoloTeamRoom() {
-  if (!_chatRequireSourceFolder()) return;
+  if (!_chatRequireSourceFolder() || _teamRoomCreationPending) return;
+  const baseName = _chatNewRoomBaseName();
+  _teamRoomCreationPending = true;
   try {
-    const existing = await apiFetch(_chatApiPath('/collab/rooms')).catch(() => []);
-    const names = new Set((existing || []).filter(r => r.type === 'group').map(r => r.name));
-    let name = '自分だけのルーム';
-    let i = 2;
-    while (names.has(name)) { name = '自分だけのルーム' + i; i++; }
+    const existing = await apiFetch(_chatApiPath('/collab/rooms'));
+    const name = _chatUniqueNewRoomName(baseName, (existing || []).filter(r => r.type === 'group'));
     const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'group', members: [] }));
     await loadTeamRooms();
     const roomPath = res?.path || ('group/' + name);
@@ -1123,6 +1125,8 @@ async function createSoloTeamRoom() {
     }, 50);
   } catch (e) {
     showStatus('ルーム作成に失敗: ' + (e.message || ''), true);
+  } finally {
+    _teamRoomCreationPending = false;
   }
 }
 
