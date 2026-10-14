@@ -50401,6 +50401,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function recompute(entry) {
     const { toolbar, more } = entry;
+    const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
     if (toolbar.lastElementChild !== more) toolbar.appendChild(more);
     const before = entry.overflow;
@@ -50434,6 +50435,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     entry.overflow = items.filter(el => removed.has(el));
     more.hidden = entry.overflow.length === 0;
+    if (hadMoreFocus && !more.hidden) more.focus({ preventScroll: true });
     if (active === entry && (before.length !== entry.overflow.length || before.some((el, i) => el !== entry.overflow[i]))) close(true);
   }
 

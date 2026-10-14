@@ -1,4 +1,4 @@
-const QUICK_MEMO_CACHE = 'meldex-quick-memo-v7';
+const QUICK_MEMO_CACHE = 'meldex-quick-memo-v8';
 const QUICK_MEMO_CACHE_PREFIX = 'meldex-quick-memo-';
 const QUICK_MEMO_ASSETS = [
   'quick-memo.html',
