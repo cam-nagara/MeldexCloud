@@ -3,7 +3,7 @@
   "schema_version": 1,
   "manual_version": "0.7.388",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "9e40dc6fdffac8f94a6ce93ea2001c5470c5a5a68e1f104fda5e98a9da39692a",
+  "source_digest": "221441057297df8730dff1e7bccad2d2b038ec843fbcaf2f1a6ff580996a296a",
   "document_count": 207,
   "chunk_count": 1904,
   "documents": [
@@ -39,7 +39,7 @@
       "path": "01_はじめに/初回セットアップガイド.md",
       "title": "初回セットアップガイド",
       "category": "基本ガイド",
-      "source_sha256": "9a1fa489019dd055487f574a7d1260004734bd77daf67408e81ffa5974fd02c7",
+      "source_sha256": "0e3c1d6a2f7cfde959eb728fc64422a38631f0e0ba5c15dd8321ec10874d2652",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E5%88%9D%E5%9B%9E%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97%E3%82%AC%E3%82%A4%E3%83%89.md"
     },
     {
@@ -2765,7 +2765,7 @@
       "category": "基本ガイド",
       "heading": "ホーム画面に追加",
       "anchor": "_5",
-      "text": "初回同意後、クラウド版/PWA向けに ホーム画面に追加 モーダルが表示されます。Meldex本体とクイックメモは別々に追加するため、案内内で Meldex本体 と クイックメモ が分かれて表示されます。\n対応ブラウザでは、Meldex本体の追加確認をMeldex内のボタンから開けます。クイックメモは クイックメモを開く から開き、その画面をホーム画面に追加してください。あとで追加したい場合は、設定 → 導入・アプリ連携 → ホーム画面に追加 から同じ案内を開けます。",
+      "text": "初回同意後、クラウド版/PWA向けに ホーム画面に追加 モーダルが表示されます。Meldex本体とクイックメモは別々に追加するため、案内内で Meldex本体 と クイックメモ が分かれて表示されます。\n対応ブラウザでは、Meldex本体の追加確認をMeldex内のボタンから開けます。あとで追加したい場合は、設定 → 導入・アプリ連携 → ホーム画面に追加 から同じ案内を開けます。\nクイックメモの単独アプリは、端末に応じたボタンから追加手順を確認します。手順を表示しても、Meldex本体の画面は切り替わりません。\nスマホの場合:\nスマホでは ホームに追加 を押します。\n追加用ページを開く を押し、Safariの共有メニューやChromeのメニューから ホーム画面に追加 を選びます。\nWindows PCの場合:\nWindows PCでは タスクバーにピン留め を押します。\nクイックメモの単独アプリ（MeldexQuickMemo.exe）を起動します。\nタスクバーのクイックメモのアイコンを右クリックし、タスクバーにピン留めする を選びます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E5%88%9D%E5%9B%9E%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97%E3%82%AC%E3%82%A4%E3%83%89.md&section=_5"
     },
     {

@@ -25,6 +25,7 @@
   let _installDialogApi = null;
   let _cloudHomeDialogApi = null;
   let _installHelpDialogApi = null;
+  let _quickMemoInstallDialogApi = null;
   let _consentDialogApi = null;
 
   function _safeStorageGet(key) {
@@ -391,10 +392,14 @@
       ];
     }
     return [
-      'クイックメモ画面をChromeまたはEdgeで開きます。',
-      'アドレスバー右側のインストールアイコン、またはブラウザメニューの「アプリをインストール」を選びます。',
-      '追加後は「Meldex Memo」として起動できます。',
+      'クイックメモの単独アプリ（MeldexQuickMemo.exe）を起動します。',
+      'タスクバーのクイックメモのアイコンを右クリックします。',
+      '「タスクバーにピン留めする」を選びます。次回からこのアイコンで単独アプリを起動できます。',
     ];
+  }
+
+  function _quickMemoInstallLabel() {
+    return _isIosLike() || _isAndroidLike() ? 'ホームに追加' : 'タスクバーにピン留め';
   }
 
   function _quickMemoUrl() {
@@ -403,12 +408,56 @@
 
   function openMeldexQuickMemo() {
     const url = _quickMemoUrl();
-    const opened = window.open(url, '_blank');
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
     if (opened) {
       try { opened.opener = null; } catch (_) {}
-      return;
     }
-    location.href = url;
+    // WebViewやnoopenerでは、別画面を開いても戻り値がnullになる。
+    // Meldex本体をクイックメモへ移動させるフォールバックは行わない。
+  }
+
+  function showQuickMemoInstallDialog() {
+    if (_quickMemoInstallDialogApi?.isOpen?.()) _quickMemoInstallDialogApi.close('replace');
+    const mobile = _isIosLike() || _isAndroidLike();
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const closeButton = _el('button', {
+      type: 'button', class: 'gb-btn gb-btn-sm',
+      'aria-label': 'クイックメモの追加手順を閉じる',
+      dataset: { e2eId: 'quick-memo-install-close' }, text: '閉じる',
+    });
+    const pageButton = mobile ? _el('button', {
+      type: 'button', class: 'gb-btn gb-btn-sm gb-btn-primary primary',
+      dataset: { e2eId: 'quick-memo-install-page' }, text: '追加用ページを開く',
+    }) : null;
+    pageButton?.addEventListener('click', openMeldexQuickMemo);
+    let dialogApi = null;
+    dialogApi = window.GBUI.createModal({
+      id: 'quick-memo-install-dialog',
+      titleId: 'quick-memo-install-title',
+      title: 'クイックメモを' + _quickMemoInstallLabel(),
+      body: [
+        _el('p', { class: 'meldex-install-help-intro', text: mobile
+          ? 'クイックメモの単独アプリをホーム画面に追加します。追加用ページは別画面で開きます。'
+          : 'クイックメモの単独アプリをWindowsのタスクバーにピン留めします。' }),
+        _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
+      ],
+      footer: pageButton ? [pageButton, closeButton] : [closeButton],
+      variant: 'standard',
+      extraClass: 'meldex-install-help-modal',
+      geometryKey: 'quick-memo-install-dialog',
+      initialFocus: pageButton || closeButton,
+      returnFocus: opener,
+      onClose: () => { if (_quickMemoInstallDialogApi === dialogApi) _quickMemoInstallDialogApi = null; },
+    });
+    _quickMemoInstallDialogApi = dialogApi;
+    dialogApi.overlay.id = 'quick-memo-install-overlay';
+    dialogApi.overlay.classList.add('modal-overlay', 'meldex-install-help-overlay');
+    dialogApi.modal.classList.add('modal');
+    dialogApi.body.classList.add('modal-body', 'meldex-install-help-body');
+    dialogApi.footer.classList.add('btn-row');
+    dialogApi.overlay.addEventListener('meldex-release-dialog-close', () => dialogApi.close('external'));
+    closeButton.addEventListener('click', () => dialogApi.close('footer'));
+    dialogApi.open();
   }
 
   function _installStatusText() {
@@ -590,7 +639,7 @@
     title.appendChild(_el('span', { text: 'ホーム画面に追加' }));
     const desc = _el('div', {
       class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
-      text: 'Meldex本体とクイックメモは別々にホーム画面へ追加します。用途に合わせて必要なものを追加してください。',
+      text: 'Meldex本体とクイックメモの単独アプリは別々に追加します。用途に合わせて必要なものを追加してください。',
     });
     const status = _el('div', {
       class: 'meldex-install-status',
@@ -624,18 +673,22 @@
       type: 'button',
       class: modal ? 'meldex-install-button meldex-install-quick-button' : 'gb-btn gb-btn-sm meldex-install-quick-button',
       dataset: { e2eId: modal ? 'install-modal-open-quick-memo-button' : 'settings-install-open-quick-memo-button', meldexQuickMemoInstallButton: '1' },
-      text: 'クイックメモを開く',
+      'aria-haspopup': 'dialog',
+      'aria-controls': 'quick-memo-install-dialog',
+      text: _quickMemoInstallLabel(),
     });
-    quickButton.addEventListener('click', openMeldexQuickMemo);
+    quickButton.addEventListener('click', showQuickMemoInstallDialog);
     const quickOption = _el('div', { class: 'meldex-install-option meldex-install-option--quick' }, [
-      _installOptionTitle('fileText', 'クイックメモ'),
+      _installOptionTitle('fileText', 'クイックメモ（単独アプリ）'),
       _el('div', {
         class: 'meldex-install-option-desc',
         text: '短いメモ、共有URL、ペン入力、音声メモをすばやく保存する軽量画面です。',
       }),
       _el('div', {
         class: 'meldex-install-hint',
-        text: '開いたクイックメモ画面をホーム画面に追加すると、Meldex Memoとして起動できます。',
+        text: _isIosLike() || _isAndroidLike()
+          ? 'ホーム画面に追加すると、Meldex Memoとして起動できます。'
+          : '単独アプリをタスクバーにピン留めして、すばやく起動できます。',
       }),
       _el('div', { class: 'meldex-install-actions' }, [quickButton]),
     ]);
@@ -657,7 +710,7 @@
     });
     const intro = _el('p', {
       class: 'meldex-install-help-intro',
-      text: 'Meldex本体とクイックメモは別々にホーム画面へ追加できます。本体はワークスペース全体、クイックメモは短いメモや共有保存に使います。',
+      text: 'Meldex本体とクイックメモの単独アプリは別々に追加できます。本体はワークスペース全体、クイックメモは短いメモや共有保存に使います。',
     });
     const laterButton = _el('button', {
       id: 'meldex-install-prompt-later',
@@ -928,7 +981,7 @@
       type: 'button',
       class: 'gb-btn gb-btn-sm',
       dataset: { e2eId: 'install-help-open-quick-memo-button' },
-      text: 'クイックメモを開く',
+      text: 'クイックメモを' + _quickMemoInstallLabel(),
     });
     const doneButton = options.onManualDone
       ? _el('button', {
@@ -979,7 +1032,7 @@
       dialogApi.close('done');
       options.onManualDone?.();
     });
-    quickMemoButton.addEventListener('click', openMeldexQuickMemo);
+    quickMemoButton.addEventListener('click', showQuickMemoInstallDialog);
     closeButton.addEventListener('click', () => dialogApi.close('footer'));
     dialogApi.open();
     return true;
