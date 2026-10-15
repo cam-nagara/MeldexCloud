@@ -893,7 +893,7 @@
           writeJson(CURRENT_KEY, current);
         }
       } catch (error) {
-        state.lastSaveError = String(error?.message || error);
+        state.lastSaveError = syncFailureDetail(error);
         failed.add(item.memo_id);
       }
     }
@@ -1472,6 +1472,17 @@
     window.dispatchEvent?.(new CustomEvent('meldex:quick-memo-tag-sync'));
   }
 
+  function syncFailureDetail(error) {
+    const detail = String(error?.userMessage || error?.message || error || '同期できませんでした');
+    // Static hosts/proxies can return an entire error page. Never expose its
+    // markup as a tag/status message, including on an older installed PWA.
+    if (/<(?:!doctype|html|head|body|title|meta|style)\b/i.test(detail)) {
+      const status = Number(error?.status) || Number(detail.match(/HTTP\s+(\d{3})/i)?.[1]);
+      return '同期先へ接続できませんでした' + (status ? `（HTTP ${status}）` : '');
+    }
+    return detail.replace(/\s+/g, ' ').trim().slice(0, 180);
+  }
+
   function mergeQuickMemoTags(remote, local) {
     return normalizeQuickMemoTags([...remote, ...local])
       .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
@@ -1547,7 +1558,7 @@
     }
     quickMemoTagSyncPromise = syncQuickMemoTagsNow(quickMemoTagSyncGeneration)
       .catch(error => {
-        notifyQuickMemoTagSync('タグの同期待ちです: ' + (error?.message || error), true);
+        notifyQuickMemoTagSync('タグの同期待ちです: ' + syncFailureDetail(error), true);
         return { pending: true, error };
       }).finally(() => {
         quickMemoTagSyncPromise = null;
@@ -1639,9 +1650,10 @@
     try {
       _applyUnifiedTagCatalog(await _loadUnifiedTagCatalog());
     } catch (error) {
-      const detail = String(error?.userMessage || error?.message || error);
+      const detail = syncFailureDetail(error);
       const message = /404|file not found|failed to fetch|network/i.test(detail)
-        ? '共通タグはMeldexへ接続すると利用できます'
+        ? (isCloudMode() ? '共通タグを同期できません。Dropbox接続を確認してください'
+          : '共通タグはMeldexへ接続すると利用できます')
         : '共通タグを読み込めませんでした: ' + detail.slice(0, 160);
       state.tagCatalogError = message;
       setStatus(message, !/接続すると利用できます/.test(message));
