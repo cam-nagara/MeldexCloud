@@ -60,11 +60,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'インポート',
-    desc: '外部ノート、Notion同期',
+    desc: '外部ノート、Notion同期、定期実行の予定と結果',
     icon: 'download',
     pages: [
       { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import', commitMode: 'immediate-safe' },
       { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync', commitMode: 'immediate-safe' },
+      { id: 'import-schedules', label: '定期実行', panels: ['取り込み'], view: 'import-schedules', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -87,10 +88,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '導入・アプリ連携',
-    desc: 'ホーム画面追加、ファイル関連付け、RenderList',
+    desc: 'Meldex本体、クイックメモ、ファイル関連付け、RenderList',
     icon: 'download',
     pages: [
-      { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'setup', label: 'Meldex本体', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'quick-memo-setup', label: 'クイックメモ', panels: ['全般'], view: 'quick-memo-setup', commitMode: 'immediate-safe' },
+      { id: 'file-associations', label: 'ファイル関連付け', panels: ['全般'], view: 'file-associations', commitMode: 'immediate-safe' },
       { id: 'renderlist', label: 'RenderList', panels: ['全般'], view: 'renderlist', commitMode: 'immediate-safe' },
     ],
   },
@@ -115,10 +118,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'フィードバック',
-    desc: 'フィードバック、利用統計、診断、更新確認',
+    desc: '不具合・要望の報告、送信設定、診断・更新、管理',
     icon: 'messageSquareText',
     pages: [
-      { id: 'feedback', label: 'フィードバック', panels: ['フィードバック'], view: 'feedback', commitMode: 'immediate-safe' },
+      { id: 'feedback', label: '報告・送信設定', panels: ['フィードバック'], view: 'feedback', commitMode: 'immediate-safe' },
+      { id: 'diagnostics', label: '診断・更新', panels: ['フィードバック'], view: 'diagnostics', commitMode: 'immediate-safe' },
+      { id: 'feedback-management', label: 'フォーム・受信箱の管理', panels: ['フィードバック'], view: 'feedback-management', commitMode: 'immediate-safe' },
     ],
   },
 ]);
@@ -156,6 +161,12 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'Web Clipper': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   'ウェブクリップ': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   'Chrome拡張機能': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  'Meldex本体': { tabId: '導入・アプリ連携', pageId: 'setup' },
+  'クイックメモ': { tabId: '導入・アプリ連携', pageId: 'quick-memo-setup' },
+  'ファイル関連付け': { tabId: '導入・アプリ連携', pageId: 'file-associations' },
+  '定期実行': { tabId: 'インポート', pageId: 'import-schedules' },
+  '診断・更新': { tabId: 'フィードバック', pageId: 'diagnostics' },
+  'フォーム・受信箱の管理': { tabId: 'フィードバック', pageId: 'feedback-management' },
   '連携': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   '拡張機能': { tabId: '拡張機能', pageId: 'extensions' },
   'ゴミ箱': { tabId: 'ゴミ箱・データ保守', pageId: 'trash' },
@@ -185,14 +196,26 @@ function _settingsAutoTagPageVisible() {
 
 function _settingsNavigationRuntimeTabs() {
   const autoTagVisible = _settingsAutoTagPageVisible();
-  return MELDEX_SETTINGS_NAVIGATION.map(tab => {
-    if (tab.id !== 'AI' || autoTagVisible) return tab;
-    return {
-      ...tab,
-      desc: 'AIキー、ローカルLLM、CLI、AI使用量',
-      pages: tab.pages.filter(page => page.id !== 'auto-tag'),
-    };
-  });
+  const desktop = _settingsDesktopFeaturesAvailable();
+  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates']);
+  return MELDEX_SETTINGS_NAVIGATION.map(tab => ({
+    ...tab,
+    desc: !desktop && tab.id === 'AI' ? 'AIキー、管理者AI、記憶・指示、AI使用量'
+      : !desktop && tab.id === '導入・アプリ連携' ? 'Meldex本体、クイックメモの追加・起動'
+      : !desktop && tab.id === 'インポート' ? '外部ノート・Googleデータの取り込み'
+      : !desktop && tab.id === 'Webクリップ' ? 'Web Clipper、Xブックマークの共通設定'
+      : !desktop && tab.id === 'ゴミ箱・データ保守' ? '削除したファイルの復元、タグのメンテナンス'
+      : !desktop && tab.id === 'フィードバック' ? '不具合・要望の報告、送信設定、診断・更新' : tab.desc,
+    pages: tab.pages.filter(page => (page.id !== 'auto-tag' || autoTagVisible) && (desktop || !desktopPages.has(page.id)))
+      .map(page => !desktop && page.id === 'cli' ? { ...page, label: '管理者AI', commitMode: 'immediate-safe' } : page),
+  })).filter(tab => tab.pages.length);
+}
+
+function _settingsDesktopFeaturesAvailable() {
+  const mode = window.MeldexRuntimeAdapter?.getMode?.() || document.body?.dataset?.cloudMode || '';
+  const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
+    && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
+  return !window.MeldexRuntimeAdapter?.isPwaMode?.() && !['browser', 'dropbox'].includes(mode) && !cloudStatic;
 }
 
 function _settingsNavigationFindTab(tabId) {
@@ -239,7 +262,7 @@ function _settingsLegacyPanelsForName(name, options = {}) {
 
 function _settingsNavigationDisplayName(name, options = {}) {
   const target = resolveSettingsNavigationTarget(name, options);
-  return target.pageLabel && target.tab?.pages?.length > 1
+  return target.pageLabel && target.pageLabel !== target.tabId && target.tab?.pages?.length > 1
     ? `${target.tabId} / ${target.pageLabel}`
     : target.tabId;
 }
@@ -280,7 +303,7 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 2 ホームフォルダ
     'storage',   // 3 スクリーンショット保存先
     'storage',   // 4 保存の仕組み
-    'setup',     // 5 ファイルを開くアプリ
+    'file-associations', // 5 ファイルを開くアプリ
     'setup',     // 6 ホーム画面に追加（#settings-install-container）
     'transfer',  // 7 設定の引き継ぎ
     'display',   // 8 表示オプション

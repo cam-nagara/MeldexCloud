@@ -115,6 +115,12 @@ async function renderCliChatSettingsForSettings(root) {
   const scope = root?.querySelector ? root : document;
   const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    // The existing security UI observes this container. Cloud can inspect its
+    // signed permissions without pretending that local executables exist.
+    container.innerHTML = '<div id="settings-workspace-cli-relay-container"></div>';
+    return;
+  }
   container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
   try {
     const config = await apiFetch('/cli-chat/config');

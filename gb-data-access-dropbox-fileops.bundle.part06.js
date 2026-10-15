@@ -1,3 +1,5 @@
+        return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
+      }
       const split = _splitNameAndExt(sourceName);
       const nextPath = _joinPath(parentPath, newName + split.ext);
       if (nextPath !== oldPath && await _pathExists(provider, nextPath)) throw new Error(`既に存在: ${newName + split.ext}`);

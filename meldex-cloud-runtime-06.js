@@ -696,6 +696,7 @@
   }
 
   function render(modal) {
+    if (typeof global._settingsDesktopFeaturesAvailable === 'function' && !global._settingsDesktopFeaturesAvailable()) return;
     const panel = modal?.querySelector?.('.settings-panel[data-panel="全般"]');
     if (!panel || panel.querySelector('[data-settings-renderlist]')) return;
     const section = document.createElement('section');

@@ -106,6 +106,7 @@ function _setSettingsAvatarPreview(el, avatar) {
 }
 
 function isWebClipperDesktopSetupAvailable() {
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) return false;
   try {
     const host = String(window.location.hostname || '').toLowerCase();
     const local = !host || host === 'localhost' || host === '127.0.0.1' || host === '::1';
@@ -411,28 +412,29 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-e2e-id="settings-storage-mode-open" data-action="openStorageSettingsFlow()">保存先を設定...</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="setup">
+      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="file-associations">
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('画像とPDFはMeldex Viewerを候補登録できます。シナリオ・シート・ボードはMeldex本体から開きます。既存のWindows既定アプリは自動で上書きしません', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} 画像/PDFをMeldex Viewerにする</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} Meldex Viewerを候補に登録</button>
         </div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-refresh" data-action="loadDefaultAppAssociationsForSettings">${lucide('refreshCw',14)} 状態を更新</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
         </div>
       </section>
-      <div id="settings-install-container" data-settings-view="setup">
+      <div id="settings-install-container" class="settings-section-wide" data-settings-view="setup">
         <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
+          <div class="gb-section-title">${lucide('download',14)} Meldex本体の追加・起動</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
+      <div id="settings-quick-memo-install-container" class="settings-section-wide" data-settings-view="quick-memo-setup"></div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません', { e2eId: 'settings-transfer-help' })}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button id="settings-transfer-open-location" type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()">${lucide('folderOpen',14)} 設定保存先を開く</button>
+          <button id="settings-transfer-open-location" type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()"${typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable() ? ' hidden' : ''}>${lucide('folderOpen',14)} 設定保存先を開く</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="exportSettingsTransferBundle()">${uiTransferIcon('export',14) || lucide('upload',14)} 設定をエクスポート</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="document.getElementById('settings-transfer-import-input')?.click()">${uiTransferIcon('import',14) || lucide('download',14)} 設定をインポート</button>
           <input id="settings-transfer-import-input" type="file" accept=".zip,application/zip" hidden data-onchange="importSettingsTransferBundleFromFile(this)">
@@ -612,7 +614,7 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})">レイアウトを初期化</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed" data-settings-view="history">
+      <section class="gb-section gb-section--boxed" data-settings-view="${_historySheetExportAvailable ? 'history' : 'desktop-history'}">
         <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・アノテート・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）', { e2eId: 'settings-history-export-help' })}</div>
         <div class="gb-field-row">
           ${_historySheetExportAvailable
@@ -691,8 +693,10 @@ async function showSettingsModal(opts) {
           ${fieldHelp('チャットからMeldex内の読み取り・作成・更新ツールを使えるようにします')}
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
+      <section class="gb-section gb-section--boxed" data-settings-view="cli">
+        <div class="gb-section-title">${lucide('terminal',14)} ${typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()
+          ? '管理者AI ' + fieldHelp('共有ワークスペースで管理者PCへ依頼するための端末と許可状態を確認します')
+          : 'CLIチャット ' + fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
         <div id="settings-cli-chat-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
@@ -782,7 +786,7 @@ async function showSettingsModal(opts) {
     </div>
     <!-- 取り込み -->
     <div class="settings-panel" data-panel="取り込み" hidden>
-      <div id="external-import-settings-container">
+      <div id="external-import-settings-container" data-settings-view="external-import">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('download',14)} 外部ノート取り込み</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
@@ -800,11 +804,12 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
+      <div id="import-schedule-settings-container" data-settings-view="import-schedules"></div>
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
       ${window.MeldexMobileWebClipSettings?.render?.() || ''}
-      <section class="gb-section gb-section--boxed" data-settings-view="web-clipper" data-settings-webclip-desktop="1">
+      <section class="gb-section gb-section--boxed" data-settings-view="${_webClipperDesktopSetupAvailable ? 'web-clipper' : 'desktop-web-clipper'}" data-settings-webclip-desktop="1">
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper ${fieldHelp('Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の「Web Clipper」フォルダです')}</div>
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
@@ -857,7 +862,7 @@ async function showSettingsModal(opts) {
     </div>
     <!-- データベース -->
     <div class="settings-panel" data-panel="データベース" hidden>
-      <div id="database-maintenance-container">
+      <div id="database-maintenance-container" data-settings-view="${typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable() ? 'database' : 'desktop-database'}">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('database',14)} データベースメンテナンス</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
@@ -873,13 +878,13 @@ async function showSettingsModal(opts) {
     </div>
     <!-- フィードバック -->
     <div class="settings-panel" data-panel="フィードバック" hidden>
-      <div id="feedback-form-container">
+      <div id="feedback-form-container" data-settings-view="feedback feedback-management">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('messageSquareText',14)} フィードバック</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
-      <div id="feedback-settings-container">
+      <div id="feedback-settings-container" data-settings-view="feedback diagnostics feedback-management">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('send',14)} 送信設定</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>

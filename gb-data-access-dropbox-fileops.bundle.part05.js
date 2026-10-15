@@ -1,3 +1,5 @@
+    if (!Array.isArray(state?.links) || !Array.isArray(state?.requests)) {
+      throw new Error('フォルダリンクの再試行履歴が破損しています');
     }
     const previous = requestId ? state.requests.find(record => record.request_id === requestId) : null;
     _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
@@ -896,5 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         await _runPostMutationStep(warnings, 'references', async () => {
           relocate = await _relocateReferences(provider, oldPath, newPath, true);
         });
-        return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
-      }

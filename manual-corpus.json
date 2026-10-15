@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.388",
+  "manual_version": "0.7.389",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "221441057297df8730dff1e7bccad2d2b038ec843fbcaf2f1a6ff580996a296a",
+  "source_digest": "f006f4d5ba6c5d95e61efb24f5bcb8e52af05138a6a7a9f41a948541b05be911",
   "document_count": 207,
-  "chunk_count": 1904,
+  "chunk_count": 1905,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -39,7 +39,7 @@
       "path": "01_はじめに/初回セットアップガイド.md",
       "title": "初回セットアップガイド",
       "category": "基本ガイド",
-      "source_sha256": "0e3c1d6a2f7cfde959eb728fc64422a38631f0e0ba5c15dd8321ec10874d2652",
+      "source_sha256": "8ea4f299ccc3ecd0a60247857b4972e9a8058230d49807b65a9f994f3b971f68",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E5%88%9D%E5%9B%9E%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97%E3%82%AC%E3%82%A4%E3%83%89.md"
     },
     {
@@ -396,7 +396,7 @@
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
-      "source_sha256": "522d935e89c898e4f9f7baea2ec39be2878a4894a65db7a4a1896c75fe164093",
+      "source_sha256": "55753ced0ce7b2d0f5638708426d78fec9e14a9940504b14a1ad4cf18c966a08",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -438,7 +438,7 @@
       "path": "04_サポート/Windows 既定アプリの設定.md",
       "title": "Windows 既定アプリの設定",
       "category": "サポート",
-      "source_sha256": "8740d59dbc08f5b06c77df360297d38fd32a44766584e28e62caf64e7e68f240",
+      "source_sha256": "e671bc6b0259fd98c27bf7c5ada16e5d9c1bb3d8026798c049810d7b80c6421e",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/Windows%20%E6%97%A2%E5%AE%9A%E3%82%A2%E3%83%97%E3%83%AA%E3%81%AE%E8%A8%AD%E5%AE%9A.md"
     },
     {
@@ -2765,7 +2765,7 @@
       "category": "基本ガイド",
       "heading": "ホーム画面に追加",
       "anchor": "_5",
-      "text": "初回同意後、クラウド版/PWA向けに ホーム画面に追加 モーダルが表示されます。Meldex本体とクイックメモは別々に追加するため、案内内で Meldex本体 と クイックメモ が分かれて表示されます。\n対応ブラウザでは、Meldex本体の追加確認をMeldex内のボタンから開けます。あとで追加したい場合は、設定 → 導入・アプリ連携 → ホーム画面に追加 から同じ案内を開けます。\nクイックメモの単独アプリは、端末に応じたボタンから追加手順を確認します。手順を表示しても、Meldex本体の画面は切り替わりません。\nスマホの場合:\nスマホでは ホームに追加 を押します。\n追加用ページを開く を押し、Safariの共有メニューやChromeのメニューから ホーム画面に追加 を選びます。\nWindows PCの場合:\nWindows PCでは タスクバーにピン留め を押します。\nクイックメモの単独アプリ（MeldexQuickMemo.exe）を起動します。\nタスクバーのクイックメモのアイコンを右クリックし、タスクバーにピン留めする を選びます。",
+      "text": "初回同意後、クラウド版/PWA向けに ホーム画面に追加 モーダルが表示されます。Meldex本体とクイックメモは別々に追加するため、案内内で Meldex本体 と クイックメモ が分かれて表示されます。\n対応ブラウザでは、Meldex本体の追加確認をMeldex内のボタンから開けます。あとで追加したい場合は、設定 → 導入・アプリ連携 → Meldex本体 を開きます。デスクトップ版では、Meldex.exe をタスクバーにピン留めする手順を表示します。\nクイックメモの単独アプリは、設定 → 導入・アプリ連携 → クイックメモ の端末に応じたボタンから追加手順を確認します。本体とクイックメモの追加手順は、それぞれ専用ページに表示します。\nスマホの場合:\nスマホでは ホームに追加 を押します。\n追加用ページを開く を押し、Safariの共有メニューやChromeのメニューから ホーム画面に追加 を選びます。\nWindows PCの場合:\nWindows PCでは タスクバーにピン留め を押します。\nクイックメモの単独アプリ（MeldexQuickMemo.exe）を起動します。\nタスクバーのクイックメモのアイコンを右クリックし、タスクバーにピン留めする を選びます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=01_%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB/%E5%88%9D%E5%9B%9E%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97%E3%82%AC%E3%82%A4%E3%83%89.md&section=_5"
     },
     {
@@ -13665,7 +13665,7 @@
       "category": "設定・外部連携",
       "heading": "設定ダイアログの共通ルール",
       "anchor": "_3",
-      "text": "左側のツリー一覧で親カテゴリや子ページを切り替えます\n子ページを持つカテゴリは左側でツリー展開され、目的のページへ直接切り替えられます\n下端の 保存 を押すと反映されます\nキャンセル を押すと未保存の変更を破棄します\nモバイルではグループ一覧から各セクションに入る形式になります\nフチをドラッグして大きさを変えると、次回開いたときも前回ドラッグして決めた大きさ・位置で開きます",
+      "text": "左側のツリー一覧で親カテゴリや子ページを切り替えます\n子ページを持つカテゴリは左側でツリー展開され、目的のページへ直接切り替えられます\n下端に 保存 があるページでは、変更をまとめて保存します。閉じる のみのページでは、項目内の保存・実行ボタンやチェック操作で反映します\nキャンセル を押すと未保存の変更を破棄します\nモバイルではグループ一覧から各セクションに入る形式になります\nフチをドラッグして大きさを変えると、次回開いたときも前回ドラッグして決めた大きさ・位置で開きます",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_3"
     },
     {
@@ -13675,7 +13675,7 @@
       "category": "設定・外部連携",
       "heading": "現行のグループ構成",
       "anchor": "_4",
-      "text": "グループ\n子ページ（左ツリー）\n主な内容\nユーザー・共同作業\nプロフィール / ユーザー / ワークスペース\nユーザー名・アイコン、仮ユーザー、ワークスペースごとの所属と権限\n保存先・フォルダ\n（単一画面）\nホームフォルダ、ソースフォルダ、Dropbox共有状態、保存の仕組み（この端末 / Dropbox）の切替\n表示・起動\n（単一画面）\n表示サイズ、表示オプション（フォルダツリーのサムネイル・クリック操作、ビューワーのホイール動作など）、自動起動\nテーマ\nテーマ / テーマカラー / フォント / 状態・装飾 / アプリ別\nUI全体のテーマ、共通カラーパレット、共通フォント、状態装飾、アプリ別の書式\nショートカット\n（単一画面）\nキーバインド一覧、検索、競合確認、リセット\nAI\n自動タグ付け / AIキー / ローカルLLM / CLI / 記憶・指示 / AI使用量\nLLM APIキー、自動タグ付け、CLIチャット、ナレッジ、予算管理\nインポート\n外部取り込み / Notion同期\n外部ノート取り込み、Notion同期\nWebクリップ\nWeb Clipper / Xブックマーク / Xアカウント保存\nブラウザからの保存、X連携\n拡張機能\n（単一画面）\nPillow/CLIP/CalDAVなどの拡張パッケージ\n導入・アプリ連携\n（単一画面）\nホーム画面に追加、ファイルを開くアプリの関連付け\n履歴・引き継ぎ\n履歴・復元 / 引き継ぎ・初期化\nUndo回数、自動バージョン保存、レイアウト初期化、設定の引き継ぎ、全設定リセット\nゴミ箱・データ保守\nゴミ箱 / データ保守 / 重複検出\n保持期間・復元、内部データベースの整合性・バックアップ・タグメンテナンス、重複ファイルの自動確認\nフィードバック\n（単一画面）\nフィードバック送信、診断情報、同意設定\n2026年8月から、共同ワークスペースはDropboxへ一本化されました。旧「接続・共有サーバー」の保存先切替は 保存先・フォルダ へ統合され、管理者PCへ直接接続する共有サーバー機能と接続URL表示は終了しました。既存ファイルは自動で移動・削除されません。",
+      "text": "グループ\n子ページ（左ツリー）\n主な内容\nユーザー・共同作業\nプロフィール / ユーザー / ワークスペース\nユーザー名・アイコン、仮ユーザー、ワークスペースごとの所属と権限\n保存先・フォルダ\n（単一画面）\nホームフォルダ、ソースフォルダ、Dropbox共有状態、保存の仕組み（この端末 / Dropbox）の切替\n表示・起動\n（単一画面）\n表示サイズ、表示オプション（フォルダツリーのサムネイル・クリック操作、ビューワーのホイール動作など）、自動起動\nテーマ\n（単一画面）\nUI全体のテーマ、共通カラーパレット、共通フォント、状態装飾、アプリ別の書式\nショートカット\n（単一画面）\nキーバインド一覧、検索、競合確認、リセット\nAI\n自動タグ付け / AIキー / ローカルLLM / CLI / 記憶・指示 / AI使用量\nLLM APIキー、自動タグ付け、CLIチャット、ナレッジ、予算管理\nインポート\n外部取り込み / Notion同期 / 定期実行\n外部ノート取り込み、Notion同期、定期実行の予定・結果\nWebクリップ\nWeb Clipper / Xブックマーク / Xアカウント保存\nブラウザからの保存、X連携\n拡張機能\n（単一画面）\nPillow/CLIP/CalDAVなどの拡張パッケージ\n導入・アプリ連携\nMeldex本体 / クイックメモ / ファイル関連付け / RenderList\n本体と単独アプリの追加・起動、Windowsの候補登録、RenderList連携\n履歴・引き継ぎ\n履歴・復元 / 引き継ぎ・初期化\nUndo回数、自動バージョン保存、レイアウト初期化、設定の引き継ぎ、全設定リセット\nゴミ箱・データ保守\nゴミ箱 / データ保守 / 重複検出\n保持期間・復元、内部データベースの整合性・バックアップ・タグメンテナンス、重複ファイルの自動確認\nフィードバック\n報告・送信設定 / 診断・更新 / フォーム・受信箱の管理\n通常の報告、送信同意、診断、更新確認、管理者向け設定\nCloud版では、PCへの導入やバックグラウンド実行を必要とする自動タグ付け、ローカルLLM、拡張パッケージ、ファイル関連付け、RenderList、定期実行、Notionへの同期、Xアカウント取得、受信箱管理、重複検出の設定を表示しません。Notionからの取り込みは 外部取り込み、Xブックマークの共通設定は Webクリップ で扱います。AIの 管理者AI ページでは、管理者PCへの依頼に関する安全設定を確認できます。\n2026年8月から、共同ワークスペースはDropboxへ一本化されました。旧「接続・共有サーバー」の保存先切替は 保存先・フォルダ へ統合され、管理者PCへ直接接続する共有サーバー機能と接続URL表示は終了しました。既存ファイルは自動で移動・削除されません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_4"
     },
     {
@@ -14039,7 +14039,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=notion"
     },
     {
-      "id": "manual-chunk-6b40735dbef05a43",
+      "id": "manual-chunk-25129a200b371c0f",
+      "path": "03_設定と連携/設定 マニュアル.md",
+      "title": "設定 マニュアル",
+      "category": "設定・外部連携",
+      "heading": "定期実行",
+      "anchor": "_33",
+      "text": "取り込みの予定、次回時刻、前回結果を専用ページで確認します。XブックマークとXアカウント保存の設定は、各カードのボタンから専用ページへ移動して変更します。定期実行は既定で無効です。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_33"
+    },
+    {
+      "id": "manual-chunk-d25fe990c2bd7b8f",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14049,7 +14059,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=web"
     },
     {
-      "id": "manual-chunk-5f6c2f7c68a5e91a",
+      "id": "manual-chunk-b2d2b0093e280758",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14059,7 +14069,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=x"
     },
     {
-      "id": "manual-chunk-f3fc0de4139ebeaa",
+      "id": "manual-chunk-2f6de6c27fd92092",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14069,7 +14079,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=x_1"
     },
     {
-      "id": "manual-chunk-efda676ccada5a76",
+      "id": "manual-chunk-bb914ad245eba3d7",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14079,23 +14089,13 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=web-clipper"
     },
     {
-      "id": "manual-chunk-ba7f29d15754963f",
-      "path": "03_設定と連携/設定 マニュアル.md",
-      "title": "設定 マニュアル",
-      "category": "設定・外部連携",
-      "heading": "拡張機能",
-      "anchor": "_33",
-      "text": "拡張機能グループには、導入可能な拡張パッケージと現在の状態が一覧表示されます。\n拡張\n役割\nファイルサイズ目安\nPillow（画像処理）\n重複画像検出に必要\n約 3MB\nCLIP（画像類似検索）\nテキストで画像を検索（Pillow も同時インストール）\n約 2GB\nCalDAV（カレンダー同期）\niPhone / Thunderbird 等とカレンダーを双方向同期\n約 5MB\nCalDAV を有効にすると、その下に CalDAV 接続情報 セクションが表示され、サーバ URL・ユーザー名・パスワードの入力欄、および手動同期ボタン（CalDAV に送信 / CalDAV から取得）が現れます。\nGoogle ToDo との同期は、スケジュールの 同期 ボタンから設定します。Google ToDo は Client ID のみを入力し、Client Secret は使いません。\n各セクションには、それぞれ専用のセットアップ手順マニュアルへのリンクがあります。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_33"
-    },
-    {
       "id": "manual-chunk-4240ad7fa6f8b347",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
-      "heading": "導入・アプリ連携",
+      "heading": "拡張機能",
       "anchor": "_34",
-      "text": "導入・アプリ連携グループでは、ホーム画面への追加と、ファイルを開くアプリの関連付けを行います。",
+      "text": "拡張機能グループには、導入可能な拡張パッケージと現在の状態が一覧表示されます。\n拡張\n役割\nファイルサイズ目安\nPillow（画像処理）\n重複画像検出に必要\n約 3MB\nCLIP（画像類似検索）\nテキストで画像を検索（Pillow も同時インストール）\n約 2GB\nCalDAV（カレンダー同期）\niPhone / Thunderbird 等とカレンダーを双方向同期\n約 5MB\nCalDAV を有効にすると、その下に CalDAV 接続情報 セクションが表示され、サーバ URL・ユーザー名・パスワードの入力欄、および手動同期ボタン（CalDAV に送信 / CalDAV から取得）が現れます。\nGoogle ToDo との同期は、スケジュールの 同期 ボタンから設定します。Google ToDo は Client ID のみを入力し、Client Secret は使いません。\n各セクションには、それぞれ専用のセットアップ手順マニュアルへのリンクがあります。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_34"
     },
     {
@@ -14103,23 +14103,33 @@
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
-      "heading": "ホーム画面に追加",
+      "heading": "導入・アプリ連携",
       "anchor": "_35",
-      "text": "項目\n役割\nMeldex本体を追加\n対応ブラウザでは、Meldex本体をホーム画面やアプリ一覧へ追加する確認画面を開く\nクイックメモを開く\nクイックメモ画面を開く。開いた画面をホーム画面へ追加すると Meldex Memo として起動できる\n手順案内\niPhone/iPadや一部ブラウザなど、直接追加画面を開けない環境で、Meldex本体とクイックメモそれぞれの追加手順を表示\n追加済み表示\nすでにホーム画面やアプリ一覧から起動している場合に状態を表示\n初回同意後にも同じ導線が単体モーダルで表示されます。Meldex本体とクイックメモは別々に追加するため、あとから追加したい場合は、この導入・アプリ連携グループから必要な方を開いてください。",
+      "text": "導入・アプリ連携グループでは、ホーム画面への追加と、ファイルを開くアプリの関連付けを行います。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_35"
     },
     {
-      "id": "manual-chunk-d5f23c0857dd579f",
+      "id": "manual-chunk-57836948d6152e42",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
-      "heading": "ファイルを開くアプリ",
+      "heading": "Meldex本体 / クイックメモ",
+      "anchor": "meldex",
+      "text": "項目\n役割\nMeldex本体を追加\n対応ブラウザでは、Meldex本体をホーム画面やアプリ一覧へ追加する確認画面を開く\n本体のタスクバーにピン留め\nデスクトップ版では Meldex.exe のピン留め手順を表示\nクイックメモのホームに追加\nスマホで専用の追加手順を表示。追加用ページを開く を押してから別画面を開く\nクイックメモのタスクバーにピン留め\nPCで MeldexQuickMemo.exe のピン留め手順を表示\n手順案内\n本体とクイックメモをそれぞれの専用ページから追加\n追加済み表示\nすでにホーム画面やアプリ一覧から起動している場合に状態を表示\n初回同意後にも同じ導線が単体モーダルで表示されます。Meldex本体とクイックメモは別々に追加するため、あとから追加したい場合は、この導入・アプリ連携グループから必要な方を開いてください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=meldex"
+    },
+    {
+      "id": "manual-chunk-bd2bb6acf6a7b3d0",
+      "path": "03_設定と連携/設定 マニュアル.md",
+      "title": "設定 マニュアル",
+      "category": "設定・外部連携",
+      "heading": "ファイル関連付け",
       "anchor": "_36",
-      "text": "項目\n役割\n画像/PDFをMeldex Viewerにする\nWindowsでの画像/PDFの既定アプリをMeldex単独ビューワーに設定\n状態を更新\n現在の関連付け状態を再取得\n手順を見る\n手動設定が必要な場合の手順を表示\nWindowsで画像やPDFをダブルクリックした時に、Meldex Viewerで開くための候補を登録します。既存の既定アプリを自動で上書きせず、Windowsが確認を必要とする場合は既定アプリ画面を開きます。.mel-scenario、.mel-sheet、.mel-board はMeldex本体から開いてください。",
+      "text": "項目\n役割\nMeldex Viewerを候補に登録\nWindowsで画像/PDFを開くアプリの候補にMeldex Viewerを登録\n状態を更新\n現在の関連付け状態を再取得\n手順を見る\n手動設定が必要な場合の手順を表示\nWindowsで画像やPDFをダブルクリックした時に、Meldex Viewerで開くための候補を登録します。既存の既定アプリを自動で上書きせず、Windowsが確認を必要とする場合は既定アプリ画面を開きます。.mel-scenario、.mel-sheet、.mel-board はMeldex本体から開いてください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_36"
     },
     {
-      "id": "manual-chunk-f0fc50eede67bd5f",
+      "id": "manual-chunk-aef1db5fae92548e",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14129,7 +14139,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_37"
     },
     {
-      "id": "manual-chunk-69af9a863a7347c1",
+      "id": "manual-chunk-0cb78053d5b7f637",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14139,7 +14149,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_38"
     },
     {
-      "id": "manual-chunk-f2c261e1bfe32a08",
+      "id": "manual-chunk-b60ef99b48666188",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14149,7 +14159,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=undoredo"
     },
     {
-      "id": "manual-chunk-60bf32fa4a3c53a9",
+      "id": "manual-chunk-81fc9c2012e127d3",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14159,7 +14169,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_39"
     },
     {
-      "id": "manual-chunk-836b654f6477c864",
+      "id": "manual-chunk-9af5039b2ce12667",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14169,7 +14179,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_40"
     },
     {
-      "id": "manual-chunk-305f37d1676b2e69",
+      "id": "manual-chunk-dae49abb020cc5ae",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14179,27 +14189,27 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_41"
     },
     {
-      "id": "manual-chunk-6e61430a1832787e",
+      "id": "manual-chunk-a0f603aa1af5ae1f",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
-      "heading": "全設定リセット",
+      "heading": "表示・操作設定の初期化",
       "anchor": "_42",
-      "text": "項目\n役割\n全設定を初期化\nレイアウト・テーマ・フィルタ・表示設定など localStorage の全設定を初期化（ログイン情報含む）\n全設定リセットは強い影響があります。実行前に確認ダイアログが出ます。",
+      "text": "項目\n役割\n表示・操作設定を初期化\nレイアウト・テーマ・フィルタ・表示などを初期化。作品、ワークスペース、ソースフォルダ、下書き、共有登録、APIキーは保持\n実行前に確認ダイアログが表示されます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_42"
     },
     {
-      "id": "manual-chunk-8284bb087e39b4af",
+      "id": "manual-chunk-0812b2801c016548",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
       "heading": "ゴミ箱・データ保守",
       "anchor": "_43",
-      "text": "ゴミ箱・データ保守グループには ゴミ箱 / データ保守 / 重複検出 の3つのサブタブがあります。",
+      "text": "ゴミ箱・データ保守グループには ゴミ箱 / データ保守 / 重複検出 の3つのサブタブがあります。\nCloud版の ゴミ箱 は復元一覧への入口、データ保守 はタグのメンテナンスを表示します。PC内データベースのバックアップ・保持期間や重複の自動監視はデスクトップ版で扱います。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_43"
     },
     {
-      "id": "manual-chunk-960d522944806dae",
+      "id": "manual-chunk-0c448e2acb4c2d9c",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14209,7 +14219,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_44"
     },
     {
-      "id": "manual-chunk-245da4d25e1bcdfe",
+      "id": "manual-chunk-3eb1cbaf3326cc2e",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14219,7 +14229,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_45"
     },
     {
-      "id": "manual-chunk-54857b5669d79e74",
+      "id": "manual-chunk-9675953f309ab5e7",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14229,7 +14239,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_46"
     },
     {
-      "id": "manual-chunk-319222ce6a8cf8c4",
+      "id": "manual-chunk-c12f765562a2be79",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14239,7 +14249,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
-      "id": "manual-chunk-1a784d3487fd19c3",
+      "id": "manual-chunk-f00d3cbeae45d86c",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14249,17 +14259,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_47"
     },
     {
-      "id": "manual-chunk-cbe2f4b744e66ab7",
+      "id": "manual-chunk-b54f4a066a56539f",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
       "heading": "フィードバック",
       "anchor": "_48",
-      "text": "フィードバックグループでは、不具合報告・要望の送信、診断情報の取得、テレメトリ設定を管理します。\n項目\n役割\nフィードバック送信フォーム\n内容を入力して送信（添付付き）\n送信履歴を開く\nホームの Meldexフィードバック シートで、自分が送った内容・送信状態・受付番号を確認\n診断情報をエクスポート\nOS・バージョン・エラーログ・設定ダイジェストを zip 化\nクラッシュレポート送信\nON/OFF（既定 OFF、オプトイン）\n利用統計送信\nON/OFF（既定 OFF、オプトイン）\n更新を確認\n利用可能な更新情報を確認\n同意フラグは v0.5.4 以降、サーバ側に保存され、複数端末で同期されます（スマホ・タブレットからの利用 参照）。\nMeldexフィードバック シートは起動時に自動で準備されます。フォーム、サポート画面、常駐アプリ、同意済みクラッシュ報告は、送信待ち、送信済み、送信失敗 などの実際の状態で記録されます。オフラインから再送できた場合も同じ行が更新されます。\nバージョン、配布者情報、公式URL、OSS / フォントライセンスは、左クロームの ヘルプ → Meldex（メルデックス）について で確認します。\nCloud版の手動フィードバックを開発者へ送れない環境では、入力はシートへ残りますが 端末内に保存 と表示されます。これは 送信済み ではありません。Cloud版の同意済み自動クラッシュ報告は、専用の送信経路で送信され、結果が同じシートへ記録されます。\n詳しくは ログの送り方 を参照。",
+      "text": "報告・送信設定 では報告フォーム、送信履歴、送信同意を扱います。診断・更新 では診断情報の取得と更新確認を行います。公開フォームURL、送信先、Google受信箱、管理者トークンは、デスクトップ版の フォーム・受信箱の管理 にまとめています。\n項目\n役割\n報告フォームを開く\n設定を閉じて報告フォームを表示。内容を入力し、送信前に確認\n送信履歴を開く\nホームの Meldexフィードバック シートで、自分が送った内容・送信状態・受付番号を確認\n診断情報をエクスポート\nOS・バージョン・エラーログ・設定ダイジェストを zip 化\nクラッシュレポート送信\nON/OFF（既定 OFF、オプトイン）\n利用統計送信\nON/OFF（既定 OFF、オプトイン）\n更新を確認\n利用可能な更新情報を確認\n同意フラグは v0.5.4 以降、サーバ側に保存され、複数端末で同期されます（スマホ・タブレットからの利用 参照）。\nMeldexフィードバック シートは起動時に自動で準備されます。フォーム、サポート画面、常駐アプリ、同意済みクラッシュ報告は、送信待ち、送信済み、送信失敗 などの実際の状態で記録されます。オフラインから再送できた場合も同じ行が更新されます。\nバージョン、配布者情報、公式URL、OSS / フォントライセンスは、左クロームの ヘルプ → Meldex（メルデックス）について で確認します。\nCloud版の手動フィードバックを開発者へ送れない環境では、入力はシートへ残りますが 端末内に保存 と表示されます。これは 送信済み ではありません。Cloud版の同意済み自動クラッシュ報告は、専用の送信経路で送信され、結果が同じシートへ記録されます。\n詳しくは ログの送り方 を参照。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_48"
     },
     {
-      "id": "manual-chunk-20d5584b4a0464f3",
+      "id": "manual-chunk-3cf931eb03249f19",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -14269,7 +14279,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E8%A8%AD%E5%AE%9A%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_49"
     },
     {
-      "id": "manual-chunk-12c194a0d56bdeb8",
+      "id": "manual-chunk-81bfc90ce968367e",
       "path": "03_設定と連携/設定 マニュアル.md",
       "title": "設定 マニュアル",
       "category": "設定・外部連携",
@@ -15095,7 +15105,7 @@
       "category": "サポート",
       "heading": "Meldexの設定から行う方法",
       "anchor": "meldex_1",
-      "text": "Meldex本体を開きます。\n設定を開きます。\n導入・アプリ連携を開きます。\nファイルを開くアプリで、使いたいボタンを押します。\n- 画像/PDFをMeldex Viewerにする\nWindowsの既定のアプリ画面が開いた場合は、対象の拡張子でMeldexを選びます。\nWindowsは、アプリが勝手に既定アプリを変えることを制限しています。そのため、ボタンを押すだけで完了するPCと、最後にWindows設定で確認が必要なPCがあります。",
+      "text": "Meldex本体を開きます。\n設定を開きます。\n導入・アプリ連携 → ファイル関連付けを開きます。\nファイルを開くアプリで、使いたいボタンを押します。\n- Meldex Viewerを候補に登録\nWindowsの既定のアプリ画面が開いた場合は、対象の拡張子でMeldexを選びます。\nボタンはMeldex Viewerを候補として登録します。既定アプリへの切替はWindowsの設定で確認してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/Windows%20%E6%97%A2%E5%AE%9A%E3%82%A2%E3%83%97%E3%83%AA%E3%81%AE%E8%A8%AD%E5%AE%9A.md&section=meldex_1"
     },
     {

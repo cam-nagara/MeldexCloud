@@ -127,6 +127,7 @@
 
   async function _allowedTrashRoots() {
     const roots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex' }];
+    if (window.MeldexRuntimeAdapter?.getMode?.() === 'browser') return roots;
     const registry = window.MeldexSourceFolderRegistry;
     if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
     let payload;

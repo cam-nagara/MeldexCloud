@@ -354,6 +354,11 @@
   }
 
   function _installSteps() {
+    if (_isDesktopInstallHost()) return [
+      'Meldex本体（Meldex.exe）を起動します。',
+      'タスクバーのMeldexのアイコンを右クリックします。',
+      '「タスクバーにピン留めする」を選びます。次回からこのアイコンで起動できます。',
+    ];
     if (_isStandaloneDisplayMode()) return ['Meldexはすでにホーム画面またはアプリ一覧から起動できます。'];
     if (_isIosLike()) {
       return [
@@ -400,6 +405,15 @@
 
   function _quickMemoInstallLabel() {
     return _isIosLike() || _isAndroidLike() ? 'ホームに追加' : 'タスクバーにピン留め';
+  }
+
+  function _isDesktopInstallHost() {
+    return !_isIosLike() && !_isAndroidLike() && _isLocalAppHost()
+      && (typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable());
+  }
+
+  function _mainInstallLabel() {
+    return _isDesktopInstallHost() ? 'タスクバーにピン留め' : 'Meldex本体を追加';
   }
 
   function _quickMemoUrl() {
@@ -461,15 +475,17 @@
   }
 
   function _installStatusText() {
+    if (_isDesktopInstallHost()) return 'このPCではMeldex.exeから本体を起動します。';
     if (_isStandaloneDisplayMode()) return 'Meldex本体は追加済みです。ホーム画面やアプリ一覧から起動できます。';
     if (_installPromptEvent) return 'この端末では、Meldex本体の追加確認を開けます。';
     return 'ブラウザ条件により直接追加できない場合は、ボタンから追加手順を確認できます。';
   }
 
   function _installHintText() {
+    if (_isDesktopInstallHost()) return 'ピン留めの手順を確認できます。';
     if (_isStandaloneDisplayMode()) return '現在はアプリ表示で起動しています。';
     if (_installPromptEvent) return 'ボタンを押すとブラウザの確認画面が開きます。';
-    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューから追加します。クイックメモは別画面を開いて追加します。';
+    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューからMeldex本体を追加します。';
   }
 
   function _showInstallStatus(message) {
@@ -617,7 +633,7 @@
       const button = section.querySelector('[data-meldex-install-button]');
       if (button) {
         button.disabled = installed;
-        button.textContent = installed ? '本体は追加済み' : 'Meldex本体を追加';
+        button.textContent = installed ? '本体は追加済み' : _mainInstallLabel();
       }
     });
   }
@@ -636,10 +652,13 @@
     });
     const title = _el('div', { class: modal ? 'meldex-install-title' : 'gb-section-title meldex-install-title' });
     title.appendChild(_iconNode('download', 14));
-    title.appendChild(_el('span', { text: 'ホーム画面に追加' }));
+    title.appendChild(_el('span', { text: options.app === 'quick-memo' ? 'クイックメモの追加・起動'
+      : options.app === 'main' ? 'Meldex本体の追加・起動' : 'アプリの追加・起動' }));
     const desc = _el('div', {
       class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
-      text: 'Meldex本体とクイックメモの単独アプリは別々に追加します。用途に合わせて必要なものを追加してください。',
+      text: options.app === 'quick-memo' ? 'クイックメモの単独アプリを、端末からすぐに起動できるようにします。'
+        : options.app === 'main' ? 'ノート、シート、ボード、チャットを使うMeldex本体の起動方法を設定します。'
+        : 'Meldex本体とクイックメモの単独アプリは別々に追加します。用途に合わせて必要なものを追加してください。',
     });
     const status = _el('div', {
       class: 'meldex-install-status',
@@ -692,7 +711,8 @@
       }),
       _el('div', { class: 'meldex-install-actions' }, [quickButton]),
     ]);
-    section.append(title, desc, _el('div', { class: 'meldex-install-options' }, [mainOption, quickOption]));
+    const installOptions = options.app === 'main' ? [mainOption] : options.app === 'quick-memo' ? [quickOption] : [mainOption, quickOption];
+    section.append(title, desc, _el('div', { class: 'meldex-install-options' }, installOptions));
     _refreshInstallUi(section);
     return section;
   }
@@ -722,7 +742,7 @@
     dialogApi = window.GBUI.createModal({
       id: 'meldex-install-prompt-dialog',
       titleId: 'meldex-install-prompt-title',
-      title: 'ホーム画面に追加',
+      title: _isDesktopInstallHost() ? 'アプリの追加・起動' : 'ホーム画面に追加',
       body: [intro, installSection],
       footer: laterButton,
       variant: 'standard',
@@ -902,10 +922,12 @@
 
   function renderMeldexInstallSection(root, options) {
     options = options || {};
-    const section = _createInstallSection(options);
-    if (options.standalone) return section;
     const scope = root?.querySelector ? root : document;
     const host = options.host || scope.querySelector?.('#settings-install-container');
+    const app = options.app || (host?.id === 'settings-quick-memo-install-container' ? 'quick-memo'
+      : host?.id === 'settings-install-container' ? 'main' : undefined);
+    const section = _createInstallSection({ ...options, app: options.standalone ? options.app : app });
+    if (options.standalone) return section;
     if (!host) return section;
     host.replaceChildren(section);
     return section;
@@ -914,8 +936,9 @@
   function _renderPendingInstallSections(root) {
     const scope = root?.querySelectorAll ? root : document;
     const hosts = [];
-    if (scope.matches?.('#settings-install-container')) hosts.push(scope);
-    scope.querySelectorAll?.('#settings-install-container').forEach(host => hosts.push(host));
+    const hostSelector = '#settings-install-container, #settings-quick-memo-install-container';
+    if (scope.matches?.(hostSelector)) hosts.push(scope);
+    scope.querySelectorAll?.(hostSelector).forEach(host => hosts.push(host));
     hosts.forEach(host => {
       if (host.querySelector?.('[data-meldex-install-section]')) {
         _refreshInstallUi(host);
@@ -927,6 +950,10 @@
 
   async function installMeldexApp() {
     const options = arguments[0] || {};
+    if (_isDesktopInstallHost()) {
+      showMeldexInstallHelpDialog();
+      return { ok: false, manual: true };
+    }
     if (_isStandaloneDisplayMode()) {
       _showInstallStatus('Meldexはすでにホーム画面に追加済みです');
       _refreshInstallUi(document);
@@ -969,20 +996,12 @@
     const bodyContent = [
       _el('p', {
         class: 'meldex-install-help-intro',
-        text: 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
+        text: _isDesktopInstallHost() ? 'Meldex本体をWindowsのタスクバーにピン留めします。'
+          : 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
       }),
       _el('div', { class: 'meldex-install-help-subtitle', text: 'Meldex本体' }),
       _el('ol', { class: 'meldex-install-help-list' }, _installSteps().map(step => _el('li', { text: step }))),
-      _el('div', { class: 'meldex-install-help-subtitle', text: 'クイックメモ' }),
-      _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
     ];
-    const quickMemoButton = _el('button', {
-      id: 'meldex-install-help-quick-memo',
-      type: 'button',
-      class: 'gb-btn gb-btn-sm',
-      dataset: { e2eId: 'install-help-open-quick-memo-button' },
-      text: 'クイックメモを' + _quickMemoInstallLabel(),
-    });
     const doneButton = options.onManualDone
       ? _el('button', {
         id: 'meldex-install-help-done',
@@ -997,16 +1016,17 @@
       type: 'button',
       class: options.onManualDone ? 'gb-btn gb-btn-sm' : 'gb-btn gb-btn-sm gb-btn-primary primary',
       dataset: { e2eId: 'install-help-close-button' },
+      'aria-label': 'Meldex本体の追加手順を閉じる',
       text: '閉じる',
     });
     let dialogApi = null;
-    const footerContent = [quickMemoButton];
+    const footerContent = [];
     if (doneButton) footerContent.push(doneButton);
     footerContent.push(closeButton);
     dialogApi = window.GBUI.createModal({
       id: 'meldex-install-help-dialog',
       titleId: 'meldex-install-help-title',
-      title: 'ホーム画面に追加',
+      title: 'Meldex本体を' + (_isDesktopInstallHost() ? 'タスクバーにピン留め' : '追加'),
       body: bodyContent,
       footer: footerContent,
       variant: 'standard',
@@ -1032,7 +1052,6 @@
       dialogApi.close('done');
       options.onManualDone?.();
     });
-    quickMemoButton.addEventListener('click', showQuickMemoInstallDialog);
     closeButton.addEventListener('click', () => dialogApi.close('footer'));
     dialogApi.open();
     return true;

@@ -691,6 +691,15 @@ function _settingsMaintenanceRetention(input) {
 async function renderTrashSettings(root) {
   const container = (root?.querySelector ? root : document).querySelector('#trash-settings-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    container.innerHTML = `<section class="gb-section gb-section--boxed">
+      <div class="gb-section-title">${lucide('trash2',14)} 削除したファイルの復元</div>
+      <div class="gb-section-desc">ゴミ箱にあるファイルを確認し、復元する項目を選べます。</div>
+      <button type="button" class="gb-btn gb-btn-sm" id="settings-trash-open">復元一覧を開く</button>
+    </section>`;
+    container.querySelector('#settings-trash-open').addEventListener('click', () => showTrashModal());
+    return;
+  }
   container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('trash2',14)} ゴミ箱</div><div class="gb-section-desc">読み込み中...</div></section>`;
   try {
     const status = await _loadDataProtectionStatus();
@@ -743,6 +752,10 @@ async function renderTrashSettings(root) {
 async function renderDatabaseMaintenanceSettings(root) {
   const container = (root?.querySelector ? root : document).querySelector('#database-maintenance-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    container.replaceChildren();
+    return;
+  }
   container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('database',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込み中...</div></section>`;
   try {
     const status = await _loadDataProtectionStatus();

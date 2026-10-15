@@ -626,8 +626,9 @@
     if (!provider) throw new Error('保存先が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
     const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
-    try { await provider.statPath(USAGE_DB_NOTE); }
-    catch (_) { await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter()); }
+    if (!await provider.statPath(USAGE_DB_NOTE)) {
+      await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter());
+    }
     const flushStamp = _safeFilePart(String(summary.flushedAt || _nowIso()).replace(/[:.]/g, '-'), 'flush');
     const entryPath = _joinPath(USAGE_DB_DIR, `usage_${_today()}_${sessionId}_${flushStamp}.md`);
     await provider.writeText(entryPath, _usageEntryMarkdown(summary));
@@ -696,8 +697,17 @@
 
   function _upgradeCloudFeedbackSheet(source) {
     const current = String(source || '');
-    if (!current || current.includes('  送信状態:')) return current;
+    if (!current) return current;
     const complete = _feedbackDbFrontmatter();
+    // Earlier Cloud startup could create a metadata note without its schema
+    // after statPath returned null. Repair only the missing schema, keeping
+    // existing metadata, view configuration and body byte-for-byte.
+    const header = current.match(/^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---(?=\r?\n|$))/);
+    if (header && !/^property_types:/m.test(header[2])) {
+      const schema = complete.slice(complete.indexOf('property_types:'), complete.indexOf('\npublish:'));
+      return header[1] + header[2] + '\n' + schema + header[3] + current.slice(header[0].length);
+    }
+    if (current.includes('  送信状態:')) return current;
     const historyStart = complete.indexOf('  送信元:');
     const historyEnd = complete.indexOf('  仕分け状態:');
     if (historyStart < 0 || historyEnd <= historyStart) return current;
@@ -712,8 +722,7 @@
   async function _writeCloudFeedbackSheet() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    let exists = false;
-    try { await provider.statPath(FEEDBACK_DB_NOTE); exists = true; } catch (_) {}
+    const exists = !!await provider.statPath(FEEDBACK_DB_NOTE);
     if (!exists) {
       await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter());
     } else if (typeof provider.readText === 'function') {
@@ -1373,11 +1382,12 @@
 
     const section = document.createElement('section');
     section.className = 'gb-section gb-section--boxed';
+    section.dataset.settingsView = 'feedback';
     const title = document.createElement('div');
     title.className = 'gb-section-title';
-    title.textContent = 'フィードバック';
+    title.textContent = '不具合・要望を報告';
     if (typeof fieldHelp === 'function') {
-      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します', { e2eId: 'settings-beta-feedback-help' }));
+      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('Meldex内の報告フォームを開きます。送信前に内容を確認でき、送信した内容は保管シートに残ります', { e2eId: 'settings-beta-feedback-help' }));
     }
     section.append(title);
 
@@ -1400,7 +1410,7 @@
     status.setAttribute('aria-live', 'polite');
     status.textContent = _feedbackFormUrl()
       ? '設定済みのフォームURLを利用できます。'
-      : '保管シートを作成し、フォームビューを公開した後、そのURLをここに保存してください。';
+      : '報告フォームで内容を入力し、送信前に確認できます。';
     section.appendChild(status);
 
     const actions = document.createElement('div');
@@ -1419,7 +1429,7 @@
     ensureButton.type = 'button';
     ensureButton.className = 'gb-btn gb-btn-sm';
     ensureButton.dataset.e2eId = 'settings-feedback-ensure-sheet';
-    ensureButton.textContent = '保管シートを作成/開く';
+    ensureButton.textContent = '報告フォームを開く';
     const historyButton = document.createElement('button');
     historyButton.type = 'button';
     historyButton.className = 'gb-btn gb-btn-sm';
@@ -1430,9 +1440,26 @@
     classifyButton.className = 'gb-btn gb-btn-sm';
     classifyButton.dataset.e2eId = 'settings-feedback-classify';
     classifyButton.textContent = 'LLM仕分けを実行';
-    actions.append(saveUrlButton, openButton, ensureButton, historyButton, classifyButton);
+    actions.append(ensureButton, historyButton);
     section.appendChild(actions);
     container.appendChild(section);
+    const management = document.createElement('section');
+    management.className = 'gb-section gb-section--boxed';
+    management.dataset.settingsView = 'feedback-management';
+    const managementTitle = document.createElement('div');
+    managementTitle.className = 'gb-section-title';
+    managementTitle.textContent = '公開フォームの管理';
+    const managementActions = document.createElement('div');
+    managementActions.className = 'gb-field-row settings-feedback-actions';
+    managementActions.append(saveUrlButton, openButton, classifyButton);
+    management.append(managementTitle, urlRow, managementActions);
+    container.append(management);
+    // Status is shared by the report and management actions, with one stable ID.
+    container.append(status);
+    const modal = container.closest('.settings-modal');
+    if (modal && typeof _applySettingsNavigationView === 'function') {
+      _applySettingsNavigationView(modal, resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId, { pageId: modal.dataset.settingsActivePageId }));
+    }
 
     saveUrlButton.addEventListener('click', () => {
       setFeedbackFormUrl(urlInput.value);
@@ -1446,29 +1473,61 @@
       }
       window.open(url, '_blank', 'noopener');
     });
+    const confirmTransition = async () => {
+      const overlay = container.closest('[data-settings-modal="1"]');
+      if (!overlay) return true;
+      const draftViews = new Set((typeof getSettingsNavigationTabs === 'function' ? getSettingsNavigationTabs() : [])
+        .flatMap(tab => tab.pages).filter(page => page.commitMode === 'draft-save').map(page => page.view));
+      const hasDraft = [...(overlay.__settingsDirtyControlIds || [])].some(id => {
+        const control = [...overlay.querySelectorAll('input, select, textarea')]
+          .find(node => node.id === id || node.dataset.e2eId === id);
+        return String(control?.closest('[data-settings-view]')?.dataset.settingsView || '')
+          .split(/\s+/).some(view => draftViews.has(view));
+      }) || window._settingsThemeDirty || window._settingsOutlinerRootsDirty;
+      if (!hasDraft) return true;
+      return typeof cfConfirm === 'function' && await cfConfirm('保存していない設定があります。変更を破棄して報告画面へ移動しますか？');
+    };
+    const openFeedbackView = async (result, index) => {
+      const dbPath = result.dbPath || FEEDBACK_DB_DIR;
+      // Let the sheet opener resolve its destination from a folder/note pane.
+      // Its live pane context is available only after the load has completed.
+      const opened = await selectDatabase(dbPath, undefined, { silent: true });
+      if (opened?.stale || opened?.destroyed) return;
+      if (opened?.ok === false) throw opened.error || new Error('保管シートを読み込めませんでした');
+      const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
+      if (ctx && (ctx.destroyed || ctx.dbPath !== dbPath || _currentPaneState() !== ctx)) return;
+      loadSavedView(index, ctx);
+    };
     ensureButton.addEventListener('click', async () => {
+      if (!await confirmTransition()) return;
       ensureButton.disabled = true;
       status.textContent = '保管シートを準備中...';
       try {
-        const result = await ensureFeedbackSheet();
+        const result = await ensureFeedbackSheet({ open: false });
+        const closed = await window.closeSettingsModalWithReason?.('settings-transition-feedback', container.closest('.modal-overlay'));
+        if (closed === false) return;
+        await openFeedbackView(result, 0);
         status.textContent = `保管シートを準備しました: ${result.dbPath || FEEDBACK_DB_DIR}`;
       } catch (error) {
         status.textContent = '保管シートの準備に失敗しました: ' + (error?.message || error);
+        if (!container.isConnected && typeof showStatus === 'function') showStatus(status.textContent, true);
       } finally {
         ensureButton.disabled = false;
       }
     });
     historyButton.addEventListener('click', async () => {
+      if (!await confirmTransition()) return;
       historyButton.disabled = true;
       status.textContent = '送信履歴を開いています...';
       try {
-        const result = await ensureFeedbackSheet();
-        const dbPath = result.dbPath || FEEDBACK_DB_DIR;
-        if (typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
-        if (typeof loadSavedView === 'function') loadSavedView(1, { dbPath });
+        const result = await ensureFeedbackSheet({ open: false });
+        const closed = await window.closeSettingsModalWithReason?.('settings-transition-feedback', container.closest('.modal-overlay'));
+        if (closed === false) return;
+        await openFeedbackView(result, 1);
         status.textContent = '送信履歴を開きました。修正済みの項目は対応状況で確認できます。';
       } catch (error) {
         status.textContent = '送信履歴を開けませんでした: ' + (error?.message || error);
+        if (!container.isConnected && typeof showStatus === 'function') showStatus(status.textContent, true);
       } finally {
         historyButton.disabled = false;
       }

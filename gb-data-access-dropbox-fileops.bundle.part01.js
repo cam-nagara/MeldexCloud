@@ -285,6 +285,8 @@
       name: 'Meldex',
       physicalPath: physicalTrashPath(window.MeldexDropboxAuth?.getVaultPath?.()),
     }];
+    // Device-local storage has no Dropbox source roots or remote registry.
+    if (window.MeldexRuntimeAdapter?.getMode?.() === 'browser') return roots;
     if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
     let payload;
     try {
@@ -896,5 +898,3 @@
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
-      _assertCloudCopyRecord(previous, operationId, operation, identity);
-      if (!previous) throw new Error('prepared Cloudファイル操作履歴がありません');

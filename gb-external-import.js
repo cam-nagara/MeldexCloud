@@ -838,9 +838,6 @@
     if (container.dataset.rendered === '1') {
       window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
       if (!cloudSurface) refresh();
-      // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら
-      // 内部でrefresh()のみ行う（二重追加はしない）。
-      if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
       return;
     }
     container.dataset.rendered = '1';
@@ -921,10 +918,6 @@
     bind();
     window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
     if (!cloudSurface) refresh();
-    // 定期実行の一覧・管理（Notion同期/Xブックマーク/Xアカウント投稿/外部取り込みを横断）を
-    // この設定画面の末尾へ追加する。Meldex.html への新規コンテナ追加はレーン外のため、
-    // 既存コンテナへランタイムでマウントする。
-    if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;

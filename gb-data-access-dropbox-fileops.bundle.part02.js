@@ -1,3 +1,5 @@
+      _assertCloudCopyRecord(previous, operationId, operation, identity);
+      if (!previous) throw new Error('prepared Cloudファイル操作履歴がありません');
       if (previous.state === 'completed') selected = previous.result;
       else {
         if (result?.ok !== true || result.operation_id !== operationId) throw new Error('Cloudファイル操作結果が不正です');
@@ -896,5 +898,3 @@ async function _listAnnotationRecords(provider, query) {
   const records = [];
   const seenIds = new Set();
   const scopeOwnersById = new Map();
-  let scopes;
-  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }

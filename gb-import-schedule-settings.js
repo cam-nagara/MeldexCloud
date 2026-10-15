@@ -6,9 +6,8 @@
 // gb-external-import.js。いずれも /api/import-schedules へ書き込みが委譲される）。
 // 本モジュールは、それらを横断する「インポート予定」一覧を1画面にまとめ、
 // Xブックマークは予定・結果の確認と専用設定への移動だけを提供する。
-// 他の設定画面にUIを持たないXアカウント投稿の定期実行もここから登録できるように
-// する（Meldex.html の編集はレーン外のため、既存の外部取り込み設定画面の末尾へ
-// ランタイムでマウントする）。
+// 設定の「定期実行」ページへまとめる。Xアカウントの登録と周期変更は
+// アカウント別の専用画面を正とする。
 (function () {
   'use strict';
 
@@ -90,19 +89,20 @@
     status.dataset.e2eId = `import-schedule-status-${stableId}`;
     card.appendChild(status);
 
-    if (entry.category === 'x-bookmarks') {
+    if (entry.category === 'x-bookmarks' || entry.category === 'x-account-posts') {
+      const settingsName = entry.category === 'x-bookmarks' ? 'Xブックマーク' : 'Xアカウント保存';
       card.appendChild(textEl('div', '接続・取り込み・自動実行の設定は専用画面で変更できます。', 'gb-section-desc'));
       const link = document.createElement('button');
       link.type = 'button';
       link.className = 'gb-btn gb-btn-sm';
-      link.innerHTML = icon('arrowRight', 14) + ' Xブックマークの設定を開く';
+      link.innerHTML = icon('arrowRight', 14) + ` ${settingsName}の設定を開く`;
       link.dataset.e2eId = `import-schedule-settings-${stableId}`;
       link.addEventListener('click', async () => {
         try {
           if (typeof _openSettingsSection === 'function') {
-            _openSettingsSection('Xブックマーク', card, { forcePage: true });
+            _openSettingsSection(settingsName, card, { forcePage: true });
           } else if (typeof showSettingsModal === 'function') {
-            await showSettingsModal({ panel: 'Xブックマーク' });
+            await showSettingsModal({ panel: settingsName });
           } else {
             throw new Error('設定画面を利用できません');
           }
@@ -186,82 +186,6 @@
     }
   }
 
-  function renderAddAccountPostsForm(container, onAdded) {
-    const section = document.createElement('section');
-    section.className = 'gb-section gb-section--boxed';
-    section.dataset.e2eId = 'import-schedule-add-x-account-posts';
-
-    const title = document.createElement('div');
-    title.className = 'gb-section-title';
-    title.innerHTML = `${icon('atSign', 14)} Xアカウント投稿の定期保存を追加`;
-    section.appendChild(title);
-
-    // 同意・料金に関わる開示はツールチップへ隠しきらず、可視のまま残す
-    // （UI共通ルール: 同意・プライバシーに関わる開示は短い1文を可視で残す）。
-    section.appendChild(textEl(
-      'div',
-      'X APIの利用量に応じて料金が発生する場合があります。定期実行は既定で無効です。',
-      'gb-section-desc'
-    ));
-
-    const row = document.createElement('div');
-    row.className = 'gb-field-row';
-    row.style.flexWrap = 'wrap';
-
-    const usernameInput = document.createElement('input');
-    usernameInput.type = 'text';
-    usernameInput.className = 'gb-input';
-    usernameInput.placeholder = '@ユーザー名';
-    usernameInput.setAttribute('aria-label', 'Xのユーザー名');
-    usernameInput.dataset.e2eId = 'import-schedule-x-account-username';
-    row.appendChild(usernameInput);
-
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'gb-btn gb-btn-sm';
-    addBtn.innerHTML = icon('plus', 14) + ' 追加';
-    addBtn.dataset.e2eId = 'import-schedule-x-account-add';
-    row.appendChild(addBtn);
-
-    const message = textEl('div', '', 'gb-section-desc');
-    message.setAttribute('role', 'status');
-    message.setAttribute('aria-live', 'polite');
-
-    addBtn.addEventListener('click', async () => {
-      const username = usernameInput.value.trim().replace(/^@/, '');
-      if (!username) {
-        message.textContent = 'ユーザー名を入力してください。';
-        return;
-      }
-      const existing = await loadSchedules();
-      if (existing.some((entry) => entry.category === 'x-account-posts'
-        && String(entry.target_ref?.username || '').toLowerCase() === username.toLowerCase())) {
-        message.textContent = `@${username} はすでに一覧にあります。`;
-        return;
-      }
-      addBtn.disabled = true;
-      try {
-        await apiPost('/import-schedules', {
-          category: 'x-account-posts',
-          target_ref: { username },
-          label: `@${username}`,
-          period: { type: 'off' },
-        }, { silentError: true });
-        usernameInput.value = '';
-        message.textContent = '追加しました。定期実行はOFFです。';
-        onAdded();
-      } catch (err) {
-        message.textContent = '追加できませんでした: ' + (err.userMessage || err.message || err);
-      } finally {
-        addBtn.disabled = false;
-      }
-    });
-
-    section.appendChild(row);
-    section.appendChild(message);
-    container.appendChild(section);
-  }
-
   async function refresh(root) {
     const list = root.querySelector('.import-schedule-list');
     if (!list) return;
@@ -309,7 +233,13 @@
     `;
     container.appendChild(section);
 
-    renderAddAccountPostsForm(section, () => refresh(section));
+    const accountLink = document.createElement('button');
+    accountLink.type = 'button';
+    accountLink.className = 'gb-btn gb-btn-sm';
+    accountLink.dataset.e2eId = 'import-schedule-open-x-account-posts';
+    accountLink.textContent = 'Xアカウント保存の設定を開く';
+    accountLink.addEventListener('click', () => _openSettingsSection('Xアカウント保存', container, { forcePage: true }));
+    section.append(accountLink);
 
     const list = document.createElement('div');
     list.className = 'import-schedule-list';
@@ -319,10 +249,9 @@
     return refresh(section);
   }
 
-  // 既存の外部取り込み設定画面の末尾へランタイムでマウントする
-  // （Meldex.html/Meldex-dev.html への新規コンテナ追加はレーン外のため）。
+  // 設定ダイアログの専用コンテナへマウントする。
   function mount(hostContainerId) {
-    const host = document.getElementById(hostContainerId || 'external-import-settings-container');
+    const host = document.getElementById(hostContainerId || 'import-schedule-settings-container');
     return host ? render(host) : Promise.resolve();
   }
 

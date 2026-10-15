@@ -76462,11 +76462,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'インポート',
-    desc: '外部ノート、Notion同期',
+    desc: '外部ノート、Notion同期、定期実行の予定と結果',
     icon: 'download',
     pages: [
       { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import', commitMode: 'immediate-safe' },
       { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync', commitMode: 'immediate-safe' },
+      { id: 'import-schedules', label: '定期実行', panels: ['取り込み'], view: 'import-schedules', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -76489,10 +76490,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '導入・アプリ連携',
-    desc: 'ホーム画面追加、ファイル関連付け、RenderList',
+    desc: 'Meldex本体、クイックメモ、ファイル関連付け、RenderList',
     icon: 'download',
     pages: [
-      { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'setup', label: 'Meldex本体', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
+      { id: 'quick-memo-setup', label: 'クイックメモ', panels: ['全般'], view: 'quick-memo-setup', commitMode: 'immediate-safe' },
+      { id: 'file-associations', label: 'ファイル関連付け', panels: ['全般'], view: 'file-associations', commitMode: 'immediate-safe' },
       { id: 'renderlist', label: 'RenderList', panels: ['全般'], view: 'renderlist', commitMode: 'immediate-safe' },
     ],
   },
@@ -76517,10 +76520,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'フィードバック',
-    desc: 'フィードバック、利用統計、診断、更新確認',
+    desc: '不具合・要望の報告、送信設定、診断・更新、管理',
     icon: 'messageSquareText',
     pages: [
-      { id: 'feedback', label: 'フィードバック', panels: ['フィードバック'], view: 'feedback', commitMode: 'immediate-safe' },
+      { id: 'feedback', label: '報告・送信設定', panels: ['フィードバック'], view: 'feedback', commitMode: 'immediate-safe' },
+      { id: 'diagnostics', label: '診断・更新', panels: ['フィードバック'], view: 'diagnostics', commitMode: 'immediate-safe' },
+      { id: 'feedback-management', label: 'フォーム・受信箱の管理', panels: ['フィードバック'], view: 'feedback-management', commitMode: 'immediate-safe' },
     ],
   },
 ]);
@@ -76558,6 +76563,12 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'Web Clipper': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   'ウェブクリップ': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   'Chrome拡張機能': { tabId: 'Webクリップ', pageId: 'web-clipper' },
+  'Meldex本体': { tabId: '導入・アプリ連携', pageId: 'setup' },
+  'クイックメモ': { tabId: '導入・アプリ連携', pageId: 'quick-memo-setup' },
+  'ファイル関連付け': { tabId: '導入・アプリ連携', pageId: 'file-associations' },
+  '定期実行': { tabId: 'インポート', pageId: 'import-schedules' },
+  '診断・更新': { tabId: 'フィードバック', pageId: 'diagnostics' },
+  'フォーム・受信箱の管理': { tabId: 'フィードバック', pageId: 'feedback-management' },
   '連携': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   '拡張機能': { tabId: '拡張機能', pageId: 'extensions' },
   'ゴミ箱': { tabId: 'ゴミ箱・データ保守', pageId: 'trash' },
@@ -76587,14 +76598,26 @@ function _settingsAutoTagPageVisible() {
 
 function _settingsNavigationRuntimeTabs() {
   const autoTagVisible = _settingsAutoTagPageVisible();
-  return MELDEX_SETTINGS_NAVIGATION.map(tab => {
-    if (tab.id !== 'AI' || autoTagVisible) return tab;
-    return {
-      ...tab,
-      desc: 'AIキー、ローカルLLM、CLI、AI使用量',
-      pages: tab.pages.filter(page => page.id !== 'auto-tag'),
-    };
-  });
+  const desktop = _settingsDesktopFeaturesAvailable();
+  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates']);
+  return MELDEX_SETTINGS_NAVIGATION.map(tab => ({
+    ...tab,
+    desc: !desktop && tab.id === 'AI' ? 'AIキー、管理者AI、記憶・指示、AI使用量'
+      : !desktop && tab.id === '導入・アプリ連携' ? 'Meldex本体、クイックメモの追加・起動'
+      : !desktop && tab.id === 'インポート' ? '外部ノート・Googleデータの取り込み'
+      : !desktop && tab.id === 'Webクリップ' ? 'Web Clipper、Xブックマークの共通設定'
+      : !desktop && tab.id === 'ゴミ箱・データ保守' ? '削除したファイルの復元、タグのメンテナンス'
+      : !desktop && tab.id === 'フィードバック' ? '不具合・要望の報告、送信設定、診断・更新' : tab.desc,
+    pages: tab.pages.filter(page => (page.id !== 'auto-tag' || autoTagVisible) && (desktop || !desktopPages.has(page.id)))
+      .map(page => !desktop && page.id === 'cli' ? { ...page, label: '管理者AI', commitMode: 'immediate-safe' } : page),
+  })).filter(tab => tab.pages.length);
+}
+
+function _settingsDesktopFeaturesAvailable() {
+  const mode = window.MeldexRuntimeAdapter?.getMode?.() || document.body?.dataset?.cloudMode || '';
+  const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
+    && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
+  return !window.MeldexRuntimeAdapter?.isPwaMode?.() && !['browser', 'dropbox'].includes(mode) && !cloudStatic;
 }
 
 function _settingsNavigationFindTab(tabId) {
@@ -76641,7 +76664,7 @@ function _settingsLegacyPanelsForName(name, options = {}) {
 
 function _settingsNavigationDisplayName(name, options = {}) {
   const target = resolveSettingsNavigationTarget(name, options);
-  return target.pageLabel && target.tab?.pages?.length > 1
+  return target.pageLabel && target.pageLabel !== target.tabId && target.tab?.pages?.length > 1
     ? `${target.tabId} / ${target.pageLabel}`
     : target.tabId;
 }
@@ -76682,7 +76705,7 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 2 ホームフォルダ
     'storage',   // 3 スクリーンショット保存先
     'storage',   // 4 保存の仕組み
-    'setup',     // 5 ファイルを開くアプリ
+    'file-associations', // 5 ファイルを開くアプリ
     'setup',     // 6 ホーム画面に追加（#settings-install-container）
     'transfer',  // 7 設定の引き継ぎ
     'display',   // 8 表示オプション
@@ -77142,6 +77165,7 @@ function _setSettingsAvatarPreview(el, avatar) {
 }
 
 function isWebClipperDesktopSetupAvailable() {
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) return false;
   try {
     const host = String(window.location.hostname || '').toLowerCase();
     const local = !host || host === 'localhost' || host === '127.0.0.1' || host === '::1';
@@ -77447,28 +77471,29 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-e2e-id="settings-storage-mode-open" data-action="openStorageSettingsFlow()">保存先を設定...</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="setup">
+      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="file-associations">
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('画像とPDFはMeldex Viewerを候補登録できます。シナリオ・シート・ボードはMeldex本体から開きます。既存のWindows既定アプリは自動で上書きしません', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} 画像/PDFをMeldex Viewerにする</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} Meldex Viewerを候補に登録</button>
         </div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-refresh" data-action="loadDefaultAppAssociationsForSettings">${lucide('refreshCw',14)} 状態を更新</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
         </div>
       </section>
-      <div id="settings-install-container" data-settings-view="setup">
+      <div id="settings-install-container" class="settings-section-wide" data-settings-view="setup">
         <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
+          <div class="gb-section-title">${lucide('download',14)} Meldex本体の追加・起動</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
+      <div id="settings-quick-memo-install-container" class="settings-section-wide" data-settings-view="quick-memo-setup"></div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません', { e2eId: 'settings-transfer-help' })}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button id="settings-transfer-open-location" type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()">${lucide('folderOpen',14)} 設定保存先を開く</button>
+          <button id="settings-transfer-open-location" type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()"${typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable() ? ' hidden' : ''}>${lucide('folderOpen',14)} 設定保存先を開く</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="exportSettingsTransferBundle()">${uiTransferIcon('export',14) || lucide('upload',14)} 設定をエクスポート</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="document.getElementById('settings-transfer-import-input')?.click()">${uiTransferIcon('import',14) || lucide('download',14)} 設定をインポート</button>
           <input id="settings-transfer-import-input" type="file" accept=".zip,application/zip" hidden data-onchange="importSettingsTransferBundleFromFile(this)">
@@ -77648,7 +77673,7 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})">レイアウトを初期化</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed" data-settings-view="history">
+      <section class="gb-section gb-section--boxed" data-settings-view="${_historySheetExportAvailable ? 'history' : 'desktop-history'}">
         <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・アノテート・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）', { e2eId: 'settings-history-export-help' })}</div>
         <div class="gb-field-row">
           ${_historySheetExportAvailable
@@ -77727,8 +77752,10 @@ async function showSettingsModal(opts) {
           ${fieldHelp('チャットからMeldex内の読み取り・作成・更新ツールを使えるようにします')}
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
+      <section class="gb-section gb-section--boxed" data-settings-view="cli">
+        <div class="gb-section-title">${lucide('terminal',14)} ${typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()
+          ? '管理者AI ' + fieldHelp('共有ワークスペースで管理者PCへ依頼するための端末と許可状態を確認します')
+          : 'CLIチャット ' + fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
         <div id="settings-cli-chat-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
@@ -77818,7 +77845,7 @@ async function showSettingsModal(opts) {
     </div>
     <!-- 取り込み -->
     <div class="settings-panel" data-panel="取り込み" hidden>
-      <div id="external-import-settings-container">
+      <div id="external-import-settings-container" data-settings-view="external-import">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('download',14)} 外部ノート取り込み</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
@@ -77836,11 +77863,12 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
+      <div id="import-schedule-settings-container" data-settings-view="import-schedules"></div>
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
       ${window.MeldexMobileWebClipSettings?.render?.() || ''}
-      <section class="gb-section gb-section--boxed" data-settings-view="web-clipper" data-settings-webclip-desktop="1">
+      <section class="gb-section gb-section--boxed" data-settings-view="${_webClipperDesktopSetupAvailable ? 'web-clipper' : 'desktop-web-clipper'}" data-settings-webclip-desktop="1">
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper ${fieldHelp('Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の「Web Clipper」フォルダです')}</div>
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
@@ -77893,7 +77921,7 @@ async function showSettingsModal(opts) {
     </div>
     <!-- データベース -->
     <div class="settings-panel" data-panel="データベース" hidden>
-      <div id="database-maintenance-container">
+      <div id="database-maintenance-container" data-settings-view="${typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable() ? 'database' : 'desktop-database'}">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('database',14)} データベースメンテナンス</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
@@ -77909,13 +77937,13 @@ async function showSettingsModal(opts) {
     </div>
     <!-- フィードバック -->
     <div class="settings-panel" data-panel="フィードバック" hidden>
-      <div id="feedback-form-container">
+      <div id="feedback-form-container" data-settings-view="feedback feedback-management">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('messageSquareText',14)} フィードバック</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
-      <div id="feedback-settings-container">
+      <div id="feedback-settings-container" data-settings-view="feedback diagnostics feedback-management">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('send',14)} 送信設定</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
@@ -83714,8 +83742,9 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof updateRestorePointScheduleSettingsVisibility === 'function') updateRestorePointScheduleSettingsVisibility();
-      if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
-      if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
+      const desktop = typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable();
+      if (desktop && typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
+      if (desktop && typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
       window.MeldexSettingsCloudLink?.renderStatusCard?.(modal.querySelector('#settings-cloud-link-card'));
       return;
     }
@@ -83751,7 +83780,8 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === '取り込み') {
       if (typeof renderExternalImportSettings === 'function') renderExternalImportSettings(modal);
       if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
-      if (typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
+      if ((typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable())
+        && typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
       return;
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
@@ -83948,6 +83978,7 @@ function _showSettingsNavigationTarget(modal, target) {
   if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
+  if (target.pageId === 'import-schedules') window.MeldexImportScheduleSettings?.mount();
   const headerText = modal.querySelector('#settings-header-text');
   if (headerText) headerText.textContent = typeof _settingsNavigationDisplayName === 'function'
     ? _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId })
@@ -85163,6 +85194,15 @@ function _settingsMaintenanceRetention(input) {
 async function renderTrashSettings(root) {
   const container = (root?.querySelector ? root : document).querySelector('#trash-settings-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    container.innerHTML = `<section class="gb-section gb-section--boxed">
+      <div class="gb-section-title">${lucide('trash2',14)} 削除したファイルの復元</div>
+      <div class="gb-section-desc">ゴミ箱にあるファイルを確認し、復元する項目を選べます。</div>
+      <button type="button" class="gb-btn gb-btn-sm" id="settings-trash-open">復元一覧を開く</button>
+    </section>`;
+    container.querySelector('#settings-trash-open').addEventListener('click', () => showTrashModal());
+    return;
+  }
   container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('trash2',14)} ゴミ箱</div><div class="gb-section-desc">読み込み中...</div></section>`;
   try {
     const status = await _loadDataProtectionStatus();
@@ -85215,6 +85255,10 @@ async function renderTrashSettings(root) {
 async function renderDatabaseMaintenanceSettings(root) {
   const container = (root?.querySelector ? root : document).querySelector('#database-maintenance-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    container.replaceChildren();
+    return;
+  }
   container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('database',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込み中...</div></section>`;
   try {
     const status = await _loadDataProtectionStatus();
@@ -85682,6 +85726,12 @@ async function renderCliChatSettingsForSettings(root) {
   const scope = root?.querySelector ? root : document;
   const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
   if (!container) return;
+  if (typeof _settingsDesktopFeaturesAvailable === 'function' && !_settingsDesktopFeaturesAvailable()) {
+    // The existing security UI observes this container. Cloud can inspect its
+    // signed permissions without pretending that local executables exist.
+    container.innerHTML = '<div id="settings-workspace-cli-relay-container"></div>';
+    return;
+  }
   container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
   try {
     const config = await apiFetch('/cli-chat/config');
@@ -94397,9 +94447,6 @@ async function resetLayoutToDefault() {
     if (container.dataset.rendered === '1') {
       window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
       if (!cloudSurface) refresh();
-      // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら
-      // 内部でrefresh()のみ行う（二重追加はしない）。
-      if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
       return;
     }
     container.dataset.rendered = '1';
@@ -94480,10 +94527,6 @@ async function resetLayoutToDefault() {
     bind();
     window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
     if (!cloudSurface) refresh();
-    // 定期実行の一覧・管理（Notion同期/Xブックマーク/Xアカウント投稿/外部取り込みを横断）を
-    // この設定画面の末尾へ追加する。Meldex.html への新規コンテナ追加はレーン外のため、
-    // 既存コンテナへランタイムでマウントする。
-    if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;
@@ -95216,9 +95259,8 @@ async function resetLayoutToDefault() {
 // gb-external-import.js。いずれも /api/import-schedules へ書き込みが委譲される）。
 // 本モジュールは、それらを横断する「インポート予定」一覧を1画面にまとめ、
 // Xブックマークは予定・結果の確認と専用設定への移動だけを提供する。
-// 他の設定画面にUIを持たないXアカウント投稿の定期実行もここから登録できるように
-// する（Meldex.html の編集はレーン外のため、既存の外部取り込み設定画面の末尾へ
-// ランタイムでマウントする）。
+// 設定の「定期実行」ページへまとめる。Xアカウントの登録と周期変更は
+// アカウント別の専用画面を正とする。
 (function () {
   'use strict';
 
@@ -95300,19 +95342,20 @@ async function resetLayoutToDefault() {
     status.dataset.e2eId = `import-schedule-status-${stableId}`;
     card.appendChild(status);
 
-    if (entry.category === 'x-bookmarks') {
+    if (entry.category === 'x-bookmarks' || entry.category === 'x-account-posts') {
+      const settingsName = entry.category === 'x-bookmarks' ? 'Xブックマーク' : 'Xアカウント保存';
       card.appendChild(textEl('div', '接続・取り込み・自動実行の設定は専用画面で変更できます。', 'gb-section-desc'));
       const link = document.createElement('button');
       link.type = 'button';
       link.className = 'gb-btn gb-btn-sm';
-      link.innerHTML = icon('arrowRight', 14) + ' Xブックマークの設定を開く';
+      link.innerHTML = icon('arrowRight', 14) + ` ${settingsName}の設定を開く`;
       link.dataset.e2eId = `import-schedule-settings-${stableId}`;
       link.addEventListener('click', async () => {
         try {
           if (typeof _openSettingsSection === 'function') {
-            _openSettingsSection('Xブックマーク', card, { forcePage: true });
+            _openSettingsSection(settingsName, card, { forcePage: true });
           } else if (typeof showSettingsModal === 'function') {
-            await showSettingsModal({ panel: 'Xブックマーク' });
+            await showSettingsModal({ panel: settingsName });
           } else {
             throw new Error('設定画面を利用できません');
           }
@@ -95396,82 +95439,6 @@ async function resetLayoutToDefault() {
     }
   }
 
-  function renderAddAccountPostsForm(container, onAdded) {
-    const section = document.createElement('section');
-    section.className = 'gb-section gb-section--boxed';
-    section.dataset.e2eId = 'import-schedule-add-x-account-posts';
-
-    const title = document.createElement('div');
-    title.className = 'gb-section-title';
-    title.innerHTML = `${icon('atSign', 14)} Xアカウント投稿の定期保存を追加`;
-    section.appendChild(title);
-
-    // 同意・料金に関わる開示はツールチップへ隠しきらず、可視のまま残す
-    // （UI共通ルール: 同意・プライバシーに関わる開示は短い1文を可視で残す）。
-    section.appendChild(textEl(
-      'div',
-      'X APIの利用量に応じて料金が発生する場合があります。定期実行は既定で無効です。',
-      'gb-section-desc'
-    ));
-
-    const row = document.createElement('div');
-    row.className = 'gb-field-row';
-    row.style.flexWrap = 'wrap';
-
-    const usernameInput = document.createElement('input');
-    usernameInput.type = 'text';
-    usernameInput.className = 'gb-input';
-    usernameInput.placeholder = '@ユーザー名';
-    usernameInput.setAttribute('aria-label', 'Xのユーザー名');
-    usernameInput.dataset.e2eId = 'import-schedule-x-account-username';
-    row.appendChild(usernameInput);
-
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'gb-btn gb-btn-sm';
-    addBtn.innerHTML = icon('plus', 14) + ' 追加';
-    addBtn.dataset.e2eId = 'import-schedule-x-account-add';
-    row.appendChild(addBtn);
-
-    const message = textEl('div', '', 'gb-section-desc');
-    message.setAttribute('role', 'status');
-    message.setAttribute('aria-live', 'polite');
-
-    addBtn.addEventListener('click', async () => {
-      const username = usernameInput.value.trim().replace(/^@/, '');
-      if (!username) {
-        message.textContent = 'ユーザー名を入力してください。';
-        return;
-      }
-      const existing = await loadSchedules();
-      if (existing.some((entry) => entry.category === 'x-account-posts'
-        && String(entry.target_ref?.username || '').toLowerCase() === username.toLowerCase())) {
-        message.textContent = `@${username} はすでに一覧にあります。`;
-        return;
-      }
-      addBtn.disabled = true;
-      try {
-        await apiPost('/import-schedules', {
-          category: 'x-account-posts',
-          target_ref: { username },
-          label: `@${username}`,
-          period: { type: 'off' },
-        }, { silentError: true });
-        usernameInput.value = '';
-        message.textContent = '追加しました。定期実行はOFFです。';
-        onAdded();
-      } catch (err) {
-        message.textContent = '追加できませんでした: ' + (err.userMessage || err.message || err);
-      } finally {
-        addBtn.disabled = false;
-      }
-    });
-
-    section.appendChild(row);
-    section.appendChild(message);
-    container.appendChild(section);
-  }
-
   async function refresh(root) {
     const list = root.querySelector('.import-schedule-list');
     if (!list) return;
@@ -95519,7 +95486,13 @@ async function resetLayoutToDefault() {
     `;
     container.appendChild(section);
 
-    renderAddAccountPostsForm(section, () => refresh(section));
+    const accountLink = document.createElement('button');
+    accountLink.type = 'button';
+    accountLink.className = 'gb-btn gb-btn-sm';
+    accountLink.dataset.e2eId = 'import-schedule-open-x-account-posts';
+    accountLink.textContent = 'Xアカウント保存の設定を開く';
+    accountLink.addEventListener('click', () => _openSettingsSection('Xアカウント保存', container, { forcePage: true }));
+    section.append(accountLink);
 
     const list = document.createElement('div');
     list.className = 'import-schedule-list';
@@ -95529,10 +95502,9 @@ async function resetLayoutToDefault() {
     return refresh(section);
   }
 
-  // 既存の外部取り込み設定画面の末尾へランタイムでマウントする
-  // （Meldex.html/Meldex-dev.html への新規コンテナ追加はレーン外のため）。
+  // 設定ダイアログの専用コンテナへマウントする。
   function mount(hostContainerId) {
-    const host = document.getElementById(hostContainerId || 'external-import-settings-container');
+    const host = document.getElementById(hostContainerId || 'import-schedule-settings-container');
     return host ? render(host) : Promise.resolve();
   }
 

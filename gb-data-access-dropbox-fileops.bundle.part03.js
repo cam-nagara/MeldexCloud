@@ -1,3 +1,5 @@
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
   for (const scope of scopes) {
     let stored = [];
     try {
@@ -896,5 +898,3 @@ async function _listFileVersions(provider, path) {
   versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
   return versions.map(({ _modifiedMs, ...row }) => row);
 }
-
-async function _buildCloudVersionTimeline(provider, url) {

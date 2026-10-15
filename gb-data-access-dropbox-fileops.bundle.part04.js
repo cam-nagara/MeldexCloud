@@ -1,3 +1,5 @@
+
+async function _buildCloudVersionTimeline(provider, url) {
   const path = _normalizeFolderPath(url.searchParams.get('target_path') || url.searchParams.get('path') || '');
   if (!path) return { ok: true, total: 0, entries: [] };
   const kinds = new Set(String(url.searchParams.get('kinds') || 'named,auto,edit').split(',').filter(Boolean));
@@ -896,5 +898,3 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
   }
   const { folderPath, folderId, validated, validationFailures } = await _validateFolderLinkBatch(provider, operation, body);
   const committed = await _updateFolderLinksStateForProvider(provider, (state) => {
-    if (!Array.isArray(state?.links) || !Array.isArray(state?.requests)) {
-      throw new Error('フォルダリンクの再試行履歴が破損しています');

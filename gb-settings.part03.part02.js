@@ -368,8 +368,9 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof updateRestorePointScheduleSettingsVisibility === 'function') updateRestorePointScheduleSettingsVisibility();
-      if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
-      if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
+      const desktop = typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable();
+      if (desktop && typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
+      if (desktop && typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
       window.MeldexSettingsCloudLink?.renderStatusCard?.(modal.querySelector('#settings-cloud-link-card'));
       return;
     }
@@ -405,7 +406,8 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === '取り込み') {
       if (typeof renderExternalImportSettings === 'function') renderExternalImportSettings(modal);
       if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
-      if (typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
+      if ((typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable())
+        && typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
       return;
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
@@ -602,6 +604,7 @@ function _showSettingsNavigationTarget(modal, target) {
   if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
+  if (target.pageId === 'import-schedules') window.MeldexImportScheduleSettings?.mount();
   const headerText = modal.querySelector('#settings-header-text');
   if (headerText) headerText.textContent = typeof _settingsNavigationDisplayName === 'function'
     ? _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId })

@@ -14602,6 +14602,7 @@
 
   async function _allowedTrashRoots() {
     const roots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex' }];
+    if (window.MeldexRuntimeAdapter?.getMode?.() === 'browser') return roots;
     const registry = window.MeldexSourceFolderRegistry;
     if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
     let payload;
@@ -30746,6 +30747,8 @@
       name: 'Meldex',
       physicalPath: physicalTrashPath(window.MeldexDropboxAuth?.getVaultPath?.()),
     }];
+    // Device-local storage has no Dropbox source roots or remote registry.
+    if (window.MeldexRuntimeAdapter?.getMode?.() === 'browser') return roots;
     if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
     let payload;
     try {
@@ -58959,6 +58962,11 @@ if (typeof window !== 'undefined') {
   }
 
   function _installSteps() {
+    if (_isDesktopInstallHost()) return [
+      'Meldex本体（Meldex.exe）を起動します。',
+      'タスクバーのMeldexのアイコンを右クリックします。',
+      '「タスクバーにピン留めする」を選びます。次回からこのアイコンで起動できます。',
+    ];
     if (_isStandaloneDisplayMode()) return ['Meldexはすでにホーム画面またはアプリ一覧から起動できます。'];
     if (_isIosLike()) {
       return [
@@ -59005,6 +59013,15 @@ if (typeof window !== 'undefined') {
 
   function _quickMemoInstallLabel() {
     return _isIosLike() || _isAndroidLike() ? 'ホームに追加' : 'タスクバーにピン留め';
+  }
+
+  function _isDesktopInstallHost() {
+    return !_isIosLike() && !_isAndroidLike() && _isLocalAppHost()
+      && (typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable());
+  }
+
+  function _mainInstallLabel() {
+    return _isDesktopInstallHost() ? 'タスクバーにピン留め' : 'Meldex本体を追加';
   }
 
   function _quickMemoUrl() {
@@ -59066,15 +59083,17 @@ if (typeof window !== 'undefined') {
   }
 
   function _installStatusText() {
+    if (_isDesktopInstallHost()) return 'このPCではMeldex.exeから本体を起動します。';
     if (_isStandaloneDisplayMode()) return 'Meldex本体は追加済みです。ホーム画面やアプリ一覧から起動できます。';
     if (_installPromptEvent) return 'この端末では、Meldex本体の追加確認を開けます。';
     return 'ブラウザ条件により直接追加できない場合は、ボタンから追加手順を確認できます。';
   }
 
   function _installHintText() {
+    if (_isDesktopInstallHost()) return 'ピン留めの手順を確認できます。';
     if (_isStandaloneDisplayMode()) return '現在はアプリ表示で起動しています。';
     if (_installPromptEvent) return 'ボタンを押すとブラウザの確認画面が開きます。';
-    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューから追加します。クイックメモは別画面を開いて追加します。';
+    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューからMeldex本体を追加します。';
   }
 
   function _showInstallStatus(message) {
@@ -59222,7 +59241,7 @@ if (typeof window !== 'undefined') {
       const button = section.querySelector('[data-meldex-install-button]');
       if (button) {
         button.disabled = installed;
-        button.textContent = installed ? '本体は追加済み' : 'Meldex本体を追加';
+        button.textContent = installed ? '本体は追加済み' : _mainInstallLabel();
       }
     });
   }
@@ -59241,10 +59260,13 @@ if (typeof window !== 'undefined') {
     });
     const title = _el('div', { class: modal ? 'meldex-install-title' : 'gb-section-title meldex-install-title' });
     title.appendChild(_iconNode('download', 14));
-    title.appendChild(_el('span', { text: 'ホーム画面に追加' }));
+    title.appendChild(_el('span', { text: options.app === 'quick-memo' ? 'クイックメモの追加・起動'
+      : options.app === 'main' ? 'Meldex本体の追加・起動' : 'アプリの追加・起動' }));
     const desc = _el('div', {
       class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
-      text: 'Meldex本体とクイックメモの単独アプリは別々に追加します。用途に合わせて必要なものを追加してください。',
+      text: options.app === 'quick-memo' ? 'クイックメモの単独アプリを、端末からすぐに起動できるようにします。'
+        : options.app === 'main' ? 'ノート、シート、ボード、チャットを使うMeldex本体の起動方法を設定します。'
+        : 'Meldex本体とクイックメモの単独アプリは別々に追加します。用途に合わせて必要なものを追加してください。',
     });
     const status = _el('div', {
       class: 'meldex-install-status',
@@ -59297,7 +59319,8 @@ if (typeof window !== 'undefined') {
       }),
       _el('div', { class: 'meldex-install-actions' }, [quickButton]),
     ]);
-    section.append(title, desc, _el('div', { class: 'meldex-install-options' }, [mainOption, quickOption]));
+    const installOptions = options.app === 'main' ? [mainOption] : options.app === 'quick-memo' ? [quickOption] : [mainOption, quickOption];
+    section.append(title, desc, _el('div', { class: 'meldex-install-options' }, installOptions));
     _refreshInstallUi(section);
     return section;
   }
@@ -59327,7 +59350,7 @@ if (typeof window !== 'undefined') {
     dialogApi = window.GBUI.createModal({
       id: 'meldex-install-prompt-dialog',
       titleId: 'meldex-install-prompt-title',
-      title: 'ホーム画面に追加',
+      title: _isDesktopInstallHost() ? 'アプリの追加・起動' : 'ホーム画面に追加',
       body: [intro, installSection],
       footer: laterButton,
       variant: 'standard',
@@ -59507,10 +59530,12 @@ if (typeof window !== 'undefined') {
 
   function renderMeldexInstallSection(root, options) {
     options = options || {};
-    const section = _createInstallSection(options);
-    if (options.standalone) return section;
     const scope = root?.querySelector ? root : document;
     const host = options.host || scope.querySelector?.('#settings-install-container');
+    const app = options.app || (host?.id === 'settings-quick-memo-install-container' ? 'quick-memo'
+      : host?.id === 'settings-install-container' ? 'main' : undefined);
+    const section = _createInstallSection({ ...options, app: options.standalone ? options.app : app });
+    if (options.standalone) return section;
     if (!host) return section;
     host.replaceChildren(section);
     return section;
@@ -59519,8 +59544,9 @@ if (typeof window !== 'undefined') {
   function _renderPendingInstallSections(root) {
     const scope = root?.querySelectorAll ? root : document;
     const hosts = [];
-    if (scope.matches?.('#settings-install-container')) hosts.push(scope);
-    scope.querySelectorAll?.('#settings-install-container').forEach(host => hosts.push(host));
+    const hostSelector = '#settings-install-container, #settings-quick-memo-install-container';
+    if (scope.matches?.(hostSelector)) hosts.push(scope);
+    scope.querySelectorAll?.(hostSelector).forEach(host => hosts.push(host));
     hosts.forEach(host => {
       if (host.querySelector?.('[data-meldex-install-section]')) {
         _refreshInstallUi(host);
@@ -59532,6 +59558,10 @@ if (typeof window !== 'undefined') {
 
   async function installMeldexApp() {
     const options = arguments[0] || {};
+    if (_isDesktopInstallHost()) {
+      showMeldexInstallHelpDialog();
+      return { ok: false, manual: true };
+    }
     if (_isStandaloneDisplayMode()) {
       _showInstallStatus('Meldexはすでにホーム画面に追加済みです');
       _refreshInstallUi(document);
@@ -59574,20 +59604,12 @@ if (typeof window !== 'undefined') {
     const bodyContent = [
       _el('p', {
         class: 'meldex-install-help-intro',
-        text: 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
+        text: _isDesktopInstallHost() ? 'Meldex本体をWindowsのタスクバーにピン留めします。'
+          : 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
       }),
       _el('div', { class: 'meldex-install-help-subtitle', text: 'Meldex本体' }),
       _el('ol', { class: 'meldex-install-help-list' }, _installSteps().map(step => _el('li', { text: step }))),
-      _el('div', { class: 'meldex-install-help-subtitle', text: 'クイックメモ' }),
-      _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
     ];
-    const quickMemoButton = _el('button', {
-      id: 'meldex-install-help-quick-memo',
-      type: 'button',
-      class: 'gb-btn gb-btn-sm',
-      dataset: { e2eId: 'install-help-open-quick-memo-button' },
-      text: 'クイックメモを' + _quickMemoInstallLabel(),
-    });
     const doneButton = options.onManualDone
       ? _el('button', {
         id: 'meldex-install-help-done',
@@ -59602,16 +59624,17 @@ if (typeof window !== 'undefined') {
       type: 'button',
       class: options.onManualDone ? 'gb-btn gb-btn-sm' : 'gb-btn gb-btn-sm gb-btn-primary primary',
       dataset: { e2eId: 'install-help-close-button' },
+      'aria-label': 'Meldex本体の追加手順を閉じる',
       text: '閉じる',
     });
     let dialogApi = null;
-    const footerContent = [quickMemoButton];
+    const footerContent = [];
     if (doneButton) footerContent.push(doneButton);
     footerContent.push(closeButton);
     dialogApi = window.GBUI.createModal({
       id: 'meldex-install-help-dialog',
       titleId: 'meldex-install-help-title',
-      title: 'ホーム画面に追加',
+      title: 'Meldex本体を' + (_isDesktopInstallHost() ? 'タスクバーにピン留め' : '追加'),
       body: bodyContent,
       footer: footerContent,
       variant: 'standard',
@@ -59637,7 +59660,6 @@ if (typeof window !== 'undefined') {
       dialogApi.close('done');
       options.onManualDone?.();
     });
-    quickMemoButton.addEventListener('click', showQuickMemoInstallDialog);
     closeButton.addEventListener('click', () => dialogApi.close('footer'));
     dialogApi.open();
     return true;
@@ -61340,8 +61362,9 @@ ${reason.message}`
     if (!provider) throw new Error('保存先が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
     const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
-    try { await provider.statPath(USAGE_DB_NOTE); }
-    catch (_) { await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter()); }
+    if (!await provider.statPath(USAGE_DB_NOTE)) {
+      await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter());
+    }
     const flushStamp = _safeFilePart(String(summary.flushedAt || _nowIso()).replace(/[:.]/g, '-'), 'flush');
     const entryPath = _joinPath(USAGE_DB_DIR, `usage_${_today()}_${sessionId}_${flushStamp}.md`);
     await provider.writeText(entryPath, _usageEntryMarkdown(summary));
@@ -61410,8 +61433,17 @@ ${reason.message}`
 
   function _upgradeCloudFeedbackSheet(source) {
     const current = String(source || '');
-    if (!current || current.includes('  送信状態:')) return current;
+    if (!current) return current;
     const complete = _feedbackDbFrontmatter();
+    // Earlier Cloud startup could create a metadata note without its schema
+    // after statPath returned null. Repair only the missing schema, keeping
+    // existing metadata, view configuration and body byte-for-byte.
+    const header = current.match(/^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---(?=\r?\n|$))/);
+    if (header && !/^property_types:/m.test(header[2])) {
+      const schema = complete.slice(complete.indexOf('property_types:'), complete.indexOf('\npublish:'));
+      return header[1] + header[2] + '\n' + schema + header[3] + current.slice(header[0].length);
+    }
+    if (current.includes('  送信状態:')) return current;
     const historyStart = complete.indexOf('  送信元:');
     const historyEnd = complete.indexOf('  仕分け状態:');
     if (historyStart < 0 || historyEnd <= historyStart) return current;
@@ -61426,8 +61458,7 @@ ${reason.message}`
   async function _writeCloudFeedbackSheet() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    let exists = false;
-    try { await provider.statPath(FEEDBACK_DB_NOTE); exists = true; } catch (_) {}
+    const exists = !!await provider.statPath(FEEDBACK_DB_NOTE);
     if (!exists) {
       await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter());
     } else if (typeof provider.readText === 'function') {
@@ -62087,11 +62118,12 @@ ${reason.message}`
 
     const section = document.createElement('section');
     section.className = 'gb-section gb-section--boxed';
+    section.dataset.settingsView = 'feedback';
     const title = document.createElement('div');
     title.className = 'gb-section-title';
-    title.textContent = 'フィードバック';
+    title.textContent = '不具合・要望を報告';
     if (typeof fieldHelp === 'function') {
-      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します', { e2eId: 'settings-beta-feedback-help' }));
+      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('Meldex内の報告フォームを開きます。送信前に内容を確認でき、送信した内容は保管シートに残ります', { e2eId: 'settings-beta-feedback-help' }));
     }
     section.append(title);
 
@@ -62114,7 +62146,7 @@ ${reason.message}`
     status.setAttribute('aria-live', 'polite');
     status.textContent = _feedbackFormUrl()
       ? '設定済みのフォームURLを利用できます。'
-      : '保管シートを作成し、フォームビューを公開した後、そのURLをここに保存してください。';
+      : '報告フォームで内容を入力し、送信前に確認できます。';
     section.appendChild(status);
 
     const actions = document.createElement('div');
@@ -62133,7 +62165,7 @@ ${reason.message}`
     ensureButton.type = 'button';
     ensureButton.className = 'gb-btn gb-btn-sm';
     ensureButton.dataset.e2eId = 'settings-feedback-ensure-sheet';
-    ensureButton.textContent = '保管シートを作成/開く';
+    ensureButton.textContent = '報告フォームを開く';
     const historyButton = document.createElement('button');
     historyButton.type = 'button';
     historyButton.className = 'gb-btn gb-btn-sm';
@@ -62144,9 +62176,26 @@ ${reason.message}`
     classifyButton.className = 'gb-btn gb-btn-sm';
     classifyButton.dataset.e2eId = 'settings-feedback-classify';
     classifyButton.textContent = 'LLM仕分けを実行';
-    actions.append(saveUrlButton, openButton, ensureButton, historyButton, classifyButton);
+    actions.append(ensureButton, historyButton);
     section.appendChild(actions);
     container.appendChild(section);
+    const management = document.createElement('section');
+    management.className = 'gb-section gb-section--boxed';
+    management.dataset.settingsView = 'feedback-management';
+    const managementTitle = document.createElement('div');
+    managementTitle.className = 'gb-section-title';
+    managementTitle.textContent = '公開フォームの管理';
+    const managementActions = document.createElement('div');
+    managementActions.className = 'gb-field-row settings-feedback-actions';
+    managementActions.append(saveUrlButton, openButton, classifyButton);
+    management.append(managementTitle, urlRow, managementActions);
+    container.append(management);
+    // Status is shared by the report and management actions, with one stable ID.
+    container.append(status);
+    const modal = container.closest('.settings-modal');
+    if (modal && typeof _applySettingsNavigationView === 'function') {
+      _applySettingsNavigationView(modal, resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId, { pageId: modal.dataset.settingsActivePageId }));
+    }
 
     saveUrlButton.addEventListener('click', () => {
       setFeedbackFormUrl(urlInput.value);
@@ -62160,29 +62209,61 @@ ${reason.message}`
       }
       window.open(url, '_blank', 'noopener');
     });
+    const confirmTransition = async () => {
+      const overlay = container.closest('[data-settings-modal="1"]');
+      if (!overlay) return true;
+      const draftViews = new Set((typeof getSettingsNavigationTabs === 'function' ? getSettingsNavigationTabs() : [])
+        .flatMap(tab => tab.pages).filter(page => page.commitMode === 'draft-save').map(page => page.view));
+      const hasDraft = [...(overlay.__settingsDirtyControlIds || [])].some(id => {
+        const control = [...overlay.querySelectorAll('input, select, textarea')]
+          .find(node => node.id === id || node.dataset.e2eId === id);
+        return String(control?.closest('[data-settings-view]')?.dataset.settingsView || '')
+          .split(/\s+/).some(view => draftViews.has(view));
+      }) || window._settingsThemeDirty || window._settingsOutlinerRootsDirty;
+      if (!hasDraft) return true;
+      return typeof cfConfirm === 'function' && await cfConfirm('保存していない設定があります。変更を破棄して報告画面へ移動しますか？');
+    };
+    const openFeedbackView = async (result, index) => {
+      const dbPath = result.dbPath || FEEDBACK_DB_DIR;
+      // Let the sheet opener resolve its destination from a folder/note pane.
+      // Its live pane context is available only after the load has completed.
+      const opened = await selectDatabase(dbPath, undefined, { silent: true });
+      if (opened?.stale || opened?.destroyed) return;
+      if (opened?.ok === false) throw opened.error || new Error('保管シートを読み込めませんでした');
+      const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
+      if (ctx && (ctx.destroyed || ctx.dbPath !== dbPath || _currentPaneState() !== ctx)) return;
+      loadSavedView(index, ctx);
+    };
     ensureButton.addEventListener('click', async () => {
+      if (!await confirmTransition()) return;
       ensureButton.disabled = true;
       status.textContent = '保管シートを準備中...';
       try {
-        const result = await ensureFeedbackSheet();
+        const result = await ensureFeedbackSheet({ open: false });
+        const closed = await window.closeSettingsModalWithReason?.('settings-transition-feedback', container.closest('.modal-overlay'));
+        if (closed === false) return;
+        await openFeedbackView(result, 0);
         status.textContent = `保管シートを準備しました: ${result.dbPath || FEEDBACK_DB_DIR}`;
       } catch (error) {
         status.textContent = '保管シートの準備に失敗しました: ' + (error?.message || error);
+        if (!container.isConnected && typeof showStatus === 'function') showStatus(status.textContent, true);
       } finally {
         ensureButton.disabled = false;
       }
     });
     historyButton.addEventListener('click', async () => {
+      if (!await confirmTransition()) return;
       historyButton.disabled = true;
       status.textContent = '送信履歴を開いています...';
       try {
-        const result = await ensureFeedbackSheet();
-        const dbPath = result.dbPath || FEEDBACK_DB_DIR;
-        if (typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
-        if (typeof loadSavedView === 'function') loadSavedView(1, { dbPath });
+        const result = await ensureFeedbackSheet({ open: false });
+        const closed = await window.closeSettingsModalWithReason?.('settings-transition-feedback', container.closest('.modal-overlay'));
+        if (closed === false) return;
+        await openFeedbackView(result, 1);
         status.textContent = '送信履歴を開きました。修正済みの項目は対応状況で確認できます。';
       } catch (error) {
         status.textContent = '送信履歴を開けませんでした: ' + (error?.message || error);
+        if (!container.isConnected && typeof showStatus === 'function') showStatus(status.textContent, true);
       } finally {
         historyButton.disabled = false;
       }
@@ -62342,6 +62423,35 @@ ${reason.message}`
     actions.append(saveGoogleButton, importGoogleButton, flushButton, diagnosticsButton, updateButton);
     section.appendChild(actions);
     container.appendChild(section);
+    section.dataset.settingsView = 'feedback';
+    const makeSection = (view, label) => {
+      const node = document.createElement('section');
+      node.className = 'gb-section gb-section--boxed';
+      node.dataset.settingsView = view;
+      const heading = document.createElement('div');
+      heading.className = 'gb-section-title';
+      heading.textContent = label;
+      node.append(heading);
+      container.append(node);
+      return node;
+    };
+    const management = makeSection('feedback-management', '送信先・受信箱の管理');
+    const managementActions = document.createElement('div');
+    managementActions.className = 'gb-field-row settings-feedback-actions';
+    managementActions.append(saveDebuggerButton, saveGoogleButton, importGoogleButton);
+    management.append(debuggerUrlRow, debuggerSlugRow, googleUrlRow, tokenRow, managementActions);
+    const diagnostics = makeSection('diagnostics', '診断・更新');
+    const diagnosticsActions = document.createElement('div');
+    diagnosticsActions.className = 'gb-field-row settings-feedback-actions';
+    diagnosticsActions.append(diagnosticsButton, updateButton);
+    diagnostics.append(diagnosticsActions);
+    // Keep ordinary transmission controls on their own page.
+    actions.append(flushButton);
+    container.append(status);
+    const modal = container.closest('.settings-modal');
+    if (modal && typeof _applySettingsNavigationView === 'function') {
+      _applySettingsNavigationView(modal, resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId, { pageId: modal.dataset.settingsActivePageId }));
+    }
 
     crash.input.addEventListener('change', () => {
       setCrashReportEnabled(crash.input.checked);

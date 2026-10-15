@@ -2,6 +2,35 @@
     actions.append(saveGoogleButton, importGoogleButton, flushButton, diagnosticsButton, updateButton);
     section.appendChild(actions);
     container.appendChild(section);
+    section.dataset.settingsView = 'feedback';
+    const makeSection = (view, label) => {
+      const node = document.createElement('section');
+      node.className = 'gb-section gb-section--boxed';
+      node.dataset.settingsView = view;
+      const heading = document.createElement('div');
+      heading.className = 'gb-section-title';
+      heading.textContent = label;
+      node.append(heading);
+      container.append(node);
+      return node;
+    };
+    const management = makeSection('feedback-management', '送信先・受信箱の管理');
+    const managementActions = document.createElement('div');
+    managementActions.className = 'gb-field-row settings-feedback-actions';
+    managementActions.append(saveDebuggerButton, saveGoogleButton, importGoogleButton);
+    management.append(debuggerUrlRow, debuggerSlugRow, googleUrlRow, tokenRow, managementActions);
+    const diagnostics = makeSection('diagnostics', '診断・更新');
+    const diagnosticsActions = document.createElement('div');
+    diagnosticsActions.className = 'gb-field-row settings-feedback-actions';
+    diagnosticsActions.append(diagnosticsButton, updateButton);
+    diagnostics.append(diagnosticsActions);
+    // Keep ordinary transmission controls on their own page.
+    actions.append(flushButton);
+    container.append(status);
+    const modal = container.closest('.settings-modal');
+    if (modal && typeof _applySettingsNavigationView === 'function') {
+      _applySettingsNavigationView(modal, resolveSettingsNavigationTarget(modal.dataset.settingsActiveTabId, { pageId: modal.dataset.settingsActivePageId }));
+    }
 
     crash.input.addEventListener('change', () => {
       setCrashReportEnabled(crash.input.checked);
