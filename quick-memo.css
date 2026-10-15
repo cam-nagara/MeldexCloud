@@ -71,6 +71,36 @@ body {
   margin: 4px;
   background: var(--qm-border);
 }
+.qm-create-wrap {
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 10010;
+}
+.qm-create-button {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: var(--qm-accent);
+  color: var(--qm-strong);
+  background: var(--qm-panel-2);
+}
+.qm-create-button .ico { width: 24px; height: 24px; }
+.qm-create-menu {
+  position: fixed;
+  top: auto;
+  bottom: 72px;
+  left: max(12px, env(safe-area-inset-left));
+  width: min(220px, calc(100vw - 24px));
+  max-height: calc(100dvh - 96px);
+}
+.qm-create-menu > button { min-height: 44px; }
+.qm-create-menu > button[hidden] { display: none; }
+.qm-create-menu > button:focus-visible { outline: 2px solid var(--qm-accent); outline-offset: -2px; }
+.qm-create-button:focus-visible { outline: 2px solid var(--qm-accent); outline-offset: 2px; }
 button, input, select { font: inherit; }
 button {
   min-height: 36px;
@@ -100,6 +130,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding-bottom: 64px;
 }
 .qm-header, .qm-meta, .qm-toolbar, .qm-surface, .qm-mode-controls, .qm-cloud-connect, .qm-status-row {
   background: var(--qm-panel);
@@ -151,16 +182,6 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .qm-header-primary-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
 .qm-header-primary-controls .qm-icon { min-width: 28px; width: 28px; height: 28px; padding: 3px; }
-.qm-header-primary-controls select {
-  min-width: 96px;
-  height: 28px;
-  border: 1px solid var(--qm-border);
-  border-radius: 4px;
-  background: var(--qm-bg);
-  color: var(--qm-fg);
-  padding: 2px 22px 2px 6px;
-  font-size: 12px;
-}
 .qm-profile-slot { display: contents; }
 .qm-profile-slot:empty { display: none; }
 .qm-profile-slot .sa-profile-badge { margin: 0; }
@@ -564,7 +585,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
     min-height: 44px;
   }
   .qm-menu-wrap > .qm-icon, .qm-header-actions .qm-icon, .qm-header-primary-controls .qm-icon, .qm-mode-controls .qm-icon { width: 44px; }
-  .qm-meta input, .qm-header-primary-controls select, .qm-list-filter input, .qm-list-filter select {
+  .qm-meta input, .qm-list-filter input, .qm-list-filter select {
     min-height: 44px;
   }
   .qm-title-input { min-height: 44px; }
@@ -586,8 +607,6 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   .qm-header-actions { gap: 4px; }
   .qm-primary { width: auto !important; padding-right: 7px; padding-left: 7px; }
   .qm-meta { grid-template-columns: 1fr; }
-  .qm-mode-select-label { display: none; }
-  .qm-header-primary-controls select { min-width: 92px; }
   .qm-toolbar-group { flex-wrap: nowrap; overflow: visible; }
   .qm-width-control > span { display: none; }
   #widthInput { width: 76px; }
@@ -616,11 +635,6 @@ body[data-quick-memo-embed="1"] .qm-profile-slot,
 body[data-quick-memo-embed="1"] .qm-profile-slot button {
   min-width: 28px;
   width: 28px;
-  min-height: 28px;
-  height: 28px;
-}
-body[data-quick-memo-embed="1"] .qm-header-primary-controls select {
-  min-width: 88px;
   min-height: 28px;
   height: 28px;
 }

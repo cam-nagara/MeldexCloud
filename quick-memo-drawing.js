@@ -430,6 +430,8 @@
     canvas.addEventListener('pointermove', continueStroke);
     canvas.addEventListener('pointerup', endStroke);
     canvas.addEventListener('pointercancel', endStroke);
+    // Keep native touch gestures from swallowing the first button tap after drawing.
+    canvas.addEventListener('touchstart', event => event.preventDefault(), { passive: false });
     document.addEventListener('pointerdown', (event) => {
       if (!options.popover.hidden && !options.popover.contains(event.target) && !options.swatch.contains(event.target)) {
         options.popover.hidden = true;

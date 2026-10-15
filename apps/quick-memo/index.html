@@ -56,14 +56,10 @@
           <input id="titleInput" class="qm-title-input" type="text" placeholder="タイトル（空なら本文の一行目）" aria-label="メモのタイトル" spellcheck="false">
         </div>
       </div>
-      <div class="qm-header-primary-controls" aria-label="入力方法と履歴">
+      <div class="qm-header-primary-controls" aria-label="編集履歴">
         <button id="undoBtn" class="qm-icon qm-lucide-button" type="button" title="元に戻す" aria-label="元に戻す" disabled></button>
         <button id="redoBtn" class="qm-icon qm-lucide-button" type="button" title="やり直す" aria-label="やり直す" disabled></button>
-        <select id="modeSelect" aria-label="入力方法">
-          <option value="text">テキスト</option>
-          <option value="pen">ペン</option>
-          <option value="voice">ボイス</option>
-        </select>
+
       </div>
       <div class="qm-header-actions">
         <span class="qm-profile-slot" data-sa-profile-slot></span>
@@ -101,7 +97,7 @@
 
     <section class="qm-surface">
       <div id="editor" class="qm-editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
-      <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ" style="display:none;"></canvas>
+      <canvas id="drawingCanvas" tabindex="0" class="qm-canvas" aria-label="手書きメモ" style="display:none;"></canvas>
       <div id="voicePanel" class="qm-voice" style="display:none;">
         <div class="qm-voice-status" id="voiceStatus">マイクの準備ができています</div>
         <div class="qm-voice-timer" id="voiceTimer">00:00</div>
@@ -128,7 +124,16 @@
     <button id="listMoreBtn" class="qm-list-more" type="button" hidden>さらに表示</button>
   </section>
 
-  <span id="syncStatus" class="qm-sr-status" role="status" aria-live="polite">端末に保存済み</span>
+  <div class="qm-create-wrap">
+    <button id="createMemoBtn" class="qm-create-button" type="button" title="新規メモを追加" aria-label="新規メモを追加" aria-haspopup="menu" aria-expanded="false" aria-controls="createMemoMenu"><span class="ico ico-plus" aria-hidden="true"></span></button>
+    <div id="createMemoMenu" class="qm-menu qm-create-menu" role="menu" aria-label="新しいメモの形式" hidden>
+      <button type="button" role="menuitem" data-new-memo-mode="text"><span class="ico ico-fileText" aria-hidden="true"></span>テキスト</button>
+      <button type="button" role="menuitem" data-new-memo-mode="pen"><span class="ico ico-pencil" aria-hidden="true"></span>ペン</button>
+      <button type="button" role="menuitem" data-new-memo-mode="voice"><span class="ico ico-mic" aria-hidden="true"></span>ボイス</button>
+    </div>
+  </div>
+
+  <span id="syncStatus" data-status-owner="quick-memo" class="qm-sr-status" role="status" aria-live="polite">端末に保存済み</span>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
 
   <script defer src="gb-stable-copy-operation-ids.js"></script><script src="gb-escape.js"></script>

@@ -19,7 +19,8 @@
   function status(value, message, count) {
     const appId = document.documentElement?.getAttribute('data-standalone-app') || '';
     const label = document.getElementById(`${appId}-sync-status`) || document.getElementById('syncStatus');
-    if (label) {
+    // Quick Memo owns a separate save queue and reports its own save result.
+    if (label && label.dataset.statusOwner !== 'quick-memo') {
       label.textContent = message || (value === 'synced' ? '同期済み' : '');
       label.dataset.status = value;
     }

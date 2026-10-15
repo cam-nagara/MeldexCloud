@@ -40,6 +40,7 @@
     memoEpoch: 0,
     voiceStarting: false,
     lastSaveError: '',
+    creatingMemo: false,
   };
   if (typeof window !== 'undefined') {
     window.MeldexQuickMemo = window.MeldexQuickMemo || {};
@@ -114,7 +115,7 @@
       'syncStatus', 'menuBtn', 'quickMemoMenu', 'listBtn', 'menuListBtn', 'workspaceBtn',
       'installBtn', 'newMemoBtn', 'saveBtn', 'storageLocation',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
-      'modeSelect', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
+      'createMemoBtn', 'createMemoMenu', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
       'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
       'voiceRecordBtn', 'voicePauseBtn', 'voiceResumeBtn', 'voiceStopBtn',
       'voicePanel', 'voiceTimer', 'voiceTranscript', 'voiceStatus',
@@ -290,15 +291,37 @@
     });
     on(els.titleInput, 'input', scheduleSave);
     on(els.saveBtn, 'click', () => { closeMenu({ restoreFocus: true }); saveNow({ manual: true }); });
-    on(els.newMemoBtn, 'click', () => { closeMenu({ restoreFocus: true }); startNewMemo(); });
-    on(els.modeSelect, 'change', async () => {
-      const next = els.modeSelect.value;
-      if (state.currentMode === 'voice' && next !== 'voice' && !await finalizeVoiceForClose()) {
-        els.modeSelect.value = state.currentMode;
-        setStatus('音声を確定できませんでした。文字起こしを再試行してください', true);
+    on(els.newMemoBtn, 'click', () => { closeMenu(); openCreateMenu(); });
+    on(els.createMemoBtn, 'click', () => {
+      closeMenu();
+      if (els.createMemoMenu.hidden) openCreateMenu();
+      else closeCreateMenu(true);
+    });
+    on(els.createMemoMenu, 'click', async event => {
+      const button = event.target.closest('[data-new-memo-mode]');
+      if (!button || button.disabled) return;
+      closeCreateMenu();
+      const created = await startNewMemo(button.dataset.newMemoMode);
+      if (!created) els.createMemoBtn.focus();
+    });
+    on(document, 'pointerdown', event => {
+      if (!els.createMemoMenu.contains(event.target) && !els.createMemoBtn.contains(event.target)) closeCreateMenu();
+    });
+    on(document, 'keydown', event => {
+      if (els.createMemoMenu.hidden) return;
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        closeCreateMenu(event.key === 'Escape');
+        if (event.key === 'Escape') event.preventDefault();
         return;
       }
-      switchMode(next);
+      const buttons = [...els.createMemoMenu.querySelectorAll('button:not([hidden]):not([disabled])')];
+      const index = buttons.indexOf(document.activeElement);
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && buttons.length) {
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+          : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+        buttons[next].focus();
+      }
     });
     on(els.undoBtn, 'click', () => runHistory('undo'));
     on(els.redoBtn, 'click', () => runHistory('redo'));
@@ -336,6 +359,29 @@
     // フロートパネルのリサイズ（本体埋め込み時）でも横スクロールのフェード表示を
     // 追随させる。iframeの表示領域が変わればcontentWindowのresizeが発火する。
     window.addEventListener('resize', () => _updateTagChipsOverflowHint());
+    window.addEventListener('resize', () => closeCreateMenu());
+  }
+
+  function closeCreateMenu(restoreFocus = false) {
+    els.createMemoMenu.hidden = true;
+    els.createMemoBtn.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) els.createMemoBtn.focus();
+  }
+
+  function openCreateMenu() {
+    if (state.creatingMemo) return;
+    const voice = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
+    voice.hidden = isCloudMode() && !(window.SpeechRecognition || window.webkitSpeechRecognition);
+    els.createMemoMenu.hidden = false;
+    els.createMemoBtn.setAttribute('aria-expanded', 'true');
+    window.GBTooltip?.hide?.();
+    if (typeof window.positionPopup === 'function') {
+      // Let the shared viewport clamp measure the natural menu height.
+      els.createMemoMenu.style.bottom = 'auto';
+      els.createMemoMenu.style.top = '0px';
+      window.positionPopup(els.createMemoMenu, els.createMemoBtn.getBoundingClientRect(), { gap: 8 });
+    }
+    els.createMemoMenu.querySelector('button:not([hidden]):not([disabled])')?.focus();
   }
 
   function switchMode(mode) {
@@ -346,7 +392,7 @@
       : 'text';
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
     state.currentMode = nextMode;
-    els.modeSelect.value = state.currentMode;
+    document.body.dataset.memoMode = state.currentMode;
     els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
     els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
     els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
@@ -385,6 +431,7 @@
 
   function focusEditorSoon() {
     setTimeout(() => {
+      if (state.currentMode !== 'text') return;
       try { els.editor.focus({ preventScroll: true }); } catch { els.editor.focus(); }
     }, 40);
   }
@@ -422,6 +469,7 @@
       source_label: draft.source_label || '',
     };
     drawingController.reset(draft.drawing_png || '');
+    state.currentMode = draft.input_mode || (draft.drawing_png ? 'pen' : 'text');
   }
 
   function collectMemo() {
@@ -439,6 +487,7 @@
       html,
       text: els.editor.innerText.trim(),
       drawing_png: drawingController.toDataURL(),
+      input_mode: state.currentMode,
       source_url: state.share?.source_url || draft.source_url || '',
       share_title: state.share?.share_title || draft.share_title || '',
       source_label: state.share?.source_label || draft.source_label || '',
@@ -460,40 +509,56 @@
     window.__MELDEX_QUICK_MEMO_TEST__.mergeMemoDraft = mergeMemoDraft;
   }
 
-  async function startNewMemo() {
-    if (!await finalizeVoiceForClose()) return false;
-    await drawingController.flush?.();
-    const current = collectMemo();
-    if (draftHasContent(current) && (!persistDraft(current) || !enqueueMemo(current))) {
-      setStatus('メモを端末内へ保存できませんでした', true);
+  async function startNewMemo(mode = 'text') {
+    if (state.creatingMemo) return false;
+    state.creatingMemo = true;
+    els.createMemoBtn.disabled = true;
+    try {
+      if (!await finalizeVoiceForClose()) return false;
+      await drawingController.flush?.();
+      const current = collectMemo();
+      if ((current.server_path || draftHasContent(current)) && (!persistDraft(current) || !enqueueMemo(current))) {
+        setStatus('メモを端末内へ保存できませんでした', true);
+        return false;
+      }
+      if (!await ensureDurableRecords()) return false;
+      state.memoEpoch += 1;
+      clearTimeout(state.saveTimer);
+      state.saveTimer = 0;
+      _stopVoiceCapture();
+      state.share = null;
+      state.currentPath = '';
+      state.currentVersionTarget = { path: '', type: 'file' };
+      els.titleInput.value = '';
+      els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
+      state.selectedTags = [];
+      state.selectedTagIds = [];
+      renderTagChips();
+      editorController.reset('');
+      resetDrawingCanvas();
+      writeJson(CURRENT_KEY, {
+        memo_id: newMemoId(),
+        client_id: clientId(),
+        created_at: new Date().toISOString(),
+        input_mode: mode,
+      });
+      state.dirty = false;
+      setStatus('新規メモ');
+      libraryController.hide();
+      switchMode(mode);
+      flushPendingQueue().then((ok) => {
+        if (ok) setStatus('新規メモ');
+      });
+      if (mode === 'pen') els.drawingCanvas.focus({ preventScroll: true });
+      if (mode === 'voice') els.voiceRecordBtn.focus({ preventScroll: true });
+      return true;
+    } catch (error) {
+      setStatus('新規メモへ切り替えられませんでした: ' + (error?.message || error), true);
       return false;
+    } finally {
+      state.creatingMemo = false;
+      els.createMemoBtn.disabled = false;
     }
-    if (!await ensureDurableRecords()) return false;
-    state.memoEpoch += 1;
-    clearTimeout(state.saveTimer);
-    _stopVoiceCapture();
-    state.share = null;
-    state.currentPath = '';
-    state.currentVersionTarget = { path: '', type: 'file' };
-    els.titleInput.value = '';
-    els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
-    state.selectedTags = [];
-    state.selectedTagIds = [];
-    renderTagChips();
-    editorController.reset('');
-    resetDrawingCanvas();
-    writeJson(CURRENT_KEY, {
-      memo_id: newMemoId(),
-      client_id: clientId(),
-      created_at: new Date().toISOString(),
-    });
-    state.dirty = false;
-    setStatus('新規メモ');
-    switchMode('text');
-    flushPendingQueue().then((ok) => {
-      if (ok) setStatus('新規メモ');
-    });
-    focusEditorSoon();
   }
 
   function resetDrawingCanvas() {
@@ -545,7 +610,7 @@
     });
     state.dirty = false;
     libraryController.hide();
-    switchMode('text');
+    switchMode(memo.drawing_png ? 'pen' : 'text');
     setStatus('過去のメモを開きました');
     loadTags();
     return true;
@@ -639,10 +704,13 @@
   }
 
   function draftHasContent(draft) {
+    const content = document.createElement('div');
+    content.innerHTML = sanitizeHtml(draft.html || '');
     return !!(
       String(draft.title || '').trim()
       || String(draft.text || '').trim()
-      || String(draft.html || '').replace(/<[^>]+>/g, '').trim()
+      || content.textContent.trim()
+      || content.querySelector('img[src]')
       || draft.drawing_png
     );
   }
@@ -916,6 +984,9 @@
   }
 
   function enqueueMemo(memo) {
+    // A mode selection, empty paragraph or tag toggle must not create a blank file.
+    // Existing files still accept intentional clearing of their contents.
+    if (!memo.server_path && !draftHasContent(memo)) return true;
     const queue = readJson(QUEUE_KEY, []);
     const idx = queue.findIndex((item) => item.memo_id === memo.memo_id);
     if (idx >= 0) queue[idx] = memo;
@@ -1251,7 +1322,7 @@
     // Cloud本体ではローカルOpenAI APIへボイスデータを送らない。ブラウザ標準の
     // SpeechRecognition が無い環境ではボイスモード自体を選択不可にする。
     if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
-      const voiceOption = els.modeSelect?.querySelector?.('option[value="voice"]');
+      const voiceOption = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
       if (voiceOption) {
         voiceOption.disabled = true;
         voiceOption.hidden = true;
