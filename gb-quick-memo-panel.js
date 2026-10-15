@@ -1,9 +1,9 @@
 /* ==============================
-   gb-quick-memo-panel.js — クイックメモのフロートパネル
+   gb-quick-memo-panel.js — クイックメモの単独起動とフロートパネル互換API
 
-   右レール下端のボタンから、クイックメモを作業領域の上へ一時的に浮かべる。
-   メインパネルのタブにも右サイドバーにもならないので、いま開いている作業を
-   崩さずにメモを書ける。
+   右レール下端のボタンは単独アプリを別ウィンドウで起動する。
+   フロートパネルのAPIは、既存パネルの保存・単独画面への引き継ぎと
+   バージョン操作の互換性のため維持する。
 
    中身は単独アプリ版と同じ quick-memo.html を iframe で読み込む。保存経路も
    単独アプリ版と同じ（/api/quick-memo → シートのエントリ）なので、本体側で
@@ -54,6 +54,29 @@
       width: Math.max(MIN_W, Math.round(rect?.width || DEFAULT_W)),
       height: Math.max(MIN_H, Math.round(rect?.height || DEFAULT_H)),
     };
+  }
+
+  // The rail opens the native capture app directly. Cloud stays within the
+  // browser and must open its window during the original user gesture.
+  async function openStandalone() {
+    try {
+      if (isOpen()) return await _openStandalone();
+      if (_isCloudHost() || window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+        const url = new URL(_isCloudHost() ? 'apps/quick-memo/' : 'quick-memo.html?dataAccessMode=browser', location.href);
+        const opened = window.open(url.href, 'MeldexQuickMemo',
+          `popup,width=${DEFAULT_W},height=${DEFAULT_H}`);
+        if (!opened) throw new Error('クイックメモを開けません。ポップアップの許可を確認してください');
+        opened.opener = null;
+        opened.focus();
+        return true;
+      }
+      const result = await apiPost('/quick-memo/open', {});
+      if (result?.ok !== true) throw new Error('クイックメモの単独アプリを起動できませんでした');
+      return true;
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus(error?.message || 'クイックメモを開けませんでした', true);
+      return false;
+    }
   }
 
   async function _openStandalone() {
@@ -253,6 +276,7 @@
   }
 
   window.GBQuickMemoPanel = Object.freeze({
+    openStandalone,
     open,
     close,
     toggle,

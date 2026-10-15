@@ -13,6 +13,8 @@
   --qm-blue: var(--accent);
   --qm-danger: var(--red);
   --qm-create-clearance: calc(72px + env(safe-area-inset-bottom, 0px));
+  --qm-safe-top: env(safe-area-inset-top, 0px);
+  --qm-safe-bottom: env(safe-area-inset-bottom, 0px);
   --ui-border-strong: color-mix(in srgb, var(--qm-border) 40%, var(--qm-muted) 45%);
   --ui-popup-border: var(--ui-border-strong);
 }
@@ -597,15 +599,15 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   #widthInput { min-height: 44px; }
 }
 
-@media (max-width: 620px) {
-  body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-  .qm-shell { height: 100dvh; gap: 0; }
+@media (max-width: 620px), (pointer: coarse) and (max-height: 620px) {
+  body { padding: 0 env(safe-area-inset-right) var(--qm-safe-bottom) env(safe-area-inset-left); }
+  .qm-shell { height: calc(100dvh - var(--qm-safe-bottom)); gap: 0; }
   .qm-header, .qm-meta, .qm-toolbar, .qm-surface, .qm-mode-controls, .qm-list-filter, .qm-cloud-connect, .qm-status-row {
     border-right: 0;
     border-left: 0;
     border-radius: 0;
   }
-  .qm-header { min-height: 46px; padding: max(2px, env(safe-area-inset-top)) 4px 2px; }
+  .qm-header { min-height: 46px; padding: max(2px, var(--qm-safe-top)) 4px 2px; }
   .qm-brand strong { font-size: 13px; }
   .qm-header-actions { gap: 4px; }
   .qm-primary { width: auto !important; padding-right: 7px; padding-left: 7px; }
@@ -624,6 +626,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   .qm-header-actions { gap: 3px; }
 }
 
+body[data-quick-memo-embed="1"] { --qm-safe-top: 0px; --qm-safe-bottom: 0px; }
 body[data-quick-memo-embed="1"] #editorView > .qm-header {
   min-height: 38px;
   padding: 3px 5px;

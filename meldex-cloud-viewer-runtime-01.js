@@ -29,7 +29,7 @@
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '4388d0348772', parts: { 'gb-theme-manager.bundle.part01.js': '58d237fccad9', 'gb-theme-manager.bundle.part02.js': '06a96cc70069', 'gb-theme-manager.bundle.part03.js': 'f82731f8ce2f', 'gb-theme-manager.bundle.part04.js': '726522c91220' } },
     'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '3c5e17893e21', parts: { 'gb-outliner.bundle.part01.js': 'bdf5835d19a8', 'gb-outliner.bundle.part02.js': 'da93f418e64a', 'gb-outliner.bundle.part03.js': '20cc0e3ec8aa', 'gb-outliner.bundle.part04.js': '2186485df8b7', 'gb-outliner.bundle.part05.js': '1f34ad5f9489', 'gb-outliner.bundle.part06.js': 'c2644de1d936' } },
     'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '8364cf3993e2', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '26fd0892a2cb', 'gb-data-access-dropbox-fileops.bundle.part02.js': '0e9f98d8227e', 'gb-data-access-dropbox-fileops.bundle.part03.js': '6fe5df1000b0', 'gb-data-access-dropbox-fileops.bundle.part04.js': '4f7ff8e46204', 'gb-data-access-dropbox-fileops.bundle.part05.js': '6a2deb2ac32c', 'gb-data-access-dropbox-fileops.bundle.part06.js': '059d0f5109eb' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '0888bcbbbb09', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '48d15a6ce08d', 'gb-cloud-mobile-editbar.bundle.part02.js': '0f9ed29e6adb' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: 'acb3c567dc23', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '70590cb13e1a', 'gb-cloud-mobile-editbar.bundle.part02.js': '0f9ed29e6adb' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {

@@ -58,7 +58,7 @@
     { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
     { id: 'command-palette', label: 'コマンドパレット', icon: 'command', action: () => _callGlobal('showCommandPalette') },
     { id: 'chat', label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
-    { id: 'quick-memo', label: 'クイックメモ', icon: 'notebookPen', action: () => window.GBQuickMemoPanel?.open?.() },
+    { id: 'quick-memo', label: 'クイックメモ', icon: 'notebookPen', action: () => window.GBQuickMemoPanel?.openStandalone?.() },
     { id: 'annotation-tool', label: 'アノテートツール', icon: 'squarePen', action: () => _callGlobal('toggleAnnotationToolbar') },
     { id: 'help', label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
     { id: 'settings', label: '設定', icon: 'settings', action: () => _openSettingsModal() },

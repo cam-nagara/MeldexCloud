@@ -1110,11 +1110,10 @@
 
   function _appendRightRailQuickMemo(dockBar) {
     if (!_isQuickMemoRailAvailable()) return;
-    const btn = _railButton('gb-dock-icon gb-dock-rail-quick-memo', 'notebookPen', 'クイックメモ', () => {
-      GBQuickMemoPanel.toggle();
+    const btn = _railButton('gb-dock-icon gb-dock-rail-quick-memo', 'notebookPen', 'クイックメモを別ウィンドウで開く', () => {
+      GBQuickMemoPanel.openStandalone();
     });
     btn.dataset.e2eId = 'fixed-right-rail-quick-memo';
-    btn.setAttribute('aria-pressed', 'false');
     dockBar.appendChild(btn);
     if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
   }
