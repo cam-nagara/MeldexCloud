@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.392-79e503e62df09de36592",
+  "version": "0.7.394-ad32af4bf38005872f07",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -789,7 +789,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "15118f92818ec593b6e6184d428f242984e465b0234668f8a6c350cea9b6ecda"
+      "sha256": "402dbd41e9fea8102f6176ffbfdea760faebb29f552a0abb0fb863a58de4efbb"
     },
     {
       "path": "gb-color-palette.js",
@@ -1005,7 +1005,7 @@
     },
     {
       "path": "gb-data-access-dropbox-tags.js",
-      "sha256": "0a69cc1a0ce3e8730164a3613515c51678e875f09925d2ca2d087ba33bf8b6d0"
+      "sha256": "b8caebf64cb5b41d484ce6bf2c546920437eff2aad2fe97206e62c12963e41b0"
     },
     {
       "path": "gb-data-access.js",
@@ -1733,7 +1733,7 @@
     },
     {
       "path": "gb-global-tags.js",
-      "sha256": "b7c380f37a25caf17c6580005768ae74aa90e4adbb37963ae2997f7eb4d6700c"
+      "sha256": "ee421d396951609d2a4f2d6b196b5c5f6601e522fd2c6467af6e8e3869415dac"
     },
     {
       "path": "gb-google-import-cloud.js",
@@ -2425,7 +2425,7 @@
     },
     {
       "path": "gb-quick-memo-sync.js",
-      "sha256": "43ab51f521610ab2f774a21a19c5bc7d83872bb202a262d47f8a7a4dfb1d774a"
+      "sha256": "c7c62d292f6e8931f2813ff4ef935345bc5b4b371f4d7b7cd7eb9473c6108585"
     },
     {
       "path": "gb-rail-contract.js",
@@ -3573,7 +3573,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "c068fb7a28e3c7e5a5b75a59a30a7417bea5297b58baf9beba11774c3285b2ea"
+      "sha256": "c572eb1afa12c55dfe1aba6e1c31fed76da80ce0a5d6a80ce1d071a8adda52e5"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3585,15 +3585,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "d4b3a4db72e0eb094beffddb7a511764ef7616ac161895619799ffa01c1b1bca"
+      "sha256": "e879175e173096d1be08bc1fde9e115b88fdc17eeabf8a4ad666a52ac5ea6376"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "7b73ed97d4d792d9c4c4a3ee03b8455f9f46cb4e609d6215cdcd913e7892fb8e"
+      "sha256": "4da709baa6b47eec6d8ab924bd646c1ff6507a04c0b5c1539bb56c8379664822"
     },
     {
       "path": "manual.html",
-      "sha256": "1a939acbb224ef8dd5834247691366103af67fd6c002a608acc36dcc4ef0b675"
+      "sha256": "1b6d8fe752525c47c39d64a76d1952849da253c186ba47f0987e7dc73f178fa0"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3629,11 +3629,11 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "d834d0a0921b84e3a151f9a48498f49d1430c8ff8815117c68f60373dec0ce57"
+      "sha256": "16ad6308e30432b523d83bcff78bd52c63d9653196c364acdfbf5cd19af2f3f4"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
-      "sha256": "a4b00e9fea8c5318639b04c709ae8532fad9ff5aa8409f8a35ab883c5873d66b"
+      "sha256": "fb0ce8aaadcd3554cc5581607f53faaedce86def26995ca1329f613aa130d8eb"
     },
     {
       "path": "meldex-cloud-runtime-06.js",
@@ -3709,7 +3709,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "0bbb4b27a93819e545b389db2bbbab06ddaa1e208137b3954af93cacf6055af0"
+      "sha256": "ef450c61a17d24f690bbdfee2a43dce58752f3466b53a1547b211d93234f06a1"
     },
     {
       "path": "Meldex.ico",
@@ -3877,7 +3877,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "e84ba0465ec47afea9c9452bc744476493f1492c8f3723be771dab825887e6fc"
+      "sha256": "a97002bbea200bb23cd9a7fe9d9d82299c59e625abf6955033c62243f6ff717a"
     },
     {
       "path": "public-legal.css",
@@ -3921,7 +3921,7 @@
     },
     {
       "path": "quick-memo.css",
-      "sha256": "f7af5329c64f43fcff8e3f9098441713c2913ae0e50da35d6acfb520756b189d"
+      "sha256": "966d260d010b9d883f48997ea3d6914be85efb75da251330bda9a7c206287f44"
     },
     {
       "path": "quick-memo.html",
@@ -3929,7 +3929,7 @@
     },
     {
       "path": "quick-memo.js",
-      "sha256": "b2a9e85c3a632106eacbaede5b9a9f5c9cc3b79b37199026f156aa02c23c1296"
+      "sha256": "d114a38b8713dcb7011988740498bdb47089488a98007a910bd80660e660c626"
     },
     {
       "path": "quick-memo.webmanifest",
@@ -4077,7 +4077,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "70c392536d17d563f7b2ef2cd7f15c8063eaee3233eb3fff7966dbf463d944db"
+      "sha256": "9c97659ff60b06ed0c38dba60319d739f502bb6e6b0f079326870356dbb834a2"
     },
     {
       "path": "viewer-annotation-legacy.js",

@@ -338,10 +338,10 @@
     on(els.voiceResumeBtn, 'click', resumeVoiceRecording);
     on(els.voiceStopBtn, 'click', stopVoiceRecording);
     window.addEventListener('online', flushPendingQueue);
-    window.addEventListener('online', () => syncQuickMemoTags());
-    window.addEventListener('focus', () => syncQuickMemoTags());
+    window.addEventListener('online', () => loadTags());
+    window.addEventListener('focus', () => loadTags());
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') syncQuickMemoTags();
+      if (document.visibilityState === 'visible') loadTags();
     });
     ['meldex:standalone-cloud-ready', 'meldex:standalone-auth-changed', 'meldex:dropbox-auth-session-changed']
       .forEach(type => window.addEventListener(type, () => {
@@ -936,7 +936,6 @@
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
-        sent.add(item.memo_id);
         results.set(item.memo_id, result);
         const current = readJson(CURRENT_KEY, {});
         if (current.memo_id === item.memo_id) {
@@ -960,6 +959,13 @@
           }
           writeJson(CURRENT_KEY, current);
         }
+        if (Array.isArray(item.tags) && item.tags.length) {
+          if (typeof window.MeldexGlobalTags?.mergeExistingTagNames !== 'function') {
+            throw new Error('共通タグとの統合機能を読み込めませんでした');
+          }
+          await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags);
+        }
+        sent.add(item.memo_id);
       } catch (error) {
         state.lastSaveError = syncFailureDetail(error);
         failed.add(item.memo_id);
@@ -1701,7 +1707,8 @@
       const name = String(tag?.name || '').trim();
       if (!name) return;
       const groupColor = String(groupsById[tag.group_id]?.color || '').trim();
-      nextColors[name] = groupColor || String(tag?.color || '').trim();
+      nextColors[name] = window.MeldexGlobalTags?.effectiveTagColor?.(tag, groupsById)
+        || groupColor || String(tag?.color || '').trim();
       nextIds[name] = String(tag?.id || '');
     });
     state.tagCatalog = { tags: [...tags], groups: [...groups] };
@@ -1737,13 +1744,22 @@
     return tagLoadPromise;
   }
 
+  function quickMemoTagRecord(name) {
+    return state.tagCatalog.tags.find(tag => String(tag?.name || '').trim() === name)
+      || quickMemoTags().find(tag => tag.name === name) || { name, color: '' };
+  }
+
   function _buildTagChip(tag) {
     const isSelected = state.selectedTags.includes(tag);
-    const record = quickMemoTags().find(item => item.name === tag) || { name: tag, color: '' };
+    const record = quickMemoTagRecord(tag);
+    const title = `${tag}（${record.id ? '共通タグ' : 'クイックメモタグ'}）`
+      + (record.description ? `\n${record.description}` : '');
     const chip = window.MeldexGlobalTags?.createTagChip
       ? window.MeldexGlobalTags.createTagChip(record, {
           className: 'qm-tag-chip' + (isSelected ? ' is-selected' : ''),
-          title: `${tag}（クイックメモタグ）`,
+          title,
+          groupsById: Object.fromEntries(state.tagCatalog.groups.map(group => [group.id, group])),
+          dataset: { tagId: record.id || '' },
           ariaLabel: `${tag}${isSelected ? '、選択中' : '、未選択'}`,
           onActivate: () => toggleTag(tag),
         })
@@ -2257,8 +2273,7 @@
         checkbox.setAttribute('aria-label', `${name}を${checkbox.checked ? '解除' : '選択'}`);
         const swatch = document.createElement('span');
         swatch.className = 'qm-tag-picker-swatch';
-        const color = source === 'common' || allowRegistration
-          ? state.commonTagColors[name] || '' : tag.color || '';
+        const color = state.commonTagColors[name] || tag.color || '';
         swatch.style.background = color || 'var(--qm-accent)';
         const text = document.createElement('span');
         text.textContent = name;
@@ -2394,6 +2409,7 @@
         updateCount();
       };
       const createTag = async () => {
+        if (createButton.disabled) return;
         const name = createInput.value.trim();
         if (!name) return;
         createButton.disabled = true;
@@ -2403,8 +2419,9 @@
           if (!state.selectedTags.includes(name)) toggleTag(name);
           _recordRecentTagName(name);
           createInput.value = '';
-          search.value = name;
+          search.value = '';
           renderTree();
+          createInput.focus();
         } catch (error) {
           showError(error);
         } finally {

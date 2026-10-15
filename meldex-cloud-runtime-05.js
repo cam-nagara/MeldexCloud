@@ -96399,6 +96399,36 @@ async function resetLayoutToDefault() {
     return publishTargetTagsMutation(targetPath, merged, sourceFolder);
   }
 
+  // Reuse only exact names from the destination dictionary. Unmatched private
+  // names stay private, and unrelated file assignments are preserved.
+  async function mergeExistingTagNames(path, names) {
+    const wanted = new Set((Array.isArray(names) ? names : []).map(name => String(name).trim()).filter(Boolean));
+    if (!wanted.size) return [];
+    if (!path) throw new Error('共通タグを統合するメモの保存先を確認できません');
+    const sourceFolder = sourceFolderForTarget(path);
+    const catalog = await loadTags(sourceFolder);
+    if (!Array.isArray(catalog?.tags)) throw new Error('共通タグ辞書を確認できませんでした');
+    const seen = new Set();
+    const matched = catalog.tags.filter(tag => {
+      const name = String(tag?.name || '').trim();
+      if (!tag?.id || !wanted.has(name) || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+    const personal = [];
+    for (const tag of matched) {
+      if (['admin', 'duplicate'].includes(tag._dictionary_scope) && window.MeldexAdminTagDictionary) {
+        const result = await window.MeldexAdminTagDictionary.useTag(path, tag, sourceFolder);
+        if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
+      } else personal.push({ id: tag.id, existing_only: true });
+    }
+    if (personal.length) {
+      const result = await updateTargetTags(path, { add: personal, remove: [] }, { sourceFolder });
+      if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
+    }
+    return matched;
+  }
+
   async function searchByTag(tag, sourceFolder) {
     const name = tag?.name || tag || '';
     if (!name) return { results: [] };
@@ -96932,6 +96962,7 @@ async function resetLayoutToDefault() {
     addTargetTag,
     removeTargetTag,
     updateTargetTags,
+    mergeExistingTagNames,
     searchByTag,
     openTaggedTarget,
     // コンパクト表示

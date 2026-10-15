@@ -37218,6 +37218,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   }
 
   function tagForValue(catalog, value) {
+    if (value?.existing_only) return catalog.tags.find(tag => tag.id === value.id) || null;
     const id = String(value?.id || value?.name || value || '').trim();
     const key = identity(id);
     return catalog.tags.find(tag => tag.id === id || identity(tag.name) === key) || null;
@@ -37233,11 +37234,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   async function ensureTargetTags(provider, catalog, values) {
     const requested = Array.isArray(values) ? values : [values];
+    const requireExisting = (current, value) => {
+      if (value?.existing_only && !tagForValue(current, value)) {
+        throw Object.assign(new Error('共通タグが変更されました。辞書を再読み込みして再試行してください'), { status: 409 });
+      }
+    };
+    requested.forEach(value => requireExisting(catalog, value));
     const created = [];
     let saved = catalog;
     if (requested.some(value => !tagForValue(catalog, value))) {
       saved = await writeCatalog(provider, current => {
         requested.forEach(value => {
+          requireExisting(current, value);
           if (tagForValue(current, value)) return;
           const source = value && typeof value === 'object' ? value : { name: value };
           const tag = {
@@ -52769,13 +52777,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!Array.isArray(queue) || !queue.length) return true;
     syncing = true;
     const sent = new Map();
+    const receipts = new Map();
     try {
       for (const raw of queue) {
         const item = raw && typeof raw === 'object' ? { ...raw } : null;
         if (!item) continue;
         try {
           const result = await saveItem(item);
-          sent.set(item.memo_id, { signature: signature(raw), result });
+          receipts.set(item.memo_id, result);
           const current = readJson(CURRENT_KEY, {});
           if (current?.memo_id === item.memo_id) {
             current.server_path = result.path || item.server_path || current.server_path || '';
@@ -52787,6 +52796,13 @@ document.addEventListener('DOMContentLoaded', () => {
             delete current.auto_tag;
             writeJson(CURRENT_KEY, current);
           }
+          if (Array.isArray(item.tags) && item.tags.length) {
+            if (typeof window.MeldexGlobalTags?.mergeExistingTagNames !== 'function') {
+              throw new Error('共通タグとの統合機能を読み込めませんでした');
+            }
+            await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags);
+          }
+          sent.set(item.memo_id, { signature: signature(raw), result });
         } catch {}
       }
       const latest = readJson(QUEUE_KEY, []);
@@ -52795,11 +52811,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return !saved || signature(item) !== saved.signature;
       });
       remaining.forEach(item => {
-        const saved = sent.get(item.memo_id);
-        if (saved) {
-          item.server_path = saved.result.path || item.server_path || '';
-          if (saved.result.memo_revision) item.memo_revision = saved.result.memo_revision;
-          if (saved.result.cloud_etag) item.cloud_etag = saved.result.cloud_etag;
+        const receipt = receipts.get(item.memo_id);
+        if (receipt) {
+          item.server_path = receipt.path || item.server_path || '';
+          if (receipt.memo_revision) item.memo_revision = receipt.memo_revision;
+          if (receipt.cloud_etag) item.cloud_etag = receipt.cloud_etag;
         }
       });
       return writeJson(QUEUE_KEY, remaining) && remaining.length === 0;

@@ -499,6 +499,7 @@
   }
 
   function tagForValue(catalog, value) {
+    if (value?.existing_only) return catalog.tags.find(tag => tag.id === value.id) || null;
     const id = String(value?.id || value?.name || value || '').trim();
     const key = identity(id);
     return catalog.tags.find(tag => tag.id === id || identity(tag.name) === key) || null;
@@ -514,11 +515,18 @@
 
   async function ensureTargetTags(provider, catalog, values) {
     const requested = Array.isArray(values) ? values : [values];
+    const requireExisting = (current, value) => {
+      if (value?.existing_only && !tagForValue(current, value)) {
+        throw Object.assign(new Error('共通タグが変更されました。辞書を再読み込みして再試行してください'), { status: 409 });
+      }
+    };
+    requested.forEach(value => requireExisting(catalog, value));
     const created = [];
     let saved = catalog;
     if (requested.some(value => !tagForValue(catalog, value))) {
       saved = await writeCatalog(provider, current => {
         requested.forEach(value => {
+          requireExisting(current, value);
           if (tagForValue(current, value)) return;
           const source = value && typeof value === 'object' ? value : { name: value };
           const tag = {
