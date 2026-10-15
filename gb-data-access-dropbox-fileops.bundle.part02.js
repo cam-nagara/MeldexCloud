@@ -893,8 +893,8 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
   return next;
 }
 
-async function _listAnnotationRecords(provider, query) {
-  const contract = window.MeldexSystemStorage;
-  const records = [];
-  const seenIds = new Set();
-  const scopeOwnersById = new Map();
+async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
+  // A normal first read can require several 50-record pages, followed by a
+  // second pass after legacy migration changes the collection generation.
+  // Finish that work before reporting a startup failure. Bound the work and
+  // stop on stalled coverage; storage/CAS errors still propagate unchanged.

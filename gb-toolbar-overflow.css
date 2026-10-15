@@ -13,6 +13,13 @@
   text-overflow: ellipsis;
 }
 .gb-toolbar-overflow-host > #sidebar-search-input { flex: 1 1 auto !important; min-width: 48px !important; }
+.gb-toolbar-overflow-host > .bd-toolbar-title {
+  /* The touch board layout gives this title a full row. Measured overflow
+     keeps one row, so release that basis before reserving the menu button. */
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 48px !important;
+}
 .gb-toolbar-overflow-host > .gb-tbo-hidden { display: none !important; }
 .gb-toolbar-overflow-button {
   display: inline-flex;
@@ -28,12 +35,13 @@
 }
 .gb-toolbar-overflow-button[hidden] { display: none !important; }
 .gb-toolbar-overflow-popup {
+  box-sizing: border-box;
   position: fixed;
   z-index: 10050;
   display: flex;
   flex-direction: column;
-  width: min(320px, calc(100vw - 16px));
-  max-height: calc(100dvh - 16px);
+  width: min(320px, calc((100vw - 16px) / var(--meldex-ui-zoom, 1)));
+  max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
   overflow: auto;
   padding: 6px;
   color: var(--fg);
@@ -43,6 +51,7 @@
   box-shadow: var(--ui-shadow-lg, 0 8px 24px #0008);
 }
 .gb-toolbar-overflow-popup .gb-tbo-row {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -63,7 +72,7 @@
 .gb-tbo-row:hover:not(:disabled), .gb-tbo-row.active { background: var(--ui-hover-bg, var(--bg3)); }
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 640px) {
   .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
 }

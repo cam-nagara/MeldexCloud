@@ -500,11 +500,22 @@ td.active-cell .cell-value > .cell-value-more {
 #pivot-table .col-add-prop-cell, .pivot-table .col-add-prop-cell { width: 36px; min-width: 36px; max-width: 36px; border-left: 1px dashed var(--border); }
 /* 新規エントリ行 */
 #pivot-table .new-entity-row td, .pivot-table .new-entity-row td { border-top: 1px dashed var(--border); }
+#pivot-table .db-new-entry-label, .pivot-table .db-new-entry-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
 #pivot-table .new-entity-row .ico, .pivot-table .new-entity-row .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
   width: 16px;
   height: 16px;
   vertical-align: middle;
 }
+#pivot-table .new-entity-row .ico svg, .pivot-table .new-entity-row .ico svg { display: block; }
 #pivot-table .new-entity-spacer-row td, .pivot-table .new-entity-spacer-row td {
   height: 64px;
   padding: 0 !important;

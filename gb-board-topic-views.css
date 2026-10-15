@@ -194,6 +194,7 @@
   .bd-common-view-add > .view-tab-add { min-height: 44px; min-width: 44px; }
 }
 @media (max-width: 768px) {
+  .bd-topic-view-controls .bd-common-view-tab:not(.active) { display: none; }
   .bd-topic-view-controls .bd-common-view-tab.active > .view-tab-label { display: none; }
   .bd-topic-view-controls .bd-common-view-tabs { flex: 0 0 auto; overflow: visible; }
 }

@@ -11406,6 +11406,23 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
   return next;
 }
 
+async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
+  // A normal first read can require several 50-record pages, followed by a
+  // second pass after legacy migration changes the collection generation.
+  // Finish that work before reporting a startup failure. Bound the work and
+  // stop on stalled coverage; storage/CAS errors still propagate unchanged.
+  const seen = new Set();
+  let coverage;
+  for (let batch = 0; batch < 200; batch++) {
+    coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+    if (coverage.complete) return coverage;
+    const progress = JSON.stringify([coverage.cursor, coverage.revision]);
+    if (seen.has(progress)) break;
+    seen.add(progress);
+  }
+  return coverage;
+}
+
 async function _listAnnotationRecords(provider, query) {
   const contract = window.MeldexSystemStorage;
   const records = [];
@@ -11418,7 +11435,7 @@ async function _listAnnotationRecords(provider, query) {
     try {
       const kind = contract.SystemStorageKind.ANNOTATIONS;
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
-        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        const coverage = await _ensureAnnotationIndexCoverage(provider, scope, kind);
         if (!coverage.complete) {
           const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
@@ -20012,7 +20029,14 @@ function createMarkupToolbar(markup, parentEl) {
     document.body.appendChild(palette);
     colorBtn.setAttribute('aria-expanded', 'true');
     positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
-    paletteKeyHandler = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); colorBtn.focus(); } };
+    paletteKeyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      closePalette();
+      const target = colorBtn.classList.contains('gb-tbo-hidden')
+        ? tb.querySelector('.gb-toolbar-overflow-button') : colorBtn;
+      target?.focus();
+    };
     paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
     closePaletteTimer = setTimeout(() => {
       document.addEventListener('pointerdown', paletteOutsideHandler, true);
@@ -20443,6 +20467,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const registry = new Map();
   let active = null;
   let pending = false;
+  let hostSequence = 0;
   const externalClass = value => String(value || '').split(/\s+/).filter(name => name && name !== hiddenClass && name !== 'gb-toolbar-overflow-host').join(' ');
   const matches = (el, selectors) => selectors.some(selector => el.matches(selector));
   const label = el => el.getAttribute('aria-label') || el.title || el.textContent.trim() || '操作';
@@ -20513,6 +20538,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.className = 'gb-tbo-close';
+    dismiss.dataset.e2eId = entry.more.dataset.e2eId + '-close';
     dismiss.textContent = '閉じる';
     dismiss.addEventListener('click', () => close(true));
     popup.appendChild(dismiss);
@@ -20629,6 +20655,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'tb-icon-btn gb-toolbar-overflow-button';
+    more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
     more.textContent = '▼';
     more.title = '隠れている操作を表示';
     more.setAttribute('aria-label', more.title);

@@ -202,6 +202,56 @@
       return records.sort((left, right) => String(left.documentId || '').localeCompare(String(right.documentId || '')));
     }
 
+    async _documentIds(kind) {
+      const contract = _systemContract();
+      // _path validates the kind without creating a directory on an empty workspace.
+      const folder = _dirname(this._path(kind, 'header-probe'));
+      let entries;
+      try { entries = await this.provider.listEntries(folder); }
+      catch (error) {
+        if (error?.name === 'NotFoundError') return [];
+        throw error;
+      }
+      return entries.filter(entry => entry?.kind === 'file' && /\.json$/i.test(entry.name || ''))
+        .map(entry => String(entry.name).slice(0, -5)).filter(id => {
+          try {
+            if (contract?.sanitizeDocumentId) contract.sanitizeDocumentId(id);
+            else _systemSegment(id, '管理データID');
+            return true;
+          } catch { return false; }
+        }).sort();
+    }
+
+    async listDocumentHeaders(kind, options) {
+      const cursor = String(options?.cursor || '');
+      if (cursor) _systemSegment(cursor, '管理データカーソル');
+      const requested = Number(options?.limit ?? 50);
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(200, Math.floor(requested))) : 50;
+      const ids = (await this._documentIds(kind)).filter(id => id > cursor);
+      const entries = [];
+      for (const id of ids.slice(0, limit)) {
+        // OPFS has no revision metadata. Read the envelope; never certify corrupt
+        // or concurrently removed records as covered by the annotation index.
+        const record = await this.load(kind, id);
+        if (!record) throw new Error('管理データが一覧取得中に変更されました。再試行してください');
+        entries.push({ documentId: id, revision: String(record.revision || ''), modified: record.updatedAt || '' });
+      }
+      const complete = ids.length <= limit;
+      return { entries, complete, cursor: complete ? '' : entries[entries.length - 1].documentId };
+    }
+
+    async documentCollectionGeneration(kind, options) {
+      const excluded = new Set((options?.excludeDocumentIds || []).map(String));
+      const headers = [];
+      for (const id of await this._documentIds(kind)) {
+        if (excluded.has(id)) continue;
+        const record = await this.load(kind, id);
+        if (!record) throw new Error('管理データが世代確認中に変更されました。再試行してください');
+        headers.push([id, String(record.revision || '')]);
+      }
+      return _systemContract().computeRevision(headers);
+    }
+
     async save(kind, documentId, payload, options) {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('payload はオブジェクトである必要があります');
       const path = this._path(kind, documentId);

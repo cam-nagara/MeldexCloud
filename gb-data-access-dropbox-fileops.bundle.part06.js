@@ -1,3 +1,20 @@
+        if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
+          await _moveEntry(provider, oldNotePath, newNotePath);
+          await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
+        }
+        await _runPostMutationStep(warnings, 'stored-paths', () => (
+          typeof _rewriteStoredPathsForProvider === 'function'
+            ? _rewriteStoredPathsForProvider(provider, oldPath, newPath, true)
+            : Promise.resolve(_rewriteStoredPaths(oldPath, newPath, true))
+        ));
+        await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: true }, warnings);
+        await _updateAnnotationsForPathMutation(provider, {
+          action: 'rename', oldPath, newPath, isFolder: true, annotationPlan,
+        });
+        let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+        await _runPostMutationStep(warnings, 'references', async () => {
+          relocate = await _relocateReferences(provider, oldPath, newPath, true);
+        });
         return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
       }
       const split = _splitNameAndExt(sourceName);

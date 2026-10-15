@@ -272,6 +272,23 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
   return next;
 }
 
+async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
+  // A normal first read can require several 50-record pages, followed by a
+  // second pass after legacy migration changes the collection generation.
+  // Finish that work before reporting a startup failure. Bound the work and
+  // stop on stalled coverage; storage/CAS errors still propagate unchanged.
+  const seen = new Set();
+  let coverage;
+  for (let batch = 0; batch < 200; batch++) {
+    coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+    if (coverage.complete) return coverage;
+    const progress = JSON.stringify([coverage.cursor, coverage.revision]);
+    if (seen.has(progress)) break;
+    seen.add(progress);
+  }
+  return coverage;
+}
+
 async function _listAnnotationRecords(provider, query) {
   const contract = window.MeldexSystemStorage;
   const records = [];
@@ -284,7 +301,7 @@ async function _listAnnotationRecords(provider, query) {
     try {
       const kind = contract.SystemStorageKind.ANNOTATIONS;
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
-        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        const coverage = await _ensureAnnotationIndexCoverage(provider, scope, kind);
         if (!coverage.complete) {
           const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;

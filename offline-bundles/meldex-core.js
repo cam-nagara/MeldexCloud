@@ -3577,7 +3577,14 @@ function createMarkupToolbar(markup, parentEl) {
     document.body.appendChild(palette);
     colorBtn.setAttribute('aria-expanded', 'true');
     positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
-    paletteKeyHandler = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); colorBtn.focus(); } };
+    paletteKeyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      closePalette();
+      const target = colorBtn.classList.contains('gb-tbo-hidden')
+        ? tb.querySelector('.gb-toolbar-overflow-button') : colorBtn;
+      target?.focus();
+    };
     paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
     closePaletteTimer = setTimeout(() => {
       document.addEventListener('pointerdown', paletteOutsideHandler, true);

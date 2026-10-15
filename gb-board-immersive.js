@@ -372,7 +372,11 @@
     guide.className = 'bd-empty-guide';
     guide.setAttribute('aria-hidden', 'true');
     guide.dataset.e2eId = `board-${identity}-empty-guide`;
-    guide.innerHTML = '<div class="bd-empty-guide-title">ダブルクリックでトピックを追加</div>'
+    const touchGuide = root.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
+    guide.innerHTML = touchGuide
+      ? '<div class="bd-empty-guide-title">ダブルタップでトピックを追加</div>'
+        + '<div class="bd-empty-guide-hint">トピックの操作はメニューやツールバーから選べます</div>'
+      : '<div class="bd-empty-guide-title">ダブルクリックでトピックを追加</div>'
       + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
       + '<div class="bd-empty-guide-hint">トピックを選んで Tab でサブトピックを追加</div>';
     canvas.appendChild(guide);

@@ -84,6 +84,14 @@
       && document.body.dataset.cloudMobileAnnotationbarOpen !== '1'
       && document.body.dataset.cloudMobileKeyboard !== '1';
     fab.hidden = !show;
+    const bar = document.getElementById('cloud-mobile-boardbar');
+    if (show && bar) {
+      fab.style.bottom = `calc(var(--cloud-mobile-editbar-safe-bottom, env(safe-area-inset-bottom)) + ${bar.offsetHeight + 8}px)`;
+      if (!bar._annotationFabResizeObserver && typeof ResizeObserver === 'function') {
+        bar._annotationFabResizeObserver = new ResizeObserver(_refreshAnnotationFab);
+        bar._annotationFabResizeObserver.observe(bar);
+      }
+    }
   }
 
   function _openActiveCardStyleManager() {

@@ -1,3 +1,20 @@
+    }
+    return result;
+  });
+  return { links: next, results };
+}
+
+async function _executeFolderLinkBatch(provider, operation, body, scopeId, fingerprint) {
+  const requestId = String(body?.request_id || '').trim();
+  if (requestId) {
+    const current = await _folderLinksStateForProvider(provider);
+    if (!Array.isArray(current?.requests)) throw new Error('フォルダリンクの再試行履歴が破損しています');
+    const previous = current.requests.find(record => record.request_id === requestId);
+    _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
+    if (previous) return previous.result;
+  }
+  const { folderPath, folderId, validated, validationFailures } = await _validateFolderLinkBatch(provider, operation, body);
+  const committed = await _updateFolderLinksStateForProvider(provider, (state) => {
     if (!Array.isArray(state?.links) || !Array.isArray(state?.requests)) {
       throw new Error('フォルダリンクの再試行履歴が破損しています');
     }
@@ -881,20 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
         const oldNotePath = _joinPath(newPath, sourceName + '.md');
         const newNotePath = _joinPath(newPath, newName + '.md');
-        if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
-          await _moveEntry(provider, oldNotePath, newNotePath);
-          await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
-        }
-        await _runPostMutationStep(warnings, 'stored-paths', () => (
-          typeof _rewriteStoredPathsForProvider === 'function'
-            ? _rewriteStoredPathsForProvider(provider, oldPath, newPath, true)
-            : Promise.resolve(_rewriteStoredPaths(oldPath, newPath, true))
-        ));
-        await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: true }, warnings);
-        await _updateAnnotationsForPathMutation(provider, {
-          action: 'rename', oldPath, newPath, isFolder: true, annotationPlan,
-        });
-        let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-        await _runPostMutationStep(warnings, 'references', async () => {
-          relocate = await _relocateReferences(provider, oldPath, newPath, true);
-        });

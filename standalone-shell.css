@@ -14,6 +14,12 @@
   --sa-radius: 6px;
 }
 
+/* Shared dialogs must remain above the standalone side panels (9900),
+   including link insertion opened while file properties are visible. */
+html:has(.sa-shell), html:has(#board-standalone-shell) {
+  --ui-z-modal: 10040;
+}
+
 * {
   box-sizing: border-box;
 }

@@ -1,3 +1,20 @@
+  const seen = new Set();
+  let coverage;
+  for (let batch = 0; batch < 200; batch++) {
+    coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+    if (coverage.complete) return coverage;
+    const progress = JSON.stringify([coverage.cursor, coverage.revision]);
+    if (seen.has(progress)) break;
+    seen.add(progress);
+  }
+  return coverage;
+}
+
+async function _listAnnotationRecords(provider, query) {
+  const contract = window.MeldexSystemStorage;
+  const records = [];
+  const seenIds = new Set();
+  const scopeOwnersById = new Map();
   let scopes;
   try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
   for (const scope of scopes) {
@@ -5,7 +22,7 @@
     try {
       const kind = contract.SystemStorageKind.ANNOTATIONS;
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
-        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        const coverage = await _ensureAnnotationIndexCoverage(provider, scope, kind);
         if (!coverage.complete) {
           const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
@@ -881,20 +898,3 @@ async function _listFileVersions(provider, path) {
   }
   const known = new Set(versions.map(row => row.name));
   for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {
-    if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
-    const entryInfo = _fileVersionInfoFromName(entry.name);
-    if (!entryInfo.created) continue;
-    const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
-    versions.push({
-      name: entry.name,
-      auto: entryInfo.auto,
-      label: entryInfo.label,
-      created: entryInfo.created || stats.modified || '',
-      modified: stats.modified || '',
-      size: stats.size || 0,
-      _modifiedMs: stats.modifiedMs || Date.parse(entryInfo.created || '') || 0,
-    });
-  }
-  versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
-  return versions.map(({ _modifiedMs, ...row }) => row);
-}

@@ -215,7 +215,8 @@ function _settingsDesktopFeaturesAvailable() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || document.body?.dataset?.cloudMode || '';
   const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
     && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
-  return !window.MeldexRuntimeAdapter?.isPwaMode?.() && !['browser', 'dropbox'].includes(mode) && !cloudStatic;
+  return !window.MeldexRuntimeAdapter?.isPwaMode?.() && !['browser', 'dropbox'].includes(mode)
+    && !['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '') && !cloudStatic;
 }
 
 function _settingsNavigationFindTab(tabId) {

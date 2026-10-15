@@ -1,3 +1,20 @@
+    if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
+    const entryInfo = _fileVersionInfoFromName(entry.name);
+    if (!entryInfo.created) continue;
+    const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
+    versions.push({
+      name: entry.name,
+      auto: entryInfo.auto,
+      label: entryInfo.label,
+      created: entryInfo.created || stats.modified || '',
+      modified: stats.modified || '',
+      size: stats.size || 0,
+      _modifiedMs: stats.modifiedMs || Date.parse(entryInfo.created || '') || 0,
+    });
+  }
+  versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
+  return versions.map(({ _modifiedMs, ...row }) => row);
+}
 
 async function _buildCloudVersionTimeline(provider, url) {
   const path = _normalizeFolderPath(url.searchParams.get('target_path') || url.searchParams.get('path') || '');
@@ -881,20 +898,3 @@ function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, f
     else {
       next.splice(index, 1);
       result.status = 'removed';
-    }
-    return result;
-  });
-  return { links: next, results };
-}
-
-async function _executeFolderLinkBatch(provider, operation, body, scopeId, fingerprint) {
-  const requestId = String(body?.request_id || '').trim();
-  if (requestId) {
-    const current = await _folderLinksStateForProvider(provider);
-    if (!Array.isArray(current?.requests)) throw new Error('フォルダリンクの再試行履歴が破損しています');
-    const previous = current.requests.find(record => record.request_id === requestId);
-    _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
-    if (previous) return previous.result;
-  }
-  const { folderPath, folderId, validated, validationFailures } = await _validateFolderLinkBatch(provider, operation, body);
-  const committed = await _updateFolderLinksStateForProvider(provider, (state) => {

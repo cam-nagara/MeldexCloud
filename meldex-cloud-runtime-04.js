@@ -32255,6 +32255,23 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
   return next;
 }
 
+async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
+  // A normal first read can require several 50-record pages, followed by a
+  // second pass after legacy migration changes the collection generation.
+  // Finish that work before reporting a startup failure. Bound the work and
+  // stop on stalled coverage; storage/CAS errors still propagate unchanged.
+  const seen = new Set();
+  let coverage;
+  for (let batch = 0; batch < 200; batch++) {
+    coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+    if (coverage.complete) return coverage;
+    const progress = JSON.stringify([coverage.cursor, coverage.revision]);
+    if (seen.has(progress)) break;
+    seen.add(progress);
+  }
+  return coverage;
+}
+
 async function _listAnnotationRecords(provider, query) {
   const contract = window.MeldexSystemStorage;
   const records = [];
@@ -32267,7 +32284,7 @@ async function _listAnnotationRecords(provider, query) {
     try {
       const kind = contract.SystemStorageKind.ANNOTATIONS;
       if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
-        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        const coverage = await _ensureAnnotationIndexCoverage(provider, scope, kind);
         if (!coverage.complete) {
           const error = new Error('アノテートmetadata indexを構築中です。再試行してください');
           error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
@@ -49852,7 +49869,14 @@ function createMarkupToolbar(markup, parentEl) {
     document.body.appendChild(palette);
     colorBtn.setAttribute('aria-expanded', 'true');
     positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
-    paletteKeyHandler = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); colorBtn.focus(); } };
+    paletteKeyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      closePalette();
+      const target = colorBtn.classList.contains('gb-tbo-hidden')
+        ? tb.querySelector('.gb-toolbar-overflow-button') : colorBtn;
+      target?.focus();
+    };
     paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
     closePaletteTimer = setTimeout(() => {
       document.addEventListener('pointerdown', paletteOutsideHandler, true);
@@ -50283,6 +50307,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const registry = new Map();
   let active = null;
   let pending = false;
+  let hostSequence = 0;
   const externalClass = value => String(value || '').split(/\s+/).filter(name => name && name !== hiddenClass && name !== 'gb-toolbar-overflow-host').join(' ');
   const matches = (el, selectors) => selectors.some(selector => el.matches(selector));
   const label = el => el.getAttribute('aria-label') || el.title || el.textContent.trim() || '操作';
@@ -50353,6 +50378,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.className = 'gb-tbo-close';
+    dismiss.dataset.e2eId = entry.more.dataset.e2eId + '-close';
     dismiss.textContent = '閉じる';
     dismiss.addEventListener('click', () => close(true));
     popup.appendChild(dismiss);
@@ -50469,6 +50495,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'tb-icon-btn gb-toolbar-overflow-button';
+    more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
     more.textContent = '▼';
     more.title = '隠れている操作を表示';
     more.setAttribute('aria-label', more.title);
@@ -76650,6 +76677,56 @@ async function _applyImportedCustomColors(rawColors, mode) {
         }
       }
       return records.sort((left, right) => String(left.documentId || '').localeCompare(String(right.documentId || '')));
+    }
+
+    async _documentIds(kind) {
+      const contract = _systemContract();
+      // _path validates the kind without creating a directory on an empty workspace.
+      const folder = _dirname(this._path(kind, 'header-probe'));
+      let entries;
+      try { entries = await this.provider.listEntries(folder); }
+      catch (error) {
+        if (error?.name === 'NotFoundError') return [];
+        throw error;
+      }
+      return entries.filter(entry => entry?.kind === 'file' && /\.json$/i.test(entry.name || ''))
+        .map(entry => String(entry.name).slice(0, -5)).filter(id => {
+          try {
+            if (contract?.sanitizeDocumentId) contract.sanitizeDocumentId(id);
+            else _systemSegment(id, '管理データID');
+            return true;
+          } catch { return false; }
+        }).sort();
+    }
+
+    async listDocumentHeaders(kind, options) {
+      const cursor = String(options?.cursor || '');
+      if (cursor) _systemSegment(cursor, '管理データカーソル');
+      const requested = Number(options?.limit ?? 50);
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(200, Math.floor(requested))) : 50;
+      const ids = (await this._documentIds(kind)).filter(id => id > cursor);
+      const entries = [];
+      for (const id of ids.slice(0, limit)) {
+        // OPFS has no revision metadata. Read the envelope; never certify corrupt
+        // or concurrently removed records as covered by the annotation index.
+        const record = await this.load(kind, id);
+        if (!record) throw new Error('管理データが一覧取得中に変更されました。再試行してください');
+        entries.push({ documentId: id, revision: String(record.revision || ''), modified: record.updatedAt || '' });
+      }
+      const complete = ids.length <= limit;
+      return { entries, complete, cursor: complete ? '' : entries[entries.length - 1].documentId };
+    }
+
+    async documentCollectionGeneration(kind, options) {
+      const excluded = new Set((options?.excludeDocumentIds || []).map(String));
+      const headers = [];
+      for (const id of await this._documentIds(kind)) {
+        if (excluded.has(id)) continue;
+        const record = await this.load(kind, id);
+        if (!record) throw new Error('管理データが世代確認中に変更されました。再試行してください');
+        headers.push([id, String(record.revision || '')]);
+      }
+      return _systemContract().computeRevision(headers);
     }
 
     async save(kind, documentId, payload, options) {

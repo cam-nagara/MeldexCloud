@@ -20,8 +20,9 @@
   }
 
   function tabTitle(tab) {
+    const label = tab?.querySelector?.('.view-tab-label, .gb-tab-label, .tab-label');
     return String(tab?.dataset?.tabTitle || tab?.getAttribute?.('aria-label') ||
-      tab?.getAttribute?.('title') || tab?.textContent || 'タブ').trim() || 'タブ';
+      tab?.getAttribute?.('title') || label?.textContent || tab?.textContent || 'タブ').trim() || 'タブ';
   }
 
   function tabItems(tablist) {
@@ -169,6 +170,14 @@
   function syncOne(tablist, usedIds) {
     if (!tablist?.isConnected) return;
     if (tablist.classList?.contains('gb-production-list-switch') || tablist.closest?.('.gb-production-list-switch')) return;
+    // Sheet/board view bars already provide their own phone select and menu.
+    // Adding a second dropdown also collects hidden menu text into its label.
+    const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
+    if (nativeSwitcher) {
+      const old = tablist.previousElementSibling;
+      if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
+      return;
+    }
     const trigger = ensureDropdown(tablist, usedIds);
     const tabs = tabItems(tablist);
     const active = activeTab(tabs);

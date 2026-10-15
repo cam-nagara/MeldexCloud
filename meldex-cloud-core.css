@@ -7484,7 +7484,7 @@ html[data-single-window="1"] .left-chrome-floating {
     gap: 8px !important;
     border-bottom: 1px solid var(--border, #333) !important;
     background: var(--bg, #1f1f1f);
-    overflow: hidden;
+    overflow: hidden !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar > button[title="フォルダツリーで表示"],
@@ -8081,13 +8081,13 @@ html[data-single-window="1"] .left-chrome-floating {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings select,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings .gb-input,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings .gb-select {
-    min-height: 32px !important;
+    min-height: 44px !important;
     font-size: var(--cloud-mobile-ui-font-size) !important;
     line-height: 1.2 !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-nav-btn {
-    min-height: 32px !important;
+    min-height: 44px !important;
     font-size: var(--cloud-mobile-ui-meta-font-size) !important;
     line-height: 1.2 !important;
   }
@@ -8645,6 +8645,11 @@ html[data-single-window="1"] .left-chrome-floating {
 
 body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"] #status-bar {
   display: none !important;
+}
+
+body:is([data-cloud-mobile="1"], [data-mobile-ui="1"]):has(.gb-mobile-dialog-overlay-open) #gb-mobile-status-toast {
+  /* Informational page status must not cover a dialog's close/save buttons. */
+  z-index: calc(var(--ui-z-modal, 300) - 1);
 }
 
 body[data-cloud-mobile="1"] .gb-global-tags-target-editor .gb-input,
@@ -10224,11 +10229,22 @@ td.active-cell .cell-value > .cell-value-more {
 #pivot-table .col-add-prop-cell, .pivot-table .col-add-prop-cell { width: 36px; min-width: 36px; max-width: 36px; border-left: 1px dashed var(--border); }
 /* 新規エントリ行 */
 #pivot-table .new-entity-row td, .pivot-table .new-entity-row td { border-top: 1px dashed var(--border); }
+#pivot-table .db-new-entry-label, .pivot-table .db-new-entry-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
 #pivot-table .new-entity-row .ico, .pivot-table .new-entity-row .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
   width: 16px;
   height: 16px;
   vertical-align: middle;
 }
+#pivot-table .new-entity-row .ico svg, .pivot-table .new-entity-row .ico svg { display: block; }
 #pivot-table .new-entity-spacer-row td, .pivot-table .new-entity-spacer-row td {
   height: 64px;
   padding: 0 !important;
@@ -27169,6 +27185,13 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   text-overflow: ellipsis;
 }
 .gb-toolbar-overflow-host > #sidebar-search-input { flex: 1 1 auto !important; min-width: 48px !important; }
+.gb-toolbar-overflow-host > .bd-toolbar-title {
+  /* The touch board layout gives this title a full row. Measured overflow
+     keeps one row, so release that basis before reserving the menu button. */
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 48px !important;
+}
 .gb-toolbar-overflow-host > .gb-tbo-hidden { display: none !important; }
 .gb-toolbar-overflow-button {
   display: inline-flex;
@@ -27184,12 +27207,13 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 }
 .gb-toolbar-overflow-button[hidden] { display: none !important; }
 .gb-toolbar-overflow-popup {
+  box-sizing: border-box;
   position: fixed;
   z-index: 10050;
   display: flex;
   flex-direction: column;
-  width: min(320px, calc(100vw - 16px));
-  max-height: calc(100dvh - 16px);
+  width: min(320px, calc((100vw - 16px) / var(--meldex-ui-zoom, 1)));
+  max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
   overflow: auto;
   padding: 6px;
   color: var(--fg);
@@ -27199,6 +27223,7 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   box-shadow: var(--ui-shadow-lg, 0 8px 24px #0008);
 }
 .gb-toolbar-overflow-popup .gb-tbo-row {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -27219,7 +27244,7 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 .gb-tbo-row:hover:not(:disabled), .gb-tbo-row.active { background: var(--ui-hover-bg, var(--bg3)); }
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 640px) {
   .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
 }
@@ -27657,7 +27682,7 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   }
 }
 
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 640px) {
   #pivot-view,
   #pivot-table,
   .pivot-table,
@@ -27705,15 +27730,83 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
     width: 44px;
   }
 
-  /* ＋/ハンドル/チェックボックスが44pxタッチターゲットになるため、専用の行先頭列も合わせて拡幅する。
-     幅は変数だけを上書きする（JS 側の固定列 sticky left も同じ変数を読むため、直接 width を
-     書き換えると固定列だけ横にずれる） */
-  #pivot-table, .pivot-table { --db-row-controls-w: 144px; }
+  /* 左端は選択だけにする。並べ替えはトピック横のメニューを兼用し、
+     操作ごとの44px領域を保ちながら本文の横幅を確保する。 */
+  #pivot-table, .pivot-table { --db-row-controls-w: 48px; }
+  :is(#pivot-table, .pivot-table) :is(.col-row-controls, .col-row-controls-header) {
+    padding-left: 1px;
+    padding-right: 1px;
+  }
+  #pivot-table .col-row-controls .row-add-btn,
+  .pivot-table .col-row-controls .row-add-btn,
+  #pivot-table .col-row-controls .row-drag-handle,
+  .pivot-table .col-row-controls .row-drag-handle { display: none; }
+  .row-select-all-cb {
+    --gb-checkbox-size-override: 22px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb) {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::before {
+    content: '';
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    inset: 11px;
+    box-sizing: border-box;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-xs);
+    background: var(--ui-bg-app);
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
+    border-color: var(--ui-accent);
+    background: var(--ui-accent);
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::after {
+    z-index: 1;
+  }
+
+  /* Safariのcollapsed borderとstickyの別レイヤー間に生じる半pixelの
+     透けを防ぐ。線は各セルの右辺・下辺だけで描き、二重線にしない。 */
+  #pivot-table, .pivot-table { border-collapse: separate; border-spacing: 0; }
+  #pivot-table th, #pivot-table td, .pivot-table th, .pivot-table td {
+    border-top-width: 0;
+    border-left-width: 0;
+  }
 
   #pivot-table td.col-entity .entity-name-cell-main {
     gap: 2px;
-    padding-right: 18px;
+    padding-right: 0;
+    min-height: 44px;
   }
+  .pivot-table td.col-entity .entity-name-cell-main {
+    gap: 2px;
+    padding-right: 0;
+    min-height: 44px;
+  }
+  :is(#pivot-table, .pivot-table) .entity-row-open-btn { display: none; }
+  :is(#pivot-table, .pivot-table) .entity-row-more-btn {
+    touch-action: none;
+    -webkit-touch-callout: none;
+    user-select: none;
+    position: static;
+    transform: none;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  :is(#pivot-table, .pivot-table) .db-new-entry-label { min-height: 44px; }
 
   #pivot-table td.col-entity .entity-name-label {
     min-width: 0;
@@ -27743,13 +27836,24 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
     align-items: center;
     justify-content: center;
   }
-  #pivot-table td .cell-value,
-  .pivot-table td .cell-value {
-    padding-right: 96px;
+  /* メニューを本文と同じflex行に置き、短い行への44pxボタンの重なりを防ぐ。 */
+  body #pivot-table td .cell-value,
+  body .pivot-table td .cell-value {
+    padding-right: 0;
+    min-height: 44px;
+    gap: 2px;
   }
-  #pivot-table td .cell-value > .cell-value-more,
-  .pivot-table td .cell-value > .cell-value-more {
-    right: 48px !important;
+  body #pivot-table td .cell-value:has(> .value-text) > .cell-value-more,
+  body .pivot-table td .cell-value:has(> .value-text) > .cell-value-more {
+    position: static !important;
+    transform: none !important;
+    order: 10;
+    flex: 0 0 44px;
+    margin-left: auto;
+  }
+  body #pivot-table[data-cell-overflow="clip"] .cell-value .value-text,
+  body .pivot-table[data-cell-overflow="clip"] .cell-value .value-text {
+    min-width: 0;
   }
 
   .view-tabs,
@@ -29525,7 +29629,7 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
   transform: translateY(0);
 }
 
-#board-standalone-shell .gb-toolbar-option-panel-btn {
+#board-standalone-shell .gb-toolbar-option-panel-btn:not(.gb-tbo-hidden) {
   display: inline-flex !important;
 }
 
@@ -29972,6 +30076,7 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   .bd-common-view-add > .view-tab-add { min-height: 44px; min-width: 44px; }
 }
 @media (max-width: 768px) {
+  .bd-topic-view-controls .bd-common-view-tab:not(.active) { display: none; }
   .bd-topic-view-controls .bd-common-view-tab.active > .view-tab-label { display: none; }
   .bd-topic-view-controls .bd-common-view-tabs { flex: 0 0 auto; overflow: visible; }
 }

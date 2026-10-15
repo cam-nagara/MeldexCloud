@@ -34,7 +34,7 @@
   }
 }
 
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 640px) {
   #pivot-view,
   #pivot-table,
   .pivot-table,
@@ -82,15 +82,83 @@
     width: 44px;
   }
 
-  /* ＋/ハンドル/チェックボックスが44pxタッチターゲットになるため、専用の行先頭列も合わせて拡幅する。
-     幅は変数だけを上書きする（JS 側の固定列 sticky left も同じ変数を読むため、直接 width を
-     書き換えると固定列だけ横にずれる） */
-  #pivot-table, .pivot-table { --db-row-controls-w: 144px; }
+  /* 左端は選択だけにする。並べ替えはトピック横のメニューを兼用し、
+     操作ごとの44px領域を保ちながら本文の横幅を確保する。 */
+  #pivot-table, .pivot-table { --db-row-controls-w: 48px; }
+  :is(#pivot-table, .pivot-table) :is(.col-row-controls, .col-row-controls-header) {
+    padding-left: 1px;
+    padding-right: 1px;
+  }
+  #pivot-table .col-row-controls .row-add-btn,
+  .pivot-table .col-row-controls .row-add-btn,
+  #pivot-table .col-row-controls .row-drag-handle,
+  .pivot-table .col-row-controls .row-drag-handle { display: none; }
+  .row-select-all-cb {
+    --gb-checkbox-size-override: 22px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb) {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::before {
+    content: '';
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    inset: 11px;
+    box-sizing: border-box;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-xs);
+    background: var(--ui-bg-app);
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
+    border-color: var(--ui-accent);
+    background: var(--ui-accent);
+  }
+  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::after {
+    z-index: 1;
+  }
+
+  /* Safariのcollapsed borderとstickyの別レイヤー間に生じる半pixelの
+     透けを防ぐ。線は各セルの右辺・下辺だけで描き、二重線にしない。 */
+  #pivot-table, .pivot-table { border-collapse: separate; border-spacing: 0; }
+  #pivot-table th, #pivot-table td, .pivot-table th, .pivot-table td {
+    border-top-width: 0;
+    border-left-width: 0;
+  }
 
   #pivot-table td.col-entity .entity-name-cell-main {
     gap: 2px;
-    padding-right: 18px;
+    padding-right: 0;
+    min-height: 44px;
   }
+  .pivot-table td.col-entity .entity-name-cell-main {
+    gap: 2px;
+    padding-right: 0;
+    min-height: 44px;
+  }
+  :is(#pivot-table, .pivot-table) .entity-row-open-btn { display: none; }
+  :is(#pivot-table, .pivot-table) .entity-row-more-btn {
+    touch-action: none;
+    -webkit-touch-callout: none;
+    user-select: none;
+    position: static;
+    transform: none;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  :is(#pivot-table, .pivot-table) .db-new-entry-label { min-height: 44px; }
 
   #pivot-table td.col-entity .entity-name-label {
     min-width: 0;
@@ -120,13 +188,24 @@
     align-items: center;
     justify-content: center;
   }
-  #pivot-table td .cell-value,
-  .pivot-table td .cell-value {
-    padding-right: 96px;
+  /* メニューを本文と同じflex行に置き、短い行への44pxボタンの重なりを防ぐ。 */
+  body #pivot-table td .cell-value,
+  body .pivot-table td .cell-value {
+    padding-right: 0;
+    min-height: 44px;
+    gap: 2px;
   }
-  #pivot-table td .cell-value > .cell-value-more,
-  .pivot-table td .cell-value > .cell-value-more {
-    right: 48px !important;
+  body #pivot-table td .cell-value:has(> .value-text) > .cell-value-more,
+  body .pivot-table td .cell-value:has(> .value-text) > .cell-value-more {
+    position: static !important;
+    transform: none !important;
+    order: 10;
+    flex: 0 0 44px;
+    margin-left: auto;
+  }
+  body #pivot-table[data-cell-overflow="clip"] .cell-value .value-text,
+  body .pivot-table[data-cell-overflow="clip"] .cell-value .value-text {
+    min-width: 0;
   }
 
   .view-tabs,

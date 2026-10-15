@@ -56,7 +56,10 @@ function _handleTbodyDragstart(e) {
   const ctx = tbody._meldexCtx;
   if (!ctx) return;
   const target = e.target;
-  if (target.closest('.row-add-btn, .entity-row-more-btn, .row-select-cb, button, input, select, textarea, [contenteditable="true"]')) {
+  const menuHandle = target.closest('.entity-row-more-btn');
+  const mobileMenuHandle = menuHandle && window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
+  if (target.closest('.row-add-btn, .row-select-cb, button, input, select, textarea, [contenteditable="true"]')
+      || (menuHandle && !mobileMenuHandle)) {
     e.preventDefault();
     e.stopPropagation();
     return;
@@ -102,7 +105,7 @@ function _handleTbodyDragstart(e) {
 
   // 2. 専用ハンドルからのドラッグ → 行並び替え (複数選択時は全行)
   // セル自体は draggable にしない。編集・選択操作と行並び替えを明確に分離する。
-  const rowHandle = target.closest('.row-drag-handle');
+  const rowHandle = mobileMenuHandle || target.closest('.row-drag-handle');
   if (!rowHandle) return;
   const tr = target.closest('tr[data-entity-name]');
   if (tr) {
@@ -137,6 +140,79 @@ function _handleTbodyDragend(e) {
   if (nameSpan) { nameSpan.classList.remove('dragging'); return; }
   const tr = target.closest('tr[data-entity-name]');
   if (tr) { tr.style.opacity = ''; }
+}
+
+// HTML5 DnDに依存せず、指・ペンで行メニューから並べ替える。
+// 保存、グループ、マニュアル順の制約は既存のdrag/drop処理を共用する。
+function _dbBindTouchRowMenuDrag(menu) {
+  let gesture = null;
+  let suppressClickUntil = 0;
+  const eventFor = (g, target, pointer) => ({
+    currentTarget: g.tbody, target, clientX: pointer.clientX, clientY: pointer.clientY,
+    dataTransfer: g.transfer, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {},
+  });
+  const hitRow = (g, e) => {
+    const row = menu.ownerDocument.elementFromPoint(e.clientX, e.clientY)
+      ?.closest('tr[data-entity-name],tr.group-header-row');
+    return row && g.tbody.contains(row) ? row : null;
+  };
+  const finish = (e, cancel) => {
+    const g = gesture;
+    if (!g || e.pointerId !== g.id) return;
+    gesture = null;
+    const target = !cancel && g.started ? hitRow(g, e) : null;
+    menu.draggable = g.draggable;
+    if (g.moved) suppressClickUntil = Date.now() + 700;
+    try { menu.releasePointerCapture(g.id); } catch {}
+    if (g.started) {
+      window.MeldexDragAutoScroll?.endPointerSession?.();
+      _handleTbodyDragend(eventFor(g, menu, e));
+      _handleTbodyDragleave({ currentTarget: g.tbody, relatedTarget: null });
+      if (target) _handleTbodyDrop(eventFor(g, target, e));
+    }
+  };
+  menu.addEventListener('pointerdown', e => {
+    if (!['touch', 'pen'].includes(e.pointerType) || e.isPrimary === false || e.button !== 0 || gesture) return;
+    if (!window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches) return;
+    const tbody = menu.closest('tbody');
+    if (!tbody?._meldexCtx) return;
+    suppressClickUntil = 0;
+    const payload = new Map();
+    gesture = { id: e.pointerId, x: e.clientX, y: e.clientY, tbody,
+      draggable: menu.draggable, started: false, moved: false,
+      transfer: { get types() { return [...payload.keys()]; },
+        setData: (type, value) => payload.set(type, value), getData: type => payload.get(type) || '' } };
+    menu.draggable = false;
+    try { menu.setPointerCapture(e.pointerId); } catch {}
+  });
+  menu.addEventListener('pointermove', e => {
+    const g = gesture;
+    if (!g || e.pointerId !== g.id) return;
+    if (!g.moved) {
+      if (Math.abs(e.clientX - g.x) + Math.abs(e.clientY - g.y) < 8) return;
+      g.moved = true;
+      const start = eventFor(g, menu, e);
+      _handleTbodyDragstart(start);
+      g.started = !start.defaultPrevented && g.transfer.types.includes('text/x-meldex-rows');
+      if (g.started) window.MeldexDragAutoScroll?.beginPointerSession?.(e.clientX, e.clientY);
+    }
+    if (!g.started) return;
+    e.preventDefault();
+    window.MeldexDragAutoScroll?.updatePointer?.(e.clientX, e.clientY);
+    const target = hitRow(g, e);
+    if (target) _handleTbodyDragover(eventFor(g, target, e));
+    else _handleTbodyDragleave({ currentTarget: g.tbody, relatedTarget: null });
+  });
+  menu.addEventListener('pointerup', e => finish(e, false));
+  menu.addEventListener('pointercancel', e => finish(e, true));
+  menu.addEventListener('lostpointercapture', e => finish(e, true));
+  menu.addEventListener('contextmenu', e => { if (gesture) e.preventDefault(); });
+  menu.addEventListener('click', e => {
+    if (e.detail && Date.now() < suppressClickUntil) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
 }
 
 // D-4-f: tbody dragover / dragleave / drop 委譲ハンドラ (エントリ行の並び替え)
@@ -1238,15 +1314,31 @@ function renderEntityRow(entityName, ctx, options) {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
     }
   });
-  // 「...」ボタン。行自体が draggable なので、ボタン側でドラッグ起点を止める。
+  // スマホでは「...」を行並べ替えハンドルと兼用し、左端を選択だけにする。
   const moreBtn = document.createElement('span');
   moreBtn.className = 'entity-row-more-btn';
   moreBtn.title = 'メニュー';
-  moreBtn.draggable = false;
+  moreBtn.setAttribute('role', 'button');
+  moreBtn.setAttribute('aria-label', `トピックのメニュー: ${entityName}`);
+  moreBtn.tabIndex = 0;
+  moreBtn.dataset.e2eId = _dbE2eId(ctx, 'row-menu', entityName);
+  moreBtn.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    e.stopPropagation();
+    moreBtn.click();
+  });
+  moreBtn.draggable = true;
+  _dbBindTouchRowMenuDrag(moreBtn);
+  if (window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches) {
+    moreBtn.title = 'タップでメニュー / ドラッグで行を並べ替え';
+    moreBtn.setAttribute('aria-description', moreBtn.title);
+  }
   moreBtn.innerHTML = lucide('moreHorizontal', 12);
   moreBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   moreBtn.addEventListener('mousedown', (e) => e.stopPropagation());
   moreBtn.addEventListener('dragstart', (e) => {
+    if (window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches) return;
     e.preventDefault();
     e.stopPropagation();
   });
@@ -1309,7 +1401,7 @@ function renderNewEntryRow(ctx, options) {
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.cssText = 'cursor:pointer;color:var(--fg2);width:' + _entityW + 'px;min-width:' + _entityW + 'px;';
   tdName.style.maxWidth = _entityW + 'px';
-  tdName.innerHTML = `<span class="ico" style="margin-right:4px;">${lucide('plus',14)}</span><span>新規</span>`;
+  tdName.innerHTML = `<span class="db-new-entry-label"><span class="ico">${lucide('plus',14)}</span><span>新規</span></span>`;
   // click は tbody 委譲 (_handleNewEntryClick) で処理
 
   // フェーズ2: エントリ名列も他の列と同じ並べ替え順序（renderedCols）で配置する

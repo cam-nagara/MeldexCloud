@@ -37,7 +37,7 @@
   transform: translateY(0);
 }
 
-#board-standalone-shell .gb-toolbar-option-panel-btn {
+#board-standalone-shell .gb-toolbar-option-panel-btn:not(.gb-tbo-hidden) {
   display: inline-flex !important;
 }
 

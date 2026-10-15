@@ -54,6 +54,9 @@ function _dbEntityColumnDisplayLabel(dbPath, options) {
 }
 
 function _dbDefaultEntityColumnWidth(dbPath) {
+  // 保存済みの列幅は呼出元で優先する。未設定のスマホだけ、行メニューと
+  // トピック名を同時に読める初期幅にする。
+  if (window.matchMedia?.('(max-width: 640px)')?.matches) return 180;
   // 幅の目安は既定ラベル基準（任意名を付けても既定の幅感を保つ）
   const label = _dbDefaultEntityColumnLabel(dbPath);
   return label === 'タスク名' ? 260 : (label === 'トピック名' ? 120 : 180);

@@ -7,6 +7,7 @@
   const registry = new Map();
   let active = null;
   let pending = false;
+  let hostSequence = 0;
   const externalClass = value => String(value || '').split(/\s+/).filter(name => name && name !== hiddenClass && name !== 'gb-toolbar-overflow-host').join(' ');
   const matches = (el, selectors) => selectors.some(selector => el.matches(selector));
   const label = el => el.getAttribute('aria-label') || el.title || el.textContent.trim() || '操作';
@@ -77,6 +78,7 @@
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.className = 'gb-tbo-close';
+    dismiss.dataset.e2eId = entry.more.dataset.e2eId + '-close';
     dismiss.textContent = '閉じる';
     dismiss.addEventListener('click', () => close(true));
     popup.appendChild(dismiss);
@@ -193,6 +195,7 @@
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'tb-icon-btn gb-toolbar-overflow-button';
+    more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
     more.textContent = '▼';
     more.title = '隠れている操作を表示';
     more.setAttribute('aria-label', more.title);

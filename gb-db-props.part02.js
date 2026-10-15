@@ -204,6 +204,12 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const hasDeps = _hasDependencyPairProps(pts);
   const isXBookmarkEntry = !!pts?.['ポストID'];
   const items = [
+    ...(ctx && !productionSchemaLocked && typeof _handleInsertRowRelative === 'function' ? [
+      { icon: 'arrowUp', label: '上にトピックを追加', e2eId: 'db-entry-row-add-above',
+        action: () => _handleInsertRowRelative(ctx, entityName, 'above') },
+      { icon: 'arrowDown', label: '下にトピックを追加', e2eId: 'db-entry-row-add-below',
+        action: () => _handleInsertRowRelative(ctx, entityName, 'below') },
+    ] : []),
     ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'トピック名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
     } }] : []),
