@@ -1143,6 +1143,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
   }
 
   // click は tbody 委譲で処理 (空セル/アクティブセル切替は _handleTbodyClick 内)
+  window.MeldexSheetCellRecovery?.render(td, _entityPath(dbPath, entityName, ctx?.pivotData), propName, ctx);
 
   return td;
 }

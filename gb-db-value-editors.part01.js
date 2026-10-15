@@ -118,12 +118,17 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
     const save = async () => {
       try {
         await _apiPutValue(saveRef, { new_value: nv });
+        window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+          candidateIndex: saveRef.candidate_index, value: nv });
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
         else if (saveRef.file) val.file = saveRef.file;
         if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
         restoreEditedCellSelection(true);
       } catch (e) {
+        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+          candidateIndex: saveRef.candidate_index, before: old, value: nv });
+        if (editedTd) window.MeldexSheetCellRecovery?.render(editedTd, entityPath, propName, valueCtx);
         val.value = old;
         showStatus('保存に失敗: ' + (e?.message || e), true);
         restore();

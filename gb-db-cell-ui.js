@@ -1139,6 +1139,8 @@ function startInlineEdit(span, val, entityPath, propName) {
         restoreEditedCellSelection(true, moveTo);
       } catch (e) {
         span.textContent = old;
+        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+          candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
         restoreEditedCellSelection(true);
         await _cellUiRecoverMutationFailure(dbPath, ctx, e, '削除');
       }
@@ -1159,10 +1161,14 @@ function startInlineEdit(span, val, entityPath, propName) {
           else if (saveRef.file) val.file = saveRef.file;
           _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
           showStatus('保存しました', false, { passiveSave: true });
+          window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+            candidateIndex: val.candidate_index, value: nv });
           if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
           else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
           restoreEditedCellSelection(true, moveTo);
         } catch (e) {
+          window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+            candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
           val.value = old;
           if (oldRichHtml) val.rich_html = oldRichHtml;
           else delete val.rich_html;

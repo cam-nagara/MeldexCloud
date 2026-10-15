@@ -377,9 +377,14 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         await selectDatabase(dbPath, ctx, { silent: true });
       }
       if (!restoredOptimistic) _restoreCellPos(pos, moveTo);
+      window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName, value: String(value) });
       return true;
     } catch(e) {
       rejectPendingCreate?.(e);
+      if (['text', 'furigana', 'url', 'number'].includes(type)) {
+        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+          value: String(value), status: writeStatus, candidateIndex: null });
+      }
       if (!backendCommitted) {
         if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
           try {
