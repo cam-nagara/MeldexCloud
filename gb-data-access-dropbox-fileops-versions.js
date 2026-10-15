@@ -436,6 +436,10 @@ async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
   const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
+  if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
+    const browserMeta = await provider.getMetadata(path);
+    return String(browserMeta?.revision || '');
+  }
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
   const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';

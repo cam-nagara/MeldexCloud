@@ -1,3 +1,7 @@
+    });
+  }
+  const known = new Set(versions.map(row => row.name));
+  for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {
     if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
     const entryInfo = _fileVersionInfoFromName(entry.name);
     if (!entryInfo.created) continue;
@@ -894,7 +898,3 @@ function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, f
         next.push({ ...item, path: item.file_path, name: _displayLabelForPath(item.file_path, ''), folder_path: folderPath, folder_id: folderId, added_at: new Date().toISOString() });
         result.status = 'created';
       }
-    } else if (index < 0) result.status = 'unchanged';
-    else {
-      next.splice(index, 1);
-      result.status = 'removed';

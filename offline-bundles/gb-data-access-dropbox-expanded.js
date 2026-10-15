@@ -2171,6 +2171,44 @@
     throw new Error('同名トピックが多すぎます');
   }
 
+  async function _readSheetEntryAttachmentDocument(provider, path) {
+    const stored = await _readSheetStoreEntry(provider, path);
+    return stored ? { frontmatter: stored.frontmatter, body: stored.body } : null;
+  }
+
+  async function _patchSheetEntryAttachments(provider, path, frontmatter, expectedRevision) {
+    const dbPath = _dirname(_normalizeFolderPath(path));
+    if (!(await _sheetStoreMode(provider, dbPath)).enabled) return false;
+    await _requireUnlocked(provider, dbPath, { action: 'entry-attachments' });
+    await _requireUnlocked(provider, path, { action: 'entry-attachments' });
+    if (typeof provider.writeJsonMerged !== 'function') throw new Error('リンク情報を安全に保存できません');
+    const fileName = _sheetStoreFileName(path);
+    const manifest = await _readSheetManifest(provider, dbPath);
+    const shard = manifest?.row_shard?.[fileName];
+    if (manifest && !shard) throw Object.assign(new Error('トピックが見つかりません'), { status: 404 });
+    const storePath = shard ? _sheetShardPath(dbPath, shard) : _sheetStorePath(dbPath);
+    await provider.writeJsonMerged(storePath, current => {
+      const row = current?.rows?.[fileName];
+      if (!row || row.deleted) throw Object.assign(new Error('トピックが見つかりません'), { status: 404 });
+      if (Number(row.frontmatter?.meldex_revision || 0) !== Number(expectedRevision)) {
+        throw Object.assign(new Error('このトピックは他の端末で更新されています'), { status: 409 });
+      }
+      const now = _nowIso();
+      return { ...current, modified: now, rows: { ...current.rows, [fileName]: {
+        ...row, updated: now, frontmatter: { ...row.frontmatter,
+          entry_attachments: frontmatter.entry_attachments,
+          meldex_revision: Number(expectedRevision) + 1,
+        },
+      } } };
+    });
+    return true;
+  }
+
+  internals.sheetEntryAttachmentDocument = {
+    read: _readSheetEntryAttachmentDocument,
+    patch: _patchSheetEntryAttachments,
+  };
+
   function _entityPayloadFromParsed(path, parsed) {
     const properties = {};
     Object.entries(parsed.frontmatter.properties || {}).forEach(([prop, rawList]) => {
@@ -2193,6 +2231,8 @@
       properties,
       page_content: String(parsed.body || '').trim(),
       id: parsed.frontmatter.id || '',
+      entry_attachments: Array.isArray(parsed.frontmatter.entry_attachments) ? parsed.frontmatter.entry_attachments : [],
+      revision: Number(parsed.frontmatter.meldex_revision || 0),
       relations: Array.isArray(parsed.frontmatter.relations) ? parsed.frontmatter.relations : [],
     };
   }

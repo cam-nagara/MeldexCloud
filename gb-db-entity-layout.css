@@ -28,7 +28,7 @@
   gap: 4px;
   max-width: 180px;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--fg2);
   background: transparent;
   border: 1px solid transparent;
@@ -84,7 +84,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--fg);
   background: transparent;
   border: none;
@@ -102,11 +102,11 @@
 }
 .el-field-picker-empty {
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--fg2);
 }
 .el-popup-title {
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   font-weight: 700;
   color: var(--fg2);
   padding: 2px 4px;
@@ -117,7 +117,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 2px 4px;
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--fg2);
 }
 .el-popup-row input {
@@ -141,7 +141,7 @@
 .el-edit-toolbar .gb-btn span { margin-left: 4px; }
 .el-viewport {
   position: relative;
-  overflow: hidden;
+  overflow: auto;
   min-width: 0;
   border-radius: 6px;
 }
@@ -150,7 +150,7 @@
   outline-offset: -1px;
 }
 .el-canvas {
-  position: absolute;
+  position: relative;
   top: 0;
   left: 0;
   transform-origin: 0 0;
@@ -167,7 +167,7 @@
   align-items: center;
   justify-content: center;
   color: var(--el-fg2, var(--fg2));
-  font-size: 13px;
+  font-size: var(--ui-font-13, 13px);
   pointer-events: none;
   text-align: center;
   padding: 12px;
@@ -188,7 +188,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  font-size: 13px; /* セル書式(fontSize)のインライン指定が本文へ継承されるよう基準はセル側に置く */
+  font-size: var(--ui-font-13, 13px); /* セル書式(fontSize)のインライン指定が本文へ継承されるよう基準はセル側に置く */
 }
 .el-cell-content {
   flex: 1 1 auto;
@@ -202,7 +202,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--el-fg2, var(--fg2));
   flex: 0 0 auto;
   min-width: 0;
@@ -227,14 +227,14 @@
   font-size: inherit;
 }
 .el-cell-missing {
-  font-size: 11px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--red);
 }
 .el-cell-placeholder {
   align-items: center;
   justify-content: center;
   color: var(--el-fg2, var(--fg2));
-  font-size: 11px;
+  font-size: var(--ui-font-13, 13px);
 }
 
 /* --- セルタイプ別（見出し/罫線/画像） --- */
@@ -312,11 +312,11 @@
   align-items: center;
   gap: 8px;
   padding: 3px 4px;
-  font-size: 12px;
+  font-size: var(--ui-font-13, 13px);
   cursor: pointer;
 }
 .el-popup-hint {
-  font-size: 11px;
+  font-size: var(--ui-font-13, 13px);
   color: var(--fg2);
   padding: 2px 4px;
 }
@@ -348,8 +348,8 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: var(--ui-h-md, 28px);
+  height: var(--ui-h-md, 28px);
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -359,7 +359,7 @@
   z-index: 2;
 }
 .el-cell-remove { right: 2px; }
-.el-cell-settings { right: 22px; }
+.el-cell-settings { right: calc(var(--ui-h-md, 28px) + 4px); }
 .el-cell.el-selected .el-cell-remove,
 .el-cell.el-editable:hover .el-cell-remove,
 .el-cell.el-selected .el-cell-settings,
@@ -383,7 +383,7 @@
 @media (pointer: coarse), (max-width: 900px) {
   /* タッチ時は視覚サイズだけでなく実際の操作領域を44px確保する。
      小さい罫線セルでも操作が切れないよう、編集時のチロームだけはセル外へ出せる。 */
-  .el-viewport.el-editing { overflow: visible; }
+  .el-viewport.el-editing { overflow: auto; }
   .el-cell.el-editable { overflow: visible; }
   .el-cell.el-editable > .el-cell-content {
     overflow: hidden;
@@ -414,3 +414,24 @@
     height: calc(44px * var(--el-inverse-scale, 1));
   }
 }
+
+.el-preset-dialog {
+  box-sizing: border-box;
+  width: 100%;
+  font-size: var(--ui-font-13, 13px);
+}
+.el-preset-actions, .el-preset-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.el-preset-dialog input, .el-preset-dialog select { font: inherit; padding: 6px 8px; }
+.el-preset-name-row input { flex: 1; min-width: 120px; }
+.el-preset-message { min-height: 1.5em; margin-bottom: 8px; color: var(--fg2); }
+.el-preset-message[data-error="true"] { color: var(--red); }
+.el-preset-editor { min-width: 0; }
+.el-preset-editor .el-viewport { max-height: 50vh; }
+.el-tab-menu { max-height: min(70vh, 600px); overflow: auto; }
+.el-tab-menu-item:disabled { color: var(--fg2); cursor: default; }

@@ -330,6 +330,7 @@
       exists: response?.exists === true,
       revision: response?.revision || null,
       templates: _validSharedTemplates(payload.templates),
+      deletedNames: (Array.isArray(payload.deletedNames) ? payload.deletedNames : []).filter(name => typeof name === 'string'),
     };
   }
 
@@ -341,7 +342,9 @@
     try {
       const remote = await _readSharedLibrary(fetcher);
       if (!remote.available) return { ...remote, source: 'device-cache', templates: cached };
-      const templates = _mergeSharedTemplates(remote.templates, cached);
+      // 未同期の端末プリセットは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
+      const templates = _mergeSharedTemplates(remote.templates, cached)
+        .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       _cacheSharedTemplates(templates, opts.storage);
       return { ...remote, source: 'personal-library', templates };
     } catch (error) {
@@ -354,11 +357,11 @@
       || /(?:HTTP\s*)?409|競合/.test(String(error?.message || ''));
   }
 
-  async function _putSharedLibrary(fetcher, templates, revision) {
+  async function _putSharedLibrary(fetcher, templates, revision, deletedNames = []) {
     return fetcher(`/personal-preferences/${SHARED_LIBRARY_DOCUMENT}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, silentError: true,
       body: JSON.stringify({
-        payload: { schemaVersion: SHARED_LIBRARY_SCHEMA_VERSION, templates: _validSharedTemplates(templates) },
+        payload: { schemaVersion: SHARED_LIBRARY_SCHEMA_VERSION, templates: _validSharedTemplates(templates), deletedNames },
         expectedRevision: revision || null,
       }),
     });
@@ -372,7 +375,7 @@
     const name = String(template.layout.name || '').trim();
     const fetcher = _sharedLibraryFetcher(opts.fetcher);
     const saveToDevice = (templates) => {
-      _cacheSharedTemplates(templates, opts.storage);
+      if (!_cacheSharedTemplates(templates, opts.storage)) throw new Error('プリセットの保存先を利用できません');
       return { saved: true, shared: false, source: 'device-cache', templates };
     };
     if (!fetcher) {
@@ -395,14 +398,15 @@
         }
         return { ...saveToDevice([...cached, clone(template)]), error };
       }
-      const current = _mergeSharedTemplates(remote.templates, loadSharedTemplates(opts.storage));
+      const current = _mergeSharedTemplates(remote.templates, loadSharedTemplates(opts.storage))
+        .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       if (current.some(item => String(item.layout?.name || '').trim() === name)) {
         return { saved: false, shared: remote.available, reason: 'duplicate-name', templates: current };
       }
       const next = [...current, clone(template)];
       if (!remote.available) return saveToDevice(next);
       try {
-        const saved = await _putSharedLibrary(fetcher, next, remote.revision);
+        const saved = await _putSharedLibrary(fetcher, next, remote.revision, remote.deletedNames.filter(item => item !== name));
         if (saved?.available === false) return saveToDevice(next);
         _cacheSharedTemplates(next, opts.storage);
         return { saved: true, shared: true, source: 'personal-library', revision: saved?.revision || null, templates: next };
@@ -412,6 +416,59 @@
       }
     }
     throw new Error('共有テンプレートの競合を解消できませんでした');
+  }
+
+  // 編集・削除は読込時の内容と照合してからCAS保存する。通信失敗を端末保存の成功に置き換えない。
+  function _templateFingerprint(template) {
+    const sorted = value => Array.isArray(value) ? value.map(sorted)
+      : object(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+    return JSON.stringify(sorted(template));
+  }
+
+  async function changeSharedTemplateInLibrary(previous, template, options) {
+    if (template && (!object(template) || template.format !== TEMPLATE_FORMAT || !object(template.layout))) {
+      throw new TypeError('トピックレイアウトテンプレートの形式が不正です');
+    }
+    const opts = object(options) ? options : {};
+    const fetcher = _sharedLibraryFetcher(opts.fetcher);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remote = fetcher ? await _readSharedLibrary(fetcher) : { available: false };
+      const current = remote.available
+        ? _mergeSharedTemplates(remote.templates, loadSharedTemplates(opts.storage))
+          .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()))
+        : loadSharedTemplates(opts.storage);
+      const oldName = String(previous?.layout?.name || '').trim();
+      const index = previous ? current.findIndex(item => String(item.layout?.name || '').trim() === oldName) : -1;
+      if (previous && (index < 0 || _templateFingerprint(current[index]) !== _templateFingerprint(previous))) {
+        throw new Error('プリセットが別の画面で変更されました。閉じてから読み直してください');
+      }
+      const name = String(template?.layout?.name || '').trim();
+      if (template && !name) throw new Error('プリセット名を入力してください');
+      if (template && current.some((item, i) => i !== index && String(item.layout?.name || '').trim() === name)) {
+        throw new Error('同名のプリセットが既にあります');
+      }
+      const next = current.map(clone);
+      if (index >= 0) next.splice(index, 1, ...(template ? [clone(template)] : []));
+      else if (template) next.push(clone(template));
+      if (remote.available) {
+        try {
+          const deleted = new Set(remote.deletedNames);
+          if (previous && (!template || oldName !== name)) deleted.add(oldName);
+          if (template) deleted.delete(name);
+          const saved = await _putSharedLibrary(fetcher, next, remote.revision, [...deleted]);
+          if (saved?.available === false) throw new Error('プリセットの保存先を利用できません');
+        } catch (error) {
+          if (attempt === 0 && _isConflict(error)) continue;
+          throw error;
+        }
+      }
+      try {
+        if (!_cacheSharedTemplates(next, opts.storage) && !remote.available) throw new Error('プリセットの保存先を利用できません');
+      }
+      catch (error) { if (!remote.available) throw error; }
+      return { saved: true, shared: !!remote.available, templates: next };
+    }
+    throw new Error('プリセットの保存が競合しました');
   }
 
   return Object.freeze({
@@ -425,6 +482,7 @@
     TEMPLATE_FORMAT,
     applyCaptionMode,
     applyCellStyle,
+    changeSharedTemplateInLibrary,
     createStyleControls,
     exportTemplate,
     importTemplate,

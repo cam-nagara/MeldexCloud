@@ -227,7 +227,12 @@
     if (typeof apiPut !== 'function') return;
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
     await clearDraft(item.path, item.storageKey);
-    if (typeof openPage === 'function') {
+    const format = window.MeldexDocumentIdentity?.formatForPath?.(item.path, item.content);
+    if ((format === 'scenario' || /\.(?:mel-scenario|scriptnote\.json)$/i.test(item.path)) && typeof openScenarioInScriptNote === 'function') {
+      await openScenarioInScriptNote(item.path, _fileLabel(item.path));
+    } else if ((format === 'board' || /\.mel-board$/i.test(item.path)) && typeof openBoard === 'function') {
+      await openBoard(_fileLabel(item.path), item.path);
+    } else if (typeof openPage === 'function') {
       await openPage(_fileLabel(item.path).replace(/\.md$/i, ''), item.path);
       const pc = document.getElementById('page-content');
       if (pc && pc.dataset.path === item.path) pc.dataset.lastSavedEtag = res.etag || pc.dataset.lastSavedEtag || '';

@@ -713,6 +713,10 @@ async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
   const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
+  if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
+    const browserMeta = await provider.getMetadata(path);
+    return String(browserMeta?.revision || '');
+  }
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
   const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
@@ -894,7 +898,3 @@ async function _listFileVersions(provider, path) {
         || key === 'schedule_bucket_id' || key === 'transaction_id' || key === 'created_by'
         || key.startsWith('content_last_editor_')
         || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
-    });
-  }
-  const known = new Set(versions.map(row => row.name));
-  for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {

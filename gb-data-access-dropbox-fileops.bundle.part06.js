@@ -1,3 +1,16 @@
+          ? await _prepareAnnotationsForPathMutation(provider, {
+            action: 'rename', oldPath, newPath, isFolder: true,
+          }) : [];
+        const warnings = [];
+        if (newPath !== oldPath) {
+          await _moveEntry(provider, oldPath, newPath);
+          await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, newPath, true));
+          await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+            _relocateCsvSidecars(provider, oldPath, newPath, true, false)
+          ));
+        }
+        const oldNotePath = _joinPath(newPath, sourceName + '.md');
+        const newNotePath = _joinPath(newPath, newName + '.md');
         if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
           await _moveEntry(provider, oldNotePath, newNotePath);
           await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));

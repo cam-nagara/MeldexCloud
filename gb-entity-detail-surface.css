@@ -13,6 +13,13 @@
   margin: 6px 0 10px;
   color: var(--fg);
   font-size: 17px;
+  outline: none;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+.meldex-entity-detail-title:focus {
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .meldex-entity-detail-parent {
@@ -78,10 +85,7 @@
 
 .meldex-entity-attachments-section {
   margin: 12px 0 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--ui-radius-sm, 6px);
-  background: var(--bg2, rgba(0, 0, 0, 0.02));
+  min-width: 0;
   transition: border-color 0.15s, background-color 0.15s;
 }
 
@@ -93,7 +97,7 @@
 .meldex-entity-attachments-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   margin-bottom: 6px;
 }
@@ -130,7 +134,9 @@
 
 .meldex-entity-attachments-list {
   display: flex;
-  flex-direction: column;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
   gap: 4px;
 }
 
@@ -149,6 +155,8 @@
   background: var(--bg);
   border: 1px solid var(--border);
   font-size: 13px;
+  flex: 0 0 auto;
+  max-width: 220px;
 }
 
 .meldex-entity-attachment-icon {
@@ -165,10 +173,71 @@
   white-space: nowrap;
   color: var(--accent, #3b82f6);
   cursor: pointer;
+  border: 0;
+  padding: 3px 2px;
+  background: transparent;
+  font: inherit;
 }
 
-.meldex-entity-attachment-name:hover {
-  text-decoration: underline;
+.meldex-entity-attachment-item:has([aria-selected="true"]) {
+  border-color: var(--accent);
+  background: var(--bg3);
+}
+
+.meldex-entity-attachment-add-container {
+  flex: 0 0 auto;
+}
+
+.meldex-entity-linked-content {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+
+.meldex-entity-linked-pane {
+  min-width: 0;
+  min-height: 180px;
+}
+
+.meldex-entity-linked-pane[hidden] {
+  display: none !important;
+}
+
+.meldex-entity-linked-pane:has(.gb-production-sheet-embed),
+.meldex-entity-linked-pane:has(.gb-canvas-root),
+.meldex-entity-linked-pane:has(.sn2-root) {
+  display: flex;
+  height: 500px;
+  overflow: hidden;
+}
+
+.meldex-entity-linked-media {
+  width: 100%;
+  max-height: 600px;
+  object-fit: contain;
+  border: 0;
+}
+
+iframe.meldex-entity-linked-media {
+  height: 500px;
+}
+
+.meldex-entity-linked-chat label {
+  display: block;
+  margin: 10px 0;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.meldex-entity-linked-chat textarea {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
 .meldex-entity-attachment-size {

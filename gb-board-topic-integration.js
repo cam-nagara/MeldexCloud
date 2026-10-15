@@ -256,8 +256,8 @@
     (pendingSheetEditors.get(board) || []).forEach(commit => commit());
   }
 
-  function captureRuntime(board) {
-    commitPendingEdits(board);
+  function captureRuntime(board, options = {}) {
+    if (options.commitEdits !== false) commitPendingEdits(board);
     // hydrate後に追加されたカードにも、ビューとラインを保存する前に安定TopicRefを付与する。
     // これが無いと初回保存だけ端点targetRefが一時的なnode idのまま残り、再読込時に
     // viewLinesToLegacyが接続元・接続先を解決できない。
@@ -582,7 +582,8 @@
   }
 
   function serializeFrontmatter(board) {
-    captureRuntime(board);
+    // 自動保存や入力保全用スナップショットの読み取りで、現在の本文編集を終了しない。
+    captureRuntime(board, { commitEdits: false });
     let output = '';
     if ((board.nodes || []).some((node) => node.topicRef?.sourceId && node.topicRef?.topicId)) {
       output += `${REFS_FIELD}:\n`;

@@ -1,6 +1,6 @@
 /* gb-db-entity-layout-canvas.js: エントリレイアウトの自由配置キャンバス描画。
-   - デザイン基準サイズ（layout.canvasSize）でセルを絶対配置し、表示コンテナ幅へ
-     transform: scale() で等比フィットさせる（要望8。ResizeObserverで追従）。
+   - デザイン基準サイズ（layout.canvasSize）でセルを絶対配置する。
+     狭い面では横スクロールし、本文や操作ボタンを縮小しない。
    - 編集モード: セルのドラッグ移動・右下ハンドルでのリサイズ・選択・削除、
      「列を配置」メニュー、キャンバスサイズ設定。
    - ボードのキャンバスエンジン（gb-canvas-engine*）はグローバル状態と強く結合しているため
@@ -21,7 +21,8 @@ function _elSnap(value) {
 /* レイアウト本体を grid コンテナへ描画する（renderEntityPropsGridInto から委譲される）。 */
 function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, rerender) {
   const state = _elGetState(dbPath);
-  const layout = state?.layouts.find(l => l.id === layoutId);
+  const draft = options?.layoutDraft;
+  const layout = draft?.layout || state?.layouts.find(l => l.id === layoutId);
   const host = document.createElement('div');
   host.className = 'el-host';
   host.dataset.e2eId = 'entity-layout-host';
@@ -33,7 +34,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
     host.appendChild(missing);
     return;
   }
-  const session = _elSession(grid, entityPath);
+  const session = draft?.session || _elSession(grid, entityPath);
   const editMode = !!session.editMode;
   const safeRerender = () => {
     if (grid.isConnected && typeof rerender === 'function') rerender();
@@ -47,6 +48,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
       || {},
     persist(label, detail, mutator) {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(grid, options)) return null;
+      if (draft) return draft.persist(mutator);
       return _elMutateState(dbPath, label, detail, (st, cfg) => {
         const target = st.layouts.find(l => l.id === layoutId);
         if (!target) return false;
@@ -83,24 +85,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
     canvas.appendChild(hint);
   }
 
-  // 等比フィット: コンテナ幅に合わせて縮小/拡大し、高さは縦横比に追従させる
-  const applyScale = () => {
-    if (!viewport.isConnected) return;
-    const width = viewport.clientWidth;
-    if (!width) return;
-    const scale = width / layout.canvasSize.w;
-    canvas.style.transform = 'scale(' + scale + ')';
-    canvas.dataset.elScale = String(scale);
-    canvas.style.setProperty('--el-inverse-scale', String(scale > 0 ? 1 / scale : 1));
-    viewport.style.height = Math.ceil(layout.canvasSize.h * scale) + 'px';
-  };
-  applyScale();
-  if (typeof ResizeObserver === 'function') {
-    const observer = new ResizeObserver(() => applyScale());
-    observer.observe(viewport);
-    // 解放はタブ行の再構築時（_elBuildTabBar）に grid 経由で行う
-    grid._elViewportObserver = observer;
-  }
+  canvas.dataset.elScale = '1';
 
   // 長文の自動フィット（要望10）: レイアウト確定後にセルごとへ適用する
   requestAnimationFrame(() => {
@@ -179,7 +164,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   settingsBtn.title = settingsLabel;
   settingsBtn.setAttribute('aria-label', settingsLabel);
   settingsBtn.setAttribute('aria-haspopup', 'dialog');
-  settingsBtn.innerHTML = typeof lucide === 'function' ? lucide('settings2', 12) : '⚙';
+  settingsBtn.innerHTML = typeof lucide === 'function' ? lucide('settings2', 14) : '⚙';
   settingsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     _elSelectCellElement(canvas, el);
@@ -194,7 +179,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   removeBtn.dataset.e2eId = 'entity-layout-cell-remove';
   removeBtn.title = 'セルを削除';
   removeBtn.setAttribute('aria-label', 'セルを削除');
-  removeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 12) : '×';
+  removeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
   // セル削除は配置の編集操作（データ自体は消えない）なので確認は出さず、取り消し履歴で戻せるようにする
   removeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -375,6 +360,7 @@ function _elAttachPopupCommon(popup, anchorBtn) {
     clampPopupToViewport(popup);
   }
   setTimeout(() => {
+    if (!popup.isConnected) return;
     const onPointerDown = (ev) => {
       if (!popup.contains(ev.target) && ev.target !== anchorBtn && !anchorBtn.contains(ev.target)) close();
     };
@@ -478,7 +464,7 @@ function _elShowCanvasSizePopup(anchorBtn, ctx) {
 
   const applyBtn = document.createElement('button');
   applyBtn.type = 'button';
-  applyBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  applyBtn.className = 'gb-btn gb-btn-primary primary';
   applyBtn.dataset.e2eId = 'entity-layout-canvas-size-apply';
   applyBtn.textContent = '適用';
   applyBtn.addEventListener('click', () => {
@@ -508,7 +494,7 @@ function _elBuildEditToolbar(ctx) {
 
   const fieldBtn = document.createElement('button');
   fieldBtn.type = 'button';
-  fieldBtn.className = 'gb-btn gb-btn-sm';
+  fieldBtn.className = 'gb-btn';
   fieldBtn.dataset.e2eId = 'entity-layout-add-field';
   fieldBtn.setAttribute('aria-haspopup', 'menu');
   fieldBtn.innerHTML = (typeof lucide === 'function' ? lucide('plus', 13) : '+') + '<span>列を配置</span>';
@@ -524,7 +510,7 @@ function _elBuildEditToolbar(ctx) {
 
   const sizeBtn = document.createElement('button');
   sizeBtn.type = 'button';
-  sizeBtn.className = 'gb-btn gb-btn-sm';
+  sizeBtn.className = 'gb-btn';
   sizeBtn.dataset.e2eId = 'entity-layout-canvas-size-btn';
   sizeBtn.setAttribute('aria-haspopup', 'dialog');
   sizeBtn.innerHTML = (typeof lucide === 'function' ? lucide('slidersHorizontal', 13) : '⚙') + '<span>キャンバスサイズ</span>';

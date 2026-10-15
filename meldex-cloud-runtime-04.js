@@ -25911,6 +25911,44 @@
     throw new Error('同名トピックが多すぎます');
   }
 
+  async function _readSheetEntryAttachmentDocument(provider, path) {
+    const stored = await _readSheetStoreEntry(provider, path);
+    return stored ? { frontmatter: stored.frontmatter, body: stored.body } : null;
+  }
+
+  async function _patchSheetEntryAttachments(provider, path, frontmatter, expectedRevision) {
+    const dbPath = _dirname(_normalizeFolderPath(path));
+    if (!(await _sheetStoreMode(provider, dbPath)).enabled) return false;
+    await _requireUnlocked(provider, dbPath, { action: 'entry-attachments' });
+    await _requireUnlocked(provider, path, { action: 'entry-attachments' });
+    if (typeof provider.writeJsonMerged !== 'function') throw new Error('リンク情報を安全に保存できません');
+    const fileName = _sheetStoreFileName(path);
+    const manifest = await _readSheetManifest(provider, dbPath);
+    const shard = manifest?.row_shard?.[fileName];
+    if (manifest && !shard) throw Object.assign(new Error('トピックが見つかりません'), { status: 404 });
+    const storePath = shard ? _sheetShardPath(dbPath, shard) : _sheetStorePath(dbPath);
+    await provider.writeJsonMerged(storePath, current => {
+      const row = current?.rows?.[fileName];
+      if (!row || row.deleted) throw Object.assign(new Error('トピックが見つかりません'), { status: 404 });
+      if (Number(row.frontmatter?.meldex_revision || 0) !== Number(expectedRevision)) {
+        throw Object.assign(new Error('このトピックは他の端末で更新されています'), { status: 409 });
+      }
+      const now = _nowIso();
+      return { ...current, modified: now, rows: { ...current.rows, [fileName]: {
+        ...row, updated: now, frontmatter: { ...row.frontmatter,
+          entry_attachments: frontmatter.entry_attachments,
+          meldex_revision: Number(expectedRevision) + 1,
+        },
+      } } };
+    });
+    return true;
+  }
+
+  internals.sheetEntryAttachmentDocument = {
+    read: _readSheetEntryAttachmentDocument,
+    patch: _patchSheetEntryAttachments,
+  };
+
   function _entityPayloadFromParsed(path, parsed) {
     const properties = {};
     Object.entries(parsed.frontmatter.properties || {}).forEach(([prop, rawList]) => {
@@ -25933,6 +25971,8 @@
       properties,
       page_content: String(parsed.body || '').trim(),
       id: parsed.frontmatter.id || '',
+      entry_attachments: Array.isArray(parsed.frontmatter.entry_attachments) ? parsed.frontmatter.entry_attachments : [],
+      revision: Number(parsed.frontmatter.meldex_revision || 0),
       relations: Array.isArray(parsed.frontmatter.relations) ? parsed.frontmatter.relations : [],
     };
   }
@@ -33147,6 +33187,10 @@ async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
   const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
+  if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
+    const browserMeta = await provider.getMetadata(path);
+    return String(browserMeta?.revision || '');
+  }
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
   const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
@@ -34362,6 +34406,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return items;
     }
 
+    function _pwaFileTransport() {
+      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
+    }
+
     async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
       let meta = writeMeta?.meta || writeMeta || null;
       if (!meta?.id && typeof provider?.getMetadata === 'function') {
@@ -34386,7 +34434,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         : '';
       return {
         etag: token,
-        transport_revision: { transport: 'dropbox-rev', token },
+        transport_revision: { transport: _pwaFileTransport(), token },
         ...(documentId ? {
           document_id: documentId,
           document_key: `document:${documentId}`,
@@ -34412,27 +34460,32 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
 
     function _dropboxTransportRevisionToken(bodyValue) {
+      const expectedTransport = _pwaFileTransport();
       const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
       let transport = '';
       let token = '';
       if (revision && typeof revision === 'object') {
-        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        transport = String(revision.transport || revision.kind || expectedTransport);
         token = String(revision.token || revision.revision || revision.etag || '').trim();
       } else {
         const raw = String(revision || '').trim();
         if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('browser-local:')) {
+          transport = 'browser-local';
+          token = raw.slice('browser-local:'.length);
+        }
         else if (raw.startsWith('dropbox-rev:')) {
           transport = 'dropbox-rev';
           token = raw.slice('dropbox-rev:'.length);
         } else {
-          transport = 'dropbox-rev';
+          transport = expectedTransport;
           token = raw;
         }
       }
-      if (transport && transport !== 'dropbox-rev') {
-        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+      if (transport && transport !== expectedTransport) {
+        const error = new Error('異なる保存経路のrevisionは使用できません');
         error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
-        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
         throw error;
       }
       return token;
@@ -40424,6 +40477,295 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
 ;
 
+/* === gb-topic-linked-file-editor.js === */
+;
+/* Editors owned by a topic's linked-file tabs; never redirect the main pane. */
+(function () {
+  'use strict';
+  let sequence = 0;
+
+  function mount(root, item, entryPath, options = {}) {
+    const id = 'topic-link-' + (++sequence);
+    let instance = null;
+    let disposed = false;
+    let flushEditor = async () => true;
+    const cleanup = [];
+    const ready = (async () => {
+      const listing = await apiFetch('/sheet-entry/attachments?entry_path=' + encodeURIComponent(entryPath));
+      const resolved = listing?.attachments?.find(value => value.id === item.id);
+      const path = resolved?.client_path || item.path;
+      const kind = item.kind;
+      const access = await window.MeldexEntityDetail.resolveReadOnly(path, options.readOnly);
+      root.dataset.readOnly = access.readOnly ? '1' : '0';
+      if (disposed) return false;
+      if (access.readOnly) {
+        const stop = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+        for (const type of ['beforeinput', 'paste', 'cut', 'drop', 'change']) root.addEventListener(type, stop, true);
+        root.addEventListener('click', event => {
+          if (event.target.closest('[data-allow-readonly="1"],[role="tab"]')) return;
+          if (event.target.closest('button,input,select,textarea,[contenteditable="true"]')) stop(event);
+        }, true);
+        root.addEventListener('keydown', event => {
+          if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Tab', 'Escape'].includes(event.key)
+              && !((event.ctrlKey || event.metaKey) && ['c', 'a'].includes(event.key.toLowerCase()))) stop(event);
+        }, true);
+      }
+      if (kind === 'sheet' || kind === 'database') {
+        instance = window.MeldexProductionSheetEmbed.create({ idSuffix: id });
+        instance.mount(root);
+        flushEditor = async () => {
+          // 新規行を保存してから、その行の改名・セル更新の完了を待つ。
+          if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(path);
+          if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(path) === false) return false;
+          if (typeof flushPendingDbPropertySettings === 'function') await flushPendingDbPropertySettings(path);
+          if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(path);
+          return true;
+        };
+        return await instance.open(path);
+      }
+      if (kind === 'scenario' || kind === 'board') {
+        const type = kind === 'scenario' ? 'scriptnote' : 'board';
+        instance = createToolComponent(type, id, id, { embedded: true, interaction: access.readOnly ? 'read-only' : 'editable' });
+        instance.state = { ...instance.state, [kind === 'scenario' ? 'scenarioPath' : 'boardPath']: path, label: item.name };
+        instance._skipDetailSync = true;
+        instance.mount(root);
+        if (kind === 'scenario') {
+          const loaded = await instance._loadScenario(path, {
+            skipNavPush: true, skipRecent: true, skipSaveLastView: true, skipStatus: true, silent: true,
+          });
+          if (loaded === false) throw new Error('シナリオを読み込めませんでした');
+        } else {
+          instance.activate();
+          if (instance._boardLoadPending && await instance._boardLoadPending === false) throw new Error('ボードを読み込めませんでした');
+          // The Board engine has one active model. Retain this component's dump
+          // before another surface takes it, and restore it before an edit.
+          const remember = event => {
+            if (!root.contains(event.target) && typeof bd !== 'undefined' && bd.path === path && typeof bdDumpState === 'function') {
+              instance._bdDump = bdDumpState();
+            }
+          };
+          const activate = () => {
+            if (typeof bd !== 'undefined' && bd.path === path) instance._bdDump = null;
+            instance.activate();
+          };
+          document.addEventListener('pointerdown', remember, true);
+          root.addEventListener('pointerdown', activate, true);
+          root.addEventListener('wheel', event => {
+            activate();
+            if (instance.onEmbeddedWheel?.({ mode: event.ctrlKey || event.metaKey ? 'zoom' : 'pan', deltaX: event.deltaX, deltaY: event.deltaY }, event)) {
+              event.preventDefault(); event.stopPropagation();
+            }
+          }, { capture: true, passive: false });
+          cleanup.push(() => document.removeEventListener('pointerdown', remember, true));
+        }
+        flushEditor = async () => {
+          if (typeof instance.flush === 'function') return await instance.flush();
+          if (typeof instance.flushPendingSave === 'function') return await instance.flushPendingSave();
+          if (kind === 'board' && typeof bd !== 'undefined' && bd.path === path && bd.dirty) return await bdSave();
+          return true;
+        };
+        return true;
+      }
+      if (kind === 'chat' || /(?:^|\/)\_chat\/llm\//.test(path)) {
+        const chatEditor = await mountChat(root, path, access);
+        flushEditor = chatEditor.flush;
+        instance = chatEditor;
+        return true;
+      }
+      if (kind === 'note' || /\.md$/i.test(path)) {
+        const toolbar = document.createElement('div');
+        toolbar.className = 'gb-toolbar meldex-entity-detail-toolbar';
+        const editor = document.createElement('div');
+        editor.className = 'meldex-entity-linked-note meldex-entity-detail-editor';
+        editor.dataset.e2eId = 'entity-linked-note-editor';
+        // 読込が終わるまで入力させない。非同期のopenPageが先行入力を上書きしないようにする。
+        editor.contentEditable = 'false';
+        for (const [label, command] of [['太字', 'bold'], ['斜体', 'italic'], ['箇条書き', 'insertUnorderedList']]) {
+          const button = document.createElement('button');
+          button.type = 'button'; button.textContent = label; button.disabled = true;
+          button.addEventListener('mousedown', event => event.preventDefault());
+          button.addEventListener('click', () => { editor.focus(); document.execCommand(command); });
+          toolbar.appendChild(button);
+        }
+        root.append(toolbar, editor);
+        const ok = await openPage(item.name, path, {
+          containerEl: editor, skipShowView: true, skipGlobalUi: true, skipStateView: true,
+          skipNavPush: true, skipSaveLastView: true, skipRecent: true, skipHighlight: true, skipHistoryScope: true,
+        });
+        editor.contentEditable = access.readOnly || ok === false ? 'false' : 'true';
+        toolbar.querySelectorAll('button').forEach(button => { button.disabled = access.readOnly || ok === false; });
+        flushEditor = async () => {
+          if (access.readOnly) return true;
+          await _runNoteAutoSave(editor);
+          return !window.MeldexNoteSaveAdapter?.isConflictPending?.(path)
+            && window.MeldexNoteSaveAdapter.isUnchanged(editor, _noteMarkdownFromEditor(editor));
+        };
+        return ok;
+      }
+      if (kind === 'folder' && typeof openFolder === 'function') {
+        return await openFolder(item.name, path, { containerEl: root, skipShowView: true, skipGlobalUi: true, skipNavPush: true, skipSaveLastView: true, skipHighlight: true, silent: true });
+      }
+      const media = document.createElement(/\.(mp4|webm|mov)$/i.test(path) ? 'video' : /\.(png|jpe?g|webp|gif|svg)$/i.test(path) ? 'img' : 'iframe');
+      media.className = 'meldex-entity-linked-media';
+      media.src = window.MeldexResourceUrl?.fileRaw?.(path) || '/api/file-raw?path=' + encodeURIComponent(path);
+      media.title = item.name; media.alt = item.name;
+      if (media.tagName === 'VIDEO') media.controls = true;
+      if (media.tagName === 'IFRAME') media.setAttribute('sandbox', '');
+      root.appendChild(media);
+      return true;
+    })().then(ok => {
+      if (ok === false && !disposed) throw new Error('リンク先の表示に失敗しました');
+      return ok;
+    }).catch(error => {
+      root.dataset.loadFailed = '1';
+      const notice = document.createElement('div');
+      notice.className = 'meldex-entity-detail-loading';
+      notice.textContent = 'リンク先を読み込めませんでした: ' + (error.userMessage || error.message || error);
+      root.appendChild(notice);
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '再試行';
+      retry.dataset.allowReadonly = '1';
+      retry.addEventListener('click', () => {
+        root.closest('.meldex-entity-attachments-section')?.querySelectorAll('[role="tab"]').forEach(tab => {
+          if (tab.dataset.attachmentId === item.id) tab.click();
+        });
+      });
+      root.appendChild(retry);
+      return false;
+    });
+    return {
+      ready,
+      get failed() { return root.dataset.loadFailed === '1'; },
+      flush: async () => { await ready; try { return await flushEditor() !== false; } catch (error) {
+        if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
+        return false;
+      } },
+      activate: () => instance?.activate?.(),
+      deactivate: () => instance?.deactivate?.(),
+      dispose: async () => {
+        await ready;
+        try { if (await flushEditor() === false) return false; }
+        catch (error) {
+          if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
+          return false;
+        }
+        disposed = true;
+        cleanup.forEach(remove => remove());
+        instance?.destroy?.({ skipFlush: true });
+        return true;
+      },
+    };
+  }
+
+  async function mountChat(root, path, access) {
+    // /chat/load supplies the canonical message model. Bind it to the same file
+    // generation as /file so edits cannot overwrite a concurrent chat session.
+    const file = await apiFetch('/file?path=' + encodeURIComponent(path));
+    const source = String(path).replace(/\\/g, '/').match(/^(.+)\/_chat\/llm\//)?.[1] || '';
+    const chat = await apiFetch('/chat/load?path=' + encodeURIComponent(path)
+      + (/^(?:[a-z]:\/|\/)/i.test(source) ? '&source_folder=' + encodeURIComponent(source) : ''));
+    const check = await apiFetch('/file?path=' + encodeURIComponent(path));
+    if (file.etag !== check.etag) throw new Error('チャットが更新されました。タブを開き直してください');
+    const messages = structuredClone(chat.messages || []);
+    let baseline = file.content;
+    let etag = file.etag;
+    let dirty = false;
+    let timer = 0;
+    let saving = Promise.resolve(true);
+    function serialize() {
+      const match = baseline.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      if (!match) throw new Error('チャットのメタデータを読み取れません');
+      const lines = match[1].split(/\r?\n/);
+      const start = lines.findIndex(line => /^messages:/.test(line));
+      if (start >= 0) {
+        let end = start + 1;
+        while (end < lines.length && !/^[^\s#-][^\r\n]*?:(?:\s|$)/.test(lines[end])) end += 1;
+        lines.splice(start, end - start);
+      }
+      lines.push('messages: ' + JSON.stringify(messages));
+      const body = messages.map(message => '## ' + (message.role === 'assistant' ? 'Assistant' : 'User') + '\n\n'
+        + (Array.isArray(message.content) ? message.content.filter(part => part.type === 'text').map(part => part.text || '').join('\n') : message.content || '')).join('\n\n');
+      return '---\n' + lines.join('\n') + '\n---\n\n' + body + '\n';
+    }
+    function flush() {
+      clearTimeout(timer);
+      saving = saving.catch(() => false).then(async () => {
+        if (!dirty || access.readOnly) return true;
+        const content = serialize();
+        const result = await apiPut('/file?path=' + encodeURIComponent(path), { content, if_match_etag: etag });
+        if (result?.ok === false || result?.missing || result?.skipped || !result?.etag) {
+          throw new Error('チャットの保存を確認できませんでした。入力を保持しています');
+        }
+        baseline = content;
+        etag = result.etag;
+        if (serialize() === content) {
+          dirty = false;
+          await window.MeldexDraftRecovery?.markSynced?.(path, content);
+        }
+        return true;
+      });
+      return saving;
+    }
+    function schedule() {
+      dirty = true;
+      void window.MeldexDraftRecovery?.saveDraft?.(path, serialize(), baseline);
+      clearTimeout(timer);
+      timer = setTimeout(() => flush().catch(error => {
+        if (typeof showStatus === 'function') showStatus('チャットの保存に失敗しました: ' + (error.userMessage || error.message || error), true);
+      }), 1000);
+    }
+    const conversation = document.createElement('div');
+    conversation.className = 'meldex-entity-linked-chat';
+    function renderMessage(message) {
+      const label = document.createElement('label');
+      label.textContent = ({ assistant: 'アシスタント', user: 'ユーザー', system: 'システム', tool: 'ツール' })[message.role] || message.role;
+      function textInput(value, update) {
+        const input = document.createElement('textarea');
+        input.value = String(value || ''); input.readOnly = access.readOnly;
+        input.dataset.e2eId = 'entity-linked-chat-message';
+        input.addEventListener('input', () => { update(input.value); schedule(); });
+        input.addEventListener('blur', () => flush().catch(() => {}));
+        label.appendChild(input);
+      }
+      if (Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (part.type === 'text') textInput(part.text, value => { part.text = value; });
+          else {
+            const attachment = document.createElement('div');
+            attachment.textContent = part.name || part.filename || (part.type === 'image_url' ? '画像' : '添付ファイル');
+            label.appendChild(attachment);
+          }
+        }
+      } else textInput(message.content, value => { message.content = value; });
+      conversation.appendChild(label);
+    }
+    messages.forEach(renderMessage);
+    root.appendChild(conversation);
+    if (!access.readOnly) {
+      const add = document.createElement('button');
+      add.type = 'button'; add.className = 'gb-btn'; add.textContent = 'メッセージを追加';
+      add.addEventListener('click', () => {
+        const message = { role: 'user', content: '', id: crypto.randomUUID() };
+        messages.push(message); renderMessage(message); schedule();
+        conversation.lastElementChild.querySelector('textarea').focus();
+      });
+      root.appendChild(add);
+    }
+    const beforeUnload = event => {
+      if (!dirty) return;
+      void window.MeldexDraftRecovery?.saveDraft?.(path, serialize(), baseline);
+      void flush().catch(() => {});
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return { flush, destroy: () => { clearTimeout(timer); window.removeEventListener('beforeunload', beforeUnload); } };
+  }
+  window.MeldexTopicLinkedEditor = { mount };
+})();
+
+;
+
 /* === gb-sheet-entry-attachments.js === */
 ;
 /* gb-sheet-entry-attachments.js:
@@ -40722,13 +41064,72 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const header = document.createElement('div');
     header.className = 'meldex-entity-attachments-header';
 
-    const title = document.createElement('div');
-    title.className = 'meldex-entity-attachments-title';
-    title.innerHTML = `${_icon('link2', 14)} <span>リンクファイル</span>`;
-
-    header.appendChild(title);
-
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
+    section.classList.toggle('is-empty', attachments.length === 0);
+    const list = document.createElement('div');
+    list.className = 'meldex-entity-attachments-list';
+    list.setAttribute('role', 'tablist');
+    list.setAttribute('aria-label', 'リンクファイル');
+    if (attachments.length) header.appendChild(list);
+    const content = document.createElement('div');
+    content.className = 'meldex-entity-linked-content';
+    const editors = new Map();
+    let selectedId = '';
+    let switching = Promise.resolve(true);
+    let disposed = false;
+    const flushEditors = async () => {
+      for (const editor of editors.values()) if (await editor.flush?.() === false) return false;
+      return true;
+    };
+    section._linkedFiles = {
+      flush: async () => { await switching; return flushEditors(); },
+      dispose: async () => {
+        await switching;
+        if (!await flushEditors()) return false;
+        for (const editor of editors.values()) if (await editor.dispose?.() === false) return false;
+        disposed = true;
+        return true;
+      },
+    };
+    function selectAttachment(item) {
+      switching = switching.catch(() => false).then(async () => {
+        if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
+        if (!await flushEditors()) return false;
+        if (disposed) return false;
+        if (editors.get(item.id)?.failed) {
+          await editors.get(item.id).dispose();
+          editors.delete(item.id);
+          Array.from(content.children).find(pane => pane.dataset.attachmentId === item.id)?.remove();
+        }
+        const previous = editors.get(selectedId);
+        previous?.deactivate?.();
+        if (!editors.has(item.id)) {
+          const pane = document.createElement('div');
+          pane.className = 'meldex-entity-linked-pane';
+          pane.setAttribute('role', 'tabpanel');
+          pane.setAttribute('aria-label', item.name || item.path);
+          pane.dataset.attachmentId = item.id;
+          content.appendChild(pane);
+          const editor = window.MeldexTopicLinkedEditor.mount(pane, item, entryPath, options);
+          editors.set(item.id, editor);
+          await editor.ready;
+        }
+        selectedId = item.id;
+        section.dataset.selectedAttachment = selectedId;
+        list.querySelectorAll('[role="tab"]').forEach(tab => {
+          const selected = tab.dataset.attachmentId === selectedId;
+          tab.setAttribute('aria-selected', String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+        editors.get(selectedId)?.activate?.();
+        return true;
+      }).catch(error => {
+        if (typeof showStatus === 'function') showStatus('リンク先を開けませんでした: ' + (error.message || error), true);
+        return false;
+      });
+      return switching;
+    }
 
     if (!options.readOnly) {
       const addContainer = document.createElement('div');
@@ -40746,42 +41147,61 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
       fileInput.multiple = true;
+      fileInput.dataset.e2eId = 'entity-attachment-file-input';
       fileInput.style.display = 'none';
 
-      fileInput.addEventListener('change', async (e) => {
-        const files = Array.from(e.target.files || []);
+      async function uploadFiles(files) {
         if (files.length === 0) return;
+        if (options.beforeMutation && !await options.beforeMutation()) return;
+        let count = 0;
+        let selectedId;
         for (const file of files) {
           try {
             const formData = new FormData();
             formData.append('entry_path', entryPath);
             formData.append('file', file);
             formData.append('mode', 'move');
-            await apiPostForm('/sheet-entry/upload-intake', formData);
+            const result = await apiPostForm('/sheet-entry/upload-intake', formData);
+            if (!result?.ok) throw new Error('ファイルの保存を確認できませんでした');
+            count += 1;
+            selectedId = result.attachment?.id;
           } catch (err) {
             if (typeof showStatus === 'function') showStatus('リンクの追加に失敗しました: ' + (err.message || err), true);
           }
         }
-        if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
-        if (typeof options.onReload === 'function') options.onReload();
+        if (count && typeof showStatus === 'function') showStatus(`${count}件のファイルをリンクしました`);
+        if (count && typeof options.onReload === 'function') await options.onReload(selectedId);
+      }
+      fileInput.addEventListener('change', async (e) => {
+        try { await uploadFiles(Array.from(e.target.files || [])); }
+        catch (error) { if (typeof showStatus === 'function') showStatus('リンクの追加に失敗しました: ' + (error.message || error), true); }
+        finally { fileInput.value = ''; }
       });
+      section._uploadLinkedFiles = uploadFiles;
 
       async function handleCreateNew(type, defaultLabel) {
         const label = prompt(`新規${defaultLabel}の名前を入力してください:`, defaultLabel);
         if (label == null) return;
+        addBtn.disabled = true;
         try {
+          if (options.beforeMutation && !await options.beforeMutation()) throw new Error('未保存の編集を保存できませんでした');
+          // 列の編集でもrevisionは進む。追加は最新の本文・既存リンクを保ったまま行う。
+          const current = typeof apiFetch === 'function'
+            ? await apiFetch('/entity?path=' + encodeURIComponent(entryPath)) : data;
           const res = await apiPost('/sheet-entry/create-file', {
             entry_path: entryPath,
             type: type,
             label: label.trim() || defaultLabel,
-            expected_revision: data?.revision != null ? data.revision : undefined,
+            expected_revision: current?.revision != null ? current.revision : undefined,
           });
           if (res?.ok) {
             if (typeof showStatus === 'function') showStatus(`「${label}」を作成してリンクしました`);
-            if (typeof options.onReload === 'function') options.onReload();
+            if (typeof options.onReload === 'function') await options.onReload(res.attachment?.id);
           }
         } catch (err) {
           if (typeof showStatus === 'function') showStatus('新規作成に失敗しました: ' + (err.message || err), true);
+        } finally {
+          addBtn.disabled = false;
         }
       }
 
@@ -40858,6 +41278,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
 
         addContainer.appendChild(menu);
+        if (typeof positionPopup === 'function') positionPopup(menu, addBtn.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+        if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
       }
 
       addBtn.addEventListener('click', showAddMenu);
@@ -40868,15 +41290,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     section.appendChild(header);
 
-    const list = document.createElement('div');
-    list.className = 'meldex-entity-attachments-list';
-
-    if (attachments.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'meldex-entity-attachments-empty';
-      empty.textContent = 'リンクファイルはありません（ファイルをドロップしてリンク）';
-      list.appendChild(empty);
-    } else {
+    if (attachments.length) {
       attachments.forEach((item) => {
         const row = document.createElement('div');
         row.className = 'meldex-entity-attachment-item';
@@ -40886,13 +41300,30 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         iconBox.className = 'meldex-entity-attachment-icon';
         iconBox.innerHTML = _icon(getAttachmentIcon(item.kind, item.name), 14);
 
-        const nameSpan = document.createElement('span');
+        const nameSpan = document.createElement('button');
+        nameSpan.type = 'button';
         nameSpan.className = 'meldex-entity-attachment-name';
+        nameSpan.setAttribute('role', 'tab');
+        nameSpan.setAttribute('aria-selected', 'false');
+        nameSpan.dataset.allowReadonly = '1';
+        nameSpan.dataset.attachmentId = item.id;
+        nameSpan.tabIndex = -1;
         nameSpan.textContent = item.name || item.path.split('/').pop();
-        nameSpan.title = 'クリックして開く: ' + (item.path || '');
+        nameSpan.title = item.path || '';
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
-          openAttachment(item, entryPath);
+          selectAttachment(item);
+        });
+        nameSpan.addEventListener('keydown', event => {
+          const index = attachments.indexOf(item);
+          let next;
+          if (event.key === 'ArrowRight') next = attachments[(index + 1) % attachments.length];
+          if (event.key === 'ArrowLeft') next = attachments[(index + attachments.length - 1) % attachments.length];
+          if (event.key === 'Home') next = attachments[0];
+          if (event.key === 'End') next = attachments[attachments.length - 1];
+          if (!next) return;
+          event.preventDefault();
+          selectAttachment(next).then(ok => { if (ok) list.querySelectorAll('[role="tab"]').forEach(tab => { if (tab.dataset.attachmentId === next.id) tab.focus(); }); });
         });
 
         const sizeSpan = document.createElement('span');
@@ -40901,7 +41332,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
         row.appendChild(iconBox);
         row.appendChild(nameSpan);
-        row.appendChild(sizeSpan);
 
         if (!options.readOnly) {
           const delBtn = document.createElement('button');
@@ -40919,11 +41349,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
               : `リンク「${targetName}」を外しますか？（リンク先ファイルは削除されません）`;
             if (!confirm(question)) return;
             try {
+              if (options.beforeMutation && !await options.beforeMutation()) return;
+              const current = typeof apiFetch === 'function' ? await apiFetch('/entity?path=' + encodeURIComponent(entryPath)) : data;
               const res = await apiPost('/sheet-entry/detach', {
                 entry_path: entryPath,
                 attachment_id: item.id,
                 delete_file: item.mode !== 'link',
-                expected_revision: data?.revision != null ? data.revision : undefined,
+                expected_revision: current?.revision != null ? current.revision : undefined,
               });
               if (res?.ok) {
                 if (res.delete_warning) {
@@ -40937,7 +41369,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
                     showStatus(deletesLinkedFile ? 'リンク先ファイルを削除しました' : 'リンクを外しました');
                   }
                 }
-                if (typeof options.onReload === 'function') options.onReload();
+                if (typeof options.onReload === 'function') await options.onReload();
               }
             } catch (err) {
               if (typeof showStatus === 'function') showStatus('リンクを外せませんでした: ' + (err.message || err), true);
@@ -40967,21 +41399,16 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         section.classList.remove('gb-attachment-dropzone-active');
         const files = Array.from(e.dataTransfer.files || []);
         if (files.length > 0) {
-          for (const file of files) {
-            const formData = new FormData();
-            formData.append('entry_path', entryPath);
-            formData.append('file', file);
-            formData.append('mode', e.altKey ? 'link' : 'move');
-            await apiPostForm('/sheet-entry/upload-intake', formData);
-          }
-          if (typeof showStatus === 'function') showStatus(`${files.length}件のファイルをリンクしました`);
-          if (typeof options.onReload === 'function') options.onReload();
+          try { await section._uploadLinkedFiles(files); }
+          catch (error) { if (typeof showStatus === 'function') showStatus('リンクの追加に失敗しました: ' + (error.message || error), true); }
         }
       });
     }
 
-    section.appendChild(list);
+    if (attachments.length) section.appendChild(content);
     container.appendChild(section);
+    const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
+    if (initial) selectAttachment(initial);
     return section;
   }
 
@@ -41030,11 +41457,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
    * FormDataをPOSTするヘルパー。
    */
   async function apiPostForm(endpoint, formData) {
-    const url = '/api' + (endpoint.startsWith('/') ? endpoint : '/' + endpoint);
+    const route = endpoint.startsWith('/') ? endpoint : '/' + endpoint;
+    const url = '/api' + route;
     const headers = {};
     if (typeof LOCAL_API_TOKEN !== 'undefined' && LOCAL_API_TOKEN) {
       headers['Authorization'] = 'Bearer ' + LOCAL_API_TOKEN;
     }
+    // 通常のAPI経路で現在の編集者・デバイスのロック情報も送る。
+    // FormDataのContent-Type（boundary）はブラウザに設定させる。
+    if (typeof apiFetch === 'function') return apiFetch(route, { method: 'POST', headers, body: formData });
     const response = await fetch(url, {
       method: 'POST',
       headers,
@@ -41129,11 +41560,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (!frontmatterLite) throw new Error('Cloud frontmatter lite が読み込まれていません');
 
     const normMethod = String(method || 'GET').toUpperCase();
+    const entryDocuments = window.__MeldexPwaDataAccessInternals?.sheetEntryAttachmentDocument;
+    const readEntryDocument = async path => (await entryDocuments?.read?.(provider, path))
+      || frontmatterLite.readFrontmatter(provider, path);
+    const writeEntryDocument = async (path, frontmatter, textBody, expectedRevision) => {
+      if (await entryDocuments?.patch?.(provider, path, frontmatter, expectedRevision)) return;
+      await provider.writeText(path, frontmatterLite.frontmatterText(frontmatter, textBody));
+    };
 
     if (pathname === '/sheet-entry/attachments' && normMethod === 'GET') {
       const entryPath = url.searchParams.get('entry_path') || url.searchParams.get('path');
       if (!entryPath) throw _httpError(400, 'entry_path は必須です');
-      const { frontmatter } = await frontmatterLite.readFrontmatter(provider, entryPath);
+      const { frontmatter } = await readEntryDocument(entryPath);
       const attachments = Array.isArray(frontmatter?.entry_attachments) ? frontmatter.entry_attachments : [];
       const resolved = [];
       for (const item of attachments) {
@@ -41163,7 +41601,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!attachmentId) throw _httpError(400, 'attachment_id は必須です');
 
       return _withEntryLock(entryPath, async () => {
-        const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
+        const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
         const currentRevision = Number(frontmatter?.meldex_revision || 0);
         if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
           throw _httpError(409, 'このトピックは他の端末で更新されています');
@@ -41213,7 +41651,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         };
 
         // メタデータ/CAS書き込みを先に実行（失敗時にファイルを失わない）
-        await provider.writeText(entryPath, frontmatterLite.frontmatterText(updated, textBody));
+        await writeEntryDocument(entryPath, updated, textBody, currentRevision);
 
         // メタデータ保存成功後に物理削除を実行
         if (normTargetToDelete && targetExists && typeof provider.deletePath === 'function') {
@@ -41273,7 +41711,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       };
       itemType = typeAlias[itemType] || itemType;
 
-      const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
+      const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
         throw _httpError(409, 'このトピックは他の端末で更新されています');
@@ -41379,7 +41817,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       };
 
       try {
-        await provider.writeText(entryPath, frontmatterLite.frontmatterText(updated, textBody));
+        await writeEntryDocument(entryPath, updated, textBody, currentRevision);
       } catch (err) {
         let compensated = false;
         try {
@@ -41482,7 +41920,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!entryPath) throw _httpError(400, 'entry_path は必須です');
       if (!sourcePath) throw _httpError(400, 'source_path は必須です');
 
-      const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
+      const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
         throw _httpError(409, 'このトピックは他の端末で更新されています');
@@ -41523,7 +41961,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         meldex_revision: currentRevision + 1,
       };
 
-      await provider.writeText(entryPath, frontmatterLite.frontmatterText(updated, textBody));
+      await writeEntryDocument(entryPath, updated, textBody, currentRevision);
       return {
         ok: true,
         entry_path: entryPath,
@@ -57061,7 +57499,12 @@ if (typeof window !== 'undefined') {
     if (typeof apiPut !== 'function') return;
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
     await clearDraft(item.path, item.storageKey);
-    if (typeof openPage === 'function') {
+    const format = window.MeldexDocumentIdentity?.formatForPath?.(item.path, item.content);
+    if ((format === 'scenario' || /\.(?:mel-scenario|scriptnote\.json)$/i.test(item.path)) && typeof openScenarioInScriptNote === 'function') {
+      await openScenarioInScriptNote(item.path, _fileLabel(item.path));
+    } else if ((format === 'board' || /\.mel-board$/i.test(item.path)) && typeof openBoard === 'function') {
+      await openBoard(_fileLabel(item.path), item.path);
+    } else if (typeof openPage === 'function') {
       await openPage(_fileLabel(item.path).replace(/\.md$/i, ''), item.path);
       const pc = document.getElementById('page-content');
       if (pc && pc.dataset.path === item.path) pc.dataset.lastSavedEtag = res.etag || pc.dataset.lastSavedEtag || '';

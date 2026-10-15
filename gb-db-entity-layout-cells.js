@@ -200,7 +200,8 @@ function _elApplyCellStyle(el, cell, ctx) {
 /* 長文の自動フィット（要望10）: セルに収まらない場合、切り詰めずにフォントサイズを
    段階的に縮小して収める。下限(8px)でも収まらない場合はスクロール（CSS側のoverflow）が最終手段。 */
 function _elAutoFitCellText(el, cell) {
-  if (cell.style?.autoFit === false) return;
+  // 既定では周囲のUIと同じ文字サイズを保ち、長文はスクロールする。
+  if (cell.style?.autoFit !== true) return;
   if (cell.type !== 'field' && cell.type !== 'label') return;
   const body = el.querySelector('.el-cell-body');
   if (!body || !body.isConnected || body.clientHeight === 0) return;
@@ -458,7 +459,7 @@ function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
   }));
   const textStyleBtn = document.createElement('button');
   textStyleBtn.type = 'button';
-  textStyleBtn.className = 'gb-btn gb-btn-sm';
+  textStyleBtn.className = 'gb-btn';
   textStyleBtn.textContent = '文字書式を開く';
   popup.appendChild(textStyleBtn);
   const close = _elAttachPopupCommon(popup, anchorBtn);
@@ -532,7 +533,7 @@ function _elShowThemePopup(anchorBtn, ctx) {
 
   const resetBtn = document.createElement('button');
   resetBtn.type = 'button';
-  resetBtn.className = 'gb-btn gb-btn-sm';
+  resetBtn.className = 'gb-btn';
   resetBtn.dataset.e2eId = 'entity-layout-theme-reset';
   resetBtn.textContent = 'アプリのテーマに合わせる';
   resetBtn.addEventListener('click', () => {
@@ -564,7 +565,7 @@ function _elEditToolbarExtraItems(ctx) {
   const make = (e2eId, icon, label, onClick, popup) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'gb-btn gb-btn-sm';
+    btn.className = 'gb-btn';
     btn.dataset.e2eId = e2eId;
     if (popup) btn.setAttribute('aria-haspopup', popup);
     btn.innerHTML = (typeof lucide === 'function' ? lucide(icon, 13) : '') + '<span>' + label + '</span>';

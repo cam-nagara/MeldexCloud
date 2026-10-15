@@ -1,3 +1,7 @@
+    } else if (index < 0) result.status = 'unchanged';
+    else {
+      next.splice(index, 1);
+      result.status = 'removed';
     }
     return result;
   });
@@ -132,6 +136,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return items;
     }
 
+    function _pwaFileTransport() {
+      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
+    }
+
     async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
       let meta = writeMeta?.meta || writeMeta || null;
       if (!meta?.id && typeof provider?.getMetadata === 'function') {
@@ -156,7 +164,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         : '';
       return {
         etag: token,
-        transport_revision: { transport: 'dropbox-rev', token },
+        transport_revision: { transport: _pwaFileTransport(), token },
         ...(documentId ? {
           document_id: documentId,
           document_key: `document:${documentId}`,
@@ -182,27 +190,32 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
 
     function _dropboxTransportRevisionToken(bodyValue) {
+      const expectedTransport = _pwaFileTransport();
       const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
       let transport = '';
       let token = '';
       if (revision && typeof revision === 'object') {
-        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        transport = String(revision.transport || revision.kind || expectedTransport);
         token = String(revision.token || revision.revision || revision.etag || '').trim();
       } else {
         const raw = String(revision || '').trim();
         if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('browser-local:')) {
+          transport = 'browser-local';
+          token = raw.slice('browser-local:'.length);
+        }
         else if (raw.startsWith('dropbox-rev:')) {
           transport = 'dropbox-rev';
           token = raw.slice('dropbox-rev:'.length);
         } else {
-          transport = 'dropbox-rev';
+          transport = expectedTransport;
           token = raw;
         }
       }
-      if (transport && transport !== 'dropbox-rev') {
-        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+      if (transport && transport !== expectedTransport) {
+        const error = new Error('異なる保存経路のrevisionは使用できません');
         error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
-        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
         throw error;
       }
       return token;
@@ -885,16 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const newPath = _joinPath(parentPath, newName);
         if (newPath !== oldPath && await _pathExists(provider, newPath)) throw new Error(`既に存在: ${newName}`);
         const annotationPlan = newPath !== oldPath
-          ? await _prepareAnnotationsForPathMutation(provider, {
-            action: 'rename', oldPath, newPath, isFolder: true,
-          }) : [];
-        const warnings = [];
-        if (newPath !== oldPath) {
-          await _moveEntry(provider, oldPath, newPath);
-          await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, newPath, true));
-          await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-            _relocateCsvSidecars(provider, oldPath, newPath, true, false)
-          ));
-        }
-        const oldNotePath = _joinPath(newPath, sourceName + '.md');
-        const newNotePath = _joinPath(newPath, newName + '.md');

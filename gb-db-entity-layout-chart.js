@@ -85,7 +85,7 @@ function _elRenderRadarChart(axes, w, h, options = {}) {
   const accent = typeof _chartThemeAccentColor === 'function' ? _chartThemeAccentColor() : '#7c9cff';
   const fg2 = options.mutedColor || 'rgba(128,128,128,0.55)';
   if (list.length < 3) {
-    svg.appendChild(svgText(w / 2, h / 2, '軸を3つ以上選んでください', { fill: fg2, fontSize: 12, anchor: 'middle' }));
+    svg.appendChild(svgText(w / 2, h / 2, '軸を3つ以上選んでください', { fill: fg2, fontSize: 13, anchor: 'middle' }));
     return svg;
   }
   const cx = w / 2;
@@ -127,12 +127,12 @@ function _elRenderRadarChart(axes, w, h, options = {}) {
       const [rawX, y] = pointAt(i, 1.06 + 10 / radius);
       const anchor = Math.abs(rawX - cx) < radius * 0.25 ? 'middle' : (rawX < cx ? 'end' : 'start');
       const label = String(axis.label).slice(0, 8) + (options.showValues === false ? '' : ' ' + (Math.round(Number(axis.value || 0) * 10) / 10));
-      const approxWidth = label.length * 6.5;
+      const approxWidth = label.length * 8.5;
       let x = rawX;
       if (anchor === 'end') x = Math.max(approxWidth, rawX);
       else if (anchor === 'start') x = Math.min(w - approxWidth, rawX);
       else x = Math.max(approxWidth / 2, Math.min(w - approxWidth / 2, rawX));
-      svg.appendChild(svgText(x, y + 3, label, { fill: 'currentColor', fontSize: 10, anchor }));
+      svg.appendChild(svgText(x, y + 3, label, { fill: 'currentColor', fontSize: 13, anchor }));
     });
   }
   return svg;
@@ -354,7 +354,7 @@ function _elShowChartCellPopup(anchorBtn, ctx, existingCell) {
 
   const applyBtn = document.createElement('button');
   applyBtn.type = 'button';
-  applyBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  applyBtn.className = 'gb-btn gb-btn-primary primary';
   applyBtn.dataset.e2eId = 'entity-layout-chart-apply';
   applyBtn.textContent = existingCell ? '適用' : '追加';
   applyBtn.addEventListener('click', () => {

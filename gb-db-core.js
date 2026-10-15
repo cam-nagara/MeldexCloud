@@ -722,6 +722,17 @@ function _entityDefaultName(baseName, index) {
 
 const _dbPendingEntityCreates = new Map();
 
+async function waitForPendingDbEntityCreates(dbPath) {
+  const target = _dbNormalizePath(dbPath || '');
+  for (;;) {
+    const pending = [..._dbPendingEntityCreates.entries()]
+      .filter(([key, value]) => !value.settled && (!target || key.startsWith(target + '\n')))
+      .map(([, value]) => value.promise);
+    if (!pending.length) return true;
+    await Promise.all(pending);
+  }
+}
+
 function _dbPendingEntityCreateKey(dbPath, entityName) {
   return _dbNormalizePath(dbPath) + '\n' + String(entityName || '');
 }

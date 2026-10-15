@@ -66,13 +66,6 @@
     return el;
   }
 
-  function openChat(path) {
-    if (typeof window.openEntityChatForPath === 'function') return window.openEntityChatForPath(path);
-    if (typeof window.openEntityAiChat === 'function') return window.openEntityAiChat(path);
-    if (typeof openFileChat === 'function') return openFileChat(path);
-    if (typeof showStatus === 'function') showStatus('チャットを開けません', true);
-  }
-
   function stripIds(root, surface) {
     root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
     // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
@@ -188,6 +181,8 @@
       data: options.data || null,
       staticContent: false,
       attachmentRefreshSeq: 0,
+      titleSaving: null,
+      titleFailed: false,
     };
 
     async function save() {
@@ -216,19 +211,24 @@
       clearTimeout(state.timer);
       state.timer = 0;
       if (state.saving) await state.saving.catch(() => {});
+      if (state.titleSaving && !await state.titleSaving) return false;
+      if (state.titleFailed) return false;
+      const links = root.querySelector('.meldex-entity-attachments-section');
+      if (links?._linkedFiles && !await links._linkedFiles.flush()) return false;
       return save();
     }
 
     async function dispose() {
       if (state.disposed) return true;
-      await flush().catch(() => {});
+      if (!await flush().catch(() => false)) return false;
+      if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
       state.disposed = true;
       clearTimeout(state.timer);
       if (root._meldexEntityDetailController === controller) delete root._meldexEntityDetailController;
       return true;
     }
 
-    async function refreshAttachmentsOnly() {
+    async function refreshAttachmentsOnly(selectedId) {
       const refreshSeq = ++state.attachmentRefreshSeq;
       try {
         const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true });
@@ -241,6 +241,7 @@
           || typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection !== 'function') {
           return false;
         }
+        if (currentSection._linkedFiles && !await currentSection._linkedFiles.dispose()) return false;
         const nextSectionData = {
           ...(state.data || {}),
           entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
@@ -251,6 +252,8 @@
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
           onReload: refreshAttachmentsOnly,
+          beforeMutation: flush,
+          selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
         });
         if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
           return false;
@@ -262,20 +265,19 @@
         // 場合まで本文側のCAS基準を進めると、その変更を次回保存で上書きできて
         // しまう。取得本文が現在の保存済みbaselineと一致し、保存処理も進行中で
         // ない時だけ、添付操作によるrevision更新として追随する。
-        const bodyBaselineUnchanged = !!state.editor
-          && !state.saving
+        const bodyBaselineUnchanged = !state.saving
           && refreshed?.page_content != null
-          && String(refreshed.page_content) === String(state.editor.dataset.lastSavedMd || '');
+          && String(refreshed.page_content) === String(state.editor?.dataset.lastSavedMd || '');
         state.data = {
           ...(state.data || {}),
           entry_attachments: nextSectionData.entry_attachments,
           ...(bodyBaselineUnchanged && refreshed?.revision != null ? { revision: refreshed.revision } : {}),
           ...(bodyBaselineUnchanged && refreshed?.freetext_etag ? { freetext_etag: refreshed.freetext_etag } : {}),
         };
-        if (bodyBaselineUnchanged && refreshed?.revision != null) {
+        if (bodyBaselineUnchanged && state.editor && refreshed?.revision != null) {
           state.editor.dataset.lastSavedRevision = String(refreshed.revision);
         }
-        if (bodyBaselineUnchanged && refreshed?.freetext_etag) {
+        if (bodyBaselineUnchanged && state.editor && refreshed?.freetext_etag) {
           state.editor.dataset.lastSavedEtag = String(refreshed.freetext_etag);
         }
         if (typeof replaceIcons === 'function') replaceIcons();
@@ -332,6 +334,55 @@
       const title = document.createElement('h2');
       title.className = 'meldex-entity-detail-title';
       title.textContent = entityName(data, state.path);
+      title.dataset.e2eId = 'entity-detail-title';
+      title.contentEditable = access.readOnly ? 'false' : 'plaintext-only';
+      title.setAttribute('role', 'textbox');
+      title.setAttribute('aria-label', 'トピック名');
+      title.setAttribute('aria-multiline', 'false');
+      let savedTitle = title.textContent;
+      let cancellingTitle = false;
+      title.addEventListener('keydown', event => {
+        if (event.isComposing) return;
+        if (event.key === 'Enter' || event.key === 'Escape') {
+          event.preventDefault();
+          if (event.key === 'Escape') { cancellingTitle = true; title.textContent = savedTitle; state.titleFailed = false; }
+          title.blur();
+        }
+      });
+      title.addEventListener('blur', () => {
+        const next = title.textContent.replace(/[\r\n]+/g, ' ').trim();
+        if (cancellingTitle || !next || next === savedTitle || root.dataset.readOnly === '1') {
+          cancellingTitle = false;
+          state.titleFailed = false;
+          title.textContent = savedTitle;
+          return;
+        }
+        title.contentEditable = 'false';
+        state.titleFailed = false;
+        state.titleSaving = (async () => {
+          try {
+            if (!await save()) throw new Error('本文を保存できませんでした');
+            const renamed = await window.GbDbEntryIdentity.rename({
+              path: state.path, dbPath: parent, oldName: savedTitle, newName: next,
+              entryId: state.data?.entry_id || state.data?.id, ctx: options.ctx,
+            });
+            if (renamed?.ok === false) throw new Error('名前を変更できませんでした');
+            savedTitle = next;
+            state.data.entity = next;
+            // 表示名変更は同じ論理パス・IDを維持する。保存基準だけ取り直す。
+            await refreshAttachmentsOnly();
+            return true;
+          } catch (error) {
+            state.titleFailed = true;
+            if (typeof showStatus === 'function') showStatus('トピック名の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
+            return false;
+          } finally {
+            title.textContent = state.titleFailed ? next : savedTitle;
+            title.contentEditable = root.dataset.readOnly === '1' ? 'false' : 'plaintext-only';
+            state.titleSaving = null;
+          }
+        })();
+      });
       if (state.surface === 'main') title.id = 'entity-title';
       root.appendChild(title);
 
@@ -341,7 +392,6 @@
       // 旧・専用コピー用ボタンは廃止した（シート表示・ビュー状態・エントリ操作の改善計画
       // 2026-08-04）。列一覧内の文字選択に応じたコピーポップアップ（gb-entity-props-selection.js）
       // に置き換わったため、専用ボタンは不要になった。
-      actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
       const postId = xPostId(data);
       if (postId && typeof window.reimportXBookmarkPost === 'function') {
         actions.appendChild(button('Xからこのポストを再インポート', 'refreshCw', async () => {
@@ -359,7 +409,7 @@
           }
         }));
       }
-      root.appendChild(actions);
+      if (actions.childElementCount) root.appendChild(actions);
 
       const grid = document.createElement('div');
       grid.className = 'meldex-entity-detail-props';
@@ -380,6 +430,7 @@
           readOnly: access.readOnly,
           surface: state.surface,
           onReload: refreshAttachmentsOnly,
+          beforeMutation: flush,
         });
       }
 
@@ -413,6 +464,14 @@
       }
 
       const raw = String(data?.page_content || '');
+      // 旧トピックの本文は保全する。空のトピックには暗黙のノートを作らない。
+      if (!raw.trim()) {
+        if (state.surface !== 'main') stripIds(root, state.surface);
+        applyReadOnly(root, access.readOnly, access.reason);
+        delete root.dataset.loadFailed;
+        if (typeof replaceIcons === 'function') replaceIcons();
+        return true;
+      }
       const editor = document.createElement('div');
       editor.className = 'meldex-entity-detail-editor';
       editor.dataset.e2eId = 'entity-detail-editor';
@@ -435,8 +494,7 @@
       root.appendChild(toolbar);
       root.appendChild(editor);
 
-      // 空のトピック本文も通常の編集欄として維持する。新規ファイル作成は
-      // 「リンクを追加」メニューへ集約し、上部に別の作成ボタンを増やさない。
+      // 新規ファイル作成は「リンクを追加」メニューへ集約する。
 
       editor.addEventListener('click', event => {
         const link = event.target.closest?.('.auto-link');
@@ -469,9 +527,24 @@
       return true;
     }
 
-    const controller = { get editor() { return state.editor; }, flush, dispose, rerender: render, ready: null };
-    root._meldexEntityDetailController = controller;
-    controller.ready = Promise.resolve(previousDispose).catch(() => false).then(render).catch(error => {
+    async function rerender() {
+      try {
+        if (!await flush()) return false;
+        const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
+        if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
+        state.data = refreshed;
+        return render();
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus('トピックを再表示できませんでした: ' + (error.userMessage || error.message || error), true);
+        return false;
+      }
+    }
+    const controller = { get editor() { return state.editor; }, flush, dispose, rerender, ready: null };
+    controller.ready = Promise.resolve(previousDispose).catch(() => false).then(saved => {
+      if (saved === false) return false;
+      root._meldexEntityDetailController = controller;
+      return render();
+    }).catch(error => {
       if (!state.disposed) {
         root.replaceChildren();
         root.dataset.loadFailed = '1';

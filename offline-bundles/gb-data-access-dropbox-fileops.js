@@ -2509,6 +2509,10 @@ async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
   const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
+  if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
+    const browserMeta = await provider.getMetadata(path);
+    return String(browserMeta?.revision || '');
+  }
   const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
   const statMeta = stat?.meta || {};
   const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
@@ -3724,6 +3728,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return items;
     }
 
+    function _pwaFileTransport() {
+      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
+    }
+
     async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
       let meta = writeMeta?.meta || writeMeta || null;
       if (!meta?.id && typeof provider?.getMetadata === 'function') {
@@ -3748,7 +3756,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         : '';
       return {
         etag: token,
-        transport_revision: { transport: 'dropbox-rev', token },
+        transport_revision: { transport: _pwaFileTransport(), token },
         ...(documentId ? {
           document_id: documentId,
           document_key: `document:${documentId}`,
@@ -3774,27 +3782,32 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
 
     function _dropboxTransportRevisionToken(bodyValue) {
+      const expectedTransport = _pwaFileTransport();
       const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
       let transport = '';
       let token = '';
       if (revision && typeof revision === 'object') {
-        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        transport = String(revision.transport || revision.kind || expectedTransport);
         token = String(revision.token || revision.revision || revision.etag || '').trim();
       } else {
         const raw = String(revision || '').trim();
         if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('browser-local:')) {
+          transport = 'browser-local';
+          token = raw.slice('browser-local:'.length);
+        }
         else if (raw.startsWith('dropbox-rev:')) {
           transport = 'dropbox-rev';
           token = raw.slice('dropbox-rev:'.length);
         } else {
-          transport = 'dropbox-rev';
+          transport = expectedTransport;
           token = raw;
         }
       }
-      if (transport && transport !== 'dropbox-rev') {
-        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+      if (transport && transport !== expectedTransport) {
+        const error = new Error('異なる保存経路のrevisionは使用できません');
         error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
-        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
         throw error;
       }
       return token;
