@@ -1776,6 +1776,11 @@
       throw new Error(`不正なタイプ: ${type}`);
     }
 
+    if (pathname === '/quick-memo/config' && method === 'GET') return _quickMemoTarget(await _requirePwaProvider('read'));
+    if (pathname === '/quick-memo/files' && method === 'GET') return _quickMemoFiles(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/quick-memo/file' && ['GET', 'POST', 'PUT'].includes(method)) return _quickMemoFile(
+      await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite'), url.searchParams.get('path') || '', method, body || {},
+    );
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
     if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '', signal);
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

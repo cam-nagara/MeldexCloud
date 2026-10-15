@@ -674,6 +674,10 @@
       });
     }
 
+    invalidateReadCache(relativePath) {
+      this._forgetMeta(relativePath);
+    }
+
     _forgetMeta(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       this._metaCache.delete(normalized);

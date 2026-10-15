@@ -4,7 +4,7 @@
   const ACTIVE_ROOT_KEY = 'meldex-standalone-cloud-active-root';
   const LAST_PATH_KEY = 'meldex-standalone-cloud-last-path';
   const WRITE_ENDPOINTS = new Set([
-    '/file', '/upload-file', '/outliner/add', '/outliner/rename',
+    '/file', '/quick-memo/file', '/upload-file', '/outliner/add', '/outliner/rename',
     '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
     '/outliner/duplicate', '/outliner/save-as', '/outliner/move',
   ]);
@@ -532,6 +532,7 @@
   }
 
   function _lockPaths(endpoint, path, body) {
+    if (endpoint === '/quick-memo/file') return [dirname(_pathQuery(path)), _pathQuery(path)];
     if (endpoint === '/file') return [_pathQuery(path)];
     if (endpoint === '/upload-file') return [joinPath(_pathQuery(path), body?.filename || body?.name || '')];
     if (endpoint === '/outliner/add') return [normalizePath(body?.parent || '')];

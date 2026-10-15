@@ -2331,6 +2331,169 @@
     return result;
   }
 
+  // Desktop と同じ登録マーカーを使う。選択中のroot直下へ別シートを作らない。
+  async function _quickMemoRoots() {
+    const registry = window.MeldexSourceFolderRegistry;
+    const roots = typeof registry.loadOutlinerRoots === 'function' ? await registry.loadOutlinerRoots()
+      : (await registry.loadRegistry({ writeIfMissing: false })).roots.map(root => registry.toOutlinerRoot(root));
+    return roots.filter(root => root && root.visible !== false && /^__dropbox_root__\/[^/]+$/.test(root.path));
+  }
+
+  function _quickMemoFolderName(folder, roots) {
+    const root = roots.find(item => item.path === folder);
+    return root?.dropboxPath ? _basename(root.dropboxPath) : _basename(folder);
+  }
+
+  async function _quickMemoScope(provider) {
+    const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+    return JSON.stringify([account?.account_id || '', provider.getVaultPath?.() || '']);
+  }
+
+  async function _quickMemoTarget(provider) {
+    const roots = await _quickMemoRoots();
+    const marked = [], legacy = [], visited = new Set();
+    const queue = roots.map(root => root.path);
+    while (queue.length) {
+      const folder = queue.shift();
+      if (visited.has(folder)) continue;
+      visited.add(folder);
+      if (visited.size > 1000) throw new Error('クイックメモの保存先を特定できません。Meldexファイルで本体のシートがあるフォルダを登録してください');
+      // 読取失敗を「存在しない」に置き換えると、別の保存先を選んでしまう。
+      const entries = await provider.listEntries(folder);
+      const noteName = _quickMemoFolderName(folder, roots) + '.md';
+      const note = entries.find(entry => entry.name === noteName && entry.kind === 'file');
+      let isSheet = false;
+      if (note) {
+        const fm = _parseFrontmatter(await provider.readText(_joinPath(folder, noteName))).frontmatter;
+        isSheet = fm.type === 'settings-db';
+        if (isSheet && fm.meldex_registry === 'quick-memo-v1') marked.push(folder);
+        else if (isSheet && _quickMemoFolderName(folder, roots) === 'クイックメモ') legacy.push(folder);
+      }
+      if (!isSheet) entries.forEach(entry => {
+        if (entry.kind === 'directory' && !/^[._]/.test(entry.name)) queue.push(_joinPath(folder, entry.name));
+      });
+    }
+    const registry = window.MeldexSourceFolderRegistry, unique = new Map();
+    for (const path of marked.length ? marked : legacy) {
+      const location = registry.resolveDropboxLocation?.(path);
+      unique.set(location ? JSON.stringify([location.namespaceKind, location.path.toLowerCase()]) : path, path);
+    }
+    const candidates = [...unique.values()];
+    if (candidates.length !== 1) {
+      throw new Error(candidates.length
+        ? 'クイックメモのシートが複数あります。Meldexファイルで本体の保存先フォルダだけを表示して再試行してください'
+        : 'Meldex本体のクイックメモシートが見つかりません。Meldexファイルで本体と同じDropboxフォルダを登録してください。メモは送信待ちに保持します');
+    }
+    const path = candidates[0], root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
+    return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+  }
+
+  async function _quickMemoFolder(provider, rawPath, file) {
+    const path = _normalizeFolderPath(rawPath);
+    const roots = await _quickMemoRoots();
+    if (String(rawPath).replace(/\\/g, '/').split('/').some(part => part === '..' || part === '.')
+      || !roots.some(root => path.startsWith(root.path + '/') || (!file && path === root.path))) {
+      throw Object.assign(new Error('登録済みDropboxフォルダ内の保存先を指定してください'), { status: 403 });
+    }
+    const folder = file ? _dirname(path) : path;
+    const name = _quickMemoFolderName(folder, roots);
+    if (file && (!/\.md$/i.test(path) || _basename(path) === name + '.md' || /^[._]/.test(_basename(path)))) {
+      throw Object.assign(new Error('クイックメモの保存先が不正です'), { status: 400 });
+    }
+    const note = _joinPath(folder, name + '.md');
+    const fm = _parseFrontmatter(await provider.readText(note)).frontmatter;
+    if (fm.type !== 'settings-db') throw new Error('保存先のシートを確認できません');
+    return { path, folder, name, frontmatter: fm };
+  }
+
+  async function _quickMemoRecord(provider, path, store) {
+    const row = store?.rows?.[_basename(path)];
+    if (row?.deleted) throw Object.assign(new Error('このメモは削除されています。入力を保持しています'), { status: 409 });
+    let content = row ? _frontmatterText(row.frontmatter, row.body) : '', legacyEtag = '';
+    if (!row) {
+      const stat = await provider.statPath(path);
+      if (!stat) return null;
+      content = await provider.readText(path);
+      legacyEtag = String(stat.meta?.rev || (await provider.getMetadata?.(path))?.rev || '');
+    }
+    const parsed = _parseFrontmatter(content);
+    if (parsed.frontmatter.quick_memo !== true || !parsed.frontmatter.quick_memo_id) {
+      throw Object.assign(new Error('保存先は別のメモです。入力を保持しています'), { status: 409 });
+    }
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+    const etag = 'quick-memo:' + [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join('');
+    return { path, content, etag, parsed, legacy_etag: legacyEtag };
+  }
+
+  async function _quickMemoFile(provider, rawPath, method, body) {
+    const scope = await _quickMemoScope(provider);
+    const { path, folder, frontmatter: sheet } = await _quickMemoFolder(provider, rawPath, true);
+    if (method !== 'GET') {
+      await _requireUnlocked(provider, folder, { action: 'quick-memo-save' });
+      await _requireUnlocked(provider, path, { action: 'quick-memo-save' });
+    }
+    const store = await _readSheetStoreMaybe(provider, folder);
+    const current = await _quickMemoRecord(provider, path, store);
+    if (method === 'GET') {
+      if (!current) throw Object.assign(new Error('not_found'), { status: 404 });
+      return { path, content: current.content, etag: current.etag, legacy_etag: current.legacy_etag };
+    }
+    if ((body.create_only && current) || (current && body.if_match_etag !== current.etag)
+      || (!current && !body.create_only)) {
+      throw Object.assign(new Error('クイックメモが別の画面で変更されています。入力を保持して再読み込みしてください'), { status: 409 });
+    }
+    const parsed = _parseFrontmatter(String(body.content || ''));
+    const fm = parsed.frontmatter;
+    if (fm.type !== 'settings-entry' || fm.quick_memo !== true || !fm.quick_memo_id
+      || (current && current.parsed.frontmatter.quick_memo_id !== fm.quick_memo_id)) {
+      throw Object.assign(new Error('クイックメモの識別情報が一致しません'), { status: 409 });
+    }
+    const previousProperties = current?.parsed.frontmatter.properties || {};
+    const changedProperties = [...new Set([...Object.keys(previousProperties), ...Object.keys(fm.properties || {})])].filter(key =>
+      JSON.stringify(fm.properties[key]) !== JSON.stringify(previousProperties[key]));
+    if (changedProperties.some(key => Array.isArray(sheet.computed_props) && sheet.computed_props.includes(key))) {
+      throw Object.assign(new Error('この列は自動計算のため直接編集できません'), { status: 403, code: 'COMPUTED_PROPERTY_READONLY' });
+    }
+    if (changedProperties.some(key => sheet.property_types?.[key]?.source)) {
+      throw Object.assign(new Error('この列は自動取得のため直接編集できません'), { status: 403, code: 'IMPORT_PROPERTY_READONLY' });
+    }
+    // 物理.mdを別途作らず、本体が読む既存シート保管ファイルへ同じ行として保存する。
+    const next = store || _emptySheetStore(folder);
+    if (!store) await _assertSheetStoreMissing(provider, folder);
+    next.rows[_basename(path)] = {
+      file_name: _basename(path), name: _sheetStoreEntityName(path), path,
+      frontmatter: fm, body: parsed.body, updated: _nowIso(),
+    };
+    const history = _sharedEditHistory();
+    await _trackSharedEdit(history, provider, {
+      path, currentContent: current ? _sharedHistoryContent(history, current.parsed) : '',
+      nextContent: { frontmatter: fm, body: parsed.body },
+      actor: history?.actor?.(null, body) || null, exists: !!current,
+      snapshotPath: folder, snapshotKind: 'folder', fileKind: 'settings-entry',
+    }, async () => {
+      if (await _quickMemoScope(provider) !== scope) throw new Error('Dropboxアカウントが変わったため保存を中止しました。入力を保持しています');
+      return _writeSheetStore(provider, folder, next, { changedFileNames: [_basename(path)] });
+    });
+    const saved = await _quickMemoRecord(provider, path, next);
+    return { ok: true, path, etag: saved.etag };
+  }
+
+  async function _quickMemoFiles(provider, rawPath) {
+    const { folder, name } = await _quickMemoFolder(provider, rawPath, false);
+    const store = await _readSheetStoreMaybe(provider, folder);
+    const paths = new Set(Object.values(store?.rows || {}).filter(row => !row.deleted
+      && row.frontmatter?.quick_memo === true).map(row => _joinPath(folder, row.file_name)));
+    const entries = await provider.listEntries(folder);
+    for (const entry of entries) {
+      if (entry.kind === 'file' && /\.md$/i.test(entry.name) && !/^[._]/.test(entry.name)
+        && entry.name !== name + '.md' && !store?.rows?.[entry.name]) {
+        const path = _joinPath(folder, entry.name);
+        if (_parseFrontmatter(await provider.readText(path)).frontmatter.quick_memo === true) paths.add(path);
+      }
+    }
+    return [...paths].map(path => ({ path, name: _basename(path), kind: 'file' }));
+  }
+
   async function _listDatabases(provider) {
     const folders = await _findDatabaseFolders(provider, '', 6);
     return folders.map(({ path, kind }) => ({
@@ -6225,6 +6388,11 @@
       throw new Error(`不正なタイプ: ${type}`);
     }
 
+    if (pathname === '/quick-memo/config' && method === 'GET') return _quickMemoTarget(await _requirePwaProvider('read'));
+    if (pathname === '/quick-memo/files' && method === 'GET') return _quickMemoFiles(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/quick-memo/file' && ['GET', 'POST', 'PUT'].includes(method)) return _quickMemoFile(
+      await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite'), url.searchParams.get('path') || '', method, body || {},
+    );
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
     if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '', signal);
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

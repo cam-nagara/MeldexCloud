@@ -6,6 +6,7 @@
     'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt',
     'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form',
   ]);
+  const manualReloads = new Map();
   const LEGACY_CONTAINER_IDS = {
     board: 'bd-canvas',
     folder: 'folder-view',
@@ -164,8 +165,7 @@
     });
   }
 
-  async function reloadCurrentOpenFile(event) {
-    const current = _currentTarget(event);
+  async function _reloadCurrentOpenFile(event, current) {
     const tab = current.tab;
     if (!tab) {
       if (typeof showStatus === 'function') showStatus('再読み込みできるファイルがありません', true);
@@ -179,6 +179,17 @@
     }
     try {
       await _flushPendingEditorBeforeReload(tab?.type || '', path);
+      let importResult = null, importError = null;
+      if (event && DB_VIEW_TYPES.has(tab.type) && window.MeldexSheetImportRefresh) {
+        if (typeof showStatus === 'function') showStatus('差分を確認しています…');
+        try { importResult = await window.MeldexSheetImportRefresh.refresh(path); }
+        catch (error) { importError = error; }
+      }
+      // 取得中に別タブへ移った場合、完了した元シートへ画面を戻さない。
+      if (current.paneId && _tabFromPaneId(current.paneId)?.id !== tab.id) {
+        if (importError) throw importError;
+        return true;
+      }
       const handled = await _reloadComponent(tab) || (path ? await _reloadLegacyTab(tab, path, label, current.paneId) : false);
       if (!handled) {
         if (typeof showStatus === 'function') showStatus('この表示は再読み込み対象ではありません', true);
@@ -190,12 +201,31 @@
           { rerender: true, all: true },
         );
       }
-      if (typeof showStatus === 'function') showStatus('再読み込みしました');
+      if (importError) throw importError;
+      if (typeof showStatus === 'function') showStatus(importResult?.cancelled
+        ? '外部取得を中止し、保存済みデータを再読み込みしました'
+        : importResult ? '差分を確認し、シートを更新しました' : '再読み込みしました');
       return true;
     } catch (error) {
       if (typeof showStatus === 'function') showStatus('再読み込みに失敗: ' + (error?.message || error), true);
       return false;
     }
+  }
+
+  async function reloadCurrentOpenFile(event) {
+    const current = _currentTarget(event);
+    if (!event || !DB_VIEW_TYPES.has(current.tab?.type)) return _reloadCurrentOpenFile(event, current);
+    const key = _tabPath(current.tab);
+    if (manualReloads.has(key)) return manualReloads.get(key);
+    const button = event.target?.closest?.('button');
+    const wasDisabled = button?.disabled;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    const promise = _reloadCurrentOpenFile(event, current).finally(() => {
+      manualReloads.delete(key);
+      if (button) { button.disabled = wasDisabled; button.removeAttribute('aria-busy'); }
+    });
+    manualReloads.set(key, promise);
+    return promise;
   }
 
   window.reloadCurrentOpenFile = reloadCurrentOpenFile;

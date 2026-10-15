@@ -201,6 +201,8 @@
       const queryPath = normalizePath(request?.queryPath || '');
       if (endpoint === '/browse' && method === 'GET') return assertFolder(queryPath, 'フォルダを表示');
       if (endpoint === '/search' && method === 'GET') return assertFolder(queryPath, 'フォルダを検索');
+      if (endpoint === '/quick-memo/files' && method === 'GET') return assertFolder(queryPath, 'メモ一覧を表示');
+      if (endpoint === '/quick-memo/file') return assertFile(queryPath, { action: 'クイックメモを保存', extensions: ['.md'] });
       if (endpoint === '/file-meta' && method === 'GET') {
         return assertFile(queryPath, { action: 'ファイル情報を確認', requireExtension: false });
       }

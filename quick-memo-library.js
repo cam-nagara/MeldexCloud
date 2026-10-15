@@ -228,7 +228,8 @@
 
     async function cloudPage(reset) {
       if (reset) {
-        const entries = await window.MeldexStandaloneCloud.browse(options.cloudFolderPath?.() || CLOUD_FOLDER, { detail: false });
+        const folder = await options.cloudFolderPath?.() || CLOUD_FOLDER;
+        const entries = await window.apiFetch('/quick-memo/files?path=' + encodeURIComponent(folder));
         state.cloudFiles = (Array.isArray(entries) ? entries : [])
           .filter((item) => /\.md$/i.test(item.name || item.path || ''));
         state.saved = [];
@@ -244,7 +245,7 @@
         const batch = files.slice(offset, offset + 6);
         const results = await Promise.all(batch.map(async (item) => {
           try {
-            const result = await window.MeldexStandaloneCloud.readText(item.path);
+            const result = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path));
             const memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
             return memo.quick_memo ? memo : null;
           } catch (_) {
@@ -286,7 +287,7 @@
         await options.beforeNavigate?.();
         let memo = item;
         if (!item.pending && options.isCloudMode()) {
-          const result = await window.MeldexStandaloneCloud.readText(item.path);
+          const result = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path));
           memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
         } else if (!item.pending) {
           const query = new URLSearchParams({ path: item.path || '', memo_id: item.memo_id || '' });

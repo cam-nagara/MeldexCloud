@@ -134,7 +134,13 @@
   async function loadStorageLocation() {
     if (!els.storageLocation) return;
     if (isCloudMode()) {
-      els.storageLocation.textContent = '保存先: Dropbox / クイックメモ';
+      try {
+        await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
+        const target = await window.apiFetch('/quick-memo/config');
+        els.storageLocation.textContent = `保存先: ${target.display_path || target.quick_memo_folder}`;
+      } catch (error) {
+        els.storageLocation.textContent = cloudConnected() ? String(error.message || error) : '保存先: Dropboxに接続してください';
+      }
       els.storageLocation.title = els.storageLocation.textContent;
       return;
     }
@@ -1035,10 +1041,10 @@
       && window.MeldexStandaloneCloud.getStatus().connected === true;
   }
 
-  function cloudFolderPath() {
-    const root = String(window.MeldexStandaloneCloud?.getStatus?.().activeRoot?.path || '').replace(/\/$/, '');
-    if (!/^__dropbox_root__\/[^/]+$/.test(root)) throw new Error('Dropboxの登録済み保存先を確認できません');
-    return root + '/' + CLOUD_SHEET_NAME;
+  async function cloudFolderPath() {
+    const target = await window.apiFetch('/quick-memo/config');
+    if (!target?.quick_memo_folder) throw new Error('本体のクイックメモシートを確認できません');
+    return target.quick_memo_folder;
   }
 
   function cloudCandidate(value) {
@@ -1139,14 +1145,14 @@
     return lines.join('\n') + String(body || '').replace(/\s+$/, '') + '\n';
   }
 
-  function cloudMemoPath(item) {
+  function cloudMemoPath(item, folder) {
     if (item.server_path) return String(item.server_path).replace(/\\/g, '/');
     const stamp = String(item.created_at || new Date().toISOString())
       .replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '_').slice(0, 15);
     const id = String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
     const firstLine = (item.text || '').trim().split(/\r?\n/)[0] || '';
     const title = String(item.title || firstLine || 'メモ').trim().slice(0, 40).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') || 'メモ';
-    return `${cloudFolderPath()}/${stamp}_${title}_${id}.md`;
+    return `${folder}/${stamp}_${title}_${id}.md`;
   }
 
   function cloudMemoTags(item) {
@@ -1220,37 +1226,7 @@
     window.__MELDEX_QUICK_MEMO_TEST__.saveMemoCloud = saveMemoCloud;
   }
 
-  async function ensureCloudSheet(folder) {
-    const name = folder.split('/').pop();
-    // 既存メモの更新時も含め毎回呼ぶ（gb-quick-memo-sync.jsのensureMemoWorkspace()と
-    // 同じ方針）。シートが外部操作で削除されていた場合でも次の保存で自己修復できるように、
-    // 「新規作成時だけ」に絞り込まない。
-    try {
-      await window.apiFetch('/file?path=' + encodeURIComponent(folder + '/' + name + '.md'));
-    } catch (error) {
-      if (!cloudNotFound(error)) throw error;
-      await window.apiPost('/outliner/add', { type: 'database', label: name, parent: folder.split('/').slice(0, -1).join('/') });
-    }
-    const existing = await window.apiFetch('/db-metadata?path=' + encodeURIComponent(folder));
-    await window.apiPut('/db-metadata?path=' + encodeURIComponent(folder), {
-      type: 'settings-db',
-      property_types: {
-        種別: { type: 'select', options: ['メモ'] },
-        タグ: { type: 'multi-select', options: [] },
-        追加日時: { type: 'date', withTime: true },
-        更新日時: { type: 'date', withTime: true },
-        保存先: { type: 'text' },
-        URL: { type: 'url' },
-        共有タイトル: { type: 'text' },
-        共有元: { type: 'text' },
-        ...(existing?.property_types || existing?.propertyTypes || {}),
-      },
-    });
-  }
-
-  // /file の上書きは、対象パスの事前GETで得たetagが無いと拒否される
-  // （standalone-cloud-runtime.jsのrequestJson()側の仕様）。ファイルが存在しなければ
-  // create_only指定で新規作成として書く。既存メモの更新にも、フォールバック書き込みにも使う。
+  // シート内の同じ行をetagで条件付き保存し、新規行はcreate_onlyで重複を防ぐ。
   function cloudNotFound(error) {
     const status = Number(error?.status || error?.status_code || 0);
     if (status) return status === 404;
@@ -1261,7 +1237,7 @@
   async function cloudWriteFile(path, content, existingData) {
     let current = existingData || null;
     try {
-      if (!current) current = await window.apiFetch('/file?path=' + encodeURIComponent(path));
+      if (!current) current = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(path));
     } catch (error) {
       if (!cloudNotFound(error)) {
         throw error;
@@ -1274,20 +1250,19 @@
     const body = current
       ? { content, if_match_etag: String(current.etag || '') }
       : { content, create_only: true };
-    return window.apiPost('/file?path=' + encodeURIComponent(path), body);
+    return window.apiPost('/quick-memo/file?path=' + encodeURIComponent(path), body);
   }
 
   async function saveMemoCloud(item) {
     await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
-    const path = cloudMemoPath(item);
+    const path = cloudMemoPath(item, item.server_path ? '' : await cloudFolderPath());
     const folder = path.split('/').slice(0, -1).join('/');
-    await ensureCloudSheet(folder);
     const tags = cloudMemoTags(item);
     // 本文とクイックメモ識別子を一度の条件付き書込で保存する。
     // 空のエントリを先に作ると、本文の失敗・再試行で重複が残る。
     let existingData = null;
     try {
-      existingData = await window.apiFetch('/file?path=' + encodeURIComponent(path));
+      existingData = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(path));
     } catch (error) {
       if (!cloudNotFound(error)) {
         throw error;
@@ -1297,7 +1272,7 @@
     if (existingData && (existing.frontmatter.quick_memo !== true || existing.frontmatter.quick_memo_id !== item.memo_id)) {
       throw new Error('保存先は別のメモです。入力を保持しています');
     }
-    if (item.cloud_etag && item.cloud_etag !== existing.etag) {
+    if (item.cloud_etag && item.cloud_etag !== existing.etag && item.cloud_etag !== existingData?.legacy_etag) {
       throw new Error('クイックメモが別の画面で変更されています。入力を保持して再読み込みしてください');
     }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
@@ -1344,6 +1319,7 @@
     function refreshConnectBanner() {
       const connected = cloudConnected();
       banner.style.display = connected ? 'none' : '';
+      loadStorageLocation();
       if (connected) {
         loadTags();
         flushPendingQueue();
@@ -1393,6 +1369,7 @@
     window.addEventListener('meldex:standalone-cloud-ready', refreshConnectBanner);
     window.addEventListener('meldex:standalone-auth-required', refreshConnectBanner);
     window.addEventListener('meldex:standalone-auth-changed', refreshConnectBanner);
+    window.addEventListener('meldex:standalone-root-changed', refreshConnectBanner);
     refreshConnectBanner();
   }
 

@@ -197,69 +197,21 @@
     };
   }
 
-  function quickMemoViewConfig(current) {
-    const config = current && typeof current === 'object' ? { ...current } : {};
-    const views = Array.isArray(config.savedViews) ? config.savedViews.map(view => ({ ...view })) : [];
-    if (!views.some(view => view.id === 'quick-memo-default')) {
-      views.unshift({
-        id: 'quick-memo-default', name: 'クイックメモ', viewMode: 'pivot',
-        sortConfig: { key: '更新日時', dir: 'desc' },
-        colOrder: ['種別', 'タグ', '追加日時', '更新日時', '保存先', 'メモID', 'URL', '共有タイトル', '共有元'],
-        advancedFilters: [{ property: '種別', field: 'value', operator: 'equals', value: 'メモ' }],
-        systemManaged: true,
-      });
-    }
-    config.savedViews = views;
-    if (!Number.isInteger(config.currentViewIdx)) config.currentViewIdx = 0;
-    return config;
-  }
-
-  async function ensureMemoWorkspace(item = {}) {
-    const sheetPath = targetSheetPath(item);
-    const sheetName = targetSheetName(item);
-    const parent = sheetPath.includes('/') ? sheetPath.split('/').slice(0, -1).join('/') : '';
-    try {
-      await apiFetch('/file?path=' + encodeURIComponent(`${sheetPath}/${sheetName}.md`), { silentError: true });
-    } catch (error) {
-      if (!notFound(error)) throw error;
-      await jsonFetch('/outliner/add', {
-        method: 'POST',
-        silentError: true,
-        body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
-      });
-    }
-    const defaults = {
-      種別: { type: 'select', options: ['メモ'] }, タグ: { type: 'multi-select', options: [] },
-      追加日時: { type: 'date', withTime: true }, 更新日時: { type: 'date', withTime: true },
-      保存先: { type: 'text' }, メモID: { type: 'text' }, URL: { type: 'url' },
-      共有タイトル: { type: 'text' }, 共有元: { type: 'text' },
-    };
-    const existing = await apiFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), { silentError: true });
-    const existingTypes = existing?.property_types || existing?.propertyTypes || {};
-    await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
-      method: 'PUT',
-      silentError: true,
-      body: JSON.stringify({
-        type: 'settings-db',
-        storage: 'sqlite',
-        cloud_storage: 'sheet-store-v1',
-        property_types: { ...defaults, ...existingTypes },
-        view_config: quickMemoViewConfig(existing?.view_config || existing?.viewConfig),
-      }),
-    });
-  }
-
   async function saveViaExistingApis(item) {
-    await ensureMemoWorkspace(item);
+    const savedPath = String(item.server_path || item.path || '').replace(/\\/g, '/');
+    const target = savedPath ? savedPath.split('/').slice(0, -1).join('/')
+      : (await apiFetch('/quick-memo/config', { silentError: true }))?.quick_memo_folder;
+    if (!target) throw new Error('本体のクイックメモシートを確認できません');
+    item = { ...item, target_sheet: target };
     const path = memoPath(item);
     const frontmatter = memoFrontmatter(item, path);
     let existing = null;
-    try { existing = await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true }); }
+    try { existing = await apiFetch('/quick-memo/file?path=' + encodeURIComponent(path), { silentError: true }); }
     catch (error) { if (!notFound(error)) throw error; }
     let content = frontmatterText(frontmatter, memoBody(item));
     if (existing) {
       if (!existing.etag) throw new Error('既存メモの更新情報を確認できません');
-      if (item.cloud_etag && item.cloud_etag !== existing.etag) throw new Error('クイックメモが別の画面で変更されています');
+      if (item.cloud_etag && item.cloud_etag !== existing.etag && item.cloud_etag !== existing.legacy_etag) throw new Error('クイックメモが別の画面で変更されています');
       const match = String(existing.content || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
       const parser = window.MeldexCloudFrontmatterLite?.yamlLite;
       if (!match || !parser) throw new Error('既存メモの追加情報を安全に読み取れません');
@@ -273,7 +225,7 @@
       if (/^properties:\s*\S/m.test(match[1])) frontmatter.properties = { ...(previous.properties || {}), ...properties };
       content = '---\n' + patchMapping(match[1], frontmatter) + '---\n\n' + memoBody(item);
     }
-    const written = await jsonFetch('/file?path=' + encodeURIComponent(path), {
+    const written = await jsonFetch('/quick-memo/file?path=' + encodeURIComponent(path), {
       method: 'POST',
       silentError: true,
       body: JSON.stringify({ content, ...(existing ? { if_match_etag: existing.etag } : { create_only: true }) }),
@@ -293,7 +245,8 @@
       throw new Error('クイックメモの保存を確認できませんでした');
     } catch (error) {
       // 権限、ロック、競合、通信失敗を別の書込APIで迂回しない。
-      if (![404, 405, 501].includes(Number(error?.status || error?.status_code || 0))) throw error;
+      if (error?.code !== 'cloud_route_unwired'
+        && ![404, 405, 501].includes(Number(error?.status || error?.status_code || 0))) throw error;
     }
     return saveViaExistingApis(item);
   }
