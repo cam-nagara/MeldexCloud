@@ -4,6 +4,17 @@
   const PAGE_SIZE = 50;
   const CLOUD_FOLDER = 'クイックメモ';
 
+  async function readWithTimeout(task, message, timeoutMs = 15000) {
+    let timer;
+    try {
+      return await Promise.race([task, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function parseJsonValue(raw) {
     try { return JSON.parse(raw); } catch (_) { return String(raw || '').replace(/^['"]|['"]$/g, ''); }
   }
@@ -126,7 +137,10 @@
       openEpoch: 0,
       failedFiles: [],
       loadFailed: false,
+      loadError: '',
+      connectionRequired: false,
     };
+    let loadEpoch = 0;
 
     function pendingItems() {
       const queue = options.readQueue?.();
@@ -192,13 +206,27 @@
 
     function render() {
       options.content.replaceChildren();
+      const failedRead = state.loadFailed || state.failedFiles.length > 0;
+      const failureMessage = state.loadFailed ? state.loadError
+        : `${state.failedFiles.length}件のメモを読み込めませんでした。再試行してください`;
       if (!state.filtered.length) {
         const empty = document.createElement('div');
         empty.className = 'qm-list-empty';
-        empty.textContent = state.loading ? '読み込み中…' : '該当するメモはありません';
+        empty.textContent = state.loading ? (options.isCloudMode() ? 'Dropboxのメモを確認中…' : '読み込み中…')
+          : failedRead ? failureMessage
+            : state.connectionRequired ? 'Dropboxに接続すると保存済みのメモを表示できます。メニューから接続してください'
+              : '該当するメモはありません';
         options.content.appendChild(empty);
       } else {
         state.filtered.forEach((item) => options.content.appendChild(createListItem(item)));
+        if (failedRead || state.connectionRequired) {
+          const message = document.createElement('div');
+          message.className = 'qm-list-empty';
+          message.setAttribute('role', 'status');
+          message.textContent = failedRead ? failureMessage
+            : 'Dropbox未接続です。端末に保存した送信待ちのメモを表示しています';
+          options.content.appendChild(message);
+        }
       }
       options.moreButton.hidden = state.nextOffset == null && !state.failedFiles.length && !state.loadFailed;
       options.moreButton.textContent = state.failedFiles.length || state.loadFailed ? '読み込みを再試行' : 'さらに読み込む';
@@ -215,68 +243,95 @@
       render();
     }
 
-    async function localPage(reset) {
-      const query = new URLSearchParams({ offset: String(reset ? 0 : state.offset), limit: String(PAGE_SIZE) });
+    async function localPage(reset, next, assertActive) {
+      const query = new URLSearchParams({ offset: String(reset ? 0 : next.offset), limit: String(PAGE_SIZE) });
       const response = await fetch(`${options.apiBase}/api/quick-memo/list?${query}`);
       const payload = await response.json().catch(() => ({}));
+      assertActive();
       if (!response.ok) throw new Error(payload.error || 'メモ一覧を読み込めませんでした');
-      if (reset) state.saved = [];
-      state.saved.push(...(Array.isArray(payload.memos) ? payload.memos : []));
-      state.nextOffset = Number.isFinite(payload.next_offset) ? payload.next_offset : null;
-      state.offset = state.nextOffset == null ? state.offset : state.nextOffset;
+      if (reset) next.saved = [];
+      next.saved.push(...(Array.isArray(payload.memos) ? payload.memos : []));
+      next.nextOffset = Number.isFinite(payload.next_offset) ? payload.next_offset : null;
+      next.offset = next.nextOffset == null ? next.offset : next.nextOffset;
     }
 
-    async function cloudPage(reset) {
+    async function cloudPage(reset, next, assertActive) {
       if (reset) {
         const folder = await options.cloudFolderPath?.() || CLOUD_FOLDER;
+        assertActive();
         const entries = await window.apiFetch('/quick-memo/files?path=' + encodeURIComponent(folder));
-        state.cloudFiles = (Array.isArray(entries) ? entries : [])
+        assertActive();
+        next.cloudFiles = (Array.isArray(entries) ? entries : [])
           .filter((item) => /\.md$/i.test(item.name || item.path || ''));
-        state.saved = [];
-        state.offset = 0;
-        state.failedFiles = [];
+        next.saved = [];
+        next.offset = 0;
+        next.failedFiles = [];
       }
-      const start = state.offset;
-      const retrying = state.failedFiles.length > 0;
-      const files = retrying ? state.failedFiles : state.cloudFiles.slice(start, start + PAGE_SIZE);
-      state.failedFiles = [];
+      const start = next.offset;
+      const retrying = next.failedFiles.length > 0;
+      const files = retrying ? next.failedFiles : next.cloudFiles.slice(start, start + PAGE_SIZE);
+      next.failedFiles = [];
       const memos = [];
       for (let offset = 0; offset < files.length; offset += 6) {
         const batch = files.slice(offset, offset + 6);
         const results = await Promise.all(batch.map(async (item) => {
           try {
             const result = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path));
+            assertActive();
             const memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
             return memo.quick_memo ? memo : null;
           } catch (_) {
-            state.failedFiles.push(item);
+            next.failedFiles.push(item);
             return null;
           }
         }));
+        assertActive();
         memos.push(...results.filter(Boolean));
       }
-      state.saved.push(...memos);
+      next.saved.push(...memos);
       const end = retrying ? start : start + files.length;
-      state.nextOffset = end < state.cloudFiles.length ? end : null;
-      state.offset = state.nextOffset == null ? end : state.nextOffset;
+      next.nextOffset = end < next.cloudFiles.length ? end : null;
+      next.offset = next.nextOffset == null ? end : next.nextOffset;
     }
 
     async function load(reset) {
       if (state.loading) return;
+      const epoch = ++loadEpoch;
+      let active = true;
+      const assertActive = () => {
+        if (!active || epoch !== loadEpoch) throw new Error('メモ一覧の読込を中止しました');
+      };
       state.loading = true;
       state.loadFailed = false;
-      render();
+      state.loadError = '';
+      state.connectionRequired = options.isCloudMode() && !options.cloudConnected();
+      if (state.connectionRequired) {
+        state.saved = [];
+        state.nextOffset = null;
+        state.failedFiles = [];
+      }
+      // Remote reads must never hide the device's pending notes.
+      mergeItems();
+      const next = { ...state, saved: [...state.saved], failedFiles: [...state.failedFiles] };
       try {
-        if (options.isCloudMode() && options.cloudConnected()) await cloudPage(reset);
-        else if (!options.isCloudMode()) await localPage(reset);
+        const read = state.connectionRequired ? Promise.resolve()
+          : options.isCloudMode() ? cloudPage(reset, next, assertActive) : localPage(reset, next, assertActive);
+        await readWithTimeout(read, 'メモ一覧の読込に時間がかかっています。端末の入力は保持しています。接続と保存先を確認して再試行してください', options.readTimeoutMs);
+        assertActive();
+        Object.assign(state, { saved: next.saved, cloudFiles: next.cloudFiles,
+          failedFiles: next.failedFiles, offset: next.offset, nextOffset: next.nextOffset });
         state.loading = false;
         mergeItems();
         if (state.failedFiles.length) options.onStatus?.(`${state.failedFiles.length}件のメモを読み込めませんでした。再試行してください`, true);
       } catch (error) {
+        if (epoch !== loadEpoch) return;
         state.loading = false;
         state.loadFailed = true;
+        state.loadError = String(options.formatError?.(error) || error?.message || error).replace(/\s+/g, ' ').slice(0, 240);
         mergeItems();
-        options.onStatus?.(String(error?.message || error), true);
+        options.onStatus?.(state.loadError, true);
+      } finally {
+        active = false;
       }
     }
 
@@ -287,19 +342,28 @@
         await options.beforeNavigate?.();
         let memo = item;
         if (!item.pending && options.isCloudMode()) {
-          const result = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path));
+          const result = await readWithTimeout(window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path)),
+            'メモを開くのに時間がかかっています。接続を確認してメモをもう一度選んでください', options.readTimeoutMs);
           memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
         } else if (!item.pending) {
           const query = new URLSearchParams({ path: item.path || '', memo_id: item.memo_id || '' });
-          const response = await fetch(`${options.apiBase}/api/quick-memo/item?${query}`);
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(payload.error || 'メモを開けませんでした');
+          const payload = await readWithTimeout((async () => {
+            const response = await fetch(`${options.apiBase}/api/quick-memo/item?${query}`);
+            const value = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(value.error || 'メモを開けませんでした');
+            return value;
+          })(), 'メモを読み込めません。接続を確認してもう一度選んでください', options.readTimeoutMs);
           memo = payload.memo || payload;
         }
         if (epoch !== state.openEpoch) return;
         await options.onOpen?.(memo, undefined, () => epoch === state.openEpoch);
       } catch (error) {
-        if (epoch === state.openEpoch) options.onStatus?.(String(error?.message || error), true);
+        if (epoch === state.openEpoch) {
+          state.loadFailed = true;
+          state.loadError = String(options.formatError?.(error) || error?.message || error).replace(/\s+/g, ' ').slice(0, 240);
+          render();
+          options.onStatus?.(state.loadError, true);
+        }
       } finally {
         button.disabled = false;
       }
@@ -309,12 +373,14 @@
       await options.beforeNavigate?.();
       options.editorView.style.display = 'none';
       options.listView.style.display = '';
-      await load(true);
       options.search.focus();
+      await load(true);
     }
 
     function hide() {
       state.openEpoch += 1;
+      loadEpoch += 1;
+      state.loading = false;
       options.listView.style.display = 'none';
       options.editorView.style.display = '';
     }
@@ -326,5 +392,5 @@
     return { show, hide, refresh: () => load(true), parseMemoText };
   }
 
-  window.MeldexQuickMemoLibrary = { create, parseMemoText, splitFrontmatter };
+  window.MeldexQuickMemoLibrary = { create, parseMemoText, splitFrontmatter, readWithTimeout };
 })();

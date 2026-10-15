@@ -75,6 +75,7 @@
   let drawingController = null;
   let libraryController = null;
   let tagLoadPromise = null;
+  let storageLocationEpoch = 0;
   const durableMemory = new Map();
   const failedLocalWrites = new Set();
 
@@ -97,7 +98,7 @@
     registerCloseContract();
     switchMode(state.currentMode);
     initCloudMode();
-    await loadStorageLocation();
+    if (!isCloudMode()) loadStorageLocation();
     loadTags();
     listenInstallPrompt();
     registerServiceWorker();
@@ -133,28 +134,33 @@
 
   async function loadStorageLocation() {
     if (!els.storageLocation) return;
-    if (isCloudMode()) {
-      try {
-        await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
-        const target = await window.apiFetch('/quick-memo/config');
-        els.storageLocation.textContent = `保存先: ${target.display_path || target.quick_memo_folder}`;
-      } catch (error) {
-        els.storageLocation.textContent = cloudConnected() ? String(error.message || error) : '保存先: Dropboxに接続してください';
-      }
-      els.storageLocation.title = els.storageLocation.textContent;
-      return;
-    }
+    const epoch = ++storageLocationEpoch;
+    const cloud = isCloudMode();
+    els.storageLocation.textContent = cloud ? '保存先: Dropboxの本体シートを確認中…' : '保存先を確認中…';
     try {
-      const response = await fetch(`${API_BASE}/api/quick-memo/config`);
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.detail || '保存先を確認できませんでした');
-      const path = String(payload.quick_memo_folder || '').trim();
-      els.storageLocation.textContent = path ? `保存先: ${path}` : '保存先: ホームフォルダ / クイックメモ';
-      els.storageLocation.title = els.storageLocation.textContent;
-    } catch {
-      els.storageLocation.textContent = '保存先: ホームフォルダ / クイックメモ';
-      els.storageLocation.title = els.storageLocation.textContent;
+      const read = (async () => {
+        if (cloud) {
+          await window.MeldexStandaloneCloud?.ensureReady?.({ requireConnection: true });
+          if (epoch !== storageLocationEpoch) return null;
+          return window.apiFetch('/quick-memo/config');
+        }
+        const response = await fetch(`${API_BASE}/api/quick-memo/config`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.detail || '保存先を確認できませんでした');
+        return payload;
+      })();
+      const target = await window.MeldexQuickMemoLibrary.readWithTimeout(read,
+        '保存先の確認に時間がかかっています。Meldexファイルで本体のシートがあるDropboxフォルダを確認してください');
+      if (epoch !== storageLocationEpoch) return;
+      const path = String(target?.display_path || target?.quick_memo_folder || '').trim();
+      if (!path) throw new Error('保存先を確認できませんでした');
+      els.storageLocation.textContent = `保存先: ${cloud ? 'Dropbox / ' : ''}${path}`;
+    } catch (error) {
+      if (epoch !== storageLocationEpoch) return;
+      els.storageLocation.textContent = cloud && !cloudConnected() ? '保存先: Dropboxに接続してください'
+        : '保存先を確認できません: ' + syncFailureDetail(error);
     }
+    els.storageLocation.title = els.storageLocation.textContent;
   }
 
   function setupControllers() {
@@ -218,6 +224,7 @@
         isCloudMode,
         cloudConnected,
         cloudFolderPath,
+        formatError: syncFailureDetail,
         onStatus: setStatus,
         beforeNavigate: preserveCurrentForNavigation,
         onOpen: openExistingMemo,
@@ -587,7 +594,6 @@
 
   async function openExistingMemo(memo, requestedEpoch, isCurrent) {
     const epoch = requestedEpoch ?? ++state.memoEpoch;
-    await loadTags();
     if (epoch !== state.memoEpoch || (isCurrent && !isCurrent())) return false;
     clearTimeout(state.saveTimer);
     state.saveTimer = 0;
@@ -1033,7 +1039,8 @@
   // 使わず、保存のたびに候補が積み上がるのを避ける）。
 
   function isCloudMode() {
-    return typeof window.apiFetch === 'function' && window.apiFetch._meldexStandaloneCloudAdapter === true;
+    return document.documentElement?.hasAttribute?.('data-standalone-cloud') === true
+      || (typeof window.apiFetch === 'function' && window.apiFetch._meldexStandaloneCloudAdapter === true);
   }
 
   function cloudConnected() {
@@ -1042,7 +1049,8 @@
   }
 
   async function cloudFolderPath() {
-    const target = await window.apiFetch('/quick-memo/config');
+    const target = await window.MeldexQuickMemoLibrary.readWithTimeout(window.apiFetch('/quick-memo/config'),
+      '本体のクイックメモ保存先を確認できません。MeldexファイルのDropboxフォルダを確認して再試行してください');
     if (!target?.quick_memo_folder) throw new Error('本体のクイックメモシートを確認できません');
     return target.quick_memo_folder;
   }
