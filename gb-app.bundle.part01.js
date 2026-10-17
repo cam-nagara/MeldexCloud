@@ -483,7 +483,7 @@ function _mapRenamedPath(path, oldPath, newPath) {
 }
 
 const APP_PATH_REF_KEYS = [
-  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath',
+  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath', 'formPath',
   'pagePath', 'entityPath', 'folderPath', 'mediaPath', 'csvPath', 'versionPath',
   'calendarFile',
 ];
@@ -850,6 +850,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      component.onPathRename?.(oldPath, newPath, options);
     });
   }
 
@@ -897,4 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       // mapped === newPath は「このファイル自体がリネームされた」場合のみ真になり、
       // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
       if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
-        editor.doc.title = exactLabel;

@@ -631,6 +631,12 @@
           i += 1;
         }
         if (i < lines.length) i += 1;
+        if (lang === 'meldex-poll' && global.MeldexChatPolls) {
+          try {
+            const card = global.MeldexChatPolls.createCard(JSON.parse(codeLines.join('\n')), options?.pollContext);
+            if (card) { root.appendChild(card); continue; }
+          } catch { /* 未知の形式は元のコードブロックとして残す。 */ }
+        }
         const pre = document.createElement('pre');
         const code = document.createElement('code');
         if (lang) code.dataset.language = lang;
@@ -707,7 +713,9 @@
       root.appendChild(p);
     }
 
-    if (global.localStorage?.getItem?.('note-heading-indent') !== '0') {
+    let headingIndent = true;
+    try { headingIndent = global.localStorage?.getItem?.('note-heading-indent') !== '0'; } catch { /* 保存領域を使えなくても本文と回答ボタンは描画する。 */ }
+    if (headingIndent) {
       _applyChatHeadingSections(root);
     }
     container.replaceChildren(root);

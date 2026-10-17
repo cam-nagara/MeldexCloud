@@ -255,6 +255,16 @@
   // 右パネルツールの初期化（switchRightTabの初期化ロジックを再現）
   function _initRpTool(toolType, options) {
     if (toolType === 'chat') {
+      const chat = document.getElementById('rp-chat');
+      if (chat && !window._gbSingleWindow && window.GBChatSidebar && !chat.querySelector('[data-chat-sidebar-close]')) {
+        const close = document.createElement('button');
+        close.type = 'button'; close.className = 'gb-btn gb-btn-xs';
+        close.dataset.chatSidebarClose = '1'; close.textContent = '×';
+        close.setAttribute('aria-label', 'チャットサイドバーを閉じる'); close.title = 'チャットサイドバーを閉じる';
+        close.style.marginLeft = 'auto';
+        close.addEventListener('click', () => window.GBChatSidebar?.close());
+        chat.firstElementChild?.appendChild(close);
+      }
       const savedProvider = localStorage.getItem('chat-provider');
       const savedModel = localStorage.getItem('chat-model');
       if (savedProvider) {

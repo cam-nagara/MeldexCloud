@@ -32,7 +32,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet',
+    '.mel-sheet', '.mel-form',
     '.mel-timer', '.timer.json',
   ];
 
@@ -85,6 +85,7 @@ const GBLinkRouter = (() => {
     const extension = ext(lower);
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
+    if (lower.endsWith('.mel-form')) return 'form-app';
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
@@ -121,6 +122,8 @@ const GBLinkRouter = (() => {
     if (entry.type === 'scriptnote') {
       state.scenarioPath = entry.path || '';
       state.label = entry.label || '';
+    } else if (entry.type === 'form-app') {
+      state.formPath = entry.path || ''; state.label = entry.label || '';
     } else if (entry.type === 'board') {
       state.boardPath = entry.path || '';
       state.label = entry.label || '';
@@ -141,6 +144,7 @@ const GBLinkRouter = (() => {
 
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
+    else if (explicitType === 'form-app') entry = { type: 'form-app', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -160,6 +164,7 @@ const GBLinkRouter = (() => {
     } else if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-form')) entry = { type: 'form-app', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };

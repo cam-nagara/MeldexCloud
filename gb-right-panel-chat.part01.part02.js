@@ -589,8 +589,8 @@ function _buildTeamMessageRow(m, me) {
   const div = document.createElement('div');
   div.className = 'chat-message-bubble chat-message-bubble-team';
   div.style.cssText = (isMine
-    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:6px 10px;border-radius:10px 2px 10px 10px;'
-    : 'background:var(--bg3);color:var(--fg);padding:6px 10px;border-radius:2px 10px 10px 10px;')
+    ? 'background:var(--chat-user-bg, var(--accent));color:var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)));padding:6px 10px;border-radius:10px 2px 10px 10px;'
+    : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:6px 10px;border-radius:2px 10px 10px 10px;')
     + 'font-size:13px;user-select:text;cursor:text;';
   // 名前（自分以外）
   if (!isMine) {
@@ -618,6 +618,9 @@ function _buildTeamMessageRow(m, me) {
     else textEl.textContent = m.text;
   }
   div.appendChild(textEl);
+  if (window.MeldexChatPolls && String(m.text || '').includes('```meldex-poll')) {
+    renderChatMarkdown(textEl, m.text, { role: isMine ? 'user' : 'assistant', pollContext: { message: m, room: _teamCurrentRoom } });
+  }
   // タイムスタンプ
   const timeEl = document.createElement('div');
   timeEl.style.cssText = 'font-size:9px;opacity:0.6;text-align:right;margin-top:2px;';

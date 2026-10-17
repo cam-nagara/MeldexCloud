@@ -881,10 +881,10 @@ function chatAddMessage(role, content, options = {}) {
   const div = document.createElement('div');
   div.className = 'chat-message-bubble chat-message-bubble-llm chat-copy-body' + (isControl ? ' is-control' : (isUser ? ' is-user' : ' is-assistant'));
   div.style.cssText = isUser
-    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
+    ? 'background:var(--chat-user-bg, var(--accent));color:var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)));padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
     : (isControl
       ? 'background:var(--bg2);color:var(--fg2);padding:8px 12px;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;'
-      : 'background:var(--bg3);color:var(--fg);padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
+      : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
   // スタンプのみメッセージの判定
   const _isStructured = Array.isArray(content);
   const _stampOnly = !_isStructured && typeof isStampOnly === 'function' && isStampOnly(plainContent);

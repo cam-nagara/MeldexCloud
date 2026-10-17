@@ -127,6 +127,7 @@ function navOpen(entry, opts) {
   const o = opts || undefined;
   if (entry.type === 'page') return openPage(entry.label, entry.path, o);
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
+  if (entry.type === 'form-app') return openFormApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
   if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {

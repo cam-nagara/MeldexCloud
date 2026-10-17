@@ -1,3 +1,6 @@
+      applyBoardThemeRuntime(board);
+      return false;
+    }
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
     board.themeId = nextThemeId;
     applyBoardThemeRuntime(board);

@@ -576,6 +576,9 @@
     fallback('--chat-bg', '--content-bg', '#1e1e1e');
     fallback('--chat-panel-bg', '--bg2', '#252525');
     fallback('--chat-message-bg', '--bg3', '#2d2d2d');
+    if (!next['--chat-message-fg']) next['--chat-message-fg'] = 'var(--chat-fg)';
+    if (!next['--chat-user-bg']) next['--chat-user-bg'] = 'color-mix(in srgb, var(--chat-accent) calc(100% - var(--theme-ui-auto-dark-percent, 30%)), black var(--theme-ui-auto-dark-percent, 30%))';
+    if (!next['--chat-user-fg']) next['--chat-user-fg'] = '#ffffff';
     fallback('--chat-input-bg', '--content-bg', '#1e1e1e');
     fallback('--chat-input-fg', '--fg', '#d4d4d4');
     fallback('--chat-fg', '--fg', '#d4d4d4');

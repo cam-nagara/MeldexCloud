@@ -797,10 +797,10 @@ const FILE_TYPE_LABELS = {
   entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
-  archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
+  'form-app': 'フォーム', archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
+const NATIVE_TYPES = new Set(['form-app','page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -1056,7 +1056,7 @@ const UI_TYPE_ICONS = {
   chat: 'messagesSquare',
   tags: 'tag',
   annotation: 'squarePen',
-  sticky: 'clipboardList',
+  sticky: 'clipboardList', 'form-app': 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',

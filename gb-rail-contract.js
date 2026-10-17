@@ -29,7 +29,7 @@
   const BY_TYPE = new Map(RIGHT.map((item, index) => [item.type, Object.freeze({ ...item, index })]));
 
   function definitions() { return RIGHT.slice(); }
-  function defaults() { return RIGHT.map(item => [item.label, item.type]); }
+  function defaults() { return RIGHT.filter(item => item.type !== 'chat').map(item => [item.label, item.type]); }
   function types() { return new Set(RIGHT.map(item => item.type)); }
   function definition(type) { return BY_TYPE.get(String(type || '')) || null; }
   function order(type) { return definition(type)?.index ?? Number.MAX_SAFE_INTEGER; }

@@ -23,6 +23,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
     { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },

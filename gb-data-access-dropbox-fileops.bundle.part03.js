@@ -410,6 +410,7 @@ function _historyFileKind(path, content) {
   const text = String(content || '').slice(0, 4000).toLowerCase();
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
+  if (name.endsWith('.mel-form')) return 'form';
   if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
@@ -897,4 +898,3 @@ async function _listFileVersions(provider, path) {
         || key === 'content_hash' || key === 'stable_document_id' || key === 'schedule_id'
         || key === 'schedule_bucket_id' || key === 'transaction_id' || key === 'created_by'
         || key.startsWith('content_last_editor_')
-        || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),

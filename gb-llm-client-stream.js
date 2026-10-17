@@ -187,6 +187,7 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-4-argon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
@@ -199,6 +200,7 @@
       'gemini-2.5-flash': { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
     },
     anthropic: {
+      'claude-haiku-5-5': { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
       'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
       'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
       'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
@@ -418,7 +420,7 @@
   //   top_kも既定値以外だと400になるため常に省略する。
   // - "adaptiveNoXhigh": 上と同じadaptive方式だがeffort='xhigh'は未対応（highへクランプ）。
   // - どちらにも一致しないモデルは従来のbudget_tokens方式を使う。
-  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
+  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-haiku-5'];
   const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 
   function _anthropicThinkingGeneration(model) {
@@ -960,13 +962,17 @@
     const system = String(body.system_prompt || '').trim();
     if (system) payload.systemInstruction = { parts: [{ text: system }] };
     if (Number.isFinite(Number(body.top_p))) payload.generationConfig.topP = _generationNumber(body, 'top_p', 1, 0, 1);
+    if (model.startsWith('gemini-4')) {
+      delete payload.generationConfig.temperature;
+      delete payload.generationConfig.topP;
+    }
     const tools = [];
     if (_requestFlag(body, 'allow_web_search', true)) tools.push({ google_search: {} });
     if (_requestFlag(body, 'allow_code_execution', false)) tools.push({ code_execution: {} });
     if (tools.length) payload.tools = tools;
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') {
-      if (model.startsWith('gemini-3')) {
+      if (/^gemini-[34]/.test(model)) {
         let level = ['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : 'high';
         if (model.includes('pro') && level === 'medium') level = 'high';
         payload.generationConfig.thinkingConfig = { thinkingLevel: level };

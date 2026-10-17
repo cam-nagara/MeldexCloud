@@ -742,6 +742,11 @@ const _shortcutHandlers = {
     if (state.view === 'board' && window.MeldexBoardStandalone?.saveCurrentBoard) window.MeldexBoardStandalone.saveCurrentBoard();
     else if (state.view === 'board' && typeof bdSave === 'function') bdSave();
     else if (state.view === 'csv' && typeof saveCsv === 'function') saveCsv();
+    else if (state.view === 'form-app') {
+      const paneId = typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane;
+      const tab = GBTabs.getActiveTab(paneId);
+      if (tab?.type === 'form-app') getComponentInstance(tab.id)?.saveDefinition?.();
+    }
     else if (state.view === 'scriptnote') {
       const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
       if (editor?.save) editor.save();
@@ -752,7 +757,7 @@ const _shortcutHandlers = {
     }
   },
   'global.new': () => {
-    const typeMap = { page: 'page', entity: 'page', pivot: 'database', tree: 'database', gallery: 'database', kanban: 'database', board: 'board', calendar: 'calendar', csv: 'page', folder: 'page' };
+    const typeMap = { page: 'page', entity: 'page', pivot: 'database', tree: 'database', gallery: 'database', kanban: 'database', board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page' };
     const type = typeMap[state.view] || 'page';
     if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(type);
   },

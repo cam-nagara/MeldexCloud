@@ -160,7 +160,7 @@ const UI_TYPE_ICONS = {
   chat: 'messagesSquare',
   tags: 'tag',
   annotation: 'squarePen',
-  sticky: 'clipboardList',
+  sticky: 'clipboardList', 'form-app': 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',

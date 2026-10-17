@@ -1,3 +1,4 @@
+    if (parentVirtualContainer) {
       childrenDiv._virtualOwnerContainer = parentVirtualContainer;
       childrenDiv._virtualParentPath = item.path;
     }
@@ -897,4 +898,3 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   if (batchTargets.length) {
     try {
       const payload = await apiPost('/outliner/delete-batch', {
-        items: batchTargets.map(item => ({

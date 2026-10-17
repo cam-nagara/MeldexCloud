@@ -147,6 +147,7 @@
   function _splitNameAndExt(name) {
     const safeName = String(name || '');
     const lower = safeName.toLowerCase();
+    if (lower.endsWith('.mel-form')) return { stem: safeName.slice(0, -9), ext: '.mel-form' };
     if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
     if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
@@ -238,7 +239,7 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form'].includes(ext)
       || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
@@ -924,6 +925,7 @@
     const name = _basename(relativePath);
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
+    if (ext === '.mel-form') return 'form-app';
     if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
     if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';

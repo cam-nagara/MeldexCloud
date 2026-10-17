@@ -1016,6 +1016,7 @@ async function openFolderItem(item) {
   else if (item.type === 'database') { selectDatabase(item.path, _expOpts.paneContext || null, _expOpts); }
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
+  else if (item.type === 'form-app') { openFormApp(item.path, item.name, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
   else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }

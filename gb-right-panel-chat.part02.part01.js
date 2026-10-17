@@ -549,6 +549,7 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
     prompt += `\n## このチャットの現在の対象\nパス: ${promptTargetPath}\nこのチャットはこのファイルまたはフォルダに関する会話です。内容を参照する場合、ファイルならread_file、フォルダならbrowse/search/read_project_overviewを使ってください。\n`;
   }
 
+  prompt += '\n質問を選択式で尋ねる場合は、meldex-pollという言語名のコードブロックにJSONを書くと回答ボタンになる。形式は {"version":1,"id":"質問ごとに異なる8〜80文字の英数字ID","kind":"survey","question":"質問","options":["選択肢1","選択肢2"],"anonymous":true}。選択肢は2〜4個。四択クイズはkindをquizにしてanswerへ0始まりの正解番号を入れる。回答はユーザーメッセージとして届く。\n';
   return prompt;
 }
 

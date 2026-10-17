@@ -1,3 +1,4 @@
+        items: batchTargets.map(item => ({
           path: item.path,
           kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
           ...(item.assetId ? { assetId: item.assetId } : {}),
@@ -529,7 +530,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -721,7 +722,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,
@@ -897,4 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!isMulti && (isFolder || isDB) && nodeData.path) {
     addSep();
     addMenuItem('バージョンを保存', () => {
-      closeTreeContextMenu();

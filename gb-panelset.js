@@ -916,6 +916,7 @@
     { type: 'scriptnote', label: 'シナリオ', icon: 'scriptnote', standalone: 'scenario-standalone.html' },
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
+    { type: 'form-app', label: 'フォーム', icon: 'clipboardList' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
   ]);
 
@@ -1118,7 +1119,36 @@
     if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
   }
 
+  function _appendRightRailChat(dockBar) {
+    if (!window.GBChatSidebar) return;
+    const open = window.GBChatSidebar.isOpen();
+    const button = _railButton('gb-dock-icon gb-dock-rail-chat', 'messagesSquare', open ? 'チャットを閉じる' : 'チャットを開く', () => window.GBChatSidebar.toggle());
+    button.dataset.tabType = 'chat';
+    button.dataset.e2eId = 'fixed-right-rail-chat';
+    button.classList.toggle('active', open);
+    button.setAttribute('aria-pressed', String(open));
+    button.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-controls', 'rp-chat');
+    dockBar.appendChild(button);
+  }
+
   function renderDock(panelsetNode, depth) {
+    if (panelsetNode.meldexRole === 'chat-sidebar') {
+      const column = document.createElement('div');
+      column.className = 'gb-column gb-dock gb-chat-sidebar' + (panelsetNode.collapsed ? ' gb-dock-collapsed' : '');
+      column.dataset.panelsetId = panelsetNode.id;
+      column.dataset.columnNodeId = panelsetNode.id;
+      column.style.cssText = 'display:flex;width:100%;height:100%;min-width:0;min-height:0;';
+      if (!panelsetNode.collapsed) {
+        const group = panelsetNode.groups.find(item => item.id === panelsetNode.activeGroupId) || panelsetNode.groups[0];
+        const body = document.createElement('div');
+        body.className = 'gb-dock-body';
+        body.style.cssText = 'display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;';
+        if (group?.root) body.appendChild(GBLayout.renderNode(group.root, depth));
+        column.appendChild(body);
+      }
+      return column;
+    }
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
     const fixedSide = _fixedDockSide(panelsetNode);
@@ -1424,7 +1454,10 @@
         if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
       }
     });
-    if (fixedSide === 'right') _appendRightRailQuickMemo(dockBar);
+    if (fixedSide === 'right') {
+      _appendRightRailChat(dockBar);
+      _appendRightRailQuickMemo(dockBar);
+    }
     if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {
       window.GBRailContract.decorate(dockBar, fixedSide);
     }

@@ -6180,6 +6180,7 @@
       const normalized = _normalizeRelativePath(relativePath);
       const lower = normalized.toLowerCase();
       if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
+      if (lower.endsWith('.mel-form')) return 'form-app';
       if (lower.endsWith('.mel-sheet')) return 'database';
       if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
@@ -6791,6 +6792,7 @@
   function _splitNameAndExt(name) {
     const safeName = String(name || '');
     const lower = safeName.toLowerCase();
+    if (lower.endsWith('.mel-form')) return { stem: safeName.slice(0, -9), ext: '.mel-form' };
     if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
     if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
@@ -6882,7 +6884,7 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form'].includes(ext)
       || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
@@ -7568,6 +7570,7 @@
     const name = _basename(relativePath);
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
+    if (ext === '.mel-form') return 'form-app';
     if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
     if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
@@ -9259,10 +9262,10 @@
     ['.mel-board', 'board'],
     ['.mel-scenario', 'scenario'],
     ['.mel-timer', 'timer'],
-    ['.mel-sheet', 'sheet'],
+    ['.mel-sheet', 'sheet'], ['.mel-form', 'form'],
   ];
 
-  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet']);
+  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet', 'form']);
 
   // フロントマター全体（開始"---" 〜 終了"---"）を検出する正規表現。
   // ^ は文字列先頭に固定されるため match.index は常に 0 になる
@@ -11827,6 +11830,7 @@ function _historyFileKind(path, content) {
   const text = String(content || '').slice(0, 4000).toLowerCase();
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
+  if (name.endsWith('.mel-form')) return 'form';
   if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
@@ -14010,7 +14014,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
@@ -14059,6 +14063,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         });
         return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
+      if (type === 'form-app') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-form');
+        const targetPath = _joinPath(parent, labelName + '.mel-form');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
+        content = titled(content,targetPath);
+        if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+          method: 'PUT', body: { content, create_only: true },
+        });
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
@@ -14090,7 +14105,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
         const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
         if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
           titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
@@ -14359,7 +14374,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           imageCopies.push({ path: item.path, source_locator: sourceLocator });
           continue;
         }
-        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(sourceLocator)) {
+        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
         if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
@@ -17266,10 +17281,10 @@ const FILE_TYPE_LABELS = {
   entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
-  archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
+  'form-app': 'フォーム', archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
+const NATIVE_TYPES = new Set(['form-app','page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -17525,7 +17540,7 @@ const UI_TYPE_ICONS = {
   chat: 'messagesSquare',
   tags: 'tag',
   annotation: 'squarePen',
-  sticky: 'clipboardList',
+  sticky: 'clipboardList', 'form-app': 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',

@@ -45,21 +45,44 @@ function _getActiveFormViewRecord(dbPath, ctx) {
 }
 
 function getActiveFormConfig(dbPath, props, propTypes, ctx) {
+  if (ctx?.formApp) return ctx.formApp.getConfig(props || [], propTypes);
   const { view } = _getActiveFormViewRecord(dbPath, ctx);
   const cfg = view?.typeSpecific?.form?.formConfig || view?.formConfig || getDbViewConfig(dbPath).formConfig || null;
+  const layout = cfg?.layoutId && getDbViewConfig(dbPath).entityLayouts?.find(item => item.id === cfg.layoutId);
+  if (layout && globalThis.MeldexDbFormModel) {
+    const shared = MeldexDbFormModel.forLayout(layout, cfg);
+    return normalizeDbFormConfig({ ...cfg, ...shared, layoutId: layout.id, mode: cfg.mode || 'edit' },
+      [...(props || []), ...MeldexDbFormModel.layoutFields(layout)], propTypes);
+  }
   return normalizeDbFormConfig(cfg, props, propTypes);
 }
 
-function saveActiveFormConfig(dbPath, formConfig, ctx) {
+function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
+  const invalid = globalThis.MeldexDbFormModel?.validateDefinition(formConfig);
+  if (invalid) { if (typeof showStatus === 'function') showStatus(invalid, true); return false; }
+  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig);
+  if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
+  const config = getDbViewConfig(dbPath);
+  if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {
+    const layout = config.entityLayouts?.find(item => item.id === formConfig.layoutId);
+    if (layout) {
+      // The current form edits the linked definition, rather than keeping a second copy.
+      layout.formConfig = MeldexDbFormModel.normalize(formConfig, MeldexDbFormModel.layoutFields(layout));
+      delete layout.formConfig.layoutId; delete layout.formConfig.mode;
+    }
+  }
   const { idx, views } = _getActiveFormViewRecord(dbPath, ctx);
   if (idx >= 0 && views[idx]) {
     if (!views[idx].typeSpecific || typeof views[idx].typeSpecific !== 'object' || Array.isArray(views[idx].typeSpecific)) views[idx].typeSpecific = {};
     if (!views[idx].typeSpecific.form || typeof views[idx].typeSpecific.form !== 'object' || Array.isArray(views[idx].typeSpecific.form)) views[idx].typeSpecific.form = {};
     views[idx].typeSpecific.form.formConfig = formConfig;
-    setSavedViews(dbPath, views, { label: 'シート表示: フォーム設定' });
+    config.savedViews = views;
   } else {
-    setCurrentDbViewTypeSpecific(dbPath, 'form', { formConfig }, { ctx, historyLabel: 'シート表示: フォーム設定' });
+    config.formConfig = formConfig;
   }
+  // Binding and its shared definition are one preference/history operation.
+  saveDbViewConfig(dbPath, config, { historyLabel: 'シート表示: フォーム設定', ctx });
+  return true;
 }
 
 function _formContainer(ctx) {
@@ -106,7 +129,7 @@ function renderDbFormView(ctx) {
   if (!root || !dbPath) return;
   root.style.display = 'flex';
   const pivot = ctx.pivotData || state.pivotData || { properties: [] };
-  const propTypes = getPropertyTypes(dbPath) || {};
+  const propTypes = getPropertyTypes(dbPath, ctx) || {};
   const formProps = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivot.properties || [])
     : (pivot.properties || []);
@@ -123,19 +146,38 @@ function renderDbFormView(ctx) {
     b.textContent = label;
     b.dataset.e2eId = e2eId;
     b.setAttribute('aria-pressed', active ? 'true' : 'false');
-    b.addEventListener('click', fn);
+    b.addEventListener('click', async () => {
+      if (cfg.mode === 'entry' && globalThis.MeldexDbFormRuntime && !await MeldexDbFormRuntime.confirmLeave(root)) return;
+      fn();
+    });
     return b;
   };
-  toolbar.appendChild(mkBtn('編集', cfg.mode !== 'answer', () => {
-    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
-  }, 'db-form-view-edit'));
+  const editButton = mkBtn('編集', !['answer', 'entry'].includes(cfg.mode), () => {
+    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
+  }, 'db-form-view-edit');
+  editButton.disabled = ctx.formApp?.definitionReadOnly === true;
+  toolbar.appendChild(editButton);
   toolbar.appendChild(mkBtn('回答プレビュー', cfg.mode === 'answer', () => {
-    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
+    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
   }, 'db-form-view-answer'));
+  if (!cfg.customInstructionsRelay && !cfg.betaFeedbackRelay) toolbar.appendChild(mkBtn('入力・閲覧', cfg.mode === 'entry', () => {
+    cfg.mode = 'entry'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
+  }, 'db-form-view-entry'));
   root.appendChild(toolbar);
+  if (globalThis.MeldexDbFormDesigner) MeldexDbFormDesigner.buildViewSelector(root, dbPath, cfg, propTypes, ctx);
+
+  if (cfg.mode === 'entry' && globalThis.MeldexDbFormRuntime) {
+    MeldexDbFormRuntime.renderView(root, dbPath, cfg, propTypes, ctx);
+    return;
+  }
 
   if (cfg.mode === 'answer') {
-    root.appendChild(_buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: !(cfg.customInstructionsRelay || cfg.betaFeedbackRelay) }));
+    const form = _buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: !(cfg.customInstructionsRelay || cfg.betaFeedbackRelay) });
+    if (ctx.formApp?.getLayout()) {
+      MeldexDbFormRuntime.applyNewLayout(form, ctx.formApp.getLayout(), propTypes, dbPath, { ...ctx, readOnly: true });
+      form.querySelectorAll('[data-form-add-column]').forEach(button => { button.disabled = true; });
+    }
+    root.appendChild(form);
     return;
   }
 
@@ -164,6 +206,12 @@ function renderDbFormView(ctx) {
   _dbFormDispatchSaveInput(desc, () => { cfg.headerDescription = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
   side.appendChild(desc);
 
+  const placedFields = cfg.layoutId && globalThis.MeldexDbFormModel
+    ? MeldexDbFormModel.layoutFields(ctx.formApp?.getLayout() || getDbViewConfig(dbPath).entityLayouts?.find(layout => layout.id === cfg.layoutId)) : null;
+  if (placedFields) {
+    const hint = document.createElement('p'); hint.textContent = '未配置の列は「配置を編集」→「列を配置」から追加できます。'; side.appendChild(hint);
+  }
+
   formProps.forEach(prop => {
     const type = propTypes[prop]?.type || 'text';
     if (DB_FORM_UNSUPPORTED_TYPES.has(type)) return;
@@ -175,6 +223,7 @@ function renderDbFormView(ctx) {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = checked;
+    if (placedFields && !placedFields.includes(prop)) { cb.disabled = true; cb.title = '「配置を編集」から列を配置してください'; }
     _dbFormSetControlIdentity(cb, cfg, prop, 'field-enabled', 'フォーム項目に含める: ' + prop);
     const name = document.createElement('span');
     name.className = 'gb-form-prop-name';
@@ -204,7 +253,8 @@ function renderDbFormView(ctx) {
   root.appendChild(editor);
 }
 
-function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
+function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverride) {
+  const save = () => saveOverride ? saveOverride(cfg) : saveActiveFormConfig(dbPath, cfg, ctx);
   const wrap = document.createElement('div');
   wrap.className = 'gb-form-fields-editor';
   const settings = document.createElement('div');
@@ -223,7 +273,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   });
   entityNameSelect.addEventListener('change', e => {
     cfg.entityNameProp = e.target.value || '';
-    saveActiveFormConfig(dbPath, cfg, ctx);
+    save();
   });
   settings.appendChild(entityNameLabel);
   settings.appendChild(entityNameSelect);
@@ -265,7 +315,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     label.value = cfg.labels[prop] || prop;
     const labelId = _dbFormSetControlIdentity(label, cfg, prop, 'label-input', '表示名: ' + prop);
     row.appendChild(_dbFormEditorLabel('表示名', labelId));
-    _dbFormDispatchSaveInput(label, () => { cfg.labels[prop] = label.value.trim() || prop; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(label, () => { cfg.labels[prop] = label.value.trim() || prop; save(); });
     row.appendChild(label);
     const desc = document.createElement('input');
     desc.className = 'gb-input';
@@ -273,7 +323,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     desc.value = cfg.descriptions[prop] || '';
     const descId = _dbFormSetControlIdentity(desc, cfg, prop, 'description-input', '説明: ' + prop);
     row.appendChild(_dbFormEditorLabel('説明', descId));
-    _dbFormDispatchSaveInput(desc, () => { cfg.descriptions[prop] = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(desc, () => { cfg.descriptions[prop] = desc.value; save(); });
     row.appendChild(desc);
     const placeholder = document.createElement('input');
     placeholder.className = 'gb-input';
@@ -281,7 +331,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     placeholder.value = cfg.placeholders[prop] || '';
     const placeholderId = _dbFormSetControlIdentity(placeholder, cfg, prop, 'placeholder-input', 'プレースホルダー: ' + prop);
     row.appendChild(_dbFormEditorLabel('プレースホルダー', placeholderId));
-    _dbFormDispatchSaveInput(placeholder, () => { cfg.placeholders[prop] = placeholder.value; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(placeholder, () => { cfg.placeholders[prop] = placeholder.value; save(); });
     row.appendChild(placeholder);
     const foot = document.createElement('label');
     foot.className = 'gb-check';
@@ -300,9 +350,10 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     required.addEventListener('change', (e) => {
       if (e.target.checked && !cfg.required.includes(prop)) cfg.required.push(prop);
       if (!e.target.checked) cfg.required = cfg.required.filter(p => p !== prop);
-      saveActiveFormConfig(dbPath, cfg, ctx);
+      save();
     });
     row.appendChild(foot);
+    if (globalThis.MeldexDbFormDesigner) MeldexDbFormDesigner.appendRules(row, cfg, prop, type, save);
     wrap.appendChild(row);
   });
   const submitRow = document.createElement('div');
@@ -331,8 +382,8 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   successField.appendChild(successMessage);
   submitRow.appendChild(submitLabelField);
   submitRow.appendChild(successField);
-  submitLabel.addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; saveActiveFormConfig(dbPath, cfg, ctx); });
-  successMessage.addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; saveActiveFormConfig(dbPath, cfg, ctx); });
+  submitLabel.addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; save(); });
+  successMessage.addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; save(); });
   wrap.appendChild(submitRow);
   return wrap;
 }
@@ -352,9 +403,10 @@ function _buildFormAnswerPanel(dbPath, cfg, propTypes, publicMode, options = {})
   form.dataset.e2eId = _dbFormControlIdentity(cfg, 'answer', 'form');
   form.setAttribute('aria-label', cfg.headerTitle || 'フォーム回答');
   if (options.previewOnly) form.dataset.previewOnly = '1';
+  form.addEventListener('input', event => { if (event.target.matches('input,textarea,select')) event.target.dataset.formDirty = 'true'; });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    submitDbFormResponse(form, dbPath, cfg, propTypes, { previewOnly: !!options.previewOnly });
+    submitDbFormResponse(form, dbPath, cfg, propTypes, options);
   });
   if (cfg.headerTitle) {
     const h = document.createElement('h2');
@@ -372,6 +424,7 @@ function _buildFormAnswerPanel(dbPath, cfg, propTypes, publicMode, options = {})
     form.appendChild(p);
   }
   cfg.fields.forEach(prop => {
+    if (Object.prototype.hasOwnProperty.call(options.fixedFields || {}, prop)) return;
     const type = propTypes[prop]?.type || 'text';
     if (DB_FORM_UNSUPPORTED_TYPES.has(type)) return;
     if (publicMode && DB_FORM_PUBLIC_HIDDEN_TYPES.has(type)) return;
@@ -413,6 +466,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
   } else if (type === 'number') {
     input = document.createElement('input');
     input.type = 'number';
+    input.step = 'any';
   } else if (type === 'date') {
     input = document.createElement('input');
     input.type = ptc.withTime ? 'datetime-local' : 'date';
@@ -451,21 +505,39 @@ function _buildFormInputRow(prop, cfg, ptc) {
     input.type = 'text';
   }
   input.name = prop;
+  input.setAttribute('aria-label', cfg.labels[prop] || prop);
   input.className = type === 'select' ? 'gb-select gb-form-select' : (type === 'long-text' ? 'gb-input gb-textarea' : 'gb-input');
   input.dataset.formType = type;
   input.dataset.e2eId = _dbFormControlIdentity(cfg, prop, type === 'long-text' ? 'textarea' : type);
   if (cfg.placeholders[prop]) input.placeholder = cfg.placeholders[prop];
   if (cfg.required.includes(prop)) input.required = true;
+  if (globalThis.MeldexDbFormModel) {
+    const rule = MeldexDbFormModel.ruleFor(cfg, prop);
+    for (const key of ['min', 'max'])
+      if (rule[key] !== undefined && rule[key] !== '') input[key] = rule[key];
+    for (const key of ['minLength', 'maxLength'])
+      if (rule[key] !== undefined && rule[key] !== '') input.dataset['form' + key[0].toUpperCase() + key.slice(1)] = rule[key];
+    input.dataset.formField = prop;
+    const error = document.createElement('span'); error.className = 'gb-form-field-error'; error.setAttribute('role', 'status');
+    row.appendChild(error);
+    const validate = () => {
+      const value = type === 'checkbox' ? String(input.checked) : type === 'image' ? String(input.files?.length || '') : input.value;
+      const message = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, type, rule);
+      input.setCustomValidity(message); input.setAttribute('aria-invalid', String(!!message)); error.textContent = message;
+    };
+    input.addEventListener('input', () => { input.setCustomValidity(''); error.textContent = ''; });
+    input.addEventListener('change', validate); input.addEventListener('invalid', validate);
+  }
   row.appendChild(input);
   return row;
 }
 
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
-  const fields = {};
+  const fields = { ...(options.fixedFields || {}) };
   for (const prop of cfg.fields) {
     const safeName = MeldexEscape.cssIdent(prop);
     const input = form.querySelector(`[name="${safeName}"]`);
-    if (!input) continue;
+    if (!input || input.disabled) continue;
     const type = propTypes[prop]?.type || 'text';
     if (type === 'checkbox') {
       fields[prop] = input.checked ? 'true' : 'false';
@@ -563,7 +635,32 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
   if (submitButton) submitButton.disabled = true;
   const msg = form.querySelector('.gb-form-submit-message');
   try {
-    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
+    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
+    // Validate before image upload as well, so invalid sibling fields create no attachments.
+    if (globalThis.MeldexDbFormModel) {
+      for (const prop of cfg.fields || []) {
+        const input = [...form.elements].find(item => item.name === prop);
+        if (!input || input.disabled) continue;
+        const type = propTypes[prop]?.type || 'text';
+        const value = type === 'checkbox' ? String(input.checked) : type === 'image' ? String(input.files?.length || '') : input.value;
+        const rules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, type, MeldexDbFormModel.ruleFor(cfg, prop, rules));
+        if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); throw new Error(error); }
+      }
+    }
+    const fields = await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
+    if (globalThis.MeldexDbFormModel) {
+      const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
+      for (const prop of cfg.fields || []) {
+        const rule = MeldexDbFormModel.ruleFor(cfg, prop, sheetRules);
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, fields[prop], propTypes[prop]?.type || 'text', rule);
+        if (error) {
+          const input = [...form.elements].find(item => item.name === prop);
+          if (input) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); }
+          throw new Error(error);
+        }
+      }
+    }
     if (cfg.betaFeedbackRelay && !fields['送信日']) {
       fields['送信日'] = new Date().toISOString().slice(0, 10);
     }
@@ -586,16 +683,19 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const nameProp = cfg.entityNameProp || '';
-    const name = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP');
+    const proposedName = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
+    const name = form._dbFormPendingName || proposedName;
     if (options.previewOnly) {
       if (msg) msg.textContent = '回答プレビューです。実データは作成されません。';
       const previewResult = { previewOnly: true };
       return { ...previewResult, fields, name };
     }
+    form._dbFormPendingName = name;
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const validation = await applyChatCustomInstructionsFromForm(fields, cfg, { validateOnly: true, silent: true });
       if (validation?.ok === false) throw new Error(_customInstructionRelayErrorMessage(validation));
     }
+    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
     const createResult = await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
@@ -619,7 +719,12 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (msg) msg.textContent = completionMessage;
     _showBetaFeedbackThanksDialog(cfg, completionMessage);
     form.reset();
-    if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
+    form.querySelectorAll('[data-form-dirty]').forEach(input => { input.dataset.formDirty = 'false'; });
+    delete form._dbFormPendingName;
+    form._dbFormSubmitting = false;
+    if (options.onCreated) await options.onCreated(createResult);
+    else if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
+    return createResult;
   } catch (err) {
     if (msg) msg.textContent = err?.message || '送信に失敗しました';
     showStatus(err?.message || 'フォーム送信に失敗しました', true);

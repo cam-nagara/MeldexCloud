@@ -90,6 +90,8 @@ input[type=number] { -moz-appearance: textfield; }
   --detail-border: #333333; --detail-hover-bg: #3e3e3e; --detail-active-bg: #264f78; --detail-active-fg: #ffffff; --detail-accent: #569cd6;
   --chat-bg: var(--content-bg); --chat-panel-bg: #252525; --chat-message-bg: #2d2d2d; --chat-input-bg: var(--content-bg); --chat-input-fg: #d4d4d4;
   --chat-fg: #d4d4d4; --chat-muted-fg: #969696; --chat-border: #333333; --chat-hover-bg: #3e3e3e; --chat-active-bg: #569cd6; --chat-active-fg: #ffffff; --chat-accent: #569cd6;
+  --chat-user-bg: color-mix(in srgb, var(--chat-accent) calc(100% - var(--theme-ui-auto-dark-percent, 30%)), black var(--theme-ui-auto-dark-percent, 30%)); --chat-user-fg: #ffffff;
+  --chat-message-fg: var(--chat-fg);
   --timer-bg: var(--content-bg); --timer-panel-bg: #252525; --timer-display-bg: var(--content-bg); --timer-fg: #d4d4d4; --timer-muted-fg: #969696;
   --timer-border: #333333; --timer-hover-bg: #3e3e3e; --timer-active-bg: #569cd6; --timer-active-fg: #ffffff; --timer-accent: #569cd6;
   --history-bg: var(--content-bg); --history-row-bg: #252525; --history-fg: #d4d4d4; --history-muted-fg: #969696;

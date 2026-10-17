@@ -1,3 +1,4 @@
+        editor.doc.title = exactLabel;
         const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
           ? editor.host.closest('.gb-scriptnote-root')
           : null;
@@ -388,6 +389,7 @@ function navOpen(entry, opts) {
   const o = opts || undefined;
   if (entry.type === 'page') return openPage(entry.label, entry.path, o);
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
+  if (entry.type === 'form-app') return openFormApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
   if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
@@ -832,7 +834,8 @@ function _applyNavEntryToBoundTab(navState, entry) {
     }
     return true;
   };
-  if (typeChanged && typeof removeComponentInstance === 'function') {
+  const formFileChanged = nextType === 'form-app' && tab.path !== (entry.path || entry.dbPath || '');
+  if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
     const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
     if (component && typeof removeComponentInstanceSafely === 'function') {
       return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);
@@ -895,6 +898,3 @@ function navBack(paneId) {
   }
 }
 function navForward(paneId) {
-  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
-    ? GBPanelSet.rightRailNavigationState(paneId)
-    : null;

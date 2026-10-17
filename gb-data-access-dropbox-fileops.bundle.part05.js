@@ -1,3 +1,4 @@
+      }
     } else if (index < 0) result.status = 'unchanged';
     else {
       next.splice(index, 1);
@@ -797,7 +798,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
@@ -846,6 +847,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         });
         return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
+      if (type === 'form-app') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-form');
+        const targetPath = _joinPath(parent, labelName + '.mel-form');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
+        content = titled(content,targetPath);
+        if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+          method: 'PUT', body: { content, create_only: true },
+        });
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
@@ -877,7 +889,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
         const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
         if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
           titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
@@ -886,15 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (titleOnly) {
         const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
         const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
-        const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
-        const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
-          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
-        });
-        return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
-      }
-      const parentPath = _dirname(oldPath);
-      const sourceName = _basename(oldPath);
-      if (source.kind === 'directory') {
-        const newPath = _joinPath(parentPath, newName);
-        if (newPath !== oldPath && await _pathExists(provider, newPath)) throw new Error(`既に存在: ${newName}`);
-        const annotationPlan = newPath !== oldPath

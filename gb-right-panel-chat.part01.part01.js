@@ -180,6 +180,7 @@ const CHAT_CLI_MODEL_CATALOG = {
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
@@ -191,8 +192,8 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
-  gemini: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001'],
+  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
   openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
@@ -215,9 +216,10 @@ const CHAT_CLI_PROVIDERS = {
   antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 7;
+const CHAT_MODELS_CACHE_VERSION = 8;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
+    'gemini-4-argon': { input: 4, output: 20 },
     'gemini-3.8-flash': { input: 1.5, output: 7.5 },
     'gemini-3.7-flash': { input: 1.5, output: 7.5 },
     'gemini-3.6-flash': { input: 1.5, output: 7.5 },
@@ -227,6 +229,7 @@ const CHAT_COST_TABLE_PER_MILLION = {
     'gemini-2.5-pro': { input: 1.25, output: 10.00 },
   },
   anthropic: {
+    'claude-haiku-5-5': { input: 0.5, output: 2.5 },
     'claude-fable-5-1': { input: 10, output: 50 },
     'claude-opus-5-5': { input: 4, output: 20 },
     'claude-sonnet-5-5': { input: 2, output: 10 },

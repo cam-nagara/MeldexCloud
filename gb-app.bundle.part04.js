@@ -1,3 +1,6 @@
+    if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
+    if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
+    const result = await _origApiFetch(path, opts);
     mutationSucceeded = true;
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
@@ -391,6 +394,7 @@ async function init() {
       try {
         if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
+        else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
         else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
         else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
@@ -454,6 +458,7 @@ async function init() {
           else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
           else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
+          else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
           else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
           else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
@@ -893,8 +898,3 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       return {
         x,
         y,
-        width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
-        height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
-      };
-    };
-    function onKeyDown(ev) {

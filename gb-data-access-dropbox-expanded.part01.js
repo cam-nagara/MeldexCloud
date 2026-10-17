@@ -1023,6 +1023,8 @@
       path,
       properties,
       page_content: String(parsed.body || '').trim(),
+      quick_memo: parsed.frontmatter.quick_memo === true,
+      quick_memo_legacy_title: parsed.frontmatter.quick_memo === true && !Object.hasOwn(parsed.frontmatter, 'quick_memo_title'),
       id: parsed.frontmatter.id || '',
       entry_attachments: Array.isArray(parsed.frontmatter.entry_attachments) ? parsed.frontmatter.entry_attachments : [],
       revision: Number(parsed.frontmatter.meldex_revision || 0),

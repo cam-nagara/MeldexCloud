@@ -226,7 +226,8 @@ const UI_STYLE_SECTIONS = {
   'チャット': [
     { label: 'パネル', fg:'--chat-fg', line:'--chat-border', text:'チャット' },
     { label: 'ツール領域', bg:'--chat-panel-bg', text:'ツール' },
-    { label: 'メッセージ', fg:'--chat-fg', bg:'--chat-message-bg', text:'メッセージ' },
+    { label: 'メッセージ', fg:'--chat-message-fg', bg:'--chat-message-bg', text:'メッセージ' },
+    { label: '自分のフキダシ', fg:'--chat-user-fg', bg:'--chat-user-bg', text:'確認しました。' },
     { label: '入力欄', fg:'--chat-input-fg', bg:'--chat-input-bg', text:'入力欄' },
     { label: '補助表示', fg:'--chat-muted-fg', text:'補助' },
     { label: 'ホバー', bg:'--chat-hover-bg', text:'ホバー' },

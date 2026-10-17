@@ -186,7 +186,11 @@
 
 .meldex-entity-attachment-add-container {
   flex: 0 0 auto;
+  margin-left: auto;
 }
+
+.meldex-quick-memo-drawing img { max-width: 100%; height: auto; }
+.meldex-quick-memo-audio audio { display: block; width: 100%; max-width: 100%; }
 
 .meldex-entity-linked-content {
   min-width: 0;

@@ -39,6 +39,7 @@
     { label: 'ノート', icon: 'fileText', type: 'page' },
     { label: 'シート', icon: 'database', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
+    { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
     { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
   ];
 
@@ -50,6 +51,7 @@
       { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
       { label: 'シート', icon: 'database', type: 'database' },
       { label: 'ボード', icon: 'presentation', type: 'board' },
+      { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
       { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
     ],
   }];
@@ -58,6 +60,7 @@
     page: 'ノート',
     scriptnote: 'シナリオ',
     board: 'ボード',
+    'form-app': 'フォーム',
     database: 'シート',
     calendar: 'カレンダー',
     csv: 'CSV',

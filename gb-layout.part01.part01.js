@@ -74,7 +74,7 @@ const GBLayout = (() => {
 
   function _isSidebarPaneNode(node) {
     const role = _paneRoleName(node);
-    return role === 'left-sidebar' || role === 'right-sidebar';
+    return role === 'left-sidebar' || role === 'right-sidebar' || role === 'chat-sidebar';
   }
 
   function _activeTabForPaneNode(node) {
@@ -147,7 +147,7 @@ const GBLayout = (() => {
   const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
     ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
     ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
-    ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
+    ['ヒストリー', 'history'], ['バージョン管理', 'version'],
   ];
   const FIXED_RAIL_RIGHT_TYPES = window.GBRailContract?.types?.()
     || new Set(FIXED_RAIL_RIGHT_DEFAULTS.map(([, type]) => type));
@@ -277,7 +277,7 @@ const GBLayout = (() => {
       || _collectFixedRailPanes(mainDock)[0]
       || allPanes.find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
     if (!main) return false;
-    const fileTypes = new Set(['page', 'board', 'scriptnote', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
+    const fileTypes = new Set(['page', 'board', 'scriptnote', 'form-app', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
     const isFile = tab => fileTypes.has(tab?.type) || (tab?.type === 'calendar' && !!tab.path);
     let changed = false;
     const sidePanes = new Set([..._collectFixedRailPanes(leftDock), ..._collectFixedRailPanes(rightDock),
@@ -1014,9 +1014,26 @@ const GBLayout = (() => {
     // 変わっても同じピクセル幅になるよう比率を再計算する。
     // スナップショット（_savedInnerRatio）は使わず毎回現在値から算出するため、
     // 折りたたみ中に右幅をドラッグ調整しても展開時に破棄されない。
-    const innerSplit = _innerHorizontalSplit(otherChild);
+    if (targetNode.meldexRole === 'chat-sidebar') {
+      // チャットの開閉では既存の両サイドバーの幅を保ち、作業領域で吸収する。
+      const fullWidth = _splitRenderedContentSize(splitNode);
+      const remaining = targetNode.collapsed ? fullWidth - 4
+        : (childIndex === 1 ? splitNode.ratio : 1 - splitNode.ratio) * (fullWidth - 4);
+      let leftWidth = 0;
+      for (const [role, selector] of [['left-sidebar', '.gb-dock-fixed-left'], ['right-sidebar', '.gb-dock-fixed-right']]) {
+        const dock = _findFixedRailPanelset(otherChild, role);
+        const parent = dock && findParent(_root, dock.id)?.node;
+        const pixels = document.querySelector(selector)?.getBoundingClientRect?.().width || 0;
+        if (role === 'left-sidebar') leftWidth = pixels;
+        if (!dock || dock.collapsed || parent?.type !== 'split' || !pixels) continue;
+        const available = role === 'left-sidebar' ? remaining : remaining - leftWidth - 4;
+        const fraction = Math.max(.05, Math.min(.9, pixels / Math.max(1, available - 4)));
+        parent.ratio = role === 'left-sidebar' ? fraction : 1 - fraction;
+      }
+    }
+    const innerSplit = targetNode.meldexRole === 'chat-sidebar' ? null : _innerHorizontalSplit(otherChild);
     if (innerSplit) {
-      const layoutW = _layoutEl?.clientWidth || window.innerWidth || 1600;
+      const layoutW = _splitRenderedContentSize(splitNode);
       const handlePx = 4;
       // 左レール展開時のルート比率（折りたたみ時は保存値、展開時は復元済みの現在値）
       const expandedRootRatio = targetNode.collapsed

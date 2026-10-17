@@ -281,7 +281,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
-  const allProps = Object.keys(data.properties || {});
+  const allProps = Object.keys(data.properties || {}).filter(name => !(data.quick_memo === true && name === '種別'
+    && (data.properties[name] || []).every(item => item.value === 'メモ')));
   const layout = typeof getPropertyLayout === 'function'
     ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx })
     : { order: getEntryPropOrder(parentDb) || [...allProps].sort(), hidden: [], groups: [] };
@@ -1452,7 +1453,8 @@ function stripAutoLinks(html) {
 function _quickMemoStoredHtml(element) {
   const body = element?.tagName === 'DIV' && element.classList.contains('meldex-quick-memo-body');
   const drawing = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-drawing');
-  if (!body && !drawing) return null;
+  const audio = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-audio');
+  if (!body && !drawing && !audio) return null;
   const root = element.cloneNode(true);
   const allowed = new Set('DIV P BR B STRONG I EM U S DEL SPAN A UL OL LI BLOCKQUOTE PRE CODE H1 H2 H3 H4 H5 H6 IMG FIGURE FIGCAPTION HR AUDIO VIDEO SOURCE TABLE THEAD TBODY TFOOT TR TD TH CAPTION COLGROUP COL'.split(' '));
   const forbidden = new Set('SCRIPT STYLE IFRAME OBJECT EMBED SVG MATH TEMPLATE FORM INPUT BUTTON LINK META BASE'.split(' '));
@@ -1491,12 +1493,12 @@ function _quickMemoStoredHtml(element) {
     root.removeAttribute('style');
   }
   [...root.attributes].forEach(attr => root.removeAttribute(attr.name));
-  root.setAttribute('class', body ? 'meldex-quick-memo-body' : 'meldex-quick-memo-drawing');
+  root.setAttribute('class', body ? 'meldex-quick-memo-body' : audio ? 'meldex-quick-memo-audio' : 'meldex-quick-memo-drawing');
   return root.outerHTML;
 }
 
 function _quickMemoMarkdownBlock(lines, start) {
-  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing)["']/i);
+  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing|audio)["']/i);
   if (!opening) return null;
   const tag = opening[1].toLowerCase();
   const tokens = new RegExp('<\\/?' + tag + '(?=[\\s>])[^>]*>', 'gi');

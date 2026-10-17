@@ -54,7 +54,7 @@
           imageCopies.push({ path: item.path, source_locator: sourceLocator });
           continue;
         }
-        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(sourceLocator)) {
+        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
         if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');

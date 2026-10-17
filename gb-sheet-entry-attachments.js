@@ -371,8 +371,8 @@
       addBtn.className = 'entity-create-action-btn meldex-entity-attachment-add-btn';
       addBtn.dataset.e2eId = 'entity-attachment-add-btn';
       addBtn.title = '既存ファイルをリンクまたは新規作成';
-      addBtn.ariaLabel = 'リンクを追加';
-      addBtn.innerHTML = `${_icon('plus', 12)} <span>リンクを追加</span>`;
+      addBtn.ariaLabel = 'ファイルを追加';
+      addBtn.innerHTML = `${_icon('plus', 12)} <span>ファイルを追加</span>`;
 
       const fileInput = document.createElement('input');
       fileInput.type = 'file';

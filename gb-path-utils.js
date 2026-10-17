@@ -81,7 +81,7 @@
 
   function isDisplayTitleRename(route, body) {
     const managed = route === '/entity/rename' || (route === '/outliner/rename'
-      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer'].includes(body?.type));
+      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app'].includes(body?.type));
     return managed && (body?.title_only === true || /[\\/:?*"<>|]/.test(String(body?.new_name || '')));
   }
 
@@ -103,7 +103,7 @@
 
   function readDisplayTitle(text, path) {
     const raw = String(text || '');
-    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+    if (/\.(?:json|mel-scenario|mel-timer|mel-form)$/i.test(String(path || ''))) {
       try { const doc = JSON.parse(raw); return typeof doc?.display_title === 'string' ? doc.display_title : ''; }
       catch { return ''; }
     }
@@ -120,11 +120,11 @@
   function writeDisplayTitle(text, title, path, type) {
     title = validateDisplayTitle(title);
     const raw = String(text || '');
-    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+    if (/\.(?:json|mel-scenario|mel-timer|mel-form)$/i.test(String(path || ''))) {
       const doc = JSON.parse(raw);
       if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('文書の形式が不正です');
       doc.display_title = title;
-      if (['scenario', 'scriptnote'].includes(type)) doc.title = title;
+      if (['scenario', 'scriptnote', 'form-app'].includes(type)) doc.title = title;
       return JSON.stringify(doc, null, 2);
     }
     const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
@@ -208,7 +208,7 @@
 
   const MELDEX_CURRENT_FILE_SUFFIXES = [
     '.scriptnote.json', '.timer.json', '.board.md',
-    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
+    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form',
   ];
 
   // 旧版の複製失敗や外部同期が残した回復用ファイルは削除せず、現役文書として

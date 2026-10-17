@@ -855,7 +855,7 @@ function _copyCurrentFilePath() {
 function _toolMenuNavType(toolType) {
   return {
     page: 'page',
-    scriptnote: 'scriptnote',
+    scriptnote: 'scriptnote', 'form-app': 'form-app',
     database: 'pivot',
     board: 'board',
     calendar: 'calendar',

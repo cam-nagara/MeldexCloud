@@ -131,7 +131,8 @@ function _applyNavEntryToBoundTab(navState, entry) {
     }
     return true;
   };
-  if (typeChanged && typeof removeComponentInstance === 'function') {
+  const formFileChanged = nextType === 'form-app' && tab.path !== (entry.path || entry.dbPath || '');
+  if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
     const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
     if (component && typeof removeComponentInstanceSafely === 'function') {
       return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);

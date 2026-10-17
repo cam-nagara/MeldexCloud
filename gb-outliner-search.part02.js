@@ -111,6 +111,7 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote', open: (paneId) => _openPanelMenuItem('scriptnote', paneId) },
     { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
+    { label: 'フォーム', icon: 'clipboardList', type: 'form-app', open: (paneId) => _openPanelMenuItem('form-app', paneId) },
     { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
   ],
 }];

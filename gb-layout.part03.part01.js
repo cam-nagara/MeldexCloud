@@ -234,6 +234,7 @@
     if (!paneId) return false;
     const path = _collectNodePath(_root, paneId);
     if (!path || !path.length) return false;
+    if (_isMobileLayout() && paneId === _activePane && path.some(node => node.meldexRole === 'chat-sidebar')) return true;
     return path.every((node) => !node?.collapsed);
   }
 
@@ -248,6 +249,8 @@
     }
     let changed = false;
     path.forEach((node) => {
+      // 1パネル表示の切替では、デスクトップの折り畳み状態と幅を動かさない。
+      if (options?.preserveCollapsed) return;
       if (!node?.collapsed) return;
       // ユーザーが明示的に閉じた固定レールは、付随的な reveal（コンテンツ更新・
       // タブ切替等）では開き直さない。ユーザー操作起点（options.userIntent）のみ開く。
@@ -422,6 +425,7 @@
 
   function render() {
     if (!_layoutEl) return;
+    _root = window.GBChatSidebar?.ensure?.(_root) || _root;
     // Phase 5 安全策: ポップアップ表示中に再レンダリングすると、ポップアップ内に
     // 移動した pane DOM が innerHTML = '' で消える一方、_state.originalParent が
     // 新しい DOM に差し替わってしまい孤立する。事前にポップアップを閉じて pane DOM
@@ -1016,16 +1020,17 @@
   async function resetLayout(options) {
     const opts = options || {};
     const before = !opts.skipHistory ? captureLayoutSnapshot() : null;
-    const nextRoot = defaultLayout();
+    const nextRoot = _migrateLayoutToFixedRailsIfNeeded(defaultLayout());
     if (!await _removeOrphanComponentInstances(_root, nextRoot)) return false;
     _root = nextRoot;
-    _activePane = null;
+    _activePane = getAllPanes(nextRoot).find(pane => pane.meldexRole === 'main')?.id || null;
     render();
     saveLayout();
     if (before) {
       const after = captureLayoutSnapshot();
       pushLayoutHistory('レイアウト: 初期化', before, after, '標準レイアウトへ戻す');
     }
+    return true;
   }
 
   function _cloneLayoutTree(layout) {

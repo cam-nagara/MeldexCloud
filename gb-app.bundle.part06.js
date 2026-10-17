@@ -1,3 +1,8 @@
+      const prevOpacity = ann.opacity;
+      if (msg.color) ann.color = msg.color;
+      ann.opacity = 1;
+      Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
+        ann.color = prevColor;
         ann.opacity = prevOpacity;
       });
       return;
@@ -602,7 +607,11 @@ document.addEventListener('pointerdown', (e) => {
   // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
   // （2026-08-13 バグ報告で確認）。
   if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    document.querySelectorAll('.gb-context-menu').forEach(m => {
+      if (m._popupChildSelector && e.target?.closest?.(m._popupChildSelector)) return;
+      if (typeof m._requestClose === 'function') m._requestClose();
+      else m.remove();
+    });
   }
 }, true);
 document.addEventListener('keydown', (e) => {
@@ -627,6 +636,7 @@ document.addEventListener('keydown', (e) => {
   // （main-menu 等の既存 Escape 挙動を変えない）。
   let hasDialogMenu = false;
   menus.forEach((m) => {
+    if (typeof m._requestClose === 'function') { hasDialogMenu = true; m._requestClose(); return; }
     const role = m.getAttribute('role');
     if (role === 'dialog' || role === 'alertdialog') {
       hasDialogMenu = true;
@@ -887,14 +897,3 @@ function _stopHeartbeat() {
   clearInterval(_heartbeatTimer);
   _heartbeatTimer = null;
 }
-
-function _syncHeartbeatForVisibility() {
-  if (_isHeartbeatCloudMode()) {
-    _stopHeartbeat();
-    return;
-  }
-  _startHeartbeat();
-}
-
-document.addEventListener('visibilitychange', _syncHeartbeatForVisibility);
-if (document.body && typeof MutationObserver !== 'undefined') {

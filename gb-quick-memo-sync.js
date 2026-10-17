@@ -150,18 +150,23 @@
   }
 
   function memoBody(item) {
-    const title = memoTitle(item);
     const html = sanitizeHtml(item.html || '');
     const text = String(item.text || '').trim();
     const drawing = safeDrawing(item.drawing_png || item.drawing || '');
-    const parts = [`# ${title}`, ''];
+    const parts = [];
     if (html) {
       parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
     } else if (text) {
-      parts.push(MeldexEscape.html(text).replace(/\n/g, '<br>'), '');
+      parts.push('<div class="meldex-quick-memo-body">', MeldexEscape.html(text).replace(/\n/g, '<br>'), '</div>', '');
     }
     if (drawing) {
       parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
+    }
+    const clips = item.audio_clips || [];
+    if (!Array.isArray(clips) || clips.length > 20 || clips.reduce((size, clip) => size + String(clip).length, 0) > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+    for (const audio of clips) {
+      if (!/^data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+$/.test(audio) || audio.length > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+      parts.push('<figure class="meldex-quick-memo-audio">', `<audio controls preload="metadata" src="${audio}"></audio>`, '</figure>', '');
     }
     return parts.join('\n');
   }
@@ -186,6 +191,8 @@
       category: targetSheetName(item),
       quick_memo: true,
       quick_memo_id: String(item.memo_id || item.client_id || ''),
+      quick_memo_title: String(item.title || '').trim(),
+      quick_memo_input_mode: String(item.input_mode || 'text'),
       created,
       modified: updated,
       source_url: String(item.source_url || ''),
@@ -217,6 +224,7 @@
       if (!match || !parser) throw new Error('既存メモの追加情報を安全に読み取れません');
       const previous = parser(match[1]);
       if (previous.quick_memo !== true || previous.quick_memo_id !== item.memo_id) throw new Error('保存先は別のメモです');
+      if (!Object.hasOwn(item, 'audio_clips')) item = { ...item, audio_clips: [...String(existing.content).matchAll(/<audio[^>]+src=["'](data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+)["']/gi)].map(match => match[1]) };
       delete frontmatter.id;
       delete frontmatter.created;
       delete frontmatter.relations;

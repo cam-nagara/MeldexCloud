@@ -355,6 +355,7 @@ function _folderItemExt(item) {
   const path = String(item?.path || item?.name || '').split(/[?#]/)[0].toLowerCase();
   const name = path.split(/[\\/]/).pop() || '';
   if (name.endsWith('.mel-board')) return '.mel-board';
+  if (name.endsWith('.mel-form')) return '.mel-form';
   if (name.endsWith('.mel-sheet')) return '.mel-sheet';
   if (name.endsWith('.mel-scenario')) return '.mel-scenario';
   if (name.endsWith('.mel-timer')) return '.mel-timer';

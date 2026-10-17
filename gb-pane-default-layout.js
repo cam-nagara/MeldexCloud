@@ -113,7 +113,7 @@
     const id = typeof pane === 'string' ? pane : pane?.id;
     const walk = (node, sidebar = false) => {
       if (!node) return false;
-      sidebar = sidebar || ['left-sidebar', 'right-sidebar'].includes(node.meldexRole);
+      sidebar = sidebar || ['left-sidebar', 'right-sidebar', 'chat-sidebar'].includes(node.meldexRole);
       if (node.type === 'pane') return node.id === id && sidebar;
       const children = node.type === 'panelset' ? (node.groups || []).map(group => group.root) : node.children || [];
       return children.some(child => walk(child, sidebar));
@@ -170,7 +170,7 @@
     const rightDefaults = window.GBRailContract?.defaults?.() || [
       ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
       ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
-      ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
+      ['ヒストリー', 'history'], ['バージョン管理', 'version'],
     ];
     const rightPanes = rightDefaults.map(([label, type]) => _pane([_tab(label, type)]));
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });

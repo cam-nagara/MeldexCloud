@@ -1,3 +1,4 @@
+};
 
 function _treeNodeIsAncestor(parentNode, childNode) {
   if (!parentNode || !childNode || parentNode === childNode) return false;
@@ -897,4 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
     // 親コンテナ全件をDOM化せず、表示範囲＋オーバースキャンだけを維持する。
     const parentVirtualContainer = div.parentElement && div.parentElement.dataset && div.parentElement.dataset.virtual === 'true'
       ? div.parentElement : null;
-    if (parentVirtualContainer) {

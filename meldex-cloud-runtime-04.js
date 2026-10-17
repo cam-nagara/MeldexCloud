@@ -5487,6 +5487,7 @@
       const normalized = _normalizeRelativePath(relativePath);
       const lower = normalized.toLowerCase();
       if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
+      if (lower.endsWith('.mel-form')) return 'form-app';
       if (lower.endsWith('.mel-sheet')) return 'database';
       if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
@@ -6638,6 +6639,7 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-4-argon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
@@ -6650,6 +6652,7 @@
       'gemini-2.5-flash': { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
     },
     anthropic: {
+      'claude-haiku-5-5': { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
       'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
       'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
       'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
@@ -6869,7 +6872,7 @@
   //   top_kも既定値以外だと400になるため常に省略する。
   // - "adaptiveNoXhigh": 上と同じadaptive方式だがeffort='xhigh'は未対応（highへクランプ）。
   // - どちらにも一致しないモデルは従来のbudget_tokens方式を使う。
-  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
+  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-haiku-5'];
   const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 
   function _anthropicThinkingGeneration(model) {
@@ -7411,13 +7414,17 @@
     const system = String(body.system_prompt || '').trim();
     if (system) payload.systemInstruction = { parts: [{ text: system }] };
     if (Number.isFinite(Number(body.top_p))) payload.generationConfig.topP = _generationNumber(body, 'top_p', 1, 0, 1);
+    if (model.startsWith('gemini-4')) {
+      delete payload.generationConfig.temperature;
+      delete payload.generationConfig.topP;
+    }
     const tools = [];
     if (_requestFlag(body, 'allow_web_search', true)) tools.push({ google_search: {} });
     if (_requestFlag(body, 'allow_code_execution', false)) tools.push({ code_execution: {} });
     if (tools.length) payload.tools = tools;
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') {
-      if (model.startsWith('gemini-3')) {
+      if (/^gemini-[34]/.test(model)) {
         let level = ['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : 'high';
         if (model.includes('pro') && level === 'medium') level = 'high';
         payload.generationConfig.thinkingConfig = { thinkingLevel: level };
@@ -7826,6 +7833,7 @@
   function _splitNameAndExt(name) {
     const safeName = String(name || '');
     const lower = safeName.toLowerCase();
+    if (lower.endsWith('.mel-form')) return { stem: safeName.slice(0, -9), ext: '.mel-form' };
     if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
     if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
@@ -7917,7 +7925,7 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form'].includes(ext)
       || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
@@ -8603,6 +8611,7 @@
     const name = _basename(relativePath);
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
+    if (ext === '.mel-form') return 'form-app';
     if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
     if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
@@ -19420,7 +19429,16 @@
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
     let last = null;
     if (entries.length) {
-      try { last = await _readMessage(provider, meta.path, entries[entries.length - 1], sourceFolder); } catch {}
+      // アンケートは再送可能な固定IDをファイル名に使うため、日時で比較する。
+      const candidates = entries.filter(entry => /^poll_/.test(entry.name));
+      const ordinary = entries.filter(entry => !/^poll_/.test(entry.name)).pop();
+      if (ordinary) candidates.push(ordinary);
+      for (const entry of candidates) {
+        try {
+          const message = await _readMessage(provider, meta.path, entry, sourceFolder);
+          if (!last || (_timestampMillis(message.timestamp) || 0) > (_timestampMillis(last.timestamp) || 0)) last = message;
+        } catch {}
+      }
     }
     const payload = { ...meta, count: entries.length, last };
     if (meta.type === 'dm') payload.members = _roomMembers(meta.path);
@@ -19552,6 +19570,45 @@
       await _removeEntry(provider, _roomDir(roomPath, sourceFolder));
       return { ok: true };
     }
+    if (pathname === '/collab/poll' && ['GET', 'POST'].includes(method)) {
+      const polls = window.MeldexChatPolls;
+      if (!polls) throw new Error('アンケート機能を読み込めません');
+      const roomPath = _requireRoomPath(body?.room || url.searchParams.get('room'));
+      await _assertRoomAccess(provider, roomPath, user, sourceFolder);
+      const messageId = String(body?.message_id || url.searchParams.get('message_id') || '');
+      const voter = String(body?.voter || url.searchParams.get('voter') || '');
+      if (!/^[A-Za-z0-9_-]{1,120}$/.test(messageId) || (method === 'POST' || voter) && !polls.safeId.test(voter)) throw new Error('回答が不正です');
+      const poll = polls.extract(await provider.readText(_joinPath(_roomDir(roomPath, sourceFolder), messageId + '.md')));
+      const directory = _joinPath(_roomDir(roomPath, sourceFolder), '_polls', messageId);
+      if (method === 'POST') {
+        const choice = body?.choice;
+        if (!Number.isInteger(choice) || choice < 0 || choice >= poll.options.length) throw new Error('回答が不正です');
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先は重複投票を安全に防げません');
+        const filePath = _joinPath(directory, voter + '.md');
+        if (typeof internals._requireUnlockedPath !== 'function') throw new Error('編集ロックを確認できません');
+        await internals._requireUnlockedPath(provider, directory, { action: 'chat-poll-vote' });
+        await internals._requireUnlockedPath(provider, filePath, { action: 'chat-poll-vote' });
+        const ballot = { version: 1, choice };
+        if (!poll.anonymous) ballot.from = user;
+        try {
+          await provider.uploadBytesConditional(filePath, new TextEncoder().encode(JSON.stringify(ballot)), null);
+        } catch (error) {
+          if (error?.status !== 409) throw error;
+          const previous = JSON.parse(await provider.readText(filePath));
+          polls.result(poll, [[voter, previous]], voter);
+          if (previous.choice !== choice) throw new Error('すでに回答済みです');
+        }
+      }
+      const ballots = [];
+      if (await _pathExists(provider, directory)) {
+        const entries = await _listDirectoryEntries(provider, directory);
+        for (const entry of entries) {
+          const token = String(entry.name || '').replace(/\.md$/, '');
+          if (polls.safeId.test(token) && /\.md$/.test(entry.name)) ballots.push([token, JSON.parse(await provider.readText(_joinPath(directory, entry.name)))]);
+        }
+      }
+      return polls.result(poll, ballots, voter);
+    }
     if (pathname === '/collab/messages' && method === 'GET') {
       const roomPath = _requireRoomPath(url.searchParams.get('room') || 'general');
       await _assertRoomAccess(provider, roomPath, user, sourceFolder);
@@ -19571,6 +19628,7 @@
             || (sinceMs == null && String(message.timestamp || '') > since)) messages.push(message);
         } catch {}
       }
+      messages.sort((a, b) => (_timestampMillis(a.timestamp) || 0) - (_timestampMillis(b.timestamp) || 0));
       return messages.slice(-limit);
     }
     if (pathname === '/collab/send' && method === 'POST') {
@@ -19582,8 +19640,22 @@
       await _directoryHandle(provider, roomDir, true);
       const now = new Date();
       const timestamp = now.toISOString();
-      const fileName = _messageFileName(now);
+      const poll = text.includes('```meldex-poll') ? window.MeldexChatPolls.extract(text) : null;
+      const fileName = poll ? 'poll_' + poll.id + '.md' : _messageFileName(now);
       const filePath = _joinPath(roomDir, fileName);
+      if (poll) {
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先はアンケートを安全に保存できません');
+        await internals._requireUnlockedPath(provider, filePath, { action: 'chat-poll-create' });
+        try {
+          await provider.uploadBytesConditional(filePath, new TextEncoder().encode(_messageMarkdown(roomPath, user, text, timestamp)), null);
+        } catch (error) {
+          if (error?.status !== 409) throw error;
+          const previous = _parseMessage(await provider.readText(filePath), fileName.replace(/\.md$/, ''), roomPath);
+          if (previous.from !== user || previous.text !== text.trim()) throw new Error('同じIDのアンケートがすでに存在します');
+          return { ok: true, id: previous.id, timestamp: previous.timestamp };
+        }
+        return { ok: true, id: fileName.replace(/\.md$/, ''), timestamp };
+      }
       await provider.writeText(filePath, _messageMarkdown(roomPath, user, text, timestamp));
       return { ok: true, id: fileName.replace(/\.md$/i, ''), timestamp };
     }
@@ -25970,6 +26042,8 @@
       path,
       properties,
       page_content: String(parsed.body || '').trim(),
+      quick_memo: parsed.frontmatter.quick_memo === true,
+      quick_memo_legacy_title: parsed.frontmatter.quick_memo === true && !Object.hasOwn(parsed.frontmatter, 'quick_memo_title'),
       id: parsed.frontmatter.id || '',
       entry_attachments: Array.isArray(parsed.frontmatter.entry_attachments) ? parsed.frontmatter.entry_attachments : [],
       revision: Number(parsed.frontmatter.meldex_revision || 0),
@@ -29361,7 +29435,7 @@
     if (startsWith([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00])) return 'sqlite';
     if (startsWith([0x50, 0x4b, 0x03, 0x04]) || startsWith([0x50, 0x4b, 0x05, 0x06]) || startsWith([0x50, 0x4b, 0x07, 0x08])) return 'portable-zip';
     const lower = String(path || '').toLowerCase();
-    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
+    if (lower.endsWith('.mel-form') || lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
     return 'text';
   }
 
@@ -29531,6 +29605,7 @@
     const lower = String(path || '').toLowerCase();
     if (/\.(?:png|jpe?g|gif|webp|bmp|tiff?)$/.test(lower)) return 'image';
     if (/\.(?:mel-scenario|scriptnote\.json|scenario\.json)$/.test(lower)) return 'scriptnote';
+    if (lower.endsWith('.mel-form')) return 'form-app';
     if (/\.(?:mel-board|board\.md)$/.test(lower)) return 'board';
     return 'page';
   }
@@ -29755,7 +29830,7 @@
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
     const lower = path.toLowerCase();
-    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
+    if (lower.endsWith('.mel-form') || lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
       await _readVerifiedSearchReplaceText(provider, path);
     }
     if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) throw new Error('この形式は通常の検索置換に対応していません');
@@ -30051,9 +30126,14 @@
 
   function _fallbackModels(provider) {
     const key = String(provider || '').toLowerCase();
-    if (key === 'anthropic') return [{ id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' }];
-    if (key === 'openai') return [{ id: 'gpt-4.1-mini', name: 'GPT-4.1 mini' }];
-    return [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+    // Desktopの推奨一覧と同じ候補を返す。Cloudでは常にこの経路を使う。
+    const catalog = {
+      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+      anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+      openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+      local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
+    };
+    return (catalog[key] || catalog.gemini).map(id => ({ id, name: id }));
   }
 
   function _cloudRole() {
@@ -30316,10 +30396,10 @@
     ['.mel-board', 'board'],
     ['.mel-scenario', 'scenario'],
     ['.mel-timer', 'timer'],
-    ['.mel-sheet', 'sheet'],
+    ['.mel-sheet', 'sheet'], ['.mel-form', 'form'],
   ];
 
-  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet']);
+  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet', 'form']);
 
   // フロントマター全体（開始"---" 〜 終了"---"）を検出する正規表現。
   // ^ は文字列先頭に固定されるため match.index は常に 0 になる
@@ -32884,6 +32964,7 @@ function _historyFileKind(path, content) {
   const text = String(content || '').slice(0, 4000).toLowerCase();
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
+  if (name.endsWith('.mel-form')) return 'form';
   if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
@@ -35067,7 +35148,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote'].includes(type);
+      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
@@ -35116,6 +35197,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         });
         return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
+      if (type === 'form-app') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-form');
+        const targetPath = _joinPath(parent, labelName + '.mel-form');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
+        content = titled(content,targetPath);
+        if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+          method: 'PUT', body: { content, create_only: true },
+        });
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
@@ -35147,7 +35239,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer'].includes(body?.type)) {
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
         const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
         if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
           titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
@@ -35416,7 +35508,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           imageCopies.push({ path: item.path, source_locator: sourceLocator });
           continue;
         }
-        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(sourceLocator)) {
+        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
         if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
@@ -41141,8 +41233,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       addBtn.className = 'entity-create-action-btn meldex-entity-attachment-add-btn';
       addBtn.dataset.e2eId = 'entity-attachment-add-btn';
       addBtn.title = '既存ファイルをリンクまたは新規作成';
-      addBtn.ariaLabel = 'リンクを追加';
-      addBtn.innerHTML = `${_icon('plus', 12)} <span>リンクを追加</span>`;
+      addBtn.ariaLabel = 'ファイルを追加';
+      addBtn.innerHTML = `${_icon('plus', 12)} <span>ファイルを追加</span>`;
 
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
@@ -47709,10 +47801,10 @@ const FILE_TYPE_LABELS = {
   entity: 'ページ', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
-  archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
+  'form-app': 'フォーム', archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
+const NATIVE_TYPES = new Set(['form-app','page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -47968,7 +48060,7 @@ const UI_TYPE_ICONS = {
   chat: 'messagesSquare',
   tags: 'tag',
   annotation: 'squarePen',
-  sticky: 'clipboardList',
+  sticky: 'clipboardList', 'form-app': 'clipboardList',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',
@@ -52668,7 +52760,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isDisplayTitleRename(route, body) {
     const managed = route === '/entity/rename' || (route === '/outliner/rename'
-      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer'].includes(body?.type));
+      && ['page', 'board', 'database', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app'].includes(body?.type));
     return managed && (body?.title_only === true || /[\\/:?*"<>|]/.test(String(body?.new_name || '')));
   }
 
@@ -52690,7 +52782,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function readDisplayTitle(text, path) {
     const raw = String(text || '');
-    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+    if (/\.(?:json|mel-scenario|mel-timer|mel-form)$/i.test(String(path || ''))) {
       try { const doc = JSON.parse(raw); return typeof doc?.display_title === 'string' ? doc.display_title : ''; }
       catch { return ''; }
     }
@@ -52707,11 +52799,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function writeDisplayTitle(text, title, path, type) {
     title = validateDisplayTitle(title);
     const raw = String(text || '');
-    if (/\.(?:json|mel-scenario|mel-timer)$/i.test(String(path || ''))) {
+    if (/\.(?:json|mel-scenario|mel-timer|mel-form)$/i.test(String(path || ''))) {
       const doc = JSON.parse(raw);
       if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('文書の形式が不正です');
       doc.display_title = title;
-      if (['scenario', 'scriptnote'].includes(type)) doc.title = title;
+      if (['scenario', 'scriptnote', 'form-app'].includes(type)) doc.title = title;
       return JSON.stringify(doc, null, 2);
     }
     const fm = raw.match(/^\uFEFF?---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
@@ -52795,7 +52887,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const MELDEX_CURRENT_FILE_SUFFIXES = [
     '.scriptnote.json', '.timer.json', '.board.md',
-    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
+    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form',
   ];
 
   // 旧版の複製失敗や外部同期が残した回復用ファイルは削除せず、現役文書として
@@ -53230,18 +53322,23 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function memoBody(item) {
-    const title = memoTitle(item);
     const html = sanitizeHtml(item.html || '');
     const text = String(item.text || '').trim();
     const drawing = safeDrawing(item.drawing_png || item.drawing || '');
-    const parts = [`# ${title}`, ''];
+    const parts = [];
     if (html) {
       parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
     } else if (text) {
-      parts.push(MeldexEscape.html(text).replace(/\n/g, '<br>'), '');
+      parts.push('<div class="meldex-quick-memo-body">', MeldexEscape.html(text).replace(/\n/g, '<br>'), '</div>', '');
     }
     if (drawing) {
       parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
+    }
+    const clips = item.audio_clips || [];
+    if (!Array.isArray(clips) || clips.length > 20 || clips.reduce((size, clip) => size + String(clip).length, 0) > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+    for (const audio of clips) {
+      if (!/^data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+$/.test(audio) || audio.length > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+      parts.push('<figure class="meldex-quick-memo-audio">', `<audio controls preload="metadata" src="${audio}"></audio>`, '</figure>', '');
     }
     return parts.join('\n');
   }
@@ -53266,6 +53363,8 @@ document.addEventListener('DOMContentLoaded', () => {
       category: targetSheetName(item),
       quick_memo: true,
       quick_memo_id: String(item.memo_id || item.client_id || ''),
+      quick_memo_title: String(item.title || '').trim(),
+      quick_memo_input_mode: String(item.input_mode || 'text'),
       created,
       modified: updated,
       source_url: String(item.source_url || ''),
@@ -53297,6 +53396,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!match || !parser) throw new Error('既存メモの追加情報を安全に読み取れません');
       const previous = parser(match[1]);
       if (previous.quick_memo !== true || previous.quick_memo_id !== item.memo_id) throw new Error('保存先は別のメモです');
+      if (!Object.hasOwn(item, 'audio_clips')) item = { ...item, audio_clips: [...String(existing.content).matchAll(/<audio[^>]+src=["'](data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+)["']/gi)].map(match => match[1]) };
       delete frontmatter.id;
       delete frontmatter.created;
       delete frontmatter.relations;
@@ -66397,6 +66497,7 @@ ${reason.message}`
 
   function _closeDropdown(el) {
     if (!el || !el.isConnected) return;
+    if (typeof el._requestClose === 'function') { el._requestClose(); return; }
     if (el.matches?.('.cs-theme-ui-picker-menu,[data-theme-ui-menu]')) {
       _hideThemeUiMenu(el);
       return;
@@ -66486,6 +66587,7 @@ ${reason.message}`
     const exceptTarget = options?.exceptTarget || null;
     _dropdowns().forEach(el => {
       if (exceptTarget && el.contains(exceptTarget)) return;
+      if (exceptTarget && el._popupChildSelector && exceptTarget.closest?.(el._popupChildSelector)) return;
       _closeDropdown(el);
     });
   }
@@ -72604,6 +72706,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     fallback('--chat-bg', '--content-bg', '#1e1e1e');
     fallback('--chat-panel-bg', '--bg2', '#252525');
     fallback('--chat-message-bg', '--bg3', '#2d2d2d');
+    if (!next['--chat-message-fg']) next['--chat-message-fg'] = 'var(--chat-fg)';
+    if (!next['--chat-user-bg']) next['--chat-user-bg'] = 'color-mix(in srgb, var(--chat-accent) calc(100% - var(--theme-ui-auto-dark-percent, 30%)), black var(--theme-ui-auto-dark-percent, 30%))';
+    if (!next['--chat-user-fg']) next['--chat-user-fg'] = '#ffffff';
     fallback('--chat-input-bg', '--content-bg', '#1e1e1e');
     fallback('--chat-input-fg', '--fg', '#d4d4d4');
     fallback('--chat-fg', '--fg', '#d4d4d4');

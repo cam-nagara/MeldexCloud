@@ -969,7 +969,7 @@
     if (startsWith([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00])) return 'sqlite';
     if (startsWith([0x50, 0x4b, 0x03, 0x04]) || startsWith([0x50, 0x4b, 0x05, 0x06]) || startsWith([0x50, 0x4b, 0x07, 0x08])) return 'portable-zip';
     const lower = String(path || '').toLowerCase();
-    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
+    if (lower.endsWith('.mel-form') || lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) return 'unsupported-structured';
     return 'text';
   }
 
@@ -1139,6 +1139,7 @@
     const lower = String(path || '').toLowerCase();
     if (/\.(?:png|jpe?g|gif|webp|bmp|tiff?)$/.test(lower)) return 'image';
     if (/\.(?:mel-scenario|scriptnote\.json|scenario\.json)$/.test(lower)) return 'scriptnote';
+    if (lower.endsWith('.mel-form')) return 'form-app';
     if (/\.(?:mel-board|board\.md)$/.test(lower)) return 'board';
     return 'page';
   }
@@ -1363,7 +1364,7 @@
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
     const lower = path.toLowerCase();
-    if (lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
+    if (lower.endsWith('.mel-form') || lower.endsWith('.mel-board') || lower.endsWith('.mel-sheet') || lower.endsWith('.mel-timer')) {
       await _readVerifiedSearchReplaceText(provider, path);
     }
     if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) throw new Error('この形式は通常の検索置換に対応していません');
@@ -1659,9 +1660,14 @@
 
   function _fallbackModels(provider) {
     const key = String(provider || '').toLowerCase();
-    if (key === 'anthropic') return [{ id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' }];
-    if (key === 'openai') return [{ id: 'gpt-4.1-mini', name: 'GPT-4.1 mini' }];
-    return [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+    // Desktopの推奨一覧と同じ候補を返す。Cloudでは常にこの経路を使う。
+    const catalog = {
+      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+      anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+      openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+      local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
+    };
+    return (catalog[key] || catalog.gemini).map(id => ({ id, name: id }));
   }
 
   function _cloudRole() {

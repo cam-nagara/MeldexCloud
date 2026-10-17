@@ -9,7 +9,7 @@ const GBTabs = (() => {
     pivot: 'db', tree: 'listTree', gallery: 'db', kanban: 'db', timeline: 'db',
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
-    search: 'search', scriptnote: 'bookOpenText', version: 'gitBranch',
+    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', version: 'gitBranch',
   };
   const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
@@ -297,6 +297,9 @@ const GBTabs = (() => {
       GBPanelSet.recordRightRailSwitch(paneId, tabId);
     }
     pane.activeTabIndex = idx;
+    // 狭い画面ではチャットの親ドックを開くだけでは中央パネルが残る。
+    if (pane.tabs[idx]?.type === 'chat' && pane.meldexRole === 'chat-sidebar' && GBLayout.isMobileLayout?.()
+        && window.GBChatSidebar?.open()) return;
     const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
 
@@ -352,7 +355,7 @@ const GBTabs = (() => {
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
     // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
-    if (closedTab?.type === 'scriptnote' && typeof getComponentInstance === 'function') {
+    if (['scriptnote', 'form-app'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;
@@ -363,7 +366,7 @@ const GBTabs = (() => {
         }
         if (!flushed) {
           if (typeof showStatus === 'function') {
-            showStatus('シナリオを保存できなかったため、タブを閉じませんでした', true);
+            showStatus('保存または入力の確認が完了しなかったため、タブを閉じませんでした', true);
           }
           return false;
         }

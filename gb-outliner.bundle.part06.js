@@ -1,3 +1,5 @@
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.isComposing) return;
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }

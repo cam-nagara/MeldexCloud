@@ -479,7 +479,7 @@ function _mapRenamedPath(path, oldPath, newPath) {
 }
 
 const APP_PATH_REF_KEYS = [
-  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath',
+  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath', 'formPath',
   'pagePath', 'entityPath', 'folderPath', 'mediaPath', 'csvPath', 'versionPath',
   'calendarFile',
 ];
@@ -846,6 +846,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      component.onPathRename?.(oldPath, newPath, options);
     });
   }
 

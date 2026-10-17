@@ -1,3 +1,4 @@
+      closeTreeContextMenu();
       if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
     }, null, 'save');
     addMenuItem('バージョン管理', () => {
@@ -595,6 +596,7 @@ function _createOutlinerPendingCreateNode(type, label) {
 function _openOutlinerCreatedNode(nd, name) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
+  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
@@ -895,6 +897,3 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
     }
     if (onFinish) onFinish();
   };
-
-  input.addEventListener('blur', finish);
-  input.addEventListener('keydown', (e) => {

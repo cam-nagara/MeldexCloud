@@ -56,7 +56,7 @@ const GBPaneBridge = (() => {
 
   // ToolComponentで描画するタイプ（レガシーコンテナを使わない、独自DOM生成）
   const COMPONENT_TYPES = new Set([
-    'calendar', 'search', 'scriptnote', 'version', 'board', 'system-sheet',
+    'calendar', 'search', 'scriptnote', 'form-app', 'version', 'board', 'system-sheet',
     'information', 'backlinks', 'file-theme',
   ]);
 

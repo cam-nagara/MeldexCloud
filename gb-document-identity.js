@@ -28,10 +28,10 @@
     ['.mel-board', 'board'],
     ['.mel-scenario', 'scenario'],
     ['.mel-timer', 'timer'],
-    ['.mel-sheet', 'sheet'],
+    ['.mel-sheet', 'sheet'], ['.mel-form', 'form'],
   ];
 
-  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet']);
+  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet', 'form']);
 
   // フロントマター全体（開始"---" 〜 終了"---"）を検出する正規表現。
   // ^ は文字列先頭に固定されるため match.index は常に 0 になる

@@ -67,6 +67,7 @@
 
   function _closeDropdown(el) {
     if (!el || !el.isConnected) return;
+    if (typeof el._requestClose === 'function') { el._requestClose(); return; }
     if (el.matches?.('.cs-theme-ui-picker-menu,[data-theme-ui-menu]')) {
       _hideThemeUiMenu(el);
       return;
@@ -156,6 +157,7 @@
     const exceptTarget = options?.exceptTarget || null;
     _dropdowns().forEach(el => {
       if (exceptTarget && el.contains(exceptTarget)) return;
+      if (exceptTarget && el._popupChildSelector && exceptTarget.closest?.(el._popupChildSelector)) return;
       _closeDropdown(el);
     });
   }

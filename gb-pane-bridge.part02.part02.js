@@ -393,7 +393,7 @@
       const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', calendar: 'スケジュール',
+        board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
         folder: 'フォルダ', outliner: 'フォルダツリー',
         search: '検索',
       };
@@ -424,12 +424,12 @@
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジュール',
+      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
       chat: 'チャット', history: 'ヒストリー', annotation: 'アノテート',
     };
-    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board']);
+    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'form-app']);
     // API の type 値 → タブの type 値（同名なら省略）
     // ここに無いタイプは toolType がそのままタブ type になる
     const _PANEL_FILE_OPEN_TYPES = {
@@ -444,6 +444,7 @@
       const state = { label: name };
       if (toolType === 'scriptnote') state.scenarioPath = path;
       if (toolType === 'board') state.boardPath = path;
+      if (toolType === 'form-app') state.formPath = path;
       if (toolType === 'database') state.dbPath = path;
       return state;
     }
@@ -529,7 +530,7 @@
         return null;
       }
     }
-    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'calendar']);
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'calendar']);
     function _isMainPanelPane(paneId) {
       const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));
@@ -731,7 +732,7 @@
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', calendar: 'スケジュール', preview: 'ビューワー',
+          board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール', preview: 'ビューワー',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
           annotation: 'アノテート', detail: 'オプション',
         };

@@ -1,3 +1,8 @@
+        width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
+        height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
+      };
+    };
+    function onKeyDown(ev) {
       if (ev.key === 'Enter') {
         const region = canvasRegion();
         if (region) cleanup(region, 'submit');
@@ -893,8 +898,3 @@ window.addEventListener('message', (e) => {
     const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
     if (!embedded && !msg.targetPath && typeof createNote === 'function') {
       const prevColor = ann.color;
-      const prevOpacity = ann.opacity;
-      if (msg.color) ann.color = msg.color;
-      ann.opacity = 1;
-      Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
-        ann.color = prevColor;

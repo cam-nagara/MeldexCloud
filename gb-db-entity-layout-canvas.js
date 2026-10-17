@@ -22,7 +22,7 @@ function _elSnap(value) {
 function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, rerender) {
   const state = _elGetState(dbPath);
   const draft = options?.layoutDraft;
-  const layout = draft?.layout || state?.layouts.find(l => l.id === layoutId);
+  const layout = options?.formLayout || draft?.layout || state?.layouts.find(l => l.id === layoutId);
   const host = document.createElement('div');
   host.className = 'el-host';
   host.dataset.e2eId = 'entity-layout-host';
@@ -40,7 +40,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
     if (grid.isConnected && typeof rerender === 'function') rerender();
   };
   const ctx = {
-    grid, data, entityPath, options, dbPath, layout, editMode,
+    grid, data, entityPath, options, dbPath, layout, editMode, session,
     readOnly: options?.readOnly === true,
     rerender: safeRerender,
     propTypes: options?.propTypes
@@ -66,13 +66,18 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
 
   const canvas = document.createElement('div');
   canvas.className = 'el-canvas';
+  canvas._elContext = ctx;
   canvas.style.width = layout.canvasSize.w + 'px';
   canvas.style.height = layout.canvasSize.h + 'px';
   viewport.appendChild(canvas);
   if (typeof _elApplyLayoutTheme === 'function') _elApplyLayoutTheme(canvas, layout);
 
-  layout.cells.forEach(cell => {
-    canvas.appendChild(_elBuildCellElement(cell, ctx, canvas));
+  const ordered = layout.formConfig && globalThis.MeldexDbFormModel ? MeldexDbFormModel.orderedCells(layout) : layout.cells;
+  ordered.forEach(cell => {
+    const element = _elBuildCellElement(cell, ctx, canvas);
+    element.style.zIndex = String(layout.cells.indexOf(cell));
+    if (session.selectedIds?.includes(cell.id)) element.classList.add('el-selected');
+    canvas.appendChild(element);
   });
 
   if (layout.cells.length === 0) {
@@ -106,11 +111,18 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
 
 function _elClearCellSelection(canvas) {
   canvas.querySelectorAll('.el-cell.el-selected').forEach(el => el.classList.remove('el-selected'));
+  if (canvas._elContext?.session) canvas._elContext.session.selectedIds = [];
 }
 
-function _elSelectCellElement(canvas, cellEl) {
-  _elClearCellSelection(canvas);
-  cellEl.classList.add('el-selected');
+function _elSelectCellElement(canvas, cellEl, additive = false) {
+  const context = canvas._elContext;
+  const cell = context?.layout.cells.find(item => item.id === cellEl.dataset.cellId);
+  const selected = !additive || !cellEl.classList.contains('el-selected');
+  if (!additive && !cellEl.classList.contains('el-selected')) _elClearCellSelection(canvas);
+  const elements = [...canvas.querySelectorAll('.el-cell')].filter(element => element === cellEl
+    || cell?.groupId && context.layout.cells.find(item => item.id === element.dataset.cellId)?.groupId === cell.groupId);
+  elements.forEach(element => element.classList.toggle('el-selected', selected));
+  if (context?.session) context.session.selectedIds = [...canvas.querySelectorAll('.el-selected')].map(element => element.dataset.cellId);
 }
 
 /* セル1件のDOMを構築する（枠 + 内容 + 編集モードの操作チローム） */
@@ -134,6 +146,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   // --- 以下は編集モード専用のチローム ---
   el.classList.add('el-editable');
+  el.classList.toggle('el-cell-locked', !!cell.locked);
   el.tabIndex = 0;
   el.setAttribute('role', 'group');
   const typeLabel = cell.type === 'field' ? (cell.prop || '列')
@@ -144,7 +157,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   el.setAttribute('aria-label', typeLabel + 'のレイアウトセル');
   // フォーカスだけでも選択状態にして、ホバーを使えないキーボード操作から
   // 設定・削除ボタンへ Tab で到達できるようにする。
-  el.addEventListener('focus', () => _elSelectCellElement(canvas, el));
+  el.addEventListener('focus', () => { if (!el.classList.contains('el-selected')) _elSelectCellElement(canvas, el); });
 
   // 見出しセルはダブルクリックでテキストを直接編集する
   if (cell.type === 'label') {
@@ -175,6 +188,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
+  removeBtn.disabled = !!cell.locked;
   removeBtn.className = 'el-cell-remove';
   removeBtn.dataset.e2eId = 'entity-layout-cell-remove';
   removeBtn.title = 'セルを削除';
@@ -194,6 +208,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'el-cell-resize';
+  resizeHandle.hidden = !!cell.locked;
   resizeHandle.dataset.e2eId = 'entity-layout-cell-resize';
   resizeHandle.setAttribute('aria-hidden', 'true');
   el.appendChild(resizeHandle);
@@ -214,7 +229,8 @@ function _elBuildCellElement(cell, ctx, canvas) {
     const resizing = e.target === resizeHandle;
     e.preventDefault();
     e.stopPropagation();
-    _elSelectCellElement(canvas, el);
+    _elSelectCellElement(canvas, el, e.shiftKey || e.ctrlKey || e.metaKey);
+    if (cell.locked || e.shiftKey || e.ctrlKey || e.metaKey) return;
     _elBeginCellPointerOp(e, el, cell, ctx, canvas, resizing ? 'resize' : 'move');
   });
 
@@ -273,6 +289,8 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
   const canvasH = ctx.layout.canvasSize.h;
   let latest = { x: cell.x, y: cell.y, w: cell.w, h: cell.h };
   let moved = false;
+  const selected = mode === 'move' ? ctx.layout.cells.filter(item => !item.locked && (ctx.session?.selectedIds || []).includes(item.id)) : [];
+  const moving = selected.length ? selected.map(item => ({ ...item })) : [{ ...cell }];
   el.classList.add('el-dragging');
   try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 
@@ -282,11 +300,18 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
     if (!moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
     moved = true;
     if (mode === 'move') {
-      const x = Math.max(0, Math.min(canvasW - start.w, _elSnap(start.x + dx)));
-      const y = Math.max(0, Math.min(canvasH - start.h, _elSnap(start.y + dy)));
+      const left = Math.min(...moving.map(item => item.x)), top = Math.min(...moving.map(item => item.y));
+      const right = Math.max(...moving.map(item => item.x + item.w)), bottom = Math.max(...moving.map(item => item.y + item.h));
+      const moveX = Math.max(-left, Math.min(canvasW - right, _elSnap(dx)));
+      const moveY = Math.max(-top, Math.min(canvasH - bottom, _elSnap(dy)));
+      const x = start.x + moveX, y = start.y + moveY;
       latest = { ...latest, x, y };
       el.style.left = x + 'px';
       el.style.top = y + 'px';
+      moving.forEach(item => {
+        const node = [...canvas.querySelectorAll('.el-cell')].find(node => node.dataset.cellId === item.id);
+        if (node) { node.style.left = item.x + moveX + 'px'; node.style.top = item.y + moveY + 'px'; }
+      });
     } else {
       const w = Math.max(EL_CELL_MIN_SIZE, Math.min(canvasW - start.x, _elSnap(start.w + dx)));
       const h = Math.max(EL_CELL_MIN_SIZE, Math.min(canvasH - start.y, _elSnap(start.h + dy)));
@@ -314,16 +339,26 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
         target.y = latest.y;
         target.w = latest.w;
         target.h = latest.h;
+        if (mode === 'move') moving.forEach(item => {
+          const other = layout.cells.find(candidate => candidate.id === item.id);
+          if (other) { other.x = item.x + latest.x - start.x; other.y = item.y + latest.y - start.y; }
+        });
       }
     );
     if (!persisted) {
-      el.style.left = start.x + 'px';
-      el.style.top = start.y + 'px';
+      moving.forEach(item => {
+        const node = [...canvas.querySelectorAll('.el-cell')].find(node => node.dataset.cellId === item.id);
+        if (node) { node.style.left = item.x + 'px'; node.style.top = item.y + 'px'; }
+      });
       el.style.width = start.w + 'px';
       el.style.height = start.h + 'px';
       return;
     }
     cell.x = latest.x; cell.y = latest.y; cell.w = latest.w; cell.h = latest.h;
+    if (mode === 'move') moving.forEach(item => {
+      const other = ctx.layout.cells.find(candidate => candidate.id === item.id);
+      if (other && other !== cell) { other.x = item.x + latest.x - start.x; other.y = item.y + latest.y - start.y; }
+    });
     // サイズ変更は文字の自動フィットとチャートの描画サイズに影響するため再描画で追従させる
     if (mode === 'resize') ctx.rerender();
   };
@@ -336,21 +371,32 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
 
 function _elCloseEditPopups() {
   document.querySelectorAll('.el-edit-popup').forEach(el => {
+    if (typeof el._requestClose === 'function') { el._requestClose(); return; }
     if (typeof el._cleanup === 'function') el._cleanup();
     el.remove();
   });
 }
 
-function _elAttachPopupCommon(popup, anchorBtn) {
+function _elAttachPopupCommon(popup, anchorBtn, options = {}) {
   document.body.appendChild(popup);
   const cleanupFns = [];
   popup._cleanup = () => { cleanupFns.splice(0).forEach(off => off()); };
-  const close = () => {
+  const remove = () => {
     popup._cleanup();
     popup.remove();
     if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorBtn);
     else { try { anchorBtn?.focus?.(); } catch { /* ignore */ } }
+    return true;
   };
+  let closing = null;
+  const close = () => {
+    if (!options.beforeClose) return remove();
+    if (closing) return closing;
+    closing = Promise.resolve().then(options.beforeClose).then(allowed => allowed ? remove() : false).finally(() => { closing = null; });
+    return closing;
+  };
+  if (options.beforeClose) popup._requestClose = close;
+  if (options.childSelector) popup._popupChildSelector = options.childSelector;
   if (typeof positionPopup === 'function') {
     positionPopup(popup, anchorBtn.getBoundingClientRect(), { gap: 4 });
   } else if (typeof clampPopupToViewport === 'function') {
@@ -362,9 +408,11 @@ function _elAttachPopupCommon(popup, anchorBtn) {
   setTimeout(() => {
     if (!popup.isConnected) return;
     const onPointerDown = (ev) => {
+      if (options.childSelector && ev.target.closest?.(options.childSelector)) return;
       if (!popup.contains(ev.target) && ev.target !== anchorBtn && !anchorBtn.contains(ev.target)) close();
     };
     const onKeyDown = (ev) => {
+      if (options.childSelector && [...document.querySelectorAll(options.childSelector)].some(child => child.getClientRects().length)) return;
       if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
     };
     document.addEventListener('pointerdown', onPointerDown);
@@ -392,7 +440,12 @@ function _elAddCell(ctx, partialCell, statusLabel) {
   const h = partialCell.h || 90;
   ctx.persist('トピックレイアウト: セル追加', statusLabel || '', (layout) => {
     const pos = _elNextCellPosition(layout, w, h);
+    if (partialCell.type === 'subform') {
+      pos.x = 20; pos.y = Math.max(20, ...layout.cells.map(cell => cell.y + cell.h + 20));
+      layout.canvasSize.h = Math.min(EL_CANVAS_MAX, Math.max(layout.canvasSize.h, pos.y + h + 20));
+    }
     layout.cells.push(_elNormalizeCell({ ...partialCell, ...pos, w, h }, layout.canvasSize.w, layout.canvasSize.h));
+    if (partialCell.type === 'field' && layout.formConfig && !layout.formConfig.fields.includes(partialCell.prop)) layout.formConfig.fields.push(partialCell.prop);
   });
   ctx.rerender();
 }
@@ -404,7 +457,7 @@ function _elShowFieldPickerMenu(anchorBtn, ctx) {
   menu.className = 'gb-context-menu el-edit-popup el-field-picker';
   menu.dataset.e2eId = 'entity-layout-field-picker';
   menu.setAttribute('role', 'menu');
-  const props = Object.keys(ctx.data?.properties || {});
+  const props = [...new Set([...Object.keys(ctx.data?.properties || {}), ...Object.keys(ctx.propTypes || {})])];
   if (props.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'el-field-picker-empty';
@@ -519,6 +572,7 @@ function _elBuildEditToolbar(ctx) {
     _elShowCanvasSizePopup(sizeBtn, ctx);
   });
   bar.appendChild(sizeBtn);
+  globalThis.MeldexDbFormDesigner?.addTools(bar, ctx);
 
   return bar;
 }

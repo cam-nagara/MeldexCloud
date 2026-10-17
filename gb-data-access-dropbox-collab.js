@@ -228,7 +228,16 @@
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
     let last = null;
     if (entries.length) {
-      try { last = await _readMessage(provider, meta.path, entries[entries.length - 1], sourceFolder); } catch {}
+      // アンケートは再送可能な固定IDをファイル名に使うため、日時で比較する。
+      const candidates = entries.filter(entry => /^poll_/.test(entry.name));
+      const ordinary = entries.filter(entry => !/^poll_/.test(entry.name)).pop();
+      if (ordinary) candidates.push(ordinary);
+      for (const entry of candidates) {
+        try {
+          const message = await _readMessage(provider, meta.path, entry, sourceFolder);
+          if (!last || (_timestampMillis(message.timestamp) || 0) > (_timestampMillis(last.timestamp) || 0)) last = message;
+        } catch {}
+      }
     }
     const payload = { ...meta, count: entries.length, last };
     if (meta.type === 'dm') payload.members = _roomMembers(meta.path);
@@ -360,6 +369,45 @@
       await _removeEntry(provider, _roomDir(roomPath, sourceFolder));
       return { ok: true };
     }
+    if (pathname === '/collab/poll' && ['GET', 'POST'].includes(method)) {
+      const polls = window.MeldexChatPolls;
+      if (!polls) throw new Error('アンケート機能を読み込めません');
+      const roomPath = _requireRoomPath(body?.room || url.searchParams.get('room'));
+      await _assertRoomAccess(provider, roomPath, user, sourceFolder);
+      const messageId = String(body?.message_id || url.searchParams.get('message_id') || '');
+      const voter = String(body?.voter || url.searchParams.get('voter') || '');
+      if (!/^[A-Za-z0-9_-]{1,120}$/.test(messageId) || (method === 'POST' || voter) && !polls.safeId.test(voter)) throw new Error('回答が不正です');
+      const poll = polls.extract(await provider.readText(_joinPath(_roomDir(roomPath, sourceFolder), messageId + '.md')));
+      const directory = _joinPath(_roomDir(roomPath, sourceFolder), '_polls', messageId);
+      if (method === 'POST') {
+        const choice = body?.choice;
+        if (!Number.isInteger(choice) || choice < 0 || choice >= poll.options.length) throw new Error('回答が不正です');
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先は重複投票を安全に防げません');
+        const filePath = _joinPath(directory, voter + '.md');
+        if (typeof internals._requireUnlockedPath !== 'function') throw new Error('編集ロックを確認できません');
+        await internals._requireUnlockedPath(provider, directory, { action: 'chat-poll-vote' });
+        await internals._requireUnlockedPath(provider, filePath, { action: 'chat-poll-vote' });
+        const ballot = { version: 1, choice };
+        if (!poll.anonymous) ballot.from = user;
+        try {
+          await provider.uploadBytesConditional(filePath, new TextEncoder().encode(JSON.stringify(ballot)), null);
+        } catch (error) {
+          if (error?.status !== 409) throw error;
+          const previous = JSON.parse(await provider.readText(filePath));
+          polls.result(poll, [[voter, previous]], voter);
+          if (previous.choice !== choice) throw new Error('すでに回答済みです');
+        }
+      }
+      const ballots = [];
+      if (await _pathExists(provider, directory)) {
+        const entries = await _listDirectoryEntries(provider, directory);
+        for (const entry of entries) {
+          const token = String(entry.name || '').replace(/\.md$/, '');
+          if (polls.safeId.test(token) && /\.md$/.test(entry.name)) ballots.push([token, JSON.parse(await provider.readText(_joinPath(directory, entry.name)))]);
+        }
+      }
+      return polls.result(poll, ballots, voter);
+    }
     if (pathname === '/collab/messages' && method === 'GET') {
       const roomPath = _requireRoomPath(url.searchParams.get('room') || 'general');
       await _assertRoomAccess(provider, roomPath, user, sourceFolder);
@@ -379,6 +427,7 @@
             || (sinceMs == null && String(message.timestamp || '') > since)) messages.push(message);
         } catch {}
       }
+      messages.sort((a, b) => (_timestampMillis(a.timestamp) || 0) - (_timestampMillis(b.timestamp) || 0));
       return messages.slice(-limit);
     }
     if (pathname === '/collab/send' && method === 'POST') {
@@ -390,8 +439,22 @@
       await _directoryHandle(provider, roomDir, true);
       const now = new Date();
       const timestamp = now.toISOString();
-      const fileName = _messageFileName(now);
+      const poll = text.includes('```meldex-poll') ? window.MeldexChatPolls.extract(text) : null;
+      const fileName = poll ? 'poll_' + poll.id + '.md' : _messageFileName(now);
       const filePath = _joinPath(roomDir, fileName);
+      if (poll) {
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先はアンケートを安全に保存できません');
+        await internals._requireUnlockedPath(provider, filePath, { action: 'chat-poll-create' });
+        try {
+          await provider.uploadBytesConditional(filePath, new TextEncoder().encode(_messageMarkdown(roomPath, user, text, timestamp)), null);
+        } catch (error) {
+          if (error?.status !== 409) throw error;
+          const previous = _parseMessage(await provider.readText(filePath), fileName.replace(/\.md$/, ''), roomPath);
+          if (previous.from !== user || previous.text !== text.trim()) throw new Error('同じIDのアンケートがすでに存在します');
+          return { ok: true, id: previous.id, timestamp: previous.timestamp };
+        }
+        return { ok: true, id: fileName.replace(/\.md$/, ''), timestamp };
+      }
       await provider.writeText(filePath, _messageMarkdown(roomPath, user, text, timestamp));
       return { ok: true, id: fileName.replace(/\.md$/i, ''), timestamp };
     }

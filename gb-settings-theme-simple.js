@@ -68,6 +68,16 @@ function settingsThemeSimpleValues() {
   return Object.fromEntries(Object.entries(settingsThemeSimpleSelections()).map(([id, value]) => [id, _settingsSimpleResolve(value)]));
 }
 
+function _settingsSimpleChatBubbleColor(value) {
+  if (/^auto(?:-light|-dark)?$/.test(value) || /^auto-rows:/.test(value)) {
+    return _settingsSimpleResolve('auto-dark');
+  }
+  const color = _settingsSimpleResolve(value);
+  if (value !== 'os-accent') return color;
+  const amount = 'var(--theme-ui-auto-dark-percent, 30%)';
+  return `color-mix(in srgb, ${color} calc(100% - ${amount}), black ${amount})`;
+}
+
 function renderSettingsSimpleThemeEditor() {
   const colors = settingsThemeSimpleValues();
   return `<section class="gb-section gb-section--boxed" data-settings-simple-theme data-settings-view="theme" hidden>
@@ -104,6 +114,8 @@ function settingsThemeSetSimpleMode(mode, root) {
 
 // Resolve semantic roles from the actual property definitions, not a parallel list of apps.
 function _settingsSimpleThemeRole(key, prop = '', label = '') {
+  if (key === '--chat-user-bg') return 'accent';
+  if (key === '--chat-user-fg') return 'selectedText';
   if (['--ui-dock-button-bg', '--outliner-item-bg'].includes(key)) return 'transparent';
   if (key.startsWith('--simple-theme-')) return '';
   if (SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key]) return SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key];
@@ -199,6 +211,12 @@ function settingsThemeApplySimpleColors(overrides = {}) {
   const styles = Object.fromEntries(Object.entries(styleRoles)
     .filter(([, role]) => changed.has(role) || role === 'transparent' && changedBackground)
     .map(([key, role]) => [key, role === 'transparent' ? 'transparent' : colors[role]]));
+  for (const [key, role] of [['--chat-user-bg', 'accent'], ['--chat-message-bg', 'control']]) {
+    if (Object.prototype.hasOwnProperty.call(styles, key)) styles[key] = _settingsSimpleChatBubbleColor(selections[role]);
+  }
+  if (changed.has('control')) {
+    styles['--chat-message-fg'] = /^(?:os-accent|auto(?:$|-))/.test(selections.control) ? '#ffffff' : colors.text;
+  }
   const root = document.documentElement;
   const apps = manager.getThemeUiApplications();
   for (const target of manager.THEME_UI_TARGETS) for (const state of target.states) {

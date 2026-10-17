@@ -10981,7 +10981,7 @@
   const BY_TYPE = new Map(RIGHT.map((item, index) => [item.type, Object.freeze({ ...item, index })]));
 
   function definitions() { return RIGHT.slice(); }
-  function defaults() { return RIGHT.map(item => [item.label, item.type]); }
+  function defaults() { return RIGHT.filter(item => item.type !== 'chat').map(item => [item.label, item.type]); }
   function types() { return new Set(RIGHT.map(item => item.type)); }
   function definition(type) { return BY_TYPE.get(String(type || '')) || null; }
   function order(type) { return definition(type)?.index ?? Number.MAX_SAFE_INTEGER; }
@@ -11208,6 +11208,158 @@
 
 ;
 
+/* === gb-chat-sidebar.js === */
+;
+/* チャット専用サイドバー。既存の右サイドバーとそのレールの外側に置く。 */
+(function () {
+  'use strict';
+  let initialStateApplied = false;
+  let returnPaneId = '';
+  function workPaneId(root, dock) {
+    const chatPanes = new Set(GBLayout.getAllPanes(dock).map(pane => pane.id));
+    const panes = GBLayout.getAllPanes(root);
+    return panes.find(pane => pane.id === returnPaneId && !chatPanes.has(pane.id))?.id
+      || panes.find(pane => pane.meldexRole === 'main')?.id;
+  }
+  function widths(node, width) {
+    if (node.direction !== 'horizontal') return [width, width];
+    const available = Math.max(1, width - 4);
+    const size = child => child.meldexRole === 'chat-sidebar' ? 0 : 32;
+    if (node.children[0].collapsed) return [size(node.children[0]), available - size(node.children[0])];
+    if (node.children[1].collapsed) return [available - size(node.children[1]), size(node.children[1])];
+    return [available * node.ratio, available * (1 - node.ratio)];
+  }
+  function preserveRailWidths(node, before, after) {
+    if (node.type === 'panelset') {
+      if (!['left-sidebar', 'right-sidebar'].includes(node.meldexRole)) node.groups.forEach(group => preserveRailWidths(group.root, before, after));
+    } else if (node.type === 'split') {
+      const old = widths(node, before);
+      if (node.direction === 'horizontal') node.children.forEach((child, index) => {
+        if (!child.collapsed && ['left-sidebar', 'right-sidebar'].includes(child.meldexRole)) {
+          const fraction = Math.max(.05, Math.min(.9, old[index] / Math.max(1, after - 4)));
+          node.ratio = index === 0 ? fraction : 1 - fraction;
+        }
+      });
+      const next = widths(node, after);
+      node.children.forEach((child, index) => preserveRailWidths(child, old[index], next[index]));
+    }
+  }
+  function closeInitially(root, dock) {
+    function visit(node, width) {
+      if (node.type === 'split') {
+        const sizes = widths(node, width);
+        const index = node.children.indexOf(dock);
+        if (index >= 0 && node.direction === 'horizontal') {
+          dock._savedRatio = node.ratio;
+          preserveRailWidths(node.children[1 - index], sizes[1 - index], Math.max(1, width - 4));
+        } else node.children.forEach((child, i) => visit(child, sizes[i]));
+      } else if (node.type === 'panelset') node.groups.forEach(group => visit(group.root, width));
+    }
+    if (!dock.collapsed) visit(root, (typeof document !== 'undefined' && document.getElementById('gb-layout-root')?.clientWidth) || window.innerWidth);
+    dock.collapsed = true;
+    if (window.innerWidth <= 768 && GBLayout.getAllPanes(dock).some(pane => pane.id === GBLayout.activePane)) {
+      const paneId = workPaneId(root, dock);
+      if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
+    }
+  }
+  function ensure(root) {
+    if (!root || window._gbSingleWindow || typeof GBPanelSet === 'undefined') return root;
+    let dock = null;
+    let chatTab = null;
+    function walk(node) {
+      if (!node) return;
+      if (node.meldexRole === 'chat-sidebar' && node.type === 'panelset') { dock = node; return; }
+      if (node.type === 'pane') {
+        if (!(node.tabs || []).some(tab => tab.type === 'chat')) return;
+        const active = node.tabs?.[node.activeTabIndex];
+        (node.tabs || []).forEach(tab => { if (tab.type === 'chat') chatTab ||= tab; });
+        node.tabs = (node.tabs || []).filter(tab => tab.type !== 'chat');
+        node.activeTabIndex = Math.max(0, node.tabs.indexOf(active));
+        if (!node.tabs.length) node.activeTabIndex = -1;
+      }
+      if (node.type === 'split') node.children.forEach(walk);
+      if (node.type === 'panelset') {
+        const chatGroups = new Set(node.groups.filter(group => GBLayout.getAllPanes(group.root).some(pane => pane.tabs?.some(tab => tab.type === 'chat'))));
+        node.groups.forEach(group => walk(group.root));
+        node.groups = node.groups.filter(group => !chatGroups.has(group) || GBLayout.getAllPanes(group.root).some(pane => pane.tabs?.length));
+        if (!node.groups.some(group => group.id === node.activeGroupId)) node.activeGroupId = node.groups[0]?.id;
+      }
+    }
+    walk(root);
+    if (dock) {
+      // 保存レイアウトでチャットタブだけが欠けても、右レールの入口を空にしない。
+      let group = dock.groups.find(item => GBLayout.getAllPanes(item.root).some(pane => pane.tabs?.some(tab => tab.type === 'chat')));
+      if (!group) {
+        const pane = GBLayout.createPaneNode(null, [chatTab || GBTabs.createTab('チャット', 'chat', '')], 0);
+        pane.meldexRole = 'chat-sidebar';
+        group = GBPanelSet.createGroup(pane);
+        dock.groups.push(group);
+      }
+      dock.activeGroupId = group.id;
+      if (!initialStateApplied) closeInitially(root, dock);
+      initialStateApplied = true;
+      return root;
+    }
+    const tab = chatTab || GBTabs.createTab('チャット', 'chat', '');
+    const pane = GBLayout.createPaneNode(null, [tab], 0);
+    pane.meldexRole = 'chat-sidebar';
+    const group = GBPanelSet.createGroup(pane);
+    dock = GBPanelSet.createPanelSetNode([group], group.id);
+    dock.meldexRole = 'chat-sidebar';
+    dock.defaultPopupWidth = 380;
+    dock.collapsed = true;
+    initialStateApplied = true;
+    return GBLayout.createSplitNode('horizontal', Math.max(.5, 1 - 380 / Math.max(800, window.innerWidth)), [root, dock]);
+  }
+  function currentDock() {
+    function find(node) {
+      if (!node) return null;
+      if (node.meldexRole === 'chat-sidebar' && node.type === 'panelset') return node;
+      const children = node.type === 'panelset' ? node.groups.map(group => group.root) : node.children || [];
+      return children.map(find).find(Boolean);
+    }
+    return find(GBLayout.root);
+  }
+  function close() {
+    const dock = currentDock();
+    if (dock && window.innerWidth <= 768) {
+      const paneId = workPaneId(GBLayout.root, dock);
+      if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
+      GBLayout.render();
+      GBLayout.saveLayout({ immediate: true });
+      return;
+    }
+    if (dock) GBLayout.setNodeCollapsed(dock.id, true);
+  }
+  function open() {
+    const dock = currentDock();
+    if (!dock) return false;
+    if (window.innerWidth <= 768) {
+      const pane = GBLayout.getAllPanes(dock).find(item => item.tabs?.some(tab => tab.type === 'chat'));
+      if (!pane) return false;
+      if (GBLayout.activePane !== pane.id) returnPaneId = GBLayout.activePane;
+      GBLayout.revealPane(pane.id, { activate: true, userIntent: true, deferRender: true, preserveCollapsed: true });
+      GBLayout.render();
+      GBLayout.saveLayout({ immediate: true });
+    } else GBLayout.setNodeCollapsed(dock.id, false);
+    return true;
+  }
+  function toggle() {
+    const dock = currentDock();
+    if (dock && !isOpen()) open();
+    else if (dock) close();
+  }
+  function isOpen() {
+    const dock = currentDock();
+    return !!dock && (window.innerWidth <= 768
+      ? GBLayout.getAllPanes(dock).some(pane => pane.id === GBLayout.activePane)
+      : !dock.collapsed);
+  }
+  window.GBChatSidebar = { ensure, open, close, toggle, isOpen };
+})();
+
+;
+
 /* === gb-layout.js === */
 ;
 /* gb-layout.part01.js */
@@ -11286,7 +11438,7 @@ const GBLayout = (() => {
 
   function _isSidebarPaneNode(node) {
     const role = _paneRoleName(node);
-    return role === 'left-sidebar' || role === 'right-sidebar';
+    return role === 'left-sidebar' || role === 'right-sidebar' || role === 'chat-sidebar';
   }
 
   function _activeTabForPaneNode(node) {
@@ -11359,7 +11511,7 @@ const GBLayout = (() => {
   const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
     ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
     ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
-    ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
+    ['ヒストリー', 'history'], ['バージョン管理', 'version'],
   ];
   const FIXED_RAIL_RIGHT_TYPES = window.GBRailContract?.types?.()
     || new Set(FIXED_RAIL_RIGHT_DEFAULTS.map(([, type]) => type));
@@ -11489,7 +11641,7 @@ const GBLayout = (() => {
       || _collectFixedRailPanes(mainDock)[0]
       || allPanes.find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
     if (!main) return false;
-    const fileTypes = new Set(['page', 'board', 'scriptnote', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
+    const fileTypes = new Set(['page', 'board', 'scriptnote', 'form-app', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
     const isFile = tab => fileTypes.has(tab?.type) || (tab?.type === 'calendar' && !!tab.path);
     let changed = false;
     const sidePanes = new Set([..._collectFixedRailPanes(leftDock), ..._collectFixedRailPanes(rightDock),
@@ -12226,9 +12378,26 @@ const GBLayout = (() => {
     // 変わっても同じピクセル幅になるよう比率を再計算する。
     // スナップショット（_savedInnerRatio）は使わず毎回現在値から算出するため、
     // 折りたたみ中に右幅をドラッグ調整しても展開時に破棄されない。
-    const innerSplit = _innerHorizontalSplit(otherChild);
+    if (targetNode.meldexRole === 'chat-sidebar') {
+      // チャットの開閉では既存の両サイドバーの幅を保ち、作業領域で吸収する。
+      const fullWidth = _splitRenderedContentSize(splitNode);
+      const remaining = targetNode.collapsed ? fullWidth - 4
+        : (childIndex === 1 ? splitNode.ratio : 1 - splitNode.ratio) * (fullWidth - 4);
+      let leftWidth = 0;
+      for (const [role, selector] of [['left-sidebar', '.gb-dock-fixed-left'], ['right-sidebar', '.gb-dock-fixed-right']]) {
+        const dock = _findFixedRailPanelset(otherChild, role);
+        const parent = dock && findParent(_root, dock.id)?.node;
+        const pixels = document.querySelector(selector)?.getBoundingClientRect?.().width || 0;
+        if (role === 'left-sidebar') leftWidth = pixels;
+        if (!dock || dock.collapsed || parent?.type !== 'split' || !pixels) continue;
+        const available = role === 'left-sidebar' ? remaining : remaining - leftWidth - 4;
+        const fraction = Math.max(.05, Math.min(.9, pixels / Math.max(1, available - 4)));
+        parent.ratio = role === 'left-sidebar' ? fraction : 1 - fraction;
+      }
+    }
+    const innerSplit = targetNode.meldexRole === 'chat-sidebar' ? null : _innerHorizontalSplit(otherChild);
     if (innerSplit) {
-      const layoutW = _layoutEl?.clientWidth || window.innerWidth || 1600;
+      const layoutW = _splitRenderedContentSize(splitNode);
       const handlePx = 4;
       // 左レール展開時のルート比率（折りたたみ時は保存値、展開時は復元済みの現在値）
       const expandedRootRatio = targetNode.collapsed
@@ -13054,7 +13223,7 @@ const GBLayout = (() => {
     const child1collapsed = node.children[1] && node.children[1].collapsed;
     if (child0collapsed) {
       // 折り畳まれた子は固定32pxにし、flex-growなし
-      if (node.direction === 'horizontal') { first.style.width = '32px'; first.style.flexShrink = '0'; }
+      if (node.direction === 'horizontal') { first.style.width = node.children[0]?.meldexRole === 'chat-sidebar' ? '0px' : '32px'; first.style.flexShrink = '0'; }
       else { first.style.height = '32px'; first.style.flexShrink = '0'; }
     } else if (child1collapsed) {
       // 相手が折り畳まれているなら自分がflex: 1で残り全部
@@ -13275,7 +13444,7 @@ const GBLayout = (() => {
     const second = document.createElement('div');
     second.className = 'gb-split-child gb-split-second';
     if (child1collapsed) {
-      if (node.direction === 'horizontal') { second.style.width = '32px'; second.style.flexShrink = '0'; }
+      if (node.direction === 'horizontal') { second.style.width = node.children[1]?.meldexRole === 'chat-sidebar' ? '0px' : '32px'; second.style.flexShrink = '0'; }
       else { second.style.height = '32px'; second.style.flexShrink = '0'; }
     } else if (child0collapsed) {
       second.style.flex = '1';
@@ -14271,6 +14440,7 @@ const GBLayout = (() => {
     if (!paneId) return false;
     const path = _collectNodePath(_root, paneId);
     if (!path || !path.length) return false;
+    if (_isMobileLayout() && paneId === _activePane && path.some(node => node.meldexRole === 'chat-sidebar')) return true;
     return path.every((node) => !node?.collapsed);
   }
 
@@ -14285,6 +14455,8 @@ const GBLayout = (() => {
     }
     let changed = false;
     path.forEach((node) => {
+      // 1パネル表示の切替では、デスクトップの折り畳み状態と幅を動かさない。
+      if (options?.preserveCollapsed) return;
       if (!node?.collapsed) return;
       // ユーザーが明示的に閉じた固定レールは、付随的な reveal（コンテンツ更新・
       // タブ切替等）では開き直さない。ユーザー操作起点（options.userIntent）のみ開く。
@@ -14459,6 +14631,7 @@ const GBLayout = (() => {
 
   function render() {
     if (!_layoutEl) return;
+    _root = window.GBChatSidebar?.ensure?.(_root) || _root;
     // Phase 5 安全策: ポップアップ表示中に再レンダリングすると、ポップアップ内に
     // 移動した pane DOM が innerHTML = '' で消える一方、_state.originalParent が
     // 新しい DOM に差し替わってしまい孤立する。事前にポップアップを閉じて pane DOM
@@ -15053,16 +15226,17 @@ const GBLayout = (() => {
   async function resetLayout(options) {
     const opts = options || {};
     const before = !opts.skipHistory ? captureLayoutSnapshot() : null;
-    const nextRoot = defaultLayout();
+    const nextRoot = _migrateLayoutToFixedRailsIfNeeded(defaultLayout());
     if (!await _removeOrphanComponentInstances(_root, nextRoot)) return false;
     _root = nextRoot;
-    _activePane = null;
+    _activePane = getAllPanes(nextRoot).find(pane => pane.meldexRole === 'main')?.id || null;
     render();
     saveLayout();
     if (before) {
       const after = captureLayoutSnapshot();
       pushLayoutHistory('レイアウト: 初期化', before, after, '標準レイアウトへ戻す');
     }
+    return true;
   }
 
   function _cloneLayoutTree(layout) {
@@ -16416,6 +16590,7 @@ const GBLayout = (() => {
     { type: 'scriptnote', label: 'シナリオ', icon: 'scriptnote', standalone: 'scenario-standalone.html' },
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
+    { type: 'form-app', label: 'フォーム', icon: 'clipboardList' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
   ]);
 
@@ -16618,7 +16793,36 @@ const GBLayout = (() => {
     if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
   }
 
+  function _appendRightRailChat(dockBar) {
+    if (!window.GBChatSidebar) return;
+    const open = window.GBChatSidebar.isOpen();
+    const button = _railButton('gb-dock-icon gb-dock-rail-chat', 'messagesSquare', open ? 'チャットを閉じる' : 'チャットを開く', () => window.GBChatSidebar.toggle());
+    button.dataset.tabType = 'chat';
+    button.dataset.e2eId = 'fixed-right-rail-chat';
+    button.classList.toggle('active', open);
+    button.setAttribute('aria-pressed', String(open));
+    button.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-controls', 'rp-chat');
+    dockBar.appendChild(button);
+  }
+
   function renderDock(panelsetNode, depth) {
+    if (panelsetNode.meldexRole === 'chat-sidebar') {
+      const column = document.createElement('div');
+      column.className = 'gb-column gb-dock gb-chat-sidebar' + (panelsetNode.collapsed ? ' gb-dock-collapsed' : '');
+      column.dataset.panelsetId = panelsetNode.id;
+      column.dataset.columnNodeId = panelsetNode.id;
+      column.style.cssText = 'display:flex;width:100%;height:100%;min-width:0;min-height:0;';
+      if (!panelsetNode.collapsed) {
+        const group = panelsetNode.groups.find(item => item.id === panelsetNode.activeGroupId) || panelsetNode.groups[0];
+        const body = document.createElement('div');
+        body.className = 'gb-dock-body';
+        body.style.cssText = 'display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;';
+        if (group?.root) body.appendChild(GBLayout.renderNode(group.root, depth));
+        column.appendChild(body);
+      }
+      return column;
+    }
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
     const fixedSide = _fixedDockSide(panelsetNode);
@@ -16924,7 +17128,10 @@ const GBLayout = (() => {
         if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
       }
     });
-    if (fixedSide === 'right') _appendRightRailQuickMemo(dockBar);
+    if (fixedSide === 'right') {
+      _appendRightRailChat(dockBar);
+      _appendRightRailQuickMemo(dockBar);
+    }
     if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {
       window.GBRailContract.decorate(dockBar, fixedSide);
     }
@@ -17001,7 +17208,7 @@ const GBTabs = (() => {
     pivot: 'db', tree: 'listTree', gallery: 'db', kanban: 'db', timeline: 'db',
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
-    search: 'search', scriptnote: 'bookOpenText', version: 'gitBranch',
+    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', version: 'gitBranch',
   };
   const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
@@ -17289,6 +17496,9 @@ const GBTabs = (() => {
       GBPanelSet.recordRightRailSwitch(paneId, tabId);
     }
     pane.activeTabIndex = idx;
+    // 狭い画面ではチャットの親ドックを開くだけでは中央パネルが残る。
+    if (pane.tabs[idx]?.type === 'chat' && pane.meldexRole === 'chat-sidebar' && GBLayout.isMobileLayout?.()
+        && window.GBChatSidebar?.open()) return;
     const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
 
@@ -17344,7 +17554,7 @@ const GBTabs = (() => {
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
     // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
-    if (closedTab?.type === 'scriptnote' && typeof getComponentInstance === 'function') {
+    if (['scriptnote', 'form-app'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;
@@ -17355,7 +17565,7 @@ const GBTabs = (() => {
         }
         if (!flushed) {
           if (typeof showStatus === 'function') {
-            showStatus('シナリオを保存できなかったため、タブを閉じませんでした', true);
+            showStatus('保存または入力の確認が完了しなかったため、タブを閉じませんでした', true);
           }
           return false;
         }
@@ -17726,7 +17936,7 @@ const GBTabs = (() => {
     const id = typeof pane === 'string' ? pane : pane?.id;
     const walk = (node, sidebar = false) => {
       if (!node) return false;
-      sidebar = sidebar || ['left-sidebar', 'right-sidebar'].includes(node.meldexRole);
+      sidebar = sidebar || ['left-sidebar', 'right-sidebar', 'chat-sidebar'].includes(node.meldexRole);
       if (node.type === 'pane') return node.id === id && sidebar;
       const children = node.type === 'panelset' ? (node.groups || []).map(group => group.root) : node.children || [];
       return children.some(child => walk(child, sidebar));
@@ -17783,7 +17993,7 @@ const GBTabs = (() => {
     const rightDefaults = window.GBRailContract?.defaults?.() || [
       ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
       ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
-      ['ヒストリー', 'history'], ['バージョン管理', 'version'], ['チャット', 'chat'],
+      ['ヒストリー', 'history'], ['バージョン管理', 'version'],
     ];
     const rightPanes = rightDefaults.map(([label, type]) => _pane([_tab(label, type)]));
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });
@@ -42350,7 +42560,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet',
+    '.mel-sheet', '.mel-form',
     '.mel-timer', '.timer.json',
   ];
 
@@ -42403,6 +42613,7 @@ const GBLinkRouter = (() => {
     const extension = ext(lower);
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
+    if (lower.endsWith('.mel-form')) return 'form-app';
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
@@ -42439,6 +42650,8 @@ const GBLinkRouter = (() => {
     if (entry.type === 'scriptnote') {
       state.scenarioPath = entry.path || '';
       state.label = entry.label || '';
+    } else if (entry.type === 'form-app') {
+      state.formPath = entry.path || ''; state.label = entry.label || '';
     } else if (entry.type === 'board') {
       state.boardPath = entry.path || '';
       state.label = entry.label || '';
@@ -42459,6 +42672,7 @@ const GBLinkRouter = (() => {
 
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
+    else if (explicitType === 'form-app') entry = { type: 'form-app', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -42478,6 +42692,7 @@ const GBLinkRouter = (() => {
     } else if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-form')) entry = { type: 'form-app', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -53864,9 +54079,20 @@ const MeldexPublicRuntime = (() => {
     + "    }\n"
     + "    return fields;\n"
     + "  }\n"
+    + "  form.addEventListener('input', function (e) { if (e.target.setCustomValidity) e.target.setCustomValidity(''); });\n"
     + "  form.addEventListener('submit', async function (e) {\n"
     + "    e.preventDefault();\n"
     + "    if (!cfg.form_submit_enabled) { if (msg) msg.textContent = '現在受付停止中です'; return; }\n"
+    + "    var limited = form.querySelectorAll('[data-form-min-length], [data-form-max-length]');\n"
+    + "    for (var n = 0; n < limited.length; n += 1) {\n"
+    + "      var input = limited[n], raw = String(input.value || '').trim(), error = '';\n"
+    + "      if (input.disabled || !raw) continue;\n"
+    + "      var length = Array.from(raw).length, label = input.getAttribute('aria-label') || input.name;\n"
+    + "      if (input.dataset.formMinLength !== undefined && length < Number(input.dataset.formMinLength)) error = label + ' は ' + input.dataset.formMinLength + ' 文字以上で入力してください';\n"
+    + "      if (input.dataset.formMaxLength !== undefined && length > Number(input.dataset.formMaxLength)) error = label + ' は ' + input.dataset.formMaxLength + ' 文字以内で入力してください';\n"
+    + "      input.setCustomValidity(error);\n"
+    + "      if (error) { if (msg) msg.textContent = error; input.reportValidity(); return; }\n"
+    + "    }\n"
     + "    if (msg) msg.textContent = '送信中...';\n"
     + "    var fields = {};\n"
     + "    try { fields = await collectFields(); } catch (err) {\n"
@@ -57103,6 +57329,11 @@ function _sn2StopSep() {
       editor.innerHTML = raw.trim() && typeof mdToHtml === 'function'
         ? (typeof applyAutoLinks === 'function' ? applyAutoLinks(mdToHtml(raw, { basePath: state.path }), state.path) : mdToHtml(raw))
         : '';
+      // 旧クイックメモの自動見出しは表示だけ隠す。保存原文は保持する。
+      if (data.quick_memo_legacy_title === true && /^# [^\r\n]+(?:\r?\n|$)/.test(raw)) {
+        const heading = editor.firstElementChild;
+        if (heading?.tagName === 'H1') heading.hidden = true;
+      }
       state.editor = editor;
       if (typeof _bindEntityFreeTextParticipant === 'function') {
         _bindEntityFreeTextParticipant(editor, state.path);
@@ -57112,7 +57343,7 @@ function _sn2StopSep() {
       root.appendChild(toolbar);
       root.appendChild(editor);
 
-      // 新規ファイル作成は「リンクを追加」メニューへ集約する。
+      // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 
       editor.addEventListener('click', event => {
         const link = event.target.closest?.('.auto-link');
@@ -64921,7 +65152,13 @@ function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
   });
 }
 // 非表示カラム
-function getHiddenCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.hiddenCols || []; }
+function getHiddenCols(dbPath, options = {}) {
+  const view = getCurrentDbViewConfigEntry(dbPath, options);
+  const hidden = view?.hiddenCols || [];
+  // 既存シートの固定値も非破壊で隠す。保存済みの列データや表示設定は書き換えない。
+  const quickMemo = (getDbViewConfig(dbPath)?.savedViews || []).some(item => item.id === 'quick-memo-default');
+  return quickMemo ? [...new Set([...hidden, '種別'])] : hidden;
+}
 function setHiddenCols(dbPath, cols, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
 }
@@ -80580,7 +80817,8 @@ const UI_STYLE_SECTIONS = {
   'チャット': [
     { label: 'パネル', fg:'--chat-fg', line:'--chat-border', text:'チャット' },
     { label: 'ツール領域', bg:'--chat-panel-bg', text:'ツール' },
-    { label: 'メッセージ', fg:'--chat-fg', bg:'--chat-message-bg', text:'メッセージ' },
+    { label: 'メッセージ', fg:'--chat-message-fg', bg:'--chat-message-bg', text:'メッセージ' },
+    { label: '自分のフキダシ', fg:'--chat-user-fg', bg:'--chat-user-bg', text:'確認しました。' },
     { label: '入力欄', fg:'--chat-input-fg', bg:'--chat-input-bg', text:'入力欄' },
     { label: '補助表示', fg:'--chat-muted-fg', text:'補助' },
     { label: 'ホバー', bg:'--chat-hover-bg', text:'ホバー' },
@@ -82194,6 +82432,16 @@ function settingsThemeSimpleValues() {
   return Object.fromEntries(Object.entries(settingsThemeSimpleSelections()).map(([id, value]) => [id, _settingsSimpleResolve(value)]));
 }
 
+function _settingsSimpleChatBubbleColor(value) {
+  if (/^auto(?:-light|-dark)?$/.test(value) || /^auto-rows:/.test(value)) {
+    return _settingsSimpleResolve('auto-dark');
+  }
+  const color = _settingsSimpleResolve(value);
+  if (value !== 'os-accent') return color;
+  const amount = 'var(--theme-ui-auto-dark-percent, 30%)';
+  return `color-mix(in srgb, ${color} calc(100% - ${amount}), black ${amount})`;
+}
+
 function renderSettingsSimpleThemeEditor() {
   const colors = settingsThemeSimpleValues();
   return `<section class="gb-section gb-section--boxed" data-settings-simple-theme data-settings-view="theme" hidden>
@@ -82230,6 +82478,8 @@ function settingsThemeSetSimpleMode(mode, root) {
 
 // Resolve semantic roles from the actual property definitions, not a parallel list of apps.
 function _settingsSimpleThemeRole(key, prop = '', label = '') {
+  if (key === '--chat-user-bg') return 'accent';
+  if (key === '--chat-user-fg') return 'selectedText';
   if (['--ui-dock-button-bg', '--outliner-item-bg'].includes(key)) return 'transparent';
   if (key.startsWith('--simple-theme-')) return '';
   if (SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key]) return SETTINGS_SIMPLE_THEME_EXTRA_ROLES[key];
@@ -82325,6 +82575,12 @@ function settingsThemeApplySimpleColors(overrides = {}) {
   const styles = Object.fromEntries(Object.entries(styleRoles)
     .filter(([, role]) => changed.has(role) || role === 'transparent' && changedBackground)
     .map(([key, role]) => [key, role === 'transparent' ? 'transparent' : colors[role]]));
+  for (const [key, role] of [['--chat-user-bg', 'accent'], ['--chat-message-bg', 'control']]) {
+    if (Object.prototype.hasOwnProperty.call(styles, key)) styles[key] = _settingsSimpleChatBubbleColor(selections[role]);
+  }
+  if (changed.has('control')) {
+    styles['--chat-message-fg'] = /^(?:os-accent|auto(?:$|-))/.test(selections.control) ? '#ffffff' : colors.text;
+  }
   const root = document.documentElement;
   const apps = manager.getThemeUiApplications();
   for (const target of manager.THEME_UI_TARGETS) for (const state of target.states) {
@@ -85831,6 +86087,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
     { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
@@ -103221,7 +103478,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
-  const allProps = Object.keys(data.properties || {});
+  const allProps = Object.keys(data.properties || {}).filter(name => !(data.quick_memo === true && name === '種別'
+    && (data.properties[name] || []).every(item => item.value === 'メモ')));
   const layout = typeof getPropertyLayout === 'function'
     ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx })
     : { order: getEntryPropOrder(parentDb) || [...allProps].sort(), hidden: [], groups: [] };
@@ -104392,7 +104650,8 @@ function stripAutoLinks(html) {
 function _quickMemoStoredHtml(element) {
   const body = element?.tagName === 'DIV' && element.classList.contains('meldex-quick-memo-body');
   const drawing = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-drawing');
-  if (!body && !drawing) return null;
+  const audio = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-audio');
+  if (!body && !drawing && !audio) return null;
   const root = element.cloneNode(true);
   const allowed = new Set('DIV P BR B STRONG I EM U S DEL SPAN A UL OL LI BLOCKQUOTE PRE CODE H1 H2 H3 H4 H5 H6 IMG FIGURE FIGCAPTION HR AUDIO VIDEO SOURCE TABLE THEAD TBODY TFOOT TR TD TH CAPTION COLGROUP COL'.split(' '));
   const forbidden = new Set('SCRIPT STYLE IFRAME OBJECT EMBED SVG MATH TEMPLATE FORM INPUT BUTTON LINK META BASE'.split(' '));
@@ -104431,12 +104690,12 @@ function _quickMemoStoredHtml(element) {
     root.removeAttribute('style');
   }
   [...root.attributes].forEach(attr => root.removeAttribute(attr.name));
-  root.setAttribute('class', body ? 'meldex-quick-memo-body' : 'meldex-quick-memo-drawing');
+  root.setAttribute('class', body ? 'meldex-quick-memo-body' : audio ? 'meldex-quick-memo-audio' : 'meldex-quick-memo-drawing');
   return root.outerHTML;
 }
 
 function _quickMemoMarkdownBlock(lines, start) {
-  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing)["']/i);
+  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing|audio)["']/i);
   if (!opening) return null;
   const tag = opening[1].toLowerCase();
   const tokens = new RegExp('<\\/?' + tag + '(?=[\\s>])[^>]*>', 'gi');
@@ -165523,6 +165782,915 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === gb-db-topic-layout-presets.js === */
+;
+// Generated by generate_topic_layout_presets.py from data/topic-layout-presets/*.json.
+// Edit the JSON sources, then regenerate this file.
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexDbTopicLayoutPresets = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+  const templates = [
+    {"format":"meldex-topic-layout/v1","schemaVersion":1,"layout":{"id":"trpg-character-sheet","name":"TRPG キャラクターシート（汎用）","canvasSize":{"w":1000,"h":1548},"theme":{"bg":"#f5f1e8","fg":"#243c35","fg2":"#65736a","accent":"#284c43","border":"#c4cabb"},"cells":[
+      {"id":"trpg-1","type":"label","x":24,"y":24,"w":952,"h":44,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#284c43","transparent":false},"style":{"fontSize":24,"textColor":"#fffcf5"},"text":"TRPG キャラクターシート","captionMode":"full"},
+      {"id":"trpg-2","type":"label","x":24,"y":76,"w":952,"h":26,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#65736a"},"text":"CHARACTER RECORD  /  冒険・人物設定・セッションの記録","captionMode":"full"},
+      {"id":"trpg-3","type":"label","x":24,"y":116,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"01  基本情報","captionMode":"full"},
+      {"id":"trpg-4","type":"image","x":24,"y":158,"w":196,"h":140,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"image":{"source":"icon","spec":"lucide:userRound","color":"#284c43","fit":"contain","alt":"人物画像の差し替え欄"},"captionMode":"full"},
+      {"id":"trpg-5","type":"field","x":24,"y":310,"w":196,"h":82,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"外見","captionMode":"full"},
+      {"id":"trpg-6","type":"field","x":232,"y":158,"w":555,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":25,"textColor":"#243c35"},"prop":"キャラクター名","captionMode":"full"},
+      {"id":"trpg-7","type":"field","x":799,"y":158,"w":177,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"プレイヤー名","captionMode":"full"},
+      {"id":"trpg-8","type":"field","x":232,"y":256,"w":177,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"種族","captionMode":"full"},
+      {"id":"trpg-9","type":"field","x":421,"y":256,"w":177,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"クラス","captionMode":"full"},
+      {"id":"trpg-10","type":"field","x":610,"y":256,"w":177,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"レベル","captionMode":"full"},
+      {"id":"trpg-11","type":"field","x":799,"y":256,"w":177,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"年齢","captionMode":"full"},
+      {"id":"trpg-12","type":"field","x":232,"y":330,"w":366,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"所属","captionMode":"full"},
+      {"id":"trpg-13","type":"field","x":610,"y":330,"w":366,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"信条","captionMode":"full"},
+      {"id":"trpg-14","type":"label","x":24,"y":410,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"02  能力値","captionMode":"full"},
+      {"id":"trpg-15","type":"field","x":24,"y":452,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"筋力","captionMode":"full"},
+      {"id":"trpg-16","type":"field","x":184,"y":452,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"敏捷","captionMode":"full"},
+      {"id":"trpg-17","type":"field","x":344,"y":452,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"耐久","captionMode":"full"},
+      {"id":"trpg-18","type":"field","x":24,"y":550,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"知力","captionMode":"full"},
+      {"id":"trpg-19","type":"field","x":184,"y":550,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"感覚","captionMode":"full"},
+      {"id":"trpg-20","type":"field","x":344,"y":550,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#edf0e5","transparent":false},"style":{"fontSize":24,"textColor":"#284c43"},"prop":"精神","captionMode":"full"},
+      {"id":"trpg-21","type":"chart","x":504,"y":452,"w":472,"h":184,"frameStyle":{"lineStyle":"none","radius":0,"padding":4,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#f5f1e8","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"chart":{"chartType":"radar","axisMax":10,"showLabels":true,"axes":[{"prop":"筋力","label":"筋力","max":10},{"prop":"敏捷","label":"敏捷","max":10},{"prop":"耐久","label":"耐久","max":10},{"prop":"知力","label":"知力","max":10},{"prop":"感覚","label":"感覚","max":10},{"prop":"精神","label":"精神","max":10}]},"captionMode":"full"},
+      {"id":"trpg-22","type":"label","x":24,"y":658,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"03  リソース・戦闘","captionMode":"full"},
+      {"id":"trpg-23","type":"field","x":24,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"HP","captionMode":"full"},
+      {"id":"trpg-24","type":"field","x":184,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"最大HP","captionMode":"full"},
+      {"id":"trpg-25","type":"field","x":344,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"MP","captionMode":"full"},
+      {"id":"trpg-26","type":"field","x":504,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"最大MP","captionMode":"full"},
+      {"id":"trpg-27","type":"field","x":664,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"防御力","captionMode":"full"},
+      {"id":"trpg-28","type":"field","x":824,"y":700,"w":148,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#243c35"},"prop":"行動値","captionMode":"full"},
+      {"id":"trpg-29","type":"label","x":24,"y":802,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"04  技能・特技","captionMode":"full"},
+      {"id":"trpg-30","type":"field","x":24,"y":844,"w":468,"h":150,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"技能","captionMode":"full"},
+      {"id":"trpg-31","type":"field","x":504,"y":844,"w":472,"h":150,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"特技・呪文","captionMode":"full"},
+      {"id":"trpg-32","type":"label","x":24,"y":1012,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"05  装備・所持品","captionMode":"full"},
+      {"id":"trpg-33","type":"field","x":24,"y":1054,"w":468,"h":126,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"武器・防具","captionMode":"full"},
+      {"id":"trpg-34","type":"field","x":504,"y":1054,"w":312,"h":126,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"所持品","captionMode":"full"},
+      {"id":"trpg-35","type":"field","x":828,"y":1054,"w":148,"h":126,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":23,"textColor":"#a27843"},"prop":"所持金","captionMode":"full"},
+      {"id":"trpg-36","type":"label","x":24,"y":1198,"w":952,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e6e9dc","transparent":false},"style":{"fontSize":15,"textColor":"#284c43"},"text":"06  人物設定・記録","captionMode":"full"},
+      {"id":"trpg-37","type":"field","x":24,"y":1240,"w":308,"h":92,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"性格","captionMode":"full"},
+      {"id":"trpg-38","type":"field","x":344,"y":1240,"w":308,"h":92,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"目的","captionMode":"full"},
+      {"id":"trpg-39","type":"field","x":664,"y":1240,"w":312,"h":92,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"関係・絆","captionMode":"full"},
+      {"id":"trpg-40","type":"field","x":24,"y":1344,"w":468,"h":140,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"経歴","captionMode":"full"},
+      {"id":"trpg-41","type":"field","x":504,"y":1344,"w":472,"h":140,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"セッション記録","captionMode":"full"},
+      {"id":"trpg-42","type":"label","x":24,"y":1498,"w":952,"h":38,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#65736a"},"text":"汎用プリセット  /  能力値の目盛りは 0–10。利用するルールに合わせて変更できます。","captionMode":"full"}
+    ]},"columns":[{"id":"","name":"外見"},{"id":"","name":"キャラクター名"},{"id":"","name":"プレイヤー名"},{"id":"","name":"種族"},{"id":"","name":"クラス"},{"id":"","name":"レベル"},{"id":"","name":"年齢"},{"id":"","name":"所属"},{"id":"","name":"信条"},{"id":"","name":"筋力"},{"id":"","name":"敏捷"},{"id":"","name":"耐久"},{"id":"","name":"知力"},{"id":"","name":"感覚"},{"id":"","name":"精神"},{"id":"","name":"HP"},{"id":"","name":"最大HP"},{"id":"","name":"MP"},{"id":"","name":"最大MP"},{"id":"","name":"防御力"},{"id":"","name":"行動値"},{"id":"","name":"技能"},{"id":"","name":"特技・呪文"},{"id":"","name":"武器・防具"},{"id":"","name":"所持品"},{"id":"","name":"所持金"},{"id":"","name":"性格"},{"id":"","name":"目的"},{"id":"","name":"関係・絆"},{"id":"","name":"経歴"},{"id":"","name":"セッション記録"}],"metadata":{"title":"TRPG キャラクターシート（汎用）","description":"基本情報・6能力値とレーダー・HP/MP・技能・装備・人物設定をまとめたキャラクター記録用レイアウト。特定のゲームシステムには依存しません。","recommendedPropertyTypes":{"外見":{"type":"text"},"キャラクター名":{"type":"text"},"プレイヤー名":{"type":"text"},"種族":{"type":"text"},"クラス":{"type":"text"},"レベル":{"type":"number"},"年齢":{"type":"number"},"所属":{"type":"text"},"信条":{"type":"text"},"筋力":{"type":"number"},"敏捷":{"type":"number"},"耐久":{"type":"number"},"知力":{"type":"number"},"感覚":{"type":"number"},"精神":{"type":"number"},"HP":{"type":"number"},"最大HP":{"type":"number"},"MP":{"type":"number"},"最大MP":{"type":"number"},"防御力":{"type":"number"},"行動値":{"type":"number"},"技能":{"type":"text"},"特技・呪文":{"type":"text"},"武器・防具":{"type":"text"},"所持品":{"type":"text"},"所持金":{"type":"number"},"性格":{"type":"text"},"目的":{"type":"text"},"関係・絆":{"type":"text"},"経歴":{"type":"text"},"セッション記録":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。","同名の列は自動で対応付けられます。足りない項目は、レイアウトの欄にある「列を追加」から個別に追加できます。レイアウトの編集モードで既存の列へ変更することもできます。","画像欄は共通の画像です。トピックごとに人物画像を変える場合は、画像欄をシートの画像列のセルへ置き換えてください。","レーダーチャートの最大値は10です。セルの設定から変更できます。"]}},
+    {"format":"meldex-topic-layout/v1","schemaVersion":1,"layout":{"id":"resume-profile","name":"履歴書・プロフィール","canvasSize":{"w":1000,"h":1470},"theme":{"bg":"#f8f9fb","fg":"#243344","fg2":"#64748b","accent":"#304b68","border":"#cbd3dd"},"cells":[
+      {"id":"resume-1","type":"label","x":32,"y":32,"w":600,"h":52,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":32,"textColor":"#243344"},"text":"履 歴 書","captionMode":"full"},
+      {"id":"resume-2","type":"field","x":688,"y":32,"w":280,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"記入日","columnType":"date","captionMode":"full"},
+      {"id":"resume-3","type":"label","x":32,"y":98,"w":936,"h":28,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#64748b"},"text":"RESUME  /  基本情報・経歴・資格・自己PR","captionMode":"full"},
+      {"id":"resume-4","type":"label","x":32,"y":132,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e9eef4","transparent":false},"style":{"fontSize":15,"textColor":"#304b68"},"text":"01  基本情報","captionMode":"full"},
+      {"id":"resume-5","type":"field","x":32,"y":176,"w":712,"h":86,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":27,"textColor":"#243344"},"prop":"氏名","columnType":"text","captionMode":"full"},
+      {"id":"resume-6","type":"field","x":32,"y":274,"w":348,"h":64,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"ふりがな","columnType":"text","captionMode":"full"},
+      {"id":"resume-7","type":"field","x":392,"y":274,"w":352,"h":64,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"生年月日","columnType":"date","captionMode":"full"},
+      {"id":"resume-8","type":"field","x":760,"y":176,"w":208,"h":162,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"写真","columnType":"image","captionMode":"full"},
+      {"id":"resume-9","type":"field","x":32,"y":350,"w":936,"h":70,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"住所","columnType":"text","captionMode":"full"},
+      {"id":"resume-10","type":"field","x":32,"y":432,"w":300,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"電話番号","columnType":"text","captionMode":"full"},
+      {"id":"resume-11","type":"field","x":344,"y":432,"w":404,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"メールアドレス","columnType":"text","captionMode":"full"},
+      {"id":"resume-12","type":"field","x":760,"y":432,"w":208,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"応募職種","columnType":"text","captionMode":"full"},
+      {"id":"resume-13","type":"label","x":32,"y":514,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e9eef4","transparent":false},"style":{"fontSize":15,"textColor":"#304b68"},"text":"02  学歴・職歴","captionMode":"full"},
+      {"id":"resume-14","type":"field","x":32,"y":556,"w":936,"h":132,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"学歴","columnType":"text","captionMode":"full"},
+      {"id":"resume-15","type":"field","x":32,"y":700,"w":936,"h":156,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"職歴","columnType":"text","captionMode":"full"},
+      {"id":"resume-16","type":"label","x":32,"y":876,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e9eef4","transparent":false},"style":{"fontSize":15,"textColor":"#304b68"},"text":"03  資格・スキル","captionMode":"full"},
+      {"id":"resume-17","type":"field","x":32,"y":918,"w":456,"h":124,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"資格・免許","columnType":"text","captionMode":"full"},
+      {"id":"resume-18","type":"field","x":512,"y":918,"w":456,"h":124,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"スキル","columnType":"text","captionMode":"full"},
+      {"id":"resume-19","type":"label","x":32,"y":1062,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#e9eef4","transparent":false},"style":{"fontSize":15,"textColor":"#304b68"},"text":"04  志望動機・自己PR","captionMode":"full"},
+      {"id":"resume-20","type":"field","x":32,"y":1104,"w":456,"h":172,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"志望動機","columnType":"text","captionMode":"full"},
+      {"id":"resume-21","type":"field","x":512,"y":1104,"w":456,"h":172,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"自己PR","columnType":"text","captionMode":"full"},
+      {"id":"resume-22","type":"field","x":32,"y":1288,"w":936,"h":98,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"本人希望","columnType":"text","captionMode":"full"},
+      {"id":"resume-23","type":"label","x":32,"y":1398,"w":936,"h":38,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#64748b"},"text":"学歴・職歴は「年月 ＋ 内容」の形で、1件ずつ値を追加すると一覧で読みやすくなります。","captionMode":"full"}
+    ]},"columns":[{"id":"","name":"記入日","type":"date"},{"id":"","name":"氏名","type":"text"},{"id":"","name":"ふりがな","type":"text"},{"id":"","name":"生年月日","type":"date"},{"id":"","name":"写真","type":"image"},{"id":"","name":"住所","type":"text"},{"id":"","name":"電話番号","type":"text"},{"id":"","name":"メールアドレス","type":"text"},{"id":"","name":"応募職種","type":"text"},{"id":"","name":"学歴","type":"text"},{"id":"","name":"職歴","type":"text"},{"id":"","name":"資格・免許","type":"text"},{"id":"","name":"スキル","type":"text"},{"id":"","name":"志望動機","type":"text"},{"id":"","name":"自己PR","type":"text"},{"id":"","name":"本人希望","type":"text"}],"metadata":{"title":"履歴書・プロフィール","description":"基本情報、学歴・職歴、資格・スキル、志望動機・自己PRを整理する履歴書風トピックレイアウト。","recommendedPropertyTypes":{"記入日":{"type":"date"},"氏名":{"type":"text"},"ふりがな":{"type":"text"},"生年月日":{"type":"date"},"写真":{"type":"image"},"住所":{"type":"text"},"電話番号":{"type":"text"},"メールアドレス":{"type":"text"},"応募職種":{"type":"text"},"学歴":{"type":"text"},"職歴":{"type":"text"},"資格・免許":{"type":"text"},"スキル":{"type":"text"},"志望動機":{"type":"text"},"自己PR":{"type":"text"},"本人希望":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。同名の列は自動で対応付けられます。","足りない項目は、欄の「列を追加」から個別に追加できます。記入日・生年月日は日付列、写真は画像列、その他はテキスト列です。","写真はトピックごとの画像列です。レイアウト全体で共通の固定画像にはなりません。","学歴・職歴・資格などは、「年月＋内容」を1件ずつ値として追加すると、行ごとに読みやすく表示できます。","配布ファイルには入力値や写真を含みません。プレビューの人物・経歴・連絡先は架空の記入例です。"]}},
+    {"format":"meldex-topic-layout/v1","schemaVersion":1,"layout":{"id":"book-reading-notes","name":"一冊の読書ノート","canvasSize":{"w":1000,"h":1600},"theme":{"bg":"#f6f2eb","fg":"#38372f","fg2":"#777164","accent":"#735842","border":"#d6ccbb"},"cells":[
+      {"id":"reading-1","type":"label","x":32,"y":24,"w":936,"h":48,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#735842","transparent":false},"style":{"fontSize":27,"textColor":"#fffdf8"},"text":"一冊の読書ノート","captionMode":"full"},
+      {"id":"reading-2","type":"label","x":32,"y":78,"w":936,"h":28,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#777164"},"text":"BOOK NOTES  /  内容を知る・自分の言葉で考える・あとで活かす","captionMode":"full"},
+      {"id":"reading-3","type":"label","x":32,"y":126,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#eae2d5","transparent":false},"style":{"fontSize":15,"textColor":"#735842"},"text":"01  本の情報・読書記録","captionMode":"full"},
+      {"id":"reading-4","type":"field","x":32,"y":170,"w":196,"h":164,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"表紙","columnType":"image","captionMode":"full"},
+      {"id":"reading-5","type":"field","x":32,"y":346,"w":196,"h":64,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"ジャンル","columnType":"text","captionMode":"full"},
+      {"id":"reading-6","type":"field","x":244,"y":170,"w":724,"h":82,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":25,"textColor":"#38372f"},"prop":"書名","columnType":"text","captionMode":"full"},
+      {"id":"reading-7","type":"field","x":244,"y":264,"w":230,"h":66,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"著者","columnType":"text","captionMode":"full"},
+      {"id":"reading-8","type":"field","x":486,"y":264,"w":306,"h":66,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"出版社","columnType":"text","captionMode":"full"},
+      {"id":"reading-9","type":"field","x":804,"y":264,"w":164,"h":66,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"出版年","columnType":"number","captionMode":"full"},
+      {"id":"reading-10","type":"field","x":244,"y":342,"w":260,"h":68,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"ISBN","columnType":"text","captionMode":"full"},
+      {"id":"reading-11","type":"field","x":516,"y":342,"w":452,"h":68,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"書誌URL","columnType":"link","captionMode":"full"},
+      {"id":"reading-12","type":"field","x":32,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"読書状況","columnType":"text","captionMode":"full"},
+      {"id":"reading-13","type":"field","x":190,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"読書開始日","columnType":"date","captionMode":"full"},
+      {"id":"reading-14","type":"field","x":348,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"読了日","columnType":"date","captionMode":"full"},
+      {"id":"reading-15","type":"field","x":506,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"現在ページ","columnType":"number","captionMode":"full"},
+      {"id":"reading-16","type":"field","x":664,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"総ページ","columnType":"number","captionMode":"full"},
+      {"id":"reading-17","type":"field","x":822,"y":424,"w":146,"h":76,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"評価（5点満点）","columnType":"select","columnOptions":["★","★★","★★★","★★★★","★★★★★"],"captionMode":"full"},
+      {"id":"reading-18","type":"label","x":32,"y":520,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#eae2d5","transparent":false},"style":{"fontSize":15,"textColor":"#735842"},"text":"02  内容をつかむ","captionMode":"full"},
+      {"id":"reading-19","type":"field","x":32,"y":564,"w":936,"h":84,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"読む目的","columnType":"text","captionMode":"full"},
+      {"id":"reading-20","type":"field","x":32,"y":660,"w":936,"h":84,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"一言要約","columnType":"text","captionMode":"full"},
+      {"id":"reading-21","type":"field","x":32,"y":756,"w":614,"h":166,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"内容の要点","columnType":"text","captionMode":"full"},
+      {"id":"reading-22","type":"field","x":658,"y":756,"w":310,"h":166,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"キーワード","columnType":"text","captionMode":"full"},
+      {"id":"reading-23","type":"label","x":32,"y":942,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#eae2d5","transparent":false},"style":{"fontSize":15,"textColor":"#735842"},"text":"03  引用と、自分の考え","captionMode":"full"},
+      {"id":"reading-24","type":"field","x":32,"y":986,"w":456,"h":208,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"引用・ページ","columnType":"text","captionMode":"full"},
+      {"id":"reading-25","type":"field","x":512,"y":986,"w":456,"h":208,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"感想・自分の考え","columnType":"text","captionMode":"full"},
+      {"id":"reading-26","type":"label","x":32,"y":1214,"w":936,"h":30,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#eae2d5","transparent":false},"style":{"fontSize":15,"textColor":"#735842"},"text":"04  読後に残すこと","captionMode":"full"},
+      {"id":"reading-27","type":"field","x":32,"y":1258,"w":456,"h":152,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"疑問・調べたいこと","columnType":"text","captionMode":"full"},
+      {"id":"reading-28","type":"field","x":512,"y":1258,"w":456,"h":152,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"活かしたいこと","columnType":"text","captionMode":"full"},
+      {"id":"reading-29","type":"field","x":32,"y":1422,"w":456,"h":94,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"関連する本・資料","columnType":"text","captionMode":"full"},
+      {"id":"reading-30","type":"field","x":512,"y":1422,"w":456,"h":94,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"次に読みたい本","columnType":"text","captionMode":"full"},
+      {"id":"reading-31","type":"label","x":32,"y":1528,"w":936,"h":42,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#777164"},"text":"引用はページ・位置を添えて記録。長い記録や章ごとのメモは、トピック本文へ続けて書けます。","captionMode":"full"}
+    ]},"columns":[{"id":"","name":"表紙","type":"image"},{"id":"","name":"ジャンル","type":"text"},{"id":"","name":"書名","type":"text"},{"id":"","name":"著者","type":"text"},{"id":"","name":"出版社","type":"text"},{"id":"","name":"出版年","type":"number"},{"id":"","name":"ISBN","type":"text"},{"id":"","name":"書誌URL","type":"link"},{"id":"","name":"読書状況","type":"text"},{"id":"","name":"読書開始日","type":"date"},{"id":"","name":"読了日","type":"date"},{"id":"","name":"現在ページ","type":"number"},{"id":"","name":"総ページ","type":"number"},{"id":"","name":"評価（5点満点）","type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},{"id":"","name":"読む目的","type":"text"},{"id":"","name":"一言要約","type":"text"},{"id":"","name":"内容の要点","type":"text"},{"id":"","name":"キーワード","type":"text"},{"id":"","name":"引用・ページ","type":"text"},{"id":"","name":"感想・自分の考え","type":"text"},{"id":"","name":"疑問・調べたいこと","type":"text"},{"id":"","name":"活かしたいこと","type":"text"},{"id":"","name":"関連する本・資料","type":"text"},{"id":"","name":"次に読みたい本","type":"text"}],"metadata":{"title":"一冊の読書ノート","description":"1冊を1トピックとして、書誌情報・読書記録・要約・引用・自分の考え・今後の行動を残す読書ノート。","recommendedPropertyTypes":{"表紙":{"type":"image"},"ジャンル":{"type":"text"},"書名":{"type":"text"},"著者":{"type":"text"},"出版社":{"type":"text"},"出版年":{"type":"number"},"ISBN":{"type":"text"},"書誌URL":{"type":"link"},"読書状況":{"type":"text"},"読書開始日":{"type":"date"},"読了日":{"type":"date"},"現在ページ":{"type":"number"},"総ページ":{"type":"number"},"評価（5点満点）":{"type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},"読む目的":{"type":"text"},"一言要約":{"type":"text"},"内容の要点":{"type":"text"},"キーワード":{"type":"text"},"引用・ページ":{"type":"text"},"感想・自分の考え":{"type":"text"},"疑問・調べたいこと":{"type":"text"},"活かしたいこと":{"type":"text"},"関連する本・資料":{"type":"text"},"次に読みたい本":{"type":"text"}},"references":[{"title":"Moleskine Passion Journals Book","url":"https://www.moleskine.com/en-us/shop/notebooks/passion-notebooks/passion-journals-book-8058647620244.html","note":"紙の読書記録帳の実例。"},{"title":"Reading notes — Hannah Tyreman / Notion","url":"https://www.notion.com/en-gb/templates/reading-notes-241","note":"引用・要約・振り返り・問い・行動を分けて記録する構成を参考。"}],"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","本1冊につき1トピックを作り、書名などを入力します。同名の列は自動で対応付けられます。","足りない項目は欄の「列を追加」から個別に追加できます。表紙は画像、日付は日付、ページ数・出版年は数値、評価はセレクト、書誌URLはリンク、その他はテキスト列です。","表紙は本ごとに異なる画像を登録できる画像列です。画像の取得・書誌情報の取得は自動では行いません。","評価は「★」「★★」「★★★」「★★★★」「★★★★★」から選択します。ページ数から進捗率を自動計算する機能は含みません。","引用はページ番号や電子書籍の位置と組み合わせて、1件ずつ値として記録すると読み返しやすくなります。引用と自分の感想は別の欄に残します。","要点・疑問・行動などは1件ずつ値を追加できます。長い文章や章ごとのメモは、トピック本文に書けます。","参考例の項目構成をもとに独自の配置を作成しています。テンプレート本文や画像は転載していません。","配布ファイルには本の情報・引用・感想・表紙を含みません。プレビューの本・文章・引用・表紙は架空の記入例です。"]}}
+  ];
+  // Return copies: editing or applying a preset must never change the standards.
+  return Object.freeze({ getTemplates: () => JSON.parse(JSON.stringify(templates)) });
+});
+
+;
+
+/* === gb-db-form-model.js === */
+;
+/* Shared form semantics. Layout coordinates and topic values remain independent. */
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexDbFormModel = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const unique = values => [...new Set((Array.isArray(values) ? values : []).filter(value => typeof value === 'string' && value))];
+  const scalarTypes = new Set(['text', 'long-text', 'number', 'date', 'checkbox', 'select', 'multi-select']);
+  function layoutFields(layout) {
+    return unique((layout?.cells || []).filter(cell => cell.type === 'field').map(cell => cell.prop));
+  }
+  function normalize(source, fields) {
+    const src = object(source) ? clone(source) : {};
+    if (Number(src.schemaVersion) > 1) throw new Error('新しい版のフォーム設定です。更新してから編集してください');
+    const available = unique(fields || src.fields || []);
+    const order = Array.isArray(src.fields) ? unique(src.fields).filter(name => available.includes(name)) : available;
+    return { ...src, schemaVersion: 1, fields: order,
+      required: unique(src.required || []).filter(name => order.includes(name)),
+      labels: object(src.labels) ? src.labels : {}, descriptions: object(src.descriptions) ? src.descriptions : {},
+      placeholders: object(src.placeholders) ? src.placeholders : {},
+      rules: (Array.isArray(src.rules) ? src.rules : []).filter(rule => object(rule) && order.includes(rule.property)),
+    };
+  }
+  function forLayout(layout, fallback) {
+    return normalize(layout?.formConfig || fallback, layoutFields(layout));
+  }
+  function ruleFor(config, name, sheetRules = []) {
+    const result = { required: (config?.required || []).includes(name) };
+    (sheetRules || []).filter(rule => rule?.enabled !== false && (rule.property || rule.config?.property) === name && !rule.config?.statusFilter).forEach(rule => {
+      if (rule.type === 'required') result.required = true;
+      if (rule.type === 'range_check') {
+        if (rule.min !== undefined && rule.min !== '') result.min = rule.min;
+        if (rule.max !== undefined && rule.max !== '') result.max = rule.max;
+      }
+    });
+    const merged = Object.assign({}, result, (config?.rules || []).find(rule => rule.property === name) || {});
+    merged.required = result.required || merged.required === true;
+    return merged;
+  }
+  function validate(name, value, type, rule) {
+    const label = name || '項目';
+    const raw = value == null ? '' : String(value).trim();
+    if (rule?.required && (type === 'checkbox' ? !['true', '1'].includes(raw) : !raw)) return label + ' は必須です';
+    if (!raw) return '';
+    if (type === 'number') {
+      const number = Number(raw.replace(/,/g, ''));
+      if (!Number.isFinite(number)) return label + ' は数値を入力してください';
+      if (rule?.min !== undefined && rule.min !== '' && number < Number(rule.min)) return label + ' は ' + rule.min + ' 以上で入力してください';
+      if (rule?.max !== undefined && rule.max !== '' && number > Number(rule.max)) return label + ' は ' + rule.max + ' 以下で入力してください';
+    }
+    if (rule?.minLength > 0 && [...raw].length < rule.minLength) return label + ' は ' + rule.minLength + ' 文字以上で入力してください';
+    if (rule?.maxLength !== undefined && rule.maxLength !== '' && Number(rule.maxLength) >= 0 && [...raw].length > Number(rule.maxLength)) return label + ' は ' + rule.maxLength + ' 文字以内で入力してください';
+    return '';
+  }
+  function validateDefinition(config) {
+    for (const rule of config?.rules || []) {
+      for (const key of ['min', 'max', 'minLength', 'maxLength']) {
+        if (rule[key] !== undefined && rule[key] !== '' && !Number.isFinite(Number(rule[key]))) return rule.property + ': 入力範囲は数値を指定してください';
+        if (key.endsWith('Length') && rule[key] !== undefined && rule[key] !== '' && (!Number.isInteger(Number(rule[key])) || Number(rule[key]) < 0)) return rule.property + ': 文字数は0以上の整数を指定してください';
+      }
+      if (rule.min !== undefined && rule.max !== undefined && Number(rule.min) > Number(rule.max)
+        || rule.minLength !== undefined && rule.maxLength !== undefined && Number(rule.minLength) > Number(rule.maxLength)) return rule.property + ': 最小値は最大値以下にしてください';
+    }
+    return '';
+  }
+  function orderedCells(layout) {
+    const order = forLayout(layout).fields;
+    return (layout?.cells || []).map((cell, index) => ({ cell, index })).sort((a, b) => {
+      const rank = item => item.cell.type === 'field' && order.includes(item.cell.prop) ? order.indexOf(item.cell.prop) : order.length + item.index;
+      return rank(a) - rank(b) || a.index - b.index;
+    }).map(item => item.cell);
+  }
+  function arrange(cells, selectedIds, action, groupId) {
+    const output = clone(cells || []);
+    const selected = output.filter(cell => selectedIds.includes(cell.id));
+    if (action === 'lock' || action === 'unlock') {
+      selected.forEach(cell => { cell.locked = action === 'lock'; }); return output;
+    }
+    const items = selected.filter(cell => !cell.locked);
+    if (action === 'group' || action === 'ungroup') {
+      items.forEach(cell => { if (action === 'group') cell.groupId = groupId; else delete cell.groupId; }); return output;
+    }
+    if (items.length < 2) return output;
+    const left = Math.min(...items.map(cell => cell.x)), top = Math.min(...items.map(cell => cell.y));
+    const right = Math.max(...items.map(cell => cell.x + cell.w)), bottom = Math.max(...items.map(cell => cell.y + cell.h));
+    const width = items[0].w, height = items[0].h;
+    items.forEach(cell => {
+      if (action === 'left') cell.x = left;
+      if (action === 'right') cell.x = right - cell.w;
+      if (action === 'top') cell.y = top;
+      if (action === 'bottom') cell.y = bottom - cell.h;
+      if (action === 'center') cell.x = Math.round((left + right - cell.w) / 2);
+      if (action === 'middle') cell.y = Math.round((top + bottom - cell.h) / 2);
+      if (action === 'width') cell.w = width;
+      if (action === 'height') cell.h = height;
+    });
+    if (items.length > 2 && ['horizontal', 'vertical'].includes(action)) {
+      const axis = action === 'horizontal' ? 'x' : 'y', size = axis === 'x' ? 'w' : 'h';
+      const sorted = [...items].sort((a, b) => a[axis] - b[axis]);
+      const first = sorted[0][axis], last = sorted.at(-1)[axis] + sorted.at(-1)[size];
+      const gap = (last - first - sorted.reduce((sum, cell) => sum + cell[size], 0)) / (items.length - 1);
+      let position = first;
+      sorted.forEach(cell => { cell[axis] = Math.max(0, Math.round(position)); position += cell[size] + gap; });
+    }
+    return output;
+  }
+  return Object.freeze({ normalize, forLayout, layoutFields, ruleFor, validate, validateDefinition, orderedCells, arrange,
+    supportsScalar: type => scalarTypes.has(type || 'text') });
+});
+
+;
+
+/* === gb-db-form-runtime.js === */
+;
+/* Shared scalar inputs, record navigation and form-view rendering. */
+(function () {
+  'use strict';
+  const model = () => globalThis.MeldexDbFormModel;
+  const viewSessions = new WeakMap();
+  const normalPath = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  function writable(root, dbPath, ctx) {
+    return !!root?.isConnected && root.__MeldexRuntimeReadOnly !== true && !ctx?.destroyed && !ctx?.writeBlocked && ctx?.readOnly !== true && ctx?.access !== 'viewer'
+      && !_cellUiRuntimeReadOnly(root)
+      && !isProductionManagementWriteBlocked(dbPath, ctx);
+  }
+  async function canWrite(root, dbPath, path, ctx) {
+    if (!writable(root, dbPath, ctx)) return false;
+    const access = await globalThis.MeldexEntityDetail?.resolveReadOnly?.(path || dbPath, false);
+    return writable(root, dbPath, ctx) && !access?.readOnly;
+  }
+  function validation(cfg, prop, value, ctx) {
+    const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(ctx.dbPath) : [];
+    const rule = model().ruleFor(cfg, prop, sheetRules);
+    const type = ctx.propTypes?.[prop]?.type || 'text';
+    const error = model().validate(cfg.labels?.[prop] || prop, value, type, rule);
+    if (error) return error;
+    if (typeof _validateRangeCheck === 'function') {
+      const properties = { ...(ctx.data.properties || {}), [prop]: [{ value, status: '採用' }] };
+      for (const item of sheetRules.filter(item => item.enabled !== false && item.type === 'range_check'
+        && [item.config?.property, item.config?.compareProperty].includes(prop))) {
+        const result = _validateRangeCheck(item, { record: properties }, ['record'], ctx.dbPath, ctx.propTypes);
+        if (result.length) return result[0].message;
+      }
+    }
+    return '';
+  }
+  async function saveScalar(ctx, prop, value, candidate) {
+    const path = ctx.entityPath;
+    const dbPath = typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(path) : ctx.dbPath;
+    if (ctx.readOnly || !_elCanMutateGrid(ctx.grid, ctx.options)
+      || ctx.options?.beforeWrite && !await ctx.options.beforeWrite()
+      || !await canWrite(ctx.grid, dbPath, path, ctx.options?.ctx)) {
+      throw new Error('このトピックは読み取り専用です');
+    }
+    const blocked = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, prop, ctx.options?.ctx) : '';
+    if (blocked) throw new Error(blocked);
+    if (candidate) {
+      const old = candidate.value;
+      const result = await _apiPutValue(candidate, { new_value: value });
+      noteRevision(ctx, result);
+      candidate.value = value;
+      if (typeof historyPush === 'function' && old !== value) {
+        const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(); };
+        historyPush('フォーム: ' + prop, () => restore(old), () => restore(value), '');
+      }
+      return candidate;
+    }
+    const result = await _apiPostValue(path, prop, value, '採用', '', undefined, { baseRevision: ctx.data.revision });
+    noteRevision(ctx, result);
+    const created = { property: prop, value, status: '採用', note: '', file: result.path || path,
+      entry_path: result.new_path || path, candidate_index: result.candidate_index, entry_revision: result.revision };
+    if (!ctx.data.properties) ctx.data.properties = {};
+    if (!Array.isArray(ctx.data.properties[prop])) ctx.data.properties[prop] = [];
+    ctx.data.properties[prop].push(created);
+    if (typeof historyPush === 'function') {
+      historyPush('フォーム: 項目を入力 ' + prop, async () => {
+        noteRevision(ctx, await _apiPutValue(created, { _delete: true }));
+        ctx.data.properties[prop] = ctx.data.properties[prop].filter(item => item !== created); ctx.rerender();
+      }, async () => {
+        const next = await _apiPostValue(path, prop, value, '採用', '');
+        noteRevision(ctx, next);
+        Object.assign(created, { candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
+        ctx.data.properties[prop].push(created); ctx.rerender();
+      }, '');
+    }
+    return created;
+  }
+  function noteRevision(ctx, result) {
+    if (result?.revision == null) return;
+    ctx.data.revision = result.revision;
+    Object.values(ctx.data.properties || {}).forEach(values => {
+      if (Array.isArray(values)) values.forEach(value => { value.entry_revision = result.revision; });
+    });
+  }
+  function renderField(body, cell, ctx) {
+    if (!ctx.layout.formConfig || !model().supportsScalar(ctx.propTypes?.[cell.prop]?.type)) return false;
+    const cfg = model().forLayout(ctx.layout);
+    const prop = cell.prop;
+    if (!cfg.fields.includes(prop)) return false;
+    const values = ctx.data?.properties?.[prop] || [];
+    const candidates = typeof filterValues === 'function' ? filterValues(values) : values;
+    if (candidates.some(item => item.rich_html)) return false;
+    let candidate = candidates[0] || null;
+    const row = _buildFormInputRow(prop, cfg, ctx.propTypes?.[prop] || { type: 'text' });
+    row.classList.add('gb-form-layout-field'); row.querySelector('.gb-form-input-label')?.remove();
+    const input = row.querySelector('input,textarea,select');
+    const type = input.dataset.formType;
+    let savedValue = String(candidate?.value ?? '');
+    if (type === 'select' && savedValue && ![...input.options].some(option => option.value === savedValue)) {
+      const retained = document.createElement('option'); retained.value = savedValue; retained.textContent = savedValue + '（既存の値）'; input.appendChild(retained);
+    }
+    if (type === 'checkbox') input.checked = ['true', '1'].includes(savedValue);
+    else input.value = type === 'date' && typeof _toInputDateValue === 'function'
+      ? _toInputDateValue(savedValue, ctx.propTypes[prop]?.withTime) : savedValue;
+    input.disabled = ctx.editMode || ctx.readOnly || !_elCanMutateGrid(ctx.grid, ctx.options)
+      || !!checkColumnEditable(ctx.dbPath, prop, ctx.options?.ctx);
+    const message = row.querySelector('.gb-form-field-error');
+    const read = () => type === 'checkbox' ? String(input.checked) : input.value;
+    // Compare the input representation; opening a legacy date/checkbox is not an edit.
+    savedValue = read();
+    let busy = false;
+    const commit = async () => {
+      if (busy || input.disabled || !row.isConnected || read() === savedValue) return;
+      const value = read(), error = validation(cfg, prop, value, ctx);
+      input.setCustomValidity(error); input.setAttribute('aria-invalid', String(!!error));
+      message.textContent = error;
+      if (error) return;
+      busy = true; message.textContent = '保存しています…';
+      let succeeded = false;
+      const pending = saveScalar(ctx, prop, value, candidate);
+      if (!ctx.grid._formPendingSaves) ctx.grid._formPendingSaves = new Set();
+      ctx.grid._formPendingSaves.add(pending); ctx.grid.dataset.formHasPending = 'true';
+      try {
+        candidate = await pending; succeeded = true;
+        savedValue = value; input.dataset.formDirty = String(read() !== savedValue);
+        message.textContent = '保存しました';
+        ctx.grid.querySelectorAll('.gb-form-layout-field').forEach(peer => peer._refreshFormField?.(prop, value, candidate));
+      } catch (error) {
+        message.textContent = '保存できません: ' + (error.userMessage || error.message || error);
+        input.dataset.formDirty = 'true';
+      } finally {
+        busy = false; ctx.grid._formPendingSaves.delete(pending);
+        if (!ctx.grid._formPendingSaves.size) delete ctx.grid.dataset.formHasPending;
+        if (succeeded && row.isConnected && read() !== savedValue) queueMicrotask(commit);
+      }
+    };
+    input.addEventListener('input', () => { input.dataset.formDirty = String(read() !== savedValue); });
+    row._refreshFormField = (property, value, latest) => {
+      if (property !== prop || busy || input.dataset.formDirty === 'true') return;
+      candidate = latest; savedValue = value;
+      if (type === 'checkbox') input.checked = value === 'true'; else input.value = value;
+      input.setCustomValidity(''); input.removeAttribute('aria-invalid'); message.textContent = '';
+    };
+    input.addEventListener('change', commit);
+    input.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape' && !busy) {
+        event.preventDefault(); event.stopPropagation();
+        if (type === 'checkbox') input.checked = ['true', '1'].includes(savedValue); else input.value = savedValue;
+        input.dataset.formDirty = 'false'; input.setCustomValidity(''); input.removeAttribute('aria-invalid'); message.textContent = '';
+      }
+      if (event.key === 'Enter' && input.tagName !== 'TEXTAREA') { event.preventDefault(); commit(); }
+    });
+    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '保存';
+    retry.disabled = input.disabled; retry.setAttribute('aria-label', prop + 'を保存'); retry.addEventListener('click', commit);
+    row.appendChild(retry); body.appendChild(row);
+    if (candidates.length > 1) {
+      const more = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '候補一覧（' + candidates.length + '件）'; more.appendChild(summary);
+      const list = document.createElement('div');
+      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: true });
+      more.appendChild(list); body.appendChild(more);
+    }
+    return true;
+  }
+  function applyNewLayout(form, layout, propTypes, dbPath, ctx) {
+    const host = document.createElement('div'); host.className = 'el-host';
+    const viewport = document.createElement('div'); viewport.className = 'el-viewport';
+    const canvas = document.createElement('div'); canvas.className = 'el-canvas';
+    canvas.style.width = layout.canvasSize.w + 'px'; canvas.style.height = layout.canvasSize.h + 'px';
+    viewport.appendChild(canvas); host.appendChild(viewport);
+    if (typeof _elApplyLayoutTheme === 'function') _elApplyLayoutTheme(canvas, layout);
+    const rows = [...form.querySelectorAll('.gb-form-input-row')];
+    const placed = new Map();
+    const sync = event => {
+      const source = event.target;
+      for (const row of placed.get(source.name) || []) {
+        const control = row.querySelector('input,textarea,select');
+        if (!control || control === source || control.type === 'file') continue;
+        control.value = source.value; control.checked = source.checked;
+        control.setCustomValidity(source.validity.customError ? source.validationMessage : '');
+        control.dataset.formDirty = 'true';
+        row.querySelector('.gb-form-field-error').textContent = source.closest('.gb-form-input-row').querySelector('.gb-form-field-error').textContent;
+      }
+    };
+    form.addEventListener('input', sync); form.addEventListener('change', sync);
+    for (const cell of model().orderedCells(layout)) {
+      if (cell.type !== 'field') {
+        const element = _elBuildCellElement(cell, { grid: host, entityPath: '', dbPath, data: { properties: {} }, layout,
+          editMode: false, readOnly: true, options: { readOnly: true, layoutDraft: { layout } }, propTypes, rerender() {} }, canvas);
+        element.style.zIndex = String(layout.cells.indexOf(cell)); canvas.appendChild(element);
+        continue;
+      }
+      let row = rows.find(row => row.dataset.formProp === cell.prop);
+      if (!row) continue;
+      const peers = placed.get(cell.prop) || [];
+      if (peers.length && row.querySelector('input')?.type !== 'file') {
+        row = _buildFormInputRow(cell.prop, model().forLayout(layout), propTypes[cell.prop]
+          || { type: cell.columnType || 'text', options: cell.columnOptions || [] });
+      } else if (peers.length) {
+        // File inputs have one upload source; additional placements display the chosen names.
+        row = document.createElement('div'); row.textContent = '画像は同じ項目の入力欄から追加してください';
+        const source = peers[0].querySelector('input');
+        source.addEventListener('change', () => { row.textContent = [...source.files].map(file => file.name).join('、') || '画像未選択'; });
+      }
+      peers.push(row); placed.set(cell.prop, peers);
+      const element = document.createElement('div'); element.className = 'el-cell el-cell-field gb-form-new-cell';
+      element.style.zIndex = String(layout.cells.indexOf(cell));
+      for (const [key, value] of Object.entries({ left: cell.x, top: cell.y, width: cell.w, height: cell.h })) element.style[key] = value + 'px';
+      _elApplyCellStyle(element, cell, { editMode: false });
+      const content = document.createElement('div'); content.className = 'el-cell-content'; content.appendChild(row); element.appendChild(content); canvas.appendChild(element);
+      if (!Object.prototype.hasOwnProperty.call(propTypes, cell.prop)) {
+        const control = row.querySelector('input,textarea,select'); if (control) control.disabled = true;
+        const add = document.createElement('button'); add.type = 'button'; add.className = 'gb-btn'; add.textContent = '列を追加';
+        add.setAttribute('aria-label', '「' + cell.prop + '」列をシートに追加');
+        const message = document.createElement('span'); message.setAttribute('role', 'status');
+        row.append(add, message);
+        add.addEventListener('click', async () => {
+          if (!await canWrite(host, dbPath, dbPath, ctx)) return;
+          add.disabled = true;
+          try {
+            const result = await _elAddMissingColumn({ grid: host, dbPath, options: { ctx } }, cell);
+            if (result && host.isConnected) {
+              Object.assign(propTypes, result.propertyTypes);
+              peers.forEach(peer => {
+                peer.querySelectorAll('input,textarea,select').forEach(input => { input.disabled = !!checkColumnEditable(dbPath, cell.prop, ctx); });
+                peer.querySelectorAll('[data-form-add-column]').forEach(button => button.remove());
+              });
+              message.textContent = '';
+            }
+          } catch (error) { message.textContent = error.userMessage || error.message || String(error); }
+          finally { add.disabled = false; }
+        });
+        add.dataset.formAddColumn = cell.prop;
+      }
+    }
+    form.querySelector('button[type=submit]').before(host);
+  }
+  async function confirmLeave(root) {
+    for (const popup of document.querySelectorAll('.gb-form-subform-editor')) {
+      if (popup._formOwner && (popup._formOwner === root || root.contains(popup._formOwner))
+        && popup._requestClose && !await popup._requestClose()) return false;
+    }
+    if ([root, ...root.querySelectorAll('form')].some(form => form._dbFormSubmitting)) {
+      if (typeof showStatus === 'function') showStatus('送信完了までお待ちください');
+      return false;
+    }
+    const hosts = [root, ...root.querySelectorAll('[data-form-has-pending]')];
+    await Promise.allSettled(hosts.flatMap(host => [...(host._formPendingSaves || [])]));
+    return !root.querySelector('[data-form-dirty="true"]') || await cfConfirm('保存できていない入力を破棄して切り替えますか？');
+  }
+  function renderView(root, dbPath, cfg, propTypes, ctx) {
+    const owner = ctx?.containerEl || root;
+    let session = viewSessions.get(owner);
+    if (!session || session.dbPath !== dbPath) { session = { dbPath, path: '', continuous: false, created: new Map() }; viewSessions.set(owner, session); }
+    const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
+    const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
+    const pivot = ctx?.pivotData || globalThis.state?.pivotData || { entities: {} };
+    for (const name of Object.keys(pivot.entities || {})) {
+      const option = document.createElement('option'); option.value = _entityPath(dbPath, name, pivot); option.textContent = name;
+      select.appendChild(option);
+    }
+    for (const [path, name] of session.created) {
+      if ([...select.options].some(option => normalPath(option.value) === normalPath(path))) continue;
+      const option = document.createElement('option'); option.value = path; option.textContent = name; select.appendChild(option);
+    }
+    select.value = session.path;
+    const change = async path => {
+      if (!await confirmLeave(panel)) { select.value = session.path; return; }
+      session.path = path; select.value = path; await renderRecord();
+    };
+    const button = (label, fn) => { const result = document.createElement('button'); result.type = 'button'; result.className = 'gb-btn'; result.textContent = label; result.addEventListener('click', fn); nav.appendChild(result); return result; };
+    const previous = button('前のトピック', () => change(select.options[Math.max(1, select.selectedIndex - 1)]?.value || ''));
+    nav.appendChild(select);
+    const next = button('次のトピック', () => change(select.options[Math.min(select.options.length - 1, select.selectedIndex + 1)]?.value || ''));
+    button('新規入力', () => change(''));
+    const continuous = document.createElement('label');
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = session.continuous;
+    continuous.append(checkbox, document.createTextNode('続けて新規入力')); nav.appendChild(continuous);
+    checkbox.addEventListener('change', () => { session.continuous = checkbox.checked; });
+    select.addEventListener('change', () => change(select.value));
+    const panel = document.createElement('div'); panel.className = 'gb-form-record-panel'; root.appendChild(panel);
+    let generation = 0;
+    async function renderRecord() {
+      const current = ++generation;
+      panel.replaceChildren();
+      previous.disabled = select.selectedIndex <= 1; next.disabled = select.selectedIndex >= select.options.length - 1;
+      if (!session.path) {
+        const fields = cfg.fields.filter(prop => !checkColumnEditable(dbPath, prop, ctx));
+        const effective = { ...cfg, fields, required: cfg.required.filter(prop => fields.includes(prop)), submitLabel: 'トピックを作成' };
+        const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
+        const displayTypes = { ...propTypes };
+        (layout?.cells || []).forEach(cell => { if (cell.type === 'field' && !displayTypes[cell.prop]) displayTypes[cell.prop] = { type: cell.columnType || 'text', options: cell.columnOptions || [] }; });
+        const form = _buildFormAnswerPanel(dbPath, effective, displayTypes, false, { canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
+          const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';
+          session.created.set(result.path, name);
+          const option = document.createElement('option'); option.value = result.path; option.textContent = name; select.appendChild(option);
+          session.path = session.continuous ? '' : result.path; select.value = session.path; await renderRecord();
+        } });
+        if (layout) applyNewLayout(form, layout, propTypes, dbPath, ctx);
+        form.addEventListener('input', event => { if (event.target.matches('input,textarea,select')) event.target.dataset.formDirty = 'true'; });
+        panel.appendChild(form);
+        if (!writable(panel, dbPath, ctx)) form.querySelectorAll('input,textarea,select,button').forEach(control => { control.disabled = true; });
+        return;
+      }
+      const path = session.path;
+      panel.textContent = 'トピックを読み込んでいます…';
+      try {
+        const [data, access] = await Promise.all([apiFetch('/entity?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false)]);
+        if (!panel.isConnected || generation !== current) return;
+        panel.replaceChildren();
+        const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
+        if (layout) _elRenderLayoutBody(panel, data, path, { propTypes, ctx, readOnly: access.readOnly || ctx?.readOnly, formLayout: ctx?.formApp?.getLayout() }, dbPath, layout.id, renderRecord);
+        else {
+          const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
+          await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+        }
+      } catch (error) {
+        if (generation === current && panel.isConnected) {
+          panel.textContent = '読み込めません: ' + (error.userMessage || error.message || error);
+          const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '再読込'; retry.addEventListener('click', renderRecord); panel.appendChild(retry);
+        }
+      }
+    }
+    renderRecord();
+  }
+  globalThis.MeldexDbFormRuntime = { renderField, renderView, canWrite, writable, validation, saveScalar, confirmLeave, normalPath, applyNewLayout };
+})();
+
+;
+
+/* === gb-db-form-designer.js === */
+;
+/* Form-view binding and the shared layout/input designer. */
+(function () {
+  'use strict';
+  const model = () => globalThis.MeldexDbFormModel;
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const button = (label, run) => {
+    const element = document.createElement('button'); element.type = 'button'; element.className = 'gb-btn';
+    element.textContent = label; element.addEventListener('click', event => { event.stopPropagation(); run(event); }); return element;
+  };
+  function appendRules(root, cfg, property, type, save) {
+    const group = document.createElement('div'); group.className = 'gb-form-rules';
+    if (!Array.isArray(cfg.rules)) cfg.rules = [];
+    for (const [key, label] of (type === 'number'
+      ? [['min', '最小値'], ['max', '最大値']]
+      : ['text', 'long-text'].includes(type) ? [['minLength', '最小文字数'], ['maxLength', '最大文字数']] : [])) {
+      const row = document.createElement('label'); row.textContent = label;
+      const input = document.createElement('input'); input.type = 'number'; input.className = 'gb-input';
+      input.step = 'any';
+      input.setAttribute('aria-label', label + ': ' + property);
+      if (key.endsWith('Length')) { input.min = '0'; input.step = '1'; }
+      input.value = cfg.rules.find(rule => rule.property === property)?.[key] ?? '';
+      input.addEventListener('change', () => {
+        let rule = cfg.rules.find(rule => rule.property === property);
+        if (!rule) { rule = { property }; cfg.rules.push(rule); }
+        if (input.value === '') delete rule[key]; else rule[key] = Number(input.value);
+        const invalid = rule.min !== undefined && rule.max !== undefined && rule.min > rule.max
+          || rule.minLength !== undefined && rule.maxLength !== undefined && rule.minLength > rule.maxLength;
+        group.querySelectorAll('input').forEach(control => control.setCustomValidity(invalid ? '最小値は最大値以下にしてください' : ''));
+        if (invalid) { input.reportValidity(); return; }
+        save();
+      });
+      row.appendChild(input); group.appendChild(row);
+    }
+    root.appendChild(group);
+  }
+  function settings(anchor, ctx) {
+    _elCloseEditPopups();
+    const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup gb-form-settings';
+    popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'フォームの入力設定とTab順');
+    const cfg = model().forLayout(ctx.layout);
+    const title = document.createElement('p'); title.textContent = '上から順にTab移動します。入力設定はフォームビューと共通です。'; popup.appendChild(title);
+    const content = document.createElement('div'); popup.appendChild(content);
+    const render = () => {
+      content.replaceChildren(_buildFormEditorFields(ctx.dbPath, cfg, ctx.propTypes, render, null, () => {}));
+    };
+    render();
+    const close = _elAttachPopupCommon(popup, anchor);
+    popup.appendChild(button('適用', () => {
+      if (!popup.querySelectorAll('input:invalid').length && _elCanMutateGrid(ctx.grid, ctx.options)) {
+        ctx.persist('フォーム: 入力設定とTab順', '', layout => { layout.formConfig = clone(cfg); });
+        close(); ctx.rerender();
+      }
+    }));
+    popup.appendChild(button('キャンセル', close));
+    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+  }
+  function arrangeMenu(anchor, ctx, canvas) {
+    const actions = [['left','左揃え'],['center','左右中央揃え'],['right','右揃え'],['top','上揃え'],['middle','上下中央揃え'],['bottom','下揃え'],
+      ['horizontal','横に等間隔'],['vertical','縦に等間隔'],['width','同じ幅'],['height','同じ高さ'],
+      ['group','グループ化'],['ungroup','グループ解除'],['lock','配置をロック'],['unlock','配置ロックを解除']];
+    _elCloseEditPopups();
+    const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup'; popup.setAttribute('role', 'menu');
+    const selected = [...canvas.querySelectorAll('.el-cell.el-selected')].map(cell => cell.dataset.cellId);
+    for (const [action, label] of actions) {
+      const item = button(label, () => {
+        if (!_elCanMutateGrid(ctx.grid, ctx.options)) return;
+        ctx.persist('トピックレイアウト: ' + label, '', layout => {
+          layout.cells = model().arrange(layout.cells, selected, action, _elGenId('group'));
+        });
+        close(); ctx.rerender();
+      });
+      item.className = 'el-tab-menu-item'; item.setAttribute('role', 'menuitem'); item.disabled = !selected.length;
+      popup.appendChild(item);
+    }
+    const close = _elAttachPopupCommon(popup, anchor);
+  }
+  function addTools(bar, ctx) {
+    const input = button('入力設定・Tab順', () => settings(input, ctx)); bar.appendChild(input);
+    const arrange = button('配置を整える', () => arrangeMenu(arrange, ctx, ctx.grid.querySelector('.el-canvas')));
+    bar.appendChild(arrange);
+    const subform = button('繰り返し項目', () => _elAddCell(ctx, {
+      type: 'subform', w: 700, h: 300, subform: { dbPath: '', relationProp: '', fields: [] },
+    }, '繰り返し項目'));
+    bar.appendChild(subform);
+  }
+  function buildViewSelector(root, dbPath, cfg, propTypes, ctx) {
+    if (ctx?.formApp) return;
+    if (cfg.betaFeedbackRelay || cfg.customInstructionsRelay) return;
+    if (!MeldexDbFormRuntime.writable(root, dbPath, ctx)) return;
+    const row = document.createElement('div'); row.className = 'gb-form-binding';
+    const label = document.createElement('label'); label.textContent = '共通レイアウト';
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '共通レイアウト');
+    const layouts = _elGetState(dbPath).layouts;
+    for (const item of [{ id: '', name: '従来の自動配置フォーム' }, ...layouts]) {
+      const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; option.selected = cfg.layoutId === item.id;
+      select.appendChild(option);
+    }
+    const bind = async (id, confirmed = false) => {
+      if (!confirmed && !await MeldexDbFormRuntime.confirmLeave(root)) { select.value = cfg.layoutId || ''; return; }
+      const layout = _elGetState(dbPath).layouts.find(item => item.id === id);
+      const next = layout ? { ...cfg, ...model().forLayout(layout), layoutId: id } : { ...cfg, layoutId: '' };
+      saveActiveFormConfig(dbPath, next, ctx); renderDbFormView(ctx);
+    };
+    select.addEventListener('change', () => bind(select.value)); label.appendChild(select); row.appendChild(label);
+    row.appendChild(button('プリセットから追加', async event => {
+      const anchor = event.currentTarget;
+      if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
+      const known = new Set(layouts.map(layout => layout.id));
+      const data = { properties: Object.fromEntries(Object.keys(propTypes).map(name => [name, []])) };
+      _elShowAddLayoutMenu(anchor, { grid: root, dbPath, entityPath: '', pivotData: data, options: { ctx }, layoutId: 'columns', rerender() {
+        const added = _elGetState(dbPath).layouts.find(layout => !known.has(layout.id));
+        if (added) bind(added.id, true);
+      } });
+    }));
+    row.appendChild(button('現在の項目から配置を作成', async () => {
+      if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
+      let id;
+      _elMutateState(dbPath, 'フォーム: 共通レイアウトを作成', '', state => {
+        id = _elGenId('form');
+        const fields = cfg.fields || [];
+        state.layouts.push(_elNormalizeLayout({ id, name: _elMakeDuplicateName('フォーム', state.layouts),
+          canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) }, formConfig: clone(cfg),
+          cells: fields.map((prop, index) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + index * 140, w: 940, h: 120 })),
+        }));
+      }, { ctx });
+      bind(id, true);
+    }));
+    if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
+      if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
+      const editor = document.createElement('div'); editor.className = 'gb-form-layout-editor'; root.replaceChildren(row, editor);
+      row.querySelectorAll('button').forEach(control => { control.disabled = true; }); select.disabled = true;
+      row.appendChild(button('配置編集を終了', () => renderDbFormView(ctx)));
+      const session = { editMode: true };
+      const render = () => {
+        editor.replaceChildren();
+        const layout = _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
+        if (!layout) { renderDbFormView(ctx); return; }
+        const data = { properties: Object.fromEntries(Object.keys(propTypes).map(name => [name, []])) };
+        _elRenderLayoutBody(editor, data, '', { propTypes, ctx, layoutDraft: { layout, session, persist(mutator) {
+          return _elMutateState(dbPath, 'フォーム: 配置編集', '', state => {
+            const target = state.layouts.find(item => item.id === layout.id); return target ? mutator(target) : false;
+          }, { ctx, onRestore: () => { if (editor.isConnected) render(); } });
+        } } }, dbPath, layout.id, render);
+      }; render();
+    }));
+    root.appendChild(row);
+  }
+  globalThis.MeldexDbFormDesigner = { appendRules, settings, addTools, buildViewSelector };
+})();
+
+;
+
+/* === gb-db-form-subform.js === */
+;
+/* A repeating block is a filtered related sheet, never a second copy of its rows. */
+(function () {
+  'use strict';
+  const api = () => globalThis.MeldexDbFormRuntime;
+  const normalize = path => typeof _dbNormalizePath === 'function' ? _dbNormalizePath(path) : api().normalPath(path);
+  function targetsParent(childPath, relation, parentPath) {
+    const target = typeof _dbResolveRelationDbPath === 'function' ? _dbResolveRelationDbPath(childPath, relation) : relation.relationDb || childPath;
+    const parent = typeof _dbResolveConfiguredRelationPath === 'function' ? _dbResolveConfiguredRelationPath(childPath, parentPath) : parentPath;
+    return normalize(target) === normalize(parent);
+  }
+  function resolve(config, types) {
+    const find = column => column?.id
+      ? Object.keys(types).find(name => String(types[name]?.property_id || '') === String(column.id)) || ''
+      : column?.name || '';
+    return { ...config, relationProp: config.relationColumn ? find(config.relationColumn) : config.relationProp,
+      fields: config.columns ? config.columns.map(find).filter(Boolean) : config.fields || [] };
+  }
+  function parentTokens(ctx) {
+    return new Set([ctx.data?.entry_id, ctx.data?.id, ctx.data?.entity,
+      String(ctx.entityPath || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '')].filter(Boolean).map(String));
+  }
+  function matches(values, tokens) {
+    return (Array.isArray(values) ? values : []).filter(item => ['採用', '掲載済み'].includes(item?.status || '採用'))
+      .some(item => String(item?.value || '').split(',').some(value => tokens.has(value.trim())));
+  }
+  function button(label, run) {
+    const element = document.createElement('button'); element.type = 'button'; element.className = 'gb-btn';
+    element.textContent = label; element.addEventListener('click', event => { event.stopPropagation(); run(event); }); return element;
+  }
+  function settings(anchor, cell, ctx) {
+    _elCloseEditPopups();
+    const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup gb-form-subform-settings';
+    popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', '繰り返し項目の設定');
+    const current = cell.subform || {};
+    const title = document.createElement('input'); title.value = current.title || '繰り返し項目';
+    const path = document.createElement('input'); path.value = current.dbPath || ''; path.placeholder = '関連シートのパス';
+    for (const [label, input] of [['見出し', title], ['関連シート', path]]) {
+      const row = document.createElement('label'); row.textContent = label; input.className = 'gb-input'; input.setAttribute('aria-label', label); row.appendChild(input); popup.appendChild(row);
+    }
+    if (typeof _attachDbPicker === 'function') _attachDbPicker(path, ctx.dbPath);
+    const relation = document.createElement('select'); relation.className = 'gb-select'; relation.setAttribute('aria-label', '親トピックを参照する列');
+    const fields = document.createElement('div'); fields.className = 'gb-form-subform-columns';
+    const message = document.createElement('p'); message.setAttribute('role', 'status');
+    let types = null, loadedPath = '', generation = 0;
+    const load = async () => {
+      const value = path.value.trim(), sequence = ++generation; types = null; loadedPath = ''; relation.replaceChildren(); fields.replaceChildren();
+      try {
+        const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(value), { silentError: true });
+        if (!popup.isConnected || sequence !== generation || path.value.trim() !== value) return;
+        types = metadata.property_types || {}; loadedPath = value;
+        const empty = document.createElement('option'); empty.value = ''; empty.textContent = '親を参照するリレーション列を選択'; relation.appendChild(empty);
+        Object.entries(types).forEach(([name, config]) => {
+          if (['relation', 'multi-relation'].includes(config.type) && !config.bidirectional
+            && targetsParent(value, config, ctx.dbPath)) {
+            const option = document.createElement('option'); option.value = name; option.textContent = name; relation.appendChild(option);
+          }
+          const label = document.createElement('label');
+          const input = document.createElement('input'); input.type = 'checkbox'; input.value = name;
+          input.checked = (current.fields || []).includes(name); label.append(input, document.createTextNode(name)); fields.appendChild(label);
+        });
+        const resolved = resolve(current, types);
+        relation.value = resolved.relationProp || '';
+        fields.querySelectorAll('input').forEach(input => { input.checked = resolved.fields.includes(input.value); });
+        message.textContent = '親シートを参照する単方向のリレーション列を使います。行は関連シートへ保存します。';
+      } catch (error) { if (sequence === generation) message.textContent = '読み込めません: ' + (error.message || error); }
+    };
+    popup.append(button('列を読み込む', load), relation, fields, message);
+    path.addEventListener('change', () => { types = null; generation++; message.textContent = '「列を読み込む」で設定を確認してください'; });
+    const close = _elAttachPopupCommon(popup, anchor, { childSelector: '.db-picker-popup,[aria-modal="true"]' });
+    popup.appendChild(button('適用', () => {
+      if (!types || loadedPath !== path.value.trim() || !relation.value) { message.textContent = '関連シートと親参照列を確認してください'; return; }
+      const selected = [...fields.querySelectorAll('input:checked')].map(input => input.value).filter(name => name !== relation.value);
+      if (!selected.length) { message.textContent = '表示する列を1つ以上選んでください'; return; }
+      if (!_elCanMutateGrid(ctx.grid, ctx.options)) return;
+      ctx.persist('フォーム: 繰り返し項目の設定', '', layout => {
+        const target = layout.cells.find(item => item.id === cell.id);
+        if (target) {
+          const column = name => ({ id: types[name]?.property_id || '', name });
+          target.subform = { title: title.value.trim(), dbPath: loadedPath,
+            relationColumn: column(relation.value), columns: selected.map(column) };
+        }
+      });
+      close(); ctx.rerender();
+    }));
+    popup.appendChild(button('キャンセル', close));
+    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+    if (path.value) load();
+  }
+  function render(cell, ctx) {
+    const root = document.createElement('div'); root.className = 'el-cell-content gb-form-subform';
+    let cfg = cell.subform || {};
+    const heading = document.createElement('strong'); heading.textContent = cfg.title || '繰り返し項目'; root.appendChild(heading);
+    const body = document.createElement('div'); root.appendChild(body);
+    if (!cfg.dbPath || !(cfg.relationProp || cfg.relationColumn) || !(cfg.fields?.length || cfg.columns?.length)) { body.textContent = '設定から関連シート・親参照列・表示列を指定してください'; return root; }
+    if (ctx.options?.layoutDraft || !ctx.entityPath) { body.textContent = (cfg.fields || cfg.columns.map(column => column.name)).join(' / ') + '（トピックの表示時に関連行を読み込みます）'; return root; }
+    let loading = false;
+    const load = async () => {
+      if (loading) return; loading = true; body.textContent = '関連行を読み込んでいます…';
+      try {
+        const [pivot, metadata, access] = await Promise.all([
+          apiFetch('/pivot?path=' + encodeURIComponent(cfg.dbPath), { silentError: true }),
+          apiFetch('/db-metadata?path=' + encodeURIComponent(cfg.dbPath), { silentError: true }),
+          MeldexEntityDetail.resolveReadOnly(cfg.dbPath, false),
+        ]);
+        if (!root.isConnected) return;
+        cfg = resolve(cfg, metadata.property_types || {});
+        if (!cfg.fields.length) throw new Error('表示列が見つかりません。配置編集から確認してください');
+        const relation = metadata.property_types?.[cfg.relationProp];
+        if (!relation || !['relation', 'multi-relation'].includes(relation.type)
+          || !targetsParent(cfg.dbPath, relation, ctx.dbPath)) throw new Error('親参照列の設定が変わりました。配置編集から確認してください');
+        body.replaceChildren();
+        const table = document.createElement('table'); table.className = 'gb-form-subform-table';
+        const header = table.createTHead().insertRow();
+        ['トピック', ...cfg.fields, '操作'].forEach(name => { const th = document.createElement('th'); th.textContent = name; header.appendChild(th); });
+        const rows = table.createTBody(), tokens = parentTokens(ctx);
+        const related = Object.entries(pivot.entities || {}).filter(([, values]) => matches(values[cfg.relationProp], tokens));
+        related.forEach(([name, values]) => {
+          const tr = rows.insertRow(); tr.insertCell().textContent = name;
+          cfg.fields.forEach(prop => { tr.insertCell().textContent = (values[prop] || []).filter(item => ['採用', '掲載済み'].includes(item.status || '採用')).map(item => item.value || '').join(' / '); });
+          tr.insertCell().appendChild(button('行を開く', () => openRow(_entityPath(cfg.dbPath, name, pivot), name, metadata.property_types, access.readOnly)));
+        });
+        body.appendChild(table);
+        if (!related.length) { const empty = document.createElement('p'); empty.textContent = '関連行はありません'; body.appendChild(empty); }
+        const canAdd = !ctx.readOnly && !access.readOnly && !relation.bidirectional && !ctx.editMode
+          && api().writable(ctx.grid, cfg.dbPath, ctx.options?.ctx);
+        if (canAdd) body.appendChild(button('行を追加', () => openNew(metadata.property_types)));
+        body.appendChild(button('関連行を再読込', load));
+      } catch (error) {
+        if (root.isConnected) { body.textContent = '関連行を読み込めません: ' + (error.message || error); body.appendChild(button('再試行', load)); }
+      } finally { loading = false; }
+    };
+    async function popup(anchor, label) {
+      for (const previous of document.querySelectorAll('.gb-form-subform-editor')) {
+        if (previous._requestClose && !await previous._requestClose()) return null;
+      }
+      _elCloseEditPopups();
+      const panel = document.createElement('div'); panel.className = 'gb-context-menu el-edit-popup gb-form-subform-editor';
+      panel._formOwner = ctx.grid;
+      panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', label);
+      const close = _elAttachPopupCommon(panel, anchor || root, {
+        beforeClose: () => api().confirmLeave(panel),
+        childSelector: '.gb-fmt-popup,.gb-palette,.gb-palette-popup,.status-dropdown,.cell-inline-dd,.user-dropdown,.gb-user-picker-dd,[aria-modal="true"]',
+      });
+      panel.appendChild(button('閉じる', async () => { if (await close()) load(); }));
+      return { panel, close };
+    }
+    async function openNew(types) {
+      const opened = await popup(root, '繰り返し項目の行を追加');
+      if (!opened) return;
+      const name = ctx.data?.entry_id || ctx.data?.id || ctx.data?.entity;
+      const formCfg = { fields: [...cfg.fields, cfg.relationProp], required: [cfg.relationProp], labels: {}, descriptions: {}, placeholders: {}, entityNameProp: cfg.fields[0], submitLabel: '行を追加' };
+      opened.panel.appendChild(_buildFormAnswerPanel(cfg.dbPath, formCfg, types, false, {
+        fixedFields: { [cfg.relationProp]: String(name || '') },
+        canWrite: async () => !ctx.readOnly && await api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx)
+          && await api().canWrite(opened.panel, cfg.dbPath, cfg.dbPath, null),
+        onCreated() { opened.close(); load(); },
+      }));
+    }
+    async function openRow(path, name, types, readOnly) {
+      const opened = await popup(root, '繰り返し項目: ' + name);
+      if (!opened) return;
+      const host = document.createElement('div'); opened.panel.appendChild(host);
+      try {
+        const [data, access] = await Promise.all([apiFetch('/entity?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, readOnly || ctx.readOnly)]);
+        if (!host.isConnected) return;
+        const layout = { formConfig: { fields: cfg.fields }, cells: cfg.fields.map(prop => ({ type: 'field', prop })) };
+        const childCtx = { grid: host, data, entityPath: path, dbPath: cfg.dbPath, propTypes: types, layout,
+          editMode: false, readOnly: access.readOnly, options: { readOnly: access.readOnly,
+            beforeWrite: () => !ctx.readOnly && api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx) }, rerender() {} };
+        cfg.fields.forEach(prop => {
+          const field = document.createElement('div'); field.className = 'gb-form-subform-row-field';
+          const label = document.createElement('strong'); label.textContent = prop; field.appendChild(label);
+          if (!api().renderField(field, { prop }, childCtx)) renderEntityPropValuesInto(field, prop, data, path, types, { readOnly: access.readOnly });
+          host.appendChild(field);
+        });
+      } catch (error) { if (host.isConnected) host.textContent = '読み込めません: ' + (error.message || error); }
+    }
+    requestAnimationFrame(load);
+    return root;
+  }
+  globalThis.MeldexDbFormSubform = { render, settings, matches, parentTokens, resolve };
+})();
+
+;
+
 /* === gb-db-topic-layout-style.js === */
 ;
 (function (root, factory) {
@@ -165542,6 +166710,7 @@ if (typeof window !== 'undefined') {
   const LINE_STYLES = new Set(['none', 'solid', 'dashed', 'dotted', 'double']);
   const SHADOWS = new Set(['none', 'small', 'medium']);
   const CAPTION_MODES = new Set(['full', 'icon-only', 'hidden']);
+  const TEMPLATE_COLUMN_TYPES = new Set(['text', 'number', 'checkbox', 'date', 'image', 'color', 'link', 'select', 'multi-select']);
   const VALUE_FIELDS = new Set(['value', 'values', 'entity', 'entityData', 'topic', 'topicRecord', 'record']);
 
   function clone(value) {
@@ -165696,6 +166865,9 @@ if (typeof window !== 'undefined') {
       columns: (Array.isArray(columns) ? columns : []).map(column => ({
         id: String(column && column.id || ''),
         name: String(column && column.name || ''),
+        ...(TEMPLATE_COLUMN_TYPES.has(column?.type) ? { type: column.type } : {}),
+        ...(['select', 'multi-select'].includes(column?.type) && Array.isArray(column.options)
+          ? { options: [...new Set(column.options.filter(option => typeof option === 'string' && option))] } : {}),
       })),
     };
     if (object(options) && object(options.metadata)) template.metadata = clone(options.metadata);
@@ -165761,6 +166933,14 @@ if (typeof window !== 'undefined') {
       output.id = idFactory('cell');
       const mapping = mappingByCell.get(sourceCellId);
       if (cell.type === 'field') {
+        const sourceColumn = (Array.isArray(template.columns) ? template.columns : []).find(column => column?.name === cell.prop);
+        const type = sourceColumn?.type || cell.columnType
+          || template.metadata?.recommendedPropertyTypes?.[cell.prop]?.type;
+        if (type) output.columnType = TEMPLATE_COLUMN_TYPES.has(type) ? type : 'text';
+        const options = sourceColumn?.options || cell.columnOptions
+          || template.metadata?.recommendedPropertyTypes?.[cell.prop]?.options;
+        if (['select', 'multi-select'].includes(output.columnType) && Array.isArray(options))
+          output.columnOptions = [...new Set(options.filter(option => typeof option === 'string' && option))];
         if (mapping && mapping.target) {
           output.columnId = String(mapping.target.id || '');
           output.prop = String(mapping.target.name || '');
@@ -165771,6 +166951,15 @@ if (typeof window !== 'undefined') {
       }
       return output;
     });
+    if (object(layout.formConfig)) {
+      const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
+      const name = value => names.get(value) || value;
+      for (const key of ['fields', 'required']) if (Array.isArray(layout.formConfig[key])) layout.formConfig[key] = layout.formConfig[key].map(name);
+      for (const key of ['labels', 'descriptions', 'placeholders']) if (object(layout.formConfig[key]))
+        layout.formConfig[key] = Object.fromEntries(Object.entries(layout.formConfig[key]).map(([key, value]) => [name(key), value]));
+      if (Array.isArray(layout.formConfig.rules)) layout.formConfig.rules.forEach(rule => { if (object(rule)) rule.property = name(rule.property); });
+      if (layout.formConfig.entityNameProp) layout.formConfig.entityNameProp = name(layout.formConfig.entityNameProp);
+    }
     return { added: true, reason: '', layout, mappings };
   }
 
@@ -165868,14 +167057,19 @@ if (typeof window !== 'undefined') {
     if (!fetcher) return { available: false, source: 'device-cache', revision: null, templates: cached };
     try {
       const remote = await _readSharedLibrary(fetcher);
-      if (!remote.available) return { ...remote, source: 'device-cache', templates: cached };
+      if (!remote.available) return { ...remote, source: 'device-cache', templates: loadSharedTemplates(opts.storage) };
+      const latestCached = loadSharedTemplates(opts.storage);
+      // 読込待ちの間に保存・削除した結果を、古い共有応答でキャッシュへ書き戻さない。
+      if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
+        return { ...remote, source: 'device-cache', templates: latestCached };
+      }
       // 未同期の端末プリセットは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
       const templates = _mergeSharedTemplates(remote.templates, cached)
         .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       _cacheSharedTemplates(templates, opts.storage);
       return { ...remote, source: 'personal-library', templates };
     } catch (error) {
-      return { available: false, source: 'device-cache', revision: null, templates: cached, error };
+      return { available: false, source: 'device-cache', revision: null, templates: loadSharedTemplates(opts.storage), error };
     }
   }
 
@@ -166027,6 +167221,486 @@ if (typeof window !== 'undefined') {
     sanitizeTemplateLayout,
   });
 });
+
+;
+
+/* === gb-form-document.js === */
+;
+/* Standalone form definitions share sheet data and the topic-layout contract. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexFormDocument = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  function parse(text) {
+    const doc = typeof text === 'string' ? JSON.parse(text.replace(/^\uFEFF/, '')) : clone(text);
+    if (!object(doc) || doc.fileType !== 'meldex-form') throw new Error('フォームファイルではありません');
+    if (doc.schema_version !== 1) throw new Error('未対応のフォーム形式です。対応するMeldexで開いてください');
+    if (Number(doc.formConfig?.schemaVersion) > 1 || Number(doc.layout?.formConfig?.schemaVersion) > 1)
+      throw new Error('未対応のフォーム設定です。対応するMeldexで開いてください');
+    if (!object(doc.sheet) || typeof doc.sheet.path !== 'string'
+      || doc.layout != null && (!object(doc.layout) || !Array.isArray(doc.layout.cells))
+      || doc.formConfig != null && !object(doc.formConfig)) throw new Error('フォームの定義が不正です');
+    return doc;
+  }
+  function create(title = '無題') {
+    return { fileType: 'meldex-form', schema_version: 1, title,
+      sheet: { path: '' }, layout: null, formConfig: { mode: 'entry' } };
+  }
+  // A failed save retains both the draft and the original etag. Never retry a
+  // conflict with the server's etag: that would overwrite another editor.
+  class Store {
+    constructor(doc, etag, write, changed = () => {}) {
+      this.doc = parse(doc); this.etag = etag; this.write = write; this.changed = changed;
+      this.revision = 0; this.savedRevision = 0; this.error = null; this.pending = null;
+    }
+    get dirty() { return this.revision !== this.savedRevision; }
+    update(mutator) {
+      const next = clone(this.doc);
+      if (mutator(next) === false) return false;
+      parse(next);
+      if (JSON.stringify(next) === JSON.stringify(this.doc)) return false;
+      this.doc = next; this.revision++; this.error = null; this.changed(this);
+      return true;
+    }
+    async save() {
+      if (this.pending) { await this.pending; return !this.error && (!this.dirty || this.save()); }
+      if (!this.dirty) return true;
+      const revision = this.revision, content = JSON.stringify(this.doc, null, 2);
+      this.pending = (async () => {
+        try {
+          const result = await this.write(content, this.etag);
+          if (!result?.etag) throw new Error('保存結果を確認できませんでした');
+          this.etag = result.etag; this.savedRevision = revision; this.error = null;
+        } catch (error) { this.error = error; }
+      })();
+      this.changed(this); await this.pending; this.pending = null; this.changed(this);
+      return !this.error && (!this.dirty || this.save());
+    }
+  }
+  return Object.freeze({ parse, create, Store, clone });
+});
+
+;
+
+/* === gb-tool-form.js === */
+;
+/* First-class Meldex form. Definitions belong to this tab; records to its sheet. */
+class FormAppComponent extends ToolComponent {
+  create() {
+    this.el = document.createElement('section');
+    this.el.className = 'gb-form-app';
+    this.el.setAttribute('aria-label', 'フォーム');
+    this.el.dataset.e2eId = 'form-app';
+    this._draftOwner = globalThis.crypto?.randomUUID?.() || _elGenId('form-draft');
+    this.el.addEventListener('keydown', event => {
+      if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); }
+    });
+    this._generation = 0;
+    this._beforeUnload = event => {
+      if (this.store?.dirty || this.el.querySelector('[data-form-dirty="true"],[data-form-has-pending]')
+        || [...this.el.querySelectorAll('form')].some(form => form._dbFormSubmitting)) {
+        event.preventDefault(); event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', this._beforeUnload);
+    return this.el;
+  }
+  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
+  activate() {
+    super.activate();
+    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+    const tab = this._tab();
+    const path = tab?.path || this.state.formPath;
+    if (path && path !== this.path) this.ready = this.load(path);
+    else if (!path && !this.store) {
+      this.el.textContent = tab?.state?.pendingCreate ? '作成しています…' : 'フォームを新規作成するか、フォルダツリーから開いてください。';
+      if (!tab?.state?.pendingCreate) this.el.appendChild(this._button('フォームを作成', async () => {
+        const home = await apiFetch('/home-folder');
+        const result = await apiPost('/outliner/add', { type: 'form-app', label: '無題', parent: home.path });
+        GBTabs.updateTab(this.paneId, this.tabId, { path: result.node.path, label: result.node.label, state: { formPath: result.node.path } });
+        this.ready = this.load(result.node.path); await this.ready;
+        if (typeof loadOutliner === 'function') loadOutliner();
+      }));
+    }
+  }
+  async load(path, options = {}) {
+    const generation = ++this._generation;
+    if (this.path && path !== this.path && !await this.flush()) return false;
+    if (this.store?.pending) await this.store.pending;
+    if (generation !== this._generation || !this.el) return false;
+    clearTimeout(this._saveTimer);
+    if (options.discardDraft) this._removeOwnDraft();
+    this.path = path;
+    this.store = null;
+    this.el.textContent = 'フォームを読み込んでいます…';
+    try {
+      const [loaded, access] = await Promise.all([
+        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false),
+      ]);
+      if (generation !== this._generation || !this.el) return false;
+      const doc = MeldexFormDocument.parse(loaded.content);
+      this._mode = null;
+      this._referenceRenames = [];
+      this.definitionReadOnly = !!access.readOnly;
+      const store = this.store = new MeldexFormDocument.Store(doc, loaded.etag, async (content, etag) => {
+        const target = this.path;
+        const access = await MeldexEntityDetail.resolveReadOnly(target, false);
+        if (access.readOnly) throw new Error('フォームは読み取り専用です');
+        return apiPut('/file?path=' + encodeURIComponent(target), { content, if_match_etag: etag });
+      }, () => this._changed());
+      const cached = this._readDraft();
+      const recover = cached && !this.definitionReadOnly && await cfConfirm('保存できていないフォームの下書きを復元しますか？');
+      if (generation !== this._generation || !this.el) return false;
+      if (recover) {
+        // Preserve its base revision, so recovery cannot overwrite remote edits.
+        store.doc = MeldexFormDocument.parse(cached.doc);
+        store.etag = cached.etag; store.revision++;
+        this._recoveredDraft = cached.recovery;
+      }
+      this.state = { ...this.state, formPath: path, label: doc.display_title || doc.title };
+      if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
+      if (typeof addRecent === 'function') addRecent(this.state.label, path, 'form-app');
+      await this._loadSheet();
+      if (generation !== this._generation) return false;
+      this._render(); this._changed();
+      if (this.store.dirty && !this.definitionReadOnly) {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = setTimeout(() => this.store.save(), 250);
+      }
+      return true;
+    } catch (error) {
+      if (generation !== this._generation || !this.el) return false;
+      this.el.replaceChildren();
+      const message = document.createElement('p'); message.textContent = 'フォームを開けません: ' + (error.userMessage || error.message);
+      this.el.append(message, this._button('再読込', () => this.load(path)));
+      return false;
+    }
+  }
+  _draftPrefix() { return 'meldex-form-draft:' + this.path; }
+  _draftKey() { return this._draftPrefix() + ':' + (this._draftOwner || this.tabId); }
+  _removeOwnDraft() {
+    try {
+      localStorage.removeItem(this._draftKey());
+      const recovered = this._recoveredDraft;
+      if (recovered && localStorage.getItem(recovered.key) === recovered.raw) localStorage.removeItem(recovered.key);
+    } catch (_) { /* Keep the recovery copy when storage is unavailable. */ }
+    this._recoveredDraft = null;
+  }
+  _readDraft() {
+    const candidates = [];
+    try {
+      const live = new Set();
+      if (typeof forEachComponent === 'function') forEachComponent(component => {
+        if (component !== this && component.path === this.path && component.el) live.add(component._draftKey?.());
+      });
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (live.has(key) || key !== this._draftPrefix() && !key?.startsWith(this._draftPrefix() + ':')) continue;
+        try {
+          const raw = localStorage.getItem(key), draft = JSON.parse(raw);
+          if (!draft?.doc || !draft.etag) continue;
+          const doc = MeldexFormDocument.parse(draft.doc);
+          if (doc.meldex?.document_id && this.store.doc.meldex?.document_id
+            && doc.meldex.document_id !== this.store.doc.meldex.document_id) continue;
+          candidates.push({ ...draft, recovery: { key, raw } });
+        } catch (_) { /* Ignore malformed entries independently. */ }
+      }
+    } catch (_) { /* A malformed recovery entry never replaces the file. */ }
+    return candidates.find(draft => draft.recovery.key === this._draftKey())
+      || candidates.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))[0] || null;
+  }
+  _changed() {
+    if (!this.store) return;
+    try {
+      if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
+      else this._removeOwnDraft();
+    } catch (_) { /* beforeunload and flush still guard the in-memory draft. */ }
+    if (this.status) this.status.textContent = this.store.error
+      ? '保存できません: ' + (this.store.error.userMessage || this.store.error.message)
+      : this.store.pending ? '保存しています…' : this.store.dirty ? '未保存の変更があります' : '保存済み';
+    if (this.retry) this.retry.hidden = !this.store.error;
+    if (this.exportDraft) this.exportDraft.disabled = !this.store.dirty;
+    if (this.status && this._sourceMoved) this.status.textContent += ' — 参照先シートが移動しました。入力を確認して再読込してください。';
+  }
+  _update(mutator, options = {}) {
+    if (this.definitionReadOnly || !this.store) return false;
+    const before = MeldexFormDocument.clone(this.store.doc);
+    if (!this.store.update(mutator)) return false;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this.store.save(), 250);
+    if (options.history !== false && typeof historyPush === 'function') {
+      const owner = this.store;
+      const after = MeldexFormDocument.clone(this.store.doc);
+      const restore = async snapshot => {
+        if (!this.el || this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+        if (!await this._leave() || this.store !== owner) throw new Error('フォームの入力を確認してから取り消してください');
+        const restored = MeldexFormDocument.clone(snapshot);
+        restored.title = owner.doc.title;
+        if (owner.doc.display_title != null) restored.display_title = owner.doc.display_title;
+        if (owner.doc.meldex) restored.meldex = MeldexFormDocument.clone(owner.doc.meldex);
+        for (const [from, to] of this._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        const previousPath = this.ctx.dbPath;
+        if (!this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
+          throw new Error('フォームを変更できません');
+        this._mode = restored.formConfig?.mode;
+        if (previousPath !== restored.sheet.path) await this._loadSheet();
+        if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
+      };
+      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
+    }
+    return true;
+  }
+  async _loadSheet() {
+    this.sheetError = '';
+    this._sourceMoved = false;
+    const source = this.store.doc.sheet;
+    if (this.ctx) { this.ctx.destroyed = true; this.ctx.writeBlocked = true; }
+    this.ctx = { paneId: this.paneId, tabId: this.tabId, containerEl: this.el, dbPath: source.path, filter: 'disabled', formApp: this };
+    const ctx = this.ctx;
+    if (!source.path) return;
+    try {
+      let path = source.path;
+      if (source.id) {
+        const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(source.id), { silentError: true }).catch(() => null);
+        if (resolved?.path) path = resolved.path;
+      }
+      const [metadata, pivot, access] = await Promise.all([
+        apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
+        apiFetch('/pivot?path=' + encodeURIComponent(path)),
+        MeldexEntityDetail.resolveReadOnly(path, false),
+      ]);
+      if (this.ctx !== ctx || ctx.destroyed) return;
+      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly;
+      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
+    } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
+  }
+  getLayout() { return this.store?.doc.layout; }
+  getConfig(props, propTypes) {
+    const doc = this.store.doc, layout = doc.layout;
+    const cfg = { ...doc.formConfig, ...(layout ? MeldexDbFormModel.forLayout(layout, doc.formConfig) : {}) };
+    return normalizeDbFormConfig({ ...cfg, layoutId: layout?.id || '', mode: this._mode || (this.definitionReadOnly ? 'entry' : doc.formConfig?.mode) || 'entry' },
+      [...props, ...MeldexDbFormModel.layoutFields(layout)], propTypes);
+  }
+  saveConfig(config) {
+    this._mode = config.mode;
+    if (this.definitionReadOnly) return true;
+    const previous = { ...this.store.doc.formConfig, mode: config.mode, layoutId: config.layoutId };
+    return this._update(doc => {
+      doc.formConfig = MeldexFormDocument.clone(config);
+      if (doc.layout) {
+        doc.layout.formConfig = MeldexDbFormModel.normalize(config, MeldexDbFormModel.layoutFields(doc.layout));
+        delete doc.layout.formConfig.mode; delete doc.layout.formConfig.layoutId;
+      }
+    }, { history: JSON.stringify(previous) !== JSON.stringify(config) });
+  }
+  _button(label, run) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn'; button.textContent = label;
+    button.addEventListener('click', async event => {
+      try { await run(event); } catch (error) { showStatus(error.userMessage || error.message, true); }
+    }); return button;
+  }
+  async _leave() { return !this.el || await MeldexDbFormRuntime.confirmLeave(this.el); }
+  async _chooseSheet() {
+    const select = this.sheetSelect;
+    const path = select.value;
+    if (path === this.ctx.dbPath) return;
+    if (!await this._leave()) { select.value = this.ctx.dbPath; return; }
+    if (this.definitionReadOnly) return;
+    select.disabled = true; this.surface.inert = true;
+    try {
+      const id = path ? await apiFetch('/file-id?path=' + encodeURIComponent(path), { silentError: true }).catch(() => null) : null;
+      this._update(doc => { doc.sheet = { ...doc.sheet, path, id: id?.file_id || '' }; });
+      await this._loadSheet(); this._render();
+    } finally {
+      select.disabled = this.definitionReadOnly;
+      if (this.surface) this.surface.inert = false;
+    }
+  }
+  async _fillSheets(select) {
+    try {
+      const data = await apiFetch('/databases');
+      if (!select.isConnected) return;
+      const items = Array.isArray(data) ? data : data.databases || [];
+      items.filter(item => item.type !== 'calendar').forEach(item => {
+        if ([...select.options].some(option => option.value === item.path)) return;
+        const option = document.createElement('option'); option.value = item.path; option.textContent = item.name + ' — ' + (item.relPath || item.path);
+        select.appendChild(option);
+      });
+      select.value = this.ctx.dbPath || '';
+    } catch (error) { this.status.textContent = 'シート一覧を取得できません: ' + error.message; }
+  }
+  async _presetOptions(select) {
+    const add = (name, items, layouts = false) => {
+      const group = document.createElement('optgroup'); group.label = name;
+      items.forEach(item => {
+        const option = document.createElement('option'); option.value = String(this._choices.length); option.textContent = layouts ? item.name : item.layout.name;
+        this._choices.push({ item, layout: layouts }); group.appendChild(option);
+      });
+      select.appendChild(group);
+    };
+    this._choices = [];
+    add('標準プリセット', MeldexDbTopicLayoutPresets.getTemplates());
+    add('シートのレイアウト', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true);
+    try {
+      const library = await MeldexDbTopicLayoutStyle.loadSharedTemplateLibrary();
+      if (select.isConnected) add('ユーザープリセット', library.templates || []);
+    } catch (_) { /* Built-in and sheet layouts remain available offline. */ }
+  }
+  async _usePreset(select) {
+    const choice = this._choices[Number(select.value)]; select.value = '';
+    if (!choice || !await this._leave()) return;
+    this._mode = 'entry';
+    let layout;
+    if (choice.layout) layout = _elNormalizeLayout(MeldexFormDocument.clone(choice.item));
+    else {
+      const columns = Object.entries(getPropertyTypes(this.ctx.dbPath, this.ctx)).map(([name, column]) => ({ ...column, name, id: column.property_id || '' }));
+      layout = _elNormalizeLayout(MeldexDbTopicLayoutStyle.importTemplate(choice.item, [], columns).layout);
+    }
+    layout.formConfig = MeldexDbFormModel.forLayout(layout);
+    this._update(doc => { doc.layout = layout; doc.formConfig = { ...doc.formConfig, ...layout.formConfig, mode: 'entry' }; });
+    this._render();
+  }
+  async _automaticLayout() {
+    if (!await this._leave()) return;
+    const fields = this.getConfig(this.ctx.pivotData?.properties || [], getPropertyTypes(this.ctx.dbPath, this.ctx)).fields;
+    this._update(doc => {
+      doc.layout = _elNormalizeLayout({ id: _elGenId('form'), name: 'フォーム', canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) },
+        cells: fields.map((prop, index) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + index * 140, w: 940, h: 120 })) });
+      doc.layout.formConfig = MeldexDbFormModel.forLayout(doc.layout, doc.formConfig);
+    }); this._render();
+  }
+  async _design() {
+    if (!await this._leave() || !this.getLayout()) return;
+    const root = this.surface, session = { editMode: true };
+    const render = () => {
+      root.replaceChildren(this._button('配置編集を終了', () => this._render()));
+      const editor = document.createElement('div'); root.appendChild(editor);
+      const layout = this.getLayout();
+      const types = getPropertyTypes(this.ctx.dbPath, this.ctx);
+      _elRenderLayoutBody(editor, { properties: Object.fromEntries(Object.keys(types).map(name => [name, []])) }, '', {
+        ctx: this.ctx, propTypes: types, layoutDraft: { layout, session, persist: mutator => this._update(doc => mutator(doc.layout)) },
+      }, this.ctx.dbPath, layout.id, render);
+    }; this._designRender = render; render();
+  }
+  _render() {
+    if (!this.el || !this.store) return;
+    this._designRender = null;
+    this.el.replaceChildren();
+    const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
+    const source = document.createElement('label'); source.textContent = '参照先シート';
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
+    const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
+    if (this.ctx.dbPath) {
+      const option = document.createElement('option'); option.value = this.ctx.dbPath;
+      option.textContent = this.ctx.dbMetadata?.display_title || this.ctx.dbPath.split(/[\\/]/).pop(); select.appendChild(option); select.value = option.value;
+    }
+    this.sheetSelect = select; source.appendChild(select); bar.appendChild(source);
+    select.disabled = this.definitionReadOnly; select.addEventListener('change', () => this._chooseSheet().catch(error => showStatus(error.message, true)));
+    this._fillSheets(select);
+    if (this.ctx.dbPath && !this.sheetError) {
+      bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
+      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'フォームのレイアウト');
+      const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout()?.name || 'レイアウトを選択'; presets.appendChild(current);
+      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
+      const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
+      const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
+    }
+    bar.appendChild(this._button('再読込', async () => {
+      if (!await this._leave()) return;
+      if (this.store.dirty && !await cfConfirm('未保存のフォーム定義を破棄して読み直しますか？')) return;
+      await this.load(this.path, { discardDraft: true });
+    }));
+    const saveBar = document.createElement('div'); saveBar.className = 'gb-form-app-save'; this.el.appendChild(saveBar);
+    this.status = document.createElement('span'); this.status.setAttribute('role', 'status'); saveBar.appendChild(this.status);
+    this.retry = this._button('保存を再試行', () => this.store.save()); saveBar.appendChild(this.retry);
+    this.exportDraft = this._button('下書きを書き出す', () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(this.store.doc, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url;
+      link.download = (GBPathUtils.displayTitle.storageName(this.store.doc.title || 'フォーム')) + '.mel-form';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }); saveBar.appendChild(this.exportDraft);
+    if (this.definitionReadOnly) saveBar.appendChild(document.createTextNode('（フォーム定義は読み取り専用）'));
+    this.surface = document.createElement('div'); this.surface.className = 'form-view gb-form-app-surface'; this.el.appendChild(this.surface);
+    if (this.sheetError || !this.ctx.dbPath) {
+      const hint = document.createElement('p'); hint.textContent = this.sheetError || '入力先のシートを選択してください。入力したトピックはシートへ保存され、配置と入力設定はこのフォームに保存されます。'; this.surface.appendChild(hint);
+    } else renderDbFormView(this.ctx);
+    this._changed();
+  }
+  async flush() {
+    this._commitFocusedControl();
+    if (!await this._leave()) return false;
+    clearTimeout(this._saveTimer);
+    return !this.store || await this.store.save();
+  }
+  async reload() {
+    if (!await this.flush()) return false;
+    return this.load(this.path);
+  }
+  handleKeyDown(event) {
+    if (event.isComposing || event.keyCode === 229) return false;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      this.saveDefinition(); return true;
+    }
+    return false;
+  }
+  saveDefinition() {
+    this._commitFocusedControl();
+    clearTimeout(this._saveTimer);
+    return this.store?.save();
+  }
+  _commitFocusedControl() {
+    const control = document.activeElement;
+    if (this.el?.contains(control) && control.matches('input,textarea,select,[contenteditable=true]')) control.blur();
+  }
+  onPathRename(oldPath, newPath, options) {
+    if (!this.path || !this.store) return;
+    (this._referenceRenames ||= []).push([oldPath, newPath]);
+    const path = _mapRenamedPath(this.path, oldPath, newPath);
+    if (path !== this.path) {
+      const oldKey = this._draftKey(); this.path = path; this.state.formPath = path;
+      if (this.store.dirty) { this._changed(); try { localStorage.removeItem(oldKey); } catch (_) {} }
+    }
+    if (this.path === newPath && options?.label != null) {
+      this.state.label = options.label;
+      this.store.doc.title = options.label;
+      if (this.store.doc.display_title != null || options.titleOnly) this.store.doc.display_title = options.label;
+      if (options.etag && !this.store.pending) this.store.etag = options.etag;
+      this._changed();
+    }
+    const source = this.store.doc.sheet.path;
+    const movedSource = _mapRenamedPath(source, oldPath, newPath);
+    if (source && source !== movedSource) {
+      this._update(doc => { doc.sheet.path = movedSource; }, { history: false });
+      // Keep any typed values on screen, but never write them to the old path.
+      if (this.ctx) this.ctx.writeBlocked = true;
+      this._sourceMoved = true; this._changed();
+    }
+  }
+  destroy(options = {}) {
+    if (!options.skipFlush && (this.store?.dirty || this.store?.pending
+      || this.el?.querySelector('[data-form-dirty="true"],[data-form-has-pending]'))) return false;
+    ++this._generation; clearTimeout(this._saveTimer);
+    window.removeEventListener('beforeunload', this._beforeUnload);
+    if (this.ctx) this.ctx.destroyed = true;
+    super.destroy(); return true;
+  }
+}
+registerToolComponent('form-app', { cls: FormAppComponent, icon: 'clipboardList', label: 'フォーム', multi: true, requiresViewLock: true });
+
+async function openFormApp(path, label, options = {}) {
+  const paneId = options.paneId || (typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane);
+  const tabId = GBTabs.addTab(paneId, label || 'フォーム', 'form-app', path, { formPath: path, label: label || 'フォーム' }, options);
+  if (!tabId) return false;
+  if (typeof navPush === 'function' && !options.skipNavPush) navPush({ type: 'form-app', path, label: label || 'フォーム' }, paneId);
+  if (!options.skipSaveLastView && typeof saveLastView === 'function') saveLastView({ type: 'form-app', path, label: label || 'フォーム' });
+  const component = getComponentInstance(tabId);
+  if (component?.ready) return component.ready;
+  return true;
+}
 
 ;
 
@@ -177291,21 +178965,44 @@ function _getActiveFormViewRecord(dbPath, ctx) {
 }
 
 function getActiveFormConfig(dbPath, props, propTypes, ctx) {
+  if (ctx?.formApp) return ctx.formApp.getConfig(props || [], propTypes);
   const { view } = _getActiveFormViewRecord(dbPath, ctx);
   const cfg = view?.typeSpecific?.form?.formConfig || view?.formConfig || getDbViewConfig(dbPath).formConfig || null;
+  const layout = cfg?.layoutId && getDbViewConfig(dbPath).entityLayouts?.find(item => item.id === cfg.layoutId);
+  if (layout && globalThis.MeldexDbFormModel) {
+    const shared = MeldexDbFormModel.forLayout(layout, cfg);
+    return normalizeDbFormConfig({ ...cfg, ...shared, layoutId: layout.id, mode: cfg.mode || 'edit' },
+      [...(props || []), ...MeldexDbFormModel.layoutFields(layout)], propTypes);
+  }
   return normalizeDbFormConfig(cfg, props, propTypes);
 }
 
-function saveActiveFormConfig(dbPath, formConfig, ctx) {
+function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
+  const invalid = globalThis.MeldexDbFormModel?.validateDefinition(formConfig);
+  if (invalid) { if (typeof showStatus === 'function') showStatus(invalid, true); return false; }
+  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig);
+  if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
+  const config = getDbViewConfig(dbPath);
+  if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {
+    const layout = config.entityLayouts?.find(item => item.id === formConfig.layoutId);
+    if (layout) {
+      // The current form edits the linked definition, rather than keeping a second copy.
+      layout.formConfig = MeldexDbFormModel.normalize(formConfig, MeldexDbFormModel.layoutFields(layout));
+      delete layout.formConfig.layoutId; delete layout.formConfig.mode;
+    }
+  }
   const { idx, views } = _getActiveFormViewRecord(dbPath, ctx);
   if (idx >= 0 && views[idx]) {
     if (!views[idx].typeSpecific || typeof views[idx].typeSpecific !== 'object' || Array.isArray(views[idx].typeSpecific)) views[idx].typeSpecific = {};
     if (!views[idx].typeSpecific.form || typeof views[idx].typeSpecific.form !== 'object' || Array.isArray(views[idx].typeSpecific.form)) views[idx].typeSpecific.form = {};
     views[idx].typeSpecific.form.formConfig = formConfig;
-    setSavedViews(dbPath, views, { label: 'シート表示: フォーム設定' });
+    config.savedViews = views;
   } else {
-    setCurrentDbViewTypeSpecific(dbPath, 'form', { formConfig }, { ctx, historyLabel: 'シート表示: フォーム設定' });
+    config.formConfig = formConfig;
   }
+  // Binding and its shared definition are one preference/history operation.
+  saveDbViewConfig(dbPath, config, { historyLabel: 'シート表示: フォーム設定', ctx });
+  return true;
 }
 
 function _formContainer(ctx) {
@@ -177352,7 +179049,7 @@ function renderDbFormView(ctx) {
   if (!root || !dbPath) return;
   root.style.display = 'flex';
   const pivot = ctx.pivotData || state.pivotData || { properties: [] };
-  const propTypes = getPropertyTypes(dbPath) || {};
+  const propTypes = getPropertyTypes(dbPath, ctx) || {};
   const formProps = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivot.properties || [])
     : (pivot.properties || []);
@@ -177369,19 +179066,38 @@ function renderDbFormView(ctx) {
     b.textContent = label;
     b.dataset.e2eId = e2eId;
     b.setAttribute('aria-pressed', active ? 'true' : 'false');
-    b.addEventListener('click', fn);
+    b.addEventListener('click', async () => {
+      if (cfg.mode === 'entry' && globalThis.MeldexDbFormRuntime && !await MeldexDbFormRuntime.confirmLeave(root)) return;
+      fn();
+    });
     return b;
   };
-  toolbar.appendChild(mkBtn('編集', cfg.mode !== 'answer', () => {
-    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
-  }, 'db-form-view-edit'));
+  const editButton = mkBtn('編集', !['answer', 'entry'].includes(cfg.mode), () => {
+    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
+  }, 'db-form-view-edit');
+  editButton.disabled = ctx.formApp?.definitionReadOnly === true;
+  toolbar.appendChild(editButton);
   toolbar.appendChild(mkBtn('回答プレビュー', cfg.mode === 'answer', () => {
-    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
+    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
   }, 'db-form-view-answer'));
+  if (!cfg.customInstructionsRelay && !cfg.betaFeedbackRelay) toolbar.appendChild(mkBtn('入力・閲覧', cfg.mode === 'entry', () => {
+    cfg.mode = 'entry'; saveActiveFormConfig(dbPath, cfg, ctx, { shared: false }); renderDbFormView(ctx);
+  }, 'db-form-view-entry'));
   root.appendChild(toolbar);
+  if (globalThis.MeldexDbFormDesigner) MeldexDbFormDesigner.buildViewSelector(root, dbPath, cfg, propTypes, ctx);
+
+  if (cfg.mode === 'entry' && globalThis.MeldexDbFormRuntime) {
+    MeldexDbFormRuntime.renderView(root, dbPath, cfg, propTypes, ctx);
+    return;
+  }
 
   if (cfg.mode === 'answer') {
-    root.appendChild(_buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: !(cfg.customInstructionsRelay || cfg.betaFeedbackRelay) }));
+    const form = _buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: !(cfg.customInstructionsRelay || cfg.betaFeedbackRelay) });
+    if (ctx.formApp?.getLayout()) {
+      MeldexDbFormRuntime.applyNewLayout(form, ctx.formApp.getLayout(), propTypes, dbPath, { ...ctx, readOnly: true });
+      form.querySelectorAll('[data-form-add-column]').forEach(button => { button.disabled = true; });
+    }
+    root.appendChild(form);
     return;
   }
 
@@ -177410,6 +179126,12 @@ function renderDbFormView(ctx) {
   _dbFormDispatchSaveInput(desc, () => { cfg.headerDescription = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
   side.appendChild(desc);
 
+  const placedFields = cfg.layoutId && globalThis.MeldexDbFormModel
+    ? MeldexDbFormModel.layoutFields(ctx.formApp?.getLayout() || getDbViewConfig(dbPath).entityLayouts?.find(layout => layout.id === cfg.layoutId)) : null;
+  if (placedFields) {
+    const hint = document.createElement('p'); hint.textContent = '未配置の列は「配置を編集」→「列を配置」から追加できます。'; side.appendChild(hint);
+  }
+
   formProps.forEach(prop => {
     const type = propTypes[prop]?.type || 'text';
     if (DB_FORM_UNSUPPORTED_TYPES.has(type)) return;
@@ -177421,6 +179143,7 @@ function renderDbFormView(ctx) {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = checked;
+    if (placedFields && !placedFields.includes(prop)) { cb.disabled = true; cb.title = '「配置を編集」から列を配置してください'; }
     _dbFormSetControlIdentity(cb, cfg, prop, 'field-enabled', 'フォーム項目に含める: ' + prop);
     const name = document.createElement('span');
     name.className = 'gb-form-prop-name';
@@ -177450,7 +179173,8 @@ function renderDbFormView(ctx) {
   root.appendChild(editor);
 }
 
-function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
+function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverride) {
+  const save = () => saveOverride ? saveOverride(cfg) : saveActiveFormConfig(dbPath, cfg, ctx);
   const wrap = document.createElement('div');
   wrap.className = 'gb-form-fields-editor';
   const settings = document.createElement('div');
@@ -177469,7 +179193,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   });
   entityNameSelect.addEventListener('change', e => {
     cfg.entityNameProp = e.target.value || '';
-    saveActiveFormConfig(dbPath, cfg, ctx);
+    save();
   });
   settings.appendChild(entityNameLabel);
   settings.appendChild(entityNameSelect);
@@ -177511,7 +179235,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     label.value = cfg.labels[prop] || prop;
     const labelId = _dbFormSetControlIdentity(label, cfg, prop, 'label-input', '表示名: ' + prop);
     row.appendChild(_dbFormEditorLabel('表示名', labelId));
-    _dbFormDispatchSaveInput(label, () => { cfg.labels[prop] = label.value.trim() || prop; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(label, () => { cfg.labels[prop] = label.value.trim() || prop; save(); });
     row.appendChild(label);
     const desc = document.createElement('input');
     desc.className = 'gb-input';
@@ -177519,7 +179243,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     desc.value = cfg.descriptions[prop] || '';
     const descId = _dbFormSetControlIdentity(desc, cfg, prop, 'description-input', '説明: ' + prop);
     row.appendChild(_dbFormEditorLabel('説明', descId));
-    _dbFormDispatchSaveInput(desc, () => { cfg.descriptions[prop] = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(desc, () => { cfg.descriptions[prop] = desc.value; save(); });
     row.appendChild(desc);
     const placeholder = document.createElement('input');
     placeholder.className = 'gb-input';
@@ -177527,7 +179251,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     placeholder.value = cfg.placeholders[prop] || '';
     const placeholderId = _dbFormSetControlIdentity(placeholder, cfg, prop, 'placeholder-input', 'プレースホルダー: ' + prop);
     row.appendChild(_dbFormEditorLabel('プレースホルダー', placeholderId));
-    _dbFormDispatchSaveInput(placeholder, () => { cfg.placeholders[prop] = placeholder.value; saveActiveFormConfig(dbPath, cfg, ctx); });
+    _dbFormDispatchSaveInput(placeholder, () => { cfg.placeholders[prop] = placeholder.value; save(); });
     row.appendChild(placeholder);
     const foot = document.createElement('label');
     foot.className = 'gb-check';
@@ -177546,9 +179270,10 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
     required.addEventListener('change', (e) => {
       if (e.target.checked && !cfg.required.includes(prop)) cfg.required.push(prop);
       if (!e.target.checked) cfg.required = cfg.required.filter(p => p !== prop);
-      saveActiveFormConfig(dbPath, cfg, ctx);
+      save();
     });
     row.appendChild(foot);
+    if (globalThis.MeldexDbFormDesigner) MeldexDbFormDesigner.appendRules(row, cfg, prop, type, save);
     wrap.appendChild(row);
   });
   const submitRow = document.createElement('div');
@@ -177577,8 +179302,8 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   successField.appendChild(successMessage);
   submitRow.appendChild(submitLabelField);
   submitRow.appendChild(successField);
-  submitLabel.addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; saveActiveFormConfig(dbPath, cfg, ctx); });
-  successMessage.addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; saveActiveFormConfig(dbPath, cfg, ctx); });
+  submitLabel.addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; save(); });
+  successMessage.addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; save(); });
   wrap.appendChild(submitRow);
   return wrap;
 }
@@ -177598,9 +179323,10 @@ function _buildFormAnswerPanel(dbPath, cfg, propTypes, publicMode, options = {})
   form.dataset.e2eId = _dbFormControlIdentity(cfg, 'answer', 'form');
   form.setAttribute('aria-label', cfg.headerTitle || 'フォーム回答');
   if (options.previewOnly) form.dataset.previewOnly = '1';
+  form.addEventListener('input', event => { if (event.target.matches('input,textarea,select')) event.target.dataset.formDirty = 'true'; });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    submitDbFormResponse(form, dbPath, cfg, propTypes, { previewOnly: !!options.previewOnly });
+    submitDbFormResponse(form, dbPath, cfg, propTypes, options);
   });
   if (cfg.headerTitle) {
     const h = document.createElement('h2');
@@ -177618,6 +179344,7 @@ function _buildFormAnswerPanel(dbPath, cfg, propTypes, publicMode, options = {})
     form.appendChild(p);
   }
   cfg.fields.forEach(prop => {
+    if (Object.prototype.hasOwnProperty.call(options.fixedFields || {}, prop)) return;
     const type = propTypes[prop]?.type || 'text';
     if (DB_FORM_UNSUPPORTED_TYPES.has(type)) return;
     if (publicMode && DB_FORM_PUBLIC_HIDDEN_TYPES.has(type)) return;
@@ -177659,6 +179386,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
   } else if (type === 'number') {
     input = document.createElement('input');
     input.type = 'number';
+    input.step = 'any';
   } else if (type === 'date') {
     input = document.createElement('input');
     input.type = ptc.withTime ? 'datetime-local' : 'date';
@@ -177697,21 +179425,39 @@ function _buildFormInputRow(prop, cfg, ptc) {
     input.type = 'text';
   }
   input.name = prop;
+  input.setAttribute('aria-label', cfg.labels[prop] || prop);
   input.className = type === 'select' ? 'gb-select gb-form-select' : (type === 'long-text' ? 'gb-input gb-textarea' : 'gb-input');
   input.dataset.formType = type;
   input.dataset.e2eId = _dbFormControlIdentity(cfg, prop, type === 'long-text' ? 'textarea' : type);
   if (cfg.placeholders[prop]) input.placeholder = cfg.placeholders[prop];
   if (cfg.required.includes(prop)) input.required = true;
+  if (globalThis.MeldexDbFormModel) {
+    const rule = MeldexDbFormModel.ruleFor(cfg, prop);
+    for (const key of ['min', 'max'])
+      if (rule[key] !== undefined && rule[key] !== '') input[key] = rule[key];
+    for (const key of ['minLength', 'maxLength'])
+      if (rule[key] !== undefined && rule[key] !== '') input.dataset['form' + key[0].toUpperCase() + key.slice(1)] = rule[key];
+    input.dataset.formField = prop;
+    const error = document.createElement('span'); error.className = 'gb-form-field-error'; error.setAttribute('role', 'status');
+    row.appendChild(error);
+    const validate = () => {
+      const value = type === 'checkbox' ? String(input.checked) : type === 'image' ? String(input.files?.length || '') : input.value;
+      const message = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, type, rule);
+      input.setCustomValidity(message); input.setAttribute('aria-invalid', String(!!message)); error.textContent = message;
+    };
+    input.addEventListener('input', () => { input.setCustomValidity(''); error.textContent = ''; });
+    input.addEventListener('change', validate); input.addEventListener('invalid', validate);
+  }
   row.appendChild(input);
   return row;
 }
 
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
-  const fields = {};
+  const fields = { ...(options.fixedFields || {}) };
   for (const prop of cfg.fields) {
     const safeName = MeldexEscape.cssIdent(prop);
     const input = form.querySelector(`[name="${safeName}"]`);
-    if (!input) continue;
+    if (!input || input.disabled) continue;
     const type = propTypes[prop]?.type || 'text';
     if (type === 'checkbox') {
       fields[prop] = input.checked ? 'true' : 'false';
@@ -177809,7 +179555,32 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
   if (submitButton) submitButton.disabled = true;
   const msg = form.querySelector('.gb-form-submit-message');
   try {
-    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
+    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
+    // Validate before image upload as well, so invalid sibling fields create no attachments.
+    if (globalThis.MeldexDbFormModel) {
+      for (const prop of cfg.fields || []) {
+        const input = [...form.elements].find(item => item.name === prop);
+        if (!input || input.disabled) continue;
+        const type = propTypes[prop]?.type || 'text';
+        const value = type === 'checkbox' ? String(input.checked) : type === 'image' ? String(input.files?.length || '') : input.value;
+        const rules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, type, MeldexDbFormModel.ruleFor(cfg, prop, rules));
+        if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); throw new Error(error); }
+      }
+    }
+    const fields = await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
+    if (globalThis.MeldexDbFormModel) {
+      const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
+      for (const prop of cfg.fields || []) {
+        const rule = MeldexDbFormModel.ruleFor(cfg, prop, sheetRules);
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, fields[prop], propTypes[prop]?.type || 'text', rule);
+        if (error) {
+          const input = [...form.elements].find(item => item.name === prop);
+          if (input) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); }
+          throw new Error(error);
+        }
+      }
+    }
     if (cfg.betaFeedbackRelay && !fields['送信日']) {
       fields['送信日'] = new Date().toISOString().slice(0, 10);
     }
@@ -177832,16 +179603,19 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const nameProp = cfg.entityNameProp || '';
-    const name = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP');
+    const proposedName = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
+    const name = form._dbFormPendingName || proposedName;
     if (options.previewOnly) {
       if (msg) msg.textContent = '回答プレビューです。実データは作成されません。';
       const previewResult = { previewOnly: true };
       return { ...previewResult, fields, name };
     }
+    form._dbFormPendingName = name;
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const validation = await applyChatCustomInstructionsFromForm(fields, cfg, { validateOnly: true, silent: true });
       if (validation?.ok === false) throw new Error(_customInstructionRelayErrorMessage(validation));
     }
+    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
     const createResult = await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
@@ -177865,7 +179639,12 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (msg) msg.textContent = completionMessage;
     _showBetaFeedbackThanksDialog(cfg, completionMessage);
     form.reset();
-    if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
+    form.querySelectorAll('[data-form-dirty]').forEach(input => { input.dataset.formDirty = 'false'; });
+    delete form._dbFormPendingName;
+    form._dbFormSubmitting = false;
+    if (options.onCreated) await options.onCreated(createResult);
+    else if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
+    return createResult;
   } catch (err) {
     if (msg) msg.textContent = err?.message || '送信に失敗しました';
     showStatus(err?.message || 'フォーム送信に失敗しました', true);
@@ -181470,8 +183249,9 @@ function applyDbTemplate(dbPath, template, opts) {
       if (!c.countTypes[k] || overwrite) c.countTypes[k] = v;
     });
   }
+  const appliedViews = [];
   const usedSavedViewsPath = typeof _applyDbTemplateSavedViews === 'function'
-    && _applyDbTemplateSavedViews(c, template, overwrite);
+    && _applyDbTemplateSavedViews(c, template, overwrite, appliedViews);
   if (!usedSavedViewsPath) {
     _applyDbTemplateViewFields(c, template, overwrite);
   }
@@ -181480,7 +183260,7 @@ function applyDbTemplate(dbPath, template, opts) {
 
   // 5.5 エントリレイアウト（typeofガード: 未ロード環境ではレイアウト無しの従来動作）
   if (typeof _applyDbTemplateEntityLayouts === 'function') {
-    _applyDbTemplateEntityLayouts(c, template, overwrite);
+    _applyDbTemplateEntityLayouts(c, template, overwrite, appliedViews);
   }
   const entityLayoutsResult = c._dbTemplateEntityLayoutsResult || null;
   delete c._dbTemplateEntityLayoutsResult;
@@ -181908,7 +183688,7 @@ function _dbTemplateAppendLegacyViewFields(view, template, overwrite) {
  *   適用前から存在していたビューにのみ行う（新規追加ビューはテンプレート側の値をそのまま使う）
  * @returns {boolean} savedViews パスを使ったか（false の場合は呼び出し元が旧パスへフォールバックする）
  */
-function _applyDbTemplateSavedViews(cfg, template, overwrite) {
+function _applyDbTemplateSavedViews(cfg, template, overwrite, appliedViews = []) {
   if (!template || !Array.isArray(template.savedViews)) return false;
   if (!Array.isArray(cfg.savedViews)) cfg.savedViews = [];
   const existingViews = cfg.savedViews.slice();
@@ -181937,6 +183717,7 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
         existing.viewMode = viewMode;
         const idx = cfg.savedViews.indexOf(existing);
         cfg.savedViews[idx] = _normalizeDbTemplateView(existing, cfg, idx);
+        appliedViews.push(cfg.savedViews[idx]);
       }
       return;
     }
@@ -181950,6 +183731,7 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
     existingNames.add(uniqueName);
     const normalized = _normalizeDbTemplateView(sanitized, cfg, cfg.savedViews.length);
     cfg.savedViews.push(normalized);
+    appliedViews.push(normalized);
     existingByKey.set(_dbTemplateSavedViewKey(normalized), normalized);
     added++;
   });
@@ -182044,7 +183826,7 @@ async function embedDbTemplateEntityLayoutImages(template, selectedCellIds) {
 /* 適用: 既存レイアウトと名前が一致するものは加算スキップ（savedViewsの方針に合わせる。
    overwrite 時は同名の中身を置き換える）。追加分は id をすべて振り直し、タブ順の末尾へ足す。
    結果は cfg._dbTemplateEntityLayoutsResult = { added, skipped } に格納する。 */
-function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
+function _applyDbTemplateEntityLayouts(cfg, template, overwrite, appliedViews = []) {
   const incoming = Array.isArray(template?.entityLayouts) ? template.entityLayouts : [];
   if (incoming.length === 0) return false;
   const genId = (prefix) => (typeof _elGenId === 'function'
@@ -182059,11 +183841,13 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
     };
   let added = 0;
   let skipped = 0;
+  const layoutIds = new Map();
   incoming.forEach(raw => {
     const layout = _dbTemplateSanitizeEntityLayout(raw);
     if (!layout) return;
     const existing = state.layouts.find(l => String(l?.name || '') === layout.name);
     if (existing) {
+      layoutIds.set(layout.id, existing.id);
       if (!overwrite) {
         skipped += 1;
         return;
@@ -182072,11 +183856,13 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
       existing.canvasSize = layout.canvasSize;
       existing.theme = layout.theme;
       existing.cells = (layout.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
+      if (layout.formConfig) existing.formConfig = JSON.parse(JSON.stringify(layout.formConfig));
       added += 1;
       return;
     }
     const clone = JSON.parse(JSON.stringify(layout));
     clone.id = genId('el');
+    layoutIds.set(layout.id, clone.id);
     clone.cells = (clone.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
     state.layouts.push(clone);
     state.tabOrder.push(clone.id);
@@ -182085,6 +183871,11 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
   cfg.entityLayouts = state.layouts;
   cfg.entityTabOrder = state.tabOrder;
   cfg.currentEntityTab = state.currentTab;
+  appliedViews.forEach(view => {
+    for (const form of [view.formConfig, view.typeSpecific?.form?.formConfig]) {
+      if (form?.layoutId && layoutIds.has(form.layoutId)) form.layoutId = layoutIds.get(form.layoutId);
+    }
+  });
   cfg._dbTemplateEntityLayoutsResult = { added, skipped };
   return true;
 }
@@ -184539,7 +186330,7 @@ const EL_DEFAULT_CANVAS_W = 1000;
 const EL_DEFAULT_CANVAS_H = 700;
 const EL_CANVAS_MIN = 200;
 const EL_CANVAS_MAX = 8000;
-const EL_CELL_TYPES = ['field', 'label', 'image', 'divider', 'chart'];
+const EL_CELL_TYPES = ['field', 'label', 'image', 'divider', 'chart', 'subform'];
 const EL_CELL_MIN_SIZE = 24;
 
 function _elGenId(prefix) {
@@ -184897,7 +186688,10 @@ function _elTopicLayoutColumns(dbPath, pivotData) {
   const data = pivotData || state?.pivotData || {};
   const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) || {} : {};
   return (Array.isArray(data.properties) ? data.properties : Object.keys(data.properties || {})).map(name => ({
-    id: String(types[name]?.id || types[name]?.columnId || ''), name: String(name),
+    id: String(types[name]?.property_id || types[name]?.id || types[name]?.columnId || ''), name: String(name),
+    type: String(types[name]?.type || 'text'),
+    ...(['select', 'multi-select'].includes(types[name]?.type) && Array.isArray(types[name].options)
+      ? { options: types[name].options.slice() } : {}),
   }));
 }
 
@@ -185028,112 +186822,191 @@ function _elAddPresetLayout(context, template) {
 async function _elShowAddLayoutMenu(anchor, context) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
-  const items = templates => [
-    { key: 'new', label: '新規に追加', icon: 'plus', run: () => _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender) },
-    ...templates.map((template, index) => ({ key: 'preset-' + index, label: template.layout.name, icon: 'layoutTemplate', run: () => _elAddPresetLayout(context, template) })),
-    { key: 'manage-presets', label: 'プリセットを管理', icon: 'settings2', run: () => _elManageLayoutPresets(context) },
-  ];
-  const menu = _elShowActionMenu(anchor, items(api?.loadSharedTemplates?.() || []), 'entity-layout-add-menu');
-  if (!api) return;
-  const library = await api.loadSharedTemplateLibrary();
-  if (menu.isConnected && anchor.isConnected && _elCanMutateGrid(context.grid, context.options)) {
-    menu._setItems(items(library.templates));
-    if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect(), { gap: 4 });
+  const existing = document.querySelector('.el-preset-popup');
+  if (existing) {
+    const same = existing._anchor === anchor;
+    if (!await existing._requestClose() || same) return;
   }
-}
-
-async function _elManageLayoutPresets(context) {
-  const api = globalThis.MeldexDbTopicLayoutStyle;
-  if (!api || !_elCanMutateGrid(context.grid, context.options)) return;
-  const existing = document.querySelector('[data-e2e-id="entity-layout-presets-dialog"]');
-  if (existing) { existing.focus(); return; }
+  if (!api) {
+    _elShowActionMenu(anchor, [{ key: 'new', label: '新規に追加', icon: 'plus',
+      run: () => _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender) }], 'entity-layout-add-menu');
+    return;
+  }
+  _elCloseTabMenus();
   const body = document.createElement('div');
-  body.className = 'el-preset-dialog';
-  const selector = document.createElement('select');
-  selector.setAttribute('aria-label', '保存済みプリセット');
-  const actions = document.createElement('div'); actions.className = 'el-preset-actions';
-  actions.appendChild(selector); body.appendChild(actions);
+  // 一般メニューの一括remove対象にせず、確認・子ポップアップと未保存ドラフトを自前で管理する。
+  body.className = 'el-preset-popup';
+  body.dataset.e2eId = 'entity-layout-add-menu';
+  body.setAttribute('role', 'dialog');
+  body.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.setAttribute('aria-modal', 'false');
+  body.tabIndex = -1;
+  body._anchor = anchor;
+  const addLayout = document.createElement('button'); addLayout.type = 'button';
+  addLayout.className = 'el-tab-menu-item'; addLayout.textContent = '新規に追加';
+  addLayout.setAttribute('role', 'menuitem'); addLayout.dataset.e2eId = 'entity-layout-tab-menu-new';
+  body.appendChild(addLayout);
+  const list = document.createElement('div'); list.className = 'el-preset-list';
+  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.appendChild(list);
+  const actions = document.createElement('div'); actions.className = 'el-preset-actions'; body.appendChild(actions);
+  const details = document.createElement('div'); details.className = 'el-preset-details'; details.hidden = true;
+  body.appendChild(details);
   const nameRow = document.createElement('label'); nameRow.className = 'el-preset-name-row';
   nameRow.textContent = 'プリセット名';
   const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'プリセット名');
-  nameRow.appendChild(name); body.appendChild(nameRow);
+  nameRow.appendChild(name); details.appendChild(nameRow);
+  const editor = document.createElement('div'); editor.className = 'el-preset-editor'; details.appendChild(editor);
   const message = document.createElement('div'); message.className = 'el-preset-message';
   message.setAttribute('role', 'status'); body.appendChild(message);
-  const editor = document.createElement('div'); editor.className = 'el-preset-editor'; body.appendChild(editor);
-  let templates = [], previous = null, draft = null, dirty = false, busy = false;
-  let modal;
+  const builtins = globalThis.MeldexDbTopicLayoutPresets?.getTemplates() || [];
+  let templates = api.loadSharedTemplates(), previous = null, draft = null, dirty = false, busy = false, closing = false, selectedBuiltin = false;
+  let libraryVersion = 0;
+  const allTemplates = () => [...builtins, ...templates];
   const report = (text, error = false) => { message.textContent = text; message.dataset.error = String(error); };
   const canEdit = () => _elCanMutateGrid(context.grid, context.options) && context.grid.isConnected && body.isConnected;
   const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないプリセットの変更を破棄しますか？'));
+  const position = () => {
+    if (!body.isConnected || !anchor.isConnected) return;
+    if (typeof positionPopup === 'function') positionPopup(body, anchor.getBoundingClientRect(), { gap: 4 });
+  };
+  const closePopup = () => {
+    body._cleanup(); body.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchor);
+    else if (anchor.isConnected) anchor.focus({ preventScroll: true });
+  };
+  body._requestClose = async () => {
+    if (busy || closing) return false;
+    closing = true;
+    try { if (!await discard()) return false; closePopup(); return true; }
+    finally { closing = false; }
+  };
   const syncControls = () => {
     name.disabled = busy || !draft;
-    selector.disabled = busy || !templates.length;
-    save.disabled = busy || !draft;
+    body.querySelectorAll('button').forEach(btn => { btn.disabled = busy; });
+    save.disabled = busy || !draft || details.hidden;
     remove.disabled = busy || !previous;
-    for (const key of ['duplicate', 'export']) {
-      body.querySelector('[data-e2e-id="entity-layout-preset-' + key + '"]').disabled = busy || !draft;
-    }
+    for (const key of ['duplicate', 'export', 'edit'])
+      actions.querySelector('[data-e2e-id="entity-layout-preset-' + key + '"]').disabled = busy || !draft;
+    actions.querySelector('[data-e2e-id="entity-layout-preset-current"]').disabled = busy || !context.layoutId || context.layoutId === EL_COLUMNS_TAB_ID;
   };
   const render = () => {
     _elCloseEditPopups();
     editor.replaceChildren();
-    if (!draft) return;
+    if (!draft || details.hidden) return;
     const editingDraft = draft;
     _elRenderLayoutBody(editor, context.pivotData, context.entityPath, {
       ...context.options, readOnly: false,
-      layoutDraft: { layout: draft.layout, session: { editMode: true }, persist(mutator) {
+      layoutDraft: { layout: draft.layout, session: { editMode: true }, onChange() {
+        if (!busy && draft === editingDraft && canEdit()) dirty = true;
+      }, persist(mutator) {
         if (busy || draft !== editingDraft || !canEdit()) return null;
         if (mutator(draft.layout) === false) return null;
         dirty = true; return draft.layout;
       } },
     }, context.dbPath, draft.layout.id, render);
+    position();
   };
-  const choose = (template, saved = null) => {
-    previous = saved ? JSON.parse(JSON.stringify(saved)) : null;
+  const choose = (template, saved = null, edit = true, builtin = false) => {
+    selectedBuiltin = builtin;
+    previous = saved && !builtin ? JSON.parse(JSON.stringify(saved)) : null;
     draft = JSON.parse(JSON.stringify(template));
     draft.layout = _elNormalizeLayout(draft.layout);
     name.value = draft.layout.name; dirty = !saved;
-    selector.value = saved?.layout.name || '';
-    report(saved ? '配置や書式を編集し、「保存」で確定します。' : '新しいプリセットを編集し、「保存」で追加します。');
-    render(); syncControls();
+    details.hidden = !edit; body.classList.toggle('is-editing', edit);
+    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'プリセットを選ぶとシートに追加します。');
+    render(); refresh(); syncControls(); position();
+    if (edit) name.focus({ preventScroll: true });
+  };
+  const editTemplate = (template, builtin) => {
+    if (!builtin) { choose(template, template); return; }
+    const copy = JSON.parse(JSON.stringify(template));
+    copy.layout.name = _elMakeDuplicateName(copy.layout.name, allTemplates().map(item => item.layout));
+    choose(copy);
+    report('標準プリセットを複製して編集します。「保存」で追加します。');
   };
   const refresh = () => {
-    selector.replaceChildren();
-    const blank = document.createElement('option'); blank.value = ''; blank.textContent = 'プリセットを選択'; selector.appendChild(blank);
-    templates.forEach(item => { const option = document.createElement('option'); option.value = item.layout.name; option.textContent = item.layout.name; selector.appendChild(option); });
-    selector.value = previous?.layout.name || '';
+    list.replaceChildren();
+    if (!allTemplates().length) {
+      const empty = document.createElement('div'); empty.className = 'el-preset-empty';
+      empty.textContent = '保存済みプリセットはありません'; list.appendChild(empty);
+    }
+    allTemplates().forEach(template => {
+      const builtin = builtins.includes(template);
+      const row = document.createElement('div'); row.className = 'el-preset-item';
+      row.dataset.presetSource = builtin ? 'builtin' : 'user';
+      row.classList.toggle('active', builtin
+        ? selectedBuiltin && draft?.layout.name === template.layout.name
+        : !selectedBuiltin && previous?.layout.name === template.layout.name);
+      row.setAttribute('role', 'none');
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'el-preset-apply';
+      apply.setAttribute('role', 'menuitem'); apply.setAttribute('aria-label', template.layout.name);
+      const preview = document.createElement('span'); preview.className = 'el-preset-preview'; preview.setAttribute('aria-hidden', 'true');
+      const layout = _elNormalizeLayout(template.layout);
+      for (const cell of layout.cells) {
+        const block = document.createElement('span'); block.className = 'el-preset-preview-cell';
+        block.style.left = (cell.x / layout.canvasSize.w * 100) + '%';
+        block.style.top = (cell.y / layout.canvasSize.h * 100) + '%';
+        block.style.width = (cell.w / layout.canvasSize.w * 100) + '%';
+        block.style.height = (cell.h / layout.canvasSize.h * 100) + '%';
+        preview.appendChild(block);
+      }
+      const label = document.createElement('span'); label.textContent = template.layout.name;
+      apply.append(preview, label);
+      if (builtin) apply.setAttribute('aria-description', '標準プリセット');
+      apply.addEventListener('click', async () => {
+        if (canEdit() && await body._requestClose()) _elAddPresetLayout(context, template);
+      });
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'gb-btn gb-btn-icon';
+      const editLabel = template.layout.name + (builtin ? 'を複製して編集' : 'を編集');
+      edit.setAttribute('aria-label', editLabel); edit.title = editLabel;
+      edit.innerHTML = typeof lucide === 'function' ? lucide('pencil', 14) : '編集';
+      edit.addEventListener('click', async () => { if (!busy && await discard() && canEdit()) editTemplate(template, builtin); });
+      row.appendChild(apply);
+      if (builtin) {
+        const badge = document.createElement('span'); badge.className = 'el-preset-badge'; badge.textContent = '標準';
+        row.appendChild(badge);
+      }
+      row.appendChild(edit); list.appendChild(row);
+    });
   };
   const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいプリセット' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
-  const button = (key, label, run, footer = false) => {
-    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn';
-    btn.textContent = label; btn.dataset.e2eId = 'entity-layout-preset-' + key;
+  const button = (key, label, icon, run) => {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn gb-btn-icon';
+    btn.innerHTML = typeof lucide === 'function' ? lucide(icon, 16) : label;
+    btn.title = label; btn.setAttribute('aria-label', label); btn.dataset.e2eId = 'entity-layout-preset-' + key;
     btn.addEventListener('click', async () => {
-      if (busy) return;
+      if (busy || (key !== 'close' && !canEdit())) return;
       try { await run(); } catch (error) { report(error?.message || String(error), true); }
     });
-    if (!footer) actions.appendChild(btn);
+    actions.appendChild(btn);
     return btn;
   };
-  button('new', '追加', async () => { if (await discard()) { choose(newDraft()); } });
-  button('duplicate', '複製', async () => {
+  button('new', '追加', 'plus', async () => { if (await discard() && canEdit()) choose(newDraft()); });
+  button('duplicate', '複製', 'copy', async () => {
     if (!draft || !await discard()) return;
     const copy = JSON.parse(JSON.stringify(draft));
-    copy.layout.name = _elMakeDuplicateName(name.value, templates.map(item => item.layout));
+    copy.layout.name = _elMakeDuplicateName(name.value, allTemplates().map(item => item.layout));
     choose(copy);
   });
-  button('current', '現在のレイアウトから追加', async () => {
+  button('current', '現在のレイアウトから追加', 'layoutTemplate', async () => {
     const layout = _elGetState(context.dbPath)?.layouts.find(item => item.id === context.layoutId);
     if (!layout) { report('先にトピックレイアウトのタブを選んでください', true); return; }
     if (await discard()) choose(api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData)));
   });
-  button('export', 'ファイルに保存', () => {
+  button('edit', '選択中のプリセットを編集', 'pencil', async () => {
+    if (draft && selectedBuiltin) { editTemplate(draft, true); return; }
+    if (draft) { details.hidden = false; body.classList.add('is-editing'); render(); syncControls(); position(); name.focus(); }
+  });
+  button('export', 'ファイルに保存', 'download', () => {
     if (!draft) return;
     const template = JSON.parse(JSON.stringify(draft)); template.layout.name = name.value.trim();
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
     link.download = (template.layout.name || 'プリセット').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
     link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 0);
   });
-  button('import', 'ファイルから読込', () => {
+  button('import', 'ファイルから読込', 'upload', () => {
     const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json';
     input.addEventListener('change', async () => {
       try {
@@ -185144,21 +187017,25 @@ async function _elManageLayoutPresets(context) {
       } catch (error) { report('読み込めません: ' + (error?.message || error), true); }
     }); input.click();
   });
-  const remove = button('delete', '削除', async () => {
+  const remove = button('delete', '削除', 'trash2', async () => {
     if (!previous || !canEdit() || !await cfConfirm('プリセット「' + previous.layout.name + '」を削除しますか？')) return;
     if (!canEdit()) return;
     await persist(null);
   });
   remove.classList.add('danger');
   const persist = async template => {
+    libraryVersion += 1; // 開いた直後の旧読込結果で、保存後の一覧を巻き戻さない。
     busy = true; editor.inert = true;
-    const controls = [...body.querySelectorAll('input, select, button'), save, close];
+    const controls = [...body.querySelectorAll('input, button')];
     controls.forEach(item => { item.disabled = true; });
     try {
       const result = await api.changeSharedTemplateInLibrary(previous, template);
       templates = result.templates;
       if (template) choose(template, template);
-      else { previous = null; draft = null; dirty = false; name.value = ''; render(); }
+      else if (allTemplates().length) {
+        const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+      }
+      else { previous = null; draft = null; dirty = false; name.value = ''; details.hidden = true; body.classList.remove('is-editing'); render(); }
       refresh(); report(template
         ? (result.shared ? 'プリセットを保存しました。' : 'この端末にプリセットを保存しました。')
         : (result.shared ? 'プリセットを削除しました。' : 'この端末のプリセットを削除しました。'));
@@ -185167,45 +187044,72 @@ async function _elManageLayoutPresets(context) {
       syncControls();
     }
   };
-  const save = button('save', '保存', async () => {
+  const save = button('save', '保存', 'save', async () => {
     if (!draft || !canEdit()) return;
     const template = JSON.parse(JSON.stringify(draft));
     template.layout.name = name.value.trim();
     if (!template.layout.name) { report('プリセット名を入力してください', true); name.focus(); return; }
     await persist(template);
-  }, true);
-  const close = button('close', '閉じる', () => modal.close('close'), true);
+  });
+  remove.before(save);
+  const close = button('close', '閉じる', 'x', () => body._requestClose());
+  close.classList.add('el-preset-close');
   name.addEventListener('input', () => { dirty = true; });
-  selector.addEventListener('change', async () => {
-    const selected = selector.value;
-    if (await discard()) {
-      const template = templates.find(item => item.layout.name === selected);
-      if (template) choose(template, template);
+  addLayout.addEventListener('click', async () => {
+    if (canEdit() && await body._requestClose()) _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender);
+  });
+  const childPopupSelector = '.el-edit-popup, .gb-palette, .gb-palette-popup, [aria-modal="true"], dialog[open]';
+  const insideChildPopup = target => !!target?.closest?.(childPopupSelector);
+  const onPointerDown = event => {
+    if (!body.contains(event.target) && !anchor.contains(event.target) && !insideChildPopup(event.target)) body._requestClose();
+  };
+  const onKeyDown = event => {
+    const childOpen = [...document.querySelectorAll(childPopupSelector)]
+      .some(popup => popup.getClientRects().length > 0);
+    if (insideChildPopup(event.target) || childOpen) return;
+    // 見出しのインライン編集は、その入力自身にEscapeの取消を任せる。
+    if (event.isComposing || event.keyCode === 229 || event.target?.closest?.('.el-label-input')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation(); body._requestClose();
     }
-    selector.value = previous?.layout.name || '';
-  });
-  modal = globalThis.GBUI.createModal({
-    id: 'entity-layout-presets', title: 'トピックレイアウトのプリセットを管理', body, footer: [save, close],
-    closeLabel: 'プリセット管理を閉じる',
-    variant: 'standard', initialFocus: selector, returnFocus: document.activeElement,
-    closeOnEsc: true, closeOnOverlay: false,
-    onBeforeClose: async () => {
-      if (busy) return false;
-      if (!await discard()) return false;
-      _elCloseEditPopups(); return true;
-    },
-  });
-  modal.modal.dataset.e2eId = 'entity-layout-presets-dialog';
-  modal.modal.style.width = 'min(1160px, calc(100vw - 24px))';
-  modal.open(); report('プリセットを読み込んでいます…');
-  busy = true; body.inert = true; syncControls();
+    if ((list.contains(event.target) || event.target === addLayout) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [addLayout, ...list.querySelectorAll('button:not(:disabled)')];
+      const index = buttons.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+        : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    }
+  };
+  body._cleanup = () => {
+    document.removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('resize', position);
+    _elCloseEditPopups();
+  };
+  document.body.appendChild(body);
+  anchor.setAttribute('aria-expanded', 'true');
+  document.addEventListener('pointerdown', onPointerDown);
+  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('resize', position);
+  // 標準と端末キャッシュはすぐ使える。共有先の読込で操作や閉じるボタンを塞がない。
+  refresh();
+  if (allTemplates().length) {
+    const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+  } else { report('プリセットを読み込んでいます…'); }
+  syncControls(); position(); addLayout.focus({ preventScroll: true });
+  const initialLibraryVersion = libraryVersion;
   try {
     const library = await api.loadSharedTemplateLibrary();
+    if (!body.isConnected || libraryVersion !== initialLibraryVersion) return;
     templates = library.templates; refresh();
-    if (templates.length) choose(templates[0], templates[0]);
-    else { report('保存済みプリセットはありません。「追加」から作成できます。'); }
-    if (library.error) report('共有先を読み込めませんでした。端末に残っているプリセットを表示しています。', true);
-  } finally { busy = false; body.inert = false; syncControls(); }
+    if (!draft && allTemplates().length) {
+      const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+    }
+    else if (!draft) { report('保存済みプリセットはありません。「追加」から作成できます。'); }
+    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のプリセットを表示しています。', true);
+  } catch (error) { report('プリセットを読み込めません: ' + (error?.message || error), true); }
+  finally { syncControls(); position(); }
 }
 
 function _elShowActionMenu(anchorBtn, items, menuE2eId) {
@@ -185393,7 +187297,7 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     addBtn.dataset.e2eId = 'entity-layout-add';
     addBtn.title = 'トピックレイアウトを追加';
     addBtn.setAttribute('aria-label', 'トピックレイアウトを追加');
-    addBtn.setAttribute('aria-haspopup', 'menu');
+    addBtn.setAttribute('aria-haspopup', 'dialog');
     addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     addBtn.addEventListener('click', () => {
       _elShowAddLayoutMenu(addBtn, { grid, entityPath, dbPath, rerender, pivotData: data, layoutId: activeTab, options });
@@ -185512,7 +187416,7 @@ function _elSnap(value) {
 function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, rerender) {
   const state = _elGetState(dbPath);
   const draft = options?.layoutDraft;
-  const layout = draft?.layout || state?.layouts.find(l => l.id === layoutId);
+  const layout = options?.formLayout || draft?.layout || state?.layouts.find(l => l.id === layoutId);
   const host = document.createElement('div');
   host.className = 'el-host';
   host.dataset.e2eId = 'entity-layout-host';
@@ -185530,7 +187434,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
     if (grid.isConnected && typeof rerender === 'function') rerender();
   };
   const ctx = {
-    grid, data, entityPath, options, dbPath, layout, editMode,
+    grid, data, entityPath, options, dbPath, layout, editMode, session,
     readOnly: options?.readOnly === true,
     rerender: safeRerender,
     propTypes: options?.propTypes
@@ -185556,13 +187460,18 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
 
   const canvas = document.createElement('div');
   canvas.className = 'el-canvas';
+  canvas._elContext = ctx;
   canvas.style.width = layout.canvasSize.w + 'px';
   canvas.style.height = layout.canvasSize.h + 'px';
   viewport.appendChild(canvas);
   if (typeof _elApplyLayoutTheme === 'function') _elApplyLayoutTheme(canvas, layout);
 
-  layout.cells.forEach(cell => {
-    canvas.appendChild(_elBuildCellElement(cell, ctx, canvas));
+  const ordered = layout.formConfig && globalThis.MeldexDbFormModel ? MeldexDbFormModel.orderedCells(layout) : layout.cells;
+  ordered.forEach(cell => {
+    const element = _elBuildCellElement(cell, ctx, canvas);
+    element.style.zIndex = String(layout.cells.indexOf(cell));
+    if (session.selectedIds?.includes(cell.id)) element.classList.add('el-selected');
+    canvas.appendChild(element);
   });
 
   if (layout.cells.length === 0) {
@@ -185596,11 +187505,18 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
 
 function _elClearCellSelection(canvas) {
   canvas.querySelectorAll('.el-cell.el-selected').forEach(el => el.classList.remove('el-selected'));
+  if (canvas._elContext?.session) canvas._elContext.session.selectedIds = [];
 }
 
-function _elSelectCellElement(canvas, cellEl) {
-  _elClearCellSelection(canvas);
-  cellEl.classList.add('el-selected');
+function _elSelectCellElement(canvas, cellEl, additive = false) {
+  const context = canvas._elContext;
+  const cell = context?.layout.cells.find(item => item.id === cellEl.dataset.cellId);
+  const selected = !additive || !cellEl.classList.contains('el-selected');
+  if (!additive && !cellEl.classList.contains('el-selected')) _elClearCellSelection(canvas);
+  const elements = [...canvas.querySelectorAll('.el-cell')].filter(element => element === cellEl
+    || cell?.groupId && context.layout.cells.find(item => item.id === element.dataset.cellId)?.groupId === cell.groupId);
+  elements.forEach(element => element.classList.toggle('el-selected', selected));
+  if (context?.session) context.session.selectedIds = [...canvas.querySelectorAll('.el-selected')].map(element => element.dataset.cellId);
 }
 
 /* セル1件のDOMを構築する（枠 + 内容 + 編集モードの操作チローム） */
@@ -185624,6 +187540,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   // --- 以下は編集モード専用のチローム ---
   el.classList.add('el-editable');
+  el.classList.toggle('el-cell-locked', !!cell.locked);
   el.tabIndex = 0;
   el.setAttribute('role', 'group');
   const typeLabel = cell.type === 'field' ? (cell.prop || '列')
@@ -185634,7 +187551,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   el.setAttribute('aria-label', typeLabel + 'のレイアウトセル');
   // フォーカスだけでも選択状態にして、ホバーを使えないキーボード操作から
   // 設定・削除ボタンへ Tab で到達できるようにする。
-  el.addEventListener('focus', () => _elSelectCellElement(canvas, el));
+  el.addEventListener('focus', () => { if (!el.classList.contains('el-selected')) _elSelectCellElement(canvas, el); });
 
   // 見出しセルはダブルクリックでテキストを直接編集する
   if (cell.type === 'label') {
@@ -185665,6 +187582,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
+  removeBtn.disabled = !!cell.locked;
   removeBtn.className = 'el-cell-remove';
   removeBtn.dataset.e2eId = 'entity-layout-cell-remove';
   removeBtn.title = 'セルを削除';
@@ -185684,6 +187602,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'el-cell-resize';
+  resizeHandle.hidden = !!cell.locked;
   resizeHandle.dataset.e2eId = 'entity-layout-cell-resize';
   resizeHandle.setAttribute('aria-hidden', 'true');
   el.appendChild(resizeHandle);
@@ -185704,7 +187623,8 @@ function _elBuildCellElement(cell, ctx, canvas) {
     const resizing = e.target === resizeHandle;
     e.preventDefault();
     e.stopPropagation();
-    _elSelectCellElement(canvas, el);
+    _elSelectCellElement(canvas, el, e.shiftKey || e.ctrlKey || e.metaKey);
+    if (cell.locked || e.shiftKey || e.ctrlKey || e.metaKey) return;
     _elBeginCellPointerOp(e, el, cell, ctx, canvas, resizing ? 'resize' : 'move');
   });
 
@@ -185763,6 +187683,8 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
   const canvasH = ctx.layout.canvasSize.h;
   let latest = { x: cell.x, y: cell.y, w: cell.w, h: cell.h };
   let moved = false;
+  const selected = mode === 'move' ? ctx.layout.cells.filter(item => !item.locked && (ctx.session?.selectedIds || []).includes(item.id)) : [];
+  const moving = selected.length ? selected.map(item => ({ ...item })) : [{ ...cell }];
   el.classList.add('el-dragging');
   try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 
@@ -185772,11 +187694,18 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
     if (!moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
     moved = true;
     if (mode === 'move') {
-      const x = Math.max(0, Math.min(canvasW - start.w, _elSnap(start.x + dx)));
-      const y = Math.max(0, Math.min(canvasH - start.h, _elSnap(start.y + dy)));
+      const left = Math.min(...moving.map(item => item.x)), top = Math.min(...moving.map(item => item.y));
+      const right = Math.max(...moving.map(item => item.x + item.w)), bottom = Math.max(...moving.map(item => item.y + item.h));
+      const moveX = Math.max(-left, Math.min(canvasW - right, _elSnap(dx)));
+      const moveY = Math.max(-top, Math.min(canvasH - bottom, _elSnap(dy)));
+      const x = start.x + moveX, y = start.y + moveY;
       latest = { ...latest, x, y };
       el.style.left = x + 'px';
       el.style.top = y + 'px';
+      moving.forEach(item => {
+        const node = [...canvas.querySelectorAll('.el-cell')].find(node => node.dataset.cellId === item.id);
+        if (node) { node.style.left = item.x + moveX + 'px'; node.style.top = item.y + moveY + 'px'; }
+      });
     } else {
       const w = Math.max(EL_CELL_MIN_SIZE, Math.min(canvasW - start.x, _elSnap(start.w + dx)));
       const h = Math.max(EL_CELL_MIN_SIZE, Math.min(canvasH - start.y, _elSnap(start.h + dy)));
@@ -185804,16 +187733,26 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
         target.y = latest.y;
         target.w = latest.w;
         target.h = latest.h;
+        if (mode === 'move') moving.forEach(item => {
+          const other = layout.cells.find(candidate => candidate.id === item.id);
+          if (other) { other.x = item.x + latest.x - start.x; other.y = item.y + latest.y - start.y; }
+        });
       }
     );
     if (!persisted) {
-      el.style.left = start.x + 'px';
-      el.style.top = start.y + 'px';
+      moving.forEach(item => {
+        const node = [...canvas.querySelectorAll('.el-cell')].find(node => node.dataset.cellId === item.id);
+        if (node) { node.style.left = item.x + 'px'; node.style.top = item.y + 'px'; }
+      });
       el.style.width = start.w + 'px';
       el.style.height = start.h + 'px';
       return;
     }
     cell.x = latest.x; cell.y = latest.y; cell.w = latest.w; cell.h = latest.h;
+    if (mode === 'move') moving.forEach(item => {
+      const other = ctx.layout.cells.find(candidate => candidate.id === item.id);
+      if (other && other !== cell) { other.x = item.x + latest.x - start.x; other.y = item.y + latest.y - start.y; }
+    });
     // サイズ変更は文字の自動フィットとチャートの描画サイズに影響するため再描画で追従させる
     if (mode === 'resize') ctx.rerender();
   };
@@ -185826,21 +187765,32 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
 
 function _elCloseEditPopups() {
   document.querySelectorAll('.el-edit-popup').forEach(el => {
+    if (typeof el._requestClose === 'function') { el._requestClose(); return; }
     if (typeof el._cleanup === 'function') el._cleanup();
     el.remove();
   });
 }
 
-function _elAttachPopupCommon(popup, anchorBtn) {
+function _elAttachPopupCommon(popup, anchorBtn, options = {}) {
   document.body.appendChild(popup);
   const cleanupFns = [];
   popup._cleanup = () => { cleanupFns.splice(0).forEach(off => off()); };
-  const close = () => {
+  const remove = () => {
     popup._cleanup();
     popup.remove();
     if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorBtn);
     else { try { anchorBtn?.focus?.(); } catch { /* ignore */ } }
+    return true;
   };
+  let closing = null;
+  const close = () => {
+    if (!options.beforeClose) return remove();
+    if (closing) return closing;
+    closing = Promise.resolve().then(options.beforeClose).then(allowed => allowed ? remove() : false).finally(() => { closing = null; });
+    return closing;
+  };
+  if (options.beforeClose) popup._requestClose = close;
+  if (options.childSelector) popup._popupChildSelector = options.childSelector;
   if (typeof positionPopup === 'function') {
     positionPopup(popup, anchorBtn.getBoundingClientRect(), { gap: 4 });
   } else if (typeof clampPopupToViewport === 'function') {
@@ -185852,9 +187802,11 @@ function _elAttachPopupCommon(popup, anchorBtn) {
   setTimeout(() => {
     if (!popup.isConnected) return;
     const onPointerDown = (ev) => {
+      if (options.childSelector && ev.target.closest?.(options.childSelector)) return;
       if (!popup.contains(ev.target) && ev.target !== anchorBtn && !anchorBtn.contains(ev.target)) close();
     };
     const onKeyDown = (ev) => {
+      if (options.childSelector && [...document.querySelectorAll(options.childSelector)].some(child => child.getClientRects().length)) return;
       if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
     };
     document.addEventListener('pointerdown', onPointerDown);
@@ -185882,7 +187834,12 @@ function _elAddCell(ctx, partialCell, statusLabel) {
   const h = partialCell.h || 90;
   ctx.persist('トピックレイアウト: セル追加', statusLabel || '', (layout) => {
     const pos = _elNextCellPosition(layout, w, h);
+    if (partialCell.type === 'subform') {
+      pos.x = 20; pos.y = Math.max(20, ...layout.cells.map(cell => cell.y + cell.h + 20));
+      layout.canvasSize.h = Math.min(EL_CANVAS_MAX, Math.max(layout.canvasSize.h, pos.y + h + 20));
+    }
     layout.cells.push(_elNormalizeCell({ ...partialCell, ...pos, w, h }, layout.canvasSize.w, layout.canvasSize.h));
+    if (partialCell.type === 'field' && layout.formConfig && !layout.formConfig.fields.includes(partialCell.prop)) layout.formConfig.fields.push(partialCell.prop);
   });
   ctx.rerender();
 }
@@ -185894,7 +187851,7 @@ function _elShowFieldPickerMenu(anchorBtn, ctx) {
   menu.className = 'gb-context-menu el-edit-popup el-field-picker';
   menu.dataset.e2eId = 'entity-layout-field-picker';
   menu.setAttribute('role', 'menu');
-  const props = Object.keys(ctx.data?.properties || {});
+  const props = [...new Set([...Object.keys(ctx.data?.properties || {}), ...Object.keys(ctx.propTypes || {})])];
   if (props.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'el-field-picker-empty';
@@ -186009,6 +187966,7 @@ function _elBuildEditToolbar(ctx) {
     _elShowCanvasSizePopup(sizeBtn, ctx);
   });
   bar.appendChild(sizeBtn);
+  globalThis.MeldexDbFormDesigner?.addTools(bar, ctx);
 
   return bar;
 }
@@ -186053,21 +188011,28 @@ function _elBuildFieldCellContent(cell, ctx) {
   const wrap = document.createElement('div');
   wrap.className = 'el-cell-content';
   const propName = String(cell.prop || '');
+  const formConfig = ctx.layout?.formConfig && globalThis.MeldexDbFormModel?.forLayout(ctx.layout);
 
   const caption = document.createElement('div');
   caption.className = 'el-cell-caption';
   caption.innerHTML = _elPropIconHtml(propName, ctx.propTypes, 13);
   const captionText = document.createElement('span');
   captionText.className = 'el-cell-caption-text';
-  captionText.textContent = propName || '(列未設定)';
+  captionText.textContent = formConfig?.labels?.[propName] || propName || '(列未設定)';
+  if (formConfig?.required?.includes(propName)) captionText.textContent += ' *';
   caption.appendChild(captionText);
   wrap.appendChild(caption);
 
   const body = document.createElement('div');
   body.className = 'el-cell-body cell-values';
-  if (propName && ctx.data?.properties && Object.prototype.hasOwnProperty.call(ctx.data.properties, propName)) {
-    if (typeof renderEntityPropValuesInto === 'function') {
-      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: ctx.readOnly === true });
+  const hasColumn = propName && (Object.prototype.hasOwnProperty.call(ctx.data?.properties || {}, propName)
+    || Object.prototype.hasOwnProperty.call(ctx.propTypes || {}, propName));
+  if (hasColumn) {
+    if (globalThis.MeldexDbFormRuntime?.renderField(body, cell, ctx)) {
+      // Both form views and topic layouts use the same rule-aware input controls.
+    } else if (typeof renderEntityPropValuesInto === 'function') {
+      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes,
+        { readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName) });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
       values.forEach(val => {
@@ -186082,10 +188047,75 @@ function _elBuildFieldCellContent(cell, ctx) {
     missing.className = 'el-cell-missing';
     missing.textContent = 'この列はシートにありません: ' + propName;
     body.appendChild(missing);
+    if (!ctx.options?.layoutDraft && ctx.dbPath && !ctx.readOnly && _elCanMutateGrid(ctx.grid, ctx.options)
+        && !(typeof isProductionManagementWriteBlocked === 'function' && isProductionManagementWriteBlocked(ctx.dbPath, ctx.options?.ctx))) {
+      const add = document.createElement('button'); add.type = 'button';
+      add.className = 'gb-btn el-cell-add-column'; add.dataset.e2eId = 'entity-layout-add-missing-column';
+      add.textContent = '列を追加';
+      add.setAttribute('aria-label', '「' + propName + '」列をシートに追加');
+      add.title = 'この項目に対応する列をシートに追加します';
+      const message = document.createElement('div'); message.className = 'el-cell-missing'; message.setAttribute('role', 'status');
+      body.append(add, message);
+      add.addEventListener('pointerdown', event => event.stopPropagation());
+      add.addEventListener('click', async event => {
+        event.stopPropagation();
+        if (add.disabled || !_elCanMutateGrid(ctx.grid, ctx.options)) return;
+        add.disabled = true; message.textContent = '列を追加しています…';
+        let saved = false;
+        try {
+          const result = await _elAddMissingColumn(ctx, cell);
+          if (!result) { message.textContent = ''; return; }
+          saved = true;
+          const fresh = await apiFetch('/entity?path=' + encodeURIComponent(ctx.entityPath), { silentError: true });
+          if (!ctx.grid.isConnected) return;
+          ctx.data.properties = fresh.properties || {};
+          // 空の列も追加直後からシート上の項目として表示する。
+          if (!Object.prototype.hasOwnProperty.call(ctx.data.properties, propName)) ctx.data.properties[propName] = [];
+          Object.assign(ctx.propTypes, result.propertyTypes);
+          ctx.rerender();
+          if (typeof showStatus === 'function') showStatus('列を追加しました: ' + propName);
+        } catch (error) {
+          message.textContent = (saved ? '列は追加済みです。再表示できませんでした: ' : '列を追加できません: ')
+            + (error?.userMessage || error?.message || error);
+          if (saved) add.textContent = '再表示';
+        } finally { add.disabled = false; }
+      });
+    }
   }
   wrap.appendChild(body);
   globalThis.MeldexDbTopicLayoutStyle?.applyCaptionMode?.(caption, captionText, body, cell, propName || '未設定の列');
   return wrap;
+}
+
+// 同じシートの複数セルから同時に追加しても、最新メタデータを読み直して1列ずつ確定する。
+const _elColumnAddQueues = new Map();
+function _elAddMissingColumn(ctx, cell) {
+  const key = String(ctx.dbPath || '').replace(/\\/g, '/');
+  const previous = _elColumnAddQueues.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const allowed = () => ctx.grid.isConnected && _elCanMutateGrid(ctx.grid, ctx.options)
+      && !ctx.options?.layoutDraft
+      && !(typeof isProductionManagementWriteBlocked === 'function' && isProductionManagementWriteBlocked(ctx.dbPath, ctx.options?.ctx));
+    if (!allowed()) return null;
+    const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(ctx.dbPath), { silentError: true });
+    if (!allowed()) return null;
+    const schemaCtx = { dbPath: ctx.dbPath, dbMetadata: metadata };
+    const name = String(cell.prop || '').trim();
+    if (!name) throw new Error('列名が設定されていません');
+    if (!Object.prototype.hasOwnProperty.call(metadata.property_types || {}, name)) {
+      const allowedTypes = ['text', 'number', 'checkbox', 'date', 'image', 'color', 'link', 'select', 'multi-select'];
+      const type = allowedTypes.includes(cell.columnType) ? cell.columnType : 'text';
+      const config = { type };
+      if (['select', 'multi-select'].includes(type) && Array.isArray(cell.columnOptions))
+        config.options = [...new Set(cell.columnOptions.filter(option => typeof option === 'string' && option))];
+      const saved = await setPropertyType(ctx.dbPath, name, config, schemaCtx);
+      if (saved === false) throw new Error('このシートには列を追加できません');
+    }
+    return { propertyTypes: getPropertyTypes(ctx.dbPath, schemaCtx) || {} };
+  });
+  _elColumnAddQueues.set(key, pending);
+  pending.finally(() => { if (_elColumnAddQueues.get(key) === pending) _elColumnAddQueues.delete(key); }).catch(() => {});
+  return pending;
 }
 
 /* label セル: 固定テキスト（見出し・キャプション）。編集はダブルクリック（canvas側で配線）。 */
@@ -186181,6 +188211,7 @@ function _elBuildImageCellContent(cell, ctx, canvasEl) {
 /* セル内容のディスパッチ。未実装タイプはタイプ名のプレースホルダを出す
    （通常は到達しない。テンプレート適用等で先行データが来ても壊れないための保険）。 */
 function _elBuildCellContent(cell, ctx, canvasEl) {
+  if (cell.type === 'subform' && globalThis.MeldexDbFormSubform) return MeldexDbFormSubform.render(cell, ctx);
   if (cell.type === 'field') return _elBuildFieldCellContent(cell, ctx);
   if (cell.type === 'label') return _elBuildLabelCellContent(cell, ctx);
   if (cell.type === 'divider') return _elBuildDividerCellContent(cell, ctx);
@@ -186269,7 +188300,8 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       target.style = snapshot;
     });
   };
-  openFormatPopup(anchorEl, {
+  const popup = openFormatPopup(anchorEl, {
+    className: ctx.options?.layoutDraft ? 'el-edit-popup' : '',
     fields: EL_FORMAT_FIELDS,
     values,
     onReset: () => {
@@ -186282,6 +188314,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
       if (value === '' || value == null || value === false) delete cell.style?.[prop];
       else { if (!_elIsObj(cell.style)) cell.style = {}; cell.style[prop] = value; }
+      ctx.options?.layoutDraft?.onChange?.();
       // ポップアップを開いたまま即時反映（再描画はしない）
       if (cellEl?.isConnected) {
         cellEl.removeAttribute('style');
@@ -186296,6 +188329,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       persistTimer = setTimeout(flushPersist, 300);
     },
   });
+  if (ctx.options?.layoutDraft && popup) popup._cleanup = () => closeAllFormatPopups();
 }
 
 /* セル1件へのパッチを永続化する共通ヘルパー */
@@ -186438,6 +188472,9 @@ function _elShowDividerColorPopup(anchorBtn, ctx, cell) {
 
 /* セルの設定入口（歯車ボタン）。タイプ別に適切な設定UIを開く。 */
 function _elOpenCellSettings(anchorBtn, cell, ctx, cellEl) {
+  if (cell.type === 'subform' && globalThis.MeldexDbFormSubform) {
+    MeldexDbFormSubform.settings(anchorBtn, cell, ctx); return;
+  }
   if (cell.type === 'image') {
     _elShowImageCellPopup(anchorBtn, ctx, cell);
     return;
@@ -197866,6 +199903,189 @@ function openCalendar() {
 
 ;
 
+/* === gb-chat-polls.js === */
+;
+/* メッセージ内のversion 1アンケート。旧版でもMarkdownとして読める追加形式。 */
+(function () {
+  'use strict';
+  const safeId = /^[A-Za-z0-9_-]{8,80}$/;
+  function normalize(value) {
+    const kind = value?.kind === undefined ? 'survey' : value.kind;
+    if (!value || value.version !== 1 || typeof value.id !== 'string' || !safeId.test(value.id) || !['survey', 'quiz', 'vote'].includes(kind)
+      || typeof value.question !== 'string' || !value.question.trim() || value.question.length > 1000
+      || !Array.isArray(value.options) || value.options.length < 2 || value.options.length > 4
+      || value.options.some(item => typeof item !== 'string' || !item.trim() || item.length > 200)) throw new Error('アンケートの形式が不正です');
+    const poll = { version: 1, id: value.id, kind, question: value.question.trim(), options: value.options.map(item => item.trim()), anonymous: kind === 'vote' || value.anonymous !== false };
+    if (new Set(poll.options).size !== poll.options.length) throw new Error('選択肢を重複させないでください');
+    if (poll.kind === 'quiz') {
+      if (poll.options.length !== 4 || !Number.isInteger(value.answer) || value.answer < 0 || value.answer > 3) throw new Error('四択クイズの正解が不正です');
+      poll.answer = value.answer;
+    }
+    return poll;
+  }
+  function extract(text) {
+    const match = String(text || '').match(/^```meldex-poll\s*\n([\s\S]*?)\n```/m);
+    if (!match) throw new Error('アンケートが見つかりません');
+    return normalize(JSON.parse(match[1]));
+  }
+  function result(poll, ballots, voter) {
+    const counts = poll.options.map(() => 0);
+    let choice = null;
+    ballots.forEach(([token, ballot]) => {
+      if (!ballot || ballot.version !== 1 || !Number.isInteger(ballot.choice) || ballot.choice < 0 || ballot.choice >= counts.length) throw new Error('投票データを読み込めません。更新して再試行してください');
+      counts[ballot.choice]++;
+      if (token === voter) choice = ballot.choice;
+    });
+    const total = counts.reduce((a, b) => a + b, 0);
+    const output = { ok: true, counts, total, choice, leaders: counts.map((n, i) => total && n === Math.max(...counts) ? i : -1).filter(i => i >= 0) };
+    if (choice !== null && poll.kind === 'quiz') Object.assign(output, { answer: poll.answer, correct: choice === poll.answer });
+    return output;
+  }
+  function randomId() { return crypto.randomUUID().replaceAll('-', ''); }
+  function tokenFor(key) {
+    const storageKey = 'chat-poll-voter:' + key;
+    let token = localStorage.getItem(storageKey);
+    if (!safeId.test(token || '')) { token = randomId(); localStorage.setItem(storageKey, token); }
+    return token;
+  }
+  function createCard(value, context = {}) {
+    let poll;
+    try { poll = normalize(value); } catch { return null; }
+    const card = document.createElement('section');
+    card.className = 'chat-poll';
+    card.setAttribute('aria-label', poll.kind === 'quiz' ? '四択クイズ' : 'アンケート');
+    const title = document.createElement('strong');
+    title.textContent = poll.question;
+    const hint = document.createElement('small');
+    hint.textContent = context.message ? (poll.anonymous ? '無記名・同じブラウザーから1票' : '同じブラウザーから1票') : '選択するとAIへの回答を送信します';
+    const status = document.createElement('div');
+    status.setAttribute('role', 'status');
+    const choices = document.createElement('div');
+    choices.className = 'chat-poll-choices';
+    const footer = document.createElement('div');
+    footer.className = 'chat-poll-footer';
+    footer.appendChild(status);
+    card.append(title, hint, choices, footer);
+    let busy = false;
+    let state = null;
+    let aiChoice = null;
+    let requestVersion = 0;
+    let voter = '';
+    const room = context.room;
+    const messageId = context.message?.id;
+    // 非同期の回答が別ルーム・別ワークスペースに流れ込まないよう、入口を固定する。
+    const endpoint = context.message ? _chatApiPath('/collab/poll') : '';
+    const payload = context.message ? _chatPostPayload({ room, message_id: messageId, from: getUsername() }) : null;
+    try { if (endpoint) voter = tokenFor(endpoint + ':' + room + ':' + messageId + ':' + poll.id); }
+    catch { status.textContent = 'ブラウザーの保存領域を利用できないため回答できません'; busy = true; }
+    function paint(next) {
+      state = next;
+      choices.replaceChildren();
+      poll.options.forEach((option, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gb-btn chat-poll-choice';
+        button.textContent = option + (next ? ` — ${next.counts[index]}票` : '');
+        button.disabled = busy || next?.choice != null || aiChoice != null;
+        button.setAttribute('aria-pressed', (next?.choice ?? aiChoice) === index ? 'true' : 'false');
+        button.addEventListener('click', () => answer(index));
+        choices.appendChild(button);
+      });
+      if (next) {
+        status.textContent = `${next.total}票`;
+        if (next.choice != null) status.textContent += '・回答済み';
+        if (typeof next.correct === 'boolean') status.textContent += next.correct ? '・正解！' : `・正解: ${poll.options[next.answer]}`;
+        if (poll.kind === 'vote' && next.total) status.textContent += next.leaders.length > 1 ? '・同票' : `・最多: ${poll.options[next.leaders[0]]}`;
+      }
+      if (aiChoice != null) status.textContent = '回答送信済み';
+    }
+    async function refresh() {
+      if (!endpoint || !voter || busy) return;
+      const version = ++requestVersion;
+      try {
+        const query = new URLSearchParams({ room, message_id: messageId, voter });
+        const next = await apiFetch(endpoint + (endpoint.includes('?') ? '&' : '?') + query);
+        if (version === requestVersion) paint(next);
+      } catch (error) { if (version === requestVersion) status.textContent = '集計を取得できません: ' + (error?.message || error); }
+    }
+    async function answer(index) {
+      if (busy || state?.choice != null || aiChoice != null) return;
+      ++requestVersion;
+      busy = true; paint(state);
+      let failure = '';
+      try {
+        if (endpoint) {
+          state = await apiPost(endpoint, { ...payload, voter, choice: index });
+        } else {
+          const input = document.getElementById('chat-input');
+          if (!input || input.value.trim() || (typeof _chatState !== 'undefined' && _chatState.streaming)) throw new Error('入力中のメッセージを送信してから回答してください');
+          input.value = `「${poll.question}」への回答: ${poll.options[index]}`;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          if (await chatSend({ fromButton: true }) === false) throw new Error('回答を送信できませんでした。入力欄から再送信してください');
+          aiChoice = index;
+        }
+      } catch (error) { failure = '回答できません: ' + (error?.message || error); }
+      finally { busy = false; paint(state); if (failure) status.textContent = failure; }
+    }
+    paint(null);
+    if (endpoint) {
+      const refreshButton = document.createElement('button');
+      refreshButton.type = 'button'; refreshButton.className = 'gb-btn gb-btn-xs'; refreshButton.textContent = '集計を更新';
+      refreshButton.addEventListener('click', refresh); footer.appendChild(refreshButton);
+      queueMicrotask(refresh);
+    }
+    return card;
+  }
+  function openComposer() {
+    if (typeof _teamCurrentRoom === 'undefined' || !_teamCurrentRoom) { showStatus('先にルームを選択してください', true); return; }
+    const room = _teamCurrentRoom;
+    const draftId = randomId();
+    const endpoint = _chatApiPath('/collab/send');
+    const basePayload = _chatPostPayload({ room, from: getUsername() });
+    const overlay = document.createElement('div');
+    overlay.className = 'gb-dialog-overlay chat-poll-dialog-overlay';
+    const dialog = document.createElement('form');
+    dialog.className = 'gb-dialog chat-poll-dialog';
+    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', 'アンケートを作成');
+    dialog.innerHTML = '<h3>アンケートを作成</h3><label>種類<select name="kind" class="gb-input"><option value="survey">アンケート</option><option value="quiz">四択クイズ</option><option value="vote">無記名投票・多数決</option></select></label><label>質問<input name="question" class="gb-input" maxlength="1000" required></label>'
+      + '<div class="chat-poll-option-fields">' + [1, 2, 3, 4].map(i => `<label>選択肢${i}<input name="option${i}" class="gb-input" maxlength="200" ${i < 3 ? 'required' : ''}></label>`).join('') + '</div>'
+      + '<label data-quiz-answer hidden>正解<select name="answer" class="gb-input"><option value="0">選択肢1</option><option value="1">選択肢2</option><option value="2">選択肢3</option><option value="3">選択肢4</option></select></label><p>回答者名は記録しません。同じブラウザーから1票です。</p><div role="status"></div><div class="chat-poll-dialog-actions"><button type="button" class="gb-btn" data-cancel>キャンセル</button><button type="submit" class="gb-btn gb-btn-primary">投稿</button></div>';
+    const previousFocus = document.activeElement;
+    const close = () => { overlay.remove(); previousFocus?.focus?.(); };
+    dialog.querySelector('[data-cancel]').addEventListener('click', close);
+    dialog.elements.kind.addEventListener('change', () => {
+      const quiz = dialog.elements.kind.value === 'quiz';
+      dialog.querySelector('[data-quiz-answer]').hidden = !quiz;
+      dialog.elements.option3.required = quiz; dialog.elements.option4.required = quiz;
+    });
+    dialog.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); close(); }
+      if (event.key === 'Tab') {
+        const fields = Array.from(dialog.querySelectorAll('input,select,button')).filter(el => !el.closest('[hidden]') && !el.disabled);
+        const next = (fields.indexOf(document.activeElement) + (event.shiftKey ? -1 : 1) + fields.length) % fields.length;
+        event.preventDefault(); fields[next]?.focus();
+      }
+    });
+    dialog.addEventListener('submit', async event => {
+      event.preventDefault();
+      const submit = dialog.querySelector('[type="submit"]');
+      if (submit.disabled) return;
+      try {
+        const options = [1, 2, 3, 4].map(i => dialog.elements['option' + i].value.trim());
+        const poll = normalize({ version: 1, id: draftId, kind: dialog.elements.kind.value, question: dialog.elements.question.value, options: options.filter(Boolean), answer: Number(dialog.elements.answer.value), anonymous: true });
+        submit.disabled = true;
+        await apiPost(endpoint, { ...basePayload, text: '```meldex-poll\n' + JSON.stringify(poll) + '\n```' });
+        close();
+        if (_teamCurrentRoom === room) await loadTeamMessages();
+      } catch (error) { dialog.querySelector('[role="status"]').textContent = String(error?.message || error); submit.disabled = false; }
+    });
+    overlay.appendChild(dialog); document.body.appendChild(overlay); dialog.elements.question.focus();
+  }
+  window.MeldexChatPolls = { normalize, extract, result, createCard, openComposer, safeId };
+})();
+
+;
+
 /* === gb-chat-markdown.js === */
 ;
 /* gb-chat-markdown.part01.js: チャット本文のMarkdown描画（見出し/表/コード/リンク要素の生成）
@@ -198501,6 +200721,12 @@ function openCalendar() {
           i += 1;
         }
         if (i < lines.length) i += 1;
+        if (lang === 'meldex-poll' && global.MeldexChatPolls) {
+          try {
+            const card = global.MeldexChatPolls.createCard(JSON.parse(codeLines.join('\n')), options?.pollContext);
+            if (card) { root.appendChild(card); continue; }
+          } catch { /* 未知の形式は元のコードブロックとして残す。 */ }
+        }
         const pre = document.createElement('pre');
         const code = document.createElement('code');
         if (lang) code.dataset.language = lang;
@@ -198577,7 +200803,9 @@ function openCalendar() {
       root.appendChild(p);
     }
 
-    if (global.localStorage?.getItem?.('note-heading-indent') !== '0') {
+    let headingIndent = true;
+    try { headingIndent = global.localStorage?.getItem?.('note-heading-indent') !== '0'; } catch { /* 保存領域を使えなくても本文と回答ボタンは描画する。 */ }
+    if (headingIndent) {
       _applyChatHeadingSections(root);
     }
     container.replaceChildren(root);
@@ -199300,6 +201528,7 @@ const CHAT_CLI_MODEL_CATALOG = {
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
@@ -199311,8 +201540,8 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
-  gemini: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001'],
+  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
+  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
   openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
@@ -199335,9 +201564,10 @@ const CHAT_CLI_PROVIDERS = {
   antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 7;
+const CHAT_MODELS_CACHE_VERSION = 8;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
+    'gemini-4-argon': { input: 4, output: 20 },
     'gemini-3.8-flash': { input: 1.5, output: 7.5 },
     'gemini-3.7-flash': { input: 1.5, output: 7.5 },
     'gemini-3.6-flash': { input: 1.5, output: 7.5 },
@@ -199347,6 +201577,7 @@ const CHAT_COST_TABLE_PER_MILLION = {
     'gemini-2.5-pro': { input: 1.25, output: 10.00 },
   },
   anthropic: {
+    'claude-haiku-5-5': { input: 0.5, output: 2.5 },
     'claude-fable-5-1': { input: 10, output: 50 },
     'claude-opus-5-5': { input: 4, output: 20 },
     'claude-sonnet-5-5': { input: 2, output: 10 },
@@ -200785,8 +203016,8 @@ function _buildTeamMessageRow(m, me) {
   const div = document.createElement('div');
   div.className = 'chat-message-bubble chat-message-bubble-team';
   div.style.cssText = (isMine
-    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:6px 10px;border-radius:10px 2px 10px 10px;'
-    : 'background:var(--bg3);color:var(--fg);padding:6px 10px;border-radius:2px 10px 10px 10px;')
+    ? 'background:var(--chat-user-bg, var(--accent));color:var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)));padding:6px 10px;border-radius:10px 2px 10px 10px;'
+    : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:6px 10px;border-radius:2px 10px 10px 10px;')
     + 'font-size:13px;user-select:text;cursor:text;';
   // 名前（自分以外）
   if (!isMine) {
@@ -200814,6 +203045,9 @@ function _buildTeamMessageRow(m, me) {
     else textEl.textContent = m.text;
   }
   div.appendChild(textEl);
+  if (window.MeldexChatPolls && String(m.text || '').includes('```meldex-poll')) {
+    renderChatMarkdown(textEl, m.text, { role: isMine ? 'user' : 'assistant', pollContext: { message: m, room: _teamCurrentRoom } });
+  }
   // タイムスタンプ
   const timeEl = document.createElement('div');
   timeEl.style.cssText = 'font-size:9px;opacity:0.6;text-align:right;margin-top:2px;';
@@ -202634,10 +204868,10 @@ function chatAddMessage(role, content, options = {}) {
   const div = document.createElement('div');
   div.className = 'chat-message-bubble chat-message-bubble-llm chat-copy-body' + (isControl ? ' is-control' : (isUser ? ' is-user' : ' is-assistant'));
   div.style.cssText = isUser
-    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
+    ? 'background:var(--chat-user-bg, var(--accent));color:var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)));padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
     : (isControl
       ? 'background:var(--bg2);color:var(--fg2);padding:8px 12px;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;'
-      : 'background:var(--bg3);color:var(--fg);padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
+      : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
   // スタンプのみメッセージの判定
   const _isStructured = Array.isArray(content);
   const _stampOnly = !_isStructured && typeof isStampOnly === 'function' && isStampOnly(plainContent);
@@ -204288,6 +206522,7 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
     prompt += `\n## このチャットの現在の対象\nパス: ${promptTargetPath}\nこのチャットはこのファイルまたはフォルダに関する会話です。内容を参照する場合、ファイルならread_file、フォルダならbrowse/search/read_project_overviewを使ってください。\n`;
   }
 
+  prompt += '\n質問を選択式で尋ねる場合は、meldex-pollという言語名のコードブロックにJSONを書くと回答ボタンになる。形式は {"version":1,"id":"質問ごとに異なる8〜80文字の英数字ID","kind":"survey","question":"質問","options":["選択肢1","選択肢2"],"anonymous":true}。選択肢は2〜4個。四択クイズはkindをquizにしてanswerへ0始まりの正解番号を入れる。回答はユーザーメッセージとして届く。\n';
   return prompt;
 }
 
@@ -210661,7 +212896,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     header.appendChild(quote);
     const bubble = document.createElement('div');
     bubble.className = 'chat-copy-body chat-message-bubble chat-message-bubble-cli';
-    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--accent)' : 'var(--bg3)'};color:${isUser ? 'var(--ui-accent-fg, var(--ui-fg-strong))' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
+    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--chat-user-bg, var(--accent))' : 'var(--bg3)'};color:${isUser ? 'var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)))' : 'var(--chat-message-fg, var(--fg))'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
     bubble.textContent = messagePreview(message);
     row.append(header, bubble);
     return row;
@@ -215079,6 +217314,7 @@ function _folderItemExt(item) {
   const path = String(item?.path || item?.name || '').split(/[?#]/)[0].toLowerCase();
   const name = path.split(/[\\/]/).pop() || '';
   if (name.endsWith('.mel-board')) return '.mel-board';
+  if (name.endsWith('.mel-form')) return '.mel-form';
   if (name.endsWith('.mel-sheet')) return '.mel-sheet';
   if (name.endsWith('.mel-scenario')) return '.mel-scenario';
   if (name.endsWith('.mel-timer')) return '.mel-timer';
@@ -217222,6 +219458,7 @@ async function openFolderItem(item) {
   else if (item.type === 'database') { selectDatabase(item.path, _expOpts.paneContext || null, _expOpts); }
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
+  else if (item.type === 'form-app') { openFormApp(item.path, item.name, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
   else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
@@ -222501,6 +224738,8 @@ if (typeof window !== 'undefined') {
       if (typeof openPage === 'function') openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
       if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name, _expOpts);
+    } else if (item.type === 'form-app') {
+      if (typeof openFormApp === 'function') openFormApp(item.path, item.name, _expOpts);
     } else if (item.type === 'board') {
       if (typeof openBoard === 'function') openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {
@@ -222915,6 +225154,7 @@ function _outlinerResolvedType(type, path) {
   const rawType = String(type || '');
   const lowerPath = String(path || '').split(/[?#]/)[0].toLowerCase();
   if (!['folder', 'database', 'entity'].includes(rawType) && (lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md'))) return 'board';
+  if (lowerPath.endsWith('.mel-form')) return 'form-app';
   if (type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(path))) return 'scriptnote';
   return type || 'page';
 }
@@ -225824,7 +228064,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -226016,7 +228256,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,
@@ -226790,6 +229030,7 @@ function _createOutlinerPendingCreateNode(type, label) {
 function _openOutlinerCreatedNode(nd, name) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
+  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
@@ -229838,6 +232079,7 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote', open: (paneId) => _openPanelMenuItem('scriptnote', paneId) },
     { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
+    { label: 'フォーム', icon: 'clipboardList', type: 'form-app', open: (paneId) => _openPanelMenuItem('form-app', paneId) },
     { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
   ],
 }];
@@ -234886,7 +237128,7 @@ const GBPaneBridge = (() => {
 
   // ToolComponentで描画するタイプ（レガシーコンテナを使わない、独自DOM生成）
   const COMPONENT_TYPES = new Set([
-    'calendar', 'search', 'scriptnote', 'version', 'board', 'system-sheet',
+    'calendar', 'search', 'scriptnote', 'form-app', 'version', 'board', 'system-sheet',
     'information', 'backlinks', 'file-theme',
   ]);
 
@@ -236642,6 +238884,16 @@ const GBPaneBridge = (() => {
   // 右パネルツールの初期化（switchRightTabの初期化ロジックを再現）
   function _initRpTool(toolType, options) {
     if (toolType === 'chat') {
+      const chat = document.getElementById('rp-chat');
+      if (chat && !window._gbSingleWindow && window.GBChatSidebar && !chat.querySelector('[data-chat-sidebar-close]')) {
+        const close = document.createElement('button');
+        close.type = 'button'; close.className = 'gb-btn gb-btn-xs';
+        close.dataset.chatSidebarClose = '1'; close.textContent = '×';
+        close.setAttribute('aria-label', 'チャットサイドバーを閉じる'); close.title = 'チャットサイドバーを閉じる';
+        close.style.marginLeft = 'auto';
+        close.addEventListener('click', () => window.GBChatSidebar?.close());
+        chat.firstElementChild?.appendChild(close);
+      }
       const savedProvider = localStorage.getItem('chat-provider');
       const savedModel = localStorage.getItem('chat-model');
       if (savedProvider) {
@@ -238039,7 +240291,7 @@ const GBPaneBridge = (() => {
       const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', calendar: 'スケジュール',
+        board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
         folder: 'フォルダ', outliner: 'フォルダツリー',
         search: '検索',
       };
@@ -238070,12 +240322,12 @@ const GBPaneBridge = (() => {
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジュール',
+      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
       chat: 'チャット', history: 'ヒストリー', annotation: 'アノテート',
     };
-    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board']);
+    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'form-app']);
     // API の type 値 → タブの type 値（同名なら省略）
     // ここに無いタイプは toolType がそのままタブ type になる
     const _PANEL_FILE_OPEN_TYPES = {
@@ -238090,6 +240342,7 @@ const GBPaneBridge = (() => {
       const state = { label: name };
       if (toolType === 'scriptnote') state.scenarioPath = path;
       if (toolType === 'board') state.boardPath = path;
+      if (toolType === 'form-app') state.formPath = path;
       if (toolType === 'database') state.dbPath = path;
       return state;
     }
@@ -238175,7 +240428,7 @@ const GBPaneBridge = (() => {
         return null;
       }
     }
-    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'calendar']);
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'calendar']);
     function _isMainPanelPane(paneId) {
       const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));
@@ -238377,7 +240630,7 @@ const GBPaneBridge = (() => {
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', calendar: 'スケジュール', preview: 'ビューワー',
+          board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール', preview: 'ビューワー',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
           annotation: 'アノテート', detail: 'オプション',
         };
@@ -238395,7 +240648,7 @@ const GBPaneBridge = (() => {
     function _showEmptyToolView(toolType) {
       const labels = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジュール',
+      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
@@ -238860,6 +241113,7 @@ const GBPaneBridge = (() => {
       ['シナリオ', 'bookOpenText', () => openToolTab('scriptnote')],
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
+      ['フォーム', 'clipboardList', () => openToolTab('form-app')],
       ['スケジュール', 'calendar', () => openToolTab('calendar')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],
@@ -242109,7 +244363,7 @@ function _mapRenamedPath(path, oldPath, newPath) {
 }
 
 const APP_PATH_REF_KEYS = [
-  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath',
+  'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath', 'formPath',
   'pagePath', 'entityPath', 'folderPath', 'mediaPath', 'csvPath', 'versionPath',
   'calendarFile',
 ];
@@ -242476,6 +244730,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      component.onPathRename?.(oldPath, newPath, options);
     });
   }
 
@@ -242914,6 +245169,7 @@ function navOpen(entry, opts) {
   const o = opts || undefined;
   if (entry.type === 'page') return openPage(entry.label, entry.path, o);
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
+  if (entry.type === 'form-app') return openFormApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
   if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
@@ -243356,7 +245612,8 @@ function _applyNavEntryToBoundTab(navState, entry) {
     }
     return true;
   };
-  if (typeChanged && typeof removeComponentInstance === 'function') {
+  const formFileChanged = nextType === 'form-app' && tab.path !== (entry.path || entry.dbPath || '');
+  if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
     const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
     if (component && typeof removeComponentInstanceSafely === 'function') {
       return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);
@@ -244715,6 +246972,7 @@ async function init() {
       try {
         if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
+        else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
         else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
         else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
@@ -244778,6 +247036,7 @@ async function init() {
           else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
           else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
+          else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
           else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
           else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
@@ -246724,7 +248983,11 @@ document.addEventListener('pointerdown', (e) => {
   // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
   // （2026-08-13 バグ報告で確認）。
   if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    document.querySelectorAll('.gb-context-menu').forEach(m => {
+      if (m._popupChildSelector && e.target?.closest?.(m._popupChildSelector)) return;
+      if (typeof m._requestClose === 'function') m._requestClose();
+      else m.remove();
+    });
   }
 }, true);
 document.addEventListener('keydown', (e) => {
@@ -246749,6 +249012,7 @@ document.addEventListener('keydown', (e) => {
   // （main-menu 等の既存 Escape 挙動を変えない）。
   let hasDialogMenu = false;
   menus.forEach((m) => {
+    if (typeof m._requestClose === 'function') { hasDialogMenu = true; m._requestClose(); return; }
     const role = m.getAttribute('role');
     if (role === 'dialog' || role === 'alertdialog') {
       hasDialogMenu = true;
@@ -249330,7 +251594,7 @@ function _copyCurrentFilePath() {
 function _toolMenuNavType(toolType) {
   return {
     page: 'page',
-    scriptnote: 'scriptnote',
+    scriptnote: 'scriptnote', 'form-app': 'form-app',
     database: 'pivot',
     board: 'board',
     calendar: 'calendar',
@@ -249447,7 +251711,7 @@ function buildToolMenuItems(toolType) {
   const hasFile = !!currentPath;
   const newItemType = {
     page: 'page', scriptnote: 'scriptnote', database: 'database',
-    board: 'board', calendar: 'calendar', csv: 'page', folder: 'page'
+    board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page'
   };
   const isFolderTool = toolType === 'folder';
 
@@ -249637,6 +251901,7 @@ function buildToolMenuItems(toolType) {
     { label: 'シナリオ', icon: 'bookOpenText', action: () => _createFolderViewItem('scriptnote') },
     { label: 'シート', icon: 'db', action: () => _createFolderViewItem('database') },
     { label: 'ボード', icon: 'presentation', action: () => _createFolderViewItem('board') },
+    { label: 'フォーム', icon: 'clipboardList', action: () => _createFolderViewItem('form-app') },
     { label: 'カレンダー', icon: 'calendar', action: () => _createFolderViewItem('calendar') },
   ];
   const common = isFolderTool
@@ -250399,6 +252664,7 @@ async function _exportDictFile(options = {}) {
     { label: 'ノート', icon: 'fileText', type: 'page' },
     { label: 'シート', icon: 'database', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
+    { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
     { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
   ];
 
@@ -250410,6 +252676,7 @@ async function _exportDictFile(options = {}) {
       { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
       { label: 'シート', icon: 'database', type: 'database' },
       { label: 'ボード', icon: 'presentation', type: 'board' },
+      { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
       { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
     ],
   }];
@@ -250418,6 +252685,7 @@ async function _exportDictFile(options = {}) {
     page: 'ノート',
     scriptnote: 'シナリオ',
     board: 'ボード',
+    'form-app': 'フォーム',
     database: 'シート',
     calendar: 'カレンダー',
     csv: 'CSV',
@@ -253137,6 +255405,11 @@ const _shortcutHandlers = {
     if (state.view === 'board' && window.MeldexBoardStandalone?.saveCurrentBoard) window.MeldexBoardStandalone.saveCurrentBoard();
     else if (state.view === 'board' && typeof bdSave === 'function') bdSave();
     else if (state.view === 'csv' && typeof saveCsv === 'function') saveCsv();
+    else if (state.view === 'form-app') {
+      const paneId = typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane;
+      const tab = GBTabs.getActiveTab(paneId);
+      if (tab?.type === 'form-app') getComponentInstance(tab.id)?.saveDefinition?.();
+    }
     else if (state.view === 'scriptnote') {
       const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
       if (editor?.save) editor.save();
@@ -253147,7 +255420,7 @@ const _shortcutHandlers = {
     }
   },
   'global.new': () => {
-    const typeMap = { page: 'page', entity: 'page', pivot: 'database', tree: 'database', gallery: 'database', kanban: 'database', board: 'board', calendar: 'calendar', csv: 'page', folder: 'page' };
+    const typeMap = { page: 'page', entity: 'page', pivot: 'database', tree: 'database', gallery: 'database', kanban: 'database', board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page' };
     const type = typeMap[state.view] || 'page';
     if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(type);
   },

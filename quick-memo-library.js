@@ -47,7 +47,7 @@
   function bodyHtml(body) {
     const marker = '<div class="meldex-quick-memo-body">';
     const markerIndex = body.indexOf(marker);
-    const drawingIndex = body.search(/<figure[^>]*class=["'][^"']*meldex-quick-memo-drawing/i);
+    const drawingIndex = body.search(/<figure[^>]*class=["'][^"']*meldex-quick-memo-(?:drawing|audio)/i);
     if (markerIndex >= 0) {
       const start = markerIndex + marker.length;
       const section = body.slice(start, drawingIndex >= start ? drawingIndex : undefined);
@@ -78,10 +78,12 @@
     const tagsText = acceptedProperty(parsed.frontmatter, 'タグ');
     return {
       memo_id: String(parsed.frontmatter.quick_memo_id || parsed.frontmatter.id || path || ''),
-      title: titleFromBody(parsed.body, String(path || '').split('/').pop()?.replace(/\.md$/i, '')),
+      title: Object.hasOwn(parsed.frontmatter, 'quick_memo_title') ? String(parsed.frontmatter.quick_memo_title || '') : titleFromBody(parsed.body, String(path || '').split('/').pop()?.replace(/\.md$/i, '')),
       html,
       text: plainText(html),
       drawing_png: drawing ? drawing[1].replace(/\s+/g, '') : '',
+      audio_clips: [...parsed.body.matchAll(/<audio[^>]+src=["'](data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+)["']/gi)].map(match => match[1]),
+      input_mode: String(parsed.frontmatter.quick_memo_input_mode || (drawing ? 'pen' : 'text')),
       tags: tagsText ? tagsText.split(/[,、]/).map((item) => item.trim()).filter(Boolean) : [],
       created_at: String(parsed.frontmatter.created || acceptedProperty(parsed.frontmatter, '追加日時') || ''),
       updated_at: String(parsed.frontmatter.modified || acceptedProperty(parsed.frontmatter, '更新日時') || ''),
@@ -99,7 +101,8 @@
     const html = String(item.html || '');
     return {
       ...item,
-      title: String(item.title || '').trim() || String(item.text || '').trim().split(/\r?\n/)[0] || '無題のメモ',
+      title: String(item.title || '').trim(),
+      display_title: String(item.title || '').trim() || String(item.text || '').trim().split(/\r?\n/)[0] || (item.drawing_png ? '手書きメモ' : item.audio_clips?.length ? '音声メモ' : '無題のメモ'),
       preview: String(item.text || plainText(html)).slice(0, 160),
       pending: true,
       path: item.server_path || '',
@@ -109,7 +112,8 @@
   function normalizedSaved(item) {
     return {
       ...item,
-      title: String(item.title || '').trim() || '無題のメモ',
+      title: String(item.title || '').trim(),
+      display_title: String(item.title || '').trim() || String(item.text || item.preview || '').trim().slice(0, 60) || (item.drawing_png ? '手書きメモ' : item.audio_clips?.length ? '音声メモ' : '無題のメモ'),
       preview: String(item.preview || item.text_preview || item.text || '').replace(/\s+/g, ' ').slice(0, 160),
       created_at: item.created_at || item.created || '',
       updated_at: item.updated_at || item.modified || '',
@@ -176,7 +180,7 @@
       button.className = 'qm-list-item';
       const title = document.createElement('div');
       title.className = 'qm-list-item-title';
-      title.textContent = item.title;
+      title.textContent = item.display_title || item.title;
       const preview = document.createElement('div');
       preview.className = 'qm-list-item-preview';
       preview.textContent = item.preview || '本文なし';

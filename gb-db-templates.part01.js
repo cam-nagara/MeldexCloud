@@ -796,8 +796,9 @@ function applyDbTemplate(dbPath, template, opts) {
       if (!c.countTypes[k] || overwrite) c.countTypes[k] = v;
     });
   }
+  const appliedViews = [];
   const usedSavedViewsPath = typeof _applyDbTemplateSavedViews === 'function'
-    && _applyDbTemplateSavedViews(c, template, overwrite);
+    && _applyDbTemplateSavedViews(c, template, overwrite, appliedViews);
   if (!usedSavedViewsPath) {
     _applyDbTemplateViewFields(c, template, overwrite);
   }
@@ -806,7 +807,7 @@ function applyDbTemplate(dbPath, template, opts) {
 
   // 5.5 エントリレイアウト（typeofガード: 未ロード環境ではレイアウト無しの従来動作）
   if (typeof _applyDbTemplateEntityLayouts === 'function') {
-    _applyDbTemplateEntityLayouts(c, template, overwrite);
+    _applyDbTemplateEntityLayouts(c, template, overwrite, appliedViews);
   }
   const entityLayoutsResult = c._dbTemplateEntityLayoutsResult || null;
   delete c._dbTemplateEntityLayoutsResult;

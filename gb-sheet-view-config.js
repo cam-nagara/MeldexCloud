@@ -712,7 +712,13 @@ function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
   });
 }
 // 非表示カラム
-function getHiddenCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.hiddenCols || []; }
+function getHiddenCols(dbPath, options = {}) {
+  const view = getCurrentDbViewConfigEntry(dbPath, options);
+  const hidden = view?.hiddenCols || [];
+  // 既存シートの固定値も非破壊で隠す。保存済みの列データや表示設定は書き換えない。
+  const quickMemo = (getDbViewConfig(dbPath)?.savedViews || []).some(item => item.id === 'quick-memo-default');
+  return quickMemo ? [...new Set([...hidden, '種別'])] : hidden;
+}
 function setHiddenCols(dbPath, cols, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
 }

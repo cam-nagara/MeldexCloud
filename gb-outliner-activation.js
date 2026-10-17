@@ -215,6 +215,8 @@
       if (typeof openPage === 'function') openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
       if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name, _expOpts);
+    } else if (item.type === 'form-app') {
+      if (typeof openFormApp === 'function') openFormApp(item.path, item.name, _expOpts);
     } else if (item.type === 'board') {
       if (typeof openBoard === 'function') openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {

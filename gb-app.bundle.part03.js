@@ -1,3 +1,6 @@
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
   if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
   const navState = _getNavState(paneId);
   if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
@@ -895,6 +898,3 @@ apiFetch = async function(path, opts) {
     const identityParams = [];
     if (user && user !== 'anonymous' && !/[?&]_user=/.test(path)) identityParams.push('_user=' + encodeURIComponent(user));
     if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));
-    if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
-    if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
-    const result = await _origApiFetch(path, opts);

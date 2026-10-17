@@ -1,3 +1,4 @@
+        || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
     });
   }
   const known = new Set(versions.map(row => row.name));
@@ -897,4 +898,3 @@ function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, f
       } else {
         next.push({ ...item, path: item.file_path, name: _displayLabelForPath(item.file_path, ''), folder_path: folderPath, folder_id: folderId, added_at: new Date().toISOString() });
         result.status = 'created';
-      }

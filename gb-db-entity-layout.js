@@ -15,7 +15,7 @@ const EL_DEFAULT_CANVAS_W = 1000;
 const EL_DEFAULT_CANVAS_H = 700;
 const EL_CANVAS_MIN = 200;
 const EL_CANVAS_MAX = 8000;
-const EL_CELL_TYPES = ['field', 'label', 'image', 'divider', 'chart'];
+const EL_CELL_TYPES = ['field', 'label', 'image', 'divider', 'chart', 'subform'];
 const EL_CELL_MIN_SIZE = 24;
 
 function _elGenId(prefix) {
@@ -373,7 +373,10 @@ function _elTopicLayoutColumns(dbPath, pivotData) {
   const data = pivotData || state?.pivotData || {};
   const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) || {} : {};
   return (Array.isArray(data.properties) ? data.properties : Object.keys(data.properties || {})).map(name => ({
-    id: String(types[name]?.id || types[name]?.columnId || ''), name: String(name),
+    id: String(types[name]?.property_id || types[name]?.id || types[name]?.columnId || ''), name: String(name),
+    type: String(types[name]?.type || 'text'),
+    ...(['select', 'multi-select'].includes(types[name]?.type) && Array.isArray(types[name].options)
+      ? { options: types[name].options.slice() } : {}),
   }));
 }
 
@@ -504,112 +507,191 @@ function _elAddPresetLayout(context, template) {
 async function _elShowAddLayoutMenu(anchor, context) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
-  const items = templates => [
-    { key: 'new', label: '新規に追加', icon: 'plus', run: () => _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender) },
-    ...templates.map((template, index) => ({ key: 'preset-' + index, label: template.layout.name, icon: 'layoutTemplate', run: () => _elAddPresetLayout(context, template) })),
-    { key: 'manage-presets', label: 'プリセットを管理', icon: 'settings2', run: () => _elManageLayoutPresets(context) },
-  ];
-  const menu = _elShowActionMenu(anchor, items(api?.loadSharedTemplates?.() || []), 'entity-layout-add-menu');
-  if (!api) return;
-  const library = await api.loadSharedTemplateLibrary();
-  if (menu.isConnected && anchor.isConnected && _elCanMutateGrid(context.grid, context.options)) {
-    menu._setItems(items(library.templates));
-    if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect(), { gap: 4 });
+  const existing = document.querySelector('.el-preset-popup');
+  if (existing) {
+    const same = existing._anchor === anchor;
+    if (!await existing._requestClose() || same) return;
   }
-}
-
-async function _elManageLayoutPresets(context) {
-  const api = globalThis.MeldexDbTopicLayoutStyle;
-  if (!api || !_elCanMutateGrid(context.grid, context.options)) return;
-  const existing = document.querySelector('[data-e2e-id="entity-layout-presets-dialog"]');
-  if (existing) { existing.focus(); return; }
+  if (!api) {
+    _elShowActionMenu(anchor, [{ key: 'new', label: '新規に追加', icon: 'plus',
+      run: () => _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender) }], 'entity-layout-add-menu');
+    return;
+  }
+  _elCloseTabMenus();
   const body = document.createElement('div');
-  body.className = 'el-preset-dialog';
-  const selector = document.createElement('select');
-  selector.setAttribute('aria-label', '保存済みプリセット');
-  const actions = document.createElement('div'); actions.className = 'el-preset-actions';
-  actions.appendChild(selector); body.appendChild(actions);
+  // 一般メニューの一括remove対象にせず、確認・子ポップアップと未保存ドラフトを自前で管理する。
+  body.className = 'el-preset-popup';
+  body.dataset.e2eId = 'entity-layout-add-menu';
+  body.setAttribute('role', 'dialog');
+  body.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.setAttribute('aria-modal', 'false');
+  body.tabIndex = -1;
+  body._anchor = anchor;
+  const addLayout = document.createElement('button'); addLayout.type = 'button';
+  addLayout.className = 'el-tab-menu-item'; addLayout.textContent = '新規に追加';
+  addLayout.setAttribute('role', 'menuitem'); addLayout.dataset.e2eId = 'entity-layout-tab-menu-new';
+  body.appendChild(addLayout);
+  const list = document.createElement('div'); list.className = 'el-preset-list';
+  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.appendChild(list);
+  const actions = document.createElement('div'); actions.className = 'el-preset-actions'; body.appendChild(actions);
+  const details = document.createElement('div'); details.className = 'el-preset-details'; details.hidden = true;
+  body.appendChild(details);
   const nameRow = document.createElement('label'); nameRow.className = 'el-preset-name-row';
   nameRow.textContent = 'プリセット名';
   const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'プリセット名');
-  nameRow.appendChild(name); body.appendChild(nameRow);
+  nameRow.appendChild(name); details.appendChild(nameRow);
+  const editor = document.createElement('div'); editor.className = 'el-preset-editor'; details.appendChild(editor);
   const message = document.createElement('div'); message.className = 'el-preset-message';
   message.setAttribute('role', 'status'); body.appendChild(message);
-  const editor = document.createElement('div'); editor.className = 'el-preset-editor'; body.appendChild(editor);
-  let templates = [], previous = null, draft = null, dirty = false, busy = false;
-  let modal;
+  const builtins = globalThis.MeldexDbTopicLayoutPresets?.getTemplates() || [];
+  let templates = api.loadSharedTemplates(), previous = null, draft = null, dirty = false, busy = false, closing = false, selectedBuiltin = false;
+  let libraryVersion = 0;
+  const allTemplates = () => [...builtins, ...templates];
   const report = (text, error = false) => { message.textContent = text; message.dataset.error = String(error); };
   const canEdit = () => _elCanMutateGrid(context.grid, context.options) && context.grid.isConnected && body.isConnected;
   const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないプリセットの変更を破棄しますか？'));
+  const position = () => {
+    if (!body.isConnected || !anchor.isConnected) return;
+    if (typeof positionPopup === 'function') positionPopup(body, anchor.getBoundingClientRect(), { gap: 4 });
+  };
+  const closePopup = () => {
+    body._cleanup(); body.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchor);
+    else if (anchor.isConnected) anchor.focus({ preventScroll: true });
+  };
+  body._requestClose = async () => {
+    if (busy || closing) return false;
+    closing = true;
+    try { if (!await discard()) return false; closePopup(); return true; }
+    finally { closing = false; }
+  };
   const syncControls = () => {
     name.disabled = busy || !draft;
-    selector.disabled = busy || !templates.length;
-    save.disabled = busy || !draft;
+    body.querySelectorAll('button').forEach(btn => { btn.disabled = busy; });
+    save.disabled = busy || !draft || details.hidden;
     remove.disabled = busy || !previous;
-    for (const key of ['duplicate', 'export']) {
-      body.querySelector('[data-e2e-id="entity-layout-preset-' + key + '"]').disabled = busy || !draft;
-    }
+    for (const key of ['duplicate', 'export', 'edit'])
+      actions.querySelector('[data-e2e-id="entity-layout-preset-' + key + '"]').disabled = busy || !draft;
+    actions.querySelector('[data-e2e-id="entity-layout-preset-current"]').disabled = busy || !context.layoutId || context.layoutId === EL_COLUMNS_TAB_ID;
   };
   const render = () => {
     _elCloseEditPopups();
     editor.replaceChildren();
-    if (!draft) return;
+    if (!draft || details.hidden) return;
     const editingDraft = draft;
     _elRenderLayoutBody(editor, context.pivotData, context.entityPath, {
       ...context.options, readOnly: false,
-      layoutDraft: { layout: draft.layout, session: { editMode: true }, persist(mutator) {
+      layoutDraft: { layout: draft.layout, session: { editMode: true }, onChange() {
+        if (!busy && draft === editingDraft && canEdit()) dirty = true;
+      }, persist(mutator) {
         if (busy || draft !== editingDraft || !canEdit()) return null;
         if (mutator(draft.layout) === false) return null;
         dirty = true; return draft.layout;
       } },
     }, context.dbPath, draft.layout.id, render);
+    position();
   };
-  const choose = (template, saved = null) => {
-    previous = saved ? JSON.parse(JSON.stringify(saved)) : null;
+  const choose = (template, saved = null, edit = true, builtin = false) => {
+    selectedBuiltin = builtin;
+    previous = saved && !builtin ? JSON.parse(JSON.stringify(saved)) : null;
     draft = JSON.parse(JSON.stringify(template));
     draft.layout = _elNormalizeLayout(draft.layout);
     name.value = draft.layout.name; dirty = !saved;
-    selector.value = saved?.layout.name || '';
-    report(saved ? '配置や書式を編集し、「保存」で確定します。' : '新しいプリセットを編集し、「保存」で追加します。');
-    render(); syncControls();
+    details.hidden = !edit; body.classList.toggle('is-editing', edit);
+    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'プリセットを選ぶとシートに追加します。');
+    render(); refresh(); syncControls(); position();
+    if (edit) name.focus({ preventScroll: true });
+  };
+  const editTemplate = (template, builtin) => {
+    if (!builtin) { choose(template, template); return; }
+    const copy = JSON.parse(JSON.stringify(template));
+    copy.layout.name = _elMakeDuplicateName(copy.layout.name, allTemplates().map(item => item.layout));
+    choose(copy);
+    report('標準プリセットを複製して編集します。「保存」で追加します。');
   };
   const refresh = () => {
-    selector.replaceChildren();
-    const blank = document.createElement('option'); blank.value = ''; blank.textContent = 'プリセットを選択'; selector.appendChild(blank);
-    templates.forEach(item => { const option = document.createElement('option'); option.value = item.layout.name; option.textContent = item.layout.name; selector.appendChild(option); });
-    selector.value = previous?.layout.name || '';
+    list.replaceChildren();
+    if (!allTemplates().length) {
+      const empty = document.createElement('div'); empty.className = 'el-preset-empty';
+      empty.textContent = '保存済みプリセットはありません'; list.appendChild(empty);
+    }
+    allTemplates().forEach(template => {
+      const builtin = builtins.includes(template);
+      const row = document.createElement('div'); row.className = 'el-preset-item';
+      row.dataset.presetSource = builtin ? 'builtin' : 'user';
+      row.classList.toggle('active', builtin
+        ? selectedBuiltin && draft?.layout.name === template.layout.name
+        : !selectedBuiltin && previous?.layout.name === template.layout.name);
+      row.setAttribute('role', 'none');
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'el-preset-apply';
+      apply.setAttribute('role', 'menuitem'); apply.setAttribute('aria-label', template.layout.name);
+      const preview = document.createElement('span'); preview.className = 'el-preset-preview'; preview.setAttribute('aria-hidden', 'true');
+      const layout = _elNormalizeLayout(template.layout);
+      for (const cell of layout.cells) {
+        const block = document.createElement('span'); block.className = 'el-preset-preview-cell';
+        block.style.left = (cell.x / layout.canvasSize.w * 100) + '%';
+        block.style.top = (cell.y / layout.canvasSize.h * 100) + '%';
+        block.style.width = (cell.w / layout.canvasSize.w * 100) + '%';
+        block.style.height = (cell.h / layout.canvasSize.h * 100) + '%';
+        preview.appendChild(block);
+      }
+      const label = document.createElement('span'); label.textContent = template.layout.name;
+      apply.append(preview, label);
+      if (builtin) apply.setAttribute('aria-description', '標準プリセット');
+      apply.addEventListener('click', async () => {
+        if (canEdit() && await body._requestClose()) _elAddPresetLayout(context, template);
+      });
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'gb-btn gb-btn-icon';
+      const editLabel = template.layout.name + (builtin ? 'を複製して編集' : 'を編集');
+      edit.setAttribute('aria-label', editLabel); edit.title = editLabel;
+      edit.innerHTML = typeof lucide === 'function' ? lucide('pencil', 14) : '編集';
+      edit.addEventListener('click', async () => { if (!busy && await discard() && canEdit()) editTemplate(template, builtin); });
+      row.appendChild(apply);
+      if (builtin) {
+        const badge = document.createElement('span'); badge.className = 'el-preset-badge'; badge.textContent = '標準';
+        row.appendChild(badge);
+      }
+      row.appendChild(edit); list.appendChild(row);
+    });
   };
   const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいプリセット' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
-  const button = (key, label, run, footer = false) => {
-    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn';
-    btn.textContent = label; btn.dataset.e2eId = 'entity-layout-preset-' + key;
+  const button = (key, label, icon, run) => {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn gb-btn-icon';
+    btn.innerHTML = typeof lucide === 'function' ? lucide(icon, 16) : label;
+    btn.title = label; btn.setAttribute('aria-label', label); btn.dataset.e2eId = 'entity-layout-preset-' + key;
     btn.addEventListener('click', async () => {
-      if (busy) return;
+      if (busy || (key !== 'close' && !canEdit())) return;
       try { await run(); } catch (error) { report(error?.message || String(error), true); }
     });
-    if (!footer) actions.appendChild(btn);
+    actions.appendChild(btn);
     return btn;
   };
-  button('new', '追加', async () => { if (await discard()) { choose(newDraft()); } });
-  button('duplicate', '複製', async () => {
+  button('new', '追加', 'plus', async () => { if (await discard() && canEdit()) choose(newDraft()); });
+  button('duplicate', '複製', 'copy', async () => {
     if (!draft || !await discard()) return;
     const copy = JSON.parse(JSON.stringify(draft));
-    copy.layout.name = _elMakeDuplicateName(name.value, templates.map(item => item.layout));
+    copy.layout.name = _elMakeDuplicateName(name.value, allTemplates().map(item => item.layout));
     choose(copy);
   });
-  button('current', '現在のレイアウトから追加', async () => {
+  button('current', '現在のレイアウトから追加', 'layoutTemplate', async () => {
     const layout = _elGetState(context.dbPath)?.layouts.find(item => item.id === context.layoutId);
     if (!layout) { report('先にトピックレイアウトのタブを選んでください', true); return; }
     if (await discard()) choose(api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData)));
   });
-  button('export', 'ファイルに保存', () => {
+  button('edit', '選択中のプリセットを編集', 'pencil', async () => {
+    if (draft && selectedBuiltin) { editTemplate(draft, true); return; }
+    if (draft) { details.hidden = false; body.classList.add('is-editing'); render(); syncControls(); position(); name.focus(); }
+  });
+  button('export', 'ファイルに保存', 'download', () => {
     if (!draft) return;
     const template = JSON.parse(JSON.stringify(draft)); template.layout.name = name.value.trim();
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
     link.download = (template.layout.name || 'プリセット').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
     link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 0);
   });
-  button('import', 'ファイルから読込', () => {
+  button('import', 'ファイルから読込', 'upload', () => {
     const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json';
     input.addEventListener('change', async () => {
       try {
@@ -620,21 +702,25 @@ async function _elManageLayoutPresets(context) {
       } catch (error) { report('読み込めません: ' + (error?.message || error), true); }
     }); input.click();
   });
-  const remove = button('delete', '削除', async () => {
+  const remove = button('delete', '削除', 'trash2', async () => {
     if (!previous || !canEdit() || !await cfConfirm('プリセット「' + previous.layout.name + '」を削除しますか？')) return;
     if (!canEdit()) return;
     await persist(null);
   });
   remove.classList.add('danger');
   const persist = async template => {
+    libraryVersion += 1; // 開いた直後の旧読込結果で、保存後の一覧を巻き戻さない。
     busy = true; editor.inert = true;
-    const controls = [...body.querySelectorAll('input, select, button'), save, close];
+    const controls = [...body.querySelectorAll('input, button')];
     controls.forEach(item => { item.disabled = true; });
     try {
       const result = await api.changeSharedTemplateInLibrary(previous, template);
       templates = result.templates;
       if (template) choose(template, template);
-      else { previous = null; draft = null; dirty = false; name.value = ''; render(); }
+      else if (allTemplates().length) {
+        const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+      }
+      else { previous = null; draft = null; dirty = false; name.value = ''; details.hidden = true; body.classList.remove('is-editing'); render(); }
       refresh(); report(template
         ? (result.shared ? 'プリセットを保存しました。' : 'この端末にプリセットを保存しました。')
         : (result.shared ? 'プリセットを削除しました。' : 'この端末のプリセットを削除しました。'));
@@ -643,45 +729,72 @@ async function _elManageLayoutPresets(context) {
       syncControls();
     }
   };
-  const save = button('save', '保存', async () => {
+  const save = button('save', '保存', 'save', async () => {
     if (!draft || !canEdit()) return;
     const template = JSON.parse(JSON.stringify(draft));
     template.layout.name = name.value.trim();
     if (!template.layout.name) { report('プリセット名を入力してください', true); name.focus(); return; }
     await persist(template);
-  }, true);
-  const close = button('close', '閉じる', () => modal.close('close'), true);
+  });
+  remove.before(save);
+  const close = button('close', '閉じる', 'x', () => body._requestClose());
+  close.classList.add('el-preset-close');
   name.addEventListener('input', () => { dirty = true; });
-  selector.addEventListener('change', async () => {
-    const selected = selector.value;
-    if (await discard()) {
-      const template = templates.find(item => item.layout.name === selected);
-      if (template) choose(template, template);
+  addLayout.addEventListener('click', async () => {
+    if (canEdit() && await body._requestClose()) _elAddLayout(context.grid, context.entityPath, context.dbPath, context.rerender);
+  });
+  const childPopupSelector = '.el-edit-popup, .gb-palette, .gb-palette-popup, [aria-modal="true"], dialog[open]';
+  const insideChildPopup = target => !!target?.closest?.(childPopupSelector);
+  const onPointerDown = event => {
+    if (!body.contains(event.target) && !anchor.contains(event.target) && !insideChildPopup(event.target)) body._requestClose();
+  };
+  const onKeyDown = event => {
+    const childOpen = [...document.querySelectorAll(childPopupSelector)]
+      .some(popup => popup.getClientRects().length > 0);
+    if (insideChildPopup(event.target) || childOpen) return;
+    // 見出しのインライン編集は、その入力自身にEscapeの取消を任せる。
+    if (event.isComposing || event.keyCode === 229 || event.target?.closest?.('.el-label-input')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation(); body._requestClose();
     }
-    selector.value = previous?.layout.name || '';
-  });
-  modal = globalThis.GBUI.createModal({
-    id: 'entity-layout-presets', title: 'トピックレイアウトのプリセットを管理', body, footer: [save, close],
-    closeLabel: 'プリセット管理を閉じる',
-    variant: 'standard', initialFocus: selector, returnFocus: document.activeElement,
-    closeOnEsc: true, closeOnOverlay: false,
-    onBeforeClose: async () => {
-      if (busy) return false;
-      if (!await discard()) return false;
-      _elCloseEditPopups(); return true;
-    },
-  });
-  modal.modal.dataset.e2eId = 'entity-layout-presets-dialog';
-  modal.modal.style.width = 'min(1160px, calc(100vw - 24px))';
-  modal.open(); report('プリセットを読み込んでいます…');
-  busy = true; body.inert = true; syncControls();
+    if ((list.contains(event.target) || event.target === addLayout) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [addLayout, ...list.querySelectorAll('button:not(:disabled)')];
+      const index = buttons.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+        : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    }
+  };
+  body._cleanup = () => {
+    document.removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('resize', position);
+    _elCloseEditPopups();
+  };
+  document.body.appendChild(body);
+  anchor.setAttribute('aria-expanded', 'true');
+  document.addEventListener('pointerdown', onPointerDown);
+  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('resize', position);
+  // 標準と端末キャッシュはすぐ使える。共有先の読込で操作や閉じるボタンを塞がない。
+  refresh();
+  if (allTemplates().length) {
+    const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+  } else { report('プリセットを読み込んでいます…'); }
+  syncControls(); position(); addLayout.focus({ preventScroll: true });
+  const initialLibraryVersion = libraryVersion;
   try {
     const library = await api.loadSharedTemplateLibrary();
+    if (!body.isConnected || libraryVersion !== initialLibraryVersion) return;
     templates = library.templates; refresh();
-    if (templates.length) choose(templates[0], templates[0]);
-    else { report('保存済みプリセットはありません。「追加」から作成できます。'); }
-    if (library.error) report('共有先を読み込めませんでした。端末に残っているプリセットを表示しています。', true);
-  } finally { busy = false; body.inert = false; syncControls(); }
+    if (!draft && allTemplates().length) {
+      const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
+    }
+    else if (!draft) { report('保存済みプリセットはありません。「追加」から作成できます。'); }
+    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のプリセットを表示しています。', true);
+  } catch (error) { report('プリセットを読み込めません: ' + (error?.message || error), true); }
+  finally { syncControls(); position(); }
 }
 
 function _elShowActionMenu(anchorBtn, items, menuE2eId) {
@@ -869,7 +982,7 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     addBtn.dataset.e2eId = 'entity-layout-add';
     addBtn.title = 'トピックレイアウトを追加';
     addBtn.setAttribute('aria-label', 'トピックレイアウトを追加');
-    addBtn.setAttribute('aria-haspopup', 'menu');
+    addBtn.setAttribute('aria-haspopup', 'dialog');
     addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     addBtn.addEventListener('click', () => {
       _elShowAddLayoutMenu(addBtn, { grid, entityPath, dbPath, rerender, pivotData: data, layoutId: activeTab, options });

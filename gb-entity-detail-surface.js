@@ -485,6 +485,11 @@
       editor.innerHTML = raw.trim() && typeof mdToHtml === 'function'
         ? (typeof applyAutoLinks === 'function' ? applyAutoLinks(mdToHtml(raw, { basePath: state.path }), state.path) : mdToHtml(raw))
         : '';
+      // 旧クイックメモの自動見出しは表示だけ隠す。保存原文は保持する。
+      if (data.quick_memo_legacy_title === true && /^# [^\r\n]+(?:\r?\n|$)/.test(raw)) {
+        const heading = editor.firstElementChild;
+        if (heading?.tagName === 'H1') heading.hidden = true;
+      }
       state.editor = editor;
       if (typeof _bindEntityFreeTextParticipant === 'function') {
         _bindEntityFreeTextParticipant(editor, state.path);
@@ -494,7 +499,7 @@
       root.appendChild(toolbar);
       root.appendChild(editor);
 
-      // 新規ファイル作成は「リンクを追加」メニューへ集約する。
+      // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 
       editor.addEventListener('click', event => {
         const link = event.target.closest?.('.auto-link');

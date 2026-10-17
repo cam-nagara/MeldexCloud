@@ -13,6 +13,7 @@
     speech: null,
     recording: null,
     recordChunks: [],
+    audioClips: [],
     saveTimer: 0,
     savePromise: null,
     flushRequested: false,
@@ -384,7 +385,7 @@
   function openCreateMenu() {
     if (state.creatingMemo) return;
     const voice = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
-    voice.hidden = isCloudMode() && !(window.SpeechRecognition || window.webkitSpeechRecognition);
+    voice.hidden = !voiceAvailable();
     els.createMemoMenu.hidden = false;
     els.createMemoBtn.setAttribute('aria-expanded', 'true');
     window.GBTooltip?.hide?.();
@@ -398,9 +399,9 @@
   }
 
   function switchMode(mode) {
-    const speechAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    const speechAvailable = voiceAvailable();
     const nextMode = ['text', 'pen', 'voice'].includes(mode)
-      && !(mode === 'voice' && isCloudMode() && !speechAvailable)
+      && !(mode === 'voice' && isCloudMode() && !speechAvailable && !state.audioClips.length)
       ? mode
       : 'text';
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
@@ -409,6 +410,7 @@
     els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
     els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
     els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
+    els.voiceRecordBtn.disabled = !speechAvailable;
     let hasToolbarForMode = false;
     els.toolbarGroups.forEach((group) => {
       const shown = group.dataset.for === state.currentMode;
@@ -438,8 +440,7 @@
 
   function autoFillTitle() {
     if (els.titleInput.value.trim()) return;
-    const firstLine = els.editor.innerText.trim().split(/\r?\n/)[0] || '';
-    els.titleInput.placeholder = firstLine ? firstLine.slice(0, 60) : 'タイトル（空なら本文の一行目）';
+    els.titleInput.placeholder = 'タイトル（任意）';
   }
 
   function focusEditorSoon() {
@@ -482,6 +483,8 @@
       source_label: draft.source_label || '',
     };
     drawingController.reset(draft.drawing_png || '');
+    state.audioClips = Array.isArray(draft.audio_clips) ? [...draft.audio_clips] : [];
+    renderAudioClips();
     state.currentMode = draft.input_mode || (draft.drawing_png ? 'pen' : 'text');
   }
 
@@ -494,12 +497,13 @@
       memo_id: memoId,
       client_id: draft.client_id || clientId(),
       server_path: draft.server_path || '',
-      title: els.titleInput.value.trim() || (els.editor.innerText.trim().split(/\r?\n/)[0] || '').slice(0, 60),
+      title: els.titleInput.value.trim(),
       tags: [...state.selectedTags],
       tag_ids: [...state.selectedTagIds],
       html,
       text: els.editor.innerText.trim(),
       drawing_png: drawingController.toDataURL(),
+      audio_clips: [...state.audioClips],
       input_mode: state.currentMode,
       source_url: state.share?.source_url || draft.source_url || '',
       share_title: state.share?.share_title || draft.share_title || '',
@@ -543,7 +547,9 @@
       state.currentPath = '';
       state.currentVersionTarget = { path: '', type: 'file' };
       els.titleInput.value = '';
-      els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
+      els.titleInput.placeholder = 'タイトル（任意）';
+      state.audioClips = [];
+      renderAudioClips();
       state.selectedTags = [];
       state.selectedTagIds = [];
       renderTagChips();
@@ -614,6 +620,8 @@
     renderTagChips();
     editorController.reset(sanitizeHtml(memo.html || escHtml(memo.text || '').replace(/\n/g, '<br>')));
     drawingController.reset(memo.drawing_png || '');
+    state.audioClips = Array.isArray(memo.audio_clips) ? [...memo.audio_clips] : [];
+    renderAudioClips();
     writeJson(CURRENT_KEY, {
       ...memo,
       memo_id: memo.memo_id || newMemoId(),
@@ -622,7 +630,7 @@
     });
     state.dirty = false;
     libraryController.hide();
-    switchMode(memo.drawing_png ? 'pen' : 'text');
+    switchMode(memo.input_mode || (memo.drawing_png ? 'pen' : state.audioClips.length ? 'voice' : 'text'));
     setStatus('過去のメモを開きました');
     loadTags();
     return true;
@@ -691,6 +699,9 @@
     els.titleInput.value = shared.title || titleFromUrl(shared.url) || '';
     editorController.reset(sharedHtml(shared));
     drawingController.reset('');
+    state.audioClips = [];
+    renderAudioClips();
+    switchMode('text');
     state.selectedTags = ['共有'];
     state.selectedTagIds = [];
     renderTagChips();
@@ -724,6 +735,7 @@
       || content.textContent.trim()
       || content.querySelector('img[src]')
       || draft.drawing_png
+      || draft.audio_clips?.length
     );
   }
 
@@ -773,6 +785,8 @@
   async function saveNow(opts) {
     clearTimeout(state.saveTimer);
     state.saveTimer = 0;
+    if (opts?.manual && (state.recording || state.speech)) await finalizeVoiceForClose();
+    await drawingController.flush?.();
     const memo = collectMemo();
     if (!memo.server_path && !draftHasContent(memo)) return flushPendingQueue();
     const storedDraft = persistDraft(memo);
@@ -875,7 +889,7 @@
     if (state.voiceStarting) state.memoEpoch += 1;
     const recorder = state.recording;
     const speech = state.speech;
-    if (!recorder && !speech && !state.voiceFinalizePromise) return !state.pendingVoice;
+    if (!recorder && !speech && !state.voiceFinalizePromise) return !state.pendingVoice || state.pendingVoice.retained === true;
     const stopped = new Promise(resolve => {
       let pending = Number(!!recorder) + Number(!!speech);
       if (!pending) return resolve();
@@ -890,7 +904,7 @@
     stopVoiceRecording();
     await stopped;
     if (state.voiceFinalizePromise) await state.voiceFinalizePromise;
-    return !state.recording && !state.speech && !state.pendingVoice;
+    return !state.recording && !state.speech && (!state.pendingVoice || state.pendingVoice.retained === true);
   }
 
   async function flushPendingQueue() {
@@ -1168,15 +1182,20 @@
   }
 
   function cloudMemoBody(item) {
-    const title = String(item.title || '').trim() || 'メモ';
     const html = sanitizeHtml(item.html || '');
     const text = String(item.text || '').trim();
     const drawingRaw = String(item.drawing_png || '');
     const drawing = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/.test(drawingRaw) ? drawingRaw.replace(/\s+/g, '') : '';
-    const parts = ['# ' + title, ''];
+    const parts = [];
     if (html) parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
     else if (text) parts.push('<div class="meldex-quick-memo-body">', escHtml(text).replace(/\n/g, '<br>'), '</div>', '');
     if (drawing) parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
+    const clips = item.audio_clips || [];
+    if (!Array.isArray(clips) || clips.length > 20 || clips.reduce((size, clip) => size + String(clip).length, 0) > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+    for (const audio of clips) {
+      if (!/^data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+$/.test(audio) || audio.length > 12 * 1024 * 1024) throw new Error('録音データの形式またはサイズを確認してください');
+      parts.push('<figure class="meldex-quick-memo-audio">', `<audio controls preload="metadata" src="${audio}"></audio>`, '</figure>', '');
+    }
     return parts.join('\n');
   }
 
@@ -1202,6 +1221,8 @@
       category: CLOUD_SHEET_NAME,
       quick_memo: true,
       quick_memo_id: String(item.memo_id || item.client_id || ''),
+      quick_memo_title: String(item.title || '').trim(),
+      quick_memo_input_mode: String(item.input_mode || 'text'),
       created,
       modified: updated,
       properties: {
@@ -1283,6 +1304,9 @@
     if (item.cloud_etag && item.cloud_etag !== existing.etag && item.cloud_etag !== existingData?.legacy_etag) {
       throw new Error('クイックメモが別の画面で変更されています。入力を保持して再読み込みしてください');
     }
+    if (!Object.hasOwn(item, 'audio_clips') && existingData) {
+      item = { ...item, audio_clips: window.MeldexQuickMemoLibrary.parseMemoText(existingData.content, path).audio_clips };
+    }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
     const written = await cloudWriteFile(
       path,
@@ -1308,9 +1332,8 @@
       els.workspaceBtn.setAttribute('aria-label', 'Cloudワークスペースを開く');
       els.workspaceBtn.setAttribute('title', 'Cloudワークスペースを開く');
     }
-    // Cloud本体ではローカルOpenAI APIへボイスデータを送らない。ブラウザ標準の
-    // SpeechRecognition が無い環境ではボイスモード自体を選択不可にする。
-    if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+    // Cloudはブラウザ内で録音し、有料の文字起こしAPIへ自動送信しない。
+    if (!voiceAvailable()) {
       const voiceOption = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
       if (voiceOption) {
         voiceOption.disabled = true;
@@ -1882,21 +1905,77 @@
 
   // --- ボイスモード --------------------------------------------------------
 
+  function voiceAvailable() {
+    return !!((window.MediaRecorder && navigator.mediaDevices?.getUserMedia) || window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+
+  function renderAudioClips() {
+    if (!els.voicePanel) return;
+    let list = els.voicePanel.querySelector('.qm-audio-clips');
+    if (!list) {
+      list = document.createElement('div');
+      list.className = 'qm-audio-clips';
+      els.voicePanel.appendChild(list);
+    }
+    list.replaceChildren();
+    state.audioClips.forEach((src, index) => {
+      if (!/^data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+$/.test(src)) return;
+      const player = document.createElement('audio');
+      player.controls = true;
+      player.preload = 'metadata';
+      player.src = src;
+      player.setAttribute('aria-label', `録音 ${index + 1}`);
+      player.style.cssText = 'display:block;width:100%;margin-top:8px';
+      list.appendChild(player);
+    });
+  }
+
+  async function finishRecordedAudio(blob, epoch) {
+    if (!blob.size) {
+      if (epoch === state.memoEpoch) {
+        state.pendingVoice = null;
+        els.voiceStatus.textContent = '録音データがありません。もう一度録音してください';
+      }
+      return;
+    }
+    const raw = await blobToDataUrl(blob);
+    if (epoch !== state.memoEpoch) return;
+    // codecs パラメーターは録音形式本体に影響しない。保存・再生には基本MIMEを使う。
+    const dataUrl = raw.replace(/^(data:audio\/[^;,]+);[^,]*;base64,/, '$1;base64,');
+    if (!/^data:audio\/(?:webm|mp4|mpeg|ogg|wav);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('この録音形式は保存できません');
+    if (dataUrl.length > 12 * 1024 * 1024) throw new Error('録音が長すぎます。短く分けて録音してください');
+    if (!state.pendingVoice?.retained) {
+      if (state.audioClips.length >= 20 || state.audioClips.reduce((size, clip) => size + clip.length, dataUrl.length) > 12 * 1024 * 1024) throw new Error('録音が長すぎます。別のメモに分けて録音してください');
+      state.audioClips.push(dataUrl);
+    }
+    if (state.pendingVoice) state.pendingVoice.retained = true;
+    renderAudioClips();
+    scheduleSave();
+    if (!persistDraft(collectMemo())) throw new Error('録音を端末へ保存できませんでした');
+    if (isCloudMode() || state.pendingVoice?.skipTranscription) {
+      state.pendingVoice = null;
+      els.voiceStatus.textContent = '録音を保存しました';
+    } else {
+      await transcribeBlob(blob, epoch);
+    }
+  }
+
   async function startVoiceRecording() {
     if (state.voiceStarting || state.speech || state.recording || state.voiceFinalizePromise) return;
     if (state.pendingVoice) {
       const pending = state.pendingVoice;
-      state.voiceFinalizePromise = transcribeBlob(pending.blob, pending.epoch)
+      state.voiceFinalizePromise = (pending.retained && !pending.skipTranscription ? transcribeBlob(pending.blob, pending.epoch) : finishRecordedAudio(pending.blob, pending.epoch))
+        .catch(error => { els.voiceStatus.textContent = '録音を保持しています: ' + (error?.message || error); })
         .finally(() => { state.voiceFinalizePromise = null; });
       return state.voiceFinalizePromise;
     }
     const epoch = state.memoEpoch;
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (Recognition) {
+    if (Recognition && !(window.MediaRecorder && navigator.mediaDevices?.getUserMedia)) {
       startBrowserSpeech(Recognition);
       return;
     }
-    if (isCloudMode()) {
+    if (!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia)) {
       els.voiceStatus.textContent = 'このブラウザではボイス認識を利用できません';
       return;
     }
@@ -1919,15 +1998,18 @@
         updateVoiceUI('stopped');
         if (recorder._meldexCancelled) return;
         const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
-        state.pendingVoice = { blob, epoch };
-        state.voiceFinalizePromise = transcribeBlob(blob, epoch)
+        state.pendingVoice = { blob, epoch, skipTranscription: isCloudMode() || !!Recognition };
+        state.voiceFinalizePromise = finishRecordedAudio(blob, epoch)
+          .catch(error => { els.voiceStatus.textContent = '録音を保持しています: ' + (error?.message || error); })
           .finally(() => { state.voiceFinalizePromise = null; });
       };
       state.recording = recorder;
-      recorder.start();
+      recorder.start(1000);
       state.voiceStartTime = Date.now();
       startVoiceTimer();
       updateVoiceUI('recording');
+      // 録音を残しつつ、利用可能なら従来のブラウザ認識を使う。有料APIへ切り替えない。
+      if (Recognition) startBrowserSpeech(Recognition);
     } catch {
       stream?.getTracks().forEach(track => track.stop());
       state.recording = null;
@@ -1939,7 +2021,11 @@
 
   function startBrowserSpeech(Recognition) {
     if (state.speech) return;
-    const rec = new Recognition();
+    let rec;
+    try { rec = new Recognition(); } catch {
+      els.voiceStatus.textContent = state.recording ? '録音中（音声認識を利用できません）' : '音声認識を利用できません';
+      return;
+    }
     rec.lang = 'ja-JP';
     rec.continuous = true;
     rec.interimResults = true;
@@ -1966,13 +2052,15 @@
         state.voicePausing = false;
         return;
       }
-      updateVoiceUI('stopped');
-      stopVoiceTimer();
+      if (!state.recording) {
+        updateVoiceUI('stopped');
+        stopVoiceTimer();
+      }
     };
     state.speech = rec;
     try { rec.start(); } catch {
       state.speech = null;
-      els.voiceStatus.textContent = 'マイクを利用できません';
+      els.voiceStatus.textContent = state.recording ? '録音中（音声認識を利用できません）' : 'マイクを利用できません';
       return;
     }
     state.voiceStartTime = Date.now();
@@ -1983,6 +2071,7 @@
   function pauseVoiceRecording() {
     if (state.recording && state.recording.state === 'recording') {
       state.recording.pause();
+      if (state.speech) { state.voicePausing = true; state.speech.stop(); }
       updateVoiceUI('paused');
       stopVoiceTimer();
     } else if (state.speech) {
@@ -1996,6 +2085,8 @@
   function resumeVoiceRecording() {
     if (state.recording && state.recording.state === 'paused') {
       state.recording.resume();
+      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!state.speech && Recognition) startBrowserSpeech(Recognition);
       startVoiceTimer();
       updateVoiceUI('recording');
     } else if (!state.speech) {
@@ -2023,6 +2114,7 @@
       try { state.recording.stop(); } catch {}
     }
     state.recording = null;
+    state.pendingVoice = null;
     if (state.speech) {
       state.voicePausing = false;
       try { state.speech.stop(); } catch {}

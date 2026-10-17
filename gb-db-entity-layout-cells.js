@@ -34,21 +34,28 @@ function _elBuildFieldCellContent(cell, ctx) {
   const wrap = document.createElement('div');
   wrap.className = 'el-cell-content';
   const propName = String(cell.prop || '');
+  const formConfig = ctx.layout?.formConfig && globalThis.MeldexDbFormModel?.forLayout(ctx.layout);
 
   const caption = document.createElement('div');
   caption.className = 'el-cell-caption';
   caption.innerHTML = _elPropIconHtml(propName, ctx.propTypes, 13);
   const captionText = document.createElement('span');
   captionText.className = 'el-cell-caption-text';
-  captionText.textContent = propName || '(列未設定)';
+  captionText.textContent = formConfig?.labels?.[propName] || propName || '(列未設定)';
+  if (formConfig?.required?.includes(propName)) captionText.textContent += ' *';
   caption.appendChild(captionText);
   wrap.appendChild(caption);
 
   const body = document.createElement('div');
   body.className = 'el-cell-body cell-values';
-  if (propName && ctx.data?.properties && Object.prototype.hasOwnProperty.call(ctx.data.properties, propName)) {
-    if (typeof renderEntityPropValuesInto === 'function') {
-      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: ctx.readOnly === true });
+  const hasColumn = propName && (Object.prototype.hasOwnProperty.call(ctx.data?.properties || {}, propName)
+    || Object.prototype.hasOwnProperty.call(ctx.propTypes || {}, propName));
+  if (hasColumn) {
+    if (globalThis.MeldexDbFormRuntime?.renderField(body, cell, ctx)) {
+      // Both form views and topic layouts use the same rule-aware input controls.
+    } else if (typeof renderEntityPropValuesInto === 'function') {
+      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes,
+        { readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName) });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
       values.forEach(val => {
@@ -63,10 +70,75 @@ function _elBuildFieldCellContent(cell, ctx) {
     missing.className = 'el-cell-missing';
     missing.textContent = 'この列はシートにありません: ' + propName;
     body.appendChild(missing);
+    if (!ctx.options?.layoutDraft && ctx.dbPath && !ctx.readOnly && _elCanMutateGrid(ctx.grid, ctx.options)
+        && !(typeof isProductionManagementWriteBlocked === 'function' && isProductionManagementWriteBlocked(ctx.dbPath, ctx.options?.ctx))) {
+      const add = document.createElement('button'); add.type = 'button';
+      add.className = 'gb-btn el-cell-add-column'; add.dataset.e2eId = 'entity-layout-add-missing-column';
+      add.textContent = '列を追加';
+      add.setAttribute('aria-label', '「' + propName + '」列をシートに追加');
+      add.title = 'この項目に対応する列をシートに追加します';
+      const message = document.createElement('div'); message.className = 'el-cell-missing'; message.setAttribute('role', 'status');
+      body.append(add, message);
+      add.addEventListener('pointerdown', event => event.stopPropagation());
+      add.addEventListener('click', async event => {
+        event.stopPropagation();
+        if (add.disabled || !_elCanMutateGrid(ctx.grid, ctx.options)) return;
+        add.disabled = true; message.textContent = '列を追加しています…';
+        let saved = false;
+        try {
+          const result = await _elAddMissingColumn(ctx, cell);
+          if (!result) { message.textContent = ''; return; }
+          saved = true;
+          const fresh = await apiFetch('/entity?path=' + encodeURIComponent(ctx.entityPath), { silentError: true });
+          if (!ctx.grid.isConnected) return;
+          ctx.data.properties = fresh.properties || {};
+          // 空の列も追加直後からシート上の項目として表示する。
+          if (!Object.prototype.hasOwnProperty.call(ctx.data.properties, propName)) ctx.data.properties[propName] = [];
+          Object.assign(ctx.propTypes, result.propertyTypes);
+          ctx.rerender();
+          if (typeof showStatus === 'function') showStatus('列を追加しました: ' + propName);
+        } catch (error) {
+          message.textContent = (saved ? '列は追加済みです。再表示できませんでした: ' : '列を追加できません: ')
+            + (error?.userMessage || error?.message || error);
+          if (saved) add.textContent = '再表示';
+        } finally { add.disabled = false; }
+      });
+    }
   }
   wrap.appendChild(body);
   globalThis.MeldexDbTopicLayoutStyle?.applyCaptionMode?.(caption, captionText, body, cell, propName || '未設定の列');
   return wrap;
+}
+
+// 同じシートの複数セルから同時に追加しても、最新メタデータを読み直して1列ずつ確定する。
+const _elColumnAddQueues = new Map();
+function _elAddMissingColumn(ctx, cell) {
+  const key = String(ctx.dbPath || '').replace(/\\/g, '/');
+  const previous = _elColumnAddQueues.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const allowed = () => ctx.grid.isConnected && _elCanMutateGrid(ctx.grid, ctx.options)
+      && !ctx.options?.layoutDraft
+      && !(typeof isProductionManagementWriteBlocked === 'function' && isProductionManagementWriteBlocked(ctx.dbPath, ctx.options?.ctx));
+    if (!allowed()) return null;
+    const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(ctx.dbPath), { silentError: true });
+    if (!allowed()) return null;
+    const schemaCtx = { dbPath: ctx.dbPath, dbMetadata: metadata };
+    const name = String(cell.prop || '').trim();
+    if (!name) throw new Error('列名が設定されていません');
+    if (!Object.prototype.hasOwnProperty.call(metadata.property_types || {}, name)) {
+      const allowedTypes = ['text', 'number', 'checkbox', 'date', 'image', 'color', 'link', 'select', 'multi-select'];
+      const type = allowedTypes.includes(cell.columnType) ? cell.columnType : 'text';
+      const config = { type };
+      if (['select', 'multi-select'].includes(type) && Array.isArray(cell.columnOptions))
+        config.options = [...new Set(cell.columnOptions.filter(option => typeof option === 'string' && option))];
+      const saved = await setPropertyType(ctx.dbPath, name, config, schemaCtx);
+      if (saved === false) throw new Error('このシートには列を追加できません');
+    }
+    return { propertyTypes: getPropertyTypes(ctx.dbPath, schemaCtx) || {} };
+  });
+  _elColumnAddQueues.set(key, pending);
+  pending.finally(() => { if (_elColumnAddQueues.get(key) === pending) _elColumnAddQueues.delete(key); }).catch(() => {});
+  return pending;
 }
 
 /* label セル: 固定テキスト（見出し・キャプション）。編集はダブルクリック（canvas側で配線）。 */
@@ -162,6 +234,7 @@ function _elBuildImageCellContent(cell, ctx, canvasEl) {
 /* セル内容のディスパッチ。未実装タイプはタイプ名のプレースホルダを出す
    （通常は到達しない。テンプレート適用等で先行データが来ても壊れないための保険）。 */
 function _elBuildCellContent(cell, ctx, canvasEl) {
+  if (cell.type === 'subform' && globalThis.MeldexDbFormSubform) return MeldexDbFormSubform.render(cell, ctx);
   if (cell.type === 'field') return _elBuildFieldCellContent(cell, ctx);
   if (cell.type === 'label') return _elBuildLabelCellContent(cell, ctx);
   if (cell.type === 'divider') return _elBuildDividerCellContent(cell, ctx);
@@ -250,7 +323,8 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       target.style = snapshot;
     });
   };
-  openFormatPopup(anchorEl, {
+  const popup = openFormatPopup(anchorEl, {
+    className: ctx.options?.layoutDraft ? 'el-edit-popup' : '',
     fields: EL_FORMAT_FIELDS,
     values,
     onReset: () => {
@@ -263,6 +337,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
       if (value === '' || value == null || value === false) delete cell.style?.[prop];
       else { if (!_elIsObj(cell.style)) cell.style = {}; cell.style[prop] = value; }
+      ctx.options?.layoutDraft?.onChange?.();
       // ポップアップを開いたまま即時反映（再描画はしない）
       if (cellEl?.isConnected) {
         cellEl.removeAttribute('style');
@@ -277,6 +352,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       persistTimer = setTimeout(flushPersist, 300);
     },
   });
+  if (ctx.options?.layoutDraft && popup) popup._cleanup = () => closeAllFormatPopups();
 }
 
 /* セル1件へのパッチを永続化する共通ヘルパー */
@@ -419,6 +495,9 @@ function _elShowDividerColorPopup(anchorBtn, ctx, cell) {
 
 /* セルの設定入口（歯車ボタン）。タイプ別に適切な設定UIを開く。 */
 function _elOpenCellSettings(anchorBtn, cell, ctx, cellEl) {
+  if (cell.type === 'subform' && globalThis.MeldexDbFormSubform) {
+    MeldexDbFormSubform.settings(anchorBtn, cell, ctx); return;
+  }
   if (cell.type === 'image') {
     _elShowImageCellPopup(anchorBtn, ctx, cell);
     return;

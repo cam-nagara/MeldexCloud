@@ -792,7 +792,7 @@
     header.appendChild(quote);
     const bubble = document.createElement('div');
     bubble.className = 'chat-copy-body chat-message-bubble chat-message-bubble-cli';
-    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--accent)' : 'var(--bg3)'};color:${isUser ? 'var(--ui-accent-fg, var(--ui-fg-strong))' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
+    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--chat-user-bg, var(--accent))' : 'var(--bg3)'};color:${isUser ? 'var(--chat-user-fg, var(--ui-accent-fg, var(--ui-fg-strong)))' : 'var(--chat-message-fg, var(--fg))'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
     bubble.textContent = messagePreview(message);
     row.append(header, bubble);
     return row;

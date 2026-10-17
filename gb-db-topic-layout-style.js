@@ -15,6 +15,7 @@
   const LINE_STYLES = new Set(['none', 'solid', 'dashed', 'dotted', 'double']);
   const SHADOWS = new Set(['none', 'small', 'medium']);
   const CAPTION_MODES = new Set(['full', 'icon-only', 'hidden']);
+  const TEMPLATE_COLUMN_TYPES = new Set(['text', 'number', 'checkbox', 'date', 'image', 'color', 'link', 'select', 'multi-select']);
   const VALUE_FIELDS = new Set(['value', 'values', 'entity', 'entityData', 'topic', 'topicRecord', 'record']);
 
   function clone(value) {
@@ -169,6 +170,9 @@
       columns: (Array.isArray(columns) ? columns : []).map(column => ({
         id: String(column && column.id || ''),
         name: String(column && column.name || ''),
+        ...(TEMPLATE_COLUMN_TYPES.has(column?.type) ? { type: column.type } : {}),
+        ...(['select', 'multi-select'].includes(column?.type) && Array.isArray(column.options)
+          ? { options: [...new Set(column.options.filter(option => typeof option === 'string' && option))] } : {}),
       })),
     };
     if (object(options) && object(options.metadata)) template.metadata = clone(options.metadata);
@@ -234,6 +238,14 @@
       output.id = idFactory('cell');
       const mapping = mappingByCell.get(sourceCellId);
       if (cell.type === 'field') {
+        const sourceColumn = (Array.isArray(template.columns) ? template.columns : []).find(column => column?.name === cell.prop);
+        const type = sourceColumn?.type || cell.columnType
+          || template.metadata?.recommendedPropertyTypes?.[cell.prop]?.type;
+        if (type) output.columnType = TEMPLATE_COLUMN_TYPES.has(type) ? type : 'text';
+        const options = sourceColumn?.options || cell.columnOptions
+          || template.metadata?.recommendedPropertyTypes?.[cell.prop]?.options;
+        if (['select', 'multi-select'].includes(output.columnType) && Array.isArray(options))
+          output.columnOptions = [...new Set(options.filter(option => typeof option === 'string' && option))];
         if (mapping && mapping.target) {
           output.columnId = String(mapping.target.id || '');
           output.prop = String(mapping.target.name || '');
@@ -244,6 +256,15 @@
       }
       return output;
     });
+    if (object(layout.formConfig)) {
+      const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
+      const name = value => names.get(value) || value;
+      for (const key of ['fields', 'required']) if (Array.isArray(layout.formConfig[key])) layout.formConfig[key] = layout.formConfig[key].map(name);
+      for (const key of ['labels', 'descriptions', 'placeholders']) if (object(layout.formConfig[key]))
+        layout.formConfig[key] = Object.fromEntries(Object.entries(layout.formConfig[key]).map(([key, value]) => [name(key), value]));
+      if (Array.isArray(layout.formConfig.rules)) layout.formConfig.rules.forEach(rule => { if (object(rule)) rule.property = name(rule.property); });
+      if (layout.formConfig.entityNameProp) layout.formConfig.entityNameProp = name(layout.formConfig.entityNameProp);
+    }
     return { added: true, reason: '', layout, mappings };
   }
 
@@ -341,14 +362,19 @@
     if (!fetcher) return { available: false, source: 'device-cache', revision: null, templates: cached };
     try {
       const remote = await _readSharedLibrary(fetcher);
-      if (!remote.available) return { ...remote, source: 'device-cache', templates: cached };
+      if (!remote.available) return { ...remote, source: 'device-cache', templates: loadSharedTemplates(opts.storage) };
+      const latestCached = loadSharedTemplates(opts.storage);
+      // 読込待ちの間に保存・削除した結果を、古い共有応答でキャッシュへ書き戻さない。
+      if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
+        return { ...remote, source: 'device-cache', templates: latestCached };
+      }
       // 未同期の端末プリセットは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
       const templates = _mergeSharedTemplates(remote.templates, cached)
         .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       _cacheSharedTemplates(templates, opts.storage);
       return { ...remote, source: 'personal-library', templates };
     } catch (error) {
-      return { available: false, source: 'device-cache', revision: null, templates: cached, error };
+      return { available: false, source: 'device-cache', revision: null, templates: loadSharedTemplates(opts.storage), error };
     }
   }
 

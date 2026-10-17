@@ -149,7 +149,7 @@ function _dbTemplateAppendLegacyViewFields(view, template, overwrite) {
  *   適用前から存在していたビューにのみ行う（新規追加ビューはテンプレート側の値をそのまま使う）
  * @returns {boolean} savedViews パスを使ったか（false の場合は呼び出し元が旧パスへフォールバックする）
  */
-function _applyDbTemplateSavedViews(cfg, template, overwrite) {
+function _applyDbTemplateSavedViews(cfg, template, overwrite, appliedViews = []) {
   if (!template || !Array.isArray(template.savedViews)) return false;
   if (!Array.isArray(cfg.savedViews)) cfg.savedViews = [];
   const existingViews = cfg.savedViews.slice();
@@ -178,6 +178,7 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
         existing.viewMode = viewMode;
         const idx = cfg.savedViews.indexOf(existing);
         cfg.savedViews[idx] = _normalizeDbTemplateView(existing, cfg, idx);
+        appliedViews.push(cfg.savedViews[idx]);
       }
       return;
     }
@@ -191,6 +192,7 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
     existingNames.add(uniqueName);
     const normalized = _normalizeDbTemplateView(sanitized, cfg, cfg.savedViews.length);
     cfg.savedViews.push(normalized);
+    appliedViews.push(normalized);
     existingByKey.set(_dbTemplateSavedViewKey(normalized), normalized);
     added++;
   });

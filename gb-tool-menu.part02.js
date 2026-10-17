@@ -4,7 +4,7 @@ function buildToolMenuItems(toolType) {
   const hasFile = !!currentPath;
   const newItemType = {
     page: 'page', scriptnote: 'scriptnote', database: 'database',
-    board: 'board', calendar: 'calendar', csv: 'page', folder: 'page'
+    board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page'
   };
   const isFolderTool = toolType === 'folder';
 
@@ -194,6 +194,7 @@ function buildToolMenuItems(toolType) {
     { label: 'シナリオ', icon: 'bookOpenText', action: () => _createFolderViewItem('scriptnote') },
     { label: 'シート', icon: 'db', action: () => _createFolderViewItem('database') },
     { label: 'ボード', icon: 'presentation', action: () => _createFolderViewItem('board') },
+    { label: 'フォーム', icon: 'clipboardList', action: () => _createFolderViewItem('form-app') },
     { label: 'カレンダー', icon: 'calendar', action: () => _createFolderViewItem('calendar') },
   ];
   const common = isFolderTool

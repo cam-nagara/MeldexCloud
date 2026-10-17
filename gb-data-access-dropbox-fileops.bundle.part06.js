@@ -1,3 +1,15 @@
+        const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
+        const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
+          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+        });
+        return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
+      }
+      const parentPath = _dirname(oldPath);
+      const sourceName = _basename(oldPath);
+      if (source.kind === 'directory') {
+        const newPath = _joinPath(parentPath, newName);
+        if (newPath !== oldPath && await _pathExists(provider, newPath)) throw new Error(`既に存在: ${newName}`);
+        const annotationPlan = newPath !== oldPath
           ? await _prepareAnnotationsForPathMutation(provider, {
             action: 'rename', oldPath, newPath, isFolder: true,
           }) : [];
@@ -431,7 +443,7 @@
           imageCopies.push({ path: item.path, source_locator: sourceLocator });
           continue;
         }
-        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(sourceLocator)) {
+        if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
         if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');

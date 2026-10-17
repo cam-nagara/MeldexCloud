@@ -152,7 +152,7 @@
     const child1collapsed = node.children[1] && node.children[1].collapsed;
     if (child0collapsed) {
       // 折り畳まれた子は固定32pxにし、flex-growなし
-      if (node.direction === 'horizontal') { first.style.width = '32px'; first.style.flexShrink = '0'; }
+      if (node.direction === 'horizontal') { first.style.width = node.children[0]?.meldexRole === 'chat-sidebar' ? '0px' : '32px'; first.style.flexShrink = '0'; }
       else { first.style.height = '32px'; first.style.flexShrink = '0'; }
     } else if (child1collapsed) {
       // 相手が折り畳まれているなら自分がflex: 1で残り全部
@@ -373,7 +373,7 @@
     const second = document.createElement('div');
     second.className = 'gb-split-child gb-split-second';
     if (child1collapsed) {
-      if (node.direction === 'horizontal') { second.style.width = '32px'; second.style.flexShrink = '0'; }
+      if (node.direction === 'horizontal') { second.style.width = node.children[1]?.meldexRole === 'chat-sidebar' ? '0px' : '32px'; second.style.flexShrink = '0'; }
       else { second.style.height = '32px'; second.style.flexShrink = '0'; }
     } else if (child0collapsed) {
       second.style.flex = '1';

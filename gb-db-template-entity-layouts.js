@@ -77,7 +77,7 @@ async function embedDbTemplateEntityLayoutImages(template, selectedCellIds) {
 /* 適用: 既存レイアウトと名前が一致するものは加算スキップ（savedViewsの方針に合わせる。
    overwrite 時は同名の中身を置き換える）。追加分は id をすべて振り直し、タブ順の末尾へ足す。
    結果は cfg._dbTemplateEntityLayoutsResult = { added, skipped } に格納する。 */
-function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
+function _applyDbTemplateEntityLayouts(cfg, template, overwrite, appliedViews = []) {
   const incoming = Array.isArray(template?.entityLayouts) ? template.entityLayouts : [];
   if (incoming.length === 0) return false;
   const genId = (prefix) => (typeof _elGenId === 'function'
@@ -92,11 +92,13 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
     };
   let added = 0;
   let skipped = 0;
+  const layoutIds = new Map();
   incoming.forEach(raw => {
     const layout = _dbTemplateSanitizeEntityLayout(raw);
     if (!layout) return;
     const existing = state.layouts.find(l => String(l?.name || '') === layout.name);
     if (existing) {
+      layoutIds.set(layout.id, existing.id);
       if (!overwrite) {
         skipped += 1;
         return;
@@ -105,11 +107,13 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
       existing.canvasSize = layout.canvasSize;
       existing.theme = layout.theme;
       existing.cells = (layout.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
+      if (layout.formConfig) existing.formConfig = JSON.parse(JSON.stringify(layout.formConfig));
       added += 1;
       return;
     }
     const clone = JSON.parse(JSON.stringify(layout));
     clone.id = genId('el');
+    layoutIds.set(layout.id, clone.id);
     clone.cells = (clone.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
     state.layouts.push(clone);
     state.tabOrder.push(clone.id);
@@ -118,6 +122,11 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
   cfg.entityLayouts = state.layouts;
   cfg.entityTabOrder = state.tabOrder;
   cfg.currentEntityTab = state.currentTab;
+  appliedViews.forEach(view => {
+    for (const form of [view.formConfig, view.typeSpecific?.form?.formConfig]) {
+      if (form?.layoutId && layoutIds.has(form.layoutId)) form.layoutId = layoutIds.get(form.layoutId);
+    }
+  });
   cfg._dbTemplateEntityLayoutsResult = { added, skipped };
   return true;
 }
