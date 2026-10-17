@@ -108,16 +108,29 @@
     return !type || !UTILITY_PANE_TYPES.has(type);
   }
 
+  function isSidebarPane(pane, root) {
+    if (window._gbSingleWindow) return false;
+    const id = typeof pane === 'string' ? pane : pane?.id;
+    const walk = (node, sidebar = false) => {
+      if (!node) return false;
+      sidebar = sidebar || ['left-sidebar', 'right-sidebar'].includes(node.meldexRole);
+      if (node.type === 'pane') return node.id === id && sidebar;
+      const children = node.type === 'panelset' ? (node.groups || []).map(group => group.root) : node.children || [];
+      return children.some(child => walk(child, sidebar));
+    };
+    return walk(root || (typeof GBLayout !== 'undefined' ? GBLayout.root : null));
+  }
+
   function resolveMainPaneId(options) {
     if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return '';
     const opts = options || {};
     const root = opts.root || GBLayout.root;
-    const allPanes = GBLayout.getAllPanes(root) || [];
+    const allPanes = (GBLayout.getAllPanes(root) || []).filter(pane => !isSidebarPane(pane, root));
     const visiblePanes = GBLayout.getAllPanes(root, { activeOnly: true }).filter((pane) => {
-      if (!pane?.id) return false;
+      if (!pane?.id || isSidebarPane(pane, root)) return false;
       return typeof GBLayout.isPaneVisible === 'function' ? GBLayout.isPaneVisible(pane.id) : true;
     });
-    const isUsable = (pane) => pane?.id && (opts.allowLocked || !pane.locked);
+    const isUsable = (pane) => pane?.id && !isSidebarPane(pane, root) && (opts.allowLocked || !pane.locked);
     const pick = (...candidates) => {
       for (const pane of candidates) {
         if (isUsable(pane)) return pane.id;
@@ -183,6 +196,7 @@
   window.GBPaneDefaultLayout = {
     build,
     resolveMainPaneId,
+    isSidebarPane,
     constants: {
       DEFAULT_LEFT_DOCK_WIDTH_PX,
       DEFAULT_RIGHT_DOCK_WIDTH_PX,

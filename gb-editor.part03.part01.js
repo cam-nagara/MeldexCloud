@@ -524,6 +524,9 @@ function htmlToMd(html) {
     if (node.nodeType === 3) return node.textContent;
     if (node.nodeType !== 1) return '';
 
+    const memoHtml = _quickMemoStoredHtml(node);
+    if (memoHtml != null) return memoHtml + '\n\n';
+
     const tag = node.tagName;
     // コピーボタン・テーブル操作ボタン・セル編集inputはスキップ
     if (node.classList?.contains('copy-btn') || node.classList?.contains('table-add-row') || node.classList?.contains('table-add-col')) return '';

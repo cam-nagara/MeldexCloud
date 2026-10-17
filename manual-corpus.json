@@ -1,7 +1,7 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.400",
+  "manual_version": "0.7.401",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
   "source_digest": "51801bfbd9b26162c8216b7d037e28cd2f26de3ee675da3d3f25ae0d31ea30c4",
   "document_count": 207,

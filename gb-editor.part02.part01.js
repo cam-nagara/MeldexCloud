@@ -1447,6 +1447,73 @@ function stripAutoLinks(html) {
 /* ==============================
    Markdown ↔ HTML 変換
    ============================== */
+// クイックメモが保存するHTMLブロックだけを、通常のMarkdownと区別して往復する。
+// 任意のHTMLを有効化せず、本文の書式・画像・音声に必要な要素と属性だけを残す。
+function _quickMemoStoredHtml(element) {
+  const body = element?.tagName === 'DIV' && element.classList.contains('meldex-quick-memo-body');
+  const drawing = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-drawing');
+  if (!body && !drawing) return null;
+  const root = element.cloneNode(true);
+  const allowed = new Set('DIV P BR B STRONG I EM U S DEL SPAN A UL OL LI BLOCKQUOTE PRE CODE H1 H2 H3 H4 H5 H6 IMG FIGURE FIGCAPTION HR AUDIO VIDEO SOURCE TABLE THEAD TBODY TFOOT TR TD TH CAPTION COLGROUP COL'.split(' '));
+  const forbidden = new Set('SCRIPT STYLE IFRAME OBJECT EMBED SVG MATH TEMPLATE FORM INPUT BUTTON LINK META BASE'.split(' '));
+  const safeUrl = (value, media) => {
+    const url = String(value || '').replace(/[\u0000-\u0020\u007f]/g, '');
+    if (/^(?:https?:|blob:)/i.test(url)) return true;
+    if (media && /^data:(?:image\/(?:png|jpeg|gif|webp)|audio\/(?:wav|ogg|mpeg|mp4|webm)|video\/(?:mp4|webm));base64,[a-z0-9+/=]+$/i.test(url)) return true;
+    if (!media && /^(?:mailto:|tel:)/i.test(url)) return true;
+    return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('//') && !url.startsWith('\\');
+  };
+  const styleNames = ['font-weight', 'font-style', 'text-decoration', 'text-decoration-line', 'color', 'background-color', 'text-align', 'font-size', 'font-family', 'line-height', 'letter-spacing'];
+  for (const node of [root, ...root.querySelectorAll('*')]) {
+    if (forbidden.has(node.tagName)) { node.remove(); continue; }
+    const attrs = {};
+    const styles = styleNames.map(name => [name, node.style.getPropertyValue(name)])
+      .filter(([, value]) => value && !/url\s*\(|expression\s*\(|@/i.test(value));
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase(), value = attr.value;
+      if (name === 'href' && node.tagName === 'A' && safeUrl(value, false)) attrs.href = value;
+      if (name === 'src' && ['IMG', 'AUDIO', 'VIDEO', 'SOURCE'].includes(node.tagName) && safeUrl(value, true)) attrs.src = value;
+      if (['alt', 'title'].includes(name)) attrs[name] = value;
+      if (['width', 'height', 'colspan', 'rowspan'].includes(name) && /^\d{1,4}$/.test(value)) attrs[name] = value;
+      if (name === 'controls' && ['AUDIO', 'VIDEO'].includes(node.tagName)) attrs.controls = '';
+      node.removeAttribute(attr.name);
+    }
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+    for (const [name, value] of styles) node.style.setProperty(name, value);
+    if (!allowed.has(node.tagName)) node.replaceWith(...node.childNodes);
+  }
+  // 単独アプリの既存読込形式と同じ開始タグを保つ。
+  if (root.getAttribute('style')) {
+    const content = document.createElement('div');
+    content.setAttribute('style', root.getAttribute('style'));
+    content.append(...root.childNodes);
+    root.replaceChildren(content);
+    root.removeAttribute('style');
+  }
+  [...root.attributes].forEach(attr => root.removeAttribute(attr.name));
+  root.setAttribute('class', body ? 'meldex-quick-memo-body' : 'meldex-quick-memo-drawing');
+  return root.outerHTML;
+}
+
+function _quickMemoMarkdownBlock(lines, start) {
+  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing)["']/i);
+  if (!opening) return null;
+  const tag = opening[1].toLowerCase();
+  const tokens = new RegExp('<\\/?' + tag + '(?=[\\s>])[^>]*>', 'gi');
+  let depth = 0;
+  for (let end = start; end < lines.length; end++) {
+    for (const token of lines[end].match(tokens) || []) depth += token.startsWith('</') ? -1 : 1;
+    if (depth > 0) continue;
+    const template = document.createElement('template');
+    template.innerHTML = lines.slice(start, end + 1).join('\n');
+    if ([...template.content.childNodes].some(node => node.nodeType !== 1 && node.textContent.trim())) return null;
+    if (template.content.children.length !== 1) return null;
+    const html = _quickMemoStoredHtml(template.content.firstElementChild);
+    return html == null ? null : { html, end };
+  }
+  return null;
+}
+
 // options.basePath: 本文が属するノートのパス。相対メディアパス（WebClipperのクリップ本文など）を
 // 解決する基準になる。省略した場合は従来どおり src をそのまま出力する。
 function mdToHtml(md, options) {

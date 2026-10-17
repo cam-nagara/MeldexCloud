@@ -265,6 +265,70 @@ const GBLayout = (() => {
     return node;
   }
 
+  // 旧版でファイルタブに置き換わった固定サイドバーを復旧する。
+  // タブの履歴・未保存状態を含めてメインへ移し、既存のメインタブは保持する。
+  function _repairFixedRailFileTabs(node) {
+    if (!node || window._gbSingleWindow || !_hasFixedRailRoles(node)) return false;
+    const leftDock = _findFixedRailPanelset(node, 'left-sidebar');
+    const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
+    const mainDock = _findFixedRailPanelset(node, 'main');
+    const allPanes = _collectFixedRailPanes(node);
+    const main = _collectFixedRailPanes(mainDock).find(pane => pane.id === 'pane-main')
+      || _collectFixedRailPanes(mainDock)[0]
+      || allPanes.find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
+    if (!main) return false;
+    const fileTypes = new Set(['page', 'board', 'scriptnote', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
+    const isFile = tab => fileTypes.has(tab?.type) || (tab?.type === 'calendar' && !!tab.path);
+    let changed = false;
+    const sidePanes = new Set([..._collectFixedRailPanes(leftDock), ..._collectFixedRailPanes(rightDock),
+      ...allPanes.filter(pane => ['left-sidebar', 'right-sidebar'].includes(pane.meldexRole))]);
+    for (const pane of sidePanes) {
+      const active = pane.tabs?.[pane.activeTabIndex];
+      const files = (pane.tabs || []).filter(isFile);
+      if (!files.length) continue;
+      main.tabs = main.tabs || [];
+      for (const tab of files) {
+        if (main.tabs.some(other => other.id === tab.id)) tab.id = _fixedRailGeneratedId('tab');
+        main.tabs.push(tab);
+      }
+      pane.tabs = pane.tabs.filter(tab => !isFile(tab));
+      pane.activeTabIndex = Math.max(0, pane.tabs.indexOf(active));
+      if (!pane.tabs.length) pane.activeTabIndex = -1;
+      changed = true;
+    }
+    if (leftDock) {
+      let outlinerGroup = leftDock.groups?.find(group => _collectFixedRailPanes(group?.root)
+        .some(pane => pane.tabs?.some(tab => tab.type === 'outliner')));
+      if (!outlinerGroup) {
+        const empty = _collectFixedRailPanes(leftDock).find(pane => !pane.tabs?.length);
+        const pane = empty || createPaneNode(null, [], 0);
+        pane.meldexRole = 'left-sidebar';
+        pane.tabs = [_fixedRailTab('フォルダツリー', 'outliner')];
+        pane.activeTabIndex = 0;
+        if (!empty) {
+          outlinerGroup = { id: _fixedRailGeneratedId('group'), root: pane };
+          leftDock.groups.push(outlinerGroup);
+        } else outlinerGroup = leftDock.groups.find(group => _collectFixedRailPanes(group?.root).includes(pane));
+        leftDock.activeGroupId = outlinerGroup.id;
+        changed = true;
+      }
+      const activeGroup = leftDock.groups.find(group => group.id === leftDock.activeGroupId);
+      if (!_collectFixedRailPanes(activeGroup?.root).some(pane => pane.tabs?.length)) {
+        leftDock.activeGroupId = outlinerGroup.id;
+        changed = true;
+      }
+    } else {
+      const leftPane = allPanes.find(pane => pane.meldexRole === 'left-sidebar');
+      if (leftPane && !leftPane.tabs?.some(tab => tab.type === 'outliner')) {
+        leftPane.tabs = [...(leftPane.tabs || []), _fixedRailTab('フォルダツリー', 'outliner')];
+        leftPane.activeTabIndex = leftPane.tabs.length - 1;
+        changed = true;
+      }
+    }
+    if (changed && (main.activeTabIndex < 0 || main.activeTabIndex >= main.tabs.length)) main.activeTabIndex = 0;
+    return changed;
+  }
+
   function _countFixedRailTabs(node) {
     const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
     if (!rightDock || !Array.isArray(rightDock.groups)) return 0;
@@ -328,7 +392,10 @@ const GBLayout = (() => {
   function _migrateLayoutToFixedRailsIfNeeded(node) {
     _bumpCounterFromLayout(node);
     if (!node || window._gbSingleWindow) return node;
-    if (_hasFixedRailRoles(node)) return _ensureFixedRightRailDefaults(node);
+    if (_hasFixedRailRoles(node)) {
+      _repairFixedRailFileTabs(node);
+      return _ensureFixedRightRailDefaults(node);
+    }
     const storedActivePaneId = _readStoredActivePaneId();
     const leftTabs = [], rightTabs = [], contentTabs = [];
     let contentActiveIndex = -1;
@@ -544,6 +611,13 @@ const GBLayout = (() => {
       const saved = JSON.parse(rawSaved);
       if (saved && (saved.type === 'pane' || saved.type === 'split' || saved.type === 'panelset')) {
         _normalizePaneNode(saved);
+        if (_repairFixedRailFileTabs(saved)) {
+          try {
+            const backupKey = 'gb:layout:backup-pre-rail-repair';
+            if (!localStorage.getItem(backupKey)) localStorage.setItem(backupKey, rawSaved);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+          } catch (e) { /* 保存できない場合も復旧済みレイアウトで表示を続ける。 */ }
+        }
         // B 案マイグレーション: 水平split の子を panelset でラップ済みでなければバックアップしてから変換
         const needsMigration = _needsBMigration(saved);
         if (needsMigration) {

@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.400-6512c36212649d450f57",
+  "version": "0.7.401-9a3fa253bedfa09da717",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -793,7 +793,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "e8d91839786746f75ab98564d420879d54e10c4d2fba92fe478a661537e2b170"
+      "sha256": "df898e6a66de18550489e4c8e1403672b6ef3a654f2f938a0f85ebc394a6ac0c"
     },
     {
       "path": "gb-color-palette.js",
@@ -1565,11 +1565,11 @@
     },
     {
       "path": "gb-editor.part02.part01.js",
-      "sha256": "347a660b8e1d7bcd3968d189ae9d7c9390d0cdeeb938a98801748c74130650d5"
+      "sha256": "076343849fcb99b06487fb2eef29a571676001b541901c9a72162d72a3a347a2"
     },
     {
       "path": "gb-editor.part02.part02.js",
-      "sha256": "f5c76af2f0e9f1850fb02b60c0fcd8ad5669d174048e9dbb8a869c875fcfbc25"
+      "sha256": "77bda24427744f14c3e4780855ec68ad6fab1a372625f0c7243ded0159822f3a"
     },
     {
       "path": "gb-editor.part03.js",
@@ -1577,7 +1577,7 @@
     },
     {
       "path": "gb-editor.part03.part01.js",
-      "sha256": "5a22093392ac44e7692ca25c67972170ea6baf9d80aa3e399a45de085ea85b96"
+      "sha256": "38e6ad6e0dfc2fd688be83dba28d41ab0d65d7bd73ad12342710e3401f10f624"
     },
     {
       "path": "gb-editor.part03.part02.js",
@@ -1853,7 +1853,7 @@
     },
     {
       "path": "gb-layout.part01.part01.js",
-      "sha256": "338974b96b9dd26ecd12b1e50fb8873c61523bbc64a7f9102999b66b3d03352b"
+      "sha256": "bc6cec9fbec9cf95b66c118f556557f2ef3dce9a2ac6eb601d4677a4bb38a5e0"
     },
     {
       "path": "gb-layout.part01.part02.js",
@@ -2209,7 +2209,7 @@
     },
     {
       "path": "gb-pane-bridge.part02.part01.js",
-      "sha256": "b87e73e40dcebc0f9fceae6ffc2893173925211e8bdc6512ccfeefc525048475"
+      "sha256": "620faf18596160b0b64bb18dd362383c4f91f54ecc406d22d40d633290b740b4"
     },
     {
       "path": "gb-pane-bridge.part02.part02.js",
@@ -2225,7 +2225,7 @@
     },
     {
       "path": "gb-pane-default-layout.js",
-      "sha256": "f74e569de716fe738a7d1c84ebf8fe39b159bb0652de96a3254652a9c166e83f"
+      "sha256": "708a2c50b7685924daa35ee9d6c6ef2a2bf90283e23476fc3d8ec0caa9ad45f4"
     },
     {
       "path": "gb-pane-keepalive.js",
@@ -3593,7 +3593,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "3d7b8a87050ae88bc95a243ffbeb61ec40d5f5466e0f154708a699c750abb65c"
+      "sha256": "f7aa9c2fd63317f7f3730ab87594256f74339833ee3565ca6039c7100bf36186"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3605,15 +3605,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "c8df50c22675fddfe9775d9292a915fff652933c10a368c273809dc61496c6f1"
+      "sha256": "ba4c21d1b98520a6020e4b9f80f53d54dd872d8eb2b86055f3b0e6cdd34185ab"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "46c73f2183132696dc7cfa6f91e88b7a52b3665a40185b66217e74da09d07850"
+      "sha256": "e93d24c55a8083da047049ad5bb878ceac6f3f490b77fabecef853f2ceda00fe"
     },
     {
       "path": "manual.html",
-      "sha256": "fe8bee19112e758f004cc056e7f448e56c56123bf0940474bd425fd36dc2f2e7"
+      "sha256": "5ef469f7793d42bb8645f6d11755bde28929fd0ade67b2973b5139c2ece05445"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3653,7 +3653,7 @@
     },
     {
       "path": "meldex-cloud-runtime-05.js",
-      "sha256": "f382358d178f4e0a9c6800a8fb0ec49823e6b654b48fe3e253fcc5869017a0b5"
+      "sha256": "dbbace63c0d0c7309fac0fc332ae86aa54d9bdd5702a64048271cd5a3ecb4390"
     },
     {
       "path": "meldex-cloud-runtime-06.js",
@@ -3729,7 +3729,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "7bd70c4be478b3bdcbf5655ff87cf07954125ff52baae57bdbfd4ee1fef9df27"
+      "sha256": "4907bc3887f82ff600e441e86692a7a9b5f98b05d1c5321c5ad2be696505e800"
     },
     {
       "path": "Meldex.ico",
@@ -3897,7 +3897,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "6db598641e67762df1e51bdb5ae53a12c95e66d8b1fea01c35ed6e02945d751c"
+      "sha256": "d08f19e9bd88d10c193bc7041c020e12dcec5246d32c4d7e8e8138f0bc134d1f"
     },
     {
       "path": "public-legal.css",
@@ -4097,7 +4097,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "91f100067e2cb9c9998ed2aa3397d16c6e4bc10f59b6c0c296f611c9ea295b08"
+      "sha256": "ccee8c2d0043c502e6d02eafdf365a9e992e4d8a3e96ed83e83fdf08810ca9a0"
     },
     {
       "path": "viewer-annotation-legacy.js",

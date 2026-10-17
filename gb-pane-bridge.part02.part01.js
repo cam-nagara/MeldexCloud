@@ -924,6 +924,7 @@
 
   function _isFileOpenPaneCandidate(pane, options) {
     if (!pane) return false;
+    if (window.GBPaneDefaultLayout?.isSidebarPane?.(pane)) return false;
     if (!options?.allowLocked && pane.locked) return false;
     const activeTab = pane.tabs && pane.tabs[pane.activeTabIndex];
     return !activeTab || !FILE_OPEN_AVOID_PANE_TYPES.has(activeTab.type);
@@ -931,6 +932,7 @@
 
   function _isFileOpenFallbackPaneCandidate(pane, options) {
     if (!pane) return false;
+    if (window.GBPaneDefaultLayout?.isSidebarPane?.(pane)) return false;
     if (!options?.allowLocked && pane.locked) return false;
     const activeTab = pane.tabs && pane.tabs[pane.activeTabIndex];
     const type = activeTab?.type || '';

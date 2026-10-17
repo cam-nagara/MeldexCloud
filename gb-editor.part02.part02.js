@@ -119,6 +119,15 @@
       continue;
     }
 
+    const memoBlock = _quickMemoMarkdownBlock(lines, i);
+    if (memoBlock) {
+      closeListAll();
+      if (inTable) { html += '</table>'; inTable = false; pendingTableLayout = null; }
+      html += memoBlock.html;
+      i = memoBlock.end;
+      continue;
+    }
+
     const tableLayoutMatch = line.match(/^<!--table-layout:(.+)-->\s*$/);
     if (tableLayoutMatch) {
       try {

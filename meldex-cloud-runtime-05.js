@@ -11477,6 +11477,70 @@ const GBLayout = (() => {
     return node;
   }
 
+  // 旧版でファイルタブに置き換わった固定サイドバーを復旧する。
+  // タブの履歴・未保存状態を含めてメインへ移し、既存のメインタブは保持する。
+  function _repairFixedRailFileTabs(node) {
+    if (!node || window._gbSingleWindow || !_hasFixedRailRoles(node)) return false;
+    const leftDock = _findFixedRailPanelset(node, 'left-sidebar');
+    const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
+    const mainDock = _findFixedRailPanelset(node, 'main');
+    const allPanes = _collectFixedRailPanes(node);
+    const main = _collectFixedRailPanes(mainDock).find(pane => pane.id === 'pane-main')
+      || _collectFixedRailPanes(mainDock)[0]
+      || allPanes.find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
+    if (!main) return false;
+    const fileTypes = new Set(['page', 'board', 'scriptnote', 'pivot', 'entity', 'folder', 'media', 'html', 'csv']);
+    const isFile = tab => fileTypes.has(tab?.type) || (tab?.type === 'calendar' && !!tab.path);
+    let changed = false;
+    const sidePanes = new Set([..._collectFixedRailPanes(leftDock), ..._collectFixedRailPanes(rightDock),
+      ...allPanes.filter(pane => ['left-sidebar', 'right-sidebar'].includes(pane.meldexRole))]);
+    for (const pane of sidePanes) {
+      const active = pane.tabs?.[pane.activeTabIndex];
+      const files = (pane.tabs || []).filter(isFile);
+      if (!files.length) continue;
+      main.tabs = main.tabs || [];
+      for (const tab of files) {
+        if (main.tabs.some(other => other.id === tab.id)) tab.id = _fixedRailGeneratedId('tab');
+        main.tabs.push(tab);
+      }
+      pane.tabs = pane.tabs.filter(tab => !isFile(tab));
+      pane.activeTabIndex = Math.max(0, pane.tabs.indexOf(active));
+      if (!pane.tabs.length) pane.activeTabIndex = -1;
+      changed = true;
+    }
+    if (leftDock) {
+      let outlinerGroup = leftDock.groups?.find(group => _collectFixedRailPanes(group?.root)
+        .some(pane => pane.tabs?.some(tab => tab.type === 'outliner')));
+      if (!outlinerGroup) {
+        const empty = _collectFixedRailPanes(leftDock).find(pane => !pane.tabs?.length);
+        const pane = empty || createPaneNode(null, [], 0);
+        pane.meldexRole = 'left-sidebar';
+        pane.tabs = [_fixedRailTab('フォルダツリー', 'outliner')];
+        pane.activeTabIndex = 0;
+        if (!empty) {
+          outlinerGroup = { id: _fixedRailGeneratedId('group'), root: pane };
+          leftDock.groups.push(outlinerGroup);
+        } else outlinerGroup = leftDock.groups.find(group => _collectFixedRailPanes(group?.root).includes(pane));
+        leftDock.activeGroupId = outlinerGroup.id;
+        changed = true;
+      }
+      const activeGroup = leftDock.groups.find(group => group.id === leftDock.activeGroupId);
+      if (!_collectFixedRailPanes(activeGroup?.root).some(pane => pane.tabs?.length)) {
+        leftDock.activeGroupId = outlinerGroup.id;
+        changed = true;
+      }
+    } else {
+      const leftPane = allPanes.find(pane => pane.meldexRole === 'left-sidebar');
+      if (leftPane && !leftPane.tabs?.some(tab => tab.type === 'outliner')) {
+        leftPane.tabs = [...(leftPane.tabs || []), _fixedRailTab('フォルダツリー', 'outliner')];
+        leftPane.activeTabIndex = leftPane.tabs.length - 1;
+        changed = true;
+      }
+    }
+    if (changed && (main.activeTabIndex < 0 || main.activeTabIndex >= main.tabs.length)) main.activeTabIndex = 0;
+    return changed;
+  }
+
   function _countFixedRailTabs(node) {
     const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
     if (!rightDock || !Array.isArray(rightDock.groups)) return 0;
@@ -11540,7 +11604,10 @@ const GBLayout = (() => {
   function _migrateLayoutToFixedRailsIfNeeded(node) {
     _bumpCounterFromLayout(node);
     if (!node || window._gbSingleWindow) return node;
-    if (_hasFixedRailRoles(node)) return _ensureFixedRightRailDefaults(node);
+    if (_hasFixedRailRoles(node)) {
+      _repairFixedRailFileTabs(node);
+      return _ensureFixedRightRailDefaults(node);
+    }
     const storedActivePaneId = _readStoredActivePaneId();
     const leftTabs = [], rightTabs = [], contentTabs = [];
     let contentActiveIndex = -1;
@@ -11756,6 +11823,13 @@ const GBLayout = (() => {
       const saved = JSON.parse(rawSaved);
       if (saved && (saved.type === 'pane' || saved.type === 'split' || saved.type === 'panelset')) {
         _normalizePaneNode(saved);
+        if (_repairFixedRailFileTabs(saved)) {
+          try {
+            const backupKey = 'gb:layout:backup-pre-rail-repair';
+            if (!localStorage.getItem(backupKey)) localStorage.setItem(backupKey, rawSaved);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+          } catch (e) { /* 保存できない場合も復旧済みレイアウトで表示を続ける。 */ }
+        }
         // B 案マイグレーション: 水平split の子を panelset でラップ済みでなければバックアップしてから変換
         const needsMigration = _needsBMigration(saved);
         if (needsMigration) {
@@ -17647,16 +17721,29 @@ const GBTabs = (() => {
     return !type || !UTILITY_PANE_TYPES.has(type);
   }
 
+  function isSidebarPane(pane, root) {
+    if (window._gbSingleWindow) return false;
+    const id = typeof pane === 'string' ? pane : pane?.id;
+    const walk = (node, sidebar = false) => {
+      if (!node) return false;
+      sidebar = sidebar || ['left-sidebar', 'right-sidebar'].includes(node.meldexRole);
+      if (node.type === 'pane') return node.id === id && sidebar;
+      const children = node.type === 'panelset' ? (node.groups || []).map(group => group.root) : node.children || [];
+      return children.some(child => walk(child, sidebar));
+    };
+    return walk(root || (typeof GBLayout !== 'undefined' ? GBLayout.root : null));
+  }
+
   function resolveMainPaneId(options) {
     if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return '';
     const opts = options || {};
     const root = opts.root || GBLayout.root;
-    const allPanes = GBLayout.getAllPanes(root) || [];
+    const allPanes = (GBLayout.getAllPanes(root) || []).filter(pane => !isSidebarPane(pane, root));
     const visiblePanes = GBLayout.getAllPanes(root, { activeOnly: true }).filter((pane) => {
-      if (!pane?.id) return false;
+      if (!pane?.id || isSidebarPane(pane, root)) return false;
       return typeof GBLayout.isPaneVisible === 'function' ? GBLayout.isPaneVisible(pane.id) : true;
     });
-    const isUsable = (pane) => pane?.id && (opts.allowLocked || !pane.locked);
+    const isUsable = (pane) => pane?.id && !isSidebarPane(pane, root) && (opts.allowLocked || !pane.locked);
     const pick = (...candidates) => {
       for (const pane of candidates) {
         if (isUsable(pane)) return pane.id;
@@ -17722,6 +17809,7 @@ const GBTabs = (() => {
   window.GBPaneDefaultLayout = {
     build,
     resolveMainPaneId,
+    isSidebarPane,
     constants: {
       DEFAULT_LEFT_DOCK_WIDTH_PX,
       DEFAULT_RIGHT_DOCK_WIDTH_PX,
@@ -104299,6 +104387,73 @@ function stripAutoLinks(html) {
 /* ==============================
    Markdown ↔ HTML 変換
    ============================== */
+// クイックメモが保存するHTMLブロックだけを、通常のMarkdownと区別して往復する。
+// 任意のHTMLを有効化せず、本文の書式・画像・音声に必要な要素と属性だけを残す。
+function _quickMemoStoredHtml(element) {
+  const body = element?.tagName === 'DIV' && element.classList.contains('meldex-quick-memo-body');
+  const drawing = element?.tagName === 'FIGURE' && element.classList.contains('meldex-quick-memo-drawing');
+  if (!body && !drawing) return null;
+  const root = element.cloneNode(true);
+  const allowed = new Set('DIV P BR B STRONG I EM U S DEL SPAN A UL OL LI BLOCKQUOTE PRE CODE H1 H2 H3 H4 H5 H6 IMG FIGURE FIGCAPTION HR AUDIO VIDEO SOURCE TABLE THEAD TBODY TFOOT TR TD TH CAPTION COLGROUP COL'.split(' '));
+  const forbidden = new Set('SCRIPT STYLE IFRAME OBJECT EMBED SVG MATH TEMPLATE FORM INPUT BUTTON LINK META BASE'.split(' '));
+  const safeUrl = (value, media) => {
+    const url = String(value || '').replace(/[\u0000-\u0020\u007f]/g, '');
+    if (/^(?:https?:|blob:)/i.test(url)) return true;
+    if (media && /^data:(?:image\/(?:png|jpeg|gif|webp)|audio\/(?:wav|ogg|mpeg|mp4|webm)|video\/(?:mp4|webm));base64,[a-z0-9+/=]+$/i.test(url)) return true;
+    if (!media && /^(?:mailto:|tel:)/i.test(url)) return true;
+    return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('//') && !url.startsWith('\\');
+  };
+  const styleNames = ['font-weight', 'font-style', 'text-decoration', 'text-decoration-line', 'color', 'background-color', 'text-align', 'font-size', 'font-family', 'line-height', 'letter-spacing'];
+  for (const node of [root, ...root.querySelectorAll('*')]) {
+    if (forbidden.has(node.tagName)) { node.remove(); continue; }
+    const attrs = {};
+    const styles = styleNames.map(name => [name, node.style.getPropertyValue(name)])
+      .filter(([, value]) => value && !/url\s*\(|expression\s*\(|@/i.test(value));
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase(), value = attr.value;
+      if (name === 'href' && node.tagName === 'A' && safeUrl(value, false)) attrs.href = value;
+      if (name === 'src' && ['IMG', 'AUDIO', 'VIDEO', 'SOURCE'].includes(node.tagName) && safeUrl(value, true)) attrs.src = value;
+      if (['alt', 'title'].includes(name)) attrs[name] = value;
+      if (['width', 'height', 'colspan', 'rowspan'].includes(name) && /^\d{1,4}$/.test(value)) attrs[name] = value;
+      if (name === 'controls' && ['AUDIO', 'VIDEO'].includes(node.tagName)) attrs.controls = '';
+      node.removeAttribute(attr.name);
+    }
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+    for (const [name, value] of styles) node.style.setProperty(name, value);
+    if (!allowed.has(node.tagName)) node.replaceWith(...node.childNodes);
+  }
+  // 単独アプリの既存読込形式と同じ開始タグを保つ。
+  if (root.getAttribute('style')) {
+    const content = document.createElement('div');
+    content.setAttribute('style', root.getAttribute('style'));
+    content.append(...root.childNodes);
+    root.replaceChildren(content);
+    root.removeAttribute('style');
+  }
+  [...root.attributes].forEach(attr => root.removeAttribute(attr.name));
+  root.setAttribute('class', body ? 'meldex-quick-memo-body' : 'meldex-quick-memo-drawing');
+  return root.outerHTML;
+}
+
+function _quickMemoMarkdownBlock(lines, start) {
+  const opening = lines[start].match(/^\s*<(div|figure)\b[^>]*\bclass\s*=\s*["']meldex-quick-memo-(?:body|drawing)["']/i);
+  if (!opening) return null;
+  const tag = opening[1].toLowerCase();
+  const tokens = new RegExp('<\\/?' + tag + '(?=[\\s>])[^>]*>', 'gi');
+  let depth = 0;
+  for (let end = start; end < lines.length; end++) {
+    for (const token of lines[end].match(tokens) || []) depth += token.startsWith('</') ? -1 : 1;
+    if (depth > 0) continue;
+    const template = document.createElement('template');
+    template.innerHTML = lines.slice(start, end + 1).join('\n');
+    if ([...template.content.childNodes].some(node => node.nodeType !== 1 && node.textContent.trim())) return null;
+    if (template.content.children.length !== 1) return null;
+    const html = _quickMemoStoredHtml(template.content.firstElementChild);
+    return html == null ? null : { html, end };
+  }
+  return null;
+}
+
 // options.basePath: 本文が属するノートのパス。相対メディアパス（WebClipperのクリップ本文など）を
 // 解決する基準になる。省略した場合は従来どおり src をそのまま出力する。
 function mdToHtml(md, options) {
@@ -104424,6 +104579,15 @@ function mdToHtml(md, options) {
     }
     if (inCodeBlock) {
       html += esc(line) + '\n';
+      continue;
+    }
+
+    const memoBlock = _quickMemoMarkdownBlock(lines, i);
+    if (memoBlock) {
+      closeListAll();
+      if (inTable) { html += '</table>'; inTable = false; pendingTableLayout = null; }
+      html += memoBlock.html;
+      i = memoBlock.end;
       continue;
     }
 
@@ -105011,6 +105175,9 @@ function htmlToMd(html) {
   function walk(node) {
     if (node.nodeType === 3) return node.textContent;
     if (node.nodeType !== 1) return '';
+
+    const memoHtml = _quickMemoStoredHtml(node);
+    if (memoHtml != null) return memoHtml + '\n\n';
 
     const tag = node.tagName;
     // コピーボタン・テーブル操作ボタン・セル編集inputはスキップ
@@ -237144,6 +237311,7 @@ const GBPaneBridge = (() => {
 
   function _isFileOpenPaneCandidate(pane, options) {
     if (!pane) return false;
+    if (window.GBPaneDefaultLayout?.isSidebarPane?.(pane)) return false;
     if (!options?.allowLocked && pane.locked) return false;
     const activeTab = pane.tabs && pane.tabs[pane.activeTabIndex];
     return !activeTab || !FILE_OPEN_AVOID_PANE_TYPES.has(activeTab.type);
@@ -237151,6 +237319,7 @@ const GBPaneBridge = (() => {
 
   function _isFileOpenFallbackPaneCandidate(pane, options) {
     if (!pane) return false;
+    if (window.GBPaneDefaultLayout?.isSidebarPane?.(pane)) return false;
     if (!options?.allowLocked && pane.locked) return false;
     const activeTab = pane.tabs && pane.tabs[pane.activeTabIndex];
     const type = activeTab?.type || '';
