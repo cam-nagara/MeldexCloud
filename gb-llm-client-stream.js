@@ -599,9 +599,9 @@
 
   function _defaultModel(provider, model) {
     if (model) return model;
-    if (provider === 'anthropic') return 'claude-sonnet-5';
-    if (provider === 'openai') return 'gpt-5.4-mini';
-    return 'gemini-2.5-flash';
+    if (provider === 'anthropic') return 'claude-sonnet-5-5';
+    if (provider === 'openai') return 'gpt-6-luna';
+    return 'gemini-3.8-flash';
   }
 
   async function _streamAnthropic(body, apiKey, send, signal) {

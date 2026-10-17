@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.407",
+  "manual_version": "0.7.408",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "dd533dcbc0b65f5d7ef452d0fb33a63b7d429413f6030f06686585e1b6be77ed",
+  "source_digest": "c7884c18c0bb92c2fc3444a1aa74bb3e80afac460fec14cbc6ecbc658c2ff522",
   "document_count": 207,
   "chunk_count": 1911,
   "documents": [
@@ -242,7 +242,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "6714e37753452bc8622d711d84c602d1865c71ac46ca0c15f692a5ab3bb23f7e",
+      "source_sha256": "13b73a6e870074b736335ccbbc2ab06936e0323cec9657147bccffe2f0452be0",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -9465,7 +9465,7 @@
       "category": "チャット・AI",
       "heading": "PowerShellで先に動くことを確認する",
       "anchor": "powershell",
-      "text": "Meldexから使う前に、PowerShellで次の確認をします。\ncodex --version\nclaude --version\nagy --version\n使うCLIのバージョンが表示されれば、Meldexからも見つけられる可能性が高いです。\n続けて、使うCLIを一度起動します。\ncodex\nclaude\nagy\nログイン、フォルダ信頼確認、初回設定が出た場合は、ここで済ませます。",
+      "text": "Meldexから使う前に、PowerShellで次の確認をします。\ncodex --version\nclaude --version\nagy --version\n使うCLIのバージョンが表示されれば、Meldexからも見つけられる可能性が高いです。\nClaude Codeで最新のOpus 5.5などを使う場合は 2.1.280以上 が必要です。古い場合は claude update で更新してください。ログインできていても、CLI自体が古いとモデルの呼び出しが拒否されます。\n続けて、使うCLIを一度起動します。\ncodex\nclaude\nagy\nログイン、フォルダ信頼確認、初回設定が出た場合は、ここで済ませます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=powershell"
     },
     {
