@@ -1035,6 +1035,8 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     schedule(120);
   });
   root.addEventListener('click', (e) => {
+    // アイコンはピッカーの確定時に専用保存する。開く・取り消すだけでは列を保存しない。
+    if (e.target?.closest?.('#pt-icon-btn')) return;
     if (e.target?.closest?.('button')) setTimeout(() => schedule(120), 0);
   });
   root.querySelector('#pt-type')?.addEventListener('change', () => {

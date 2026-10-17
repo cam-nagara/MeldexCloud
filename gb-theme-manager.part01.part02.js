@@ -151,8 +151,8 @@
 
   function _builtinAccentThemeUiApplications(id, applications) {
     const cfg = normalizeThemeUiApplications(applications);
-    // Common controls include selector-backed chrome and tree files.
-    // Sequential folders, headings and section bars retain their eight colors.
+    // Selection uses the same accent for tree files and folders. Normal
+    // sequential decoration, headings and section bars retain eight colors.
     const commonTargets = THEME_UI_TARGETS.filter(target => target.group === 'ui'
       && (target.vars || target.id === 'left-chrome' || target.id === 'folder'));
     for (const target of commonTargets) {
@@ -162,6 +162,7 @@
         }
       }
     }
+    cfg['folder-tree-folder'].selected.bg = cfg.folder.selected.bg;
     return cfg;
   }
 

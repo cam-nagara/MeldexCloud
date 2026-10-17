@@ -18,6 +18,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
+  const THEME_UI_DEFAULTS_VERSION = 1;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -894,6 +895,7 @@
       global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: getUseOsAccentColor() } }));
     }
     if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
+      applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
       const apps = getThemeUiApplications();
       const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
@@ -934,12 +936,12 @@
 
   function resetThemeUiAutoTone(options = {}) {
     const before = _captureThemeSettingsStorage([THEME_UI_AUTO_TONE_KEY]);
-    try { localStorage.removeItem(THEME_UI_AUTO_TONE_KEY); } catch {}
+    const presetTone = normalizeThemeUiAutoTone(getThemeById(getDefaultThemeId())?.ui?.themeUiAutoTone);
+    try { localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(presetTone)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動トーンリセット', before, [THEME_UI_AUTO_TONE_KEY], '', options);
-    const next = normalizeThemeUiAutoTone(null);
     applyThemeUiApplications(getThemeUiApplications());
-    dispatchThemeUiAutoToneChange({ tone: next, reset: true });
-    return next;
+    dispatchThemeUiAutoToneChange({ tone: presetTone, reset: true });
+    return presetTone;
   }
 
   function normalizeThemeUiApplications(raw) {
@@ -972,16 +974,27 @@
 
   function getThemeUiApplications() {
     try {
-      return normalizeThemeUiApplications(JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null'));
+      const stored = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+      return stored ? normalizeThemeUiApplications(stored) : _currentThemeUiApplications();
     } catch {
-      return normalizeThemeUiApplications(null);
+      return _currentThemeUiApplications();
     }
+  }
+
+  function _currentThemeUiApplications() {
+    return normalizeThemeUiApplications(getThemeById(getDefaultThemeId())?.ui?.themeUiApplications);
+  }
+
+  function _encodeThemeUiApplications(cfg) {
+    // Metadata travels with the settings through history, import and sync.
+    // Normalization ignores it, so older clients can still read the targets.
+    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
   }
 
   function saveThemeUiApplications(cfg, options = {}) {
     const next = normalizeThemeUiApplications(cfg);
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(next)); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(next)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用変更', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(next, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: next });
@@ -996,9 +1009,9 @@
   }
 
   function resetThemeUiApplications(options = {}) {
-    const cfg = _defaultThemeUiApplications();
+    const cfg = _currentThemeUiApplications();
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.removeItem(THEME_UI_APPLICATIONS_KEY); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(cfg)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用リセット', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(cfg, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: cfg, reset: true });
@@ -1010,7 +1023,7 @@
     const ids = new Set((Array.isArray(targetIds) ? targetIds : [targetIds]).map(id => String(id || '')).filter(Boolean));
     if (!ids.size) return resetThemeUiApplications(options);
     const cfg = getThemeUiApplications();
-    const defaults = _defaultThemeUiApplications();
+    const defaults = _currentThemeUiApplications();
     ids.forEach(id => {
       if (!cfg[id] || !defaults[id]) return;
       cfg[id] = clone(defaults[id]);

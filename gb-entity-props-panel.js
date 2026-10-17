@@ -131,6 +131,28 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
   });
   header.appendChild(toggleBtn);
 
+  if (dbPath && options?.readOnly !== true && grid?.__MeldexRuntimeReadOnly !== true
+    && typeof togglePropertyLayoutEditMode === 'function'
+    && window.MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath) !== true) {
+    const reorderBtn = document.createElement('button');
+    const editing = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(dbPath);
+    const reorderLabel = editing ? '列の並べ替えを完了' : '列を並べ替える';
+    reorderBtn.type = 'button';
+    reorderBtn.className = 'entity-props-col-width-btn gb-btn gb-btn-sm gb-btn-icon db-column-reorder-toggle';
+    reorderBtn.dataset.e2eId = 'entity-props-column-reorder';
+    reorderBtn.title = reorderLabel;
+    reorderBtn.setAttribute('aria-label', reorderLabel);
+    reorderBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    reorderBtn.innerHTML = typeof lucide === 'function' ? lucide(editing ? 'check' : 'listOrdered', 14) : '↕';
+    reorderBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      togglePropertyLayoutEditMode(dbPath);
+      if (header.isConnected) renderEntityPropsGridInto(grid, data, entityPath, options);
+      grid.querySelector('[data-e2e-id="entity-props-column-reorder"]')?.focus({ preventScroll: true });
+    });
+    header.appendChild(reorderBtn);
+  }
+
   const widthBtn = document.createElement('button');
   widthBtn.type = 'button';
   widthBtn.className = 'entity-props-col-width-btn gb-btn gb-btn-sm gb-btn-icon';

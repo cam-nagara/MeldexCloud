@@ -100,6 +100,7 @@
 .entity-props-toggle-chevron { display: inline-flex; align-items: center; justify-content: center; transition: transform 0.15s; }
 .entity-props-toggle[aria-expanded="true"] .entity-props-toggle-chevron { transform: rotate(90deg); }
 .entity-props-col-width-btn { margin-left: auto; }
+.entity-props-header .db-column-reorder-toggle + .entity-props-col-width-btn { margin-left: 0; }
 @media (pointer: coarse), (max-width: 640px) {
   .entity-props-toggle,
   .entity-props-col-width-btn {
@@ -180,6 +181,16 @@
 .entry-prop-values {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
   font-size: 13px; color: var(--fg);
+}
+/* Native WebView inherits a selection-disabled body. Restore selection only
+   for entry values; disabling HTML dragging alone does not override it. */
+.entity-props-grid-container .entry-prop-values {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.entity-props-grid-container .entry-prop-values button {
+  -webkit-user-select: none;
+  user-select: none;
 }
 /* ＋（候補値を追加）を最後の値と同じ行に並べるための末尾ラッパー */
 .entry-prop-value-tail { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }

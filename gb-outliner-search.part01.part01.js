@@ -1062,12 +1062,17 @@ async function _outlinerResolveStoredItemType(item) {
 
 async function _openStoredOutlinerItem(item, opts) {
   const path = String(item?.path || '');
+  if (!path) return false;
+  const activation = window.GBOutlinerActivation;
+  const generation = activation?.nextGeneration();
   const name = _outlinerStoredItemName(item);
   const type = await _outlinerResolveStoredItemType(item);
-  const openOpts = opts || { fromExplorer: true };
-  if (!path) return;
+  // 判定待ちの間にツリー／最近使った項目で別ファイルを開いた場合、古い操作で戻さない。
+  if (activation && !activation.isCurrentGeneration(generation)) return false;
+  const openOpts = window.GBOutlinerActivation?.fileOpenOptions(opts)
+    || opts || { fromExplorer: true };
   if (type === 'folder') openFolder(name, path, openOpts);
-  else if (type === 'database') selectDatabase(path, null, openOpts);
+  else if (type === 'database') selectDatabase(path, openOpts.paneContext || null, openOpts);
   else if (type === 'entity') { if (typeof selectEntity === 'function') selectEntity(path, openOpts); }
   else if (type === 'page') openPage(name, path, openOpts);
   else if (type === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, name, openOpts); else openPage(name, path, openOpts); }
@@ -1082,6 +1087,7 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (type === 'html') openHtmlFile(name, path, openOpts);
   else if (type === 'csv') { if (typeof openCsvFile === 'function') openCsvFile(name, path, openOpts); else openPage(name, path, openOpts); }
   else if (typeof openNative === 'function') openNative(path);
+  return true;
 }
 
 // 最近使った項目・お気に入りショートカットの単クリック選択（単一選択。開かない）。

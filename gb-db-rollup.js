@@ -368,6 +368,10 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
 
   const initialTargetType = current?.targetProp ? propTypes?.[current.targetProp]?.type : '';
   const aggOptions = _rollupAggregationOptionsForType(initialTargetType);
+  // 参照先の型取得前も保存済み設定を保持する（別シートの列はまだ型が無い）。
+  if (current?.aggregation && !aggOptions.some(a => a.key === current.aggregation)) {
+    aggOptions.push({ key: current.aggregation, label: current.aggregation });
+  }
 
   // リレーション列が1つも無いシートでは、空のドロップダウンを出すと
   // 「選べないのに理由が分からない」状態になるため、その場で理由を出す。
@@ -391,7 +395,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   html += '</div>';
 
   html += '<div class="field"><label>参照先の列</label>';
-  html += '<select id="rollup-target-prop"><option value="">'
+  html += '<select id="rollup-target-prop"><option value="' + esc(current?.targetProp || '') + '">'
        + (current?.relationProp ? '読み込み中...' : 'リレーション列を選ぶと表示されます')
        + '</option></select></div>';
 
@@ -421,7 +425,7 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   const seq = (scope._rollupRelationLoadSeq || 0) + 1;
   scope._rollupRelationLoadSeq = seq;
   _rollupRelationLoadSeq++;
-  sel.innerHTML = '<option value="">読み込み中...</option>';
+  sel.replaceChildren(new Option('読み込み中...', preselect || ''));
 
   const dbPath = (typeof _ptState === 'function' ? _ptState(scope).dbPath : '') || state.currentDbPath;
   const propTypes = getPropertyTypes(dbPath);
@@ -436,14 +440,22 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
     ? _dbResolveRelationDbPath(dbPath, ptc)
     : ((ptc.relationDb === '' || ptc.relationDb == null) ? dbPath : ptc.relationDb);
   const targetData = await fetchRelatedDbData(_relDb);
+  // 未表示の別シートでも型を解決する。取得失敗時に既存の集計設定を文字列へ上書きしない。
+  let targetMetadata;
+  try {
+    targetMetadata = typeof _getDbMetadataCached === 'function'
+      ? await _getDbMetadataCached(_relDb, true) : null;
+  } catch (_) {
+    if (seq === scope._rollupRelationLoadSeq) sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+    return;
+  }
   if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;
   if (!targetData || !targetData.properties) {
-    sel.innerHTML = '<option value="">(取得失敗)</option>';
-    _rollupSetAggregationOptionsForType('', 'values', scope);
+    sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
     return;
   }
 
-  const targetPropTypes = _rollupTargetPropertyTypes(_relDb, targetData);
+  const targetPropTypes = _rollupTargetPropertyTypes(_relDb, targetMetadata || targetData);
   const targetProps = Array.from(new Set([
     ...(Array.isArray(targetData.properties) ? targetData.properties : []),
     ...Object.keys(targetPropTypes || {}),
@@ -465,7 +477,8 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   };
   const selectedType = targetPropTypes?.[sel.value]?.type || '';
   const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
-  _rollupSetAggregationOptionsForType(selectedType, aggSel?.dataset.current || 'values', scope);
+  // 読込待ちの間にも表示方法を変更できる。開始時の保存値で利用者の選択を戻さない。
+  _rollupSetAggregationOptionsForType(selectedType, aggSel?.value || aggSel?.dataset.current || 'values', scope);
 }
 
 /**
@@ -500,9 +513,9 @@ function _rollupAggregationOptionsForType(propType) {
 function _rollupTargetPropertyTypes(dbPath, targetData) {
   if (targetData?.property_types) return targetData.property_types;
   if (targetData?.propertyTypes) return targetData.propertyTypes;
-  const localTypes = getDbViewConfig(dbPath).propertyTypes || {};
-  if (Object.keys(localTypes).length) return localTypes;
-  return typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
+  // localStorage は編集した列だけの部分キャッシュ。完全なバックエンド型定義を優先する。
+  return typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) :
+    (getDbViewConfig(dbPath).propertyTypes || {});
 }
 
 function _rollupSetAggregationOptionsForType(propType, preferred, root) {

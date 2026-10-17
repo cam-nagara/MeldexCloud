@@ -53,7 +53,6 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     if (type === 'multi-relation') return 'relation';
     if (type === 'multi-user') return 'user';
     if (type === 'multi-link') return 'link';
-    if (type === 'chat') return 'text';
     return type || 'text';
   };
   global.getPropertyTypeMultiplicity = function getPropertyTypeMultiplicity(type) {
@@ -74,7 +73,11 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
   };
   global.renderPropertyTypeOptions = function renderPropertyTypeOptions(currentType) {
     const selectedType = global.getPropertyTypeUiBaseType(currentType || 'text');
-    return global.getPropertyTypeMenuItems().map(t => {
+    const items = global.getPropertyTypeMenuItems();
+    // 新規選択肢から除いた旧型も、既存列の設定を開いた時にはその型を保持する。
+    const existing = global.getPropertyTypeDefinition(selectedType);
+    if (existing && !items.some(t => t.type === selectedType)) items.push(existing);
+    return items.map(t => {
       const selected = t.type === selectedType ? ' selected' : '';
       return '<option value="' + t.type + '"' + selected + '>' + t.label + '</option>';
     }).join('\n');

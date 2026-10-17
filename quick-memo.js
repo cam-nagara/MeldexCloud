@@ -975,7 +975,7 @@
           if (typeof window.MeldexGlobalTags?.mergeExistingTagNames !== 'function') {
             throw new Error('共通タグとの統合機能を読み込めませんでした');
           }
-          await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags);
+          await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
         }
         sent.add(item.memo_id);
       } catch (error) {
@@ -1402,7 +1402,7 @@
   // --- タグチップ ---------------------------------------------------------
   //
   // 上部の候補は、Dropbox個人設定で同期するクイックメモタグだけに限定する。
-  // 共通タグの選択と専用一覧への登録は別操作とし、共通辞書へ書き込まない。
+  // 候補一覧の登録とメモへの付与は別操作。メモを送信するときに共通辞書へ統合する。
 
   const QUICK_MEMO_TAGS_KEY = 'meldex:quick-memo:tag-catalog:v1';
   const QUICK_MEMO_TAG_SYNC_KEY = 'meldex:quick-memo:tag-sync:v1';

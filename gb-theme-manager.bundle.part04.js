@@ -1,3 +1,17 @@
+    if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
+    board.themeId = nextThemeId;
+    applyBoardThemeRuntime(board);
+    if (typeof global.bdRender === 'function' && isBoardRenderReady(board)) global.bdRender();
+    if (typeof global.bdDirty === 'function') global.bdDirty();
+    const themeDef = getActiveBoardTheme(board);
+    if (typeof global.showStatus === 'function') global.showStatus(board.themeId ? `ボードテーマ「${themeDef.name}」を適用しました` : 'ボードテーマをアプリ設定に戻しました');
+    return true;
+  }
+
+  function themeOptionsHtml(currentId, options = {}) {
+    const current = _normalizeThemeIdWithPromotedCustom(currentId || '');
+    const includeSystem = options.includeSystem !== false;
+    let html = includeSystem ? `<option value="OSに合わせる"${current === 'OSに合わせる' ? ' selected' : ''}>OSに合わせる</option>` : '';
     const resolvedCurrent = current === 'OSに合わせる' ? current : resolveThemeId(current);
     html += getAllThemes().map(t => `<option value="${escAttr(t.id)}"${t.id === resolvedCurrent || t.id === current ? ' selected' : ''}>${escHtml(t.name)}</option>`).join('');
     // Keep a legacy file's current choice visible without offering retired starters to new files.
@@ -153,9 +167,25 @@
     let wroteApplications = false;
     let wroteAutoTone = false;
     try {
-      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_APPLICATIONS_KEY) == null) {
-        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(applications));
+      const raw = localStorage.getItem(THEME_UI_APPLICATIONS_KEY);
+      if (options.preserveStored !== true || raw == null) {
+        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(applications));
         wroteApplications = true;
+      } else {
+        const stored = JSON.parse(raw);
+        if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const previous = clone(applications);
+          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+          const normalized = normalizeThemeUiApplications(stored);
+          // Only migrate an exact former builtin default, never a user's
+          // different colors or an explicitly saved auto-color preference.
+          const unchangedBuiltin = themeDef.builtIn === true
+            && [previous, _defaultThemeUiApplications()].some(legacy =>
+              JSON.stringify(normalized) === JSON.stringify(legacy));
+          localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
+            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+          wroteApplications = true;
+        }
       }
     } catch {}
     try {
@@ -167,9 +197,10 @@
     // 書き込みがあったら CSS rules を再生成してランタイムへ反映 (以前は localStorage のみ
     // 更新されて `meldex-theme-ui-applications-style` が古い状態のままだった)
     if (wroteApplications || wroteAutoTone) {
-      applyThemeUiApplications(applications, { forceTargets: true });
+      const effectiveApplications = getThemeUiApplications();
+      applyThemeUiApplications(effectiveApplications, { forceTargets: true });
       if (wroteApplications && typeof dispatchThemeUiApplicationsChange === 'function') {
-        dispatchThemeUiApplicationsChange({ applications, fromTheme: true });
+        dispatchThemeUiApplicationsChange({ applications: effectiveApplications, fromTheme: true });
       }
       if (wroteAutoTone && typeof dispatchThemeUiAutoToneChange === 'function') {
         dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });

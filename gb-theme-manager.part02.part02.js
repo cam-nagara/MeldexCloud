@@ -6,9 +6,10 @@
     // 書き込みがあったら CSS rules を再生成してランタイムへ反映 (以前は localStorage のみ
     // 更新されて `meldex-theme-ui-applications-style` が古い状態のままだった)
     if (wroteApplications || wroteAutoTone) {
-      applyThemeUiApplications(applications, { forceTargets: true });
+      const effectiveApplications = getThemeUiApplications();
+      applyThemeUiApplications(effectiveApplications, { forceTargets: true });
       if (wroteApplications && typeof dispatchThemeUiApplicationsChange === 'function') {
-        dispatchThemeUiApplicationsChange({ applications, fromTheme: true });
+        dispatchThemeUiApplicationsChange({ applications: effectiveApplications, fromTheme: true });
       }
       if (wroteAutoTone && typeof dispatchThemeUiAutoToneChange === 'function') {
         dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });

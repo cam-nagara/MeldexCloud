@@ -6,6 +6,7 @@
   const STORE = 'drafts';
   const MAX_DRAFTS = 100;
   const MAX_BYTES = 1024 * 1024;
+  const RESERVATION_PREFIX = 'meldex-draft-reservation-v1:';
   const timers = new Map();
   // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
   // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
@@ -162,6 +163,39 @@
     }).catch(() => ({ ok: false }));
   }
 
+  // Reserve synchronously before navigation can stop an IndexedDB transaction
+  // or an unload request. The existing scope keeps workspaces/accounts apart.
+  function reserveDraft(path, content, lastSyncedAt) {
+    const safePath = String(path || '').trim();
+    if (!safePath || _byteLength(content) > MAX_BYTES || _isPathLocked(safePath)) return { ok: false };
+    const key = _draftStorageKey(safePath);
+    const item = { path: key, filePath: safePath, scope: _draftScope(), content: String(content || ''),
+      savedAt: new Date().toISOString(), lastSyncedAt: String(lastSyncedAt || '') };
+    let reserved = false;
+    try {
+      localStorage.setItem(RESERVATION_PREFIX + key, JSON.stringify(item));
+      sessionDraftKeys.add(key);
+      reserved = true;
+    } catch (_) {}
+    void saveDraft(safePath, content, lastSyncedAt);
+    return { ok: reserved };
+  }
+
+  function _reservations() {
+    const items = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key?.startsWith(RESERVATION_PREFIX)) continue;
+        try {
+          const item = JSON.parse(localStorage.getItem(key));
+          if (item?.path && typeof item.content === 'string' && _byteLength(item.content) <= MAX_BYTES) items.push(item);
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return items;
+  }
+
   function queueDraft(path, content, lastSyncedAt) {
     const safePath = String(path || '').trim();
     const key = _draftTimerKey(safePath);
@@ -185,6 +219,9 @@
       const all = await _request(store.getAll());
       all.filter(item => _isCurrentScopeDraft(item, scope)).forEach(item => store.delete(item.path));
     }).catch(() => {});
+    for (const item of _reservations().filter(item => _isCurrentScopeDraft(item, scope))) {
+      try { localStorage.removeItem(RESERVATION_PREFIX + item.path); } catch (_) {}
+    }
   }
 
   // storageKey は listDrafts() が返す「実際に保存されているキー」。渡された場合は
@@ -201,19 +238,38 @@
     const targets = new Set([_draftStorageKey(safePath)]);
     const explicit = String(storageKey || '').trim();
     if (explicit) targets.add(explicit);
+    targets.forEach(target => { try { localStorage.removeItem(RESERVATION_PREFIX + target); } catch (_) {} });
     await _store('readwrite', (store) => {
       targets.forEach(target => store.delete(target));
     }).catch(() => {});
   }
 
-  function markSynced(path) {
-    return clearDraft(path);
+  async function markSynced(path, expectedContent) {
+    const key = _draftStorageKey(path);
+    if (expectedContent === undefined) {
+      // Older callers cannot identify which live-input reservation they saved.
+      // Preserve it rather than clearing a newer edit in another surface.
+      try { if (localStorage.getItem(RESERVATION_PREFIX + key)) return; } catch (_) {}
+      return clearDraft(path);
+    }
+    try {
+      const item = JSON.parse(localStorage.getItem(RESERVATION_PREFIX + key) || 'null');
+      if (item && item.content !== expectedContent) return;
+      if (item) localStorage.removeItem(RESERVATION_PREFIX + key);
+    } catch (_) {}
+    await _store('readwrite', async store => {
+      const item = await _request(store.get(key));
+      if (item?.content === expectedContent) store.delete(key);
+    }).catch(() => {});
   }
 
   async function listDrafts() {
     const scope = _draftScope();
     const all = await _store('readonly', (store) => _request(store.getAll())).catch(() => []);
-    return (Array.isArray(all) ? all : [])
+    const merged = new Map((Array.isArray(all) ? all : []).map(item => [item.path, item]));
+    // The synchronous reservation is authoritative over an older async write.
+    for (const item of _reservations()) merged.set(item.path, item);
+    return [...merged.values()]
       .filter(item => _isCurrentScopeDraft(item, scope))
       .map(_publicDraft)
       .sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
@@ -483,6 +539,7 @@
   }
 
   window.MeldexDraftRecovery = {
+    reserveDraft,
     queueDraft,
     saveDraft,
     clearDraft,

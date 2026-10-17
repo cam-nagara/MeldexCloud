@@ -967,7 +967,9 @@ async function openFolderItem(item) {
   _folderSelectedItems = [];
   _folderSelected = null;
   _updateFolderBulkBar();
-  const _expOpts = { fromExplorer: true };
+  let _expOpts = { fromExplorer: true };
+  const activation = window.GBOutlinerActivation;
+  const generation = activation?.nextGeneration();
   if (item?.archive_path && typeof openArchiveItem === 'function') {
     openArchiveItem(item);
     return;
@@ -1000,6 +1002,7 @@ async function openFolderItem(item) {
   if (typeof _resolveBrowseItemTypeOnDemand === 'function' && typeof _browseItemNeedsTypeCheck === 'function'
       && _browseItemNeedsTypeCheck(item)) {
     await _resolveBrowseItemTypeOnDemand(item);
+    if (activation && !activation.isCurrentGeneration(generation)) return;
     if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
         && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
   }
@@ -1008,12 +1011,13 @@ async function openFolderItem(item) {
       && typeof openArchiveFolder === 'function') {
     return openArchiveFolder(item.path, '');
   }
+  _expOpts = window.GBOutlinerActivation?.fileOpenOptions(_expOpts) || _expOpts;
   if (item.type === 'folder') { openFolder(item.name, item.path, _expOpts); }
-  else if (item.type === 'database') { selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts); }
+  else if (item.type === 'database') { selectDatabase(item.path, _expOpts.paneContext || null, _expOpts); }
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
-  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null }); }
+  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }
   else if (item.type === 'html') { openHtmlFile(item.name, item.path, _expOpts); }

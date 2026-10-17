@@ -1065,7 +1065,8 @@ function bdParseMd(raw) {
 }
 
 // --- Markdown書き出し ---
-function bdToMd() {
+function bdToMd(boardState = bd) {
+  const bd = boardState;
   const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
   const fmtJsonString = (value) => JSON.stringify(String(value == null ? '' : value).replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
   let fm = '---\ntype: board\npositions:\n';

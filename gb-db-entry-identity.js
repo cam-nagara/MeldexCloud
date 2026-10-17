@@ -483,7 +483,9 @@
       }
       if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
         try {
-          await window.GbDbCalendarSync.onEntryDeleted(queue.dbPath, latestPath || item.path);
+          await window.GbDbCalendarSync.onEntryDeleted(
+            queue.dbPath, latestPath || item.path, item.entryId || response?.entry_id || '',
+          );
         } catch {}
       }
       return response || { ok: true };

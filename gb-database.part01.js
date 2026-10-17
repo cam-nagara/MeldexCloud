@@ -170,6 +170,21 @@ function _normalizeBackendDbViewConfig(dbPath, viewConfig) {
   return { cfg: cloned, changed: productionRepaired };
 }
 
+function _captureDbViewConfigReadState(dbPath) {
+  return {
+    snapshot: JSON.stringify(getDbViewConfig(dbPath) || {}),
+    pending: typeof _hasPendingDbViewConfigBackendSave === 'function'
+      && _hasPendingDbViewConfigBackendSave(dbPath),
+  };
+}
+
+function _canApplyDbViewConfigRead(dbPath, readState) {
+  if (!readState || readState.pending) return false;
+  if (typeof _hasPendingDbViewConfigBackendSave === 'function'
+      && _hasPendingDbViewConfigBackendSave(dbPath)) return false;
+  return readState.snapshot === JSON.stringify(getDbViewConfig(dbPath) || {});
+}
+
 function _applyBackendDbViewConfig(dbPath, viewConfig, ctx) {
   const normalizedResult = _normalizeBackendDbViewConfig(dbPath, viewConfig);
   if (!normalizedResult) return false;
@@ -406,6 +421,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (syncGlobalState) state.dbMetadata = null;
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
+    const viewConfigReadState = _captureDbViewConfigReadState(dbPath);
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
@@ -417,16 +433,23 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.dbMetadata = dbMetadata;
     const backendViewConfig = ctx.dbMetadata?.view_config;
     let backendViewConfigApplied = false;
-    if (_hasBackendDbViewConfigData(backendViewConfig)) {
-      backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig, ctx);
-    } else {
-      const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
-        requireExistingLocalCache: true,
-        hadLocalCache: hadLocalViewConfigBeforeOpen,
-        ctx,
-      });
-      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
-      if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
+    // A read can start before an edit and arrive after its save has completed.
+    // Checking only the current pending flag would then restore the old view
+    // and may persist that old configuration through normalization again.
+    if (_canApplyDbViewConfigRead(dbPath, viewConfigReadState)) {
+      if (_hasBackendDbViewConfigData(backendViewConfig)) {
+        backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig, ctx);
+      } else {
+        const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
+          requireExistingLocalCache: true,
+          hadLocalCache: hadLocalViewConfigBeforeOpen,
+          ctx,
+        });
+        if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+        if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
+      }
+    } else if (ctx.dbMetadata) {
+      ctx.dbMetadata.view_config = getDbViewConfig(dbPath);
     }
     if (backendViewConfigApplied) {
       if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);

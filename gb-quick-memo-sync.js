@@ -285,7 +285,7 @@
             if (typeof window.MeldexGlobalTags?.mergeExistingTagNames !== 'function') {
               throw new Error('共通タグとの統合機能を読み込めませんでした');
             }
-            await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags);
+            await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
           }
           sent.set(item.memo_id, { signature: signature(raw), result });
         } catch {}

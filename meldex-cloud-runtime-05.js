@@ -28079,7 +28079,8 @@ function bdParseMd(raw) {
 }
 
 // --- Markdown書き出し ---
-function bdToMd() {
+function bdToMd(boardState = bd) {
+  const bd = boardState;
   const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
   const fmtJsonString = (value) => JSON.stringify(String(value == null ? '' : value).replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
   let fm = '---\ntype: board\npositions:\n';
@@ -31386,6 +31387,18 @@ function bdEditNode(id) {
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
   txt.contentEditable = 'true'; txt.focus();
+  txt.oninput = () => {
+    if (bd.editing !== id || n._topicCanonicalOnly || !window.MeldexDraftRecovery?.reserveDraft) return;
+    const snapshot = { ...bd, editing: null,
+      nodes: bd.nodes.map(node => ({ ...node, text: node.id === id ? txt.innerText.trim() : node.text })),
+      connections: bd.connections.map(connection => ({ ...connection })),
+      topicViewDocument: bd.topicViewDocument ? JSON.parse(JSON.stringify(bd.topicViewDocument)) : null };
+    const content = bdToMd(snapshot);
+    bd._draftReservationContent = content;
+    bd._draftReservationPath = bd.path;
+    const result = window.MeldexDraftRecovery.reserveDraft(bd.path, content, bd.lastSavedEtag || '');
+    if (!result?.ok && typeof showStatus === 'function') showStatus('端末内の下書き退避に失敗しました。編集を確定して保存してください', true);
+  };
   // 課題8: キャンバス外 (オプションパネル・ツールバー等) をクリックして編集領域から
   // フォーカスが外れた場合も確定する。従来はキャンバス内の限られた経路 (クリック/
   // Escape/Enter/Tab) からしか bdFinishEdit() が呼ばれず、確定前に他操作の bdRender() が
@@ -32103,9 +32116,18 @@ function bdFitAll(_retryCount) {
 }
 
 // --- 保存 ---
+function bdAutoSave() {
+  // 新規作成や移動で予約した保存が、後から始めた本文編集を終了しない。
+  // 明示保存・文書切替は bdSave の確定処理を使い、タイマーだけ確定を待つ。
+  if (bd.editing) {
+    window._bdTimer = setTimeout(bdAutoSave, 500);
+    return;
+  }
+  return bdSave();
+}
 function bdDirty() {
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
-  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
+  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdAutoSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
 }
 // 工程2-C項目2: 保存応答/エラーが409（本物の競合）かどうかを判定する。
@@ -32198,6 +32220,7 @@ async function bdSave() {
   // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
   if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
   const savePath = bd.path;
+  let reservedDraftAtRequest = bd._draftReservationPath === savePath ? bd._draftReservationContent : undefined;
   if (!savePath) return true;
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
     showStatus('ボード保存を中止しました: ボードとして開いたMarkdownファイルではありません', true);
@@ -32218,6 +32241,13 @@ async function bdSave() {
     pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
   }
   if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+  if (!bd.editing && reservedDraftAtRequest && bd._draftReservationContent === reservedDraftAtRequest) {
+    // Commit/layout may have changed geometry since the live-input snapshot.
+    // Preserve the exact attempted document, while a later input keeps its own reservation.
+    reservedDraftAtRequest = markdown;
+    bd._draftReservationContent = markdown;
+    window.MeldexDraftRecovery?.reserveDraft?.(savePath, markdown, bd.lastSavedEtag || '');
+  }
   const prevIds = bd._lastSavedNodeIds || new Set();
   const currIds = new Set((bd.nodes || []).map(n => n.id));
   const coordinator = window.MeldexDocumentSaveCoordinator;
@@ -32259,7 +32289,7 @@ async function bdSave() {
       showStatus('ボードは未保存です。接続後に再試行します', true);
       return false;
     }
-    if (bd.path !== savePath) return true;
+    if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return true;
     if (saveResult?.etag) bd.lastSavedEtag = saveResult.etag;
     if (coordinator && (saveResult?.transport_revision || saveResult?.etag)) {
       bd.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
@@ -32271,6 +32301,7 @@ async function bdSave() {
     const unchanged = bdToMd() === markdown;
     if (unchanged) {
       bd.dirty=false;
+      if (!bd.editing) await window.MeldexDraftRecovery?.markSynced?.(savePath, reservedDraftAtRequest || markdown);
     }
     bd._lastSavedNodeIds = currIds;
     showStatus('ボードを保存しました', false, { passiveSave: true });
@@ -96582,9 +96613,9 @@ async function resetLayoutToDefault() {
     return publishTargetTagsMutation(targetPath, merged, sourceFolder);
   }
 
-  // Reuse only exact names from the destination dictionary. Unmatched private
-  // names stay private, and unrelated file assignments are preserved.
-  async function mergeExistingTagNames(path, names) {
+  // Reuse exact existing definitions. Memo saves explicitly opt in to creating
+  // missing names; unrelated assignments and dictionary settings are preserved.
+  async function mergeExistingTagNames(path, names, options = {}) {
     const wanted = new Set((Array.isArray(names) ? names : []).map(name => String(name).trim()).filter(Boolean));
     if (!wanted.size) return [];
     if (!path) throw new Error('共通タグを統合するメモの保存先を確認できません');
@@ -96605,9 +96636,15 @@ async function resetLayoutToDefault() {
         if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
       } else personal.push({ id: tag.id, existing_only: true });
     }
+    // クイックメモへ明示的に付けた名前は共通辞書にも登録する。
+    // 候補一覧の読込・端末内の登録だけでは辞書を変更しない。
+    const missing = options.createMissing === true
+      ? [...wanted].filter(name => !seen.has(name)).map(name => ({ name })) : [];
+    personal.push(...missing);
     if (personal.length) {
       const result = await updateTargetTags(path, { add: personal, remove: [] }, { sourceFolder });
       if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
+      if (missing.length) notifyDictionaryChanged('quick-memo-tags-created', sourceFolder);
     }
     return matched;
   }
@@ -107942,6 +107979,28 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
     grid.querySelector?.('[data-e2e-id="entity-props-toggle"]')?.focus?.({ preventScroll: true });
   });
   header.appendChild(toggleBtn);
+
+  if (dbPath && options?.readOnly !== true && grid?.__MeldexRuntimeReadOnly !== true
+    && typeof togglePropertyLayoutEditMode === 'function'
+    && window.MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath) !== true) {
+    const reorderBtn = document.createElement('button');
+    const editing = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(dbPath);
+    const reorderLabel = editing ? '列の並べ替えを完了' : '列を並べ替える';
+    reorderBtn.type = 'button';
+    reorderBtn.className = 'entity-props-col-width-btn gb-btn gb-btn-sm gb-btn-icon db-column-reorder-toggle';
+    reorderBtn.dataset.e2eId = 'entity-props-column-reorder';
+    reorderBtn.title = reorderLabel;
+    reorderBtn.setAttribute('aria-label', reorderLabel);
+    reorderBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    reorderBtn.innerHTML = typeof lucide === 'function' ? lucide(editing ? 'check' : 'listOrdered', 14) : '↕';
+    reorderBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      togglePropertyLayoutEditMode(dbPath);
+      if (header.isConnected) renderEntityPropsGridInto(grid, data, entityPath, options);
+      grid.querySelector('[data-e2e-id="entity-props-column-reorder"]')?.focus({ preventScroll: true });
+    });
+    header.appendChild(reorderBtn);
+  }
 
   const widthBtn = document.createElement('button');
   widthBtn.type = 'button';
@@ -146086,7 +146145,9 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       }
       if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
         try {
-          await window.GbDbCalendarSync.onEntryDeleted(queue.dbPath, latestPath || item.path);
+          await window.GbDbCalendarSync.onEntryDeleted(
+            queue.dbPath, latestPath || item.path, item.entryId || response?.entry_id || '',
+          );
         } catch {}
       }
       return response || { ok: true };
@@ -149770,7 +149831,6 @@ function _ufRefreshTarget(ctx, dbPath, options = {}) {
     if (type === 'multi-relation') return 'relation';
     if (type === 'multi-user') return 'user';
     if (type === 'multi-link') return 'link';
-    if (type === 'chat') return 'text';
     return type || 'text';
   };
   global.getPropertyTypeMultiplicity = function getPropertyTypeMultiplicity(type) {
@@ -149791,7 +149851,11 @@ function _ufRefreshTarget(ctx, dbPath, options = {}) {
   };
   global.renderPropertyTypeOptions = function renderPropertyTypeOptions(currentType) {
     const selectedType = global.getPropertyTypeUiBaseType(currentType || 'text');
-    return global.getPropertyTypeMenuItems().map(t => {
+    const items = global.getPropertyTypeMenuItems();
+    // 新規選択肢から除いた旧型も、既存列の設定を開いた時にはその型を保持する。
+    const existing = global.getPropertyTypeDefinition(selectedType);
+    if (existing && !items.some(t => t.type === selectedType)) items.push(existing);
+    return items.map(t => {
       const selected = t.type === selectedType ? ' selected' : '';
       return '<option value="' + t.type + '"' + selected + '>' + t.label + '</option>';
     }).join('\n');
@@ -153084,6 +153148,8 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     schedule(120);
   });
   root.addEventListener('click', (e) => {
+    // アイコンはピッカーの確定時に専用保存する。開く・取り消すだけでは列を保存しない。
+    if (e.target?.closest?.('#pt-icon-btn')) return;
     if (e.target?.closest?.('button')) setTimeout(() => schedule(120), 0);
   });
   root.querySelector('#pt-type')?.addEventListener('change', () => {
@@ -156376,12 +156442,17 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     showStatus('このシートは1セル1値運用です（ステータス機能オフ）');
     return;
   }
+  const inlineEditorSession = {};
+  td._dbInlineEditorSession = inlineEditorSession;
+  const ownsInlineEditor = () => td.isConnected !== false
+    && td._dbInlineEditorSession === inlineEditorSession;
   const addBtn = container.querySelector('.cell-add-btn');
   if (addBtn) {
     addBtn.style.display = 'none';
     addBtn.dataset.editingHidden = '1';
   }
   const cancel = () => {
+    if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
     setActiveCell(td);
@@ -156389,9 +156460,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   const pos = _cellPos(td);
   const isRelationType = type === 'relation' || type === 'multi-relation';
   const restoreActiveCellNow = () => {
-    if (typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
+    if (ownsInlineEditor() && typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
+    if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
     restoreActiveCellNow();
@@ -156437,6 +156509,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     } catch {}
   };
   const refreshCellDisplayNow = (affectedProps, fallbackValue) => {
+    // The model/identity still receives the save result. Its older UI callback
+    // must not replace an editor opened while that request was in flight.
+    if (!ownsInlineEditor()) return true;
     let refreshed = false;
     if (isRelationType) {
       refreshRelationCellNow(affectedProps || []);
@@ -156694,7 +156769,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           status: writeStatus,
           note: '',
         }, ctx);
-        await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
+        if (ownsInlineEditor()) await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
         return true;
       }
       // 楽観的増分更新: pivotData をローカルで更新してからセル DOM だけ書き換える
@@ -156765,7 +156840,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         removeLocalCellValue(optimisticValue);
         refreshCellDisplayNow([], '');
       }
-      if (dbPath && typeof selectDatabase === 'function') {
+      if (ownsInlineEditor() && dbPath && typeof selectDatabase === 'function') {
         try { await selectDatabase(dbPath, ctx || undefined, { silent: true }); } catch {}
       }
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
@@ -156784,13 +156859,14 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
       || rawValues.find(v => v && v.file)
       || null;
-    if (!existing?.file) {
+    if (!existing?.file && !existing?._pendingCreate) {
       await saveAndRestore(value, moveTo);
       return;
     }
     if (!existing.property) existing.property = propName;
     if ((existing.value || '') === value) { cancel(); return; }
     const oldValue = existing.value || '';
+    const pendingCreate = existing._pendingCreate;
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -156811,6 +156887,15 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
     } catch (e) {
+      if (pendingCreate) {
+        try { await pendingCreate; }
+        catch {
+          removeLocalCellValue(existing);
+          refreshCellDisplayNow([], '');
+          cancel();
+          return;
+        }
+      }
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
@@ -156843,7 +156928,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
       || rawValues.find(v => v && v.file)
       || null;
-    if (!existing?.file) {
+    if (!existing?.file && !existing?._pendingCreate) {
       if (nextValue) {
         const saved = await saveAndRestore(nextValue, moveTo);
         if (!saved) reportCommonTagPartialSave(saveOptions.createdTagNames);
@@ -156854,6 +156939,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (!existing.property) existing.property = propName;
     const oldValue = existing.value || '';
     if (oldValue === nextValue) { cancel(); return; }
+    const pendingCreate = existing._pendingCreate;
     const saveRef = { ...existing, property: existing.property || propName };
     try {
       closeInlineEditorShell();
@@ -156917,6 +157003,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         allowEmptyClear: true,
       });
     } catch (e) {
+      if (pendingCreate) {
+        try { await pendingCreate; }
+        catch {
+          removeLocalCellValue(existing);
+          refreshCellDisplayNow([], '');
+          cancel();
+          reportCommonTagPartialSave(saveOptions.createdTagNames);
+          return;
+        }
+      }
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: saveRef.file || existing.file,
@@ -157170,7 +157266,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       loadingMsg.textContent = 'タグ機能を利用できません';
       return;
     }
-    tagsApi.loadTagsCached().then(data => {
+    const tagSourceFolder = String(window.MeldexAutoTagSourceFolder?.(dbPath) || '').trim();
+    tagsApi.loadTagsCached(tagSourceFolder).then(data => {
       if (!dd.isConnected) return;
       dd.textContent = '';
       const allTags = Array.isArray(data?.tags) ? data.tags : [];
@@ -157200,7 +157297,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           const existingTag = allTags.find(t => String(t.name || '').trim().toLowerCase() === trimmed.toLowerCase());
           let tag = existingTag;
           if (!tag) {
-            const created = await tagsApi.createTag({ name: trimmed });
+            const created = await tagsApi.createTag({ name: trimmed }, tagSourceFolder);
             tag = created?.tag || null;
             if (tag) {
               allTags.push(tag);
@@ -164965,15 +165062,17 @@ if (typeof window !== 'undefined') {
   }
 
   function tabItems(tablist) {
-    const selector = tablist.classList.contains('gb-pane-tabs')
+    const paneTabs = tablist.classList.contains('gb-pane-tabs');
+    const selector = paneTabs
       ? ':scope > .gb-pane-tabs-scroll > .gb-tab'
-      : ':scope > [role="tab"]';
+      : '[role="tab"]';
     // #detail-tab-bar（オプションパネル）のように、
     // 複数の対象タイプ用タブを同じタブバーへ同居させ、現在のタイプに合わない
     // タブを `hidden` 属性で隠す実装がある。ここで hidden を素通りさせると、
     // スマホ用ドロップダウンに無関係な20件前後のタブが並び、実質的に目的の
     // タブへ切り替えられなくなる（2026-08-13 バグ報告で確認）。
-    return Array.from(tablist.querySelectorAll(selector)).filter(tab => !tab.hidden);
+    return Array.from(tablist.querySelectorAll(selector)).filter(tab =>
+      !tab.hidden && (paneTabs || tab.closest('[role="tablist"]') === tablist));
   }
 
   function activeTab(tabs) {
@@ -171104,6 +171203,21 @@ function _normalizeBackendDbViewConfig(dbPath, viewConfig) {
   return { cfg: cloned, changed: productionRepaired };
 }
 
+function _captureDbViewConfigReadState(dbPath) {
+  return {
+    snapshot: JSON.stringify(getDbViewConfig(dbPath) || {}),
+    pending: typeof _hasPendingDbViewConfigBackendSave === 'function'
+      && _hasPendingDbViewConfigBackendSave(dbPath),
+  };
+}
+
+function _canApplyDbViewConfigRead(dbPath, readState) {
+  if (!readState || readState.pending) return false;
+  if (typeof _hasPendingDbViewConfigBackendSave === 'function'
+      && _hasPendingDbViewConfigBackendSave(dbPath)) return false;
+  return readState.snapshot === JSON.stringify(getDbViewConfig(dbPath) || {});
+}
+
 function _applyBackendDbViewConfig(dbPath, viewConfig, ctx) {
   const normalizedResult = _normalizeBackendDbViewConfig(dbPath, viewConfig);
   if (!normalizedResult) return false;
@@ -171340,6 +171454,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (syncGlobalState) state.dbMetadata = null;
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
+    const viewConfigReadState = _captureDbViewConfigReadState(dbPath);
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
@@ -171351,16 +171466,23 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.dbMetadata = dbMetadata;
     const backendViewConfig = ctx.dbMetadata?.view_config;
     let backendViewConfigApplied = false;
-    if (_hasBackendDbViewConfigData(backendViewConfig)) {
-      backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig, ctx);
-    } else {
-      const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
-        requireExistingLocalCache: true,
-        hadLocalCache: hadLocalViewConfigBeforeOpen,
-        ctx,
-      });
-      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
-      if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
+    // A read can start before an edit and arrive after its save has completed.
+    // Checking only the current pending flag would then restore the old view
+    // and may persist that old configuration through normalization again.
+    if (_canApplyDbViewConfigRead(dbPath, viewConfigReadState)) {
+      if (_hasBackendDbViewConfigData(backendViewConfig)) {
+        backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig, ctx);
+      } else {
+        const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
+          requireExistingLocalCache: true,
+          hadLocalCache: hadLocalViewConfigBeforeOpen,
+          ctx,
+        });
+        if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+        if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
+      }
+    } else if (ctx.dbMetadata) {
+      ctx.dbMetadata.view_config = getDbViewConfig(dbPath);
     }
     if (backendViewConfigApplied) {
       if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
@@ -173415,6 +173537,174 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
 
 ;
 
+/* === gb-db-body-excerpt.js === */
+;
+/* Read-only topic body previews shared by card and timeline views. */
+(function () {
+  'use strict';
+  const LIMIT = 200;
+  const pending = new Map();
+  const queue = [];
+  let active = 0;
+  const observed = new Set();
+  let observer = null;
+  let cleanupScheduled = false;
+
+  function observe(row) {
+    if (!observer) {
+      observer = new IntersectionObserver(entries => {
+        entries.filter(entry => entry.isIntersecting).forEach(entry => {
+          observer.unobserve(entry.target);
+          observed.delete(entry.target);
+          entry.target._refreshBodyExcerpt?.();
+        });
+      });
+      new MutationObserver(() => {
+        if (!observed.size || cleanupScheduled) return;
+        cleanupScheduled = true;
+        requestAnimationFrame(() => {
+          cleanupScheduled = false;
+          for (const target of observed) if (!target.isConnected) {
+            observer.unobserve(target);
+            observed.delete(target);
+          }
+        });
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+    observed.add(row);
+    observer.observe(row);
+  }
+
+  function scope() {
+    return JSON.stringify([window.MeldexRuntimeAdapter?.getMode?.(),
+      window.MeldexRuntimeAdapter?.getWorkspaceState?.()]);
+  }
+
+  function take(text) { return Array.from(String(text || '')).slice(0, LIMIT).join(''); }
+
+  function plain(raw) {
+    let text = String(raw || '').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
+    const template = document.createElement('template');
+    template.innerHTML = text.replace(/<br\s*\/?\s*>/gi, '\n').replace(/<\/(?:p|div|li|h[1-6])>/gi, '\n');
+    template.content.querySelectorAll('script,style,iframe,object').forEach(el => el.remove());
+    text = template.content.textContent || '';
+    return text.replace(/^\s*```[^\n]*\n|^\s*```\s*$/gm, '')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)/gm, '')
+      .replace(/[*_`~]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  function pump() {
+    while (active < 4 && queue.length) {
+      const job = queue.shift();
+      active++;
+      Promise.resolve().then(job.run).then(job.resolve, job.reject).finally(() => { active--; pump(); });
+    }
+  }
+
+  function request(path) {
+    const requestedScope = scope();
+    return new Promise((resolve, reject) => {
+      queue.push({ resolve, reject, run: () => {
+        if (scope() !== requestedScope) throw new Error('保存先が変わりました。ビューを開き直してください');
+        return Promise.resolve(apiFetch(path, { silentError: true })).then(result => {
+          if (scope() !== requestedScope) throw new Error('保存先が変わりました。ビューを開き直してください');
+          return result;
+        });
+      } });
+      pump();
+    });
+  }
+
+  function sheetText(data) {
+    const parts = [];
+    for (const [name, entry] of Object.entries(data?.entities || {})) {
+      parts.push(name);
+      for (const [prop, values] of Object.entries(entry || {})) {
+        if (prop.startsWith('_') || !Array.isArray(values)) continue;
+        parts.push(values.map(value => plain(value.rich_html || value.value || '')).filter(Boolean).join(' '));
+      }
+      if (Array.from(parts.join(' ')).length >= LIMIT) break;
+    }
+    return parts.filter(Boolean).join(' ');
+  }
+
+  async function read(path) {
+    const data = await request('/entity?path=' + encodeURIComponent(path));
+    const parts = [plain(data?.page_content || '')].filter(Boolean);
+    if (Array.from(parts.join(' ')).length >= LIMIT) return take(parts.join(' '));
+    if (!data?.entry_attachments?.some(item => ['note', 'sheet', 'database'].includes(item.kind))) {
+      return take(parts.join(' '));
+    }
+    const listing = await request('/sheet-entry/attachments?entry_path=' + encodeURIComponent(path));
+    for (const item of listing?.attachments || []) {
+      if (!['note', 'sheet', 'database'].includes(item.kind)) continue;
+      const target = item.client_path || item.path;
+      if (!target) continue;
+      if (item.exists === false) throw new Error('リンク先の本文が見つかりません');
+      if (item.kind === 'note') {
+        const file = await request('/file?path=' + encodeURIComponent(target));
+        parts.push(plain(typeof file === 'string' ? file : file?.content || ''));
+      } else {
+        parts.push(sheetText(await request('/pivot?path=' + encodeURIComponent(target))));
+      }
+      if (Array.from(parts.join(' ')).length >= LIMIT) break;
+    }
+    return take(parts.filter(Boolean).join(' '));
+  }
+
+  function load(path) {
+    const key = scope() + ':' + path;
+    if (!pending.has(key)) pending.set(key, read(path).finally(() => pending.delete(key)));
+    return pending.get(key);
+  }
+
+  function append(root, path) {
+    if (!root || !path) return;
+    const row = document.createElement('div');
+    row.className = 'db-body-excerpt';
+    row.dataset.dbBodyExcerpt = path;
+    row.setAttribute('aria-label', '本文冒頭');
+    row.style.cssText = 'font-size:inherit;line-height:1.5;white-space:normal;overflow-wrap:anywhere;';
+    const label = document.createElement('span');
+    label.textContent = '本文冒頭: ';
+    label.style.color = 'var(--fg2)';
+    const value = document.createElement('span');
+    row.append(label, value);
+    root.appendChild(row);
+    let generation = 0;
+    const refresh = async () => {
+      const ticket = ++generation, requestedScope = scope();
+      value.textContent = '読込中…';
+      row.removeAttribute('title');
+      try {
+        const text = await load(path);
+        if (!row.isConnected || ticket !== generation) return;
+        if (scope() !== requestedScope) throw new Error('保存先が変わりました。ビューを開き直してください');
+        value.textContent = text || '—';
+      } catch (error) {
+        if (!row.isConnected || ticket !== generation) return;
+        value.textContent = '';
+        row.title = error?.message || '本文を読み込めませんでした';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'gb-btn gb-btn-sm';
+        retry.textContent = '本文を再読込';
+        retry.addEventListener('click', event => { event.stopPropagation(); refresh(); });
+        value.appendChild(retry);
+      }
+    };
+    row._refreshBodyExcerpt = refresh;
+    if (typeof IntersectionObserver === 'function') observe(row);
+    else refresh();
+    return row;
+  }
+
+  window.MeldexDbBodyExcerpt = Object.freeze({ append, load, plain, take, sheetText });
+})();
+
+;
+
 /* === gb-db-timeline.js === */
 ;
 /* タイムライン表示・依存矢印 — gb-db-views.js から分離 */
@@ -173446,6 +173736,7 @@ function getTimelineConfig(dbPath, options = {}) {
       timeStepMinutes: Math.max(1, Math.round(Number(cfg.timeStepMinutes || 1) || 1)),
       calendarSystemId: cfg.calendarSystemId || 'gregorian',
       showEntryName: cfg.showEntryName !== false,
+      showBodyExcerpt: cfg.showBodyExcerpt === true,
       cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
       cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
       cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
@@ -173609,6 +173900,7 @@ function _normalizeDbCardPropLineCount(value) {
 
 function _dbCardViewDisplayConfig(cfg = {}) {
   return {
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
     cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
     cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
   };
@@ -173683,6 +173975,9 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
     title.className = options.titleClass || 'tl-card-title';
     title.textContent = entry.name;
     root.appendChild(title);
+  }
+  if (cfg.showBodyExcerpt === true && options.dbPath) {
+    window.MeldexDbBodyExcerpt?.append(root, _entityPath(options.dbPath, entry.name, options.ctx?.pivotData));
   }
   const cardProps = Array.isArray(cfg.cardProps) ? cfg.cardProps : [];
   const editable = options.editable && options.dbPath && typeof _entityPath === 'function';
@@ -173781,9 +174076,10 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
   let showEntryName = _timelineShowsEntryName(cfg);
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
   const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, {
+    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, {
       label: 'シート表示: タイムライン表示列',
       detail,
       ctx,
@@ -173800,6 +174096,9 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
     cardImageThumbCount = next.cardImageThumbCount;
     cardPropLineCount = next.cardPropLineCount;
     saveCardProps(detail);
+  });
+  _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+    onToggle(checked) { showBodyExcerpt = checked; saveCardProps('本文冒頭'); },
   });
   props.forEach(prop => {
     _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
@@ -177750,24 +178049,6 @@ function renderDbViewTabs(ctx) {
   });
 
   // + ボタン（ビュータイプ選択ドロップダウン付き）
-  const canEditLayout = MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath, ctx) !== true;
-  if (canEditLayout && typeof togglePropertyLayoutEditMode === 'function') {
-    const reorderBtn = document.createElement('button');
-    reorderBtn.type = 'button';
-    reorderBtn.className = 'view-tab-add tb-icon-btn db-column-reorder-toggle';
-    reorderBtn.dataset.e2eId = `db-column-reorder-${e2eScope}`;
-    const editing = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(dbPath);
-    const label = editing ? '列の並べ替えを完了' : '列を並べ替える';
-    reorderBtn.innerHTML = lucide(editing ? 'check' : 'listOrdered', 16);
-    reorderBtn.title = label;
-    reorderBtn.setAttribute('aria-label', label);
-    reorderBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
-    reorderBtn.addEventListener('click', () => {
-      togglePropertyLayoutEditMode(dbPath);
-      renderDbViewTabs(ctx);
-    });
-    tabs.appendChild(reorderBtn);
-  }
   const addBtn = document.createElement('button');
   addBtn.className = 'view-tab-add tb-icon-btn';
   _markDbViewToolbarAction(addBtn);
@@ -179046,11 +179327,12 @@ function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
   let showEntryName = cfg.showEntryName !== false;
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
     ? _dbCardViewDisplayConfig(cfg)
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   const save = (detail) => {
-    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
+    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
     renderGallery(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
@@ -179067,6 +179349,9 @@ function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
         save(detail);
       });
     }
+    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
+    });
     props.forEach(prop => {
       _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
         canMoveUp: ordered.indexOf(prop) > 0,
@@ -179218,6 +179503,7 @@ function renderGallery(ctx) {
     }
 
     // プロパティ一覧（先頭4件）
+    if (galleryCfg.showBodyExcerpt === true) window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
@@ -179439,11 +179725,12 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
   let showEntryName = cfg.showEntryName !== false;
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
     ? _dbCardViewDisplayConfig(cfg)
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   const save = (detail) => {
-    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
+    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
     renderKanban(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
@@ -179460,6 +179747,9 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
         save(detail);
       });
     }
+    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
+    });
     props.forEach(prop => {
       _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
         canMoveUp: ordered.indexOf(prop) > 0,
@@ -179830,6 +180120,9 @@ function renderKanban(ctx) {
         cardEl.appendChild(title);
       }
 
+      if (kanbanCfg.showBodyExcerpt === true) {
+        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
+      }
       const propsDiv = document.createElement('div');
       propsDiv.className = 'kanban-card-props';
       const cardPropNames = Array.isArray(kanbanCfg.cardProps)
@@ -186930,6 +187223,10 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
 
   const initialTargetType = current?.targetProp ? propTypes?.[current.targetProp]?.type : '';
   const aggOptions = _rollupAggregationOptionsForType(initialTargetType);
+  // 参照先の型取得前も保存済み設定を保持する（別シートの列はまだ型が無い）。
+  if (current?.aggregation && !aggOptions.some(a => a.key === current.aggregation)) {
+    aggOptions.push({ key: current.aggregation, label: current.aggregation });
+  }
 
   // リレーション列が1つも無いシートでは、空のドロップダウンを出すと
   // 「選べないのに理由が分からない」状態になるため、その場で理由を出す。
@@ -186953,7 +187250,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   html += '</div>';
 
   html += '<div class="field"><label>参照先の列</label>';
-  html += '<select id="rollup-target-prop"><option value="">'
+  html += '<select id="rollup-target-prop"><option value="' + esc(current?.targetProp || '') + '">'
        + (current?.relationProp ? '読み込み中...' : 'リレーション列を選ぶと表示されます')
        + '</option></select></div>';
 
@@ -186983,7 +187280,7 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   const seq = (scope._rollupRelationLoadSeq || 0) + 1;
   scope._rollupRelationLoadSeq = seq;
   _rollupRelationLoadSeq++;
-  sel.innerHTML = '<option value="">読み込み中...</option>';
+  sel.replaceChildren(new Option('読み込み中...', preselect || ''));
 
   const dbPath = (typeof _ptState === 'function' ? _ptState(scope).dbPath : '') || state.currentDbPath;
   const propTypes = getPropertyTypes(dbPath);
@@ -186998,14 +187295,22 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
     ? _dbResolveRelationDbPath(dbPath, ptc)
     : ((ptc.relationDb === '' || ptc.relationDb == null) ? dbPath : ptc.relationDb);
   const targetData = await fetchRelatedDbData(_relDb);
+  // 未表示の別シートでも型を解決する。取得失敗時に既存の集計設定を文字列へ上書きしない。
+  let targetMetadata;
+  try {
+    targetMetadata = typeof _getDbMetadataCached === 'function'
+      ? await _getDbMetadataCached(_relDb, true) : null;
+  } catch (_) {
+    if (seq === scope._rollupRelationLoadSeq) sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+    return;
+  }
   if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;
   if (!targetData || !targetData.properties) {
-    sel.innerHTML = '<option value="">(取得失敗)</option>';
-    _rollupSetAggregationOptionsForType('', 'values', scope);
+    sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
     return;
   }
 
-  const targetPropTypes = _rollupTargetPropertyTypes(_relDb, targetData);
+  const targetPropTypes = _rollupTargetPropertyTypes(_relDb, targetMetadata || targetData);
   const targetProps = Array.from(new Set([
     ...(Array.isArray(targetData.properties) ? targetData.properties : []),
     ...Object.keys(targetPropTypes || {}),
@@ -187027,7 +187332,8 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   };
   const selectedType = targetPropTypes?.[sel.value]?.type || '';
   const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
-  _rollupSetAggregationOptionsForType(selectedType, aggSel?.dataset.current || 'values', scope);
+  // 読込待ちの間にも表示方法を変更できる。開始時の保存値で利用者の選択を戻さない。
+  _rollupSetAggregationOptionsForType(selectedType, aggSel?.value || aggSel?.dataset.current || 'values', scope);
 }
 
 /**
@@ -187062,9 +187368,9 @@ function _rollupAggregationOptionsForType(propType) {
 function _rollupTargetPropertyTypes(dbPath, targetData) {
   if (targetData?.property_types) return targetData.property_types;
   if (targetData?.propertyTypes) return targetData.propertyTypes;
-  const localTypes = getDbViewConfig(dbPath).propertyTypes || {};
-  if (Object.keys(localTypes).length) return localTypes;
-  return typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
+  // localStorage は編集した列だけの部分キャッシュ。完全なバックエンド型定義を優先する。
+  return typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) :
+    (getDbViewConfig(dbPath).propertyTypes || {});
 }
 
 function _rollupSetAggregationOptionsForType(propType, preferred, root) {
@@ -187097,12 +187403,13 @@ function _rollupSetAggregationOptionsForType(propType, preferred, root) {
 /* --- グラフ設定 --- */
 
 function getGraphConfig(dbPath, options = {}) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'graph', { ctx: options.ctx || null }) || {
+  return {
     colorProperty: '',
     showExternalNodes: true,
     layout: 'force',
     showLabels: true,
     showEdgeLabels: false,
+    ...(getCurrentDbViewTypeSpecific(dbPath, 'graph', { ctx: options.ctx || null }) || {}),
   };
 }
 
@@ -194587,6 +194894,31 @@ function _showSyncModal(dbPath) {
     if (!ctx || !ctx.dbPath || !ctx.entityPath || !ctx.propName) return;
     if (ctx.source === 'Sync:Calendar→Entry') return;
 
+    // Current calendar surfaces use the shared typed-cell editor rather than
+    // the legacy calendar dialog. Route its saved date fields through the same
+    // reverse-sync policy, including when the source Sheet is no longer open.
+    if (ctx.propName === 'start' || ctx.propName === 'end') {
+      try {
+        const data = typeof state !== 'undefined' && state.currentDbPath === ctx.dbPath && state.pivotData
+          ? state.pivotData
+          : await apiFetch('/pivot?path=' + encodeURIComponent(ctx.dbPath), { silentError: true });
+        if (data?.calendar_db) {
+          const entity = data.entities?.[_entityNameFromPath(ctx.entityPath)];
+          const next = {};
+          Object.entries(entity || {}).forEach(([key, values]) => {
+            if (Array.isArray(values)) next[key] = values[0]?.value ?? '';
+          });
+          next.linkedAutoGenerated = String(next.linkedAutoGenerated).toLowerCase() === 'true';
+          next[ctx.propName] = ctx.newValue;
+          await onEventSaved({ prev: { ...next, [ctx.propName]: ctx.oldValue }, next });
+          return;
+        }
+      } catch (err) {
+        console.warn('[calendar-sync] calendar cell sync failed:', err);
+        return;
+      }
+    }
+
     const ptypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(ctx.dbPath) : {};
     const ptc = ptypes[ctx.propName];
     if (!ptc || !ptc.calendarSync || !ptc.calendarSync.targetDb) return;
@@ -194877,12 +195209,15 @@ function _showSyncModal(dbPath) {
    * calendarSync 設定を読み、紐付く自動生成イベントを削除 or orphan マークする。
    * エントリ自体の削除成功後に呼ばれる想定。失敗は黙殺（本削除は既に完了済み）。
    */
-  async function onEntryDeleted(dbPath, entityPath) {
+  async function onEntryDeleted(dbPath, entityPath, deletedEntryId = '') {
     if (!dbPath || !entityPath) return;
     const ptypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(dbPath) : {};
     const entityName = _entityNameFromPath(entityPath);
-    const entityData = await _loadEntityData(dbPath, entityName);
-    const entityId = entityData?._id || _entityIdFromPath(entityPath);
+    // The delete coordinator already removed the optimistic row and the
+    // backend entry. Preserve its pre-delete identity instead of resolving it
+    // from an entry that no longer exists (whose name differs from its ID).
+    const entityData = deletedEntryId ? null : await _loadEntityData(dbPath, entityName);
+    const entityId = deletedEntryId || entityData?._id || _entityIdFromPath(entityPath);
     // calendarSync 付き date プロパティを持つ全ての target DB に対して処理
     const seenTargets = new Set();
     for (const [pName, ptc] of Object.entries(ptypes)) {
@@ -194977,7 +195312,18 @@ function _showSyncModal(dbPath) {
     const dbPath = _dbPathFromEntryPath(ev.linkedEntryPath);
     if (!dbPath) return;
     const ptypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(dbPath) : {};
-    const ptc = ptypes[ev.linkedEntrySourceProperty];
+    let ptc = ptypes[ev.linkedEntrySourceProperty];
+    if (!ptc?.calendarSync) {
+      try {
+        const metadata = typeof _getDbMetadataCached === 'function'
+          ? await _getDbMetadataCached(dbPath)
+          : await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
+        ptc = metadata?.property_types?.[ev.linkedEntrySourceProperty];
+      } catch (err) {
+        console.warn('[calendar-sync] source metadata unavailable:', err);
+        return;
+      }
+    }
     if (!ptc || !ptc.calendarSync) return;
     const rs = ptc.calendarSync.reverseSync || {};
     if (rs.enabled === false) return;
@@ -216660,7 +217006,9 @@ async function openFolderItem(item) {
   _folderSelectedItems = [];
   _folderSelected = null;
   _updateFolderBulkBar();
-  const _expOpts = { fromExplorer: true };
+  let _expOpts = { fromExplorer: true };
+  const activation = window.GBOutlinerActivation;
+  const generation = activation?.nextGeneration();
   if (item?.archive_path && typeof openArchiveItem === 'function') {
     openArchiveItem(item);
     return;
@@ -216693,6 +217041,7 @@ async function openFolderItem(item) {
   if (typeof _resolveBrowseItemTypeOnDemand === 'function' && typeof _browseItemNeedsTypeCheck === 'function'
       && _browseItemNeedsTypeCheck(item)) {
     await _resolveBrowseItemTypeOnDemand(item);
+    if (activation && !activation.isCurrentGeneration(generation)) return;
     if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
         && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
   }
@@ -216701,12 +217050,13 @@ async function openFolderItem(item) {
       && typeof openArchiveFolder === 'function') {
     return openArchiveFolder(item.path, '');
   }
+  _expOpts = window.GBOutlinerActivation?.fileOpenOptions(_expOpts) || _expOpts;
   if (item.type === 'folder') { openFolder(item.name, item.path, _expOpts); }
-  else if (item.type === 'database') { selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts); }
+  else if (item.type === 'database') { selectDatabase(item.path, _expOpts.paneContext || null, _expOpts); }
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
-  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null }); }
+  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }
   else if (item.type === 'html') { openHtmlFile(item.name, item.path, _expOpts); }
@@ -221827,6 +222177,15 @@ if (typeof window !== 'undefined') {
     return gen === _activationGeneration;
   }
 
+  function fileOpenOptions(options = {}) {
+    const paneId = typeof GBPaneBridge !== 'undefined' ? GBPaneBridge.activateFileOpenPane?.() : '';
+    return {
+      ...options,
+      fromExplorer: true,
+      ...(paneId ? { paneId, paneContext: typeof getPaneContext === 'function' ? getPaneContext(paneId) : null } : {}),
+    };
+  }
+
   // 型判定待ちの間に「選択だけ」が別項目へ移った場合に、古い結果で前の項目を開かないための
   // 「現在の対象ノード」トラッカー。selectNodeOnly()（単クリック／矢印キー選択）と
   // activateNode() 自身（ダブルクリック／Enter／メニュー「開く」など）の両方が、
@@ -221958,7 +222317,7 @@ if (typeof window !== 'undefined') {
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
     const toggle = row.querySelector('.tree-toggle');
-    const _expOpts = { fromExplorer: true, skipHighlight: true };
+    const _expOpts = fileOpenOptions({ skipHighlight: true });
 
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
       _chatSetCurrentTargetPath(item.path, currentIsFolder || currentIsDB ? 'folder' : 'file', {
@@ -221968,7 +222327,7 @@ if (typeof window !== 'undefined') {
     }
 
     if (currentIsDB) {
-      if (typeof selectDatabase === 'function') selectDatabase(item.path, paneSnapshot?.paneContext || null, _expOpts);
+      if (typeof selectDatabase === 'function') selectDatabase(item.path, _expOpts.paneContext || null, _expOpts);
     } else if (item.type === 'entity') {
       if (typeof selectEntity === 'function') selectEntity(item.path, _expOpts);
     } else if (item.type === 'page') {
@@ -221979,7 +222338,7 @@ if (typeof window !== 'undefined') {
       if (typeof openBoard === 'function') openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {
       if (typeof openCalendarFile === 'function') {
-        openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: paneSnapshot?.paneContext || null });
+        openCalendarFile(item.name, item.path, _expOpts);
       }
     } else {
       const mediaType = _mediaTypeFromItem(item);
@@ -222036,8 +222395,7 @@ if (typeof window !== 'undefined') {
     if (!record) return false;
     const opts = Object.assign({ fromExplorer: true }, options || {});
     if (typeof _openStoredOutlinerItem === 'function') {
-      _openStoredOutlinerItem(record, opts);
-      return true;
+      return await _openStoredOutlinerItem(record, opts) !== false;
     }
     return false;
   }
@@ -222059,6 +222417,7 @@ if (typeof window !== 'undefined') {
   }
 
   window.GBOutlinerActivation = {
+    fileOpenOptions,
     nextGeneration,
     isCurrentGeneration,
     selectNodeOnly,
@@ -228424,12 +228783,17 @@ async function _outlinerResolveStoredItemType(item) {
 
 async function _openStoredOutlinerItem(item, opts) {
   const path = String(item?.path || '');
+  if (!path) return false;
+  const activation = window.GBOutlinerActivation;
+  const generation = activation?.nextGeneration();
   const name = _outlinerStoredItemName(item);
   const type = await _outlinerResolveStoredItemType(item);
-  const openOpts = opts || { fromExplorer: true };
-  if (!path) return;
+  // 判定待ちの間にツリー／最近使った項目で別ファイルを開いた場合、古い操作で戻さない。
+  if (activation && !activation.isCurrentGeneration(generation)) return false;
+  const openOpts = window.GBOutlinerActivation?.fileOpenOptions(opts)
+    || opts || { fromExplorer: true };
   if (type === 'folder') openFolder(name, path, openOpts);
-  else if (type === 'database') selectDatabase(path, null, openOpts);
+  else if (type === 'database') selectDatabase(path, openOpts.paneContext || null, openOpts);
   else if (type === 'entity') { if (typeof selectEntity === 'function') selectEntity(path, openOpts); }
   else if (type === 'page') openPage(name, path, openOpts);
   else if (type === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, name, openOpts); else openPage(name, path, openOpts); }
@@ -228444,6 +228808,7 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (type === 'html') openHtmlFile(name, path, openOpts);
   else if (type === 'csv') { if (typeof openCsvFile === 'function') openCsvFile(name, path, openOpts); else openPage(name, path, openOpts); }
   else if (typeof openNative === 'function') openNative(path);
+  return true;
 }
 
 // 最近使った項目・お気に入りショートカットの単クリック選択（単一選択。開かない）。
@@ -245687,7 +246052,10 @@ async function openBoard(label, path, opts) {
       && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'
       && GBPaneBridge?.initialized) {
-      requestedPaneId = openOpts.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
+      // ツリーやサブパネルをクリックすると activePane はその補助パネルになる。
+      // 読込前の明示 navPush も、他のファイルと同じ作業パネル選択を通す。
+      requestedPaneId = openOpts.paneId || GBPaneBridge.activateFileOpenPane?.()
+        || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
       const paneInfo = requestedPaneId
         && typeof GBLayout !== 'undefined'
         && typeof GBLayout.findNode === 'function'
@@ -245941,7 +246309,10 @@ function _sendUnloadJson(url, method, body) {
   }
   const payload = JSON.stringify(requestBody);
   const blob = new Blob([payload], { type: 'application/json' });
-  if (requestMethod === 'POST' && navigator.sendBeacon) {
+  // sendBeacon cannot attach the local API token. Use the secure fetch wrapper
+  // for authenticated local saves; accepting a queued beacon is not a save ACK.
+  const needsLocalAuth = window.MeldexLocalApiSecurity?.isLocalApiUrl?.(url) === true;
+  if (!needsLocalAuth && requestMethod === 'POST' && navigator.sendBeacon) {
     try {
       if (navigator.sendBeacon(url, blob)) return true;
     } catch {}
@@ -245998,6 +246369,7 @@ window.addEventListener('beforeunload', (e) => {
     }
   }
   // キャンバス: 未保存タイマーが残っている場合
+  if (typeof bd !== 'undefined' && bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   if (window._bdTimer && typeof bd !== 'undefined' && bd.dirty && bd.path && typeof bdToMd === 'function') {
     const canSaveBoardPath = typeof _bdCanSaveCurrentBoardPath !== 'function' || _bdCanSaveCurrentBoardPath(bd.path);
     if (!canSaveBoardPath) {
@@ -246006,7 +246378,7 @@ window.addEventListener('beforeunload', (e) => {
       clearTimeout(window._bdTimer);
       const boardSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(bd.path), 'POST', { content: bdToMd(), skip_if_missing: true });
       unloadSaveQueued = boardSaveQueued && unloadSaveQueued;
-      if (!boardSaveQueued) window._bdTimer = setTimeout(bdSave, 500);
+      if (!boardSaveQueued) window._bdTimer = setTimeout(typeof bdAutoSave === 'function' ? bdAutoSave : bdSave, 500);
     }
   }
   if (!unloadSaveQueued) {
@@ -247575,6 +247947,14 @@ const MeldexExportImage = (() => {
     const rect = contentEl.getBoundingClientRect?.() || {};
     const width = Math.ceil(options?.width || contentEl.scrollWidth || rect.width || contentEl.clientWidth || 1200);
     const height = Math.ceil(options?.height || contentEl.scrollHeight || rect.height || contentEl.clientHeight || 800);
+    let backgroundColor;
+    for (let parent = contentEl; parent; parent = parent.parentElement) {
+      const color = getComputedStyle(parent).backgroundColor;
+      if (color && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)') {
+        backgroundColor = color;
+        break;
+      }
+    }
     // html2canvas は前世代のcolor構文までしか解釈できず、Chromeがネイティブの
     // チェックボックス等に用いる `color(srgb ...)` 形式の computed style に当たると
     // 例外で失敗する。サーバーサイド生成パス（MeldexExportHtml.exportToHtml側）は
@@ -247593,8 +247973,12 @@ const MeldexExportImage = (() => {
         logging: false,
         width,
         height,
-        windowWidth: width,
-        windowHeight: height,
+        // Capture extent and layout viewport are different: a narrow table
+        // must not activate phone CSS in an otherwise desktop window.
+        windowWidth: options?.layoutViewport?.width || width,
+        windowHeight: options?.layoutViewport?.height || height,
+        backgroundColor: options?.layoutViewport ? backgroundColor : undefined,
+        onclone: options?.onclone,
         ignoreElements,
         scrollX: 0,
         scrollY: 0,
@@ -247757,9 +248141,15 @@ const MeldexExportImage = (() => {
       if (layoutOptions) extraOptions.width = layoutOptions.width + 32;
     }
 
+    const htmlOptions = _getHtmlOptionsForView(viewType);
     await exportToPng(el, {
       title,
-      htmlOptions: _getHtmlOptionsForView(viewType),
+      htmlOptions,
+      layoutViewport: viewType === 'database' ? { width: window.innerWidth, height: window.innerHeight } : undefined,
+      onclone: viewType === 'database' ? doc => {
+        const table = doc.getElementById('pivot-table');
+        if (table) htmlOptions.preTransform(table);
+      } : undefined,
       ignoreElements: _ignoreElementsForView(viewType),
       ...extraOptions,
     });
@@ -247797,7 +248187,10 @@ const MeldexExportImage = (() => {
   function _databasePreTransformOptions() {
     const table = document.getElementById('pivot-table');
     const origCells = table ? Array.from(table.querySelectorAll('th, td')) : [];
-    const cellWidths = origCells.map(cell => cell.getBoundingClientRect().width);
+    const cellStyles = origCells.map(cell => {
+      const style = getComputedStyle(cell);
+      return { width: cell.getBoundingClientRect().width, color: style.color, backgroundColor: style.backgroundColor };
+    });
     const origBadges = table ? Array.from(table.querySelectorAll('[class*="status-"]')) : [];
     const badgeStyles = origBadges.map(badge => {
       const cs = getComputedStyle(badge);
@@ -247806,10 +248199,15 @@ const MeldexExportImage = (() => {
     return {
       preTransform: (clone) => {
         const cloneCells = clone.querySelectorAll('th, td');
-        cellWidths.forEach((w, i) => {
+        cellStyles.forEach((style, i) => {
           if (!cloneCells[i]) return;
-          cloneCells[i].style.width = w + 'px';
-          cloneCells[i].style.minWidth = w + 'px';
+          cloneCells[i].style.width = style.width + 'px';
+          cloneCells[i].style.minWidth = style.width + 'px';
+          cloneCells[i].style.color = style.color;
+          cloneCells[i].style.backgroundColor = style.backgroundColor;
+          cloneCells[i].style.position = 'static';
+          cloneCells[i].style.left = 'auto';
+          cloneCells[i].style.right = 'auto';
         });
         const cloneBadges = clone.querySelectorAll('[class*="status-"]');
         cloneBadges.forEach((badge, i) => {
@@ -247817,6 +248215,9 @@ const MeldexExportImage = (() => {
           badge.style.backgroundColor = badgeStyles[i].bg;
           badge.style.color = badgeStyles[i].color;
         });
+        clone.querySelectorAll('.col-row-controls-header, .col-row-controls, .col-add-prop, .col-add-prop-cell, .new-entity-row, .new-entity-spacer-row, .entity-row-open-btn, .entity-row-more-btn, .th-more-btn, .col-resize-handle, .cell-value-more, .cell-add-btn').forEach(node => node.remove());
+        if (clone.tHead) clone.tHead.style.position = 'static';
+        clone.querySelectorAll('.entity-name-cell-main').forEach(node => { node.style.paddingRight = '0'; });
       },
     };
   }

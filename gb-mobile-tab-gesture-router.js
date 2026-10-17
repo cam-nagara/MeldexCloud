@@ -26,15 +26,17 @@
   }
 
   function tabItems(tablist) {
-    const selector = tablist.classList.contains('gb-pane-tabs')
+    const paneTabs = tablist.classList.contains('gb-pane-tabs');
+    const selector = paneTabs
       ? ':scope > .gb-pane-tabs-scroll > .gb-tab'
-      : ':scope > [role="tab"]';
+      : '[role="tab"]';
     // #detail-tab-bar（オプションパネル）のように、
     // 複数の対象タイプ用タブを同じタブバーへ同居させ、現在のタイプに合わない
     // タブを `hidden` 属性で隠す実装がある。ここで hidden を素通りさせると、
     // スマホ用ドロップダウンに無関係な20件前後のタブが並び、実質的に目的の
     // タブへ切り替えられなくなる（2026-08-13 バグ報告で確認）。
-    return Array.from(tablist.querySelectorAll(selector)).filter(tab => !tab.hidden);
+    return Array.from(tablist.querySelectorAll(selector)).filter(tab =>
+      !tab.hidden && (paneTabs || tab.closest('[role="tablist"]') === tablist));
   }
 
   function activeTab(tabs) {

@@ -886,6 +886,18 @@ function bdEditNode(id) {
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
   txt.contentEditable = 'true'; txt.focus();
+  txt.oninput = () => {
+    if (bd.editing !== id || n._topicCanonicalOnly || !window.MeldexDraftRecovery?.reserveDraft) return;
+    const snapshot = { ...bd, editing: null,
+      nodes: bd.nodes.map(node => ({ ...node, text: node.id === id ? txt.innerText.trim() : node.text })),
+      connections: bd.connections.map(connection => ({ ...connection })),
+      topicViewDocument: bd.topicViewDocument ? JSON.parse(JSON.stringify(bd.topicViewDocument)) : null };
+    const content = bdToMd(snapshot);
+    bd._draftReservationContent = content;
+    bd._draftReservationPath = bd.path;
+    const result = window.MeldexDraftRecovery.reserveDraft(bd.path, content, bd.lastSavedEtag || '');
+    if (!result?.ok && typeof showStatus === 'function') showStatus('端末内の下書き退避に失敗しました。編集を確定して保存してください', true);
+  };
   // 課題8: キャンバス外 (オプションパネル・ツールバー等) をクリックして編集領域から
   // フォーカスが外れた場合も確定する。従来はキャンバス内の限られた経路 (クリック/
   // Escape/Enter/Tab) からしか bdFinishEdit() が呼ばれず、確定前に他操作の bdRender() が

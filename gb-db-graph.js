@@ -6,12 +6,13 @@
 /* --- グラフ設定 --- */
 
 function getGraphConfig(dbPath, options = {}) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'graph', { ctx: options.ctx || null }) || {
+  return {
     colorProperty: '',
     showExternalNodes: true,
     layout: 'force',
     showLabels: true,
     showEdgeLabels: false,
+    ...(getCurrentDbViewTypeSpecific(dbPath, 'graph', { ctx: options.ctx || null }) || {}),
   };
 }
 

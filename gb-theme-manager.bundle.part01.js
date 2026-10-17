@@ -22,6 +22,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
+  const THEME_UI_DEFAULTS_VERSION = 1;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -897,4 +898,3 @@
       applyOsAccentColorSetting(getUseOsAccentColor(), { restorePrevious: false });
       global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: getUseOsAccentColor() } }));
     }
-    if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {

@@ -335,24 +335,6 @@ function renderDbViewTabs(ctx) {
   });
 
   // + ボタン（ビュータイプ選択ドロップダウン付き）
-  const canEditLayout = MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath, ctx) !== true;
-  if (canEditLayout && typeof togglePropertyLayoutEditMode === 'function') {
-    const reorderBtn = document.createElement('button');
-    reorderBtn.type = 'button';
-    reorderBtn.className = 'view-tab-add tb-icon-btn db-column-reorder-toggle';
-    reorderBtn.dataset.e2eId = `db-column-reorder-${e2eScope}`;
-    const editing = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(dbPath);
-    const label = editing ? '列の並べ替えを完了' : '列を並べ替える';
-    reorderBtn.innerHTML = lucide(editing ? 'check' : 'listOrdered', 16);
-    reorderBtn.title = label;
-    reorderBtn.setAttribute('aria-label', label);
-    reorderBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
-    reorderBtn.addEventListener('click', () => {
-      togglePropertyLayoutEditMode(dbPath);
-      renderDbViewTabs(ctx);
-    });
-    tabs.appendChild(reorderBtn);
-  }
   const addBtn = document.createElement('button');
   addBtn.className = 'view-tab-add tb-icon-btn';
   _markDbViewToolbarAction(addBtn);

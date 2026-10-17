@@ -645,9 +645,9 @@
     return publishTargetTagsMutation(targetPath, merged, sourceFolder);
   }
 
-  // Reuse only exact names from the destination dictionary. Unmatched private
-  // names stay private, and unrelated file assignments are preserved.
-  async function mergeExistingTagNames(path, names) {
+  // Reuse exact existing definitions. Memo saves explicitly opt in to creating
+  // missing names; unrelated assignments and dictionary settings are preserved.
+  async function mergeExistingTagNames(path, names, options = {}) {
     const wanted = new Set((Array.isArray(names) ? names : []).map(name => String(name).trim()).filter(Boolean));
     if (!wanted.size) return [];
     if (!path) throw new Error('共通タグを統合するメモの保存先を確認できません');
@@ -668,9 +668,15 @@
         if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
       } else personal.push({ id: tag.id, existing_only: true });
     }
+    // クイックメモへ明示的に付けた名前は共通辞書にも登録する。
+    // 候補一覧の読込・端末内の登録だけでは辞書を変更しない。
+    const missing = options.createMissing === true
+      ? [...wanted].filter(name => !seen.has(name)).map(name => ({ name })) : [];
+    personal.push(...missing);
     if (personal.length) {
       const result = await updateTargetTags(path, { add: personal, remove: [] }, { sourceFolder });
       if (result?.ok !== true) throw new Error('共通タグの統合を完了できませんでした');
+      if (missing.length) notifyDictionaryChanged('quick-memo-tags-created', sourceFolder);
     }
     return matched;
   }

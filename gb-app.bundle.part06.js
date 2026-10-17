@@ -99,7 +99,10 @@ async function openBoard(label, path, opts) {
       && typeof navPush === 'function'
       && typeof GBPaneBridge !== 'undefined'
       && GBPaneBridge?.initialized) {
-      requestedPaneId = openOpts.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
+      // ツリーやサブパネルをクリックすると activePane はその補助パネルになる。
+      // 読込前の明示 navPush も、他のファイルと同じ作業パネル選択を通す。
+      requestedPaneId = openOpts.paneId || GBPaneBridge.activateFileOpenPane?.()
+        || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
       const paneInfo = requestedPaneId
         && typeof GBLayout !== 'undefined'
         && typeof GBLayout.findNode === 'function'
@@ -353,7 +356,10 @@ function _sendUnloadJson(url, method, body) {
   }
   const payload = JSON.stringify(requestBody);
   const blob = new Blob([payload], { type: 'application/json' });
-  if (requestMethod === 'POST' && navigator.sendBeacon) {
+  // sendBeacon cannot attach the local API token. Use the secure fetch wrapper
+  // for authenticated local saves; accepting a queued beacon is not a save ACK.
+  const needsLocalAuth = window.MeldexLocalApiSecurity?.isLocalApiUrl?.(url) === true;
+  if (!needsLocalAuth && requestMethod === 'POST' && navigator.sendBeacon) {
     try {
       if (navigator.sendBeacon(url, blob)) return true;
     } catch {}
@@ -410,6 +416,7 @@ window.addEventListener('beforeunload', (e) => {
     }
   }
   // キャンバス: 未保存タイマーが残っている場合
+  if (typeof bd !== 'undefined' && bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   if (window._bdTimer && typeof bd !== 'undefined' && bd.dirty && bd.path && typeof bdToMd === 'function') {
     const canSaveBoardPath = typeof _bdCanSaveCurrentBoardPath !== 'function' || _bdCanSaveCurrentBoardPath(bd.path);
     if (!canSaveBoardPath) {
@@ -418,7 +425,7 @@ window.addEventListener('beforeunload', (e) => {
       clearTimeout(window._bdTimer);
       const boardSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(bd.path), 'POST', { content: bdToMd(), skip_if_missing: true });
       unloadSaveQueued = boardSaveQueued && unloadSaveQueued;
-      if (!boardSaveQueued) window._bdTimer = setTimeout(bdSave, 500);
+      if (!boardSaveQueued) window._bdTimer = setTimeout(typeof bdAutoSave === 'function' ? bdAutoSave : bdSave, 500);
     }
   }
   if (!unloadSaveQueued) {
@@ -891,9 +898,3 @@ function _syncHeartbeatForVisibility() {
 
 document.addEventListener('visibilitychange', _syncHeartbeatForVisibility);
 if (document.body && typeof MutationObserver !== 'undefined') {
-  new MutationObserver(_syncHeartbeatForVisibility).observe(document.body, {
-    attributes: true,
-    attributeFilter: ['data-cloud-mode'],
-  });
-}
-_syncHeartbeatForVisibility();

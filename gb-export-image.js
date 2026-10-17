@@ -60,6 +60,14 @@ const MeldexExportImage = (() => {
     const rect = contentEl.getBoundingClientRect?.() || {};
     const width = Math.ceil(options?.width || contentEl.scrollWidth || rect.width || contentEl.clientWidth || 1200);
     const height = Math.ceil(options?.height || contentEl.scrollHeight || rect.height || contentEl.clientHeight || 800);
+    let backgroundColor;
+    for (let parent = contentEl; parent; parent = parent.parentElement) {
+      const color = getComputedStyle(parent).backgroundColor;
+      if (color && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)') {
+        backgroundColor = color;
+        break;
+      }
+    }
     // html2canvas は前世代のcolor構文までしか解釈できず、Chromeがネイティブの
     // チェックボックス等に用いる `color(srgb ...)` 形式の computed style に当たると
     // 例外で失敗する。サーバーサイド生成パス（MeldexExportHtml.exportToHtml側）は
@@ -78,8 +86,12 @@ const MeldexExportImage = (() => {
         logging: false,
         width,
         height,
-        windowWidth: width,
-        windowHeight: height,
+        // Capture extent and layout viewport are different: a narrow table
+        // must not activate phone CSS in an otherwise desktop window.
+        windowWidth: options?.layoutViewport?.width || width,
+        windowHeight: options?.layoutViewport?.height || height,
+        backgroundColor: options?.layoutViewport ? backgroundColor : undefined,
+        onclone: options?.onclone,
         ignoreElements,
         scrollX: 0,
         scrollY: 0,
@@ -242,9 +254,15 @@ const MeldexExportImage = (() => {
       if (layoutOptions) extraOptions.width = layoutOptions.width + 32;
     }
 
+    const htmlOptions = _getHtmlOptionsForView(viewType);
     await exportToPng(el, {
       title,
-      htmlOptions: _getHtmlOptionsForView(viewType),
+      htmlOptions,
+      layoutViewport: viewType === 'database' ? { width: window.innerWidth, height: window.innerHeight } : undefined,
+      onclone: viewType === 'database' ? doc => {
+        const table = doc.getElementById('pivot-table');
+        if (table) htmlOptions.preTransform(table);
+      } : undefined,
       ignoreElements: _ignoreElementsForView(viewType),
       ...extraOptions,
     });
@@ -282,7 +300,10 @@ const MeldexExportImage = (() => {
   function _databasePreTransformOptions() {
     const table = document.getElementById('pivot-table');
     const origCells = table ? Array.from(table.querySelectorAll('th, td')) : [];
-    const cellWidths = origCells.map(cell => cell.getBoundingClientRect().width);
+    const cellStyles = origCells.map(cell => {
+      const style = getComputedStyle(cell);
+      return { width: cell.getBoundingClientRect().width, color: style.color, backgroundColor: style.backgroundColor };
+    });
     const origBadges = table ? Array.from(table.querySelectorAll('[class*="status-"]')) : [];
     const badgeStyles = origBadges.map(badge => {
       const cs = getComputedStyle(badge);
@@ -291,10 +312,15 @@ const MeldexExportImage = (() => {
     return {
       preTransform: (clone) => {
         const cloneCells = clone.querySelectorAll('th, td');
-        cellWidths.forEach((w, i) => {
+        cellStyles.forEach((style, i) => {
           if (!cloneCells[i]) return;
-          cloneCells[i].style.width = w + 'px';
-          cloneCells[i].style.minWidth = w + 'px';
+          cloneCells[i].style.width = style.width + 'px';
+          cloneCells[i].style.minWidth = style.width + 'px';
+          cloneCells[i].style.color = style.color;
+          cloneCells[i].style.backgroundColor = style.backgroundColor;
+          cloneCells[i].style.position = 'static';
+          cloneCells[i].style.left = 'auto';
+          cloneCells[i].style.right = 'auto';
         });
         const cloneBadges = clone.querySelectorAll('[class*="status-"]');
         cloneBadges.forEach((badge, i) => {
@@ -302,6 +328,9 @@ const MeldexExportImage = (() => {
           badge.style.backgroundColor = badgeStyles[i].bg;
           badge.style.color = badgeStyles[i].color;
         });
+        clone.querySelectorAll('.col-row-controls-header, .col-row-controls, .col-add-prop, .col-add-prop-cell, .new-entity-row, .new-entity-spacer-row, .entity-row-open-btn, .entity-row-more-btn, .th-more-btn, .col-resize-handle, .cell-value-more, .cell-add-btn').forEach(node => node.remove());
+        if (clone.tHead) clone.tHead.style.position = 'static';
+        clone.querySelectorAll('.entity-name-cell-main').forEach(node => { node.style.paddingRight = '0'; });
       },
     };
   }

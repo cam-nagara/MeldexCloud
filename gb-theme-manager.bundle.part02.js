@@ -1,3 +1,5 @@
+    if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
+      applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
       const apps = getThemeUiApplications();
       const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
@@ -38,12 +40,12 @@
 
   function resetThemeUiAutoTone(options = {}) {
     const before = _captureThemeSettingsStorage([THEME_UI_AUTO_TONE_KEY]);
-    try { localStorage.removeItem(THEME_UI_AUTO_TONE_KEY); } catch {}
+    const presetTone = normalizeThemeUiAutoTone(getThemeById(getDefaultThemeId())?.ui?.themeUiAutoTone);
+    try { localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(presetTone)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動トーンリセット', before, [THEME_UI_AUTO_TONE_KEY], '', options);
-    const next = normalizeThemeUiAutoTone(null);
     applyThemeUiApplications(getThemeUiApplications());
-    dispatchThemeUiAutoToneChange({ tone: next, reset: true });
-    return next;
+    dispatchThemeUiAutoToneChange({ tone: presetTone, reset: true });
+    return presetTone;
   }
 
   function normalizeThemeUiApplications(raw) {
@@ -76,16 +78,27 @@
 
   function getThemeUiApplications() {
     try {
-      return normalizeThemeUiApplications(JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null'));
+      const stored = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+      return stored ? normalizeThemeUiApplications(stored) : _currentThemeUiApplications();
     } catch {
-      return normalizeThemeUiApplications(null);
+      return _currentThemeUiApplications();
     }
+  }
+
+  function _currentThemeUiApplications() {
+    return normalizeThemeUiApplications(getThemeById(getDefaultThemeId())?.ui?.themeUiApplications);
+  }
+
+  function _encodeThemeUiApplications(cfg) {
+    // Metadata travels with the settings through history, import and sync.
+    // Normalization ignores it, so older clients can still read the targets.
+    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
   }
 
   function saveThemeUiApplications(cfg, options = {}) {
     const next = normalizeThemeUiApplications(cfg);
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(next)); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(next)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用変更', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(next, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: next });
@@ -100,9 +113,9 @@
   }
 
   function resetThemeUiApplications(options = {}) {
-    const cfg = _defaultThemeUiApplications();
+    const cfg = _currentThemeUiApplications();
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.removeItem(THEME_UI_APPLICATIONS_KEY); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(cfg)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用リセット', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(cfg, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: cfg, reset: true });
@@ -114,7 +127,7 @@
     const ids = new Set((Array.isArray(targetIds) ? targetIds : [targetIds]).map(id => String(id || '')).filter(Boolean));
     if (!ids.size) return resetThemeUiApplications(options);
     const cfg = getThemeUiApplications();
-    const defaults = _defaultThemeUiApplications();
+    const defaults = _currentThemeUiApplications();
     ids.forEach(id => {
       if (!cfg[id] || !defaults[id]) return;
       cfg[id] = clone(defaults[id]);
@@ -320,8 +333,8 @@
 
   function _builtinAccentThemeUiApplications(id, applications) {
     const cfg = normalizeThemeUiApplications(applications);
-    // Common controls include selector-backed chrome and tree files.
-    // Sequential folders, headings and section bars retain their eight colors.
+    // Selection uses the same accent for tree files and folders. Normal
+    // sequential decoration, headings and section bars retain eight colors.
     const commonTargets = THEME_UI_TARGETS.filter(target => target.group === 'ui'
       && (target.vars || target.id === 'left-chrome' || target.id === 'folder'));
     for (const target of commonTargets) {
@@ -331,6 +344,7 @@
         }
       }
     }
+    cfg['folder-tree-folder'].selected.bg = cfg.folder.selected.bg;
     return cfg;
   }
 
@@ -884,17 +898,3 @@
   }
 
   function collectPaletteTargets(options = {}) {
-    if (!options.force && _paletteTargetCache) return _paletteTargetCache;
-    ensurePaletteObserver();
-    const targets = [];
-    PALETTE_TARGET_SPECS.forEach(([selector, target]) => {
-      document.querySelectorAll(selector).forEach((el, index) => {
-        targets.push({ el, index, target });
-      });
-    });
-    _paletteTargetCache = targets;
-    return targets;
-  }
-
-  function bindPaletteTargets(palette, options = {}) {
-    const colorSet = _effectiveThemeColorSet(palette, RAINBOW_PALETTE);

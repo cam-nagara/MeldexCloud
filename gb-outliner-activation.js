@@ -58,6 +58,15 @@
     return gen === _activationGeneration;
   }
 
+  function fileOpenOptions(options = {}) {
+    const paneId = typeof GBPaneBridge !== 'undefined' ? GBPaneBridge.activateFileOpenPane?.() : '';
+    return {
+      ...options,
+      fromExplorer: true,
+      ...(paneId ? { paneId, paneContext: typeof getPaneContext === 'function' ? getPaneContext(paneId) : null } : {}),
+    };
+  }
+
   // 型判定待ちの間に「選択だけ」が別項目へ移った場合に、古い結果で前の項目を開かないための
   // 「現在の対象ノード」トラッカー。selectNodeOnly()（単クリック／矢印キー選択）と
   // activateNode() 自身（ダブルクリック／Enter／メニュー「開く」など）の両方が、
@@ -189,7 +198,7 @@
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
     const toggle = row.querySelector('.tree-toggle');
-    const _expOpts = { fromExplorer: true, skipHighlight: true };
+    const _expOpts = fileOpenOptions({ skipHighlight: true });
 
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
       _chatSetCurrentTargetPath(item.path, currentIsFolder || currentIsDB ? 'folder' : 'file', {
@@ -199,7 +208,7 @@
     }
 
     if (currentIsDB) {
-      if (typeof selectDatabase === 'function') selectDatabase(item.path, paneSnapshot?.paneContext || null, _expOpts);
+      if (typeof selectDatabase === 'function') selectDatabase(item.path, _expOpts.paneContext || null, _expOpts);
     } else if (item.type === 'entity') {
       if (typeof selectEntity === 'function') selectEntity(item.path, _expOpts);
     } else if (item.type === 'page') {
@@ -210,7 +219,7 @@
       if (typeof openBoard === 'function') openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {
       if (typeof openCalendarFile === 'function') {
-        openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: paneSnapshot?.paneContext || null });
+        openCalendarFile(item.name, item.path, _expOpts);
       }
     } else {
       const mediaType = _mediaTypeFromItem(item);
@@ -267,8 +276,7 @@
     if (!record) return false;
     const opts = Object.assign({ fromExplorer: true }, options || {});
     if (typeof _openStoredOutlinerItem === 'function') {
-      _openStoredOutlinerItem(record, opts);
-      return true;
+      return await _openStoredOutlinerItem(record, opts) !== false;
     }
     return false;
   }
@@ -290,6 +298,7 @@
   }
 
   window.GBOutlinerActivation = {
+    fileOpenOptions,
     nextGeneration,
     isCurrentGeneration,
     selectNodeOnly,

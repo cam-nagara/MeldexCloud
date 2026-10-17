@@ -23,12 +23,17 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     showStatus('このシートは1セル1値運用です（ステータス機能オフ）');
     return;
   }
+  const inlineEditorSession = {};
+  td._dbInlineEditorSession = inlineEditorSession;
+  const ownsInlineEditor = () => td.isConnected !== false
+    && td._dbInlineEditorSession === inlineEditorSession;
   const addBtn = container.querySelector('.cell-add-btn');
   if (addBtn) {
     addBtn.style.display = 'none';
     addBtn.dataset.editingHidden = '1';
   }
   const cancel = () => {
+    if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
     setActiveCell(td);
@@ -36,9 +41,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   const pos = _cellPos(td);
   const isRelationType = type === 'relation' || type === 'multi-relation';
   const restoreActiveCellNow = () => {
-    if (typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
+    if (ownsInlineEditor() && typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
+    if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
     restoreActiveCellNow();
@@ -84,6 +90,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     } catch {}
   };
   const refreshCellDisplayNow = (affectedProps, fallbackValue) => {
+    // The model/identity still receives the save result. Its older UI callback
+    // must not replace an editor opened while that request was in flight.
+    if (!ownsInlineEditor()) return true;
     let refreshed = false;
     if (isRelationType) {
       refreshRelationCellNow(affectedProps || []);
@@ -341,7 +350,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           status: writeStatus,
           note: '',
         }, ctx);
-        await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
+        if (ownsInlineEditor()) await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
         return true;
       }
       // 楽観的増分更新: pivotData をローカルで更新してからセル DOM だけ書き換える
@@ -412,7 +421,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         removeLocalCellValue(optimisticValue);
         refreshCellDisplayNow([], '');
       }
-      if (dbPath && typeof selectDatabase === 'function') {
+      if (ownsInlineEditor() && dbPath && typeof selectDatabase === 'function') {
         try { await selectDatabase(dbPath, ctx || undefined, { silent: true }); } catch {}
       }
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
@@ -431,13 +440,14 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
       || rawValues.find(v => v && v.file)
       || null;
-    if (!existing?.file) {
+    if (!existing?.file && !existing?._pendingCreate) {
       await saveAndRestore(value, moveTo);
       return;
     }
     if (!existing.property) existing.property = propName;
     if ((existing.value || '') === value) { cancel(); return; }
     const oldValue = existing.value || '';
+    const pendingCreate = existing._pendingCreate;
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -458,6 +468,15 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
     } catch (e) {
+      if (pendingCreate) {
+        try { await pendingCreate; }
+        catch {
+          removeLocalCellValue(existing);
+          refreshCellDisplayNow([], '');
+          cancel();
+          return;
+        }
+      }
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
@@ -490,7 +509,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
       || rawValues.find(v => v && v.file)
       || null;
-    if (!existing?.file) {
+    if (!existing?.file && !existing?._pendingCreate) {
       if (nextValue) {
         const saved = await saveAndRestore(nextValue, moveTo);
         if (!saved) reportCommonTagPartialSave(saveOptions.createdTagNames);
@@ -501,6 +520,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (!existing.property) existing.property = propName;
     const oldValue = existing.value || '';
     if (oldValue === nextValue) { cancel(); return; }
+    const pendingCreate = existing._pendingCreate;
     const saveRef = { ...existing, property: existing.property || propName };
     try {
       closeInlineEditorShell();
@@ -564,6 +584,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         allowEmptyClear: true,
       });
     } catch (e) {
+      if (pendingCreate) {
+        try { await pendingCreate; }
+        catch {
+          removeLocalCellValue(existing);
+          refreshCellDisplayNow([], '');
+          cancel();
+          reportCommonTagPartialSave(saveOptions.createdTagNames);
+          return;
+        }
+      }
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: saveRef.file || existing.file,
@@ -817,7 +847,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       loadingMsg.textContent = 'タグ機能を利用できません';
       return;
     }
-    tagsApi.loadTagsCached().then(data => {
+    const tagSourceFolder = String(window.MeldexAutoTagSourceFolder?.(dbPath) || '').trim();
+    tagsApi.loadTagsCached(tagSourceFolder).then(data => {
       if (!dd.isConnected) return;
       dd.textContent = '';
       const allTags = Array.isArray(data?.tags) ? data.tags : [];
@@ -847,7 +878,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           const existingTag = allTags.find(t => String(t.name || '').trim().toLowerCase() === trimmed.toLowerCase());
           let tag = existingTag;
           if (!tag) {
-            const created = await tagsApi.createTag({ name: trimmed });
+            const created = await tagsApi.createTag({ name: trimmed }, tagSourceFolder);
             tag = created?.tag || null;
             if (tag) {
               allTags.push(tag);

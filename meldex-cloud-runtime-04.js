@@ -41193,7 +41193,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             type: type,
             label: label.trim() || defaultLabel,
             expected_revision: current?.revision != null ? current.revision : undefined,
-          });
+          // 索引のwriter待ち・共有ミラー確定まで待つ。既定15秒で中断すると、
+          // サーバーだけ作成が完了して利用者が重複作成してしまう。
+          }, { timeoutMs: 60000 });
           if (res?.ok) {
             if (typeof showStatus === 'function') showStatus(`「${label}」を作成してリンクしました`);
             if (typeof options.onReload === 'function') await options.onReload(res.attachment?.id);
@@ -53363,7 +53365,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof window.MeldexGlobalTags?.mergeExistingTagNames !== 'function') {
               throw new Error('共通タグとの統合機能を読み込めませんでした');
             }
-            await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags);
+            await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
           }
           sent.set(item.memo_id, { signature: signature(raw), result });
         } catch {}
@@ -57278,6 +57280,7 @@ if (typeof window !== 'undefined') {
   const STORE = 'drafts';
   const MAX_DRAFTS = 100;
   const MAX_BYTES = 1024 * 1024;
+  const RESERVATION_PREFIX = 'meldex-draft-reservation-v1:';
   const timers = new Map();
   // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
   // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
@@ -57434,6 +57437,39 @@ if (typeof window !== 'undefined') {
     }).catch(() => ({ ok: false }));
   }
 
+  // Reserve synchronously before navigation can stop an IndexedDB transaction
+  // or an unload request. The existing scope keeps workspaces/accounts apart.
+  function reserveDraft(path, content, lastSyncedAt) {
+    const safePath = String(path || '').trim();
+    if (!safePath || _byteLength(content) > MAX_BYTES || _isPathLocked(safePath)) return { ok: false };
+    const key = _draftStorageKey(safePath);
+    const item = { path: key, filePath: safePath, scope: _draftScope(), content: String(content || ''),
+      savedAt: new Date().toISOString(), lastSyncedAt: String(lastSyncedAt || '') };
+    let reserved = false;
+    try {
+      localStorage.setItem(RESERVATION_PREFIX + key, JSON.stringify(item));
+      sessionDraftKeys.add(key);
+      reserved = true;
+    } catch (_) {}
+    void saveDraft(safePath, content, lastSyncedAt);
+    return { ok: reserved };
+  }
+
+  function _reservations() {
+    const items = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key?.startsWith(RESERVATION_PREFIX)) continue;
+        try {
+          const item = JSON.parse(localStorage.getItem(key));
+          if (item?.path && typeof item.content === 'string' && _byteLength(item.content) <= MAX_BYTES) items.push(item);
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return items;
+  }
+
   function queueDraft(path, content, lastSyncedAt) {
     const safePath = String(path || '').trim();
     const key = _draftTimerKey(safePath);
@@ -57457,6 +57493,9 @@ if (typeof window !== 'undefined') {
       const all = await _request(store.getAll());
       all.filter(item => _isCurrentScopeDraft(item, scope)).forEach(item => store.delete(item.path));
     }).catch(() => {});
+    for (const item of _reservations().filter(item => _isCurrentScopeDraft(item, scope))) {
+      try { localStorage.removeItem(RESERVATION_PREFIX + item.path); } catch (_) {}
+    }
   }
 
   // storageKey は listDrafts() が返す「実際に保存されているキー」。渡された場合は
@@ -57473,19 +57512,38 @@ if (typeof window !== 'undefined') {
     const targets = new Set([_draftStorageKey(safePath)]);
     const explicit = String(storageKey || '').trim();
     if (explicit) targets.add(explicit);
+    targets.forEach(target => { try { localStorage.removeItem(RESERVATION_PREFIX + target); } catch (_) {} });
     await _store('readwrite', (store) => {
       targets.forEach(target => store.delete(target));
     }).catch(() => {});
   }
 
-  function markSynced(path) {
-    return clearDraft(path);
+  async function markSynced(path, expectedContent) {
+    const key = _draftStorageKey(path);
+    if (expectedContent === undefined) {
+      // Older callers cannot identify which live-input reservation they saved.
+      // Preserve it rather than clearing a newer edit in another surface.
+      try { if (localStorage.getItem(RESERVATION_PREFIX + key)) return; } catch (_) {}
+      return clearDraft(path);
+    }
+    try {
+      const item = JSON.parse(localStorage.getItem(RESERVATION_PREFIX + key) || 'null');
+      if (item && item.content !== expectedContent) return;
+      if (item) localStorage.removeItem(RESERVATION_PREFIX + key);
+    } catch (_) {}
+    await _store('readwrite', async store => {
+      const item = await _request(store.get(key));
+      if (item?.content === expectedContent) store.delete(key);
+    }).catch(() => {});
   }
 
   async function listDrafts() {
     const scope = _draftScope();
     const all = await _store('readonly', (store) => _request(store.getAll())).catch(() => []);
-    return (Array.isArray(all) ? all : [])
+    const merged = new Map((Array.isArray(all) ? all : []).map(item => [item.path, item]));
+    // The synchronous reservation is authoritative over an older async write.
+    for (const item of _reservations()) merged.set(item.path, item);
+    return [...merged.values()]
       .filter(item => _isCurrentScopeDraft(item, scope))
       .map(_publicDraft)
       .sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
@@ -57755,6 +57813,7 @@ if (typeof window !== 'undefined') {
   }
 
   window.MeldexDraftRecovery = {
+    reserveDraft,
     queueDraft,
     saveDraft,
     clearDraft,
@@ -70076,6 +70135,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
+  const THEME_UI_DEFAULTS_VERSION = 1;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -70952,6 +71012,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: getUseOsAccentColor() } }));
     }
     if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
+      applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
       const apps = getThemeUiApplications();
       const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
@@ -70992,12 +71053,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function resetThemeUiAutoTone(options = {}) {
     const before = _captureThemeSettingsStorage([THEME_UI_AUTO_TONE_KEY]);
-    try { localStorage.removeItem(THEME_UI_AUTO_TONE_KEY); } catch {}
+    const presetTone = normalizeThemeUiAutoTone(getThemeById(getDefaultThemeId())?.ui?.themeUiAutoTone);
+    try { localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(presetTone)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動トーンリセット', before, [THEME_UI_AUTO_TONE_KEY], '', options);
-    const next = normalizeThemeUiAutoTone(null);
     applyThemeUiApplications(getThemeUiApplications());
-    dispatchThemeUiAutoToneChange({ tone: next, reset: true });
-    return next;
+    dispatchThemeUiAutoToneChange({ tone: presetTone, reset: true });
+    return presetTone;
   }
 
   function normalizeThemeUiApplications(raw) {
@@ -71030,16 +71091,27 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function getThemeUiApplications() {
     try {
-      return normalizeThemeUiApplications(JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null'));
+      const stored = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+      return stored ? normalizeThemeUiApplications(stored) : _currentThemeUiApplications();
     } catch {
-      return normalizeThemeUiApplications(null);
+      return _currentThemeUiApplications();
     }
+  }
+
+  function _currentThemeUiApplications() {
+    return normalizeThemeUiApplications(getThemeById(getDefaultThemeId())?.ui?.themeUiApplications);
+  }
+
+  function _encodeThemeUiApplications(cfg) {
+    // Metadata travels with the settings through history, import and sync.
+    // Normalization ignores it, so older clients can still read the targets.
+    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
   }
 
   function saveThemeUiApplications(cfg, options = {}) {
     const next = normalizeThemeUiApplications(cfg);
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(next)); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(next)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用変更', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(next, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: next });
@@ -71054,9 +71126,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function resetThemeUiApplications(options = {}) {
-    const cfg = _defaultThemeUiApplications();
+    const cfg = _currentThemeUiApplications();
     const before = _captureThemeSettingsStorage([THEME_UI_APPLICATIONS_KEY]);
-    try { localStorage.removeItem(THEME_UI_APPLICATIONS_KEY); } catch {}
+    try { localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(cfg)); } catch {}
     _pushThemeSettingsHistory('設定: テーマ自動適用リセット', before, [THEME_UI_APPLICATIONS_KEY], '', options);
     applyThemeUiApplications(cfg, { forceTargets: true });
     dispatchThemeUiApplicationsChange({ applications: cfg, reset: true });
@@ -71068,7 +71140,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const ids = new Set((Array.isArray(targetIds) ? targetIds : [targetIds]).map(id => String(id || '')).filter(Boolean));
     if (!ids.size) return resetThemeUiApplications(options);
     const cfg = getThemeUiApplications();
-    const defaults = _defaultThemeUiApplications();
+    const defaults = _currentThemeUiApplications();
     ids.forEach(id => {
       if (!cfg[id] || !defaults[id]) return;
       cfg[id] = clone(defaults[id]);
@@ -71274,8 +71346,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _builtinAccentThemeUiApplications(id, applications) {
     const cfg = normalizeThemeUiApplications(applications);
-    // Common controls include selector-backed chrome and tree files.
-    // Sequential folders, headings and section bars retain their eight colors.
+    // Selection uses the same accent for tree files and folders. Normal
+    // sequential decoration, headings and section bars retain eight colors.
     const commonTargets = THEME_UI_TARGETS.filter(target => target.group === 'ui'
       && (target.vars || target.id === 'left-chrome' || target.id === 'folder'));
     for (const target of commonTargets) {
@@ -71285,6 +71357,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         }
       }
     }
+    cfg['folder-tree-folder'].selected.bg = cfg.folder.selected.bg;
     return cfg;
   }
 
@@ -72905,9 +72978,25 @@ async function _applyImportedCustomColors(rawColors, mode) {
     let wroteApplications = false;
     let wroteAutoTone = false;
     try {
-      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_APPLICATIONS_KEY) == null) {
-        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(applications));
+      const raw = localStorage.getItem(THEME_UI_APPLICATIONS_KEY);
+      if (options.preserveStored !== true || raw == null) {
+        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(applications));
         wroteApplications = true;
+      } else {
+        const stored = JSON.parse(raw);
+        if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const previous = clone(applications);
+          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+          const normalized = normalizeThemeUiApplications(stored);
+          // Only migrate an exact former builtin default, never a user's
+          // different colors or an explicitly saved auto-color preference.
+          const unchangedBuiltin = themeDef.builtIn === true
+            && [previous, _defaultThemeUiApplications()].some(legacy =>
+              JSON.stringify(normalized) === JSON.stringify(legacy));
+          localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
+            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+          wroteApplications = true;
+        }
       }
     } catch {}
     try {
@@ -72919,9 +73008,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     // 書き込みがあったら CSS rules を再生成してランタイムへ反映 (以前は localStorage のみ
     // 更新されて `meldex-theme-ui-applications-style` が古い状態のままだった)
     if (wroteApplications || wroteAutoTone) {
-      applyThemeUiApplications(applications, { forceTargets: true });
+      const effectiveApplications = getThemeUiApplications();
+      applyThemeUiApplications(effectiveApplications, { forceTargets: true });
       if (wroteApplications && typeof dispatchThemeUiApplicationsChange === 'function') {
-        dispatchThemeUiApplicationsChange({ applications, fromTheme: true });
+        dispatchThemeUiApplicationsChange({ applications: effectiveApplications, fromTheme: true });
       }
       if (wroteAutoTone && typeof dispatchThemeUiAutoToneChange === 'function') {
         dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });
@@ -73256,6 +73346,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   let _pushTimer = null;
   let _busy = false;
   let _applyingRemote = false;
+  let _pushRequested = false;
 
   function _manager() {
     return global.MeldexThemeManager;
@@ -73281,7 +73372,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   // 値そのものの並びから作る短い指紋。「前回同期したときから変わったか」の判定に使う。
   function _signature(values) {
     const keys = Object.keys(values || {}).sort();
-    const text = keys.map((key) => `${key} ${values[key] == null ? '' : values[key]}`).join('');
+    const text = keys.map((key) => `${key}\u0000${values[key] == null ? '' : values[key]}`).join('\u0001');
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i += 1) {
       hash ^= text.charCodeAt(i);
@@ -73307,7 +73398,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _get(path) {
     if (typeof apiFetch !== 'function') return Promise.resolve(null);
-    return apiFetch(path, { silentError: true });
+    return apiFetch(path, { silentError: true, skipBrowseCache: true });
   }
 
   // 競合したら読み直す必要があるので、失敗は呼び出し元へ伝える。
@@ -73320,6 +73411,39 @@ async function _applyImportedCustomColors(rawColors, mode) {
       body: JSON.stringify(body),
       silentError: true,
     });
+  }
+
+  function _remoteSnapshot(values, localValues) {
+    // An older client may not know a newly introduced setting. Absence is
+    // different from an explicit null (reset), and must not erase that key.
+    return Object.fromEntries(_themeKeys().map(key => [key,
+      Object.prototype.hasOwnProperty.call(values, key)
+        ? (values[key] == null ? null : String(values[key]))
+        : localValues[key],
+    ]));
+  }
+
+  function _recordRemote(response, values) {
+    const known = new Set(_themeKeys());
+    _writeState({
+      revision: response.revision,
+      signature: _signature(values),
+      updatedAt: response.payload.updatedAt || '',
+      values,
+      extras: Object.fromEntries(Object.entries(response.payload.values).filter(([key]) => !known.has(key))),
+    });
+  }
+
+  function _mergePendingValues(localValues, remoteValues, baseline) {
+    return Object.fromEntries(_themeKeys().map(key => {
+      const hasBaseline = baseline && Object.prototype.hasOwnProperty.call(baseline, key);
+      // Legacy sync states have no per-key baseline. Preserve their existing
+      // local settings, as for first sync, rather than guessing which was edited.
+      const locallyChanged = hasBaseline
+        ? localValues[key] !== baseline[key]
+        : localValues[key] != null;
+      return [key, locallyChanged ? localValues[key] : remoteValues[key]];
+    }));
   }
 
   function _applyRemoteValues(values) {
@@ -73352,22 +73476,27 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   async function pull() {
+    const requestedState = _readState();
     const response = await _get(`/personal-preferences/${DOCUMENT_NAME}`);
     if (!response || response.available === false) return { applied: false, available: false };
     if (!response.exists || !response.payload) return { applied: false, available: true, revision: null };
 
-    const remoteValues = response.payload.values;
-    if (!remoteValues || typeof remoteValues !== 'object') return { applied: false, available: true, revision: response.revision };
+    const rawRemoteValues = response.payload.values;
+    if (!rawRemoteValues || typeof rawRemoteValues !== 'object' || Array.isArray(rawRemoteValues)) return { applied: false, available: true, revision: response.revision };
 
     const localValues = _readLocalValues();
+    const remoteValues = _remoteSnapshot(rawRemoteValues, localValues);
     const localSignature = _signature(localValues);
     const remoteSignature = _signature(remoteValues);
+    const state = _readState();
+    if (state?.revision !== requestedState?.revision || state?.signature !== requestedState?.signature) {
+      return { applied: false, available: true, stale: true };
+    }
     if (localSignature === remoteSignature) {
-      _writeState({ revision: response.revision, signature: remoteSignature, updatedAt: response.payload.updatedAt || '' });
+      _recordRemote(response, remoteValues);
       return { applied: false, available: true, revision: response.revision };
     }
 
-    const state = _readState();
     const remoteUpdatedAt = String(response.payload.updatedAt || '');
     const syncedUpdatedAt = String(state?.updatedAt || '');
 
@@ -73383,48 +73512,68 @@ async function _applyImportedCustomColors(rawColors, mode) {
           : (Object.prototype.hasOwnProperty.call(remoteValues, key) ? remoteValues[key] : null);
       });
       const mergedChanged = _applyRemoteValues(merged);
-      // 埋めた結果をまだ共有側へ書き戻していないので、「同期済み」の印は付けない
-      // （signature を空にしておくと、このあとの書き戻しが必ず実行される）。
-      _writeState({ revision: response.revision, signature: '', updatedAt: remoteUpdatedAt });
+      // Record the remote baseline, not the merged local values: any local
+      // difference still needs to be written with this revision.
+      _recordRemote(response, remoteValues);
       return { applied: mergedChanged.length > 0, available: true, revision: response.revision, changed: mergedChanged, merged: true };
+    }
+
+    // Check for local edits even when timestamps are available, including edits
+    // made while this GET was pending. Keep edited keys; receive unrelated remote
+    // settings. The remote baseline lets push use its exact revision with CAS.
+    if (state.signature !== localSignature) {
+      const merged = _mergePendingValues(localValues, remoteValues, state.values);
+      const changed = _applyRemoteValues(merged);
+      _recordRemote(response, remoteValues);
+      return { applied: changed.length > 0, available: true, revision: response.revision, changed, pendingLocal: true };
     }
 
     // 2回目以降。共有側の内容が、この端末が前回やり取りした時点より新しくないなら
     // 取り込まない（同じか古い内容で、この端末の今の見た目を巻き戻さないため）。
-    if (syncedUpdatedAt && remoteUpdatedAt <= syncedUpdatedAt) {
+    if (syncedUpdatedAt && (remoteUpdatedAt < syncedUpdatedAt
+        || (remoteUpdatedAt === syncedUpdatedAt && response.revision === state.revision))) {
       return { applied: false, available: true, revision: response.revision };
     }
-    // 時刻を比べられない場合は、端末側だけが変わっているなら書き戻す側に任せる。
-    if (!syncedUpdatedAt && state.signature !== localSignature) {
-      return { applied: false, available: true, revision: response.revision };
-    }
-
     const changed = _applyRemoteValues(remoteValues);
-    _writeState({ revision: response.revision, signature: _signature(_readLocalValues()), updatedAt: remoteUpdatedAt });
+    _recordRemote(response, remoteValues);
     return { applied: changed.length > 0, available: true, revision: response.revision, changed };
   }
 
   async function push(options) {
-    const values = _readLocalValues();
-    const signature = _signature(values);
-    const state = _readState();
-    if (!options?.force && state && state.signature === signature) return { pushed: false, available: true };
-
-    const payload = { updatedAt: new Date().toISOString(), values };
-    let response = null;
-    try {
-      response = await _put(`/personal-preferences/${DOCUMENT_NAME}`, {
-        payload,
-        expectedRevision: state?.revision || null,
-      });
-    } catch (err) {
-      // 別の環境が先に書いていた場合は、こちらの内容で押し切らずに読み直す。
-      await pull().catch(() => null);
-      return { pushed: false, conflict: true, error: err };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const values = _readLocalValues();
+      const signature = _signature(values);
+      const state = _readState();
+      if (!options?.force && state && state.signature === signature) return { pushed: false, available: true };
+      const payload = { updatedAt: new Date().toISOString(), values: { ...(state?.extras || {}), ...values } };
+      let response;
+      try {
+        response = await _put(`/personal-preferences/${DOCUMENT_NAME}`, {
+          payload,
+          expectedRevision: state?.revision || null,
+        });
+      } catch (err) {
+        const conflict = Number(err?.status || err?.statusCode) === 409;
+        if (conflict && attempt === 0) {
+          const pulled = await pull().catch(() => null);
+          if (pulled?.available && !pulled.stale) continue;
+        }
+        // Failed writes never advance the baseline or discard the local edit.
+        return { pushed: false, conflict, error: err };
+      }
+      if (!response || response.available === false) return { pushed: false, available: false };
+      _writeState({ revision: response.revision || '', signature, updatedAt: payload.updatedAt,
+        values, extras: state?.extras || {} });
+      return { pushed: true, available: true, revision: response.revision || '' };
     }
-    if (!response || response.available === false) return { pushed: false, available: false };
-    _writeState({ revision: response.revision || '', signature, updatedAt: payload.updatedAt });
-    return { pushed: true, available: true, revision: response.revision || '' };
+  }
+
+  function _finishSync() {
+    _busy = false;
+    if (_pushRequested) {
+      _pushRequested = false;
+      schedulePush();
+    }
   }
 
   function schedulePush() {
@@ -73432,9 +73581,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (_pushTimer) clearTimeout(_pushTimer);
     _pushTimer = setTimeout(() => {
       _pushTimer = null;
-      if (_busy) return;
+      if (_busy) { _pushRequested = true; return; }
       _busy = true;
-      push().catch(() => null).finally(() => { _busy = false; });
+      push().catch(() => null).finally(_finishSync);
     }, PUSH_DELAY_MS);
   }
 
@@ -73449,7 +73598,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     } catch {
       return null;
     } finally {
-      _busy = false;
+      _finishSync();
     }
   }
 
@@ -77104,8 +77253,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
-  function _conflictError(expectedRevision, currentRevision) {
-    const error = new Error('管理データが別の画面で更新されています。再読み込みしてからやり直してください');
+  function _conflictError(expectedRevision, currentRevision, kind, documentId) {
+    const message = '管理データが別の画面で更新されています。再読み込みしてからやり直してください';
+    const ConflictError = _systemContract()?.SystemStorageConflictError;
+    // ロック台帳などのCAS再試行は共通の例外型を判定する。
+    // 名前だけが同じErrorでは、競合を再読込せず保存を中断してしまう。
+    const error = typeof ConflictError === 'function'
+      ? new ConflictError({ kind, documentId, expectedRevision, currentRevision, message })
+      : new Error(message);
     error.name = 'SystemStorageConflictError';
     error.code = 'system_storage_conflict';
     error.expectedRevision = expectedRevision;
@@ -77321,7 +77476,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
           const expected = options.expectedRevision || null;
           const actual = current?.revision || null;
-          if (expected !== actual) throw _conflictError(expected, actual);
+          if (expected !== actual) throw _conflictError(expected, actual, kind, documentId);
         }
         const contract = _systemContract();
         const timestamp = new Date().toISOString();
@@ -77349,7 +77504,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
           const expected = options.expectedRevision || null;
           const actual = current.revision || null;
-          if (expected !== actual) throw _conflictError(expected, actual);
+          if (expected !== actual) throw _conflictError(expected, actual, kind, documentId);
         }
         await this.provider._deletePathUnlocked(path);
         return true;

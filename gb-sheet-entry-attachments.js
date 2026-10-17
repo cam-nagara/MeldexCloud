@@ -423,7 +423,9 @@
             type: type,
             label: label.trim() || defaultLabel,
             expected_revision: current?.revision != null ? current.revision : undefined,
-          });
+          // 索引のwriter待ち・共有ミラー確定まで待つ。既定15秒で中断すると、
+          // サーバーだけ作成が完了して利用者が重複作成してしまう。
+          }, { timeoutMs: 60000 });
           if (res?.ok) {
             if (typeof showStatus === 'function') showStatus(`「${label}」を作成してリンクしました`);
             if (typeof options.onReload === 'function') await options.onReload(res.attachment?.id);

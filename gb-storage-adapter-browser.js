@@ -43,8 +43,14 @@
     return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
-  function _conflictError(expectedRevision, currentRevision) {
-    const error = new Error('管理データが別の画面で更新されています。再読み込みしてからやり直してください');
+  function _conflictError(expectedRevision, currentRevision, kind, documentId) {
+    const message = '管理データが別の画面で更新されています。再読み込みしてからやり直してください';
+    const ConflictError = _systemContract()?.SystemStorageConflictError;
+    // ロック台帳などのCAS再試行は共通の例外型を判定する。
+    // 名前だけが同じErrorでは、競合を再読込せず保存を中断してしまう。
+    const error = typeof ConflictError === 'function'
+      ? new ConflictError({ kind, documentId, expectedRevision, currentRevision, message })
+      : new Error(message);
     error.name = 'SystemStorageConflictError';
     error.code = 'system_storage_conflict';
     error.expectedRevision = expectedRevision;
@@ -260,7 +266,7 @@
         if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
           const expected = options.expectedRevision || null;
           const actual = current?.revision || null;
-          if (expected !== actual) throw _conflictError(expected, actual);
+          if (expected !== actual) throw _conflictError(expected, actual, kind, documentId);
         }
         const contract = _systemContract();
         const timestamp = new Date().toISOString();
@@ -288,7 +294,7 @@
         if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
           const expected = options.expectedRevision || null;
           const actual = current.revision || null;
-          if (expected !== actual) throw _conflictError(expected, actual);
+          if (expected !== actual) throw _conflictError(expected, actual, kind, documentId);
         }
         await this.provider._deletePathUnlocked(path);
         return true;

@@ -464,9 +464,18 @@ function bdFitAll(_retryCount) {
 }
 
 // --- 保存 ---
+function bdAutoSave() {
+  // 新規作成や移動で予約した保存が、後から始めた本文編集を終了しない。
+  // 明示保存・文書切替は bdSave の確定処理を使い、タイマーだけ確定を待つ。
+  if (bd.editing) {
+    window._bdTimer = setTimeout(bdAutoSave, 500);
+    return;
+  }
+  return bdSave();
+}
 function bdDirty() {
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
-  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
+  bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdAutoSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
 }
 // 工程2-C項目2: 保存応答/エラーが409（本物の競合）かどうかを判定する。
@@ -559,6 +568,7 @@ async function bdSave() {
   // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
   if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
   const savePath = bd.path;
+  let reservedDraftAtRequest = bd._draftReservationPath === savePath ? bd._draftReservationContent : undefined;
   if (!savePath) return true;
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
     showStatus('ボード保存を中止しました: ボードとして開いたMarkdownファイルではありません', true);
@@ -579,6 +589,13 @@ async function bdSave() {
     pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
   }
   if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+  if (!bd.editing && reservedDraftAtRequest && bd._draftReservationContent === reservedDraftAtRequest) {
+    // Commit/layout may have changed geometry since the live-input snapshot.
+    // Preserve the exact attempted document, while a later input keeps its own reservation.
+    reservedDraftAtRequest = markdown;
+    bd._draftReservationContent = markdown;
+    window.MeldexDraftRecovery?.reserveDraft?.(savePath, markdown, bd.lastSavedEtag || '');
+  }
   const prevIds = bd._lastSavedNodeIds || new Set();
   const currIds = new Set((bd.nodes || []).map(n => n.id));
   const coordinator = window.MeldexDocumentSaveCoordinator;
@@ -620,7 +637,7 @@ async function bdSave() {
       showStatus('ボードは未保存です。接続後に再試行します', true);
       return false;
     }
-    if (bd.path !== savePath) return true;
+    if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return true;
     if (saveResult?.etag) bd.lastSavedEtag = saveResult.etag;
     if (coordinator && (saveResult?.transport_revision || saveResult?.etag)) {
       bd.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
@@ -632,6 +649,7 @@ async function bdSave() {
     const unchanged = bdToMd() === markdown;
     if (unchanged) {
       bd.dirty=false;
+      if (!bd.editing) await window.MeldexDraftRecovery?.markSynced?.(savePath, reservedDraftAtRequest || markdown);
     }
     bd._lastSavedNodeIds = currIds;
     showStatus('ボードを保存しました', false, { passiveSave: true });

@@ -950,9 +950,25 @@
     let wroteApplications = false;
     let wroteAutoTone = false;
     try {
-      if (options.preserveStored !== true || localStorage.getItem(THEME_UI_APPLICATIONS_KEY) == null) {
-        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, JSON.stringify(applications));
+      const raw = localStorage.getItem(THEME_UI_APPLICATIONS_KEY);
+      if (options.preserveStored !== true || raw == null) {
+        localStorage.setItem(THEME_UI_APPLICATIONS_KEY, _encodeThemeUiApplications(applications));
         wroteApplications = true;
+      } else {
+        const stored = JSON.parse(raw);
+        if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const previous = clone(applications);
+          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+          const normalized = normalizeThemeUiApplications(stored);
+          // Only migrate an exact former builtin default, never a user's
+          // different colors or an explicitly saved auto-color preference.
+          const unchangedBuiltin = themeDef.builtIn === true
+            && [previous, _defaultThemeUiApplications()].some(legacy =>
+              JSON.stringify(normalized) === JSON.stringify(legacy));
+          localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
+            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+          wroteApplications = true;
+        }
       }
     } catch {}
     try {

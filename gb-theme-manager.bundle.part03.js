@@ -1,3 +1,17 @@
+    if (!options.force && _paletteTargetCache) return _paletteTargetCache;
+    ensurePaletteObserver();
+    const targets = [];
+    PALETTE_TARGET_SPECS.forEach(([selector, target]) => {
+      document.querySelectorAll(selector).forEach((el, index) => {
+        targets.push({ el, index, target });
+      });
+    });
+    _paletteTargetCache = targets;
+    return targets;
+  }
+
+  function bindPaletteTargets(palette, options = {}) {
+    const colorSet = _effectiveThemeColorSet(palette, RAINBOW_PALETTE);
     collectPaletteTargets({ force: options.force === true }).forEach(({ el, index, target }) => {
       const normalizedTarget = target === 'pane-tab' || target === 'panelset-tab'
         ? 'panel-tab'
@@ -884,17 +898,3 @@
       applyBoardThemeRuntime(board);
       return false;
     }
-    if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
-    board.themeId = nextThemeId;
-    applyBoardThemeRuntime(board);
-    if (typeof global.bdRender === 'function' && isBoardRenderReady(board)) global.bdRender();
-    if (typeof global.bdDirty === 'function') global.bdDirty();
-    const themeDef = getActiveBoardTheme(board);
-    if (typeof global.showStatus === 'function') global.showStatus(board.themeId ? `ボードテーマ「${themeDef.name}」を適用しました` : 'ボードテーマをアプリ設定に戻しました');
-    return true;
-  }
-
-  function themeOptionsHtml(currentId, options = {}) {
-    const current = _normalizeThemeIdWithPromotedCustom(currentId || '');
-    const includeSystem = options.includeSystem !== false;
-    let html = includeSystem ? `<option value="OSに合わせる"${current === 'OSに合わせる' ? ' selected' : ''}>OSに合わせる</option>` : '';

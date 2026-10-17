@@ -453,11 +453,12 @@ function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
   let showEntryName = cfg.showEntryName !== false;
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
     ? _dbCardViewDisplayConfig(cfg)
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   const save = (detail) => {
-    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
+    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
     renderGallery(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
@@ -474,6 +475,9 @@ function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
         save(detail);
       });
     }
+    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
+    });
     props.forEach(prop => {
       _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
         canMoveUp: ordered.indexOf(prop) > 0,
@@ -625,6 +629,7 @@ function renderGallery(ctx) {
     }
 
     // プロパティ一覧（先頭4件）
+    if (galleryCfg.showBodyExcerpt === true) window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
@@ -846,11 +851,12 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
   let showEntryName = cfg.showEntryName !== false;
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
     ? _dbCardViewDisplayConfig(cfg)
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   const save = (detail) => {
-    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
+    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
     renderKanban(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
@@ -867,6 +873,9 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
         save(detail);
       });
     }
+    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
+    });
     props.forEach(prop => {
       _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
         canMoveUp: ordered.indexOf(prop) > 0,
@@ -1237,6 +1246,9 @@ function renderKanban(ctx) {
         cardEl.appendChild(title);
       }
 
+      if (kanbanCfg.showBodyExcerpt === true) {
+        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
+      }
       const propsDiv = document.createElement('div');
       propsDiv.className = 'kanban-card-props';
       const cardPropNames = Array.isArray(kanbanCfg.cardProps)

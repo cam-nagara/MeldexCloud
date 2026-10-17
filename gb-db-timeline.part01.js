@@ -27,6 +27,7 @@ function getTimelineConfig(dbPath, options = {}) {
       timeStepMinutes: Math.max(1, Math.round(Number(cfg.timeStepMinutes || 1) || 1)),
       calendarSystemId: cfg.calendarSystemId || 'gregorian',
       showEntryName: cfg.showEntryName !== false,
+      showBodyExcerpt: cfg.showBodyExcerpt === true,
       cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
       cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
       cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
@@ -190,6 +191,7 @@ function _normalizeDbCardPropLineCount(value) {
 
 function _dbCardViewDisplayConfig(cfg = {}) {
   return {
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
     cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
     cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
   };
@@ -264,6 +266,9 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
     title.className = options.titleClass || 'tl-card-title';
     title.textContent = entry.name;
     root.appendChild(title);
+  }
+  if (cfg.showBodyExcerpt === true && options.dbPath) {
+    window.MeldexDbBodyExcerpt?.append(root, _entityPath(options.dbPath, entry.name, options.ctx?.pivotData));
   }
   const cardProps = Array.isArray(cfg.cardProps) ? cfg.cardProps : [];
   const editable = options.editable && options.dbPath && typeof _entityPath === 'function';
@@ -362,9 +367,10 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
   let showEntryName = _timelineShowsEntryName(cfg);
+  let showBodyExcerpt = cfg.showBodyExcerpt === true;
   let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
   const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, {
+    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, {
       label: 'シート表示: タイムライン表示列',
       detail,
       ctx,
@@ -381,6 +387,9 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
     cardImageThumbCount = next.cardImageThumbCount;
     cardPropLineCount = next.cardPropLineCount;
     saveCardProps(detail);
+  });
+  _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
+    onToggle(checked) { showBodyExcerpt = checked; saveCardProps('本文冒頭'); },
   });
   props.forEach(prop => {
     _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
