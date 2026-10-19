@@ -522,6 +522,20 @@ async function _chatMessageDropHandle(e, inputId, mode) {
     return;
   }
 
+  // 選択文章の橋渡しURIはファイルではない。文章をURLより先に扱う。
+  const selectedTextData = dt.getData('application/x-meldex-text');
+  if (selectedTextData) {
+    let selectedText = dt.getData('text/plain') || '';
+    try {
+      const payload = JSON.parse(selectedTextData);
+      if (typeof payload?.text === 'string' && payload.text) selectedText = payload.text;
+    } catch {}
+    if (selectedText) {
+      _chatMessageDropInsertLink(inputId, selectedText);
+      return;
+    }
+  }
+
   // 3. Meldex 内部ビューワー画像（URL に path= が含まれる）
   const raw = dt.getData('text/uri-list') || dt.getData('text/plain') || '';
   const internalMatch = raw.match(/\/(?:api\/)?file-raw\?[^\s]*?path=([^&\s]+)/);

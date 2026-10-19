@@ -341,8 +341,8 @@
 
     root.append(titlebar, _pathBarEl, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
-      MeldexDnD.installSurfaceDropTarget(root, item => {
-        const target = MeldexDnD.normalizeOpenTarget?.(item) || item;
+      MeldexDnD.installSurfaceDropTarget(root, async item => {
+        const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;
         return open(target);
       });
     }

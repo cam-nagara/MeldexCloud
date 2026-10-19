@@ -347,7 +347,7 @@
   };
 
   CalendarComponent.prototype._effectiveSidebarOnly = function() {
-    return !!(this._sidebarMode === 'only' || this._sidebarOnly || this._autoSidebarOnly);
+    return !!(this._sidebarMode === 'only' || this._sidebarOnly);
   };
 
   CalendarComponent.prototype._bindResponsiveSidebarMode = function() {
@@ -366,8 +366,9 @@
   CalendarComponent.prototype._applyResponsiveSidebarMode = function() {
     if (!this.el) return;
     const width = this.el.getBoundingClientRect?.().width || this.el.offsetWidth || 0;
-    this._autoSidebarOnly = width > 0 && width < 520;
-    if (this._autoSidebarOnly) this._sidebarEl?.classList.remove('gb-cal-hidden');
+    // チャットなどで幅が狭まっても本文は残す。明示した「サイドバーのみ」と分離する。
+    this._autoSidebarOnly = false;
+    this._autoSidebarHidden = width > 0 && width < 520;
     this._applySidebarMode();
   };
 
@@ -375,7 +376,7 @@
     if (!this.el) return;
     const mode = this._sidebarMode || (this._sidebarOnly ? 'only' : 'all');
     const effective = this._effectiveSidebarOnly();
-    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden');
+    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden' || (mode === 'all' && this._autoSidebarHidden));
     else this._sidebarEl?.classList.remove('gb-cal-hidden');
     this.el.classList.toggle('gb-cal-sidebar-only', effective);
     this.el.classList.toggle('gb-cal-sidebar-auto', !!this._autoSidebarOnly);

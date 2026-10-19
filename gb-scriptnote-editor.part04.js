@@ -519,10 +519,13 @@
   // D&D: テキストセルへのファイル/ノードドロップハンドラ
   _setupTextCellDrop(textDiv) {
     textDiv.addEventListener('dragover', (e) => {
+      if (this._readOnly || textDiv.getAttribute?.('contenteditable') === 'false') return;
       if (MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
       if (!e.dataTransfer.types.includes('application/x-meldex-node') &&
           !e.dataTransfer.types.includes('application/x-annotation') &&
-          !e.dataTransfer.types.includes('application/x-cal-event')) return;
+          !e.dataTransfer.types.includes('application/x-cal-event') &&
+          !e.dataTransfer.types.includes('application/x-meldex-text') &&
+          !e.dataTransfer.types.includes('text/plain')) return;
       e.preventDefault();
       e.stopPropagation();
       MeldexDnD.showDropCaret(textDiv, e);
@@ -531,6 +534,11 @@
       if (!textDiv.contains(e.relatedTarget)) MeldexDnD.hideDropCaret(textDiv);
     });
     textDiv.addEventListener('drop', (e) => {
+      if (this._readOnly || textDiv.getAttribute?.('contenteditable') === 'false') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
       e.preventDefault();
       e.stopPropagation();
@@ -575,6 +583,16 @@
         document.execCommand('insertText', false, text);
         this._syncRowFromDom(textDiv, { skipUndo: true });
         return;
+      }
+      let text = e.dataTransfer.getData('text/plain') || '';
+      try {
+        const payload = JSON.parse(e.dataTransfer.getData('application/x-meldex-text') || 'null');
+        if (typeof payload?.text === 'string') text = payload.text;
+      } catch {}
+      if (text) {
+        this._pushUndo('テキスト挿入');
+        document.execCommand('insertText', false, text);
+        this._syncRowFromDom(textDiv, { skipUndo: true });
       }
     });
   }

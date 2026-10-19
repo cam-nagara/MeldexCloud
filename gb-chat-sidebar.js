@@ -115,9 +115,11 @@
       if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
+      window.MeldexCloudMobileEditBar?.refresh?.();
       return;
     }
     if (dock) GBLayout.setNodeCollapsed(dock.id, true);
+    window.MeldexCloudMobileEditBar?.refresh?.();
   }
   function open() {
     const dock = currentDock();
@@ -130,6 +132,7 @@
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
     } else GBLayout.setNodeCollapsed(dock.id, false);
+    window.MeldexCloudMobileEditBar?.refresh?.();
     return true;
   }
   function toggle() {

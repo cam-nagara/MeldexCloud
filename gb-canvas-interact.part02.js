@@ -403,7 +403,9 @@
     const cfData = transfer.getData('application/x-meldex-node');
     const meldexTextData = transfer.getData('application/x-meldex-text');
     const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
-    if ((cfData || meldexTextData || boardNodesData) && window.MeldexBoardTransfer?.processTransfer) {
+    const selectedPlainText = !transfer.files.length && transfer.getData('text/plain')
+      && !droppedExternalImageUrl(transfer);
+    if ((cfData || meldexTextData || boardNodesData || selectedPlainText) && window.MeldexBoardTransfer?.processTransfer) {
       window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
         .then(result => {
           if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);

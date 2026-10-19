@@ -54724,9 +54724,9 @@ const MeldexDnD = (() => {
     const ext = path.split('.').pop().toLowerCase();
     const declared = String(item?.type || item?.toolType || '').trim().toLowerCase();
     const label = String(item?.label || item?.name || path.split(/[\\/]/).pop() || path);
-    if (declared === 'document' && ext !== 'pdf'
+    if ((!declared || declared === 'file' || (declared === 'document' && ext !== 'pdf'))
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolve === 'function') {
-      return GBLinkRouter.resolve({ path, label, type: declared });
+      return GBLinkRouter.resolve({ path, label, type: declared === 'file' ? '' : declared });
     }
     const type = resolveOpenType(declared, ext);
     const state = { ...(item?.state || {}) };
@@ -54743,6 +54743,40 @@ const MeldexDnD = (() => {
       label,
       state,
     };
+  }
+
+  // チャット本文のリンクにはツリーの型メタデータがない。拡張子のない
+  // シートなどは、ドロップ先で実体を照会してから表示先を決める。
+  async function normalizeOpenTargetAsync(item) {
+    const declared = String(item?.type || item?.toolType || '').trim().toLowerCase();
+    if ((!declared || declared === 'file') && item?.path
+        && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolveAsync === 'function') {
+      return GBLinkRouter.resolveAsync({ path: item.path, label: item.label || item.name });
+    }
+    return normalizeOpenTarget(item);
+  }
+
+  function handleTextInputDrop(event) {
+    const input = event.target;
+    if (!input?.matches?.('textarea, input[type="text"], input:not([type]), input[type="search"], input[type="url"], input[type="email"], input[type="tel"]')
+        || input.disabled || input.readOnly) return false;
+    const dt = event.dataTransfer;
+    if (!dt || dt.files?.length || dt.types.includes('application/x-meldex-node')
+        || dt.types.includes('application/x-meldex-board-nodes')) return false;
+    let text = dt.getData('text/plain');
+    try { text = JSON.parse(dt.getData('application/x-meldex-text')).text ?? text; } catch {}
+    if (typeof text !== 'string' || !text) return false;
+    event.preventDefault();
+    input.focus();
+    // insertTextは入力欄のUndo履歴とinputイベントを保つ。
+    if (!document.execCommand('insertText', false, text)) {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + text + input.value.slice(end);
+      input.setSelectionRange?.(start + text.length, start + text.length);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return true;
   }
 
   // --- リンクHTML生成 ---
@@ -54874,6 +54908,8 @@ const MeldexDnD = (() => {
     getMediaType,
     resolveOpenType,
     normalizeOpenTarget,
+    normalizeOpenTargetAsync,
+    handleTextInputDrop,
     getIconForType,
     createAutoLinkHtml,
     insertNodeAtEditableRange,

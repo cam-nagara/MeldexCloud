@@ -261,6 +261,7 @@
         close.type = 'button'; close.className = 'gb-btn gb-btn-xs';
         close.dataset.chatSidebarClose = '1'; close.textContent = '×';
         close.setAttribute('aria-label', 'チャットサイドバーを閉じる'); close.title = 'チャットサイドバーを閉じる';
+        close.dataset.e2eId = 'chat-sidebar-close';
         close.style.marginLeft = 'auto';
         close.addEventListener('click', () => window.GBChatSidebar?.close());
         chat.firstElementChild?.appendChild(close);

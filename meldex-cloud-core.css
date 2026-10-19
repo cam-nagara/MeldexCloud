@@ -7510,6 +7510,8 @@ html[data-single-window="1"] .left-chrome-floating {
     touch-action: manipulation;
   }
 
+  /* GBLayoutと同じ境界。Tabletで独立チャットを縦積みにしない。 */
+  @media (max-width: 768px) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-split-horizontal {
     flex-direction: column !important;
   }
@@ -7547,6 +7549,7 @@ html[data-single-window="1"] .left-chrome-floating {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-split-handle,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .split-collapse-btn {
     display: none !important;
+  }
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs {

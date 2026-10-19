@@ -1,6 +1,6 @@
           );
         }
-      });
+      }
       if (resolved && openedFromDrop > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);
     });

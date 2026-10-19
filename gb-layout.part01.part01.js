@@ -1243,7 +1243,8 @@ const GBLayout = (() => {
         tabEl.dataset.tabTitle = tab.label || 'タブ';
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
         const canReorderMainTab = _canReorderMainPaneTabs(node);
-        tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab;
+        const canDragMainFile = _isMainPaneNode(node) && !node.locked && !node.collapsed && !!tab.path;
+        tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab || canDragMainFile;
         tabEl.tabIndex = -1;
         tabEl.setAttribute('aria-haspopup', 'menu');
         tabEl.setAttribute('aria-expanded', 'false');
@@ -1337,14 +1338,15 @@ const GBLayout = (() => {
             e.preventDefault();
             return;
           }
-          if (!_showFreeLayoutUi() && !canReorderMainTab) {
+          if (!_showFreeLayoutUi() && !canReorderMainTab && !canDragMainFile) {
             e.preventDefault();
             return;
           }
           tabDragMode = _showFreeLayoutUi() ? 'free' : 'main-reorder';
           if (tabDragMode === 'main-reorder') {
-            e.dataTransfer.setData(MAIN_TAB_REORDER_MIME, JSON.stringify({ tabId: tab.id, paneId: node.id }));
-            e.dataTransfer.effectAllowed = 'move';
+            if (canReorderMainTab) e.dataTransfer.setData(MAIN_TAB_REORDER_MIME, JSON.stringify({ tabId: tab.id, paneId: node.id }));
+            if (canDragMainFile && typeof MeldexDnD !== 'undefined') MeldexDnD.writeNodePayload(e.dataTransfer, tab, 'main');
+            e.dataTransfer.effectAllowed = canDragMainFile ? 'copyMove' : 'move';
             if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, tabEl, 0.35);
             tabEl.classList.add('dragging');
             window._gbTabDragSrcPaneId = node.id;
@@ -1552,10 +1554,10 @@ const GBLayout = (() => {
       }
       let insertIndex = _resolveInsertIndex();
       let openedFromDrop = 0;
-      items.forEach((it) => {
-        if (!it || !it.path) return;
+      for (const it of items) {
+        if (!it || !it.path) continue;
         const normalizedTarget = typeof MeldexDnD !== 'undefined'
-          ? MeldexDnD.normalizeOpenTarget?.(it)
+          ? await MeldexDnD.normalizeOpenTargetAsync?.(it)
           : null;
         const openType = normalizedTarget?.type || (typeof _normalizeOpenTypeForNav === 'function'
           ? _normalizeOpenTypeForNav(it.type)
@@ -1567,7 +1569,7 @@ const GBLayout = (() => {
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
         const tabId = GBTabs.addTab(node.id, openLabel, openType, it.path, openState, { preferTargetPane: true });
-        if (!tabId) return;
+        if (!tabId) continue;
         openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
           && node.tabs[node.tabs.length - 1]?.id === tabId;
@@ -1581,6 +1583,6 @@ const GBLayout = (() => {
         if (typeof navOpen === 'function') {
           // skipAutoAppLayout は旧アプリ別レイアウト時代の互換オプション。
           // 現在は単一レイアウトなので、呼び出し側へ渡しても配置は変更しない。
-          navOpen(
+          await navOpen(
             normalizedTarget || { type: openType, label: openLabel, path: it.path, state: openState || {} },
-            { skipAutoAppLayout: true }
+            { skipAutoAppLayout: true, paneId: node.id }

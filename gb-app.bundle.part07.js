@@ -1,3 +1,4 @@
+
 function _syncHeartbeatForVisibility() {
   if (_isHeartbeatCloudMode()) {
     _stopHeartbeat();

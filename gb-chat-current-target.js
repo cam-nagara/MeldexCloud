@@ -53,6 +53,7 @@ function _chatCurrentTargetFromTab(tab) {
   if (type === 'page') return { path: _chatTabPath(tab, 'pagePath') || _chatStatePath('currentPagePath'), kind: 'file' };
   if (type === 'board') return { path: _chatTabPath(tab, 'boardPath') || _chatStatePath('currentBoardPath'), kind: 'file' };
   if (type === 'scriptnote') return { path: _chatTabPath(tab, 'scenarioPath', 'scriptnotePath'), kind: 'file' };
+  if (type === 'form-app') return { path: _chatTabPath(tab, 'formPath'), kind: 'file' };
   if (_CHAT_TARGET_DB_VIEW_TYPES.has(type) || _CHAT_TARGET_DB_VIEW_TYPES.has(rawType)) {
     return { path: _chatTabPath(tab, 'dbPath') || _chatStatePath('currentDbPath'), kind: 'folder' };
   }
@@ -106,8 +107,8 @@ function _chatTargetFromViewObject(view) {
   if (type === 'folder') return { path: view.path || '', kind: 'folder' };
   if (type === 'entity') return { path: view.entityPath || view.path || '', kind: 'file' };
   if (type === 'pivot' || type === 'database') return { path: view.dbPath || view.path || '', kind: 'folder' };
-  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'media' || type === 'html' || type === 'csv') {
-    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.csvPath || '', kind: 'file' };
+  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'form-app' || type === 'media' || type === 'html' || type === 'csv') {
+    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.formPath || view.csvPath || '', kind: 'file' };
   }
   return { path: view.path || '', kind: view.path ? 'file' : '' };
 }
@@ -147,7 +148,7 @@ function _chatTargetUpdateMode(options = {}) {
   if (reason === 'chat-target-picker' || reason === 'open-file-chat' || reason === 'create-file-chat' || reason === 'open-saved-chat') {
     return 'manual';
   }
-  if (reason === 'tree-click') {
+  if (reason === 'tree-click' || reason === 'tree-select' || reason === 'tree-activate') {
     if (currentMode === 'manual' && !options.force) return '';
     return 'follow-main';
   }

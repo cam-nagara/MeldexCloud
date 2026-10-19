@@ -1,3 +1,4 @@
+      const prevColor = ann.color;
       const prevOpacity = ann.opacity;
       if (msg.color) ann.color = msg.color;
       ann.opacity = 1;

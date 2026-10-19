@@ -135,10 +135,10 @@ function _handleTbodyDragend(e) {
   const ctx = tbody._meldexCtx;
   if (!ctx) return;
   _dbTableClearRowDropIndicator(tbody);
-  const target = e.target;
-  const nameSpan = target.closest('.entity-name-label');
+  const target = e.target?.closest ? e.target : e.target?.parentElement;
+  const nameSpan = target?.closest?.('.entity-name-label');
   if (nameSpan) { nameSpan.classList.remove('dragging'); return; }
-  const tr = target.closest('tr[data-entity-name]');
+  const tr = target?.closest?.('tr[data-entity-name]');
   if (tr) { tr.style.opacity = ''; }
 }
 

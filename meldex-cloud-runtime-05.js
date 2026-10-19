@@ -11327,9 +11327,11 @@
       if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
+      window.MeldexCloudMobileEditBar?.refresh?.();
       return;
     }
     if (dock) GBLayout.setNodeCollapsed(dock.id, true);
+    window.MeldexCloudMobileEditBar?.refresh?.();
   }
   function open() {
     const dock = currentDock();
@@ -11342,6 +11344,7 @@
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
     } else GBLayout.setNodeCollapsed(dock.id, false);
+    window.MeldexCloudMobileEditBar?.refresh?.();
     return true;
   }
   function toggle() {
@@ -12607,7 +12610,8 @@ const GBLayout = (() => {
         tabEl.dataset.tabTitle = tab.label || 'タブ';
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
         const canReorderMainTab = _canReorderMainPaneTabs(node);
-        tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab;
+        const canDragMainFile = _isMainPaneNode(node) && !node.locked && !node.collapsed && !!tab.path;
+        tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab || canDragMainFile;
         tabEl.tabIndex = -1;
         tabEl.setAttribute('aria-haspopup', 'menu');
         tabEl.setAttribute('aria-expanded', 'false');
@@ -12701,14 +12705,15 @@ const GBLayout = (() => {
             e.preventDefault();
             return;
           }
-          if (!_showFreeLayoutUi() && !canReorderMainTab) {
+          if (!_showFreeLayoutUi() && !canReorderMainTab && !canDragMainFile) {
             e.preventDefault();
             return;
           }
           tabDragMode = _showFreeLayoutUi() ? 'free' : 'main-reorder';
           if (tabDragMode === 'main-reorder') {
-            e.dataTransfer.setData(MAIN_TAB_REORDER_MIME, JSON.stringify({ tabId: tab.id, paneId: node.id }));
-            e.dataTransfer.effectAllowed = 'move';
+            if (canReorderMainTab) e.dataTransfer.setData(MAIN_TAB_REORDER_MIME, JSON.stringify({ tabId: tab.id, paneId: node.id }));
+            if (canDragMainFile && typeof MeldexDnD !== 'undefined') MeldexDnD.writeNodePayload(e.dataTransfer, tab, 'main');
+            e.dataTransfer.effectAllowed = canDragMainFile ? 'copyMove' : 'move';
             if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, tabEl, 0.35);
             tabEl.classList.add('dragging');
             window._gbTabDragSrcPaneId = node.id;
@@ -12916,10 +12921,10 @@ const GBLayout = (() => {
       }
       let insertIndex = _resolveInsertIndex();
       let openedFromDrop = 0;
-      items.forEach((it) => {
-        if (!it || !it.path) return;
+      for (const it of items) {
+        if (!it || !it.path) continue;
         const normalizedTarget = typeof MeldexDnD !== 'undefined'
-          ? MeldexDnD.normalizeOpenTarget?.(it)
+          ? await MeldexDnD.normalizeOpenTargetAsync?.(it)
           : null;
         const openType = normalizedTarget?.type || (typeof _normalizeOpenTypeForNav === 'function'
           ? _normalizeOpenTypeForNav(it.type)
@@ -12931,7 +12936,7 @@ const GBLayout = (() => {
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
         const tabId = GBTabs.addTab(node.id, openLabel, openType, it.path, openState, { preferTargetPane: true });
-        if (!tabId) return;
+        if (!tabId) continue;
         openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
           && node.tabs[node.tabs.length - 1]?.id === tabId;
@@ -12945,12 +12950,12 @@ const GBLayout = (() => {
         if (typeof navOpen === 'function') {
           // skipAutoAppLayout は旧アプリ別レイアウト時代の互換オプション。
           // 現在は単一レイアウトなので、呼び出し側へ渡しても配置は変更しない。
-          navOpen(
+          await navOpen(
             normalizedTarget || { type: openType, label: openLabel, path: it.path, state: openState || {} },
-            { skipAutoAppLayout: true }
+            { skipAutoAppLayout: true, paneId: node.id }
           );
         }
-      });
+      }
       if (resolved && openedFromDrop > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);
     });
@@ -41212,7 +41217,9 @@ function bdInitInteraction(root) {
     const cfData = transfer.getData('application/x-meldex-node');
     const meldexTextData = transfer.getData('application/x-meldex-text');
     const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
-    if ((cfData || meldexTextData || boardNodesData) && window.MeldexBoardTransfer?.processTransfer) {
+    const selectedPlainText = !transfer.files.length && transfer.getData('text/plain')
+      && !droppedExternalImageUrl(transfer);
+    if ((cfData || meldexTextData || boardNodesData || selectedPlainText) && window.MeldexBoardTransfer?.processTransfer) {
       window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
         .then(result => {
           if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);
@@ -42569,6 +42576,7 @@ const GBLinkRouter = (() => {
   // gb-board-links.js の _bdResolveOpenType と同じ対応表（挙動を揃えるため）。
   function normalizeExplicitType(type) {
     const t = String(type || '').trim();
+    if (t === 'file') return ''; // D&Dの汎用ファイル型は表示先アプリの指定ではない。
     if (t === 'database' || t === 'sheet') return 'pivot';
     if (t === 'scenario') return 'scriptnote';
     if (t === 'image' || t === 'video' || t === 'audio') return 'media';
@@ -123344,7 +123352,7 @@ function hideBoardNoteTab() {
   };
 
   CalendarComponent.prototype._effectiveSidebarOnly = function() {
-    return !!(this._sidebarMode === 'only' || this._sidebarOnly || this._autoSidebarOnly);
+    return !!(this._sidebarMode === 'only' || this._sidebarOnly);
   };
 
   CalendarComponent.prototype._bindResponsiveSidebarMode = function() {
@@ -123363,8 +123371,9 @@ function hideBoardNoteTab() {
   CalendarComponent.prototype._applyResponsiveSidebarMode = function() {
     if (!this.el) return;
     const width = this.el.getBoundingClientRect?.().width || this.el.offsetWidth || 0;
-    this._autoSidebarOnly = width > 0 && width < 520;
-    if (this._autoSidebarOnly) this._sidebarEl?.classList.remove('gb-cal-hidden');
+    // チャットなどで幅が狭まっても本文は残す。明示した「サイドバーのみ」と分離する。
+    this._autoSidebarOnly = false;
+    this._autoSidebarHidden = width > 0 && width < 520;
     this._applySidebarMode();
   };
 
@@ -123372,7 +123381,7 @@ function hideBoardNoteTab() {
     if (!this.el) return;
     const mode = this._sidebarMode || (this._sidebarOnly ? 'only' : 'all');
     const effective = this._effectiveSidebarOnly();
-    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden');
+    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden' || (mode === 'all' && this._autoSidebarHidden));
     else this._sidebarEl?.classList.remove('gb-cal-hidden');
     this.el.classList.toggle('gb-cal-sidebar-only', effective);
     this.el.classList.toggle('gb-cal-sidebar-auto', !!this._autoSidebarOnly);
@@ -141332,6 +141341,8 @@ function hideBoardNoteTab() {
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
     const inlineMenuAvailable = _hasVisibleInlineMobileMenu();
+    const chatPaneActive = typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
+      && GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'chat';
     _activeEditable = editable || _activeEditable;
     _activeChatInput = chatInput || (_activeChatInput?.isConnected ? _activeChatInput : null);
     _activePlainInput = plainInput || (_activePlainInput?.isConnected ? _activePlainInput : null);
@@ -141343,7 +141354,7 @@ function hideBoardNoteTab() {
     _ensureBoardBar();
     _ensureAnnotationBar();
     _syncAnnotationBarState();
-    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
+    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || chatPaneActive || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
     _setHidden(_editBar, !showEditBar);
     _setHidden(_chatBar, !showChatBar);
     _setHidden(_inputBar, !showInputBar);
@@ -161147,6 +161158,16 @@ function _ensureCellValueDragDelegate() {
     const row = _cellUiClosestFromEvent(e, '.cell-value[draggable]');
     if (!row || row.dataset.cvDragEntityPath === undefined) return;
     e.stopPropagation();
+    const selection = window.getSelection?.();
+    if (selection && !selection.isCollapsed && row.contains(selection.anchorNode) && row.contains(selection.focusNode)) {
+      const text = selection.toString();
+      const payload = { text };
+      e.dataTransfer.setData('text/plain', text);
+      e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+      e.dataTransfer.effectAllowed = 'copy';
+      if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
+      return;
+    }
     const value = row.dataset.cvDragValue || '';
     const entityPath = row.dataset.cvDragEntityPath || '';
     const propName = row.dataset.cvDragPropName || '';
@@ -161163,6 +161184,30 @@ function _ensureCellValueDragDelegate() {
     if (row) row.classList.remove('dragging');
   });
   globalThis.__gbCellValueDragInstalled = true;
+}
+
+function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
+  const accepts = e => !e.dataTransfer.files.length
+    && !e.dataTransfer.types.includes('application/x-meldex-node')
+    && !e.dataTransfer.types.includes('application/x-meldex-board-nodes')
+    && (e.dataTransfer.types.includes('text/plain') || e.dataTransfer.types.includes('application/x-meldex-text'));
+  dropTarget.addEventListener('dragover', e => {
+    if (!accepts(e)) return;
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy';
+  });
+  dropTarget.addEventListener('drop', e => {
+    if (!accepts(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    let text = e.dataTransfer.getData('text/plain');
+    try { text = JSON.parse(e.dataTransfer.getData('application/x-meldex-text')).text ?? text; } catch {}
+    if (typeof text !== 'string' || !text) return;
+    // 通常のセル編集を通すことで列ロック、保存失敗の復旧、Undoを維持する。
+    startInlineEdit(txt, val, entityPath, propName);
+    const editor = txt.querySelector('[contenteditable="true"]');
+    if (!editor) return;
+    editor.focus();
+    document.execCommand('insertText', false, text);
+  });
 }
 // 即時登録 (gb-database.js ロード時に有効化)
 if (typeof document !== 'undefined') _ensureCellValueDragDelegate();
@@ -161314,6 +161359,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // 通常テキスト（カスタム数値単位対応）
   const txt = document.createElement('span');
   txt.className = 'value-text';
+  _cellUiBindTextDrop(txt, val, entityPath, propName, row);
   const richHtml = _dbRichHtmlForValue(val);
   if (richHtml) {
     txt.classList.add('value-text--rich');
@@ -161801,6 +161847,17 @@ function startInlineEdit(span, val, entityPath, propName) {
   input.setAttribute('contenteditable', 'true');
   input.setAttribute('role', 'textbox');
   input.setAttribute('aria-multiline', 'true');
+  input.addEventListener('dragstart', e => {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !input.contains(selection.anchorNode) || !input.contains(selection.focusNode)) return;
+    const text = selection.toString();
+    const payload = { text };
+    e.dataTransfer.setData('text/plain', text);
+    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = 'copy';
+    e.stopPropagation(); // 行並べ替え側の「編集中はドラッグ禁止」へ渡さない。
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
+  });
   input.innerHTML = oldRichHtml || _dbRichPlainTextToHtml(old);
   span.textContent = '';
   span.appendChild(input);
@@ -161823,8 +161880,17 @@ function startInlineEdit(span, val, entityPath, propName) {
       _cellUiApplyAutoLinks(span, old, entityPath);
     }
   };
+  let focusMovedOutside = false;
   const restoreEditedCellSelection = (afterRender = false, moveTo = null) => {
     const restore = () => {
+      // 別パネルへのクリック後や保存中のフォーカス移動を、古いセルの復元で奪わない。
+      const focused = document.activeElement;
+      if (focusMovedOutside) return;
+      if (focused && focused !== document.body && focused !== input
+          && !input.contains(focused) && !editedTd?.contains(focused)) {
+        focusMovedOutside = true;
+        return;
+      }
       const currentActive = typeof _dbCurrentVisualActiveCell === 'function'
         ? _dbCurrentVisualActiveCell()
         : activeCell;
@@ -161975,6 +162041,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   };
   const outsidePointerDown = (ev) => {
     if (done || input.contains(ev.target) || isFormatSurface(ev.target)) return;
+    if (!editedTd?.contains(ev.target)) focusMovedOutside = true;
     if (composing) {
       pendingBlurFinish = true;
       return;
@@ -166066,6 +166133,10 @@ if (typeof window !== 'undefined') {
     const blocked = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, prop, ctx.options?.ctx) : '';
     if (blocked) throw new Error(blocked);
     if (candidate) {
+      // Forms also render outside a Sheet pane. Bind the known entry path and
+      // column instead of inferring the format from the currently active app.
+      candidate.entry_path = path;
+      candidate.property = prop;
       const old = candidate.value;
       const result = await _apiPutValue(candidate, { new_value: value });
       noteRevision(ctx, result);
@@ -167499,6 +167570,7 @@ class FormAppComponent extends ToolComponent {
   }
   _button(label, run) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn'; button.textContent = label;
+    button.dataset.e2eId = `form-${this.tabId}-${label}`;
     button.addEventListener('click', async event => {
       try { await run(event); } catch (error) { showStatus(error.userMessage || error.message, true); }
     }); return button;
@@ -167593,6 +167665,7 @@ class FormAppComponent extends ToolComponent {
     const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
     const source = document.createElement('label'); source.textContent = '参照先シート';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
+    select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
     if (this.ctx.dbPath) {
       const option = document.createElement('option'); option.value = this.ctx.dbPath;
@@ -167604,6 +167677,7 @@ class FormAppComponent extends ToolComponent {
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
       const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'フォームのレイアウト');
+      presets.dataset.e2eId = `form-${this.tabId}-layout`;
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout()?.name || 'レイアウトを選択'; presets.appendChild(current);
       presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
@@ -170110,10 +170184,10 @@ function _handleTbodyDragend(e) {
   const ctx = tbody._meldexCtx;
   if (!ctx) return;
   _dbTableClearRowDropIndicator(tbody);
-  const target = e.target;
-  const nameSpan = target.closest('.entity-name-label');
+  const target = e.target?.closest ? e.target : e.target?.parentElement;
+  const nameSpan = target?.closest?.('.entity-name-label');
   if (nameSpan) { nameSpan.classList.remove('dragging'); return; }
-  const tr = target.closest('tr[data-entity-name]');
+  const tr = target?.closest?.('tr[data-entity-name]');
   if (tr) { tr.style.opacity = ''; }
 }
 
@@ -200397,6 +200471,27 @@ function openCalendar() {
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
     }
+    const managedPath = _targetFromFileRawUrl(normalized)
+      || (_isFileUrl(normalized) ? _fileUrlToPath(normalized) : (!_isWebUrl(normalized) ? _splitTargetAnchor(normalized).path : ''));
+    if (managedPath) {
+      a.draggable = true;
+      a.addEventListener('dragstart', (event) => {
+        if (typeof MeldexDnD === 'undefined' || !event.dataTransfer) return;
+        const selection = window.getSelection?.();
+        const text = selection && !selection.isCollapsed && selection.containsNode?.(a, true)
+          ? selection.toString() : '';
+        if (text) {
+          event.dataTransfer.setData('text/plain', text);
+          const payload = { text };
+          event.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+          MeldexDnD.beginCrossWindowDrag(event.dataTransfer, payload, 'text');
+        } else {
+          MeldexDnD.writeNodePayload(event.dataTransfer, { path: managedPath, name: a.textContent }, 'chat');
+        }
+        event.dataTransfer.effectAllowed = 'copy';
+        event.stopPropagation();
+      });
+    }
     a.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -207662,6 +207757,20 @@ async function _chatMessageDropHandle(e, inputId, mode) {
     return;
   }
 
+  // 選択文章の橋渡しURIはファイルではない。文章をURLより先に扱う。
+  const selectedTextData = dt.getData('application/x-meldex-text');
+  if (selectedTextData) {
+    let selectedText = dt.getData('text/plain') || '';
+    try {
+      const payload = JSON.parse(selectedTextData);
+      if (typeof payload?.text === 'string' && payload.text) selectedText = payload.text;
+    } catch {}
+    if (selectedText) {
+      _chatMessageDropInsertLink(inputId, selectedText);
+      return;
+    }
+  }
+
   // 3. Meldex 内部ビューワー画像（URL に path= が含まれる）
   const raw = dt.getData('text/uri-list') || dt.getData('text/plain') || '';
   const internalMatch = raw.match(/\/(?:api\/)?file-raw\?[^\s]*?path=([^&\s]+)/);
@@ -208306,6 +208415,7 @@ function _chatCurrentTargetFromTab(tab) {
   if (type === 'page') return { path: _chatTabPath(tab, 'pagePath') || _chatStatePath('currentPagePath'), kind: 'file' };
   if (type === 'board') return { path: _chatTabPath(tab, 'boardPath') || _chatStatePath('currentBoardPath'), kind: 'file' };
   if (type === 'scriptnote') return { path: _chatTabPath(tab, 'scenarioPath', 'scriptnotePath'), kind: 'file' };
+  if (type === 'form-app') return { path: _chatTabPath(tab, 'formPath'), kind: 'file' };
   if (_CHAT_TARGET_DB_VIEW_TYPES.has(type) || _CHAT_TARGET_DB_VIEW_TYPES.has(rawType)) {
     return { path: _chatTabPath(tab, 'dbPath') || _chatStatePath('currentDbPath'), kind: 'folder' };
   }
@@ -208359,8 +208469,8 @@ function _chatTargetFromViewObject(view) {
   if (type === 'folder') return { path: view.path || '', kind: 'folder' };
   if (type === 'entity') return { path: view.entityPath || view.path || '', kind: 'file' };
   if (type === 'pivot' || type === 'database') return { path: view.dbPath || view.path || '', kind: 'folder' };
-  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'media' || type === 'html' || type === 'csv') {
-    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.csvPath || '', kind: 'file' };
+  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'form-app' || type === 'media' || type === 'html' || type === 'csv') {
+    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.formPath || view.csvPath || '', kind: 'file' };
   }
   return { path: view.path || '', kind: view.path ? 'file' : '' };
 }
@@ -208400,7 +208510,7 @@ function _chatTargetUpdateMode(options = {}) {
   if (reason === 'chat-target-picker' || reason === 'open-file-chat' || reason === 'create-file-chat' || reason === 'open-saved-chat') {
     return 'manual';
   }
-  if (reason === 'tree-click') {
+  if (reason === 'tree-click' || reason === 'tree-select' || reason === 'tree-activate') {
     if (currentMode === 'manual' && !options.force) return '';
     return 'follow-main';
   }
@@ -222062,6 +222172,7 @@ function _installFolderBlankContextMenu(container) {
     ['シナリオ', 'scriptnote', 'bookOpenText'],
     ['シート', 'database', 'db'],
     ['ボード', 'board', 'presentation'],
+    ['フォーム', 'form-app', 'clipboardList'],
     ['カレンダー', 'calendar', 'calendar'],
   ]);
 
@@ -238890,6 +239001,7 @@ const GBPaneBridge = (() => {
         close.type = 'button'; close.className = 'gb-btn gb-btn-xs';
         close.dataset.chatSidebarClose = '1'; close.textContent = '×';
         close.setAttribute('aria-label', 'チャットサイドバーを閉じる'); close.title = 'チャットサイドバーを閉じる';
+        close.dataset.e2eId = 'chat-sidebar-close';
         close.style.marginLeft = 'auto';
         close.addEventListener('click', () => window.GBChatSidebar?.close());
         chat.firstElementChild?.appendChild(close);
@@ -242443,8 +242555,8 @@ const GBSubPanel = (() => {
 
     root.append(titlebar, _pathBarEl, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
-      MeldexDnD.installSurfaceDropTarget(root, item => {
-        const target = MeldexDnD.normalizeOpenTarget?.(item) || item;
+      MeldexDnD.installSurfaceDropTarget(root, async item => {
+        const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;
         return open(target);
       });
     }
@@ -247985,6 +248097,7 @@ async function handleXlsxImportToOutliner(e) {
 document.addEventListener('dragover', (e) => { e.preventDefault(); }, false);
 document.addEventListener('drop', (e) => {
   // 個別ハンドラでpreventDefaultされていない場合のみ（フォールバック）
+  if (!e.defaultPrevented && typeof MeldexDnD !== 'undefined' && MeldexDnD.handleTextInputDrop(e)) return;
   if (!e.defaultPrevented) e.preventDefault();
 }, false);
 // timeline-view(カレンダー)へのD&Dドロップ（ファイルから新規イベント作成）

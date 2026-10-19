@@ -121,5 +121,6 @@ async function handleXlsxImportToOutliner(e) {
 document.addEventListener('dragover', (e) => { e.preventDefault(); }, false);
 document.addEventListener('drop', (e) => {
   // 個別ハンドラでpreventDefaultされていない場合のみ（フォールバック）
+  if (!e.defaultPrevented && typeof MeldexDnD !== 'undefined' && MeldexDnD.handleTextInputDrop(e)) return;
   if (!e.defaultPrevented) e.preventDefault();
 }, false);

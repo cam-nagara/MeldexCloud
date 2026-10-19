@@ -376,6 +376,16 @@ function _ensureCellValueDragDelegate() {
     const row = _cellUiClosestFromEvent(e, '.cell-value[draggable]');
     if (!row || row.dataset.cvDragEntityPath === undefined) return;
     e.stopPropagation();
+    const selection = window.getSelection?.();
+    if (selection && !selection.isCollapsed && row.contains(selection.anchorNode) && row.contains(selection.focusNode)) {
+      const text = selection.toString();
+      const payload = { text };
+      e.dataTransfer.setData('text/plain', text);
+      e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+      e.dataTransfer.effectAllowed = 'copy';
+      if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
+      return;
+    }
     const value = row.dataset.cvDragValue || '';
     const entityPath = row.dataset.cvDragEntityPath || '';
     const propName = row.dataset.cvDragPropName || '';
@@ -392,6 +402,30 @@ function _ensureCellValueDragDelegate() {
     if (row) row.classList.remove('dragging');
   });
   globalThis.__gbCellValueDragInstalled = true;
+}
+
+function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
+  const accepts = e => !e.dataTransfer.files.length
+    && !e.dataTransfer.types.includes('application/x-meldex-node')
+    && !e.dataTransfer.types.includes('application/x-meldex-board-nodes')
+    && (e.dataTransfer.types.includes('text/plain') || e.dataTransfer.types.includes('application/x-meldex-text'));
+  dropTarget.addEventListener('dragover', e => {
+    if (!accepts(e)) return;
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy';
+  });
+  dropTarget.addEventListener('drop', e => {
+    if (!accepts(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    let text = e.dataTransfer.getData('text/plain');
+    try { text = JSON.parse(e.dataTransfer.getData('application/x-meldex-text')).text ?? text; } catch {}
+    if (typeof text !== 'string' || !text) return;
+    // 通常のセル編集を通すことで列ロック、保存失敗の復旧、Undoを維持する。
+    startInlineEdit(txt, val, entityPath, propName);
+    const editor = txt.querySelector('[contenteditable="true"]');
+    if (!editor) return;
+    editor.focus();
+    document.execCommand('insertText', false, text);
+  });
 }
 // 即時登録 (gb-database.js ロード時に有効化)
 if (typeof document !== 'undefined') _ensureCellValueDragDelegate();
@@ -543,6 +577,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // 通常テキスト（カスタム数値単位対応）
   const txt = document.createElement('span');
   txt.className = 'value-text';
+  _cellUiBindTextDrop(txt, val, entityPath, propName, row);
   const richHtml = _dbRichHtmlForValue(val);
   if (richHtml) {
     txt.classList.add('value-text--rich');
@@ -1030,6 +1065,17 @@ function startInlineEdit(span, val, entityPath, propName) {
   input.setAttribute('contenteditable', 'true');
   input.setAttribute('role', 'textbox');
   input.setAttribute('aria-multiline', 'true');
+  input.addEventListener('dragstart', e => {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !input.contains(selection.anchorNode) || !input.contains(selection.focusNode)) return;
+    const text = selection.toString();
+    const payload = { text };
+    e.dataTransfer.setData('text/plain', text);
+    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = 'copy';
+    e.stopPropagation(); // 行並べ替え側の「編集中はドラッグ禁止」へ渡さない。
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
+  });
   input.innerHTML = oldRichHtml || _dbRichPlainTextToHtml(old);
   span.textContent = '';
   span.appendChild(input);
@@ -1052,8 +1098,17 @@ function startInlineEdit(span, val, entityPath, propName) {
       _cellUiApplyAutoLinks(span, old, entityPath);
     }
   };
+  let focusMovedOutside = false;
   const restoreEditedCellSelection = (afterRender = false, moveTo = null) => {
     const restore = () => {
+      // 別パネルへのクリック後や保存中のフォーカス移動を、古いセルの復元で奪わない。
+      const focused = document.activeElement;
+      if (focusMovedOutside) return;
+      if (focused && focused !== document.body && focused !== input
+          && !input.contains(focused) && !editedTd?.contains(focused)) {
+        focusMovedOutside = true;
+        return;
+      }
       const currentActive = typeof _dbCurrentVisualActiveCell === 'function'
         ? _dbCurrentVisualActiveCell()
         : activeCell;
@@ -1204,6 +1259,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   };
   const outsidePointerDown = (ev) => {
     if (done || input.contains(ev.target) || isFormatSurface(ev.target)) return;
+    if (!editedTd?.contains(ev.target)) focusMovedOutside = true;
     if (composing) {
       pendingBlurFinish = true;
       return;

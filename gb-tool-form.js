@@ -209,6 +209,7 @@ class FormAppComponent extends ToolComponent {
   }
   _button(label, run) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn'; button.textContent = label;
+    button.dataset.e2eId = `form-${this.tabId}-${label}`;
     button.addEventListener('click', async event => {
       try { await run(event); } catch (error) { showStatus(error.userMessage || error.message, true); }
     }); return button;
@@ -303,6 +304,7 @@ class FormAppComponent extends ToolComponent {
     const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
     const source = document.createElement('label'); source.textContent = '参照先シート';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
+    select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
     if (this.ctx.dbPath) {
       const option = document.createElement('option'); option.value = this.ctx.dbPath;
@@ -314,6 +316,7 @@ class FormAppComponent extends ToolComponent {
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
       const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'フォームのレイアウト');
+      presets.dataset.e2eId = `form-${this.tabId}-layout`;
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout()?.name || 'レイアウトを選択'; presets.appendChild(current);
       presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);

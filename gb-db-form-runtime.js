@@ -41,6 +41,10 @@
     const blocked = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, prop, ctx.options?.ctx) : '';
     if (blocked) throw new Error(blocked);
     if (candidate) {
+      // Forms also render outside a Sheet pane. Bind the known entry path and
+      // column instead of inferring the format from the currently active app.
+      candidate.entry_path = path;
+      candidate.property = prop;
       const old = candidate.value;
       const result = await _apiPutValue(candidate, { new_value: value });
       noteRevision(ctx, result);

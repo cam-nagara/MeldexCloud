@@ -41,6 +41,7 @@ const GBLinkRouter = (() => {
   // gb-board-links.js の _bdResolveOpenType と同じ対応表（挙動を揃えるため）。
   function normalizeExplicitType(type) {
     const t = String(type || '').trim();
+    if (t === 'file') return ''; // D&Dの汎用ファイル型は表示先アプリの指定ではない。
     if (t === 'database' || t === 'sheet') return 'pivot';
     if (t === 'scenario') return 'scriptnote';
     if (t === 'image' || t === 'video' || t === 'audio') return 'media';

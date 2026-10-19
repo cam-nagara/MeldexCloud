@@ -7,6 +7,7 @@
     ['シナリオ', 'scriptnote', 'bookOpenText'],
     ['シート', 'database', 'db'],
     ['ボード', 'board', 'presentation'],
+    ['フォーム', 'form-app', 'clipboardList'],
     ['カレンダー', 'calendar', 'calendar'],
   ]);
 

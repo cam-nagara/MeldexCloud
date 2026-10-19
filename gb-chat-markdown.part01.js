@@ -307,6 +307,27 @@
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
     }
+    const managedPath = _targetFromFileRawUrl(normalized)
+      || (_isFileUrl(normalized) ? _fileUrlToPath(normalized) : (!_isWebUrl(normalized) ? _splitTargetAnchor(normalized).path : ''));
+    if (managedPath) {
+      a.draggable = true;
+      a.addEventListener('dragstart', (event) => {
+        if (typeof MeldexDnD === 'undefined' || !event.dataTransfer) return;
+        const selection = window.getSelection?.();
+        const text = selection && !selection.isCollapsed && selection.containsNode?.(a, true)
+          ? selection.toString() : '';
+        if (text) {
+          event.dataTransfer.setData('text/plain', text);
+          const payload = { text };
+          event.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+          MeldexDnD.beginCrossWindowDrag(event.dataTransfer, payload, 'text');
+        } else {
+          MeldexDnD.writeNodePayload(event.dataTransfer, { path: managedPath, name: a.textContent }, 'chat');
+        }
+        event.dataTransfer.effectAllowed = 'copy';
+        event.stopPropagation();
+      });
+    }
     a.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();

@@ -211,6 +211,8 @@
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
     const inlineMenuAvailable = _hasVisibleInlineMobileMenu();
+    const chatPaneActive = typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
+      && GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'chat';
     _activeEditable = editable || _activeEditable;
     _activeChatInput = chatInput || (_activeChatInput?.isConnected ? _activeChatInput : null);
     _activePlainInput = plainInput || (_activePlainInput?.isConnected ? _activePlainInput : null);
@@ -222,7 +224,7 @@
     _ensureBoardBar();
     _ensureAnnotationBar();
     _syncAnnotationBarState();
-    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
+    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || chatPaneActive || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
     _setHidden(_editBar, !showEditBar);
     _setHidden(_chatBar, !showChatBar);
     _setHidden(_inputBar, !showInputBar);
