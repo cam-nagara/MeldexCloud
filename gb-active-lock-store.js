@@ -28,6 +28,7 @@
   // 相対パスの path フィールドから normalized_path を再計算する(下記参照)。
   const STORE_PATH = '_meldex/active_locks.json';
   const STORE_DOCUMENT_ID = 'active-lock-store';
+  const OWNER_PREFIX = 'active-lock-owner-';
   const HEADER = 'X-Meldex-Active-Lock-Token';
   const LEASE_SECONDS = 300;
   const READ_POST_ENDPOINTS = new Set([
@@ -260,6 +261,10 @@
   }
 
   async function _readStore(provider, scope) {
+    if (_usesOwnerRecords(scope)) {
+      const [state, legacy] = await Promise.all([_readOwnerRecords(scope), _readLegacyEntries(provider, scope)]);
+      return { entries: _mergeEntryLists(state.entries, legacy.filter(row => !state.owners.has(row.token_hash))), updated_at: '' };
+    }
     const [record, legacyEntries] = await Promise.all([
       _readNewStoreRecord(provider, scope),
       _readLegacyEntries(provider, scope),
@@ -274,14 +279,8 @@
   // 読取専用の操作でスコープを解決できない場合(台帳破損等)は、旧パスのみの
   // 縮退読取で継続する(書込側はスコープ解決の例外で安全側に拒否される)。
   async function _readStoreForTarget(provider, path) {
-    let scope = null;
-    try {
-      scope = await _scopeForPath(provider, path);
-    } catch {
-      scope = null;
-    }
-    if (scope) return { scope, store: await _readStore(provider, scope) };
-    return { scope: null, store: { entries: await _readLegacyEntries(provider, null), updated_at: '' } };
+    const scope = await _scopeForPath(provider, path);
+    return { scope, store: await _readStore(provider, scope) };
   }
 
   function _storePayload(entries) {
@@ -295,7 +294,60 @@
     return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
   }
 
-  async function _mutateStore(provider, scope, updater) {
+  function _usesOwnerRecords(scope) {
+    return String(scope?.adapter?.environment || scope?.adapter?.describe?.()?.environment || '').startsWith('dropbox');
+  }
+
+  async function _readOwnerRecords(scope, tokenHash = '') {
+    if (typeof scope.adapter.listActiveLeaseRecords !== 'function') {
+      throw new Error('編集リースの保持者別読込に対応した更新版が必要です');
+    }
+    const records = await scope.adapter.listActiveLeaseRecords();
+    const owners = new Map();
+    for (const record of records) {
+      if (!record.documentId.startsWith(OWNER_PREFIX)) continue;
+      const owner = record.documentId.slice(OWNER_PREFIX.length);
+      const rows = record.payload?.entries;
+      if (!/^[0-9a-f]{64}$/.test(owner) || record.payload?.owner_token_hash !== owner
+          || !Array.isArray(rows) || rows.some(row => row?.token_hash !== owner
+            || !_normalizeFolderPath(row.path) || !Number.isFinite(Date.parse(row.expires_at))) || owners.has(owner)) {
+        throw new Error('編集リースの保持者情報が破損または競合しています');
+      }
+      owners.set(owner, record);
+    }
+    const legacy = records.filter(record => record.documentId === STORE_DOCUMENT_ID)
+      .flatMap(record => _entriesFromStore(record.payload)).filter(row => !owners.has(row.token_hash));
+    const entries = _mergeEntryLists(legacy, ...[...owners.values()].map(record => _entriesFromStore(record.payload)));
+    return { entries, owners, record: owners.get(tokenHash) || null };
+  }
+
+  async function _mutateOwnerStore(provider, scope, updater, tokenHash) {
+    if (!/^[0-9a-f]{64}$/.test(tokenHash)) throw new Error('編集リースの保持者を確認できません');
+    const contract = window.MeldexSystemStorage;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const [state, legacy] = await Promise.all([_readOwnerRecords(scope, tokenHash), _readLegacyEntries(provider, scope)]);
+      const current = _mergeEntryLists(state.entries, legacy.filter(row => !state.owners.has(row.token_hash)));
+      const change = await updater(current);
+      if (change === false) return undefined;
+      const entries = (change?.entries || []).filter(row => row.token_hash === tokenHash);
+      const payload = { ...(state.record?.payload || {}), ..._storePayload(entries), format: 2, owner_token_hash: tokenHash };
+      try {
+        await scope.adapter.save(contract.SystemStorageKind.EDIT_LOCKS, OWNER_PREFIX + tokenHash, payload, {
+          expectedRevision: state.record?.revision ?? null,
+        });
+        return change?.result;
+      } catch (error) {
+        if (error instanceof contract.SystemStorageConflictError && attempt < 4) continue;
+        throw error;
+      }
+    }
+  }
+
+  async function _mutateStore(provider, scope, updater, tokenHash = '') {
+    if (_usesOwnerRecords(scope)) {
+      const owner = tokenHash || await _tokenHash(window.MeldexActiveLocks?.token?.() || '');
+      return _mutateOwnerStore(provider, scope, updater, owner);
+    }
     const adapter = scope.adapter;
     const contract = window.MeldexSystemStorage;
     const MAX_ATTEMPTS = 5;
@@ -436,7 +488,7 @@
       const entry = _entryPayload(canonical, body, tokenHash, existing);
       next.push(entry);
       return { entries: next, result: { ok: true, entry: _localizedEntry(entry, scope) } };
-    });
+    }, tokenHash);
   }
 
   async function heartbeat(provider, body = {}, headers) {
@@ -474,7 +526,7 @@
         if (updated) next.push(updated);
       }
       return { entries: next, result: { ok: true, removed } };
-    });
+    }, tokenHash);
   }
 
   async function releaseAll(provider, token, holderId) {
@@ -513,7 +565,7 @@
         }
         if (!scopeRemoved) return false; // 変更が無いスコープのストアは書き換えない。
         return { entries: next, result: { ok: true, removed: scopeRemoved } };
-      });
+      }, tokenHash);
       removed += Number(result?.removed || 0);
     }
     return { ok: true, removed };

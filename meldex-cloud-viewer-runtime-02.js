@@ -2267,6 +2267,31 @@
       return records;
     }
 
+    async listActiveLeaseRecords() {
+      // Include valid legacy conflict copies, without renaming or deleting them.
+      // A broken lease record must not become an empty/unlocked store.
+      const contract = _contract();
+      const kind = contract.SystemStorageKind.EDIT_LOCKS;
+      const folder = this._folderFor(kind);
+      const files = await this._listFolderEntries(folder);
+      const records = [];
+      for (const file of files) {
+        const name = String(file.name || '');
+        if (file['.tag'] !== 'file' || !/\.json$/i.test(name)
+            || !(name.startsWith('active-lock-store') || name.startsWith('active-lock-owner-'))) continue;
+        if (/[\\/]/.test(name)) throw new contract.SystemStorageCorruptRecordError('編集リースのファイル名が不正です');
+        const downloaded = await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, true);
+        if (!downloaded) throw new contract.SystemStorageError('編集中ロックの読込中に同期状態が変わりました');
+        const record = contract.recordFromEnvelope(downloaded.data, { revisionOverride: downloaded.rev });
+        if (record.kind !== kind || !(record.documentId === 'active-lock-store'
+            || /^active-lock-owner-[0-9a-f]{64}$/.test(record.documentId))) {
+          throw new contract.SystemStorageCorruptRecordError('編集リースの管理情報が一致しません');
+        }
+        records.push(record);
+      }
+      return records;
+    }
+
     async listDocumentHeaders(kind, options) {
       const contract = _contract();
       const opts = options || {};
