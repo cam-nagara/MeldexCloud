@@ -76,6 +76,7 @@
     isWriteAccessError: _srtIsWriteAccessError,
     frontmatterText: _srtFrontmatterText,
     readFrontmatter: _srtReadFrontmatter,
+    writeFrontmatter: _srtWriteFrontmatter,
   } = window.MeldexCloudFrontmatterLite;
 
   // ============================================================
@@ -243,7 +244,10 @@
   // ============================================================
 
   function _srtSameSpec(a, b) {
-    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return a === b; }
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    try { return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b)); } catch { return a === b; }
   }
 
   async function _srtEnsureRegistrySheet(provider, root) {
@@ -264,7 +268,8 @@
     if (!viewConfig || typeof viewConfig !== 'object' || !Array.isArray(viewConfig.savedViews) || !viewConfig.savedViews.length) {
       frontmatter.view_config = { savedViews: [{ name: 'テーブル', viewMode: 'pivot' }], currentViewIdx: 0 };
     }
-    await provider.writeText(note, _srtFrontmatterText(frontmatter, parsed.body || `# ${_basename(root)}\n\n`));
+    if (_srtSameSpec(frontmatter, parsed.frontmatter || {})) return;
+    await _srtWriteFrontmatter(provider, note, frontmatter, parsed.body || `# ${_basename(root)}\n\n`, parsed);
   }
 
   // ============================================================
@@ -448,9 +453,11 @@
     const displayName = rawDisplay || user;
     let currentFrontmatter = {};
     let currentBody = '';
+    let loadedSnapshot = { exists: false, revision: null, sourceText: '' };
     let path = existingPath;
     if (existingPath) {
       const parsed = await _srtReadFrontmatter(provider, existingPath);
+      loadedSnapshot = parsed;
       currentFrontmatter = parsed.frontmatter || {};
       currentBody = parsed.body || '';
     } else {
@@ -467,7 +474,6 @@
     if (!frontmatter.type) frontmatter.type = 'settings-entry';
     if (!frontmatter.id) frontmatter.id = 'ent_' + _srtRandomHex(10);
     frontmatter.category = _basename(root);
-    frontmatter.modified = _nowIso();
     const currentMeta = frontmatter[schema.USER_META_KEY] && typeof frontmatter[schema.USER_META_KEY] === 'object'
       ? frontmatter[schema.USER_META_KEY] : {};
     const currentType = String(currentMeta.type || '');
@@ -503,7 +509,10 @@
     setIfAllowed('備考', payload.note);
 
     frontmatter.properties = properties;
-    await provider.writeText(path, _srtFrontmatterText(frontmatter, currentBody));
+    if (!existingPath || !_srtSameSpec(frontmatter, currentFrontmatter)) {
+      frontmatter.modified = _nowIso();
+      await _srtWriteFrontmatter(provider, path, frontmatter, currentBody, loadedSnapshot);
+    }
     const row = _srtRowFromFrontmatter(_basename(path).replace(/\.md$/i, ''), frontmatter);
     row.path = path;
     return row;

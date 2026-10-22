@@ -548,6 +548,12 @@
         });
       }
 
+      // Account-bound writes retain the transport's explicit account check.
+      if (!opts.expectedAccountId && existing
+          && contract.canonicalJsonStringify(existing.payload) === contract.canonicalJsonStringify(payload)) {
+        return existing;
+      }
+
       await _ensureFolder(this._managementRoot, this._namespaceKind);
       await _ensureFolder(this._folderFor(kind), this._namespaceKind);
 

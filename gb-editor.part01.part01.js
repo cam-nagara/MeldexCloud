@@ -534,6 +534,7 @@ function _captureNoteReloadSnapshot(pc, path) {
     frontmatter,
     lastSavedMd: pc.dataset.lastSavedMd || '',
     lastSavedEtag: pc.dataset.lastSavedEtag || '',
+    lastSavedTransportRevision: pc.dataset.lastSavedTransportRevision || '',
     loadFailed: pc.dataset.loadFailed || '',
     contentEditable: pc.contentEditable,
   };
@@ -547,6 +548,7 @@ function _restoreNoteReloadSnapshot(pc, path, snapshot) {
   pc.dataset.frontmatter = snapshot.frontmatter;
   pc.dataset.lastSavedMd = snapshot.lastSavedMd;
   pc.dataset.lastSavedEtag = snapshot.lastSavedEtag;
+  pc.dataset.lastSavedTransportRevision = snapshot.lastSavedTransportRevision;
   pc.dataset.loadFailed = snapshot.loadFailed;
   pc.contentEditable = snapshot.contentEditable;
   return true;

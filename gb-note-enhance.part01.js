@@ -683,7 +683,10 @@ const _origOpenPage = typeof openPage === 'function' ? openPage : null;
 if (_origOpenPage) {
   openPage = async function(label, path, opts) {
     if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content');
-    await _origOpenPage(label, path, opts);
+    const opened = await _origOpenPage(label, path, opts);
+    // 競合解決側は読込成功の真偽で未保存編集を保全する。装飾層でも
+    // 結果を保持し、失敗・古い読込・別アプリへの遷移は装飾しない。
+    if (!opened) return opened;
     // ファイル個別テーマはpage-contentパネルにのみ適用
     const pc = document.getElementById('page-content');
     const _fileTheme = _parseFileStyleFromFrontmatter(pc?.dataset.frontmatter);
@@ -709,6 +712,7 @@ if (_origOpenPage) {
     if (btn) btn.classList.toggle('active', _indentOn);
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();
+    return opened;
   };
 }
 

@@ -101937,6 +101937,7 @@ function _captureNoteReloadSnapshot(pc, path) {
     frontmatter,
     lastSavedMd: pc.dataset.lastSavedMd || '',
     lastSavedEtag: pc.dataset.lastSavedEtag || '',
+    lastSavedTransportRevision: pc.dataset.lastSavedTransportRevision || '',
     loadFailed: pc.dataset.loadFailed || '',
     contentEditable: pc.contentEditable,
   };
@@ -101950,6 +101951,7 @@ function _restoreNoteReloadSnapshot(pc, path, snapshot) {
   pc.dataset.frontmatter = snapshot.frontmatter;
   pc.dataset.lastSavedMd = snapshot.lastSavedMd;
   pc.dataset.lastSavedEtag = snapshot.lastSavedEtag;
+  pc.dataset.lastSavedTransportRevision = snapshot.lastSavedTransportRevision;
   pc.dataset.loadFailed = snapshot.loadFailed;
   pc.contentEditable = snapshot.contentEditable;
   return true;
@@ -110010,7 +110012,10 @@ const _origOpenPage = typeof openPage === 'function' ? openPage : null;
 if (_origOpenPage) {
   openPage = async function(label, path, opts) {
     if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content');
-    await _origOpenPage(label, path, opts);
+    const opened = await _origOpenPage(label, path, opts);
+    // 競合解決側は読込成功の真偽で未保存編集を保全する。装飾層でも
+    // 結果を保持し、失敗・古い読込・別アプリへの遷移は装飾しない。
+    if (!opened) return opened;
     // ファイル個別テーマはpage-contentパネルにのみ適用
     const pc = document.getElementById('page-content');
     const _fileTheme = _parseFileStyleFromFrontmatter(pc?.dataset.frontmatter);
@@ -110036,6 +110041,7 @@ if (_origOpenPage) {
     if (btn) btn.classList.toggle('active', _indentOn);
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();
+    return opened;
   };
 }
 
@@ -128103,14 +128109,47 @@ function hideBoardNoteTab() {
 
   async function readFrontmatter(provider, path) {
     let text = '';
+    let revision = null;
+    let exists = true;
     try {
-      text = await provider.readText(path);
+      const readSnapshot = provider.readBytesSnapshot || provider.readBytesFresh;
+      if (typeof readSnapshot === 'function') {
+        const snapshot = await readSnapshot.call(provider, path);
+        text = new TextDecoder().decode(snapshot.bytes);
+        revision = snapshot.revision || null;
+        if (!revision) throw Object.assign(new Error('読込時の保存条件を確認できません'), { status: 503 });
+      } else {
+        text = await provider.readText(path);
+      }
     } catch (error) {
       if (!isNotFoundError(error)) throw error;
+      exists = false;
     }
     const match = String(text).match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!match) return { frontmatter: {}, body: text, sourceText: text };
-    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length), sourceText: text };
+    const snapshot = { sourceText: text, revision, exists };
+    if (!match) return { frontmatter: {}, body: text, ...snapshot };
+    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length), ...snapshot };
+  }
+
+  async function writeFrontmatter(provider, path, frontmatter, body, snapshot) {
+    if (!snapshot || (snapshot.exists !== false && !snapshot.revision)) {
+      throw Object.assign(new Error('読込時の保存条件がないため書込を中止しました'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+    }
+    const content = frontmatterText(frontmatter, body);
+    if (typeof window.apiPut === 'function') {
+      return window.apiPut('/file?path=' + encodeURIComponent(path), {
+        content,
+        base_content: snapshot.sourceText || '',
+        ...(snapshot.exists === false ? { create_only: true } : { if_match_etag: snapshot.revision }),
+      });
+    }
+    if (typeof provider.uploadBytesConditional !== 'function') {
+      throw Object.assign(new Error('条件付き保存に対応していません'), { status: 503, code: 'strict_cas_unavailable' });
+    }
+    return provider.uploadBytesConditional(path, new TextEncoder().encode(content),
+      snapshot.exists === false ? null : snapshot.revision);
   }
 
   window.MeldexCloudFrontmatterLite = {
@@ -128123,6 +128162,7 @@ function hideBoardNoteTab() {
     yamlLite,
     frontmatterText,
     readFrontmatter,
+    writeFrontmatter,
   };
 })();
 
@@ -260078,6 +260118,7 @@ if (typeof window !== 'undefined') {
     isWriteAccessError: _srtIsWriteAccessError,
     frontmatterText: _srtFrontmatterText,
     readFrontmatter: _srtReadFrontmatter,
+    writeFrontmatter: _srtWriteFrontmatter,
   } = window.MeldexCloudFrontmatterLite;
 
   // ============================================================
@@ -260245,7 +260286,10 @@ if (typeof window !== 'undefined') {
   // ============================================================
 
   function _srtSameSpec(a, b) {
-    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return a === b; }
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    try { return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b)); } catch { return a === b; }
   }
 
   async function _srtEnsureRegistrySheet(provider, root) {
@@ -260266,7 +260310,8 @@ if (typeof window !== 'undefined') {
     if (!viewConfig || typeof viewConfig !== 'object' || !Array.isArray(viewConfig.savedViews) || !viewConfig.savedViews.length) {
       frontmatter.view_config = { savedViews: [{ name: 'テーブル', viewMode: 'pivot' }], currentViewIdx: 0 };
     }
-    await provider.writeText(note, _srtFrontmatterText(frontmatter, parsed.body || `# ${_basename(root)}\n\n`));
+    if (_srtSameSpec(frontmatter, parsed.frontmatter || {})) return;
+    await _srtWriteFrontmatter(provider, note, frontmatter, parsed.body || `# ${_basename(root)}\n\n`, parsed);
   }
 
   // ============================================================
@@ -260450,9 +260495,11 @@ if (typeof window !== 'undefined') {
     const displayName = rawDisplay || user;
     let currentFrontmatter = {};
     let currentBody = '';
+    let loadedSnapshot = { exists: false, revision: null, sourceText: '' };
     let path = existingPath;
     if (existingPath) {
       const parsed = await _srtReadFrontmatter(provider, existingPath);
+      loadedSnapshot = parsed;
       currentFrontmatter = parsed.frontmatter || {};
       currentBody = parsed.body || '';
     } else {
@@ -260469,7 +260516,6 @@ if (typeof window !== 'undefined') {
     if (!frontmatter.type) frontmatter.type = 'settings-entry';
     if (!frontmatter.id) frontmatter.id = 'ent_' + _srtRandomHex(10);
     frontmatter.category = _basename(root);
-    frontmatter.modified = _nowIso();
     const currentMeta = frontmatter[schema.USER_META_KEY] && typeof frontmatter[schema.USER_META_KEY] === 'object'
       ? frontmatter[schema.USER_META_KEY] : {};
     const currentType = String(currentMeta.type || '');
@@ -260505,7 +260551,10 @@ if (typeof window !== 'undefined') {
     setIfAllowed('備考', payload.note);
 
     frontmatter.properties = properties;
-    await provider.writeText(path, _srtFrontmatterText(frontmatter, currentBody));
+    if (!existingPath || !_srtSameSpec(frontmatter, currentFrontmatter)) {
+      frontmatter.modified = _nowIso();
+      await _srtWriteFrontmatter(provider, path, frontmatter, currentBody, loadedSnapshot);
+    }
     const row = _srtRowFromFrontmatter(_basename(path).replace(/\.md$/i, ''), frontmatter);
     row.path = path;
     return row;

@@ -168,14 +168,47 @@
 
   async function readFrontmatter(provider, path) {
     let text = '';
+    let revision = null;
+    let exists = true;
     try {
-      text = await provider.readText(path);
+      const readSnapshot = provider.readBytesSnapshot || provider.readBytesFresh;
+      if (typeof readSnapshot === 'function') {
+        const snapshot = await readSnapshot.call(provider, path);
+        text = new TextDecoder().decode(snapshot.bytes);
+        revision = snapshot.revision || null;
+        if (!revision) throw Object.assign(new Error('読込時の保存条件を確認できません'), { status: 503 });
+      } else {
+        text = await provider.readText(path);
+      }
     } catch (error) {
       if (!isNotFoundError(error)) throw error;
+      exists = false;
     }
     const match = String(text).match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!match) return { frontmatter: {}, body: text, sourceText: text };
-    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length), sourceText: text };
+    const snapshot = { sourceText: text, revision, exists };
+    if (!match) return { frontmatter: {}, body: text, ...snapshot };
+    return { frontmatter: yamlLite(match[1]), body: text.slice(match[0].length), ...snapshot };
+  }
+
+  async function writeFrontmatter(provider, path, frontmatter, body, snapshot) {
+    if (!snapshot || (snapshot.exists !== false && !snapshot.revision)) {
+      throw Object.assign(new Error('読込時の保存条件がないため書込を中止しました'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+    }
+    const content = frontmatterText(frontmatter, body);
+    if (typeof window.apiPut === 'function') {
+      return window.apiPut('/file?path=' + encodeURIComponent(path), {
+        content,
+        base_content: snapshot.sourceText || '',
+        ...(snapshot.exists === false ? { create_only: true } : { if_match_etag: snapshot.revision }),
+      });
+    }
+    if (typeof provider.uploadBytesConditional !== 'function') {
+      throw Object.assign(new Error('条件付き保存に対応していません'), { status: 503, code: 'strict_cas_unavailable' });
+    }
+    return provider.uploadBytesConditional(path, new TextEncoder().encode(content),
+      snapshot.exists === false ? null : snapshot.revision);
   }
 
   window.MeldexCloudFrontmatterLite = {
@@ -188,5 +221,6 @@
     yamlLite,
     frontmatterText,
     readFrontmatter,
+    writeFrontmatter,
   };
 })();
