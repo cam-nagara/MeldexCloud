@@ -360,13 +360,8 @@
 .gb-btn:hover {
   color: var(--ui-button-hover-fg);
   background: var(--ui-button-hover-bg);
-  border: var(--ui-button-hover-border-width) solid var(--ui-button-hover-border);
+  border-color: var(--ui-button-hover-border);
   box-shadow: inset var(--ui-button-hover-left-accent) 0 0 var(--ui-button-hover-accent-color), inset 0 calc(-1 * var(--ui-button-hover-underline)) 0 var(--ui-button-hover-accent-color);
-  font-style: var(--ui-button-hover-font-style);
-  font-weight: var(--ui-button-hover-font-weight);
-  font-size: var(--ui-button-hover-font-size);
-  font-family: var(--ui-button-hover-font);
-  line-height: var(--ui-button-hover-line-height);
 }
 .gb-btn:active,
 .gb-btn.active,
@@ -1107,13 +1102,8 @@
 .settings-theme-preview-sheet-view .db-view-tab:hover {
   color: var(--ui-inner-tab-hover-fg);
   background: var(--ui-inner-tab-hover-bg);
-  border: var(--ui-inner-tab-hover-border-width) solid var(--ui-inner-tab-hover-border);
+  border-color: var(--ui-inner-tab-hover-border);
   box-shadow: inset var(--ui-inner-tab-hover-left-accent) 0 0 var(--ui-inner-tab-hover-accent-color), inset 0 calc(-1 * var(--ui-inner-tab-hover-underline)) 0 var(--ui-inner-tab-hover-accent-color);
-  font-style: var(--ui-inner-tab-hover-font-style);
-  font-weight: var(--ui-inner-tab-hover-font-weight);
-  font-size: var(--ui-inner-tab-hover-font-size);
-  font-family: var(--ui-inner-tab-hover-font);
-  line-height: var(--ui-inner-tab-hover-line-height);
 }
 .gb-inner-tab.gb-inner-tab-active,
 .gb-inner-tab-active,

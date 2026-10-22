@@ -318,10 +318,25 @@
 .el-chart-popup .el-popup-row select { width: 220px; max-width: 100%; }
 .el-cell-inspector { min-width: 300px; max-height: 75vh; overflow: auto; gap: 8px; }
 .el-cell-inspector > div { display: flex; flex-direction: column; gap: 6px; }
-.el-chart-axis-settings { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(70px, 1fr) 65px auto auto; gap: 4px; align-items: center; }
+.el-cell-inspector .el-popup-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr); gap: var(--ui-space-4); }
+.el-cell-inspector .el-popup-row input[type="number"] { width: 120px; justify-self: end; }
+.el-cell-inspector .el-popup-row input:not([type="number"]),
+.el-cell-inspector .el-popup-row select,
+.el-cell-inspector .el-popup-row textarea { width: 100%; max-width: 100%; }
+.el-cell-inspector .el-popup-row textarea { min-height: 64px; resize: vertical; }
+.el-dialog-content .gb-check,
+.gb-form-record-nav > label { display: flex; align-items: center; gap: var(--ui-space-4); font-size: var(--ui-font-13); }
+.el-dialog-content .gb-check > span { min-width: 0; overflow-wrap: anywhere; }
+.el-chart-axis-settings { display: grid; grid-template-columns: minmax(140px, 1.3fr) minmax(100px, 1fr) 32px 32px; gap: var(--ui-space-4); align-items: center; padding-block: var(--ui-space-2); }
+.el-chart-axis-settings.is-radar { grid-template-columns: minmax(140px, 1.3fr) minmax(90px, 1fr) 76px 32px 32px; }
+.el-chart-axis-settings .gb-btn { width: 32px; min-width: 32px; padding-inline: 0; }
+.el-chart-axis-heading { color: var(--ui-fg-muted); font-size: var(--ui-font-12); }
+.el-chart-axis-heading > :last-child { grid-column: span 2; text-align: center; }
 .el-chart-axis-settings input { min-width: 0; width: 100%; box-sizing: border-box; }
-.el-chart-axis-settings label { display: flex; align-items: center; }
+.el-chart-axis-settings label { min-width: 0; }
 .el-chart-axis-settings label input { width: auto; }
+.el-chart-popup [hidden] { display: none; }
+.el-chart-source-help { display: flex; align-items: center; gap: var(--ui-space-4); color: var(--ui-fg-muted); font-size: var(--ui-font-13); }
 .el-chart-popup-body {
   display: flex;
   flex-direction: column;

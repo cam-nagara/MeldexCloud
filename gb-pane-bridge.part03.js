@@ -91,7 +91,7 @@
     };
     window.toggleRightPanel = function(source) {
       if (!_guardRightSidebarTool('chat', source)) return;
-      const rightPanelTypes = ['chat', 'calendar', 'history', 'annotation', 'preview', 'detail'];
+      const rightPanelTypes = ['chat', 'calendar', 'history', 'annotation', 'detail'];
       let closed = 0;
       rightPanelTypes.forEach((type) => {
         for (let guard = 0; guard < 20; guard += 1) {
@@ -361,6 +361,10 @@
   // ツール（chat/calendar/annotation/history等）をペインタブとして開く
   function _openToolPane(toolType, options) {
     const openOpts = options || {};
+    if (toolType === 'preview') {
+      const paneId = window.GBPaneDefaultLayout?.resolveMainPaneId?.({ contentOnly: true });
+      if (paneId) return window.openToolTab?.('preview', { paneId, preferTargetPane: true });
+    }
     const operationSource = openOpts.source ?? openOpts.sourceEl ?? openOpts.sourcePaneId ?? openOpts.paneId ?? openOpts.surface;
     if (!_guardRightSidebarTool(toolType, operationSource)) return false;
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;

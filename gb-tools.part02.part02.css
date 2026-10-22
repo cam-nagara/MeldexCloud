@@ -1106,6 +1106,38 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   cursor: pointer;
   color: var(--fg2);
 }
+#google-personal-import {
+  margin-top: 16px;
+  padding-top: 12px;
+}
+#google-personal-import h4 {
+  margin: 0 0 8px;
+}
+#google-personal-import p {
+  margin: 10px 0;
+  line-height: 1.6;
+}
+#google-personal-import label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#google-personal-import .gb-input,
+#google-personal-import .gb-select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+#google-personal-import .external-import-provider-actions {
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+#google-personal-results {
+  max-height: 320px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
 .google-import-target-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

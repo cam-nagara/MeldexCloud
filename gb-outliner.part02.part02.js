@@ -32,8 +32,7 @@
 
   // --- 作品フォルダ設定（フォルダのみ） ---
   if (isFolder && !isMulti) {
-    const curWork = getWorkFolder();
-    const isWork = curWork === nodeData.path;
+    const isWork = isWorkFolder(nodeData.path);
     const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
     _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
     [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
@@ -46,7 +45,7 @@
           setWorkFolder(nodeData.path);
           showStatus(`「${nodeData.name}」を作品フォルダに設定しました`);
         } else {
-          setWorkFolder('');
+          removeWorkFolder(nodeData.path);
           showStatus('作品フォルダの設定を解除しました');
         }
         await loadLinkDict();

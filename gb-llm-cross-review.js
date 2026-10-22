@@ -203,7 +203,7 @@
   }
 
   function _workFolderValue(targetPath) {
-    const work = typeof getWorkFolder === 'function' ? String(getWorkFolder() || '') : '';
+    const work = typeof getWorkFolder === 'function' ? String(getWorkFolder(targetPath) || '') : '';
     if (work) return work;
     return String(targetPath || '').replace(/[\\/][^\\/]*$/, '');
   }

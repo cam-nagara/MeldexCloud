@@ -5,3 +5,10 @@
 .gb-form-app-save { display:flex; align-items:center; gap:8px; padding:4px 10px; font-size:12px; flex-wrap:wrap; }
 .gb-form-app-surface { flex:1; min-height:0; overflow:auto; }
 .gb-form-app-surface > p { margin:24px; }
+.gb-form-app-surface { container: form-app-surface / inline-size; }
+.gb-form-app .gb-check { gap:var(--ui-space-4); font-size:var(--ui-font-13); }
+.gb-form-app .gb-form-editor { grid-template-columns:minmax(220px,280px) minmax(0,1fr); }
+.gb-form-app .gb-form-preview { min-width:0; }
+@container form-app-surface (max-width:700px) {
+  .gb-form-app .gb-form-editor { grid-template-columns:minmax(0,1fr); }
+}

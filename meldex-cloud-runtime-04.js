@@ -298,7 +298,15 @@
     for (const key of new Set([..._readFolderCache.keys(), ..._readFolderPending.keys()])) {
       const [, kind, , folder] = JSON.parse(key);
       if (kind !== namespace) continue;
-      if (locations.some(({ value, parent }) => folder === parent || folder === value || folder.startsWith(value + '/'))) {
+      const cached = _readFolderCache.get(key);
+      if (locations.some(({ value, parent }) => {
+        if (folder === parent || folder === value || folder.startsWith(value + '/')) return true;
+        // Dropbox can create missing parents along with a nested upload. Keep
+        // positive ancestor evidence, but discard a previously absent child.
+        const prefix = folder + '/';
+        return value.startsWith(prefix)
+          && (!cached || !cached.entries.has(value.slice(prefix.length).split('/')[0]));
+      })) {
         _readFolderCache.delete(key);
         _readFolderPending.delete(key);
       }
@@ -1102,8 +1110,20 @@
     if (pending) return pending;
     const generation = _readFolderGeneration;
     const promise = (async () => {
-      if (path && await _isMissingReadPath(path, options)) return new Map();
-      let payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      // A fresh existence check needs the current immediate parent listing.
+      // Recursively forcing fresh checks of every ancestor turns each history,
+      // signature and lease read into a chain back to the account root. It also
+      // prevents a remotely created parent from overriding cached absence.
+      if (path && !options?.freshMissingCheck && await _isMissingReadPath(path, options)) return new Map();
+      let payload;
+      try {
+        payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      } catch (error) {
+        // Only an actual missing parent proves absence. Permission, transport
+        // and authentication failures must still reach the save caller.
+        if (options?.freshMissingCheck && /^path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) return new Map();
+        throw error;
+      }
       const entries = new Map();
       for (;;) {
         for (const entry of payload.entries || []) {
@@ -3647,7 +3667,13 @@
 
     _rememberMeta(relativePath, meta) {
       const path = _normalizeRelativePath(relativePath);
-      this._metaCache.set(path, meta || null);
+      // Upload/download return FileMetadata directly: its subtype discriminator
+      // is optional. Only files have a revision; retain explicit folder/deleted
+      // tags and malformed records so they still fail the normal file checks.
+      const cached = meta && !Object.prototype.hasOwnProperty.call(meta, '.tag')
+        && typeof meta.rev === 'string' && meta.rev
+        ? { ...meta, '.tag': 'file' } : meta;
+      this._metaCache.set(path, cached || null);
       this._metaCheckedAt.set(path, { at: Date.now(), location: JSON.stringify(this._dropboxLocation(path)) });
     }
 
@@ -9578,6 +9604,13 @@
     }
     const options = {};
     if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || !['theme-settings', 'restore-point-policy'].includes(doc)
+          || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
@@ -9650,6 +9683,12 @@
     if (!context.adapter) return { available: false, ok: false, revision: null,
       scope: 'workspace', workspaceId, role: context.role, readOnly: true };
     const options = {};
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
@@ -11354,10 +11393,10 @@
       }
     }
 
-    async load(kind, documentId) {
+    async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
-      return this._readExisting(kind, docId);
+      return this._readExisting(kind, docId, options?.fresh === true);
     }
 
     async _listFolderEntries(folderPath) {
@@ -11513,11 +11552,22 @@
       const docId = contract.sanitizeDocumentId(documentId);
       const opts = options || {};
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
+      const initialSnapshot = opts.initialSnapshot === true;
+      const initialEpoch = '1970-01-01T00:00:00.000Z';
+      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)
+          && expectedRevision === null && payload.updatedAt === initialEpoch)) {
+        throw new contract.SystemStorageError('初期設定の作成条件が不正です');
+      }
       const path = this._pathFor(kind, docId);
       await this._assertCompatibilityWriteAllowed(kind);
 
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
+      const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
+        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
+      if (sameInitial(existing)) return existing;
 
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
@@ -11542,20 +11592,22 @@
       await _ensureFolder(this._folderFor(kind), this._namespaceKind);
 
       const policy = contract.retentionPolicyFor(kind);
-      const timestamp = contract.nowIso();
+      const timestamp = initialSnapshot ? initialEpoch : contract.nowIso();
       const record = {
         kind,
         documentId: docId,
         schemaVersion: contract.CURRENT_SCHEMA_VERSION,
         // 書込直前に確認できた現在のrev(参考情報。CAS判定・戻り値は常に
         // Dropbox APIレスポンスの真のrevを使う。ファイル冒頭コメント参照)。
-        revision: currentRevision || '',
+        revision: initialSnapshot ? await contract.computeRevision(payload) : (currentRevision || ''),
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: this._boundary,
+        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
       };
-      const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
+      const envelope = contract.recordToEnvelope(record);
+      const bytes = new TextEncoder().encode(initialSnapshot
+        ? contract.canonicalJsonStringify(envelope) : JSON.stringify(envelope, null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
       const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
@@ -11573,6 +11625,10 @@
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
+          if (initialSnapshot && !opts.expectedAccountId) {
+            const winner = await this._readExisting(kind, docId, true);
+            if (sameInitial(winner)) return winner;
+          }
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
           const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
@@ -12247,7 +12303,7 @@
 // Dropbox接続済みのデスクトップ版）と、デスクトップのローカルAPIサーバー経由の
 // settings-file API（Dropbox OAuth未接続のデスクトップ版）を透過的に切り替える。
 // settings-file API側の正本は型付き管理領域
-// (profiles-workspace/dropbox-profiles)であり、旧 _meldex/profiles.v1.json は
+// (profiles-workspace の旧集約レコードと profile-event-* の追記)であり、旧 _meldex/profiles.v1.json は
 // 読取専用fallbackとしてのみ使う。
 //
 // 各 transport は {id, available(), read(storePath), write(storePath, storeObj, options)}
@@ -13121,8 +13177,71 @@
       throw new Error('プロフィール管理データの保存先を安全に判定できません');
     }
     const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
-    const record = await adapter.load(kind, 'dropbox-profiles');
+    // Read the legacy aggregate plus immutable per-change records. A local
+    // filesystem CAS cannot synchronize two independent Dropbox replicas.
+    const records = [];
+    const legacy = await adapter.load(kind, 'dropbox-profiles');
+    if (legacy) records.push(legacy);
+    let cursor = '';
+    do {
+      const page = await adapter.listDocumentHeaders(kind, {cursor, limit:200});
+      for (const header of page.entries) {
+        if (!/^profile-event-[0-9a-f]{32}$/.test(header.documentId)) continue;
+        const event = await adapter.load(kind, header.documentId, {fresh:true});
+        if (!event) throw Error('プロフィールの同期中に管理データが変わりました');
+        records.push(event);
+      }
+      cursor = page.complete ? '' : page.cursor;
+      if (!page.complete && !cursor) throw Error('プロフィール一覧の継続情報がありません');
+    } while (cursor);
+    const payload = records.length ? _mergeProfileStores(records.map(record=>record.payload)) : null;
+    const record = payload ? {payload, revision:'profiles:'+await window.MeldexSystemStorage.computeRevision(payload)} : null;
     return { adapter, kind, record };
+  }
+
+  function _mergeProfileStores(stores) {
+    const profiles = {}, winners = new Map();
+    const canonical = window.MeldexSystemStorage.canonicalJsonStringify;
+    const stamp = value => Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
+    let updatedAt = '';
+    for (const store of stores) {
+      if (!store || typeof store !== 'object' || !store.profiles
+          || typeof store.profiles !== 'object' || Array.isArray(store.profiles))
+        throw Error('プロフィール管理データの形式が不正です');
+      const at = String(store.updatedAt || '');
+      if (stamp(at)>stamp(updatedAt) || (stamp(at)===stamp(updatedAt) && at>updatedAt)) updatedAt=at;
+      for (const [key,profile] of Object.entries(store.profiles)) {
+        if (!key || !profile || typeof profile !== 'object' || Array.isArray(profile))
+          throw Error('プロフィール管理データの形式が不正です');
+        const rank = [Math.max(stamp(profile.updatedAt || at),stamp(store.profile_event_at)),canonical(profile)];
+        const previous = winners.get(key);
+        if (!previous || rank[0]>previous[0] || (rank[0]===previous[0] && rank[1]>previous[1])) {
+          winners.set(key,rank); profiles[key]=JSON.parse(JSON.stringify(profile));
+        }
+      }
+    }
+    return {version:1,updatedAt,profiles};
+  }
+
+  async function _saveManagedProfileStore(managed, incoming, expectedRevision) {
+    const store = _mergeProfileStores([incoming]);
+    if ((managed.record?.revision || null) !== (expectedRevision || null)) throw Error('revision_conflict');
+    const previous = managed.record?.payload.profiles || {};
+    if (Object.keys(previous).some(key=>!Object.prototype.hasOwnProperty.call(store.profiles,key)))
+      throw Error('既存プロフィールを省略した保存はできません');
+    const canonical = window.MeldexSystemStorage.canonicalJsonStringify;
+    const changed = {};
+    for (const [key,profile] of Object.entries(store.profiles)) {
+      if (previous[key] && canonical(previous[key])===canonical(profile)) continue;
+      changed[key]=profile;
+    }
+    if (Object.keys(changed).length || !managed.record) {
+      // Publish all changed entries (including adoption links) atomically.
+      // Never modify an existing shared file, including on first run.
+      const id = 'profile-event-'+crypto.randomUUID().replace(/-/g,'');
+      await managed.adapter.save(managed.kind,id,
+        {version:1,updatedAt:store.updatedAt,profile_event_at:_nowIso(),profiles:changed},{expectedRevision:null});
+    }
   }
 
   async function _readProfileStore() {
@@ -13141,16 +13260,14 @@
       }
       if (!Object.keys(legacyStore.profiles).length) return { store: legacyStore, rev: '' };
       try {
-        await managed.adapter.save(managed.kind, 'dropbox-profiles', legacyStore, {
-          expectedRevision: null,
-        });
+        await _saveManagedProfileStore(managed,legacyStore,null);
       } catch (error) {
         if (!_isConflictError(error)) throw error;
-        const winner = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+        const winner = (await _profileManagementRecord()).record;
         if (!winner?.payload) throw error;
         return { store: _normalizeStore(winner.payload), rev: String(winner.revision || '') };
       }
-      const migrated = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+      const migrated = (await _profileManagementRecord()).record;
       return { store: _normalizeStore(migrated?.payload), rev: String(migrated?.revision || '') };
     }
     const result = await transport.read(_profileStorePath());
@@ -13184,9 +13301,7 @@
     const transport = await _resolveTransport();
     if (String(transport?.id || '').startsWith('dropbox-api')) {
       const managed = await _profileManagementRecord();
-      await managed.adapter.save(managed.kind, 'dropbox-profiles', store, {
-        expectedRevision: rev || null,
-      });
+      await _saveManagedProfileStore(managed,store,rev || null);
       return;
     }
     await transport.write(_profileStorePath(), store, { ifMatch: rev || '' });
@@ -13504,6 +13619,7 @@
       isLocalProfileNewer: _isLocalProfileNewer,
       shouldUseSharedProfile: _shouldUseSharedProfile,
       hasLocalProfileData: _hasLocalProfileData,
+      mergeProfileStores: _mergeProfileStores,
     },
   };
 })();
@@ -59282,6 +59398,9 @@ if (typeof window !== 'undefined') {
   const _uncertainSaves = new WeakMap();
 
   function _uncertainWriteError(error) {
+    // This explicit server response guarantees rejection before any write.
+    // Keep the old revision, but allow the next attempt to carry newer input.
+    if (Number(error?.status) === 503 && error?.meldexCode === 'file_read_unavailable') return false;
     return error?.isTimeout || error?.name === 'AbortError'
       || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
       || Number(error?.status) >= 500;
@@ -70886,9 +71005,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       bold: '--ui-button-font-weight', italic: '--ui-button-font-style', font: '--ui-button-font', fontSize: '--ui-button-font-size', lineHeight: '--ui-button-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border', borderWidth: '--ui-button-hover-border-width',
+      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border',
       leftAccent: '--ui-button-hover-left-accent', underline: '--ui-button-hover-underline', accent: '--ui-button-hover-accent-color',
-      bold: '--ui-button-hover-font-weight', italic: '--ui-button-hover-font-style', font: '--ui-button-hover-font', fontSize: '--ui-button-hover-font-size', lineHeight: '--ui-button-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', border: '--ui-button-active-border', borderWidth: '--ui-button-active-border-width',
@@ -70903,9 +71021,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       bold: '--ui-dock-button-font-weight', italic: '--ui-dock-button-font-style', font: '--ui-dock-button-font', fontSize: '--ui-dock-button-font-size', lineHeight: '--ui-dock-button-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border', borderWidth: '--ui-dock-button-hover-border-width',
+      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border',
       leftAccent: '--ui-dock-button-hover-left-accent', underline: '--ui-dock-button-hover-underline', accent: '--ui-dock-button-hover-accent-color',
-      bold: '--ui-dock-button-hover-font-weight', italic: '--ui-dock-button-hover-font-style', font: '--ui-dock-button-hover-font', fontSize: '--ui-dock-button-hover-font-size', lineHeight: '--ui-dock-button-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', border: '--ui-dock-button-active-border', borderWidth: '--ui-dock-button-active-border-width',
@@ -70920,9 +71037,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       bold: '--ui-pane-tab-font-weight', italic: '--ui-pane-tab-font-style', font: '--ui-pane-tab-font', fontSize: '--ui-pane-tab-font-size', lineHeight: '--ui-pane-tab-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border', borderWidth: '--ui-pane-tab-hover-border-width',
+      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border',
       leftAccent: '--ui-pane-tab-hover-left-accent', underline: '--ui-pane-tab-hover-underline', accent: '--ui-pane-tab-hover-accent-color',
-      bold: '--ui-pane-tab-hover-font-weight', italic: '--ui-pane-tab-hover-font-style', font: '--ui-pane-tab-hover-font', fontSize: '--ui-pane-tab-hover-font-size', lineHeight: '--ui-pane-tab-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', border: '--ui-pane-tab-active-border', borderWidth: '--ui-pane-tab-active-border-width',
@@ -70937,9 +71053,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       bold: '--ui-inner-tab-font-weight', italic: '--ui-inner-tab-font-style', font: '--ui-inner-tab-font', fontSize: '--ui-inner-tab-font-size', lineHeight: '--ui-inner-tab-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border', borderWidth: '--ui-inner-tab-hover-border-width',
+      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border',
       leftAccent: '--ui-inner-tab-hover-left-accent', underline: '--ui-inner-tab-hover-underline', accent: '--ui-inner-tab-hover-accent-color',
-      bold: '--ui-inner-tab-hover-font-weight', italic: '--ui-inner-tab-hover-font-style', font: '--ui-inner-tab-hover-font', fontSize: '--ui-inner-tab-hover-font-size', lineHeight: '--ui-inner-tab-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', border: '--ui-inner-tab-active-border', borderWidth: '--ui-inner-tab-active-border-width',
@@ -74204,12 +74319,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const signature = _signature(values);
       const state = _readState();
       if (!options?.force && state && state.signature === signature) return { pushed: false, available: true };
-      const payload = { updatedAt: new Date().toISOString(), values: { ...(state?.extras || {}), ...values } };
+      const initialSnapshot = !state?.revision;
+      const payload = { updatedAt: initialSnapshot ? '1970-01-01T00:00:00.000Z' : new Date().toISOString(),
+        values: { ...(state?.extras || {}), ...values } };
       let response;
       try {
         response = await _put(`/personal-preferences/${DOCUMENT_NAME}`, {
           payload,
           expectedRevision: state?.revision || null,
+          initialSnapshot,
         });
       } catch (err) {
         const conflict = Number(err?.status || err?.statusCode) === 409;

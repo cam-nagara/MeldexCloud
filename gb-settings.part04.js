@@ -968,7 +968,7 @@ const _UI_STRUCTURED_KEYS = [
   'gb:app-layouts', 'gb:app-layout-active', 'gb:layout-source',
   'gb:canvas-bg',
   'meldex-favorites', 'outliner-sort', 'outliner-manual-order',
-  'outliner-locked-items', 'outliner-node-colors', 'outliner-work-folder', 'outliner-work-folder-id',
+  'outliner-locked-items', 'outliner-node-colors', 'outliner-work-folder', 'outliner-work-folder-id', 'outliner-work-folders',
   'global-filter', 'gb:outliner-filter-shared-state', 'main-calendar-path', 'main-calendar-id',
   'outliner-expanded', '_file-id-migrated',
   'customDbTemplates',

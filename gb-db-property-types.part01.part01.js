@@ -1091,9 +1091,9 @@ function _dbPickerNormAbs(p) {
 function _dbPickerInside(childAbs, rootAbs) {
   return !!childAbs && !!rootAbs && (childAbs === rootAbs || childAbs.startsWith(rootAbs + '/'));
 }
-function _dbPickerWorkFolderAbs() {
+function _dbPickerWorkFolderAbs(dbPath) {
   if (typeof getWorkFolder !== 'function') return '';
-  const wf = getWorkFolder();
+  const wf = getWorkFolder(dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '');
   return wf ? _dbPickerNormAbs(wf) : '';
 }
 function _dbPickerCurrentSheetAbs(dbPath) {
@@ -1101,7 +1101,7 @@ function _dbPickerCurrentSheetAbs(dbPath) {
 }
 // 作品フォルダが設定され、編集中シートがその中にある場合のみ、候補を作品フォルダ配下へ絞る
 function _dbPickerScopeToWorkFolder(dbs, dbPath) {
-  const wfAbs = _dbPickerWorkFolderAbs();
+  const wfAbs = _dbPickerWorkFolderAbs(dbPath);
   if (!wfAbs) return { list: dbs, scoped: false };
   const curAbs = _dbPickerCurrentSheetAbs(dbPath);
   if (!curAbs || !_dbPickerInside(curAbs, wfAbs)) return { list: dbs, scoped: false };
@@ -1206,7 +1206,7 @@ function _attachDbPicker(input, dbPath) {
     let { list, scoped } = _dbPickerScopeToWorkFolder(dbs, dbPath);
     let hintText = '';
     if (scoped) {
-      const wfName = (_dbPickerWorkFolderAbs().split('/').pop() || '作品フォルダ');
+      const wfName = (_dbPickerWorkFolderAbs(dbPath).split('/').pop() || '作品フォルダ');
       hintText = `${wfName}（作品フォルダ）内のシートを表示中`;
     } else {
       const roots = await _ensureRoots();

@@ -57,7 +57,7 @@ const GBPaneBridge = (() => {
   // ToolComponentで描画するタイプ（レガシーコンテナを使わない、独自DOM生成）
   const COMPONENT_TYPES = new Set([
     'calendar', 'search', 'scriptnote', 'form-app', 'version', 'board', 'system-sheet',
-    'information', 'backlinks', 'file-theme',
+    'information', 'backlinks', 'file-theme', 'preview',
   ]);
 
   // 右パネルから移行するコンテナ（レガシーコンテナとして管理）

@@ -136,7 +136,7 @@
       if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
-          const isWork = item.path === getWorkFolder();
+          const isWork = isWorkFolder(item.path);
           iconEl.innerHTML = lucide(isWork ? 'folderOpenDot' : 'folderOpen', 18);
           if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
         }
@@ -288,7 +288,7 @@
       if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
-          const isWork = item.path === getWorkFolder();
+          const isWork = isWorkFolder(item.path);
           iconEl.innerHTML = lucide(isWork ? 'folderDot' : 'folder', 18);
           if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
         }

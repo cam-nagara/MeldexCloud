@@ -1,4 +1,3 @@
-        const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page',

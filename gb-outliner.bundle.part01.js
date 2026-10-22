@@ -349,7 +349,7 @@ function _outlinerIconName(type, path, isSpecialFolder) {
 }
 
 function _outlinerIconMarkup(item, size) {
-  return lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && item?.path === getWorkFolder()), size || 18);
+  return lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && isWorkFolder(item?.path)), size || 18);
 }
 
 async function loadOutliner(options) {

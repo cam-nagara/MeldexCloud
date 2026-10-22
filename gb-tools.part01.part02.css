@@ -166,6 +166,14 @@
   user-select: none;
   display: inline-flex; align-items: center; gap: 4px;
 }
+.entry-prop-name-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 5em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
 /* レイアウト編集時の並べ替え専用ハンドル（row-drag-handle と同じ慣行）。
    カード自体は draggable にしないため、掴めるのはこのハンドルだけになる。 */
 .entry-prop-drag-handle {

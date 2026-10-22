@@ -1,3 +1,15 @@
+    _loadingGroups.set(key, group);
+  }
+  group.refs++;
+  const lease = {
+    active: true, group,
+    getState: () => group.operation?.getState() || { label: group.label },
+    update: patch => { if (lease.active) { group.label = patch.label || group.label; group.operation?.update(patch); } },
+    showNow: () => { if (lease.active) group.operation?.showNow(); },
+  };
+  _loadingOperations.push(lease);
+  _loadingCount = _loadingOperations.length;
+  _loadingMessage = group.label;
   if (!group.operation) {
     if (_loadingVisible) _renderLoadingUi(_loadingMessage);
     else if (!_loadingTimer) _loadingTimer = setTimeout(() => {

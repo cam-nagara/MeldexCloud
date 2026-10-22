@@ -587,7 +587,6 @@
 .settings-theme-state-sample[data-theme-state-section="sequence-color"] { background: var(--theme-state-normal-source); }
 .settings-theme-state-sample[data-theme-state-section="text"] { color: var(--theme-state-normal-source); }
 .settings-theme-state-sample[data-theme-state-section="ornaments"] { border-bottom-color: var(--theme-state-normal-source); }
-.settings-theme-state-sample[data-theme-state="hover"]:hover { transform: translateY(-1px); }
 .settings-theme-state-sample[data-theme-state="hover"][data-theme-state-section="basic-surfaces"]:hover,
 .settings-theme-state-sample[data-theme-state="hover"][data-theme-state-section="operation-states"]:hover,
 .settings-theme-state-sample[data-theme-state="hover"][data-theme-state-section="sequence-color"]:hover { background: var(--theme-state-source); }

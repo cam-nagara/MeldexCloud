@@ -1,7 +1,19 @@
+  _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe).then(moved => {
+    if (!moved && typeof showStatus === 'function') {
+      showStatus('画像またはPDFがあるフォルダがありません', true);
+    }
+  }).catch(error => {
+    if (typeof showStatus === 'function') showStatus('フォルダ移動に失敗しました: ' + (error?.message || error || ''), true);
+  });
+}
+
+window.addEventListener('message', (e) => {
   const sourceIframe = _getTrustedEmbeddedMessageIframe(e);
   if (!sourceIframe) return;
   const msg = e.data;
   if (!msg || !msg.type) return;
+  // 端末内の一時ファイルは、登録済みファイルの選択・プロパティ・保存対象へ反映しない。
+  if (sourceIframe.classList?.contains('gb-local-file-viewer-frame')) return;
   // サブパネルのビューワー（2つ目の表示面）は、メインの「現在のファイル」（state.currentPagePath）・
   // フォルダツリーの選択・プロパティを書き換えない。書き換えると、メインで開いているノートのタブ状態や
   // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
@@ -886,15 +898,3 @@ function showLoading(msg, opts) {
       kind: 'loading', label, mode: 'indeterminate', background: false,
       delayMs: 300, showInTray: true, priority: 40,
     }) || null };
-    _loadingGroups.set(key, group);
-  }
-  group.refs++;
-  const lease = {
-    active: true, group,
-    getState: () => group.operation?.getState() || { label: group.label },
-    update: patch => { if (lease.active) { group.label = patch.label || group.label; group.operation?.update(patch); } },
-    showNow: () => { if (lease.active) group.operation?.showNow(); },
-  };
-  _loadingOperations.push(lease);
-  _loadingCount = _loadingOperations.length;
-  _loadingMessage = group.label;

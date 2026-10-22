@@ -6,7 +6,7 @@
 // Dropbox接続済みのデスクトップ版）と、デスクトップのローカルAPIサーバー経由の
 // settings-file API（Dropbox OAuth未接続のデスクトップ版）を透過的に切り替える。
 // settings-file API側の正本は型付き管理領域
-// (profiles-workspace/dropbox-profiles)であり、旧 _meldex/profiles.v1.json は
+// (profiles-workspace の旧集約レコードと profile-event-* の追記)であり、旧 _meldex/profiles.v1.json は
 // 読取専用fallbackとしてのみ使う。
 //
 // 各 transport は {id, available(), read(storePath), write(storePath, storeObj, options)}

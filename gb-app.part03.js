@@ -299,6 +299,8 @@ window.addEventListener('message', (e) => {
   if (!sourceIframe) return;
   const msg = e.data;
   if (!msg || !msg.type) return;
+  // 端末内の一時ファイルは、登録済みファイルの選択・プロパティ・保存対象へ反映しない。
+  if (sourceIframe.classList?.contains('gb-local-file-viewer-frame')) return;
   // サブパネルのビューワー（2つ目の表示面）は、メインの「現在のファイル」（state.currentPagePath）・
   // フォルダツリーの選択・プロパティを書き換えない。書き換えると、メインで開いているノートのタブ状態や
   // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。

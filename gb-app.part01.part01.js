@@ -343,6 +343,7 @@ function _collectPathsNeedingFileIdMigration() {
   }
   const wf = localStorage.getItem('outliner-work-folder');
   if (wf) allPaths.add(wf);
+  if (typeof getWorkFolders === 'function') getWorkFolders().forEach(record => allPaths.add(record.path));
   const mcp = localStorage.getItem('main-calendar-path');
   if (mcp) allPaths.add(mcp);
   const lastView = _readStorageJson('lastView', null);
@@ -435,6 +436,9 @@ async function _migratePathsToFileIds() {
 
   // 9. work-folder, main-calendar-path
   if (wf && idMap[wf]) localStorage.setItem('outliner-work-folder-id', idMap[wf]);
+  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
+    _saveWorkFolders(getWorkFolders().map(record => ({ ...record, fileId: idMap[record.path] || record.fileId })));
+  }
   if (mcp && idMap[mcp]) localStorage.setItem('main-calendar-id', idMap[mcp]);
 
   // キャッシュにも登録
@@ -763,6 +767,9 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   const fileId = preResolvedId || _pathToFileId(newPath) || '';
   _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId);
   _rewriteStoredPathSettingForRename('outliner-work-folder', 'outliner-work-folder-id', oldPath, newPath, fileId);
+  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
+    _saveWorkFolders(getWorkFolders().map(record => ({ ...record, path: _mapRenamedPath(record.path, oldPath, newPath) })));
+  }
   _rewriteStoredPathSettingForRename('main-calendar-path', 'main-calendar-id', oldPath, newPath, fileId);
   _rewritePublishStorageForRename(oldPath, newPath);
   // 新規作成位置をパスで保存した手動順も、改名・フォルダ移動へ追従させる。
@@ -977,6 +984,9 @@ function purgeAppPathReferences(paths) {
   });
   _purgeStoredFileIdMapForDeletedPaths(deletedPaths);
   _purgeStoredPathSettingForDeletedPaths('outliner-work-folder', 'outliner-work-folder-id', deletedPaths);
+  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
+    _saveWorkFolders(getWorkFolders().filter(record => !_matchesDeletedPaths(record.path, deletedPaths)));
+  }
   _purgeStoredPathSettingForDeletedPaths('main-calendar-path', 'main-calendar-id', deletedPaths);
   _purgePublishStorageForDeletedPaths(deletedPaths);
 

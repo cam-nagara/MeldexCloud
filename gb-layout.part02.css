@@ -79,13 +79,8 @@
 .gb-tab:hover {
   color: var(--ui-pane-tab-hover-fg, var(--ui-hover-fg));
   background: var(--ui-pane-tab-hover-bg, var(--ui-hover-bg));
-  border: var(--ui-pane-tab-hover-border-width, 0px) solid var(--ui-pane-tab-hover-border, var(--border));
+  border-color: var(--ui-pane-tab-hover-border, var(--border));
   box-shadow: inset var(--ui-pane-tab-hover-left-accent, 0px) 0 0 var(--ui-pane-tab-hover-accent-color, var(--accent)), inset 0 calc(-1 * var(--ui-pane-tab-hover-underline, 0px)) 0 var(--ui-pane-tab-hover-accent-color, var(--accent));
-  font-family: var(--ui-pane-tab-hover-font, inherit);
-  font-size: var(--ui-pane-tab-hover-font-size, 11px);
-  line-height: var(--ui-pane-tab-hover-line-height, 100%);
-  font-weight: var(--ui-pane-tab-hover-font-weight, normal);
-  font-style: var(--ui-pane-tab-hover-font-style, normal);
 }
 .gb-tab.active {
   color: var(--ui-pane-tab-active-fg, var(--fg));
@@ -911,13 +906,8 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 .gb-dock-icon:hover {
   background: var(--ui-dock-button-hover-bg, var(--ui-bg-control-hover));
   color: var(--ui-dock-button-hover-fg, var(--ui-fg-default));
-  border: var(--ui-dock-button-hover-border-width, 0px) solid var(--ui-dock-button-hover-border, transparent);
+  border-color: var(--ui-dock-button-hover-border, transparent);
   box-shadow: inset 0 calc(-1 * var(--ui-dock-button-hover-underline, 0px)) 0 var(--ui-dock-button-hover-accent-color, var(--ui-accent));
-  font-family: var(--ui-dock-button-hover-font, inherit);
-  font-size: var(--ui-dock-button-hover-font-size, var(--ui-font-13));
-  line-height: var(--ui-dock-button-hover-line-height, 100%);
-  font-weight: var(--ui-dock-button-hover-font-weight, var(--ui-weight-medium));
-  font-style: var(--ui-dock-button-hover-font-style, normal);
 }
 .gb-dock-bar-fixed .gb-dock-icon.active {
   background: var(--ui-dock-button-active-bg, color-mix(in srgb, var(--ui-accent) 94%, #000)) !important;

@@ -1879,6 +1879,13 @@
     }
     const options = {};
     if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || !['theme-settings', 'restore-point-policy'].includes(doc)
+          || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
@@ -1951,6 +1958,12 @@
     if (!context.adapter) return { available: false, ok: false, revision: null,
       scope: 'workspace', workspaceId, role: context.role, readOnly: true };
     const options = {};
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }

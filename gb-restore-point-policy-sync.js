@@ -112,11 +112,12 @@
     const signature = _signature(config);
     const syncState = _state(scope);
     if (!options.force && syncState?.signature === signature) return { available: true, pushed: false, scope };
-    const payload = { updatedAt: new Date().toISOString(), config };
+    const initialSnapshot = !syncState?.revision;
+    const payload = { updatedAt: initialSnapshot ? '1970-01-01T00:00:00.000Z' : new Date().toISOString(), config };
     try {
       const response = await _request(scope.path, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload, expectedRevision: syncState?.revision || null }),
+        body: JSON.stringify({ payload, expectedRevision: syncState?.revision || null, initialSnapshot }),
       });
       if (!response || response.available === false) return { available: false, pushed: false, scope };
       _saveState(scope, { revision: response.revision || '', signature, updatedAt: payload.updatedAt });

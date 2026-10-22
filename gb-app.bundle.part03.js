@@ -1,3 +1,13 @@
+      navNavigating = false;
+      return;
+    }
+    _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }).catch((error) => {
+    navNavigating = false;
+    if (typeof showStatus === 'function') showStatus('画面遷移前の保存に失敗しました: ' + (error?.message || error), true);
+  });
+  return true;
+}
 
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
@@ -888,13 +898,3 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/outliner/duplicate') {
     const srcPath = String(body?.path || '').trim();
     if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
-  } else if (route === '/outliner/save-as') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/delete-batch') {
-    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/outliner/move') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/rename') {
-    addBody('old_path');

@@ -168,7 +168,7 @@
     leftDock.meldexRole = 'left-sidebar';
 
     const rightDefaults = window.GBRailContract?.defaults?.() || [
-      ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+      ['オプション', 'detail'], ['サブパネル', 'subpanel'],
       ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
       ['ヒストリー', 'history'], ['バージョン管理', 'version'],
     ];

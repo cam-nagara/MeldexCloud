@@ -8,10 +8,9 @@
 (function () {
   'use strict';
 
-  const VERSION = 3;
+  const VERSION = 4;
   const RIGHT = Object.freeze([
     { type: 'detail',      label: 'オプション',       icon: 'slidersHorizontal', section: 'primary' },
-    { type: 'preview',     label: 'ビューワー',       icon: 'panelTop',          section: 'primary' },
     { type: 'subpanel',    label: 'サブパネル',       icon: 'panelRight',        section: 'primary', separatorAfter: true },
     { type: 'information', label: 'プロパティ',       icon: 'info',              section: 'context' },
     { type: 'tags',        label: 'タグ',             icon: 'tags',              section: 'context' },

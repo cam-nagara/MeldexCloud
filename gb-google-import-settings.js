@@ -382,6 +382,156 @@
     });
   }
 
+  async function mountPersonal(root) {
+    if (isCloudSurface() || !canManage()) return;
+    let panel = root.querySelector('#google-personal-import');
+    if (!panel) {
+      panel = document.createElement('section');
+      panel.id = 'google-personal-import';
+      panel.className = 'google-import-more';
+      panel.innerHTML = `
+        <h4>個人用Google接続・一度だけ取り込む</h4>
+        <p>自分専用の認証設定を登録し、Googleの元ファイルと同じフォルダに、編集可能なコピーを作ります。</p>
+        <details><summary>Google側の初回設定ガイド</summary>
+          <ol>
+            <li><a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">Google Cloud</a>で自分専用のプロジェクトを作成します。</li>
+            <li><a href="https://console.cloud.google.com/apis/library" target="_blank" rel="noopener noreferrer">APIライブラリ</a>でGoogle Drive APIとGoogle Sheets APIを有効にします。</li>
+            <li><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener noreferrer">Google Auth Platform</a>でアプリ名・連絡先を登録し、対象をExternal、公開状態をTestingにします。自分をテストユーザーへ追加します。</li>
+            <li>データアクセスにDriveの読み取り権限（drive.readonly）を追加します。許可はDrive全体の読み取りですが、Meldexは選択フォルダのみ取り込みます。</li>
+            <li>クライアントの種類を「デスクトップアプリ」にして作成し、認証設定JSONをダウンロードします。APIキー・Web用・サービスアカウント用は使いません。</li>
+            <li>下でJSONを登録して「Googleに接続」を押します。ブラウザでアカウントと読み取り許可を確認し、戻ったら「接続状態を更新」を押します。</li>
+          </ol>
+          <p>認証設定は自分専用とし、ダウンロードしたJSONを共有フォルダへ置かないでください。Testingの認証は7日で失効するため、必要時に再接続します。取り込み済みコピーは接続解除後も編集できます。</p>
+        </details>
+        <p id="google-personal-state" role="status" aria-live="polite"></p>
+        <label>認証設定JSONを登録 <input id="google-personal-json" type="file" accept=".json,application/json"></label>
+        <div class="external-import-provider-actions">
+          <button type="button" id="google-personal-connect" class="gb-btn gb-btn-sm">Googleに接続</button>
+          <button type="button" id="google-personal-refresh" class="gb-btn gb-btn-sm">接続状態を更新</button>
+          <button type="button" id="google-personal-disconnect" class="gb-btn gb-btn-sm">接続解除</button>
+          <button type="button" id="google-personal-delete" class="gb-btn gb-btn-sm">認証設定を削除</button>
+        </div>
+        <p><label>ローカルソースフォルダ <select id="google-personal-source" class="gb-select"></select></label></p>
+        <p><label>サブフォルダ（省略可） <input id="google-personal-subfolder" class="gb-input" placeholder="資料/企画"></label></p>
+        <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" placeholder="https://drive.google.com/drive/folders/…"></label></p>
+        <p>サブフォルダも確認します。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
+        <button type="button" id="google-personal-preview" class="gb-btn gb-btn-sm">対象と保存先を確認</button>
+        <div id="google-personal-results" role="region" aria-label="取り込み対象と結果"></div>
+        <button type="button" id="google-personal-run" class="gb-btn gb-btn-sm" hidden>確認した保存先へ取り込む</button>
+        <button type="button" id="google-personal-cancel" class="gb-btn gb-btn-sm" hidden>取り込みを停止</button>
+        <p id="google-personal-message" role="status" aria-live="polite"></p>`;
+      root.querySelector('#google-import-details').appendChild(panel);
+      const find = id => panel.querySelector('#google-personal-' + id);
+      const message = text => { find('message').textContent = text; };
+      const output = rows => {
+        find('results').replaceChildren();
+        const list = document.createElement('ul');
+        (rows || []).forEach(row => {
+          const item = document.createElement('li');
+          const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応' };
+          item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
+          list.appendChild(item);
+        });
+        find('results').appendChild(list);
+      };
+      const invalidate = () => { panel._plan = null; find('run').hidden = true; };
+      const act = fn => async () => {
+        try { await fn(); }
+        catch (err) { message(err.userMessage || err.message || '操作に失敗しました'); }
+      };
+      const refresh = async () => {
+        const status = await apiFetch('/google-import/personal/status', { silentError: true });
+        find('state').textContent = status.reason || `${status.configured ? '設定登録済み' : '設定未登録'} / ${status.connected ? '接続済み' : '未接続'}${status.account ? ' / ' + status.account : ''}${status.busy ? ' / 取り込み中' : ''}`;
+        root.querySelector('#google-import-connection-state').textContent = status.configured
+          ? `${root._googlePayload?.connection?.connected ? '管理者用 接続済み / ' : ''}個人用 ${status.connected ? '接続済み' : '未接続'}`
+          : stateLabel(root._googlePayload);
+        const selected = find('source').value;
+        find('source').replaceChildren();
+        for (const row of status.source_folders || []) {
+          const option = document.createElement('option');
+          option.value = row.path; option.textContent = row.name || row.path;
+          find('source').appendChild(option);
+        }
+        if (selected) find('source').value = selected;
+        find('connect').disabled = !status.configured || !status.available || status.busy;
+        find('preview').disabled = !status.connected || status.busy;
+        for (const id of ['json', 'disconnect', 'delete', 'source', 'subfolder', 'folder']) find(id).disabled = !!status.busy;
+      };
+      panel._refresh = refresh;
+      find('json').addEventListener('change', act(async () => {
+        const file = find('json').files?.[0];
+        if (!file) return;
+        if (file.size > 65536) throw new Error('認証設定JSONは64KB以下で指定してください');
+        invalidate();
+        await apiPost('/google-import/personal/credentials', { content: await file.text() }, { silentError: true });
+        find('json').value = '';
+        message('認証設定をこのPCの秘密ストアへ登録しました。Googleに接続してください。');
+        await refresh();
+      }));
+      find('connect').addEventListener('click', act(async () => {
+        invalidate();
+        const result = await apiPost('/google-import/personal/oauth/start', {}, { silentError: true });
+        await openExternal(result.auth_url);
+        message('ブラウザで認証後、「接続状態を更新」を押してください。');
+      }));
+      find('refresh').addEventListener('click', act(refresh));
+      for (const id of ['disconnect', 'delete']) find(id).addEventListener('click', act(async () => {
+        const prompt = id === 'delete' ? 'このPCの個人用Google認証設定を削除しますか？取り込み済みファイルは残ります。' : '個人用Google接続を解除しますか？取り込み済みファイルは残ります。';
+        if (!(typeof cfConfirm === 'function' ? await cfConfirm(prompt) : window.confirm(prompt))) return;
+        invalidate();
+        await apiPost('/google-import/personal/' + (id === 'delete' ? 'credentials' : 'disconnect'), {}, { method: id === 'delete' ? 'DELETE' : 'POST', silentError: true });
+        await refresh();
+      }));
+      for (const id of ['source', 'subfolder', 'folder']) find(id).addEventListener('input', invalidate);
+      find('preview').addEventListener('click', act(async () => {
+        invalidate();
+        message('Googleの対象とローカルの保存先を確認しています...');
+        find('preview').disabled = true;
+        try {
+          const source = find('source').value.replace(/[\\/]+$/, '') + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
+          const plan = await apiPost('/google-import/local/preview', { source, folder_url: find('folder').value.trim() }, { silentError: true });
+          panel._plan = plan.plan_id;
+          output(plan.items);
+          find('run').hidden = !plan.items.some(row => row.status === 'ready');
+          message(`対象 ${plan.items.length}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
+        } finally { await refresh(); }
+      }));
+      find('cancel').addEventListener('click', act(async () => {
+        if (panel._job) await apiPost(`/google-import/local/jobs/${encodeURIComponent(panel._job)}/cancel`, {}, { silentError: true });
+        message('停止を要求しました。確定済みファイルは残ります。');
+      }));
+      find('run').addEventListener('click', act(async () => {
+        if (!panel._plan) return;
+        find('run').disabled = true;
+        try {
+          panel._job = (await apiPost('/google-import/local/run', { plan_id: panel._plan }, { silentError: true })).job_id;
+          find('cancel').hidden = false;
+          await refresh();
+          for (;;) {
+            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(panel._job)}`, { silentError: true });
+            if (job.status === 'failed') throw new Error(job.message || '取り込みを開始できませんでした');
+            if (job.status === 'done') {
+              const result = job.result;
+              output(result.items);
+              message(`取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。再試行は対象を確認し直してください。`);
+              invalidate();
+              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
+              break;
+            }
+            message(`取り込み中 ${job.processed} / ${job.total}`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } finally {
+          find('run').disabled = false;
+          find('cancel').hidden = true;
+          await refresh();
+        }
+      }));
+    }
+    try { await panel._refresh(); }
+    catch (err) { panel.querySelector('#google-personal-state').textContent = err.userMessage || err.message || '個人用設定を取得できません'; }
+  }
+
   function mount(target) {
     const root = typeof target === 'string' ? document.querySelector(target) : target;
     if (!root) return Promise.resolve();
@@ -390,7 +540,7 @@
       renderShell(root);
       bind(root);
     }
-    return load(root);
+    return load(root).then(() => mountPersonal(root));
   }
 
   window.MeldexGoogleImportSettings = { mount, canManage, isCloudSurface, TARGET_LABELS };

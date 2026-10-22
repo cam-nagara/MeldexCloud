@@ -1,3 +1,13 @@
+    const stage = document.createElement('div');
+    stage.className = 'screenshot-region-stage';
+    stage.dataset.e2eId = 'screenshot-region-stage';
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+    stage.setAttribute('aria-label', '保存する範囲');
+
+    const preview = document.createElement('canvas');
+    preview.className = 'screenshot-region-preview';
+    preview.setAttribute('aria-hidden', 'true');
     preview.width = canvas.width;
     preview.height = canvas.height;
     preview.getContext('2d').drawImage(canvas, 0, 0);
@@ -888,13 +898,3 @@ async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath, ta
 function _handleViewerFolderNavRequest(msg, targetIframe = null) {
   const direction = Number(msg?.direction) < 0 ? -1 : 1;
   const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
-  _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe).then(moved => {
-    if (!moved && typeof showStatus === 'function') {
-      showStatus('画像またはPDFがあるフォルダがありません', true);
-    }
-  }).catch(error => {
-    if (typeof showStatus === 'function') showStatus('フォルダ移動に失敗しました: ' + (error?.message || error || ''), true);
-  });
-}
-
-window.addEventListener('message', (e) => {

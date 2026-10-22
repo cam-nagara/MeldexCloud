@@ -1503,7 +1503,7 @@ function renderFavorites() {
         renderFavorites();
       });
     } else {
-      const iconName = _outlinerIconName(node.type, node.path, node.type === 'folder' && node.path === getWorkFolder());
+      const iconName = _outlinerIconName(node.type, node.path, node.type === 'folder' && isWorkFolder(node.path));
       const ico = document.createElement('span');
       ico.innerHTML = lucide(iconName, 18);
       ico.style.cssText = 'display:inline-flex;flex-shrink:0;';

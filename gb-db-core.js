@@ -211,7 +211,7 @@ function _dbResolveConfiguredRelationPath(sourceDbPath, relationDbPath) {
   const sourcePath = _dbNormalizePath(sourceDbPath);
   if (!_dbIsAbsolutePath(sourcePath) || typeof getWorkFolder !== 'function') return relationPath;
   let workFolder = '';
-  try { workFolder = _dbNormalizePath(getWorkFolder()); } catch { workFolder = ''; }
+  try { workFolder = _dbNormalizePath(getWorkFolder(sourceDbPath)); } catch { workFolder = ''; }
   if (!_dbIsAbsolutePath(workFolder) || !_dbPathContains(sourcePath, workFolder)) return relationPath;
   return `${workFolder}/${relationPath.replace(/^\/+/, '')}`;
 }

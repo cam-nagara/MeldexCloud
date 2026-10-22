@@ -604,7 +604,7 @@
   transform: translate(-50%, -50%);
   pointer-events: auto;
 }
-.bd-group-anchor:hover { border-width: 2.5px; }
+.bd-group-anchor:hover { box-shadow: inset 0 0 0 1px var(--bd-anchor-color, var(--accent)); }
 .bd-group-anchor.top    { top: 0%;   left: 50%;  }
 .bd-group-anchor.bottom { top: 100%; left: 50%;  }
 .bd-group-anchor.left   { top: 50%;  left: 0%;   }

@@ -39,6 +39,9 @@
   const _uncertainSaves = new WeakMap();
 
   function _uncertainWriteError(error) {
+    // This explicit server response guarantees rejection before any write.
+    // Keep the old revision, but allow the next attempt to carry newer input.
+    if (Number(error?.status) === 503 && error?.meldexCode === 'file_read_unavailable') return false;
     return error?.isTimeout || error?.name === 'AbortError'
       || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
       || Number(error?.status) >= 500;

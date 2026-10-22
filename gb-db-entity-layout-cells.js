@@ -585,7 +585,14 @@ function _elShowCellInspector(anchor, ctx) {
     if (!cell) { body.textContent = '「列を配置」などからセルを追加してください。'; return; }
     const element = [...ctx.grid.querySelectorAll('.el-cell')].find(item => item.dataset.cellId === cell.id);
     if (element) _elSelectCellElement(element.parentElement, element);
-    const row = (label, input) => { if (input.type !== 'checkbox') input.classList.add('gb-input'); input.setAttribute('aria-label', label); const wrap = document.createElement('label'); wrap.className = 'el-popup-row'; wrap.append(document.createTextNode(label), input); body.appendChild(wrap); return input; };
+    const row = (label, input) => {
+      const check = input.type === 'checkbox';
+      if (!check) input.classList.add('gb-input');
+      input.setAttribute('aria-label', label);
+      const wrap = document.createElement('label'); wrap.className = check ? 'gb-check' : 'el-popup-row';
+      const text = document.createElement('span'); text.textContent = label;
+      wrap.append(...(check ? [input, text] : [text, input])); body.appendChild(wrap); return input;
+    };
     const inputs = {};
     for (const [key, label] of [['x','左から (px)'], ['y','上から (px)'], ['w','幅 (px)'], ['h','高さ (px)']]) {
       const input = document.createElement('input'); input.type = 'number'; input.required = true; input.min = ['w','h'].includes(key) ? '24' : '0'; input.max = '8000'; input.value = cell[key]; input.disabled = !!cell.locked;

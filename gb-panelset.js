@@ -918,6 +918,7 @@
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
     { type: 'form-app', label: 'フォーム', icon: 'clipboardList' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
+    { type: 'preview', label: 'ビューワー', icon: 'panelTop', standalone: 'viewer.html' },
   ]);
 
   function _mainPaneIdForRailApp() {
@@ -937,7 +938,10 @@
     if (mainPaneId && typeof GBLayout?.setActivePane === 'function') {
       GBLayout.setActivePane(mainPaneId, { skipCallback: true });
     }
-    if (!['folder', 'calendar'].includes(type)) {
+    if (type === 'preview' && typeof window.addPanelMenuTool === 'function') {
+      return window.addPanelMenuTool(type, { paneId: mainPaneId });
+    }
+    if (!['folder', 'calendar', 'preview'].includes(type)) {
       if (localStorage.getItem('gb:rail-app-launch-mode') === 'last' && typeof navOpen === 'function') {
         const entries = typeof _readStorageArray === 'function'
           ? [..._readStorageArray('meldex-rail-last-files'), ..._readStorageArray('meldex-recent')] : [];

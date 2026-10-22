@@ -337,8 +337,71 @@
       throw new Error('プロフィール管理データの保存先を安全に判定できません');
     }
     const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
-    const record = await adapter.load(kind, 'dropbox-profiles');
+    // Read the legacy aggregate plus immutable per-change records. A local
+    // filesystem CAS cannot synchronize two independent Dropbox replicas.
+    const records = [];
+    const legacy = await adapter.load(kind, 'dropbox-profiles');
+    if (legacy) records.push(legacy);
+    let cursor = '';
+    do {
+      const page = await adapter.listDocumentHeaders(kind, {cursor, limit:200});
+      for (const header of page.entries) {
+        if (!/^profile-event-[0-9a-f]{32}$/.test(header.documentId)) continue;
+        const event = await adapter.load(kind, header.documentId, {fresh:true});
+        if (!event) throw Error('プロフィールの同期中に管理データが変わりました');
+        records.push(event);
+      }
+      cursor = page.complete ? '' : page.cursor;
+      if (!page.complete && !cursor) throw Error('プロフィール一覧の継続情報がありません');
+    } while (cursor);
+    const payload = records.length ? _mergeProfileStores(records.map(record=>record.payload)) : null;
+    const record = payload ? {payload, revision:'profiles:'+await window.MeldexSystemStorage.computeRevision(payload)} : null;
     return { adapter, kind, record };
+  }
+
+  function _mergeProfileStores(stores) {
+    const profiles = {}, winners = new Map();
+    const canonical = window.MeldexSystemStorage.canonicalJsonStringify;
+    const stamp = value => Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
+    let updatedAt = '';
+    for (const store of stores) {
+      if (!store || typeof store !== 'object' || !store.profiles
+          || typeof store.profiles !== 'object' || Array.isArray(store.profiles))
+        throw Error('プロフィール管理データの形式が不正です');
+      const at = String(store.updatedAt || '');
+      if (stamp(at)>stamp(updatedAt) || (stamp(at)===stamp(updatedAt) && at>updatedAt)) updatedAt=at;
+      for (const [key,profile] of Object.entries(store.profiles)) {
+        if (!key || !profile || typeof profile !== 'object' || Array.isArray(profile))
+          throw Error('プロフィール管理データの形式が不正です');
+        const rank = [Math.max(stamp(profile.updatedAt || at),stamp(store.profile_event_at)),canonical(profile)];
+        const previous = winners.get(key);
+        if (!previous || rank[0]>previous[0] || (rank[0]===previous[0] && rank[1]>previous[1])) {
+          winners.set(key,rank); profiles[key]=JSON.parse(JSON.stringify(profile));
+        }
+      }
+    }
+    return {version:1,updatedAt,profiles};
+  }
+
+  async function _saveManagedProfileStore(managed, incoming, expectedRevision) {
+    const store = _mergeProfileStores([incoming]);
+    if ((managed.record?.revision || null) !== (expectedRevision || null)) throw Error('revision_conflict');
+    const previous = managed.record?.payload.profiles || {};
+    if (Object.keys(previous).some(key=>!Object.prototype.hasOwnProperty.call(store.profiles,key)))
+      throw Error('既存プロフィールを省略した保存はできません');
+    const canonical = window.MeldexSystemStorage.canonicalJsonStringify;
+    const changed = {};
+    for (const [key,profile] of Object.entries(store.profiles)) {
+      if (previous[key] && canonical(previous[key])===canonical(profile)) continue;
+      changed[key]=profile;
+    }
+    if (Object.keys(changed).length || !managed.record) {
+      // Publish all changed entries (including adoption links) atomically.
+      // Never modify an existing shared file, including on first run.
+      const id = 'profile-event-'+crypto.randomUUID().replace(/-/g,'');
+      await managed.adapter.save(managed.kind,id,
+        {version:1,updatedAt:store.updatedAt,profile_event_at:_nowIso(),profiles:changed},{expectedRevision:null});
+    }
   }
 
   async function _readProfileStore() {
@@ -357,16 +420,14 @@
       }
       if (!Object.keys(legacyStore.profiles).length) return { store: legacyStore, rev: '' };
       try {
-        await managed.adapter.save(managed.kind, 'dropbox-profiles', legacyStore, {
-          expectedRevision: null,
-        });
+        await _saveManagedProfileStore(managed,legacyStore,null);
       } catch (error) {
         if (!_isConflictError(error)) throw error;
-        const winner = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+        const winner = (await _profileManagementRecord()).record;
         if (!winner?.payload) throw error;
         return { store: _normalizeStore(winner.payload), rev: String(winner.revision || '') };
       }
-      const migrated = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+      const migrated = (await _profileManagementRecord()).record;
       return { store: _normalizeStore(migrated?.payload), rev: String(migrated?.revision || '') };
     }
     const result = await transport.read(_profileStorePath());
@@ -400,9 +461,7 @@
     const transport = await _resolveTransport();
     if (String(transport?.id || '').startsWith('dropbox-api')) {
       const managed = await _profileManagementRecord();
-      await managed.adapter.save(managed.kind, 'dropbox-profiles', store, {
-        expectedRevision: rev || null,
-      });
+      await _saveManagedProfileStore(managed,store,rev || null);
       return;
     }
     await transport.write(_profileStorePath(), store, { ifMatch: rev || '' });
@@ -720,6 +779,7 @@
       isLocalProfileNewer: _isLocalProfileNewer,
       shouldUseSharedProfile: _shouldUseSharedProfile,
       hasLocalProfileData: _hasLocalProfileData,
+      mergeProfileStores: _mergeProfileStores,
     },
   };
 })();

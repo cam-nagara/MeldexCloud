@@ -145,7 +145,7 @@ const GBLayout = (() => {
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
   const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
-    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'],
+    ['オプション', 'detail'], ['サブパネル', 'subpanel'],
     ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
     ['ヒストリー', 'history'], ['バージョン管理', 'version'],
   ];
@@ -209,6 +209,33 @@ const GBLayout = (() => {
   function _ensureFixedRightRailDefaults(node) {
     const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
     if (!rightDock || !Array.isArray(rightDock.groups)) return node;
+    const mainDock = _findFixedRailPanelset(node, 'main');
+    const main = _collectFixedRailPanes(mainDock)[0]
+      || _collectFixedRailPanes(node).find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
+    const separateGroups = [];
+    rightDock.groups.forEach(group => {
+      _collectFixedRailPanes(group?.root).forEach(pane => {
+        if (!Array.isArray(pane.tabs)) return;
+        const activeTab = pane.tabs[pane.activeTabIndex];
+        if (main) {
+          const viewers = pane.tabs.filter(tab => tab.type === 'preview');
+          main.tabs = [...(main.tabs || []), ...viewers];
+          pane.tabs = pane.tabs.filter(tab => tab.type !== 'preview');
+        }
+        // 旧レイアウトで同居している補助パネルも、レールごとに独立させる。
+        const keep = pane.tabs.includes(activeTab) ? activeTab : pane.tabs[0];
+        pane.tabs = pane.tabs.filter(tab => {
+          if (tab === keep || !FIXED_RAIL_RIGHT_TYPES.has(tab.type)) return true;
+          const separate = createPaneNode(null, [tab], 0);
+          separate.meldexRole = 'right-sidebar';
+          separateGroups.push({ id: _fixedRailGeneratedId('group'), root: separate });
+          return false;
+        });
+        pane.activeTabIndex = keep ? pane.tabs.indexOf(keep) : -1;
+      });
+    });
+    rightDock.groups.push(...separateGroups);
+    if (separateGroups.length) rightDock.meldexRailOrderVersion = 0;
     rightDock.groups.forEach(group => {
       _collectFixedRailPanes(group?.root).forEach(pane => {
         if (!Array.isArray(pane.tabs)) return;

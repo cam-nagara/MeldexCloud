@@ -7226,14 +7226,18 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     return document.documentElement.getAttribute('data-standalone-cloud') === 'viewer';
   }
 
+  function isLocalFileViewer() {
+    return isCloudViewer() || new URLSearchParams(location.search).get('localFiles') === '1';
+  }
+
   const CLOUD_ANNOTATION_REASON = 'Cloud版ビューワーではアノテートを利用できません';
 
   // Cloud の単独Viewerは、ローカルファイルを Blob URL で一時表示するだけであり、
   // アノテートを安全に保存する対象パスを持たない。ファイル選択後ではなく起動直後から
   // capability を明示して、メニューやショートカットが一瞬だけ現れることも防ぐ。
   function annotationCapability() {
-    return isCloudViewer()
-      ? { available: false, reason: CLOUD_ANNOTATION_REASON }
+    return isLocalFileViewer()
+      ? { available: false, reason: isCloudViewer() ? CLOUD_ANNOTATION_REASON : '端末から開いた一時ファイルではアノテートを利用できません' }
       : { available: true, reason: '' };
   }
 
@@ -7282,7 +7286,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function install() {
-    if (!isCloudViewer()) return;
+    if (!isLocalFileViewer()) return;
     const input = document.getElementById('viewer-local-file-input');
     const button = document.getElementById('btn-open-local-file');
     if (!input || !button) return;

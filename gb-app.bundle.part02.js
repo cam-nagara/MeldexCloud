@@ -1,3 +1,10 @@
+    if (typeof bd !== 'undefined' && bd.path === newPath) {
+      bd.lastSavedEtag = options.etag;
+      bd.lastSavedTransportRevision = coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName(),options.etag) || options.etag;
+    }
+  }
+
+  // ペインを再マウントしない改名でも、各ノートの次回保存先を追従させる。
   document.querySelectorAll('[id="page-content"]').forEach(pageContent => {
     if (pageContent.dataset.path) {
       pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
@@ -81,6 +88,9 @@ function purgeAppPathReferences(paths) {
   });
   _purgeStoredFileIdMapForDeletedPaths(deletedPaths);
   _purgeStoredPathSettingForDeletedPaths('outliner-work-folder', 'outliner-work-folder-id', deletedPaths);
+  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
+    _saveWorkFolders(getWorkFolders().filter(record => !_matchesDeletedPaths(record.path, deletedPaths)));
+  }
   _purgeStoredPathSettingForDeletedPaths('main-calendar-path', 'main-calendar-id', deletedPaths);
   _purgePublishStorageForDeletedPaths(deletedPaths);
 
@@ -888,13 +898,3 @@ function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
   navNavigating = true;
   applied.then((ok) => {
     if (!ok) {
-      navNavigating = false;
-      return;
-    }
-    _finishPaneHistoryNavigation(navState, nextIndex, entry);
-  }).catch((error) => {
-    navNavigating = false;
-    if (typeof showStatus === 'function') showStatus('画面遷移前の保存に失敗しました: ' + (error?.message || error), true);
-  });
-  return true;
-}

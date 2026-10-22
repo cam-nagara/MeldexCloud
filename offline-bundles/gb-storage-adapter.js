@@ -544,7 +544,13 @@
 
     _rememberMeta(relativePath, meta) {
       const path = _normalizeRelativePath(relativePath);
-      this._metaCache.set(path, meta || null);
+      // Upload/download return FileMetadata directly: its subtype discriminator
+      // is optional. Only files have a revision; retain explicit folder/deleted
+      // tags and malformed records so they still fail the normal file checks.
+      const cached = meta && !Object.prototype.hasOwnProperty.call(meta, '.tag')
+        && typeof meta.rev === 'string' && meta.rev
+        ? { ...meta, '.tag': 'file' } : meta;
+      this._metaCache.set(path, cached || null);
       this._metaCheckedAt.set(path, { at: Date.now(), location: JSON.stringify(this._dropboxLocation(path)) });
     }
 

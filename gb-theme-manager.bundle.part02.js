@@ -1,7 +1,3 @@
-    if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
-      applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
-      const apps = getThemeUiApplications();
-      const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
       dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
       dispatchThemeUiAutoToneChange({ tone, fromHistory: true });
@@ -898,3 +894,7 @@
   }
 
   function collectPaletteTargets(options = {}) {
+    if (!options.force && _paletteTargetCache) return _paletteTargetCache;
+    ensurePaletteObserver();
+    const targets = [];
+    PALETTE_TARGET_SPECS.forEach(([selector, target]) => {

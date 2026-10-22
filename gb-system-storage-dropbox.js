@@ -370,10 +370,10 @@
       }
     }
 
-    async load(kind, documentId) {
+    async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
-      return this._readExisting(kind, docId);
+      return this._readExisting(kind, docId, options?.fresh === true);
     }
 
     async _listFolderEntries(folderPath) {
@@ -529,11 +529,22 @@
       const docId = contract.sanitizeDocumentId(documentId);
       const opts = options || {};
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
+      const initialSnapshot = opts.initialSnapshot === true;
+      const initialEpoch = '1970-01-01T00:00:00.000Z';
+      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)
+          && expectedRevision === null && payload.updatedAt === initialEpoch)) {
+        throw new contract.SystemStorageError('初期設定の作成条件が不正です');
+      }
       const path = this._pathFor(kind, docId);
       await this._assertCompatibilityWriteAllowed(kind);
 
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
+      const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
+        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
+      if (sameInitial(existing)) return existing;
 
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
@@ -558,20 +569,22 @@
       await _ensureFolder(this._folderFor(kind), this._namespaceKind);
 
       const policy = contract.retentionPolicyFor(kind);
-      const timestamp = contract.nowIso();
+      const timestamp = initialSnapshot ? initialEpoch : contract.nowIso();
       const record = {
         kind,
         documentId: docId,
         schemaVersion: contract.CURRENT_SCHEMA_VERSION,
         // 書込直前に確認できた現在のrev(参考情報。CAS判定・戻り値は常に
         // Dropbox APIレスポンスの真のrevを使う。ファイル冒頭コメント参照)。
-        revision: currentRevision || '',
+        revision: initialSnapshot ? await contract.computeRevision(payload) : (currentRevision || ''),
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: this._boundary,
+        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
       };
-      const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
+      const envelope = contract.recordToEnvelope(record);
+      const bytes = new TextEncoder().encode(initialSnapshot
+        ? contract.canonicalJsonStringify(envelope) : JSON.stringify(envelope, null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
       const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
@@ -589,6 +602,10 @@
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
+          if (initialSnapshot && !opts.expectedAccountId) {
+            const winner = await this._readExisting(kind, docId, true);
+            if (sameInitial(winner)) return winner;
+          }
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
           const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);

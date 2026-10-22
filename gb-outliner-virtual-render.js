@@ -426,7 +426,7 @@
       if (expanded && item.type === 'folder') {
         var iconEl = rowEl.querySelector(':scope > .tree-node-row .tree-icon');
         if (iconEl && typeof lucide === 'function') {
-          var isWork = typeof getWorkFolder === 'function' && item.path === getWorkFolder();
+          var isWork = typeof getWorkFolder === 'function' && isWorkFolder(item.path);
           iconEl.innerHTML = lucide(isWork ? 'folderOpenDot' : 'folderOpen', 18);
           if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
         }
@@ -998,7 +998,7 @@
             if (expanded && item.type === 'folder') {
               var icon = node.querySelector(':scope > .tree-node-row .tree-icon');
               if (icon) {
-                icon.innerHTML = lucide(typeof getWorkFolder === 'function' && item.path === getWorkFolder() ? 'folderOpenDot' : 'folderOpen', 18);
+                icon.innerHTML = lucide(typeof getWorkFolder === 'function' && isWorkFolder(item.path) ? 'folderOpenDot' : 'folderOpen', 18);
                 if (item.linked) icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
               }
             }

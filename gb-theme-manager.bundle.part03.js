@@ -1,7 +1,3 @@
-    if (!options.force && _paletteTargetCache) return _paletteTargetCache;
-    ensurePaletteObserver();
-    const targets = [];
-    PALETTE_TARGET_SPECS.forEach(([selector, target]) => {
       document.querySelectorAll(selector).forEach((el, index) => {
         targets.push({ el, index, target });
       });
@@ -898,3 +894,7 @@
     if (!board) return;
     const nextThemeId = _normalizeThemeIdWithPromotedCustom(id) || '';
     if (String(board.themeId || '') === nextThemeId) {
+      applyBoardThemeRuntime(board);
+      return false;
+    }
+    if (typeof global.bdPushUndo === 'function') global.bdPushUndo();

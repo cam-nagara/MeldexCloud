@@ -1,3 +1,13 @@
+  } else if (route === '/outliner/save-as') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/delete-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
+  } else if (route === '/outliner/move') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/rename') {
+    addBody('old_path');
     const oldPath = String(body?.old_path || '');
     const newName = String(body?.new_name || '').trim();
     if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
@@ -888,13 +898,3 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       return;
     }
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const stage = document.createElement('div');
-    stage.className = 'screenshot-region-stage';
-    stage.dataset.e2eId = 'screenshot-region-stage';
-    stage.tabIndex = 0;
-    stage.setAttribute('role', 'group');
-    stage.setAttribute('aria-label', '保存する範囲');
-
-    const preview = document.createElement('canvas');
-    preview.className = 'screenshot-region-preview';
-    preview.setAttribute('aria-hidden', 'true');

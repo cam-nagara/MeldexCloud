@@ -409,7 +409,11 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     }
     const nameText = document.createElement('span');
     nameText.className = 'entry-prop-name-text';
-    nameText.textContent = propName;
+    const nameCharacters = Array.from(propName);
+    for (let start = 0; start < nameCharacters.length; start += 5) {
+      if (start) nameText.appendChild(document.createElement('br'));
+      nameText.appendChild(document.createTextNode(nameCharacters.slice(start, start + 5).join('')));
+    }
     nameEl.appendChild(nameText);
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
@@ -1398,23 +1402,72 @@ let linkDict = typeof MeldexAutoLink !== 'undefined' ? MeldexAutoLink.getDict() 
 // 作品フォルダ設定
 const WORK_FOLDER_KEY = 'outliner-work-folder';
 const WORK_FOLDER_ID_KEY = 'outliner-work-folder-id';
-function getWorkFolder() {
-  // file_id から最新パスを解決（gb-app.js より先に呼ばれる可能性があるためガード）
-  const fid = localStorage.getItem(WORK_FOLDER_ID_KEY);
-  if (fid && typeof _fileIdToPath === 'function') {
-    const resolved = _fileIdToPath(fid);
-    if (resolved) return resolved;
-  }
-  return localStorage.getItem(WORK_FOLDER_KEY) || '';
+const WORK_FOLDERS_KEY = 'outliner-work-folders';
+function _workFolderPathKey(path) {
+  const value = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:/i.test(value) ? value.toLowerCase() : value;
 }
-function setWorkFolder(path) {
-  if (path) {
-    localStorage.setItem(WORK_FOLDER_KEY, path);
-    const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
-    if (fid) localStorage.setItem(WORK_FOLDER_ID_KEY, fid);
+function getWorkFolders() {
+  let records;
+  try { records = JSON.parse(localStorage.getItem(WORK_FOLDERS_KEY)); } catch {}
+  if (!Array.isArray(records)) {
+    const path = localStorage.getItem(WORK_FOLDER_KEY) || '';
+    records = path ? [{ path, fileId: localStorage.getItem(WORK_FOLDER_ID_KEY) || '' }] : [];
+  }
+  const seen = new Set();
+  return records.flatMap(record => {
+    const fileId = record?.fileId || '';
+    const resolved = fileId && typeof _fileIdToPath === 'function' ? _fileIdToPath(fileId) : '';
+    const path = resolved || record?.path || '';
+    const key = _workFolderPathKey(path);
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    return [{ path, fileId }];
+  });
+}
+function isWorkFolder(path) {
+  return getWorkFolders().some(record => _workFolderPathKey(record.path) === _workFolderPathKey(path));
+}
+function getWorkFolder(path) {
+  const records = getWorkFolders();
+  if (path === undefined) {
+    const tab = typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(GBLayout.activePane) : null;
+    path = tab?.path || (typeof state !== 'undefined'
+      ? state.currentEntityPath || state.currentPagePath || state.currentDbPath || state.currentFolderPath : '') || '';
+    if (!path) return records.at(-1)?.path || '';
+  }
+  const key = _workFolderPathKey(path);
+  const vault = typeof state !== 'undefined' ? _workFolderPathKey(state.vaultPath) : '';
+  const absolute = value => /^(?:[a-z]:|\/)/i.test(value);
+  const candidates = [key, ...(!absolute(key) && vault ? [vault + '/' + key] : [])];
+  return records.filter(record => {
+    const root = _workFolderPathKey(record.path);
+    const roots = [root, ...(!absolute(root) && vault ? [vault + '/' + root] : [])];
+    return candidates.some(candidate => roots.some(base => candidate === base || candidate.startsWith(base + '/')));
+  }).sort((a, b) => b.path.length - a.path.length)[0]?.path || '';
+}
+function _saveWorkFolders(records) {
+  // 先に新形式を保存。旧版向けの単一値は最後に選んだ作品を指す。
+  localStorage.setItem(WORK_FOLDERS_KEY, JSON.stringify(records));
+  const last = records.at(-1);
+  if (last) {
+    localStorage.setItem(WORK_FOLDER_KEY, last.path);
+    if (last.fileId) localStorage.setItem(WORK_FOLDER_ID_KEY, last.fileId);
+    else localStorage.removeItem(WORK_FOLDER_ID_KEY);
   } else {
     localStorage.removeItem(WORK_FOLDER_KEY);
     localStorage.removeItem(WORK_FOLDER_ID_KEY);
+  }
+}
+function removeWorkFolder(path) {
+  _saveWorkFolders(getWorkFolders().filter(record => _workFolderPathKey(record.path) !== _workFolderPathKey(path)));
+}
+function setWorkFolder(path) {
+  if (path) {
+    const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
+    _saveWorkFolders([...getWorkFolders().filter(record => _workFolderPathKey(record.path) !== _workFolderPathKey(path)), { path, fileId: fid || '' }]);
+  } else {
+    removeWorkFolder(getWorkFolder());
   }
 }
 

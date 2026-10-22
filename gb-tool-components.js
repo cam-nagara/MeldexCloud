@@ -1175,6 +1175,22 @@ class VersionComponent extends ToolComponent {
 
 // === コンポーネントレジストリ登録 ===
 // Audit-P2 H-7: requiresViewLock は計画書 §8.2 に基づく。
+// 選択中ファイルの追従プレビューから独立した、空のビューワーアプリ。
+class ViewerComponent extends ToolComponent {
+  create() {
+    this.el = document.createElement('div');
+    this.el.className = 'gb-tool-viewer';
+    this.el.style.cssText = 'display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;';
+    const frame = document.createElement('iframe');
+    frame.className = 'gb-local-file-viewer-frame';
+    frame.title = 'ビューワー';
+    frame.src = 'viewer.html?embed=1&localFiles=1';
+    frame.style.cssText = 'flex:1;width:100%;height:100%;border:0;min-width:0;min-height:0;';
+    this.el.appendChild(frame);
+    return this.el;
+  }
+}
+registerToolComponent('preview',    { cls: ViewerComponent, icon: 'panelTop', label: 'ビューワー', multi: true });
 registerToolComponent('outliner',   { cls: OutlinerComponent, icon: 'folderTree', label: 'フォルダ', multi: false });
 registerToolComponent('db',         { cls: DatabaseComponent, icon: 'db', label: 'シート', multi: true, requiresViewLock: true });
 registerToolComponent('page',       { cls: EditorComponent, icon: 'page', label: 'ページ', multi: true, requiresViewLock: true });

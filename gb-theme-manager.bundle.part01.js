@@ -117,9 +117,8 @@
       bold: '--ui-button-font-weight', italic: '--ui-button-font-style', font: '--ui-button-font', fontSize: '--ui-button-font-size', lineHeight: '--ui-button-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border', borderWidth: '--ui-button-hover-border-width',
+      fg: '--ui-button-hover-fg', bg: '--ui-button-hover-bg', border: '--ui-button-hover-border',
       leftAccent: '--ui-button-hover-left-accent', underline: '--ui-button-hover-underline', accent: '--ui-button-hover-accent-color',
-      bold: '--ui-button-hover-font-weight', italic: '--ui-button-hover-font-style', font: '--ui-button-hover-font', fontSize: '--ui-button-hover-font-size', lineHeight: '--ui-button-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-button-active-fg', bg: '--ui-button-active-bg', border: '--ui-button-active-border', borderWidth: '--ui-button-active-border-width',
@@ -134,9 +133,8 @@
       bold: '--ui-dock-button-font-weight', italic: '--ui-dock-button-font-style', font: '--ui-dock-button-font', fontSize: '--ui-dock-button-font-size', lineHeight: '--ui-dock-button-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border', borderWidth: '--ui-dock-button-hover-border-width',
+      fg: '--ui-dock-button-hover-fg', bg: '--ui-dock-button-hover-bg', border: '--ui-dock-button-hover-border',
       leftAccent: '--ui-dock-button-hover-left-accent', underline: '--ui-dock-button-hover-underline', accent: '--ui-dock-button-hover-accent-color',
-      bold: '--ui-dock-button-hover-font-weight', italic: '--ui-dock-button-hover-font-style', font: '--ui-dock-button-hover-font', fontSize: '--ui-dock-button-hover-font-size', lineHeight: '--ui-dock-button-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-dock-button-active-fg', bg: '--ui-dock-button-active-bg', border: '--ui-dock-button-active-border', borderWidth: '--ui-dock-button-active-border-width',
@@ -151,9 +149,8 @@
       bold: '--ui-pane-tab-font-weight', italic: '--ui-pane-tab-font-style', font: '--ui-pane-tab-font', fontSize: '--ui-pane-tab-font-size', lineHeight: '--ui-pane-tab-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border', borderWidth: '--ui-pane-tab-hover-border-width',
+      fg: '--ui-pane-tab-hover-fg', bg: '--ui-pane-tab-hover-bg', border: '--ui-pane-tab-hover-border',
       leftAccent: '--ui-pane-tab-hover-left-accent', underline: '--ui-pane-tab-hover-underline', accent: '--ui-pane-tab-hover-accent-color',
-      bold: '--ui-pane-tab-hover-font-weight', italic: '--ui-pane-tab-hover-font-style', font: '--ui-pane-tab-hover-font', fontSize: '--ui-pane-tab-hover-font-size', lineHeight: '--ui-pane-tab-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-pane-tab-active-fg', bg: '--ui-pane-tab-active-bg', border: '--ui-pane-tab-active-border', borderWidth: '--ui-pane-tab-active-border-width',
@@ -168,9 +165,8 @@
       bold: '--ui-inner-tab-font-weight', italic: '--ui-inner-tab-font-style', font: '--ui-inner-tab-font', fontSize: '--ui-inner-tab-font-size', lineHeight: '--ui-inner-tab-line-height',
     }),
     hover: Object.freeze({
-      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border', borderWidth: '--ui-inner-tab-hover-border-width',
+      fg: '--ui-inner-tab-hover-fg', bg: '--ui-inner-tab-hover-bg', border: '--ui-inner-tab-hover-border',
       leftAccent: '--ui-inner-tab-hover-left-accent', underline: '--ui-inner-tab-hover-underline', accent: '--ui-inner-tab-hover-accent-color',
-      bold: '--ui-inner-tab-hover-font-weight', italic: '--ui-inner-tab-hover-font-style', font: '--ui-inner-tab-hover-font', fontSize: '--ui-inner-tab-hover-font-size', lineHeight: '--ui-inner-tab-hover-line-height',
     }),
     selected: Object.freeze({
       fg: '--ui-inner-tab-active-fg', bg: '--ui-inner-tab-active-bg', border: '--ui-inner-tab-active-border', borderWidth: '--ui-inner-tab-active-border-width',
@@ -898,3 +894,7 @@
       applyOsAccentColorSetting(getUseOsAccentColor(), { restorePrevious: false });
       global.dispatchEvent(new CustomEvent('meldex-theme-os-accent-change', { detail: { enabled: getUseOsAccentColor() } }));
     }
+    if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
+      applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
+      const apps = getThemeUiApplications();
+      const tone = getThemeUiAutoTone();

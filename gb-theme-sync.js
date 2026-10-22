@@ -228,12 +228,15 @@
       const signature = _signature(values);
       const state = _readState();
       if (!options?.force && state && state.signature === signature) return { pushed: false, available: true };
-      const payload = { updatedAt: new Date().toISOString(), values: { ...(state?.extras || {}), ...values } };
+      const initialSnapshot = !state?.revision;
+      const payload = { updatedAt: initialSnapshot ? '1970-01-01T00:00:00.000Z' : new Date().toISOString(),
+        values: { ...(state?.extras || {}), ...values } };
       let response;
       try {
         response = await _put(`/personal-preferences/${DOCUMENT_NAME}`, {
           payload,
           expectedRevision: state?.revision || null,
+          initialSnapshot,
         });
       } catch (err) {
         const conflict = Number(err?.status || err?.statusCode) === 409;

@@ -47,6 +47,15 @@
     if (typeof _attachDbPicker === 'function') _attachDbPicker(path, ctx.dbPath);
     const relation = document.createElement('select'); relation.className = 'gb-select'; relation.setAttribute('aria-label', '親トピックを参照する列');
     const fields = document.createElement('div'); fields.className = 'gb-form-subform-columns';
+    fields.setAttribute('role', 'group'); fields.setAttribute('aria-label', '表示する列');
+    const relationRow = document.createElement('label'); relationRow.append(document.createTextNode('親トピックを参照する列'), relation);
+    const fieldsTitle = document.createElement('div'); fieldsTitle.textContent = '表示する列';
+    const updateColumns = () => fields.querySelectorAll('input').forEach(input => {
+      input.disabled = !!relation.value && input.value === relation.value;
+      if (input.disabled) { input.checked = false; input.parentElement.dataset.gbTooltip = '親参照列は行の紐付けに使うため、表示する列には選択できません。'; }
+      else delete input.parentElement.dataset.gbTooltip;
+    });
+    relation.addEventListener('change', updateColumns);
     const message = document.createElement('p'); message.setAttribute('role', 'status');
     let types = null, loadedPath = '', generation = 0;
     const load = async () => {
@@ -61,17 +70,19 @@
             && targetsParent(value, config, ctx.dbPath)) {
             const option = document.createElement('option'); option.value = name; option.textContent = name; relation.appendChild(option);
           }
-          const label = document.createElement('label');
+          const label = document.createElement('label'); label.className = 'gb-check';
           const input = document.createElement('input'); input.type = 'checkbox'; input.value = name;
-          input.checked = (current.fields || []).includes(name); label.append(input, document.createTextNode(name)); fields.appendChild(label);
+          const text = document.createElement('span'); text.textContent = name;
+          input.checked = (current.fields || []).includes(name); label.append(input, text); fields.appendChild(label);
         });
         const resolved = resolve(current, types);
         relation.value = resolved.relationProp || '';
         fields.querySelectorAll('input').forEach(input => { input.checked = resolved.fields.includes(input.value); });
+        updateColumns();
         message.textContent = '親シートを参照する単方向のリレーション列を使います。行は関連シートへ保存します。';
       } catch (error) { if (sequence === generation) message.textContent = '読み込めません: ' + (error.message || error); }
     };
-    popup.append(button('列を読み込む', load), relation, fields, message);
+    popup.append(button('列を読み込む', load), relationRow, fieldsTitle, fields, message);
     path.addEventListener('change', () => { types = null; generation++; message.textContent = '「列を読み込む」で設定を確認してください'; });
     const apply = button('適用', () => {
       if (!types || loadedPath !== path.value.trim() || !relation.value) { message.textContent = '関連シートと親参照列を確認してください'; return; }

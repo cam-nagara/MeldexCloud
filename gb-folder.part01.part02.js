@@ -55,8 +55,7 @@
   }
 
   if (!blankTarget && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
-    const curWork = getWorkFolder();
-    const isWork = curWork === item.path;
+    const isWork = isWorkFolder(item.path);
     const wfSub = addSub('作品フォルダ', 'folderDot');
     wfSub.item((isWork ? '✓ ' : '') + '設定する', async () => {
       setWorkFolder(item.path);
@@ -67,7 +66,7 @@
     });
     if (isWork) {
       wfSub.item('解除する', async () => {
-        setWorkFolder('');
+        removeWorkFolder(item.path);
         showStatus('作品フォルダの設定を解除しました');
         if (typeof loadLinkDict === 'function') await loadLinkDict();
         if (typeof tooltipCache !== 'undefined') tooltipCache = {};

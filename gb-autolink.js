@@ -101,6 +101,17 @@ const MeldexAutoLink = (() => {
     return _normalizeDictScope(wf);
   }
 
+  function _ensureActiveWorkFolderScope(filePath) {
+    if (typeof getWorkFolder !== 'function') return;
+    const folder = getWorkFolder(filePath);
+    const scope = _normalizeDictScope(folder);
+    // 非アクティブ面の描画で、現在の作品の辞書を取り替えない。
+    if (scope !== _currentWorkFolderScope() || scope === _dictScope) return;
+    // loadDict は開始時にscopeを更新し、世代番号で古い応答を拒否する。
+    // 読込後の既存通知が現在のファイルへ自動リンクを再適用する。
+    void loadDict(folder);
+  }
+
   function _isCloudLinkDictUnavailable() {
     return false;
   }
@@ -223,7 +234,7 @@ const MeldexAutoLink = (() => {
 
   function _isInWorkFolderScope(filePath) {
     if (typeof getWorkFolder !== 'function') return true;
-    const wf = getWorkFolder();
+    const wf = getWorkFolder(filePath);
     if (_dictScope !== _normalizeDictScope(wf)) return false;
     if (!wf || !filePath) return true;
     const roots = [wf];
@@ -237,6 +248,7 @@ const MeldexAutoLink = (() => {
   // ── HTML文字列版（ノート、ボード、詳細パネル用） ──
   function applyToHtml(html, filePath, options = {}) {
     if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return html;
+    _ensureActiveWorkFolderScope(filePath);
     if (!html || _linkDict.length === 0) return html;
 
     if (!_isInWorkFolderScope(filePath)) return html;
@@ -250,6 +262,7 @@ const MeldexAutoLink = (() => {
   // ── DOM直接操作版（台本用） ──
   function applyToDom(el, filePath, options = {}) {
     if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return;
+    _ensureActiveWorkFolderScope(filePath);
     if (!el || _linkDict.length === 0) return;
     if (!_isInWorkFolderScope(filePath)) return;
     // 既存の自動リンクを除去（再適用時の二重表示を防止）

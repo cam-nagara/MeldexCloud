@@ -1441,18 +1441,21 @@
   let quickMemoTagSyncRetry = false;
 
   function normalizeQuickMemoTags(value) {
-    const seen = new Set();
-    return (Array.isArray(value) ? value : []).flatMap((item) => {
+    const entries = new Map();
+    (Array.isArray(value) ? value : []).forEach((item) => {
       const name = String(item?.name || '').trim();
-      if (!name || seen.has(name)) return [];
-      seen.add(name);
+      if (!name) return;
+      const updatedAt = Number.isSafeInteger(item.updatedAt) && item.updatedAt > 0 ? item.updatedAt : 0;
+      if (entries.has(name) && (entries.get(name).updatedAt || 0) >= updatedAt) return;
       const color = /^#[0-9a-f]{6}$/i.test(String(item?.color || '')) ? item.color : '';
-      return [{ name, color }];
+      entries.set(name, { name, color, ...(updatedAt ? { updatedAt } : {}) });
     });
+    return [...entries.values()];
   }
 
   function quickMemoTags() {
-    return normalizeQuickMemoTags(readJson(quickMemoTagStorageKey(), []));
+    return mergeQuickMemoTags([], readJson(quickMemoTagStorageKey(), []),
+      readJson(quickMemoTagStorageKey() + ':deleted', []));
   }
 
   function quickMemoTagStorageKey(scope = readJson(QUICK_MEMO_TAG_SYNC_KEY, {})?.activeScope) {
@@ -1506,7 +1509,8 @@
   async function hydrateQuickMemoTags() {
     const store = window.MeldexStandaloneLocalDrafts;
     if (!store?.getRaw) return;
-    for (const key of new Set([QUICK_MEMO_TAGS_KEY, quickMemoTagStorageKey()])) {
+    const catalogKeys = [QUICK_MEMO_TAGS_KEY, quickMemoTagStorageKey()];
+    for (const key of new Set([...catalogKeys, ...catalogKeys.map(key => key + ':deleted')])) {
       const saved = await Promise.race([
         store.getRaw(`quick-memo:${key}`, null).catch(() => null),
         new Promise(resolve => setTimeout(() => resolve(null), 1500)),
@@ -1526,9 +1530,27 @@
   function registerQuickMemoTag(name, color = '') {
     const save = mutateQuickMemoTags(async () => {
       const existing = quickMemoTags();
-      const next = normalizeQuickMemoTags([...existing, { name, color }]);
+      const removed = normalizeQuickMemoTags(readJson(quickMemoTagStorageKey() + ':deleted', []))
+        .find(tag => tag.name === name);
+      const next = normalizeQuickMemoTags([...existing, { name, color,
+        ...(removed ? { updatedAt: Math.max(Date.now(), removed.updatedAt + 1) } : {}) }]);
       if (next.length === existing.length) return;
       await persistQuickMemoTagRecord(quickMemoTagStorageKey(), next);
+      renderTagChips();
+    });
+    save.then(() => { syncQuickMemoTags(); }, () => {});
+    return save;
+  }
+
+  function deleteQuickMemoTag(name) {
+    const key = quickMemoTagStorageKey();
+    const save = mutateQuickMemoTags(async () => {
+      const previous = normalizeQuickMemoTags(readJson(key, []));
+      const deleted = normalizeQuickMemoTags(readJson(key + ':deleted', []));
+      const updatedAt = Math.max(Date.now(), ...[...previous, ...deleted].map(tag => (tag.updatedAt || 0) + 1));
+      // 削除記録を先に永続化し、中断や古い同期応答で登録が復活しないようにする。
+      await persistQuickMemoTagRecord(key + ':deleted', normalizeQuickMemoTags([...deleted, { name, updatedAt }]));
+      await persistQuickMemoTagRecord(key, previous.filter(tag => tag.name !== name));
       renderTagChips();
     });
     save.then(() => { syncQuickMemoTags(); }, () => {});
@@ -1568,8 +1590,10 @@
     return detail.replace(/\s+/g, ' ').trim().slice(0, 180);
   }
 
-  function mergeQuickMemoTags(remote, local) {
+  function mergeQuickMemoTags(remote, local, deleted = []) {
+    const removals = new Map(normalizeQuickMemoTags(deleted).map(tag => [tag.name, tag.updatedAt || 0]));
     return normalizeQuickMemoTags([...remote, ...local])
+      .filter(tag => !removals.has(tag.name) || (tag.updatedAt || 0) > removals.get(tag.name))
       .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
   }
 
@@ -1585,6 +1609,9 @@
       if (!scope) throw new Error('Dropboxアカウントの保存先を確認できませんでした');
       const payload = remote.exists ? remote.payload : { schemaVersion: 1, tags: [] };
       if (payload?.schemaVersion !== 1 || !Array.isArray(payload?.tags)
+        || (payload.deletedTags != null && (!Array.isArray(payload.deletedTags)
+          || payload.deletedTags.some(tag => typeof tag?.name !== 'string' || !tag.name.trim()
+            || !Number.isSafeInteger(tag.updatedAt) || tag.updatedAt <= 0)))
         || payload.tags.some(tag => typeof tag?.name !== 'string' || !tag.name.trim()
           || (tag.color != null && tag.color !== '' && !/^#[0-9a-f]{6}$/i.test(tag.color)))) {
         await mutateQuickMemoTags(async () => {
@@ -1602,24 +1629,30 @@
         // アカウント未所属の旧登録は、最初に接続したアカウントにだけ引き継ぐ。
         const legacy = syncState.migrationScope ? [] : await readDurableQuickMemoTags(QUICK_MEMO_TAGS_KEY);
         const local = await readDurableQuickMemoTags(key);
-        const next = mergeQuickMemoTags(payload.tags, [...local, ...legacy]);
+        const legacyDeleted = syncState.migrationScope ? [] : await readDurableQuickMemoTags(QUICK_MEMO_TAGS_KEY + ':deleted');
+        const deleted = normalizeQuickMemoTags([...(payload.deletedTags || []),
+          ...await readDurableQuickMemoTags(key + ':deleted'), ...legacyDeleted])
+          .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+        const next = mergeQuickMemoTags(payload.tags, [...local, ...legacy], deleted);
+        await persistQuickMemoTagRecord(key + ':deleted', deleted);
         await persistQuickMemoTagRecord(key, next);
         if (generation !== quickMemoTagSyncGeneration) return null;
         await persistQuickMemoTagRecord(QUICK_MEMO_TAG_SYNC_KEY, {
           ...syncState, activeScope: scope, migrationScope: syncState.migrationScope || scope,
         });
         renderTagChips();
-        return next;
+        return { tags: next, deletedTags: deleted };
       });
       if (!merged || generation !== quickMemoTagSyncGeneration) return { stale: true };
-      if (JSON.stringify(mergeQuickMemoTags(payload.tags, [])) === JSON.stringify(merged)) {
+      if (JSON.stringify(mergeQuickMemoTags(payload.tags, [])) === JSON.stringify(merged.tags)
+        && JSON.stringify(normalizeQuickMemoTags(payload.deletedTags || []).sort((a, b) => a.name.localeCompare(b.name, 'ja'))) === JSON.stringify(merged.deletedTags)) {
         notifyQuickMemoTagSync('Dropboxの同期領域に保存済みです');
         return { available: true, pushed: false };
       }
       try {
         const result = await requestQuickMemoTagPreference({
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload: { ...payload, tags: merged },
+          body: JSON.stringify({ payload: { ...payload, ...merged },
             expectedRevision: remote.revision || null, expectedScopeId: scope }),
         });
         if (generation !== quickMemoTagSyncGeneration) return { stale: true };
@@ -2333,10 +2366,10 @@
         selectedCount.textContent = `${state.selectedTags.length}件選択中`;
       };
       const showError = error => {
-        errorMessage.textContent = '登録できませんでした: ' + (error?.message || error);
+        errorMessage.textContent = '変更を保存できませんでした: ' + (error?.message || error);
         errorMessage.hidden = false;
       };
-      const tagRow = (tag, depth, allowRegistration = false) => {
+      const tagRow = (tag, depth, allowRegistration = false, allowDeletion = false) => {
         const name = String(tag?.name || '').trim();
         const row = document.createElement('div');
         row.className = 'qm-tag-picker-row';
@@ -2362,6 +2395,25 @@
         });
         label.append(checkbox, swatch, text);
         row.appendChild(label);
+        if (allowDeletion) {
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'qm-tag-picker-register qm-tag-picker-delete';
+          remove.textContent = '削除';
+          remove.setAttribute('aria-label', `${name}をクイックメモタグから削除`);
+          remove.addEventListener('click', async () => {
+            remove.disabled = true;
+            errorMessage.hidden = true;
+            try {
+              const message = `「${name}」をクイックメモタグから削除しますか？\nメモに付けたタグと共通タグはそのまま残ります。`;
+              const accepted = typeof window.cfConfirm === 'function'
+                ? await window.cfConfirm(message, { danger: true, okLabel: '削除' }) : window.confirm(message);
+              if (accepted) await deleteQuickMemoTag(name);
+            } catch (error) { showError(error); }
+            finally { remove.disabled = false; renderTree(); }
+          });
+          row.appendChild(remove);
+        }
         if (allowRegistration) {
           const register = document.createElement('button');
           register.type = 'button';
@@ -2398,7 +2450,7 @@
           : '共通タグはこのメモに選択できます。「登録」でクイックメモタグにも追加できます。';
         if (source === 'quick-memo') {
           const registered = quickMemoTags();
-          registered.filter(matches).forEach(tag => tree.appendChild(tagRow(tag, 0)));
+          registered.filter(matches).forEach(tag => tree.appendChild(tagRow(tag, 0, false, true)));
           const unregistered = state.selectedTags
             .filter(name => !registered.some(tag => tag.name === name))
             .map(name => ({ name }))

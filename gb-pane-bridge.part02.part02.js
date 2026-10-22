@@ -395,7 +395,7 @@
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
         board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
         folder: 'フォルダ', outliner: 'フォルダツリー',
-        search: '検索',
+        search: '検索', preview: 'ビューワー',
       };
       const existingGlobal = (typeof GBTabs !== 'undefined' && typeof GBTabs.findPaneWithTab === 'function')
         ? (openOpts.preferTargetPane ? null : (GBTabs.findPaneWithTab(toolType, '') || _findToolPaneInAnyGroup(toolType)))
@@ -532,7 +532,7 @@
         return null;
       }
     }
-    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'calendar']);
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'calendar', 'preview']);
     function _isMainPanelPane(paneId) {
       const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));

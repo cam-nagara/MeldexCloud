@@ -77,7 +77,15 @@
     for (const key of new Set([..._readFolderCache.keys(), ..._readFolderPending.keys()])) {
       const [, kind, , folder] = JSON.parse(key);
       if (kind !== namespace) continue;
-      if (locations.some(({ value, parent }) => folder === parent || folder === value || folder.startsWith(value + '/'))) {
+      const cached = _readFolderCache.get(key);
+      if (locations.some(({ value, parent }) => {
+        if (folder === parent || folder === value || folder.startsWith(value + '/')) return true;
+        // Dropbox can create missing parents along with a nested upload. Keep
+        // positive ancestor evidence, but discard a previously absent child.
+        const prefix = folder + '/';
+        return value.startsWith(prefix)
+          && (!cached || !cached.entries.has(value.slice(prefix.length).split('/')[0]));
+      })) {
         _readFolderCache.delete(key);
         _readFolderPending.delete(key);
       }
@@ -881,8 +889,20 @@
     if (pending) return pending;
     const generation = _readFolderGeneration;
     const promise = (async () => {
-      if (path && await _isMissingReadPath(path, options)) return new Map();
-      let payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      // A fresh existence check needs the current immediate parent listing.
+      // Recursively forcing fresh checks of every ancestor turns each history,
+      // signature and lease read into a chain back to the account root. It also
+      // prevents a remotely created parent from overriding cached absence.
+      if (path && !options?.freshMissingCheck && await _isMissingReadPath(path, options)) return new Map();
+      let payload;
+      try {
+        payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      } catch (error) {
+        // Only an actual missing parent proves absence. Permission, transport
+        // and authentication failures must still reach the save caller.
+        if (options?.freshMissingCheck && /^path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) return new Map();
+        throw error;
+      }
       const entries = new Map();
       for (;;) {
         for (const entry of payload.entries || []) {

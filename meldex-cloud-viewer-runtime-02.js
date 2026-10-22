@@ -177,7 +177,15 @@
     for (const key of new Set([..._readFolderCache.keys(), ..._readFolderPending.keys()])) {
       const [, kind, , folder] = JSON.parse(key);
       if (kind !== namespace) continue;
-      if (locations.some(({ value, parent }) => folder === parent || folder === value || folder.startsWith(value + '/'))) {
+      const cached = _readFolderCache.get(key);
+      if (locations.some(({ value, parent }) => {
+        if (folder === parent || folder === value || folder.startsWith(value + '/')) return true;
+        // Dropbox can create missing parents along with a nested upload. Keep
+        // positive ancestor evidence, but discard a previously absent child.
+        const prefix = folder + '/';
+        return value.startsWith(prefix)
+          && (!cached || !cached.entries.has(value.slice(prefix.length).split('/')[0]));
+      })) {
         _readFolderCache.delete(key);
         _readFolderPending.delete(key);
       }
@@ -981,8 +989,20 @@
     if (pending) return pending;
     const generation = _readFolderGeneration;
     const promise = (async () => {
-      if (path && await _isMissingReadPath(path, options)) return new Map();
-      let payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      // A fresh existence check needs the current immediate parent listing.
+      // Recursively forcing fresh checks of every ancestor turns each history,
+      // signature and lease read into a chain back to the account root. It also
+      // prevents a remotely created parent from overriding cached absence.
+      if (path && !options?.freshMissingCheck && await _isMissingReadPath(path, options)) return new Map();
+      let payload;
+      try {
+        payload = await apiRpc('files/list_folder', { path, recursive: false, include_deleted: false }, { namespaceKind });
+      } catch (error) {
+        // Only an actual missing parent proves absence. Permission, transport
+        // and authentication failures must still reach the save caller.
+        if (options?.freshMissingCheck && /^path\/not_found(?:\/|$)/i.test(String(error?.message || ''))) return new Map();
+        throw error;
+      }
       const entries = new Map();
       for (;;) {
         for (const entry of payload.entries || []) {
@@ -2220,10 +2240,10 @@
       }
     }
 
-    async load(kind, documentId) {
+    async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
-      return this._readExisting(kind, docId);
+      return this._readExisting(kind, docId, options?.fresh === true);
     }
 
     async _listFolderEntries(folderPath) {
@@ -2379,11 +2399,22 @@
       const docId = contract.sanitizeDocumentId(documentId);
       const opts = options || {};
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
+      const initialSnapshot = opts.initialSnapshot === true;
+      const initialEpoch = '1970-01-01T00:00:00.000Z';
+      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)
+          && expectedRevision === null && payload.updatedAt === initialEpoch)) {
+        throw new contract.SystemStorageError('初期設定の作成条件が不正です');
+      }
       const path = this._pathFor(kind, docId);
       await this._assertCompatibilityWriteAllowed(kind);
 
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
+      const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
+        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
+      if (sameInitial(existing)) return existing;
 
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
@@ -2408,20 +2439,22 @@
       await _ensureFolder(this._folderFor(kind), this._namespaceKind);
 
       const policy = contract.retentionPolicyFor(kind);
-      const timestamp = contract.nowIso();
+      const timestamp = initialSnapshot ? initialEpoch : contract.nowIso();
       const record = {
         kind,
         documentId: docId,
         schemaVersion: contract.CURRENT_SCHEMA_VERSION,
         // 書込直前に確認できた現在のrev(参考情報。CAS判定・戻り値は常に
         // Dropbox APIレスポンスの真のrevを使う。ファイル冒頭コメント参照)。
-        revision: currentRevision || '',
+        revision: initialSnapshot ? await contract.computeRevision(payload) : (currentRevision || ''),
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: this._boundary,
+        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
       };
-      const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
+      const envelope = contract.recordToEnvelope(record);
+      const bytes = new TextEncoder().encode(initialSnapshot
+        ? contract.canonicalJsonStringify(envelope) : JSON.stringify(envelope, null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
       const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
@@ -2439,6 +2472,10 @@
         uploadMeta = await response.json();
       } catch (error) {
         if (_isConflictError(error)) {
+          if (initialSnapshot && !opts.expectedAccountId) {
+            const winner = await this._readExisting(kind, docId, true);
+            if (sameInitial(winner)) return winner;
+          }
           // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
           const refreshed = await _downloadEnvelope(path, this._namespaceKind, true).catch(() => null);
           const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing, opts);
@@ -4371,7 +4408,13 @@
 
     _rememberMeta(relativePath, meta) {
       const path = _normalizeRelativePath(relativePath);
-      this._metaCache.set(path, meta || null);
+      // Upload/download return FileMetadata directly: its subtype discriminator
+      // is optional. Only files have a revision; retain explicit folder/deleted
+      // tags and malformed records so they still fail the normal file checks.
+      const cached = meta && !Object.prototype.hasOwnProperty.call(meta, '.tag')
+        && typeof meta.rev === 'string' && meta.rev
+        ? { ...meta, '.tag': 'file' } : meta;
+      this._metaCache.set(path, cached || null);
       this._metaCheckedAt.set(path, { at: Date.now(), location: JSON.stringify(this._dropboxLocation(path)) });
     }
 
@@ -8568,6 +8611,13 @@
     }
     const options = {};
     if (doc === 'quick-memo-tags') options.expectedAccountId = scope.scopeId.slice('dropbox-account:'.length);
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || !['theme-settings', 'restore-point-policy'].includes(doc)
+          || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
@@ -8640,6 +8690,12 @@
     if (!context.adapter) return { available: false, ok: false, revision: null,
       scope: 'workspace', workspaceId, role: context.role, readOnly: true };
     const options = {};
+    if (body?.initialSnapshot === true) {
+      if (body.expectedRevision !== null || payload.updatedAt !== '1970-01-01T00:00:00.000Z') {
+        throw _httpError(400, '初期設定の作成条件が不正です');
+      }
+      options.initialSnapshot = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
       options.expectedRevision = body.expectedRevision || null;
     }
