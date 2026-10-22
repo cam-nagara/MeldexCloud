@@ -14,14 +14,17 @@
     { label: '削除', action: async () => {
       if (!await cfConfirm('このビューを削除しますか？')) return;
       const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-      const views = getSavedViews(dbPath);
+      const cfg = getDbViewConfig(dbPath);
+      const curIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+      const views = cfg.savedViews || [];
       views.splice(idx, 1);
-      setSavedViews(dbPath, views, { skipHistory: true });
-      const curIdx = getCurrentViewIdx(dbPath);
       let nextIdx = curIdx;
       if (curIdx === idx) nextIdx = views.length > 0 ? Math.min(idx, views.length - 1) : -1;
-      else if (curIdx > idx) setCurrentViewIdx(dbPath, curIdx - 1, { skipHistory: true });
-      if (curIdx === idx) setCurrentViewIdx(dbPath, nextIdx, { skipHistory: true });
+      else if (curIdx > idx) nextIdx = curIdx - 1;
+      cfg.currentViewIdx = nextIdx;
+      ctx.currentViewIdx = nextIdx;
+      ctx.currentViewId = String(views[nextIdx]?.id || '');
+      saveDbViewConfig(dbPath, cfg, { skipHistory: true });
       if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
         pushDbViewConfigHistory(dbPath, 'シート表示: ビュー削除', before, captureDbViewConfigHistory(dbPath));
       }
@@ -38,12 +41,9 @@
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target)) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  // Hover submenus are portaled to body. Treat every menu in the family as
+  // inside so pointerdown does not remove the type item before its click.
+  _installColHeaderMenuDismissHandlers();
 }
 
 /* ==============================
@@ -63,6 +63,9 @@ function _renderDbViewTabMenuItems(container, itemList) {
       const wrapper = document.createElement('div');
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
+      el.tabIndex = 0;
+      el.setAttribute('role', 'menuitem');
+      el.setAttribute('aria-haspopup', 'menu');
       el.innerHTML = item.label + (typeof submenuArrow === 'function' ? submenuArrow() : ' ▸');
       const sub = document.createElement('div');
       sub.className = 'gb-context-menu gb-context-submenu';
@@ -73,6 +76,19 @@ function _renderDbViewTabMenuItems(container, itemList) {
         el.addEventListener('mouseenter', () => { sub.style.display = 'block'; });
         wrapper.addEventListener('mouseleave', () => { sub.style.display = 'none'; });
       }
+      const openSubmenu = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        el.dispatchEvent(new MouseEvent('mouseenter'));
+        el.setAttribute('aria-expanded', 'true');
+      };
+      el.addEventListener('click', openSubmenu);
+      el.addEventListener('keydown', event => {
+        if (['Enter', ' ', 'ArrowRight'].includes(event.key)) {
+          openSubmenu(event);
+          sub.querySelector('[role="menuitem"]')?.focus();
+        }
+      });
       wrapper.appendChild(el);
       wrapper.appendChild(sub);
       container.appendChild(wrapper);
@@ -80,11 +96,19 @@ function _renderDbViewTabMenuItems(container, itemList) {
     }
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
+    el.setAttribute('role', 'menuitem');
     el.innerHTML = item.label;
     if (item.disabled) {
+      el.setAttribute('aria-disabled', 'true');
       el.style.opacity = '0.4';
       el.style.pointerEvents = 'none';
     } else {
+      el.tabIndex = 0;
+      el.addEventListener('keydown', event => {
+        if (!['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        el.click();
+      });
       el.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         closeColHeaderMenu();

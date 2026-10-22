@@ -522,11 +522,13 @@
           GBLayout.setActivePane(paneId);
         }
         _schedulePanelCreatedFileListRefresh(path);
+        try { if (typeof addRecent === 'function') addRecent(name, path, toolType); }
+        catch (err) { console.warn('作成したファイルの履歴を保存できませんでした', err); }
         if (typeof showStatus === 'function') showStatus('作成しました: ' + name);
         return tabId;
       } catch (err) {
         if (pendingTabId) GBTabs.closeTab(paneId, pendingTabId, { skipHistory: true });
-        if (typeof showStatus === 'function') showStatus('作成に失敗しました', true);
+        if (typeof showStatus === 'function') showStatus(err.userMessage || '作成に失敗しました', true);
         return null;
       }
     }

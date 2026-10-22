@@ -25,11 +25,19 @@ function _getSelectedEntities(ctx) {
   return [...selected];
 }
 
+function _dbRowSelectionSurface(ctx) {
+  if (typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(ctx, ctx.dbPath)) {
+    return ctx.containerEl?.querySelector('.tree-view .db-tree-list')
+      || document.querySelector('#tree-view .db-tree-list');
+  }
+  return _paneEl(ctx, '#' + (ctx.tableId || 'pivot-table'));
+}
+
 function _setPaneAllRowsSelected(ctx, shouldSelect) {
   const c = ctx || _currentPaneState();
   const selected = _ensureSelectedEntities(c);
   if (!c || !selected) return false;
-  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const paneRoot = table || c.containerEl || document;
   const entityNames = shouldSelect && Array.isArray(c._lastEntityNames)
     ? c._lastEntityNames.filter(Boolean)
@@ -42,7 +50,7 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
   paneRoot.querySelectorAll('.row-select-cb').forEach(cb => {
     const checked = shouldSelect && nameSet.has(cb.dataset.entityName);
     cb.checked = checked;
-    cb.closest('tr')?.classList.toggle('row-selected', checked);
+    cb.closest('tr, .db-tree-row')?.classList.toggle('row-selected', checked);
     if (checked) lastChecked = cb;
   });
   paneRoot._lastSelectedCb = lastChecked;
@@ -57,7 +65,7 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
 function _syncPaneRowSelectHeader(ctx) {
   const c = ctx || _currentPaneState();
   if (!c) return;
-  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const checkbox = table?.querySelector?.('.row-select-all-cb');
   if (!checkbox) return;
   const visibleNames = Array.isArray(c._lastEntityNames) ? c._lastEntityNames.filter(Boolean) : [];
@@ -168,7 +176,7 @@ function _updateBulkEditBar(ctx) {
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
   _syncPaneRowSelectHeader(c);
-  const table = _paneEl(c, '#' + ((c && c.tableId) || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
   if (selected.length === 0) {

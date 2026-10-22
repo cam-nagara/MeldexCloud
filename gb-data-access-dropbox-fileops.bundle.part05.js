@@ -106,6 +106,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (foldersOnly) continue;
         if (item) items.push({ ...item, linked: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
       }
+      if (_boolParam(url.searchParams.get('form_hierarchy'))) {
+        const nested = new Set();
+        for (const item of items) {
+          if (item.type !== 'form-app') continue;
+          try {
+            const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
+            const sheetPath = _normalizeFolderPath(doc.sheet.path);
+            const handle = await _resolveEntryHandle(provider, sheetPath);
+            if (!handle) continue;
+            const child = await _buildBrowseItem(provider, sheetPath, handle, { allFiles, detail, signal, classifyDirectories: true });
+            if (child?.type !== 'database') continue;
+            item.children = [{ ...child, _form_parent_path: item.path }]; nested.add(sheetPath);
+          } catch (_) { /* A broken form reference never hides its sheet. */ }
+        }
+        return items.filter(item => item.type !== 'database' || !nested.has(_normalizeFolderPath(item.path)));
+      }
       return items;
     }
     if (pathname === '/check-type' && method === 'GET') {
@@ -155,11 +172,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const token = String(etag || '');
       const providerId = String(meta?.id || '');
       const identity = window.MeldexDocumentIdentity;
-      const identityFormat = identity?.formatForPath?.(filePath);
       let content = fileContent;
-      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
         content = await provider.readText(filePath).catch(() => '');
       }
+      const identityFormat = identity?.formatForPath?.(filePath, content);
       const documentId = identityFormat
         ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
         : '';
@@ -222,6 +239,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return token;
     }
 
+    async function _readFileSnapshot(provider, filePath, entry) {
+      if (typeof provider.readBytesSnapshot === 'function') {
+        const snapshot = await provider.readBytesSnapshot(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      if (typeof provider.readBytesFresh === 'function') {
+        const snapshot = await provider.readBytesFresh(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      const before = await _fileEtag(provider, filePath, entry);
+      const bytes = new TextEncoder().encode(await provider.readText(filePath));
+      const after = await _fileEtag(provider, filePath, entry);
+      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+      return { bytes, etag: after };
+    }
+
+    function _savedNoteMetadata(filePath, content) {
+      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
+      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
+    }
+
     if (pathname === '/file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -238,9 +276,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           size: Number(stats.size || 0),
         };
       }
-      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
-        const file = await provider.downloadAsFile(filePath);
-        const bytes = await file.arrayBuffer();
+      const snapshot = await _readFileSnapshot(provider, filePath, entry);
+      if (/\.csv$/i.test(filePath)) {
+        const bytes = snapshot.bytes;
         const view = new Uint8Array(bytes);
         const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
         let content;
@@ -252,7 +290,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           encoding = 'cp932';
         }
         const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
-        const etag = await _fileEtag(provider, filePath, entry);
+        const etag = snapshot.etag;
         return {
           path: filePath,
           content,
@@ -263,8 +301,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           newline: dialect.newline || '\n',
         };
       }
-      const etag = await _fileEtag(provider, filePath, entry);
-      const content = await provider.readText(filePath);
+      const etag = snapshot.etag;
+      const content = new TextDecoder().decode(snapshot.bytes);
       return {
         path: filePath,
         content,
@@ -302,10 +340,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
         _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
-      if (expectedEtag && entry) {
-        const currentEtag = await _fileEtag(provider, filePath, entry);
-        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
-      }
+      const snapshot = entry ? await _readFileSnapshot(provider, filePath, entry) : null;
       let commitEtag = expectedEtag;
       if (forceOverwrite && entry && !commitEtag) {
         if (typeof provider.refreshMetadata !== 'function') {
@@ -321,7 +356,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
       }
-      const currentContent = entry ? await provider.readText(filePath) : '';
+      const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
       const titleHelper = window.GBPathUtils?.displayTitle;
       const storedTitle = titleHelper?.read(currentContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
@@ -348,6 +383,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ).text;
         }
       }
+      const canonical = value => String(value).replace(/\r\n/g, '\n');
+      if (entry && canonical(content) === canonical(currentContent)) {
+        // A committed write may have lost its response. Acknowledge the exact
+        // current snapshot without another upload or another history version.
+        await _prepareCloudFileEdit(provider, filePath, currentContent, currentContent, _versionActor(url, body), snapshot.etag, true);
+        return {
+          ok: true, unchanged: true,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, snapshot.etag, null, currentContent),
+          ..._savedNoteMetadata(filePath, currentContent),
+        };
+      }
+      if (entry && expectedEtag && expectedEtag !== snapshot.etag) {
+        let baselineMatches = false;
+        if (docIdentityFmt === 'note' && typeof body?.base_content === 'string') {
+          const id = window.MeldexDocumentIdentity.readDocumentId(currentContent, 'note');
+          const baseline = id ? window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(body.base_content, 'note', id).text : body.base_content;
+          baselineMatches = canonical(baseline) === canonical(currentContent);
+        }
+        if (!baselineMatches) _throwEtagConflict(filePath, expectedEtag, snapshot.etag);
+        commitEtag = snapshot.etag;
+      }
       const history = await _prepareCloudFileEdit(
         provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
       );
@@ -364,7 +420,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           entry ? commitEtag : null,
         );
       } catch (error) {
-        await _abortCloudFileEdit(history);
+        const uncertain = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+          || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+        // A lost upload ACK is not proof of an aborted write. Keep its durable
+        // intent so the next identical-content confirmation can reconcile it.
+        if (!uncertain) await _abortCloudFileEdit(history);
         throw error;
       }
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
@@ -372,6 +432,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        ..._savedNoteMetadata(filePath, content),
         history_recorded: !historySyncPending,
         history_sync_pending: historySyncPending,
       };
@@ -803,6 +864,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
       const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
+      const createText = async (path, text) => {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+        }
+        const identity = window.MeldexDocumentIdentity;
+        const format = identity?.formatForPath?.(path, text);
+        const content = format ? identity.ensureDocumentId(text, format).text : text;
+        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
+      };
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -817,7 +887,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        await createText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
         return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
@@ -828,73 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
-        const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
-        const targetPath = _joinPath(parent, labelName + '.scriptnote.json');
-        await provider.writeJson(targetPath, {
-          fileType: 'meldex-scriptnote',
-          schema_version: 3,
-          version: 1,
-          title: shown(labelName),
-          ...(title !== null && title !== label ? {display_title:title} : {}),
-          layoutMode: 'manga',
-          editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
-          scenarioTypes: [],
-          characters: [],
-          characterDb: [],
-          notes: [],
-          rows: [],
-          source: { importedFrom: '', modeName: 'マンガ縦書き' },
-        });
-        return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
-      }
-      if (type === 'form-app') {
-        const labelName = await _uniqueName(provider, parent, label, '.mel-form');
-        const targetPath = _joinPath(parent, labelName + '.mel-form');
-        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
-        content = titled(content,targetPath);
-        if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
-        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
-          method: 'PUT', body: { content, create_only: true },
-        });
-        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
-      }
-      if (type === 'board') {
-        const labelName = await _uniqueName(provider, parent, label, '.mel-board');
-        const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
-        boardContent = titled(boardContent, targetPath);
-        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
-        await provider.writeText(targetPath, boardContent);
-        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
-      }
-      if (type === 'calendar') {
-        const labelName = await _uniqueName(provider, parent, label, '');
-        const targetPath = _joinPath(parent, labelName);
-        await _directoryHandle(provider, targetPath, true);
-        await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: shown(labelName), path: targetPath } };
-      }
-      throw new Error(`不正なタイプ: ${type}`);
-    }
-
-    if (pathname === '/outliner/rename' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const oldPath = _normalizeFolderPath(body?.old_path || '');
-      _rejectProductionStructureMutation(oldPath, '名前変更');
-      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
-        throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
-      }
-      const titleHelper = window.GBPathUtils?.displayTitle;
-      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
-      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
-      const source = await _resolveEntryHandle(provider, oldPath);
-      if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
-        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
-        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
-          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
-        }
-      }
-      if (titleOnly) {
-        const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
-        const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});

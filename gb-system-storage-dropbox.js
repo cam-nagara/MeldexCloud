@@ -542,7 +542,7 @@
       };
       const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
-      const existingTotal = await this._totalBytesForKind(kind, docId);
+      const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
 
       const mode = currentRevision ? { '.tag': 'update', update: currentRevision } : 'add';

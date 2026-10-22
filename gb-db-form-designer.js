@@ -44,15 +44,14 @@
       content.replaceChildren(_buildFormEditorFields(ctx.dbPath, cfg, ctx.propTypes, render, null, () => {}));
     };
     render();
-    const close = _elAttachPopupCommon(popup, anchor);
-    popup.appendChild(button('適用', () => {
+    const apply = button('適用', () => {
       if (!popup.querySelectorAll('input:invalid').length && _elCanMutateGrid(ctx.grid, ctx.options)) {
         ctx.persist('フォーム: 入力設定とTab順', '', layout => { layout.formConfig = clone(cfg); });
         close(); ctx.rerender();
       }
-    }));
-    popup.appendChild(button('キャンセル', close));
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+    });
+    apply.classList.add('gb-btn-primary');
+    const close = _elAttachPopupCommon(popup, anchor, { id: 'form-input-settings', actions: [apply] });
   }
   function arrangeMenu(anchor, ctx, canvas) {
     const actions = [['left','左揃え'],['center','左右中央揃え'],['right','右揃え'],['top','上揃え'],['middle','上下中央揃え'],['bottom','下揃え'],
@@ -102,7 +101,7 @@
       saveActiveFormConfig(dbPath, next, ctx); renderDbFormView(ctx);
     };
     select.addEventListener('change', () => bind(select.value)); label.appendChild(select); row.appendChild(label);
-    row.appendChild(button('プリセットから追加', async event => {
+    row.appendChild(button('テンプレートから追加', async event => {
       const anchor = event.currentTarget;
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       const known = new Set(layouts.map(layout => layout.id));

@@ -186,4 +186,10 @@
     }
 
     // 空行
+    const xBoundary = trimmed.match(/^<!--\s*meldex-x-conversation:(start|end)\s*-->$/);
+    if (xBoundary) {
+      closeListAll();
+      html += `<span hidden contenteditable="false" data-x-conversation-boundary="${xBoundary[1]}"></span>`;
+      continue;
+    }
     if (trimmed === '') { closeListAll(); html += '<div><br></div>'; continue; }

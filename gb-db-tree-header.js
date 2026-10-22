@@ -221,6 +221,7 @@ function _dbTreeCreateColumnHeader({
   const more = document.createElement('button');
   more.type = 'button';
   more.className = 'db-tree-header-more';
+  more.dataset.e2eId = _dbE2eId(ctx, 'tree-column-menu', propName);
   more.innerHTML = lucide('moreHorizontal', 14);
   more.title = '列メニュー';
   more.setAttribute('aria-label', `${label.textContent}列メニュー`);
@@ -359,7 +360,7 @@ function _dbTreeRenderColumnHeaders(host, options) {
     pinnedKeys: keys.filter(key => Number.isFinite(pinnedOffsets[key])),
   };
   keys.forEach((propName, index) => {
-    host.appendChild(_dbTreeCreateColumnHeader({
+    const column = _dbTreeCreateColumnHeader({
       propName,
       index,
       hierarchy: index === 0,
@@ -370,7 +371,11 @@ function _dbTreeRenderColumnHeaders(host, options) {
       list,
       host,
       pinnedOffsets,
-    }));
+    });
+    if (index === 0 && typeof _createPaneRowSelectHeaderCheckbox === 'function') {
+      column.prepend(_createPaneRowSelectHeaderCheckbox(ctx));
+    }
+    host.appendChild(column);
   });
   const actions = document.createElement('span');
   actions.className = 'db-tree-header-actions';

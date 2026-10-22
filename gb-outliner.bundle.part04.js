@@ -1,3 +1,22 @@
+      return true;
+    })
+    .sort((a, b) => a._comparePath.split('/').length - b._comparePath.split('/').length);
+  const roots = [];
+  unique.forEach(item => {
+    if (roots.some(root => _isOutlinerPathWithin(item._comparePath, root._comparePath))) return;
+    roots.push(item);
+  });
+  return roots.map(({ _comparePath, ...item }) => item);
+}
+
+async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
+  const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
+  const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? MeldexDeleteImpactWarning.confirmationPayload(options.confirmation)
+    : {};
+  if (batchTargets.length) {
+    try {
+      const payload = await apiPost('/outliner/delete-batch', {
         items: batchTargets.map(item => ({
           path: item.path,
           kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
@@ -879,22 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         const before = _captureMainCalendarSettingsHistory();
         if (val) {
           localStorage.setItem('main-calendar-path', nodeData.path);
-          const mcFid = _pathToFileId(nodeData.path);
-          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
-          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
-        } else {
-          localStorage.removeItem('main-calendar-path');
-          localStorage.removeItem('main-calendar-id');
-          showStatus('メインカレンダー設定を解除しました');
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
-        }
-        },
-      });
-    });
-  }
-
-  // --- バージョン管理（フォルダのみ） ---
-  if (!isMulti && (isFolder || isDB) && nodeData.path) {
-    addSep();
-    addMenuItem('バージョンを保存', () => {

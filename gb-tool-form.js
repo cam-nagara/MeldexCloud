@@ -54,6 +54,7 @@ class FormAppComponent extends ToolComponent {
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
       this._mode = null;
+      this._pendingSheetSwitch = false;
       this._referenceRenames = [];
       this.definitionReadOnly = !!access.readOnly;
       const store = this.store = new MeldexFormDocument.Store(doc, loaded.etag, async (content, etag) => {
@@ -74,10 +75,16 @@ class FormAppComponent extends ToolComponent {
       this.state = { ...this.state, formPath: path, label: doc.display_title || doc.title };
       if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
       if (typeof addRecent === 'function') addRecent(this.state.label, path, 'form-app');
-      await this._loadSheet();
+      if (recover && JSON.stringify(store.doc.sheet) !== JSON.stringify(doc.sheet)) {
+        this._pendingSheetSwitch = true;
+        if (await store.save()) this._pendingSheetSwitch = false;
+        if (generation !== this._generation || this.store !== store) return false;
+      }
+      if (this._pendingSheetSwitch) this._blockSheetSwitch(store.doc.sheet.path);
+      else await this._loadSheet();
       if (generation !== this._generation) return false;
       this._render(); this._changed();
-      if (this.store.dirty && !this.definitionReadOnly) {
+      if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
       }
@@ -157,7 +164,17 @@ class FormAppComponent extends ToolComponent {
         if (!this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
           throw new Error('フォームを変更できません');
         this._mode = restored.formConfig?.mode;
-        if (previousPath !== restored.sheet.path) await this._loadSheet();
+        if (previousPath !== restored.sheet.path) {
+          this._pendingSheetSwitch = true;
+          clearTimeout(this._saveTimer);
+          const saved = await this._saveDefinitionAndSheet();
+          if (this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+          if (!saved) {
+            this._blockSheetSwitch(restored.sheet.path); this._render();
+            throw new Error(this.sheetError);
+          }
+          return;
+        }
         if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
       };
       historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
@@ -215,20 +232,49 @@ class FormAppComponent extends ToolComponent {
     }); return button;
   }
   async _leave() { return !this.el || await MeldexDbFormRuntime.confirmLeave(this.el); }
+  _blockSheetSwitch(path) {
+    if (this.ctx) { this.ctx.destroyed = true; this.ctx.writeBlocked = true; }
+    this.ctx = { dbPath: path, writeBlocked: true };
+    this.sheetError = '保存先の変更を保存できませんでした。「保存を再試行」で保存してから入力してください。';
+  }
+  async _saveDefinitionAndSheet() {
+    const store = this.store, generation = this._generation;
+    const saved = !store || await store.save();
+    if (saved && this.store === store && this._generation === generation && this._pendingSheetSwitch) {
+      this._pendingSheetSwitch = false;
+      await this._loadSheet();
+      if (this.store === store && this._generation === generation) this._render();
+    }
+    return saved;
+  }
   async _chooseSheet() {
     const select = this.sheetSelect;
     const path = select.value;
+    const store = this.store, generation = this._generation;
+    const current = () => this.store === store && this._generation === generation && this.el;
     if (path === this.ctx.dbPath) return;
     if (!await this._leave()) { select.value = this.ctx.dbPath; return; }
+    if (!current()) return;
     if (this.definitionReadOnly) return;
-    select.disabled = true; this.surface.inert = true;
+    const controls = [...select.closest('.gb-form-app-toolbar').querySelectorAll('button,select')]
+      .map(control => [control, control.disabled]);
+    controls.forEach(([control]) => { control.disabled = true; });
+    this.surface.inert = true;
     try {
       const id = path ? await apiFetch('/file-id?path=' + encodeURIComponent(path), { silentError: true }).catch(() => null) : null;
+      if (!current()) return;
       this._update(doc => { doc.sheet = { ...doc.sheet, path, id: id?.file_id || '' }; });
-      await this._loadSheet(); this._render();
+      clearTimeout(this._saveTimer);
+      this._pendingSheetSwitch = true;
+      const saved = await this._saveDefinitionAndSheet();
+      if (!current()) return;
+      if (!saved) {
+        this._blockSheetSwitch(path);
+        this._render();
+      }
     } finally {
-      select.disabled = this.definitionReadOnly;
-      if (this.surface) this.surface.inert = false;
+      controls.forEach(([control, disabled]) => { control.disabled = disabled; });
+      if (current() && this.surface) this.surface.inert = false;
     }
   }
   async _fillSheets(select) {
@@ -245,25 +291,28 @@ class FormAppComponent extends ToolComponent {
     } catch (error) { this.status.textContent = 'シート一覧を取得できません: ' + error.message; }
   }
   async _presetOptions(select) {
+    const choices = [];
     const add = (name, items, layouts = false) => {
       const group = document.createElement('optgroup'); group.label = name;
       items.forEach(item => {
-        const option = document.createElement('option'); option.value = String(this._choices.length); option.textContent = layouts ? item.name : item.layout.name;
-        this._choices.push({ item, layout: layouts }); group.appendChild(option);
+        const option = document.createElement('option'); option.value = String(choices.length); option.textContent = layouts ? item.name : item.layout.name;
+        choices.push({ item, layout: layouts }); group.appendChild(option);
       });
       select.appendChild(group);
     };
-    this._choices = [];
-    add('標準プリセット', MeldexDbTopicLayoutPresets.getTemplates());
+    select._templateChoices = choices;
+    add('標準テンプレート', MeldexDbTopicLayoutPresets.getTemplates());
     add('シートのレイアウト', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true);
     try {
       const library = await MeldexDbTopicLayoutStyle.loadSharedTemplateLibrary();
-      if (select.isConnected) add('ユーザープリセット', library.templates || []);
+      if (select.isConnected && select._templateChoices === choices) add('ユーザーテンプレート', library.templates || []);
     } catch (_) { /* Built-in and sheet layouts remain available offline. */ }
   }
   async _usePreset(select) {
-    const choice = this._choices[Number(select.value)]; select.value = '';
-    if (!choice || !await this._leave()) return;
+    if (select.value === '') return;
+    const choice = select._templateChoices?.[Number(select.value)]; select.value = '';
+    const store = this.store, generation = this._generation;
+    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return;
     this._mode = 'entry';
     let layout;
     if (choice.layout) layout = _elNormalizeLayout(MeldexFormDocument.clone(choice.item));
@@ -276,7 +325,8 @@ class FormAppComponent extends ToolComponent {
     this._render();
   }
   async _automaticLayout() {
-    if (!await this._leave()) return;
+    const store = this.store, generation = this._generation;
+    if (!await this._leave() || store !== this.store || generation !== this._generation) return;
     const fields = this.getConfig(this.ctx.pivotData?.properties || [], getPropertyTypes(this.ctx.dbPath, this.ctx)).fields;
     this._update(doc => {
       doc.layout = _elNormalizeLayout({ id: _elGenId('form'), name: 'フォーム', canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) },
@@ -284,24 +334,74 @@ class FormAppComponent extends ToolComponent {
       doc.layout.formConfig = MeldexDbFormModel.forLayout(doc.layout, doc.formConfig);
     }); this._render();
   }
+  async registerTemplate() {
+    this._commitFocusedControl();
+    const store = this.store;
+    if (!store) return;
+    // A definition snapshot deliberately excludes the destination sheet and response values.
+    const fields = this.getConfig(this.ctx.pivotData?.properties || [], getPropertyTypes(this.ctx.dbPath, this.ctx)).fields;
+    const layout = MeldexFormDocument.clone(this.getLayout() || {
+      id: _elGenId('form'), canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) },
+      cells: fields.map((prop, i) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + i * 140, w: 940, h: 120 })),
+    });
+    layout.formConfig = MeldexDbFormModel.forLayout(layout, store.doc.formConfig);
+    const columns = Object.entries(getPropertyTypes(this.ctx.dbPath, this.ctx)).map(([name, column]) => ({ ...column, name, id: column.property_id || '' }));
+    // Keep stable column identities even when the source uses an automatic layout.
+    layout.cells.filter(cell => cell.type === 'field').forEach(cell => { cell.columnId = columns.find(column => column.name === cell.prop)?.id || cell.columnId || ''; });
+    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.value = store.doc.title || layout.name || 'フォーム';
+    const body = document.createElement('div');
+    body.appendChild(GBUI.createField({ label: 'テンプレート名', input: name }));
+    const hint = document.createElement('p'); hint.textContent = '配置・書式・入力設定を登録します。他のフォームの「テンプレートを適用」から選べます。入力済みの値や参照先シートは含みません。'; body.appendChild(hint);
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); body.appendChild(status);
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録';
+    let busy = false;
+    const modal = GBUI.createModal({ id: 'form-register-template', title: 'テンプレートに登録', body, footer: [save], initialFocus: name,
+      onBeforeClose: () => !busy });
+    save.addEventListener('click', async () => {
+      if (busy) return;
+      if (!name.value.trim()) { status.textContent = 'テンプレート名を入力してください'; name.focus(); return; }
+      busy = true; save.disabled = true; name.disabled = true;
+      try {
+        layout.name = name.value.trim();
+        const template = MeldexDbTopicLayoutStyle.exportTemplate(layout, columns);
+        const result = await MeldexDbTopicLayoutStyle.saveSharedTemplateToLibrary(template);
+        if (!result.saved) throw new Error('同名のテンプレートがあります。別の名前で登録してください');
+        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。' : 'テンプレートに登録しました';
+        if (this.store === store && this.el?.isConnected) {
+          const select = this.el.querySelector('[data-form-templates]');
+          if (select) { select.replaceChildren(new Option(this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択', '')); this._presetOptions(select); }
+        }
+      } catch (error) { status.textContent = error.userMessage || error.message; }
+      finally { busy = false; save.disabled = false; name.disabled = false; }
+    });
+    modal.open();
+  }
   async _design() {
-    if (!await this._leave() || !this.getLayout()) return;
-    const root = this.surface, session = { editMode: true };
+    const owner = this.store, version = this._generation;
+    if (!await this._leave() || owner !== this.store || version !== this._generation || !this.getLayout()) return;
+    const root = this.surface, session = { editMode: true }, store = this.store, generation = this._generation;
     const render = () => {
+      _elCloseEditPopups();
       root.replaceChildren(this._button('配置編集を終了', () => this._render()));
       const editor = document.createElement('div'); root.appendChild(editor);
       const layout = this.getLayout();
       const types = getPropertyTypes(this.ctx.dbPath, this.ctx);
       _elRenderLayoutBody(editor, { properties: Object.fromEntries(Object.keys(types).map(name => [name, []])) }, '', {
-        ctx: this.ctx, propTypes: types, layoutDraft: { layout, session, persist: mutator => this._update(doc => mutator(doc.layout)) },
+        ctx: this.ctx, propTypes: types, layoutDraft: { layout, session, persist: mutator => {
+          if (!editor.isConnected || store !== this.store || generation !== this._generation) return false;
+          return this._update(doc => mutator(doc.layout));
+        } },
       }, this.ctx.dbPath, layout.id, render);
     }; this._designRender = render; render();
   }
   _render() {
     if (!this.el || !this.store) return;
+    if (this._designRender) _elCloseEditPopups();
     this._designRender = null;
     this.el.replaceChildren();
     const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
+    const menu = this._button('メニュー', event => showToolMenu(event, 'form-app', this));
+    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-label', 'メニュー'); menu.setAttribute('aria-haspopup', 'menu'); menu.innerHTML = lucide('menu', 16); bar.appendChild(menu);
     const source = document.createElement('label'); source.textContent = '参照先シート';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
     select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
@@ -315,10 +415,11 @@ class FormAppComponent extends ToolComponent {
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'フォームのレイアウト');
+      const templateLabel = document.createElement('label'); templateLabel.textContent = 'テンプレートを適用';
+      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
-      const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout()?.name || 'レイアウトを選択'; presets.appendChild(current);
-      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
+      const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
+      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); templateLabel.appendChild(presets); bar.appendChild(templateLabel); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
       const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }
@@ -329,7 +430,7 @@ class FormAppComponent extends ToolComponent {
     }));
     const saveBar = document.createElement('div'); saveBar.className = 'gb-form-app-save'; this.el.appendChild(saveBar);
     this.status = document.createElement('span'); this.status.setAttribute('role', 'status'); saveBar.appendChild(this.status);
-    this.retry = this._button('保存を再試行', () => this.store.save()); saveBar.appendChild(this.retry);
+    this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
     this.exportDraft = this._button('下書きを書き出す', () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(this.store.doc, null, 2)], { type: 'application/json' }));
       const link = document.createElement('a'); link.href = url;
@@ -347,7 +448,7 @@ class FormAppComponent extends ToolComponent {
     this._commitFocusedControl();
     if (!await this._leave()) return false;
     clearTimeout(this._saveTimer);
-    return !this.store || await this.store.save();
+    return this._saveDefinitionAndSheet();
   }
   async reload() {
     if (!await this.flush()) return false;
@@ -363,7 +464,7 @@ class FormAppComponent extends ToolComponent {
   saveDefinition() {
     this._commitFocusedControl();
     clearTimeout(this._saveTimer);
-    return this.store?.save();
+    return this._saveDefinitionAndSheet();
   }
   _commitFocusedControl() {
     const control = document.activeElement;

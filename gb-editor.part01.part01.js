@@ -1201,6 +1201,7 @@ async function openPage(label, path, opts) {
       // 工程1: 実処理は _runNoteAutoSave() へ集約（flushPendingEditorAutosave()と共有）。
       // 保存コーディネーター経由のsingle-flight/coalesceにより、blurと競合しない。
       window._pendingNoteAutoSavePc = null;
+      window._noteAutoSaveTimer = null;
       _runNoteAutoSave(pc, scheduledPath);
     }, 2000);
   };

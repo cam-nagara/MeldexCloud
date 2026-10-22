@@ -1,7 +1,9 @@
 // ツール別メニュー項目
-function buildToolMenuItems(toolType) {
+function buildToolMenuItems(toolType, component) {
   const currentPath = getCurrentFilePath();
   const hasFile = !!currentPath;
+  const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
+  const formComponent = component || (activeTab && typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null);
   const newItemType = {
     page: 'page', scriptnote: 'scriptnote', database: 'database',
     board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page'
@@ -118,16 +120,24 @@ function buildToolMenuItems(toolType) {
   // --- ツール固有の項目（サブメニュー以外） ---
   const specific = {
     page: [
+      { label: 'テンプレートに登録', action: () => MeldexNoteTemplates.show({ registerCurrent: true }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
+      { label: 'ノートテンプレート...', action: () => MeldexNoteTemplates.show().catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('page', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: 'オプションを表示', action: context => { if (typeof _openDetailRightPanel === 'function') _openDetailRightPanel(context?.trigger); else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', context?.trigger); }, disabled: !hasFile },
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
+    ],
+    'form-app': [
+      { label: 'テンプレートに登録', action: () => {
+        return formComponent?.registerTemplate?.();
+      }, disabled: !formComponent?.store },
     ],
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
+      { label: '新規トピックのノートテンプレート...', action: () => MeldexNoteTemplates.show({ dbPath: currentPath }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
       { label: 'シート横断検索', action: context => { if (typeof showDbSearchModal === 'function') showDbSearchModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },

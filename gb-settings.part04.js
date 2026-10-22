@@ -57,6 +57,8 @@
 
   // フォルダツリーの項目を開く操作（ダブルクリック/クリック）
   const treeOpenClickModeSelect = settingsControl('modal-tree-open-click-mode');
+  const railAppLaunchMode = settingsControl('modal-rail-app-launch-mode');
+  if (railAppLaunchMode) localStorage.setItem('gb:rail-app-launch-mode', railAppLaunchMode.value === 'last' ? 'last' : 'new');
   if (treeOpenClickModeSelect) {
     localStorage.setItem('gb:tree-open-click-mode', treeOpenClickModeSelect.value === 'single' ? 'single' : 'double');
   }
@@ -941,6 +943,7 @@ if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSiz
 
 // UI設定のサーバー永続保存（localStorageの主要設定をサーバーにバックアップ）
 const _UI_CONFIG_KEYS = [
+  'gb:rail-app-launch-mode',
   // UI設定
   'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden',
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
@@ -979,6 +982,7 @@ const _SETTINGS_PROFILE_KEYS = ['meldex-user', 'meldex-avatar', 'meldex-avatar-s
 // 「全設定を初期化」が削除できるのは、表示と操作の設定だけ。
 // profile/source/workspace/draft/session/作品データ/共有登録/秘密値は専用操作のみで変更する。
 const _SETTINGS_RESETTABLE_KEYS = [
+  'gb:rail-app-launch-mode',
   'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule',
   'meldex-statusbar-hidden', 'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion',
   'meldex-a11y-colorblind-safe', 'note-vertical', 'note-heading-indent', 'note-toc-visible',
@@ -1069,6 +1073,11 @@ async function _saveUiConfigToServer() {
 // ページ読み込み時にサーバーからUI設定を復元（localStorageが空の場合のみ）
 async function _restoreUiConfigFromServer() {
   try {
+    const initial = new Map();
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      initial.set(key, localStorage.getItem(key));
+    }
     const config = await apiFetch('/ui-config', { silentError: true });
     if (!config || typeof config !== 'object') return;
     let restored = false;
@@ -1079,6 +1088,8 @@ async function _restoreUiConfigFromServer() {
     const overwriteKeys = new Set();
     if (String(config['ui-scale-source'] || '') === 'manual'
       && String(localStorage.getItem('ui-scale-source') || '') !== 'manual'
+      && localStorage.getItem('ui-scale') === (initial.get('ui-scale') ?? null)
+      && localStorage.getItem('ui-scale-source') === (initial.get('ui-scale-source') ?? null)
       && config['ui-scale'] != null) {
       overwriteKeys.add('ui-scale');
       overwriteKeys.add('ui-scale-source');
@@ -1086,6 +1097,7 @@ async function _restoreUiConfigFromServer() {
     for (const [key, val] of Object.entries(config)) {
       if (key === 'folder-files-hidden') continue;
       if (val == null) continue;
+      if (localStorage.getItem(key) !== (initial.get(key) ?? null)) continue;
       if (localStorage.getItem(key) != null && !overwriteKeys.has(key)) continue;
       localStorage.setItem(key, val);
       restored = true;

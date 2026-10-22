@@ -1,3 +1,25 @@
+
+// ナビゲーション履歴の戻る/進む
+function navBack(paneId) {
+  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+    ? GBPanelSet.rightRailNavigationState(paneId)
+    : null;
+  if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
+  const navState = _getNavState(paneId);
+  if (navState.index <= 0) return false;
+  const nextIndex = navState.index - 1;
+  const entry = navState.history[nextIndex];
+  if (!entry) return false;
+  try {
+    return _continuePaneHistoryAfterFlush(
+      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
+    );
+  } catch (e) {
+    navNavigating = false;
+    throw e;
+  }
+}
+function navForward(paneId) {
   const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
     ? GBPanelSet.rightRailNavigationState(paneId)
     : null;
@@ -163,6 +185,7 @@ function saveLastView(obj) {
     if (fid) obj.file_id = fid;
   }
   localStorage.setItem('lastView', JSON.stringify(obj));
+  rememberRailAppFile(obj);
 }
 
 function _isCloudPhase1UnsupportedOpenType(type) {
@@ -689,14 +712,80 @@ async function _gbAppPrepareFullFileWrite(path, body) {
   }
 }
 
+let _gbAppUiConfigWriteTail = Promise.resolve();
+const _gbAppPendingValueWrites = new Map();
+const _gbAppValueWriteTails = new Map();
+let _gbAppValueAccount = window.MeldexDropboxAuth?.getSession?.()?.accountId || '';
+window.addEventListener?.('meldex:dropbox-auth-session-changed', event => {
+  const account = String(event.detail?.accountId || '');
+  if (account !== _gbAppValueAccount) _gbAppPendingValueWrites.clear();
+  _gbAppValueAccount = account;
+});
+window.addEventListener?.('meldex:mode-changed', () => _gbAppPendingValueWrites.clear());
+
+async function _gbAppPutValueConfirmed(path, body, options) {
+  const key = String(path);
+  const previous = _gbAppValueWriteTails.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const send = payload => apiFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      ...(options || {}), body: JSON.stringify(payload), silentError: true });
+    const uncertain = _gbAppPendingValueWrites.get(key);
+    if (uncertain) {
+      const result = await send(uncertain);
+      _gbAppPendingValueWrites.delete(key);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+      const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
+      if (withoutId(body) === withoutId(uncertain)) return result;
+      // Only an ordinary candidate patch may follow its own confirmed patch.
+      // Whole-body edits and structural changes retain their original baseline.
+      const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
+      const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
+      if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)
+          && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
+          && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
+        body = { ...body, [baseKey]: result.revision };
+      }
+    }
+    const payload = { ...body, operation_id: body.operation_id || crypto.randomUUID() };
+    try { return await send(payload); }
+    catch (error) {
+      const unknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+        || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+      if (!unknown) throw error;
+      _gbAppPendingValueWrites.set(key, payload);
+      const result = await send(payload);
+      _gbAppPendingValueWrites.delete(key);
+      return result;
+    }
+  });
+  _gbAppValueWriteTails.set(key, pending);
+  try { return await pending; }
+  finally { if (_gbAppValueWriteTails.get(key) === pending) _gbAppValueWriteTails.delete(key); }
+}
+
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
-  const result = await apiFetch(path, {
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
+    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    _scheduleLinkDictionaryRefreshForMutation(path);
+    return result;
+  }
+  const requestOptions = {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
     ...(options || {}),
-  });
+  };
+  const send = () => apiFetch(path, requestOptions);
+  // Whole settings snapshots must commit in user request order. A failed
+  // snapshot rejects its own caller without poisoning subsequent saves.
+  let result;
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {
+    const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
+    _gbAppUiConfigWriteTail = pending;
+    result = await pending;
+  } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
@@ -809,92 +898,3 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('dest_folder');
   } else if (route === '/outliner/rename') {
     addBody('old_path');
-    const oldPath = String(body?.old_path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
-      const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
-      _apiLockAddPath(paths, destinationBase);
-      const extension = _apiLockRenameExtension(oldPath);
-      if (extension) _apiLockAddPath(paths, destinationBase + extension);
-    }
-  } else if (route === '/entity/create') {
-    addBody('parent_path');
-  } else if (route === '/entity/rename') {
-    addBody('path');
-    const oldPath = String(body?.path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
-  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
-    addBody('target_path');
-  } else if (route === '/entity/auto-name') {
-    addBody('db_path');
-    addBody('entry_path');
-    addBody('path');
-  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
-    addBody('folder_path');
-    addBody('file_path');
-  } else if (route === '/import-csv' || route === '/import-xlsx') {
-    addBody('csv_path');
-    addBody('xlsx_path');
-    addBody('db_path');
-  } else if (route === '/public-form/submit') {
-    addBody('db_path');
-  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
-    addBoth('db_path');
-  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder' || route === '/version/delete-db') {
-    addBody('path');
-  }
-
-  return [...new Set(paths)];
-}
-
-function _apiLockBlockIfNeeded(path, opts) {
-  if (typeof isItemLocked !== 'function') return false;
-  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
-    try { return isItemLocked(p); } catch { return false; }
-  });
-  if (!lockedPath) return false;
-  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
-  const message = reason
-    ? `編集ロック中のため編集できません（理由: ${reason}）`
-    : '編集ロック中のため編集できません';
-  if (typeof showStatus === 'function') showStatus(message, true);
-  throw new Error(message);
-}
-
-function _apiUsesTransientActiveLock(path) {
-  let route = '';
-  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
-  catch { return false; }
-  return new Set([
-    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
-    '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
-  ]).has(route);
-}
-
-// apiFetchをオーバーライドしてユーザー名を付加
-const _origApiFetch = apiFetch;
-apiFetch = async function(path, opts) {
-  opts = opts || {};
-  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
-  _apiLockBlockIfNeeded(path, opts);
-  const activeLocks = window.MeldexActiveLocks;
-  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
-    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
-    : null;
-  const deferredCreateUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/add';
-  let mutationSucceeded = false;
-  try {
-    if (activeLocks?.beforeApiFetch) {
-      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
-    }
-    // 表示名と安定IDを自動付与（監査ログ・版履歴の編集者帰属用）
-    const user = getUsername();
-    const actorId = window.MeldexProfileIdentity?.getStableActorId?.() || '';
-    const requestMethod = String(opts.method || 'GET').toUpperCase();
-    const mutationRequest = requestMethod !== 'GET' && requestMethod !== 'HEAD';
-    const identityParams = [];
-    if (user && user !== 'anonymous' && !/[?&]_user=/.test(path)) identityParams.push('_user=' + encodeURIComponent(user));
-    if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));

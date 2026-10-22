@@ -1,6 +1,91 @@
+        const labelName = await _uniqueName(provider, parent, label, '.mel-scenario');
+        const targetPath = _joinPath(parent, labelName + '.mel-scenario');
+        await createText(targetPath, JSON.stringify({
+          fileType: 'meldex-scriptnote',
+          schema_version: 3,
+          version: 1,
+          title: shown(labelName),
+          ...(title !== null && title !== label ? {display_title:title} : {}),
+          layoutMode: 'manga',
+          editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
+          scenarioTypes: [],
+          characters: [],
+          characterDb: [],
+          notes: [],
+          rows: [],
+          source: { importedFrom: '', modeName: 'マンガ縦書き' },
+        }, null, 2));
+        return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
+      }
+      if (type === 'form-app') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-form');
+        const targetPath = _joinPath(parent, labelName + '.mel-form');
+        const createdSheet = await window.MeldexDataAccess.requestJson('/outliner/add', {
+          method: 'POST', headers, body: { type: 'database', parent, label: labelName + 'のシート' },
+        });
+        const sheetPath = createdSheet?.node?.path;
+        if (!sheetPath) throw new Error('シートを作成できませんでした');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:sheetPath},layout:null,formConfig:{mode:'entry'}},null,2);
+        content = titled(content,targetPath);
+        if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        try {
+          await window.MeldexDataAccess.requestJson('/db-metadata?path=' + encodeURIComponent(sheetPath), {
+            method: 'PUT', headers, body: { default_form_path: targetPath },
+          });
+          await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+            method: 'PUT', headers, body: { content, create_only: true },
+          });
+        } catch (error) {
+          // A remote write may have committed before its response was lost.
+          // Retain the sheet rather than risk deleting a form's answer data.
+          error.userMessage = 'フォームの作成を確認できませんでした。シートは「' + sheetPath + '」に残っています。';
+          throw error;
+        }
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
+      if (type === 'board') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-board');
+        const targetPath = _joinPath(parent, labelName + '.mel-board');
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
+        boardContent = titled(boardContent, targetPath);
+        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
+        await createText(targetPath, boardContent);
+        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
+      }
+      if (type === 'calendar') {
+        const labelName = await _uniqueName(provider, parent, label, '');
+        const targetPath = _joinPath(parent, labelName);
+        await _directoryHandle(provider, targetPath, true);
+        await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
+        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: shown(labelName), path: targetPath } };
+      }
+      throw new Error(`不正なタイプ: ${type}`);
+    }
+
+    if (pathname === '/outliner/rename' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const oldPath = _normalizeFolderPath(body?.old_path || '');
+      _rejectProductionStructureMutation(oldPath, '名前変更');
+      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
+        throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
+      }
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
+      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
+      const source = await _resolveEntryHandle(provider, oldPath);
+      if (!source) throw new Error(`見つかりません: ${oldPath}`);
+      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
+        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+        }
+      }
+      if (titleOnly) {
+        const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+        const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
         const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
         const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
-          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+          method:'PUT',headers,body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
         });
         return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
       }
@@ -813,23 +898,3 @@
     if (pathname === '/autostart' && method === 'GET') return { supported: false, enabled: false };
     if (pathname === '/autostart' && method === 'POST') return { ok: false, supported: false };
     if (pathname === '/chat/config' && method === 'GET') return _llmConfigShape();
-    if (pathname === '/chat/config' && (method === 'PUT' || method === 'POST')) return { ok: false, unsupported: true };
-    if (pathname === '/extensions/status' && method === 'GET') return { pillow: false, clip: false, caldav: false };
-    if (pathname === '/extensions/install' && method === 'POST') return { ok: false, error: 'ブラウザ版では拡張インストールに対応していません' };
-    if (pathname === '/caldav/info' && method === 'GET') return { url: '', instructions: { iphone: '', thunderbird: '', google: '' } };
-    if (pathname === '/caldav/sync-to-ics' && method === 'POST') return { ok: false, synced: 0 };
-    if (pathname === '/caldav/sync-from-ics' && method === 'POST') return { ok: false, imported: 0, updated: 0 };
-    if (pathname === '/auth/users' && method === 'GET') return [];
-    if (pathname === '/auth/me' && method === 'GET') {
-      const username = url.searchParams.get('username') || 'anonymous';
-      const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
-      return { user: username, username, role: state.access === 'viewer' ? 'viewer' : 'editor' };
-    }
-    if (pathname === '/pick-folder' && method === 'GET') return { ok: false, needManualInput: true };
-
-    return NOT_HANDLED;
-  });
-  window.MeldexCloudIdentityCopyTransaction = Object.freeze({
-    copyPath: _copyPathWithIdentityTransaction,
-  });
-})();

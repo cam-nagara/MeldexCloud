@@ -1,3 +1,92 @@
+  const sourceIframe = _getTrustedEmbeddedMessageIframe(e);
+  if (!sourceIframe) return;
+  const msg = e.data;
+  if (!msg || !msg.type) return;
+  // サブパネルのビューワー（2つ目の表示面）は、メインの「現在のファイル」（state.currentPagePath）・
+  // フォルダツリーの選択・プロパティを書き換えない。書き換えると、メインで開いているノートのタブ状態や
+  // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
+  const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
+  if (msg.type === 'viewer-current-file-changed') {
+    if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
+    return;
+  }
+  if (msg.type === 'viewer-sheet-context-request' && window.MeldexViewerSheetContext) {
+    window.MeldexViewerSheetContext.handleRequest(msg, e.source);
+    return;
+  }
+  if (msg.type === 'viewer-sheet-row-nav-request' && window.MeldexViewerSheetContext) {
+    window.MeldexViewerSheetContext.handleRowNavigation(msg, e.source);
+    return;
+  }
+  if (msg.type === 'viewer-folder-nav-request') {
+    _handleViewerFolderNavRequest(msg, fromSubpanelViewer ? sourceIframe : null);
+    return;
+  }
+  const reloadEmbeddedAnnotations = () => {
+    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
+    if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
+      _loadAnnotationsToIframe();
+    }
+  };
+  // HTMLビューワーiframeからのステータス通知
+  if (msg.type === 'board-status') { showStatus(msg.message, msg.isError); }
+  // ヒストリー更新通知
+  if (msg.type === 'history-update') { renderHistoryList(); }
+  // HTMLビューワーiframe内メモからの保存依頼
+  if (msg.type === 'ann-save-stroke') {
+    apiPost('/annotations', {
+      target_path: msg.targetPath || ann.targetPath, type: msg.annType,
+      data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
+    }).then(res => {
+      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
+        _pushAnnotationCreateHistory(res.id, 'アノテート: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
+      }
+      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
+    }).catch((err) => {
+      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+        _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
+      }
+      if (typeof showStatus === 'function') showStatus('アノテートの保存に失敗しました: ' + (err?.message || err || ''), true);
+    });
+  }
+  if (msg.type === 'ann-delete') {
+    if (msg.annId) {
+      (async () => {
+        const before = typeof _fetchAnnotationHistoryRow === 'function'
+          ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
+          : null;
+        await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
+        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, msg.annId);
+        reloadEmbeddedAnnotations();
+      })().catch(() => {});
+    }
+  }
+  if (msg.type === 'ann-delete-note') {
+    if (msg.annId && msg.data) {
+      if (typeof _putAnnotationWithHistory === 'function') {
+        _putAnnotationWithHistory(msg.annId, { data: msg.data }, 'アノテート: 削除', msg.annId)
+          .then(reloadEmbeddedAnnotations)
+          .catch(() => {});
+      } else {
+        apiPut('/annotations/' + encodeURIComponent(msg.annId), { data: msg.data }).then(reloadEmbeddedAnnotations).catch(() => {});
+      }
+    }
+  }
+  if (msg.type === 'ann-update-note') {
+    if (msg.annId && (msg.data || msg.color)) {
+      const body = msg.color ? { color: msg.color } : { data: msg.data };
+      const label = msg.color ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
+      if (typeof _putAnnotationWithHistory === 'function') {
+        _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
+      } else {
+        apiPut('/annotations/' + encodeURIComponent(msg.annId), body).catch(() => {});
+      }
+    }
+  }
+  if (msg.type === 'ann-create-note') {
+    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
+    const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
+    if (!embedded && !msg.targetPath && typeof createNote === 'function') {
       const prevColor = ann.color;
       const prevOpacity = ann.opacity;
       if (msg.color) ann.color = msg.color;
@@ -391,13 +480,14 @@ window.addEventListener('beforeunload', (e) => {
     const pc = document.getElementById('page-content');
     const currentPath = pc?.dataset?.path;
     if (currentPath) {
-      const md = htmlToMd(pc?.innerHTML || '');
-      const fm = pc.dataset.frontmatter || '';
-      const full = fm ? fm + md : md;
+      const full = typeof _noteMarkdownFromEditorNonDestructive === 'function'
+        ? _noteMarkdownFromEditorNonDestructive(pc)
+        : (pc.dataset.frontmatter || '') + htmlToMd(pc?.innerHTML || '');
+      const unchanged = window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, full);
       const body = typeof _noteSavePayload === 'function'
         ? _noteSavePayload(pc, full)
         : { content: full, if_match_etag: pc?.dataset?.lastSavedEtag || '', skip_if_missing: true };
-      const noteSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
+      const noteSaveQueued = unchanged || _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
       unloadSaveQueued = noteSaveQueued && unloadSaveQueued;
       if (!noteSaveQueued) {
         window._noteAutoSaveTimer = setTimeout(() => {
@@ -808,93 +898,3 @@ function showLoading(msg, opts) {
   _loadingOperations.push(lease);
   _loadingCount = _loadingOperations.length;
   _loadingMessage = group.label;
-  if (!group.operation) {
-    if (_loadingVisible) _renderLoadingUi(_loadingMessage);
-    else if (!_loadingTimer) _loadingTimer = setTimeout(() => {
-      _loadingTimer = null;
-      if (_loadingCount > 0) _renderLoadingUi(_loadingMessage);
-    }, 300);
-  }
-  return lease;
-}
-
-function hideLoading(lease) {
-  // No-argument calls retain legacy stack semantics. An explicit missing or
-  // already completed lease must never dismiss another invocation's task.
-  const current = arguments.length ? lease : _loadingOperations[_loadingOperations.length - 1];
-  if (!current?.active) return;
-  const index = _loadingOperations.indexOf(current);
-  if (index < 0) return;
-  _loadingOperations.splice(index, 1);
-  current.active = false;
-  const group = current.group;
-  if (--group.refs === 0) {
-    _loadingGroups.delete(group.key);
-    group.operation?.succeed({ dismissMs: 0 });
-  }
-  _loadingCount = _loadingOperations.length;
-  _loadingMessage = _loadingOperations[_loadingCount - 1]?.group.label || '';
-  if (_loadingCount === 0) {
-    clearTimeout(_loadingTimer);
-    _loadingTimer = null;
-    if (_loadingVisible) _hideLoadingUi();
-  } else if (_loadingVisible) _renderLoadingUi(_loadingMessage);
-}
-
-function hideLoadingMessage(msg) {
-  const expected = _loadingText(msg);
-  const current = [..._loadingOperations].reverse().find(lease => lease.getState()?.label === expected);
-  if (!current) return false;
-  hideLoading(current);
-  return true;
-}
-
-function trackIframeLoading(iframe, msg, opts) {
-  const options = opts || {};
-  if (!iframe) return;
-  // A replaced iframe with the same id is still the same visible loading slot.
-  const key = iframe.id || iframe;
-  _iframeLoadingTrackers.get(key)?.();
-  if (options.silent || options.skipGlobalUi) return;
-  const loading = showLoading(msg || 'ビューアを読み込み中...', { key });
-  let done = false;
-  let timer = null;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    if (timer) clearTimeout(timer);
-    iframe.removeEventListener('load', finish);
-    iframe.removeEventListener('error', finish);
-    if (_iframeLoadingTrackers.get(key) === finish) _iframeLoadingTrackers.delete(key);
-    hideLoading(loading);
-  };
-  _iframeLoadingTrackers.set(key, finish);
-  iframe.addEventListener('load', finish);
-  iframe.addEventListener('error', finish);
-  timer = setTimeout(finish, Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000);
-}
-
-// サーバーへの定期ハートビート（exe版: ブラウザ閉じたらサーバー自動終了用）
-let _heartbeatTimer = null;
-
-function _isHeartbeatCloudMode() {
-  return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
-    || document.body?.dataset?.cloudMode === 'dropbox'
-    || document.body?.dataset?.cloudMode === 'browser';
-}
-
-function _sendHeartbeat() {
-  fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
-}
-
-function _startHeartbeat() {
-  _sendHeartbeat();
-  if (_heartbeatTimer) return;
-  _heartbeatTimer = setInterval(_sendHeartbeat, 10000);
-}
-
-function _stopHeartbeat() {
-  if (!_heartbeatTimer) return;
-  clearInterval(_heartbeatTimer);
-  _heartbeatTimer = null;
-}

@@ -276,14 +276,17 @@ function _elAutoFitCellText(el, cell) {
   // 既定では周囲のUIと同じ文字サイズを保ち、長文はスクロールする。
   if (cell.style?.autoFit !== true) return;
   if (cell.type !== 'field' && cell.type !== 'label') return;
-  const body = el.querySelector('.el-cell-body');
+  const body = el.querySelector('.el-cell-body, .gb-form-input-row');
   if (!body || !body.isConnected || body.clientHeight === 0) return;
   body.style.fontSize = '';
   const base = parseFloat(getComputedStyle(body).fontSize) || 13;
+  const content = el.querySelector('.el-cell-content');
+  const availableHeight = content?.clientHeight || body.clientHeight;
+  const availableWidth = content?.clientWidth || body.clientWidth;
   let size = base;
   let guard = 60;
   while (guard-- > 0 && size > 8
-    && (body.scrollHeight > body.clientHeight + 1 || body.scrollWidth > body.clientWidth + 1)) {
+    && (body.scrollHeight > Math.min(body.clientHeight, availableHeight) + 1 || body.scrollWidth > Math.min(body.clientWidth, availableWidth) + 1)) {
     size -= 1;
     body.style.fontSize = size + 'px';
   }
@@ -302,9 +305,11 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
     return;
   }
   const values = { ..._elIsObj(cell.style) ? cell.style : {} };
+  const preview = { ...cell, style: values };
   // カラーパレットのドラッグは中間色ごとに onChange が飛ぶため、永続化（+取り消し履歴）は
   // 300msのデバウンスで1回にまとめる。画面への反映だけライブで行う。
   let persistTimer = null;
+  let closing = false;
   const flushPersist = () => {
     persistTimer = null;
     if (!ctx.grid?.isConnected) return;
@@ -318,7 +323,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       persistTimer = setTimeout(flushPersist, 120);
       return;
     }
-    const snapshot = { ..._elIsObj(cell.style) ? cell.style : {} };
+    const snapshot = { ...values };
     _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セル書式', (target) => {
       target.style = snapshot;
     });
@@ -335,23 +340,32 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
     },
     onChange: (prop, value) => {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-      if (value === '' || value == null || value === false) delete cell.style?.[prop];
-      else { if (!_elIsObj(cell.style)) cell.style = {}; cell.style[prop] = value; }
-      ctx.options?.layoutDraft?.onChange?.();
+      if (value === '' || value == null || value === false) delete values[prop];
+      else values[prop] = value;
       // ポップアップを開いたまま即時反映（再描画はしない）
       if (cellEl?.isConnected) {
+        const zIndex = cellEl.style.zIndex;
         cellEl.removeAttribute('style');
+        cellEl.style.zIndex = zIndex;
         cellEl.style.left = cell.x + 'px';
         cellEl.style.top = cell.y + 'px';
         cellEl.style.width = cell.w + 'px';
         cellEl.style.height = cell.h + 'px';
-        _elApplyCellStyle(cellEl, cell, ctx);
-        _elAutoFitCellText(cellEl, cell);
+        _elApplyCellStyle(cellEl, preview, ctx);
+        _elAutoFitCellText(cellEl, preview);
       }
       if (persistTimer) clearTimeout(persistTimer);
-      persistTimer = setTimeout(flushPersist, 300);
+      if (closing) flushPersist(); else persistTimer = setTimeout(flushPersist, 300);
     },
   });
+  if (popup) {
+    const cleanup = popup._gbFmtCleanup;
+    popup._gbFmtCleanup = () => {
+      closing = true;
+      if (persistTimer) { clearTimeout(persistTimer); flushPersist(); }
+      cleanup?.();
+    };
+  }
   if (ctx.options?.layoutDraft && popup) popup._cleanup = () => closeAllFormatPopups();
 }
 
@@ -529,18 +543,17 @@ function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
   let latest = globalThis.MeldexDbTopicLayoutStyle.normalizeCellStyleContract(cell);
   popup.appendChild(globalThis.MeldexDbTopicLayoutStyle.createStyleControls(document, latest, (next) => {
     latest = next;
-    Object.assign(cell, next);
-    if (cellEl?.isConnected) _elApplyCellStyle(cellEl, cell, ctx);
+    if (cellEl?.isConnected) _elApplyCellStyle(cellEl, next, ctx);
     const caption = cellEl?.querySelector?.('.el-cell-caption');
     const captionText = cellEl?.querySelector?.('.el-cell-caption-text');
     const body = cellEl?.querySelector?.('.el-cell-body');
-    globalThis.MeldexDbTopicLayoutStyle.applyCaptionMode(caption, captionText, body, cell, cell.prop || '列');
-  }));
+    globalThis.MeldexDbTopicLayoutStyle.applyCaptionMode(caption, captionText, body, next, cell.prop || '列');
+  }, { caption: cell.type === 'field' }));
   const textStyleBtn = document.createElement('button');
   textStyleBtn.type = 'button';
   textStyleBtn.className = 'gb-btn';
   textStyleBtn.textContent = '文字書式を開く';
-  popup.appendChild(textStyleBtn);
+  if (['field', 'label'].includes(cell.type)) popup.appendChild(textStyleBtn);
   const close = _elAttachPopupCommon(popup, anchorBtn);
   const persist = () => {
     _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セルの見た目', (target) => {
@@ -550,7 +563,76 @@ function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
     });
   };
   popup.addEventListener('change', persist);
-  textStyleBtn.addEventListener('click', () => { close(); _elOpenCellFormatPopup(anchorBtn, cell, ctx, cellEl); });
+  textStyleBtn.addEventListener('click', () => { close(); _elOpenCellFormatPopup(anchorBtn, latest, ctx, cellEl); });
+}
+
+/* Always-visible toolbar entry: every cell remains configurable without hover or dragging. */
+function _elShowCellInspector(anchor, ctx) {
+  _elCloseEditPopups();
+  const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup el-cell-inspector';
+  popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'セル一覧・設定');
+  const types = { field: '列', label: '見出し', image: '画像', divider: '罫線', chart: 'チャート', subform: '繰り返し項目' };
+  const select = document.createElement('select'); select.className = 'gb-input'; select.setAttribute('aria-label', '設定するセル');
+  ctx.layout.cells.forEach((cell, index) => select.add(new Option(`${index + 1}. ${types[cell.type] || cell.type}: ${cell.prop || cell.text || cell.subform?.title || ''}`, cell.id)));
+  select.value = ctx.session.selectedIds?.[0] || ctx.layout.cells[0]?.id || '';
+  popup.appendChild(select);
+  const body = document.createElement('div'); popup.appendChild(body);
+  const close = _elAttachPopupCommon(popup, anchor);
+  const render = () => {
+    body.replaceChildren();
+    close.footer.querySelector('[data-cell-apply]')?.remove();
+    const cell = ctx.layout.cells.find(item => item.id === select.value);
+    if (!cell) { body.textContent = '「列を配置」などからセルを追加してください。'; return; }
+    const element = [...ctx.grid.querySelectorAll('.el-cell')].find(item => item.dataset.cellId === cell.id);
+    if (element) _elSelectCellElement(element.parentElement, element);
+    const row = (label, input) => { if (input.type !== 'checkbox') input.classList.add('gb-input'); input.setAttribute('aria-label', label); const wrap = document.createElement('label'); wrap.className = 'el-popup-row'; wrap.append(document.createTextNode(label), input); body.appendChild(wrap); return input; };
+    const inputs = {};
+    for (const [key, label] of [['x','左から (px)'], ['y','上から (px)'], ['w','幅 (px)'], ['h','高さ (px)']]) {
+      const input = document.createElement('input'); input.type = 'number'; input.required = true; input.min = ['w','h'].includes(key) ? '24' : '0'; input.max = '8000'; input.value = cell[key]; input.disabled = !!cell.locked;
+      inputs[key] = row(label, input);
+    }
+    let prop, text;
+    if (cell.type === 'field') {
+      prop = document.createElement('select');
+      const names = [...new Set([cell.prop, ...Object.keys(ctx.propTypes || {})])].filter(Boolean);
+      names.forEach(name => prop.add(new Option(name + (ctx.propTypes[name] ? '' : '（シートにない列）'), name)));
+      prop.value = cell.prop || ''; row('参照する列', prop);
+    }
+    if (cell.type === 'label') { text = document.createElement('textarea'); text.value = cell.text || ''; row('見出しの本文', text); }
+    let autoFit;
+    if (['field', 'label'].includes(cell.type)) { autoFit = document.createElement('input'); autoFit.type = 'checkbox'; autoFit.checked = cell.style?.autoFit === true; row('文字をセルに自動フィット', autoFit); }
+    let alt;
+    if (cell.type === 'image') { alt = document.createElement('input'); alt.value = cell.image?.alt || ''; row('画像の代替テキスト', alt); }
+    const button = (label, run) => { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn'; btn.textContent = label; btn.addEventListener('click', run); body.appendChild(btn); return btn; };
+    const apply = button('位置・サイズ・内容を適用', () => {
+      if ([...Object.values(inputs)].some(input => !input.checkValidity())) { Object.values(inputs).find(input => !input.checkValidity())?.reportValidity(); return; }
+      ctx.persist('トピックレイアウト: セル設定', '', layout => {
+        const target = layout.cells.find(item => item.id === cell.id);
+        if (!target) return false;
+        if (!target.locked) Object.entries(inputs).forEach(([key, input]) => { target[key] = Number(input.value); });
+        if (text) target.text = text.value;
+        if (autoFit) target.style = { ...target.style, autoFit: autoFit.checked };
+        if (alt) target.image = { ...target.image, alt: alt.value };
+        if (prop) {
+          target.prop = prop.value; target.columnId = ctx.propTypes[prop.value]?.property_id || '';
+          if (ctx.propTypes[prop.value]) { delete target.unresolvedColumn; target.columnType = ctx.propTypes[prop.value].type; }
+          if (layout.formConfig && !layout.formConfig.fields?.includes(prop.value)) layout.formConfig.fields = [...(layout.formConfig.fields || []), prop.value];
+        }
+      });
+      close(); ctx.rerender();
+    });
+    apply.dataset.cellApply = '1'; apply.classList.add('gb-btn-primary'); close.footer.appendChild(apply);
+    button(cell.type === 'chart' ? 'チャートのデータ・表示設定' : '内容の詳細設定', () => { close(); _elOpenCellSettings(anchor, cell, ctx, element); });
+    button(['field', 'label'].includes(cell.type) ? '枠・背景・文字書式' : '枠・背景', () => { close(); _elShowTopicLayoutCellStylePopup(anchor, cell, ctx, element); });
+    for (const [label, front] of [['最前面へ', true], ['最背面へ', false]]) {
+      const btn = button(label, () => { ctx.persist('トピックレイアウト: 重なり順', '', layout => {
+        const index = layout.cells.findIndex(item => item.id === cell.id);
+        if (index < 0 || layout.cells[index].locked) return false;
+        const [target] = layout.cells.splice(index, 1); if (front) layout.cells.push(target); else layout.cells.unshift(target);
+      }); close(); ctx.rerender(); }); btn.disabled = !!cell.locked;
+    }
+  };
+  select.addEventListener('change', render); render();
 }
 
 /* --- レイアウト単位の配色テーマ（要望9） --- */

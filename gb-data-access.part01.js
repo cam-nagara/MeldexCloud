@@ -253,7 +253,9 @@
   }
 
   function _jsonHeaders(headers) {
-    return { 'Content-Type': 'application/json', ...(headers || {}) };
+    const result = new Headers(headers || undefined);
+    if (!result.has('Content-Type')) result.set('Content-Type', 'application/json');
+    return result;
   }
 
   function _requestMethod(opts) {

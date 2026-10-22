@@ -167,6 +167,14 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const raw = String(value || '').trim();
     if (!raw) return '';
     const lower = raw.toLowerCase();
+    if (lower.startsWith('image:')) {
+      try {
+        const path = decodeURIComponent(raw.slice(6)).replace(/\\/g, '/');
+        if (!path || path.length > 2048 || /[:\x00-\x1f]/.test(path)
+          || path.startsWith('/') || path.split('/').includes('..')) return '';
+        return 'image:' + encodeURIComponent(path);
+      } catch (_) { return ''; }
+    }
     if (lower.startsWith('lucide:')) {
       const name = raw.slice(raw.indexOf(':') + 1).trim();
       return name ? 'lucide:' + name : '';
@@ -186,6 +194,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function parseSpec(value) {
     const spec = normalizeSpec(value);
     if (!spec) return { type: '', spec: '', label: '' };
+    if (spec.startsWith('image:')) return { type: 'image', spec, path: decodeURIComponent(spec.slice(6)), label: '画像' };
     if (spec.toLowerCase().startsWith('lucide:')) {
       const name = spec.slice(7);
       return { type: 'lucide', spec: 'lucide:' + name, name, label: _toKebab(name), search: name + ' ' + _toKebab(name) };
@@ -196,13 +205,19 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function sameSpec(a, b) {
-    return normalizeSpec(a).toLowerCase() === normalizeSpec(b).toLowerCase();
+    const left = normalizeSpec(a), right = normalizeSpec(b);
+    if (left.startsWith('image:') || right.startsWith('image:')) return left === right;
+    return left.toLowerCase() === right.toLowerCase();
   }
 
   function render(spec, size, options = {}) {
     const parsed = parseSpec(spec);
     const px = Math.max(10, Number(size) || 20);
     const className = options.className ? ' ' + options.className : '';
+    if (parsed.type === 'image') {
+      const src = '/api/media/file?path=' + encodeURIComponent(parsed.path);
+      return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
+    }
     if (parsed.type === 'lucide') {
       if (typeof global.lucide === 'function' && hasLucideName(parsed.name)) {
         return global.lucide(parsed.name, px);

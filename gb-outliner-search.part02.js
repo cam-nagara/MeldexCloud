@@ -611,7 +611,7 @@ function applyTreeNameSearch() {
     const nameMatch = !!(q && includeName && d.name && d.name.toLowerCase().includes(q));
     const pathMatch = _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
     // フォルダ/ルートは名前マッチのみ
-    if (d.type === 'folder' || d._isRoot || d.type === 'database') {
+    if (d.type === 'folder' || d._isRoot || d.type === 'database' || d.type === 'form-app') {
       node._searchMatch = nameMatch || pathMatch;
       return;
     }
@@ -648,7 +648,7 @@ function applyTreeNameSearch() {
     if (node._searchMatch || node._searchAncestor) {
       node.style.display = '';
       // 祖先フォルダが閉じていれば開く
-      if (node._searchAncestor && (d.type === 'folder' || d.type === 'database' || d._isRoot)) {
+      if (node._searchAncestor && (d.type === 'folder' || d.type === 'database' || d.type === 'form-app' || d._isRoot)) {
         const toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
         const childrenDiv = node.querySelector(':scope > .tree-children');
         if (toggle && childrenDiv && toggle.dataset.expanded === 'false') {

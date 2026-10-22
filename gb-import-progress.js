@@ -8,6 +8,9 @@
   const KIND_LABELS = {
     'notion-sync': 'Notion同期',
     'x-bookmarks': 'Xブックマーク',
+    'x-bookmark-notes': 'Xブックマークのノート',
+    'x-bookmark-post': 'Xポスト',
+    'x-bookmark-translations': 'Xポストの翻訳',
     'x-account-posts': 'Xアカウント投稿',
     'external-import': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
@@ -86,7 +89,7 @@
         const result = job.result || {};
         const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
         if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-        else if (Number(result.failed || result.errors || result.media_failed || result.author_icon_failed) > 0 || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが完了しました（一部失敗）' });
+        else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
         else entry.handle.succeed(values);
         restoredJobs.delete(jobId);
       } else if (job?.status === 'cancelled' || job?.status === 'canceled') {

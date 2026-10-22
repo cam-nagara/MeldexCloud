@@ -4,7 +4,7 @@
   const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
   const isUnavailableRoot = item.needsMapping === true;
-  const isExpandable = !isUnavailableRoot && (isFolder || isDB);
+  const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
 
   // Toggle arrow
   const toggle = document.createElement('span');
@@ -123,7 +123,8 @@
     if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
-    if (!currentIsFolder && !currentIsDB) {
+    const currentIsForm = item.type === 'form-app';
+    if (!currentIsFolder && !currentIsDB && !currentIsForm) {
       row.click();
       return;
     }
@@ -169,7 +170,11 @@
         childrenDiv._outlinerLoadToken = loadToken;
         let warmItems = [];
         try {
-          if (currentIsDB) {
+          if (currentIsForm) {
+            const children = Array.isArray(item.children) ? item.children : [];
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, children, rootPath, { folderItem: item, folderNode: div, kind: 'form-app' });
+            warmItems = children;
+          } else if (currentIsDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true', { foreground: true });
             window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
             const entityItems = _outlinerSheetTreeItems(item, pivotData);
@@ -184,7 +189,7 @@
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true&form_hierarchy=true');
             const childList = Array.isArray(children) ? children : (Array.isArray(children?.items) ? children.items : []);
             let visibleChildren = childList.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
@@ -229,7 +234,7 @@
               let match = false;
               if (d.type === 'entity') match = includeEntities && d.name && d.name.toLowerCase().includes(q);
               else match = d.name && d.name.toLowerCase().includes(q);
-              if (!match && d.type !== 'folder' && d.type !== 'database' && !d._isRoot) {
+              if (!match && d.type !== 'folder' && d.type !== 'database' && d.type !== 'form-app' && !d._isRoot) {
                 node.style.display = 'none';
               }
             });
@@ -469,6 +474,11 @@
     e.dataTransfer.dropEffect = 'move';
     clearDragIndicators();
 
+    if (item._form_parent_path) {
+      row.classList.add('drag-over-inside');
+      return;
+    }
+
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
     const h = rect.height;
@@ -557,6 +567,11 @@
       : row.classList.contains('drag-over-inside') ? 'inside'
       : 'below';
     clearDragIndicators();
+
+    if (item._form_parent_path && position !== 'inside') {
+      showStatus('このシートの中、または移動先のフォルダへドロップしてください');
+      return;
+    }
 
     // ワークスペースセクションのルート行への上下ドロップは、並び替えではなく
     // ルートフォルダ外（vaultルート）への実移動になってしまうため受け付けない
@@ -757,6 +772,7 @@
           pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
         }
       }
+      if (nodes.some(node => node._nodeData?._form_parent_path)) await loadOutliner();
     })();
   });
 
@@ -772,7 +788,10 @@ function clearDragIndicators() {
 
 function _outlinerSheetTreeItems(item, pivotData) {
   const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
-    name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+    name, type: 'entity',
+    path: pivotData.entities[name]?._entry_path || (typeof _entityPath === 'function'
+      ? _entityPath(item.path, name, pivotData) : item.path + '/' + name + (pivotData.new_format ? '.md' : '')),
+    _dbPath: item.path,
     entityData: pivotData.entities[name],
   }));
   const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
@@ -803,7 +822,7 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
       path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
         + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
-        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true';
+        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true&form_hierarchy=true';
     }
     if (_outlinerWarmKeys.has(path)) continue;
     _outlinerWarmKeys.add(path);

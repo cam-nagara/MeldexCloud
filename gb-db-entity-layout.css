@@ -79,6 +79,17 @@
   padding: 4px;
   min-width: 140px;
 }
+/* Settings use the common modal shell; menus retain their compact spacing. */
+.el-edit-popup:not([role="menu"]):not(.el-dialog-content) { padding: var(--ui-space-6); }
+.el-settings-dialog { width: 640px; }
+.el-settings-dialog > .gb-modal-body { min-width: 0; }
+.el-settings-dialog .el-dialog-content {
+  position: static; width: auto; min-width: 0; max-width: none;
+  max-height: none; overflow: visible; padding: 0; gap: var(--ui-space-4);
+}
+.el-settings-dialog .el-dialog-content input:not([type="checkbox"]):not([type="radio"]),
+.el-settings-dialog .el-dialog-content select,
+.el-settings-dialog .el-dialog-content textarea { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .el-tab-menu-item {
   display: flex;
   align-items: center;
@@ -303,7 +314,14 @@
   overflow: hidden;
 }
 .el-cell-chart-content svg { max-width: 100%; max-height: 100%; }
-.el-chart-popup { min-width: 220px; max-height: 60vh; overflow-y: auto; }
+.el-chart-popup { width: min(500px, calc(100vw - 24px)); min-width: 220px; max-height: 75vh; overflow-y: auto; gap: 8px; }
+.el-chart-popup .el-popup-row select { width: 220px; max-width: 100%; }
+.el-cell-inspector { min-width: 300px; max-height: 75vh; overflow: auto; gap: 8px; }
+.el-cell-inspector > div { display: flex; flex-direction: column; gap: 6px; }
+.el-chart-axis-settings { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(70px, 1fr) 65px auto auto; gap: 4px; align-items: center; }
+.el-chart-axis-settings input { min-width: 0; width: 100%; box-sizing: border-box; }
+.el-chart-axis-settings label { display: flex; align-items: center; }
+.el-chart-axis-settings label input { width: auto; }
 .el-chart-popup-body {
   display: flex;
   flex-direction: column;
@@ -506,6 +524,7 @@
 .gb-form-binding, .gb-form-record-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; }
 .gb-form-binding label { display: flex; align-items: center; gap: 8px; }
 .gb-form-record-panel, .gb-form-layout-editor { min-width: 0; width: 100%; }
+.gb-form-answer.gb-form-custom-layout { width: 100%; max-width: none; min-width: 0; box-sizing: border-box; }
 .gb-form-record-panel .el-viewport, .gb-form-layout-editor .el-viewport { max-height: 72vh; }
 .gb-form-layout-field { display: flex; flex-direction: column; gap: 4px; }
 .gb-form-layout-field input, .gb-form-layout-field select, .gb-form-layout-field textarea { max-width: 100%; box-sizing: border-box; font: inherit; }

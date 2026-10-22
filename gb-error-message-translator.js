@@ -41,6 +41,12 @@
       action: 'フォルダツリーを更新し、開き直してください。',
     },
     {
+      test: info => info.code === 'local_api_token_required',
+      title: 'Meldexの内部接続が切れました',
+      message: '画面とMeldex本体の接続情報が一致していません。',
+      action: '編集中の内容を控えてから、Meldexを終了して起動し直してください。',
+    },
+    {
       test: info => info.status === 403 || /forbidden|許可されていない|禁止|権限/i.test(info.raw),
       title: '操作する権限がありません',
       message: '現在の権限ではこの操作を実行できません。',
@@ -107,7 +113,7 @@
 
   function _code(error) {
     if (error == null || typeof error === 'string') return '';
-    return String(error.meldexCode || error.code || error.payload?.code || error.detail?.code || '');
+    return String(error.meldexCode || error.code || error.payload?.code || error.payload?.detail?.code || error.detail?.code || '');
   }
 
   function translate(error, context) {

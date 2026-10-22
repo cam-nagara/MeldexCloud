@@ -130,7 +130,7 @@ async function openFolder(label, path, opts) {
 
     let fetchedItems = typeof _folderFetchBrowseItems === 'function'
       ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
-      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
     const browseIncomplete = fetchedItems._folderBrowseIncomplete || null;
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
@@ -445,7 +445,8 @@ function _getFolderFilteredItems() {
   // 検索欄のタグ条件（search側。フィルタの filterTags とは別物）。
   // 検索文字列が空でもタグ条件だけで絞り込めるようにする（2-F）。
   const hasSearchTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
-  return _folderItems.filter(item => {
+  return _folderItems.filter(function matches(item) {
+    if (item.type === 'form-app' && item.children?.some(matches)) return true;
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
     if (hasSearchTagCondition && !unifiedMatch) return false;
@@ -471,7 +472,7 @@ function _folderFilterChoices() {
   const extMap = new Map();
   const folderMap = new Map();
   const tagMap = new Map();
-  _folderItems.forEach(item => {
+  _folderItems.flatMap(item => [item, ...(item.type === 'form-app' ? item.children || [] : [])]).forEach(item => {
     const type = _folderItemTypeKey(item);
     if (type && !typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type));
     const ext = _folderItemExt(item);
@@ -1035,6 +1036,20 @@ function renderFolderGrid(opts) {
       showFolderItemContextMenu(e, item);
     };
 
+    if (item.type === 'form-app' && Array.isArray(item.children)) {
+      const children = document.createElement('div'); children.className = 'fv-form-sheets';
+      children.style.cssText = 'grid-column:1/-1;padding-left:8px;min-width:0;';
+      children.setAttribute('aria-label', 'フォーム内のシート');
+      for (const sheet of item.children) {
+        const open = document.createElement('button'); open.type = 'button'; open.className = 'gb-btn';
+        open.style.cssText = 'display:block;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        open.dataset.gbTooltip = sheet.name || sheet.path;
+        open.textContent = '↳ ' + (sheet.name || sheet.path); open.setAttribute('aria-label', 'シートを開く: ' + (sheet.name || sheet.path));
+        open.addEventListener('click', event => { event.stopPropagation(); selectDatabase(sheet.path); });
+        open.addEventListener('dblclick', event => event.stopPropagation()); children.appendChild(open);
+      }
+      el.appendChild(children);
+    }
     fragment.appendChild(el);
     }
     container.appendChild(fragment);

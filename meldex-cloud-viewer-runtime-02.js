@@ -2392,7 +2392,7 @@
       };
       const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
-      const existingTotal = await this._totalBytesForKind(kind, docId);
+      const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
 
       const mode = currentRevision ? { '.tag': 'update', update: currentRevision } : 'add';
@@ -5204,6 +5204,19 @@
       }
     }
 
+    async readBytesSnapshot(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const meta = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!meta.rev) throw Object.assign(new Error('Dropboxの読込revisionを確認できません'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+      this._rememberMeta(normalized, meta);
+      return { bytes, revision: meta.rev };
+    }
+
     async readBytesFresh(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
@@ -6898,7 +6911,9 @@
   }
 
   function _jsonHeaders(headers) {
-    return { 'Content-Type': 'application/json', ...(headers || {}) };
+    const result = new Headers(headers || undefined);
+    if (!result.has('Content-Type')) result.set('Content-Type', 'application/json');
+    return result;
   }
 
   function _requestMethod(opts) {
@@ -8444,7 +8459,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -9121,6 +9136,7 @@
     return NOT_HANDLED;
   }
 
+  let _pwaUiConfigWriteTail = Promise.resolve();
   async function requestJson(path, opts) {
     const started = performance.now();
     const requestOpts = opts || {};
@@ -9131,7 +9147,20 @@
       payload: _summarizePayload(requestOpts.body),
     };
     if (_runtime()?.isBrowserDataMode?.()) {
-      const localResult = await _pwaJsonRequest(path, requestOpts);
+      const endpoint = String(path || '').split('?')[0].replace(/^\/api/, '');
+      const changesUiConfig = _requestMethod(requestOpts) !== 'GET'
+        && (endpoint === '/ui-config' || /^\/ui-config\/history\/[^/]+\/restore$/.test(endpoint));
+      const send = () => _pwaJsonRequest(path, requestOpts);
+      let localResult;
+      if (changesUiConfig) {
+        // The browser implementation awaits hashing/history before publishing.
+        // Serialize both ordinary saves and restores, including other tabs.
+        const run = () => globalThis.navigator?.locks?.request
+          ? navigator.locks.request(PWA_UI_CONFIG_KEY, send) : send();
+        const pending = _pwaUiConfigWriteTail.catch(() => {}).then(run);
+        _pwaUiConfigWriteTail = pending;
+        localResult = await pending;
+      } else localResult = await send();
       if (localResult === NOT_HANDLED) {
         _logCompare({ ...logBase, adapter: `${mode}-unhandled`, durationMs: Math.round(performance.now() - started) });
         const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
@@ -12914,7 +12943,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
   }
 
-  handlers.push(async ({ method, body, url, pathname, signal }) => {
+  handlers.push(async ({ method, body, url, pathname, signal, headers }) => {
     if (pathname === '/cloud/space-usage' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
@@ -13322,6 +13351,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (foldersOnly) continue;
         if (item) items.push({ ...item, linked: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
       }
+      if (_boolParam(url.searchParams.get('form_hierarchy'))) {
+        const nested = new Set();
+        for (const item of items) {
+          if (item.type !== 'form-app') continue;
+          try {
+            const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
+            const sheetPath = _normalizeFolderPath(doc.sheet.path);
+            const handle = await _resolveEntryHandle(provider, sheetPath);
+            if (!handle) continue;
+            const child = await _buildBrowseItem(provider, sheetPath, handle, { allFiles, detail, signal, classifyDirectories: true });
+            if (child?.type !== 'database') continue;
+            item.children = [{ ...child, _form_parent_path: item.path }]; nested.add(sheetPath);
+          } catch (_) { /* A broken form reference never hides its sheet. */ }
+        }
+        return items.filter(item => item.type !== 'database' || !nested.has(_normalizeFolderPath(item.path)));
+      }
       return items;
     }
     if (pathname === '/check-type' && method === 'GET') {
@@ -13371,11 +13417,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const token = String(etag || '');
       const providerId = String(meta?.id || '');
       const identity = window.MeldexDocumentIdentity;
-      const identityFormat = identity?.formatForPath?.(filePath);
       let content = fileContent;
-      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
         content = await provider.readText(filePath).catch(() => '');
       }
+      const identityFormat = identity?.formatForPath?.(filePath, content);
       const documentId = identityFormat
         ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
         : '';
@@ -13438,6 +13484,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return token;
     }
 
+    async function _readFileSnapshot(provider, filePath, entry) {
+      if (typeof provider.readBytesSnapshot === 'function') {
+        const snapshot = await provider.readBytesSnapshot(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      if (typeof provider.readBytesFresh === 'function') {
+        const snapshot = await provider.readBytesFresh(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      const before = await _fileEtag(provider, filePath, entry);
+      const bytes = new TextEncoder().encode(await provider.readText(filePath));
+      const after = await _fileEtag(provider, filePath, entry);
+      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+      return { bytes, etag: after };
+    }
+
+    function _savedNoteMetadata(filePath, content) {
+      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
+      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
+    }
+
     if (pathname === '/file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -13454,9 +13521,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           size: Number(stats.size || 0),
         };
       }
-      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
-        const file = await provider.downloadAsFile(filePath);
-        const bytes = await file.arrayBuffer();
+      const snapshot = await _readFileSnapshot(provider, filePath, entry);
+      if (/\.csv$/i.test(filePath)) {
+        const bytes = snapshot.bytes;
         const view = new Uint8Array(bytes);
         const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
         let content;
@@ -13468,7 +13535,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           encoding = 'cp932';
         }
         const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
-        const etag = await _fileEtag(provider, filePath, entry);
+        const etag = snapshot.etag;
         return {
           path: filePath,
           content,
@@ -13479,8 +13546,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           newline: dialect.newline || '\n',
         };
       }
-      const etag = await _fileEtag(provider, filePath, entry);
-      const content = await provider.readText(filePath);
+      const etag = snapshot.etag;
+      const content = new TextDecoder().decode(snapshot.bytes);
       return {
         path: filePath,
         content,
@@ -13518,10 +13585,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
         _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
-      if (expectedEtag && entry) {
-        const currentEtag = await _fileEtag(provider, filePath, entry);
-        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
-      }
+      const snapshot = entry ? await _readFileSnapshot(provider, filePath, entry) : null;
       let commitEtag = expectedEtag;
       if (forceOverwrite && entry && !commitEtag) {
         if (typeof provider.refreshMetadata !== 'function') {
@@ -13537,7 +13601,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
       }
-      const currentContent = entry ? await provider.readText(filePath) : '';
+      const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
       const titleHelper = window.GBPathUtils?.displayTitle;
       const storedTitle = titleHelper?.read(currentContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
@@ -13564,6 +13628,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ).text;
         }
       }
+      const canonical = value => String(value).replace(/\r\n/g, '\n');
+      if (entry && canonical(content) === canonical(currentContent)) {
+        // A committed write may have lost its response. Acknowledge the exact
+        // current snapshot without another upload or another history version.
+        await _prepareCloudFileEdit(provider, filePath, currentContent, currentContent, _versionActor(url, body), snapshot.etag, true);
+        return {
+          ok: true, unchanged: true,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, snapshot.etag, null, currentContent),
+          ..._savedNoteMetadata(filePath, currentContent),
+        };
+      }
+      if (entry && expectedEtag && expectedEtag !== snapshot.etag) {
+        let baselineMatches = false;
+        if (docIdentityFmt === 'note' && typeof body?.base_content === 'string') {
+          const id = window.MeldexDocumentIdentity.readDocumentId(currentContent, 'note');
+          const baseline = id ? window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(body.base_content, 'note', id).text : body.base_content;
+          baselineMatches = canonical(baseline) === canonical(currentContent);
+        }
+        if (!baselineMatches) _throwEtagConflict(filePath, expectedEtag, snapshot.etag);
+        commitEtag = snapshot.etag;
+      }
       const history = await _prepareCloudFileEdit(
         provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
       );
@@ -13580,7 +13665,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           entry ? commitEtag : null,
         );
       } catch (error) {
-        await _abortCloudFileEdit(history);
+        const uncertain = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+          || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+        // A lost upload ACK is not proof of an aborted write. Keep its durable
+        // intent so the next identical-content confirmation can reconcile it.
+        if (!uncertain) await _abortCloudFileEdit(history);
         throw error;
       }
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
@@ -13588,6 +13677,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        ..._savedNoteMetadata(filePath, content),
         history_recorded: !historySyncPending,
         history_sync_pending: historySyncPending,
       };
@@ -14019,6 +14109,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
       const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
+      const createText = async (path, text) => {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+        }
+        const identity = window.MeldexDocumentIdentity;
+        const format = identity?.formatForPath?.(path, text);
+        const content = format ? identity.ensureDocumentId(text, format).text : text;
+        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
+      };
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -14033,7 +14132,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        await createText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
         return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
@@ -14044,9 +14143,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
-        const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
-        const targetPath = _joinPath(parent, labelName + '.scriptnote.json');
-        await provider.writeJson(targetPath, {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-scenario');
+        const targetPath = _joinPath(parent, labelName + '.mel-scenario');
+        await createText(targetPath, JSON.stringify({
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
@@ -14060,18 +14159,33 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           notes: [],
           rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
-        });
+        }, null, 2));
         return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
       if (type === 'form-app') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-form');
         const targetPath = _joinPath(parent, labelName + '.mel-form');
-        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
+        const createdSheet = await window.MeldexDataAccess.requestJson('/outliner/add', {
+          method: 'POST', headers, body: { type: 'database', parent, label: labelName + 'のシート' },
+        });
+        const sheetPath = createdSheet?.node?.path;
+        if (!sheetPath) throw new Error('シートを作成できませんでした');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:sheetPath},layout:null,formConfig:{mode:'entry'}},null,2);
         content = titled(content,targetPath);
         if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
-        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
-          method: 'PUT', body: { content, create_only: true },
-        });
+        try {
+          await window.MeldexDataAccess.requestJson('/db-metadata?path=' + encodeURIComponent(sheetPath), {
+            method: 'PUT', headers, body: { default_form_path: targetPath },
+          });
+          await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+            method: 'PUT', headers, body: { content, create_only: true },
+          });
+        } catch (error) {
+          // A remote write may have committed before its response was lost.
+          // Retain the sheet rather than risk deleting a form's answer data.
+          error.userMessage = 'フォームの作成を確認できませんでした。シートは「' + sheetPath + '」に残っています。';
+          throw error;
+        }
         return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
       }
       if (type === 'board') {
@@ -14080,7 +14194,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
         boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
-        await provider.writeText(targetPath, boardContent);
+        await createText(targetPath, boardContent);
         return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'calendar') {
@@ -14116,7 +14230,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
         const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
         const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
-          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+          method:'PUT',headers,body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
         });
         return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
       }
@@ -20582,6 +20696,7 @@ document.addEventListener('DOMContentLoaded', () => {
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
+      text.title = text.textContent;
       if (source.tagName === 'BUTTON') {
         row.type = 'button';
         row.disabled = source.disabled;

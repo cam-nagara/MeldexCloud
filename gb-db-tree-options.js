@@ -33,7 +33,7 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
   const heading = document.createElement('h3');
   heading.textContent = 'ツリービュー設定';
   const hint = document.createElement('p');
-  hint.textContent = '階層に使う列を選びます。この設定は現在のビューに保存されます。';
+  hint.textContent = '「親を表す列」を選び、行を選択して「親トピック」を変更すると階層を作れます。行の中央へのドラッグでも親を変更できます。';
   section.append(heading, hint);
   const fields = [
     ['parentProp', '親を表す列', true],
@@ -48,10 +48,11 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
     const row = document.createElement('label');
     row.textContent = label;
     const select = document.createElement('select');
-    if (!required) {
+    select.dataset.e2eId = _dbE2eId(ctx, 'tree-setting-' + key, dbPath);
+    {
       const none = document.createElement('option');
       none.value = '';
-      none.textContent = '使用しない';
+      none.textContent = required ? '列を選択してください' : '使用しない';
       select.appendChild(none);
     }
     properties.forEach(propName => {
@@ -69,6 +70,7 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
   actions.className = 'db-tree-settings-actions';
   const apply = document.createElement('button');
   apply.type = 'button';
+  apply.dataset.e2eId = _dbE2eId(ctx, 'tree-settings-apply', dbPath);
   apply.className = 'primary';
   apply.textContent = '適用';
   apply.addEventListener('click', () => {

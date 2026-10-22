@@ -406,7 +406,7 @@ async function loadOutliner(options) {
       } catch (e) {
         // フォールバック: 従来のルートフォルダルート
         try {
-          const items = await apiFetch('/browse?all_files=true');
+          const items = await apiFetch('/browse?all_files=true&form_hierarchy=true');
           if (loadGeneration !== _outlinerLoadGeneration) {
             if (typeof _logPerfEvent === 'function') {
               _logPerfEvent('outliner.load.stale', perfStartedAt, { stage: 'legacy', reason: opts.reason || '' });
@@ -670,7 +670,7 @@ function _syncOutlinerResolvedItemType(node, item) {
   row.dataset.itemType = item.type || '';
   const toggle = row.querySelector('.tree-toggle');
   const children = node.querySelector(':scope > .tree-children');
-  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database');
+  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database' || item.type === 'form-app');
   if (previousType && previousType !== item.type && children) {
     children.replaceChildren();
     children.dataset.loaded = 'false';

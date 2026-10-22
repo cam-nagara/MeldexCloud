@@ -151,6 +151,10 @@ function getAddParentPath(nodeEl, nodeData, options = {}) {
   const isContainer = nodeData.type === 'folder'
     || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
+  if (nodeData._form_parent_path) {
+    const path = String(nodeData.path || '').replace(/\\/g, '/');
+    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
+  }
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
     // フォルダ/DBが展開中ならその中、閉じているなら同階層
@@ -215,7 +219,7 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, 
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true' + (options.detail ? '&detail=true' : ''),
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
       { skipBrowseCache: true, cache: 'reload' });
   } catch {
     return null;

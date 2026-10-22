@@ -78,11 +78,11 @@ function _dbTreeDefaultConfig(dbPath, ctx) {
   const has = name => props.includes(name);
   const tagDictionary = has('親グループ') && has('正式名') && has('種類');
   const relationProp = props.find(prop => {
-    const type = getPropertyTypes(dbPath, ctx)?.[prop]?.type;
-    return type === 'relation' || type === 'multi-relation';
+    const typeConfig = getPropertyTypes(dbPath, ctx)?.[prop] || {};
+    return typeConfig.type === 'relation' && (!typeConfig.relationDb || typeConfig.relationDb === dbPath);
   }) || '';
   return {
-    parentProp: has('親グループ') ? '親グループ' : relationProp,
+    parentProp: ['親グループ', '親トピック', '親'].find(has) || relationProp,
     orderProp: has('並び順') ? '並び順' : '',
     labelProp: has('正式名') ? '正式名' : '',
     typeProp: has('種類') ? '種類' : '',
@@ -109,7 +109,16 @@ function getDbTreeViewConfig(dbPath, ctx) {
     ? getCurrentDbViewConfigEntry(dbPath, { ctx })
     : null;
   const stored = view?.typeSpecific?.tree;
-  return { ..._dbTreeDefaultConfig(dbPath, ctx), ...(stored && typeof stored === 'object' ? stored : {}) };
+  const defaults = _dbTreeDefaultConfig(dbPath, ctx);
+  const config = { ...defaults, ...(stored && typeof stored === 'object' ? stored : {}) };
+  const data = ctx?.pivotData || state.pivotData || {};
+  const available = new Set([...(data.properties || []), ...Object.keys(getPropertyTypes(dbPath, ctx) || {})]
+    .filter(prop => typeof isDbPropertyDeleted !== 'function' || !isDbPropertyDeleted(dbPath, prop)));
+  ['parentProp', 'orderProp', 'labelProp', 'typeProp', 'colorProp', 'collapsedProp'].forEach(key => {
+    if (config[key] && !available.has(config[key])) config[key] = available.has(defaults[key]) ? defaults[key] : '';
+  });
+  if (!config.typeProp) config.parentTypeValue = '';
+  return config;
 }
 
 function setDbTreeViewConfig(dbPath, config, ctx) {
@@ -395,8 +404,10 @@ function _dbTreeValueRef(dbPath, entityName, propName, value, rawIndex, data) {
 
 async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, label) {
   if (!propName) return;
+  if (ctx?.dbPath && ctx.dbPath !== dbPath) throw new Error('表示中のシートが変わりました。対象のシートを開き直してください');
   const data = ctx?.pivotData || state.pivotData;
-  const entityData = data?.entities?.[entityName] || {};
+  const entityData = data?.entities?.[entityName];
+  if (!entityData) throw new Error('対象のトピックが見つかりません');
   const raw = Array.isArray(entityData[propName]) ? entityData[propName] : [];
   const adopted = typeof getAdoptedValueForWrite === 'function'
     ? getAdoptedValueForWrite(raw)
@@ -413,12 +424,17 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
     adopted.value = nextValue;
   } else {
     const entityPath = _entityPath(dbPath, entityName, data);
-    await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
-    entityData[propName] = [{ value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: 0 }];
+    const result = await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
+    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: result?.candidate_index ?? raw.length };
+    entityData[propName] = [...raw, added];
+    if (typeof _dbUndoValue === 'function') {
+      _dbUndoValue(label, added, '', nextValue, undefined, undefined, { dbPath, ctx });
+    }
   }
 }
 
 async function _dbTreeRefreshAfterEdit(dbPath, ctx) {
+  if (ctx?.dbPath && ctx.dbPath !== dbPath) return;
   if (typeof selectDatabase === 'function') {
     await selectDatabase(dbPath, ctx, {
       silent: true,
@@ -433,7 +449,12 @@ async function _dbTreeRefreshAfterEdit(dbPath, ctx) {
 }
 
 async function _dbTreeMoveNode(dbPath, ctx, model, config, node, target, mode) {
-  if (!node || !config.parentProp) return;
+  if (!node) return;
+  if (!config.parentProp) {
+    showStatus('ツリー設定で「親を表す列」を選ぶか、階層用の列を追加してください', true);
+    _dbTreeOpenOptions(ctx);
+    return;
+  }
   if (mode !== 'child' && !_dbTreeUsesHierarchyOrder(dbPath, ctx)) {
     showStatus('同じ階層で位置を変えるには、列メニューの並び替えを「階層の並び順」に戻してください。', true);
     return;
@@ -542,8 +563,38 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
     meta.append(dt, dd);
   });
   host.appendChild(meta);
+  if (config.parentProp) {
+    const parentLabel = document.createElement('label');
+    parentLabel.textContent = '親トピック';
+    const parentSelect = document.createElement('select');
+    parentSelect.className = 'db-tree-parent-select';
+    parentSelect.dataset.e2eId = _dbE2eId(ctx, 'tree-parent', node.entityName);
+    parentSelect.setAttribute('aria-label', '親トピック');
+    parentSelect.appendChild(new Option('最上位（親なし）', ''));
+    const model = ctx._dbTreeViewModel;
+    (model?.nodes || []).filter(candidate => !_dbTreeWouldCreateCycle(node, candidate)
+      && (!config.parentTypeValue || candidate.type === config.parentTypeValue))
+      .forEach(candidate => parentSelect.appendChild(new Option(
+        candidate.label === candidate.entityName ? candidate.label : `${candidate.label} (${candidate.entityName})`,
+        candidate.entityName,
+      )));
+    parentSelect.value = node.parent?.entityName || '';
+    const applyParent = document.createElement('button');
+    applyParent.type = 'button';
+    applyParent.dataset.e2eId = _dbE2eId(ctx, 'tree-parent-apply', node.entityName);
+    applyParent.textContent = '親を変更';
+    applyParent.addEventListener('click', async () => {
+      applyParent.disabled = true;
+      try {
+        await _dbTreeMoveNode(dbPath, ctx, model, config, node, model.byEntity.get(parentSelect.value) || null, 'child');
+      } finally { applyParent.disabled = false; }
+    });
+    parentLabel.appendChild(parentSelect);
+    host.append(parentLabel, applyParent);
+  }
   const open = document.createElement('button');
   open.type = 'button';
+  open.dataset.e2eId = _dbE2eId(ctx, 'tree-detail-open', node.entityName);
   open.textContent = 'トピックを開く';
   open.addEventListener('click', () => {
     const pathValue = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
@@ -565,7 +616,7 @@ function _dbTreeApplyCellPresentation(cell, value, propName, dbPath, ctx) {
     ? getDbColumnCellDisplay(dbPath, propName, ctx)
     : null;
   if (override) {
-    cell.dataset.cellOverflow = override.overflow;
+    cell.dataset.cellOverflow = propName === '__entity__' ? 'clip' : override.overflow;
     cell.style.setProperty('--db-tree-cell-lines', String(override.lines));
   }
   const color = typeof getCellColor === 'function' ? getCellColor(value, propName, dbPath, ctx) : null;
@@ -575,13 +626,19 @@ function _dbTreeApplyCellPresentation(cell, value, propName, dbPath, ctx) {
 
 function _dbTreeRowHeight(dbPath, columnKeys, ctx) {
   const base = typeof matchMedia === 'function' && matchMedia('(max-width: 720px)').matches ? 42 : 34;
-  if (typeof getDbColumnCellDisplay !== 'function') return base;
+  const types = getPropertyTypes(dbPath, ctx) || {};
+  const imageHeight = columnKeys.reduce((height, propName) => {
+    if (types[propName]?.type !== 'image') return height;
+    const size = typeof _imagePropOptions === 'function' ? _imagePropOptions(types[propName]).cellSize : 64;
+    return Math.max(height, size + 8);
+  }, base);
+  if (typeof getDbColumnCellDisplay !== 'function') return imageHeight;
   let maxLines = 1;
   columnKeys.forEach(propName => {
     const display = getDbColumnCellDisplay(dbPath, propName, ctx);
     if (display?.overflow === 'wrap') maxLines = Math.max(maxLines, Math.min(10, Number(display.lines) || 1));
   });
-  return base + (maxLines - 1) * 16;
+  return Math.max(imageHeight, base + (maxLines - 1) * 16);
 }
 
 function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
@@ -620,6 +677,35 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   nameCell.style.setProperty('--db-tree-depth', String(depth));
   _dbTreeApplyPinnedCell(nameCell, labelKey, pinnedOffsets);
   _dbTreeApplyCellPresentation(nameCell, node.label, labelKey, dbPath, ctx);
+  nameCell.dataset.cellOverflow = 'clip';
+  const selectedEntities = _ensureSelectedEntities(ctx);
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'row-select-cb';
+  checkbox.dataset.entityName = node.entityName;
+  checkbox.dataset.e2eId = _dbE2eId(ctx, 'tree-select', node.entityName);
+  checkbox.setAttribute('aria-label', `トピック選択: ${node.entityName}`);
+  checkbox.checked = selectedEntities.has(node.entityName);
+  row.classList.toggle('row-selected', checkbox.checked);
+  checkbox.addEventListener('click', event => {
+    event.stopPropagation();
+    const names = ctx._lastEntityNames || [];
+    const anchor = names.indexOf(ctx._dbTreeSelectionAnchor);
+    const end = names.indexOf(node.entityName);
+    const range = event.shiftKey && anchor >= 0 && end >= 0
+      ? names.slice(Math.min(anchor, end), Math.max(anchor, end) + 1) : [node.entityName];
+    range.forEach(name => checkbox.checked ? selectedEntities.add(name) : selectedEntities.delete(name));
+    ctx._dbTreeSelectionAnchor = node.entityName;
+    // Keep the clicked input mounted until its native input/change events and
+    // keyboard focus complete; rebuilding rows here suppresses those events.
+    parentEl.querySelectorAll('.row-select-cb').forEach(input => {
+      input.checked = selectedEntities.has(input.dataset.entityName);
+      input.closest('.db-tree-row')?.classList.toggle('row-selected', input.checked);
+    });
+    _updateBulkEditBar(ctx);
+  });
+  checkbox.addEventListener('pointerdown', event => event.stopPropagation());
+  nameCell.appendChild(checkbox);
   const grip = document.createElement('span');
   grip.className = 'db-tree-grip';
   grip.innerHTML = lucide('gripVertical', 13);
@@ -629,9 +715,12 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   const caret = document.createElement('button');
   caret.type = 'button';
   caret.className = 'db-tree-caret';
+  caret.dataset.e2eId = _dbE2eId(ctx, 'tree-caret', node.entityName);
+  caret.setAttribute('aria-label', `${node.label}: 子トピックはありません`);
   if (node.children.length) {
     caret.innerHTML = lucide(stateInfo.collapsed.has(node.entityName) ? 'chevronRight' : 'chevronDown', 14);
     caret.title = stateInfo.collapsed.has(node.entityName) ? '展開' : '折りたたむ';
+    caret.setAttribute('aria-label', `${caret.title}: ${node.label}`);
     caret.addEventListener('click', event => {
       event.stopPropagation();
       if (stateInfo.collapsed.has(node.entityName)) stateInfo.collapsed.delete(node.entityName);
@@ -649,6 +738,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   const label = document.createElement('span');
   label.className = 'db-tree-label';
   label.textContent = node.label;
+  label.title = node.label;
   if (_dbTreeEditableProperty(dbPath, ctx, config.labelProp, config)) {
     label.title = 'ダブルクリックして編集';
     label.addEventListener('dblclick', event => {
@@ -663,18 +753,64 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     count.textContent = String(node.children.length);
     nameCell.appendChild(count);
   }
+  const actions = document.createElement('span');
+  actions.className = 'db-tree-name-actions';
+  const action = (className, icon, title, handler) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.dataset.e2eId = _dbE2eId(ctx, className, node.entityName);
+    button.innerHTML = lucide(icon, 14);
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.addEventListener('pointerdown', event => event.stopPropagation());
+    button.addEventListener('dragstart', event => { event.preventDefault(); event.stopPropagation(); });
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      try { await handler(event); }
+      catch (error) { showStatus(error?.message || 'トピックの操作に失敗しました', true); }
+    });
+    actions.appendChild(button);
+  };
+  action('entity-row-open-btn', 'externalLink', '既定パネルで開く', event => {
+    const panel = getDbViewConfig(dbPath).defaultPanel || 'right-sidebar';
+    const path = row.dataset.meldexEntityPath;
+    const sourceEl = event.currentTarget;
+    if (['right-sidebar', 'float', 'sidebar'].includes(panel)) {
+      const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || ctx.paneId || '';
+      const options = { linkType: 'entity', sourceEl, sourcePaneId };
+      if (typeof openLinkInRightSidebar === 'function') return openLinkInRightSidebar(path, node.entityName, options);
+      if (typeof openLinkInRightPane === 'function') return openLinkInRightPane(path, node.entityName, options);
+    } else if (typeof openLinkInMainPane === 'function') return openLinkInMainPane(path, node.entityName, { linkType: 'entity' });
+    if (typeof selectEntity === 'function') return selectEntity(path);
+  });
+  action('entity-row-more-btn', 'moreHorizontal', `トピックのメニュー: ${node.entityName}`,
+    event => showDbCardContextMenu(event, dbPath, node.entityName));
+  nameCell.appendChild(actions);
   row.appendChild(nameCell);
 
   extraProps.forEach(propName => {
     const cell = document.createElement('div');
     cell.className = 'db-tree-value-cell';
     cell.dataset.propName = propName;
+    cell.dataset.e2eId = _dbE2eId(ctx, 'tree-value', `${node.entityName}:${propName}`);
     const rawValue = _dbTreeFirstValue(node.entityData, propName, ctx?.filter ?? state.filter ?? 'disabled');
     const displayValue = _dbTreeDisplayValue(rawValue);
     const cellText = document.createElement('span');
     cellText.className = 'db-tree-cell-text';
-    cellText.textContent = displayValue;
-    cell.appendChild(cellText);
+    const typeConfig = getPropertyTypes(dbPath, ctx)?.[propName];
+    const typed = ['image', 'checkbox'].includes(typeConfig?.type) && typeof createTypedValueElement === 'function';
+    if (typed) {
+      const raw = node.entityData[propName] || [];
+      const candidate = raw.find(value => value.value === rawValue) || { value: rawValue, status: '採用' };
+      cell.appendChild(createTypedValueElement(candidate, row.dataset.meldexEntityPath, propName,
+        typeof getThumbnailSize === 'function' ? getThumbnailSize(dbPath, { ctx }) : 'small', typeConfig,
+        { dbPath, ctx, filter: ctx.filter, imagePreviewCount: typeof getCellImageThumbCount === 'function' ? getCellImageThumbCount(dbPath, { ctx }) : 3 }));
+      cell.classList.add('db-tree-typed-cell');
+    } else {
+      cellText.textContent = displayValue;
+      cell.appendChild(cellText);
+    }
     _dbTreeApplyPinnedCell(cell, propName, pinnedOffsets);
     _dbTreeApplyCellPresentation(cell, rawValue, propName, dbPath, ctx);
     cell.title = _dbTreeEditableProperty(dbPath, ctx, propName, config)
@@ -684,7 +820,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     if (propName === config.colorProp && String(rawValue || '')) {
       cellText.style.color = String(rawValue);
     }
-    if (_dbTreeEditableProperty(dbPath, ctx, propName, config)) {
+    if (!typed && _dbTreeEditableProperty(dbPath, ctx, propName, config)) {
       cell.tabIndex = 0;
       cell.addEventListener('dblclick', event => {
         event.stopPropagation();
@@ -705,6 +841,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     const button = document.createElement('button');
     button.type = 'button';
     button.innerHTML = lucide(direction < 0 ? 'arrowUp' : 'arrowDown', 12);
+    button.dataset.e2eId = _dbE2eId(ctx, 'tree-move-' + direction, node.entityName);
     button.title = direction < 0 ? '同じ階層で前へ' : '同じ階層で次へ';
     button.disabled = !config.orderProp || !_dbTreeUsesHierarchyOrder(dbPath, ctx);
     if (!_dbTreeUsesHierarchyOrder(dbPath, ctx)) {
@@ -725,10 +862,16 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     parentEl.querySelectorAll('.db-tree-row[aria-selected="true"]').forEach(el => el.setAttribute('aria-selected', 'false'));
     row.setAttribute('aria-selected', 'true');
   });
+  row.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    showDbCardContextMenu(event, dbPath, node.entityName);
+  });
   row.addEventListener('keydown', event => {
     if (event.target !== row || event.key !== 'Enter' || event.isComposing) return;
     event.preventDefault();
-    _dbTreeEditProperty(dbPath, ctx, node, config.labelProp, config);
+    if (config.labelProp) _dbTreeEditProperty(dbPath, ctx, node, config.labelProp, config);
+    else actions.querySelector('.entity-row-open-btn')?.click();
   });
   row.addEventListener('dragstart', event => {
     stateInfo.dragging = node.entityName;
@@ -825,18 +968,32 @@ function renderDbTreeView(ctx) {
   toolbar.className = 'db-tree-toolbar';
   const search = document.createElement('input');
   search.type = 'search';
+  search.dataset.e2eId = _dbE2eId(ctx, 'tree-search', dbPath);
   search.placeholder = 'ツリーを検索';
   search.setAttribute('aria-label', 'ツリーを検索');
   const expand = document.createElement('button');
   expand.type = 'button';
+  expand.dataset.e2eId = _dbE2eId(ctx, 'tree-expand-all', dbPath);
   expand.innerHTML = lucide('unfoldVertical', 14) + ' すべて展開';
   const collapse = document.createElement('button');
   collapse.type = 'button';
+  collapse.dataset.e2eId = _dbE2eId(ctx, 'tree-collapse-all', dbPath);
   collapse.innerHTML = lucide('foldVertical', 14) + ' すべて折りたたむ';
   const settings = document.createElement('button');
   settings.type = 'button';
+  settings.dataset.e2eId = _dbE2eId(ctx, 'tree-settings', dbPath);
   settings.innerHTML = lucide('settings', 14) + ' ツリー設定';
   toolbar.append(search, expand, collapse, settings);
+  const changeParent = document.createElement('button');
+  changeParent.type = 'button';
+  changeParent.dataset.e2eId = _dbE2eId(ctx, 'tree-change-parent', dbPath);
+  changeParent.innerHTML = lucide('cornerDownRight', 14) + ' 親を変更';
+  changeParent.addEventListener('click', () => {
+    _dbTreeOpenOptions(ctx);
+    if (!ctx._dbTreeViewState?.selected) showStatus('親を変更するトピックの行を選択してください');
+    document.querySelector('#detail-tab-db-tree .db-tree-parent-select')?.focus();
+  });
+  toolbar.appendChild(changeParent);
   container.appendChild(toolbar);
   _dbTreeSetOptionTabVisible(true, ctx);
 
@@ -846,16 +1003,36 @@ function renderDbTreeView(ctx) {
     const title = document.createElement('strong');
     title.textContent = '親を表す列を選択してください';
     const hint = document.createElement('span');
-    hint.textContent = '同じシート内のトピックを参照する列を使って階層を作ります。';
+    hint.textContent = '現在はすべて最上位です。「親を表す列」を設定してから、行を選んで「親を変更」するか、親にしたい行の中央へドラッグすると階層を作れます。';
     const button = document.createElement('button');
     button.type = 'button';
+    button.dataset.e2eId = _dbE2eId(ctx, 'tree-setup-settings', dbPath);
     button.className = 'primary';
     button.textContent = 'ツリー設定を開く';
     button.addEventListener('click', () => _dbTreeOpenOptions(ctx));
     empty.append(title, hint, button);
     container.appendChild(empty);
-    settings.addEventListener('click', () => _dbTreeOpenOptions(ctx));
-    return;
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.dataset.e2eId = _dbE2eId(ctx, 'tree-setup-create', dbPath);
+    create.textContent = '階層用の列を追加';
+    create.addEventListener('click', async () => {
+      create.disabled = true;
+      try {
+        const usedNames = new Set([...(data.properties || []), ...Object.keys(getPropertyTypes(dbPath, ctx) || {})]);
+        let propName = '親トピック';
+        for (let suffix = 2; usedNames.has(propName); suffix++) propName = `親トピック ${suffix}`;
+        if (!await setPropertyType(dbPath, propName, { type: 'relation', relationDb: '' }, ctx)) {
+          throw new Error('階層用の列を追加できませんでした');
+        }
+        setDbTreeViewConfig(dbPath, { ...config, parentProp: propName }, ctx);
+        await _dbTreeRefreshAfterEdit(dbPath, ctx);
+      } catch (error) {
+        showStatus(error?.message || '階層用の列を追加できませんでした', true);
+        create.disabled = false;
+      }
+    });
+    empty.appendChild(create);
   }
 
   const model = _dbTreeBuildModel(data, dbPath, ctx, config);
@@ -863,9 +1040,12 @@ function renderDbTreeView(ctx) {
   const stateInfo = _dbTreeState(ctx, dbPath, model, config);
   const presetOptions = [...new Set(model.nodes.flatMap(node => node.presets))]
     .sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  // A deleted/changed preset column must not leave an invisible active filter.
+  if (!presetOptions.includes(stateInfo.presetFilter)) stateInfo.presetFilter = '';
   if (presetOptions.length) {
     const presetFilter = document.createElement('select');
     presetFilter.className = 'db-tree-preset-filter';
+    presetFilter.dataset.e2eId = _dbE2eId(ctx, 'tree-preset-filter', dbPath);
     presetFilter.setAttribute('aria-label', 'タグプリセットで絞り込む');
     const all = document.createElement('option');
     all.value = '';
@@ -877,7 +1057,6 @@ function renderDbTreeView(ctx) {
       option.textContent = presetName;
       presetFilter.appendChild(option);
     });
-    if (!presetOptions.includes(stateInfo.presetFilter)) stateInfo.presetFilter = '';
     presetFilter.value = stateInfo.presetFilter;
     presetFilter.addEventListener('change', () => {
       stateInfo.presetFilter = presetFilter.value;
@@ -1003,8 +1182,10 @@ function renderDbTreeView(ctx) {
   const draw = () => {
     const visible = _dbTreeCombinedVisibility(model, stateInfo);
     visibleRows = _dbTreeFlattenVisible(model, stateInfo, visible);
+    ctx._lastEntityNames = visibleRows.map(({ node }) => node.entityName);
     lastWindow = '';
     renderWindow();
+    _syncPaneRowSelectHeader(ctx);
   };
   draw();
   list.addEventListener('scroll', () => {

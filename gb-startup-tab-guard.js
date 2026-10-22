@@ -61,7 +61,9 @@ const MeldexStartupTabGuard = (() => {
     if (!path) return { state: 'available' };
     const base = (typeof API_BASE !== 'undefined') ? API_BASE : '/api';
     const dbViewTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar']);
-    const endpoint = dbViewTypes.has(viewName)
+    const endpoint = viewName === 'entity'
+      ? (base + '/entity?path=' + encodeURIComponent(path))
+      : dbViewTypes.has(viewName)
       ? (base + '/check-type?path=' + encodeURIComponent(path))
       : (base + '/file-meta?path=' + encodeURIComponent(path));
     try {

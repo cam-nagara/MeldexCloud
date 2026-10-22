@@ -4,8 +4,25 @@
   max-width: 100%;
   flex-wrap: nowrap !important;
   overflow: visible !important;
+  white-space: nowrap;
 }
 .gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
+/* Item names stay on one line before width measurement and in overflow menus. */
+:is(.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar,
+    .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar,
+    .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar,
+    [role="toolbar"]:not([aria-orientation="vertical"])) :is(button, label, select, .tb-label),
+.gb-toolbar-overflow-host > :is(.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title),
+.db-view-tabs .view-tab-label {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+:is([class*="toolbar"], [id$="-toolbar"], .tl-settings) :is(button, select, .tb-label) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 .gb-toolbar-overflow-host > :is(.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title) {
   flex: 1 1 auto;
   min-width: 48px;
@@ -64,10 +81,10 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  white-space: normal;
+  white-space: nowrap;
 }
 .gb-tbo-row > :is(svg, .ico) { flex: 0 0 16px; width: 16px; height: 16px; }
-.gb-tbo-row > span { overflow-wrap: anywhere; }
+.gb-tbo-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gb-tbo-row > :is(input, select) { min-width: 0; max-width: 55%; margin-left: auto; }
 .gb-tbo-row:hover:not(:disabled), .gb-tbo-row.active { background: var(--ui-hover-bg, var(--bg3)); }
 .gb-tbo-row:disabled { opacity: .45; }

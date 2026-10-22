@@ -3,10 +3,17 @@
   'use strict';
   const api = () => globalThis.MeldexDbFormRuntime;
   const normalize = path => typeof _dbNormalizePath === 'function' ? _dbNormalizePath(path) : api().normalPath(path);
+  function canonicalPath(path) {
+    const base = typeof state !== 'undefined' ? state.vaultPath : '';
+    const resolved = globalThis.GBPathUtils?.resolveForClipboard?.(path, base) || path;
+    const value = normalize(resolved);
+    return /^[A-Za-z]:\//.test(value) || value.startsWith('//') ? value.toLowerCase() : value;
+  }
   function targetsParent(childPath, relation, parentPath) {
     const target = typeof _dbResolveRelationDbPath === 'function' ? _dbResolveRelationDbPath(childPath, relation) : relation.relationDb || childPath;
-    const parent = typeof _dbResolveConfiguredRelationPath === 'function' ? _dbResolveConfiguredRelationPath(childPath, parentPath) : parentPath;
-    return normalize(target) === normalize(parent);
+    // The parent is an actual API path; only the relation target is a configured path.
+    const parent = parentPath;
+    return canonicalPath(target) === canonicalPath(parent);
   }
   function resolve(config, types) {
     const find = column => column?.id
@@ -66,8 +73,7 @@
     };
     popup.append(button('列を読み込む', load), relation, fields, message);
     path.addEventListener('change', () => { types = null; generation++; message.textContent = '「列を読み込む」で設定を確認してください'; });
-    const close = _elAttachPopupCommon(popup, anchor, { childSelector: '.db-picker-popup,[aria-modal="true"]' });
-    popup.appendChild(button('適用', () => {
+    const apply = button('適用', () => {
       if (!types || loadedPath !== path.value.trim() || !relation.value) { message.textContent = '関連シートと親参照列を確認してください'; return; }
       const selected = [...fields.querySelectorAll('input:checked')].map(input => input.value).filter(name => name !== relation.value);
       if (!selected.length) { message.textContent = '表示する列を1つ以上選んでください'; return; }
@@ -76,14 +82,15 @@
         const target = layout.cells.find(item => item.id === cell.id);
         if (target) {
           const column = name => ({ id: types[name]?.property_id || '', name });
-          target.subform = { title: title.value.trim(), dbPath: loadedPath,
+          target.subform = { ...target.subform, title: title.value.trim(), dbPath: loadedPath,
+            relationProp: relation.value, fields: selected,
             relationColumn: column(relation.value), columns: selected.map(column) };
         }
       });
       close(); ctx.rerender();
-    }));
-    popup.appendChild(button('キャンセル', close));
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+    });
+    apply.classList.add('gb-btn-primary');
+    const close = _elAttachPopupCommon(popup, anchor, { id: 'form-subform-settings', actions: [apply] });
     if (path.value) load();
   }
   function render(cell, ctx) {
@@ -139,9 +146,9 @@
       panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', label);
       const close = _elAttachPopupCommon(panel, anchor || root, {
         beforeClose: () => api().confirmLeave(panel),
+        onClose: load,
         childSelector: '.gb-fmt-popup,.gb-palette,.gb-palette-popup,.status-dropdown,.cell-inline-dd,.user-dropdown,.gb-user-picker-dd,[aria-modal="true"]',
       });
-      panel.appendChild(button('閉じる', async () => { if (await close()) load(); }));
       return { panel, close };
     }
     async function openNew(types) {
@@ -178,5 +185,5 @@
     requestAnimationFrame(load);
     return root;
   }
-  globalThis.MeldexDbFormSubform = { render, settings, matches, parentTokens, resolve };
+  globalThis.MeldexDbFormSubform = { render, settings, matches, parentTokens, resolve, targetsParent };
 })();

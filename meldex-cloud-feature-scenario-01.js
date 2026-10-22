@@ -578,7 +578,7 @@ class ScriptNoteEditor {
         this._showConflictPending(documentKey, savePath);
         return false;
       }
-      if (saveResult?.skipped || saveResult?.missing) {
+      if (saveResult?.skipped || saveResult?.missing || saveResult?.queued) {
         this._dirty = true;
         if (typeof showStatus === 'function') showStatus('保存先が見つかりません。名前を付けて保存してください', true);
         return false;

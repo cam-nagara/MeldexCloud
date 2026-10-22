@@ -145,7 +145,7 @@ function _resolveToolMenuButton(event) {
   return null;
 }
 
-function showToolMenu(e, toolType) {
+function showToolMenu(e, toolType, component) {
   e.stopPropagation();
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
@@ -162,7 +162,7 @@ function showToolMenu(e, toolType) {
   dd.setAttribute('aria-label', 'ツールメニュー');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;';
 
-  const items = buildToolMenuItems(toolType);
+  const items = buildToolMenuItems(toolType, component);
   _renderToolMenuItems(dd, items, false, dd);
 
   const rect = btn ? btn.getBoundingClientRect() : { left: e.clientX, bottom: e.clientY };

@@ -66,6 +66,7 @@
 
   /** @type {Map<string, DocRecord>} */
   const docs = new Map();
+  const uncertainWrites = new WeakMap();
   /** @type {Map<string, string>} path -> stable documentKey */
   const pathAliases = new Map();
   const CONFLICT_STORAGE_KEY = 'meldex-document-save-conflicts-v1';
@@ -494,6 +495,12 @@
     return !!(doc && doc.inFlight);
   }
 
+  function hasUnsettledSaveFrom(documentKey, hostRef) {
+    const doc = docs.get(documentKey);
+    return !!doc && (doc.inFlight?.hostRef === hostRef || doc.pendingFollowUp?.hostRef === hostRef
+      || uncertainWrites.get(hostRef)?.has(doc.key));
+  }
+
   // 「保存理由（入力停止、blurと移動先、タブ切替、終了前）の記録」（計画書§4.1）。
   // 直近1件だけを保持する軽量な記録に留める（永続化・履歴一覧化はスコープ外）。
   function markDirty(documentKey, hostRef, opts) {
@@ -517,16 +524,55 @@
     }
   }
 
+  function _uncertainWriteError(error) {
+    return error?.isTimeout || error?.name === 'AbortError'
+      || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
+      || Number(error?.status) >= 500;
+  }
+
+  async function _confirmedSend(doc, hostRef, path, md, sendFn, previousResult) {
+    // The note adapter already retains its exact serialized payload, including
+    // frontmatter. Other document adapters retain their immutable send closure.
+    if (sendFn.confirmsWrites || !hostRef || !['object', 'function'].includes(typeof hostRef)) {
+      return sendFn(previousResult || null);
+    }
+    const writes = uncertainWrites.get(hostRef) || new Map();
+    uncertainWrites.set(hostRef, writes);
+    const pending = writes.get(doc.key);
+    if (pending) {
+      const recovered = await pending.sendFn(pending.previousResult);
+      if (recovered?.skipped || recovered?.queued) return recovered;
+      writes.delete(doc.key);
+      if (pending.path === path && pending.md === md) return recovered;
+      previousResult = Object.assign({}, recovered, { savedMd: pending.md, savedPath: pending.path });
+    }
+    try {
+      return await sendFn(previousResult || null);
+    } catch (error) {
+      if (!_uncertainWriteError(error)) throw error;
+      writes.set(doc.key, { path, md, sendFn, previousResult: previousResult || null });
+      // Replaying this exact request is safe only at an idempotent CAS endpoint.
+      // Never fetch a newer revision and attach it to unconfirmed user content.
+      const recovered = await sendFn(previousResult || null);
+      if (!recovered?.skipped && !recovered?.queued) writes.delete(doc.key);
+      return recovered;
+    }
+  }
+
   function _startSend(doc, hostRef, path, md, sendFn, previousResult) {
     doc.state = STATES.SAVING;
     doc.participants.add(hostRef);
     // 同じ文書キュー内の追送だけは直前の成功応答を渡し、CAS revisionを
     // R0→R1へ連鎖させる。path/contentは各requestSave呼出時の固定値を維持する。
-    const promise = Promise.resolve().then(() => sendFn(previousResult || null)).then(
+    const promise = Promise.resolve().then(() => _confirmedSend(doc, hostRef, path, md, sendFn, previousResult)).then(
       (res) => {
+        const savedMd = typeof res?.saved_frontmatter === 'string'
+          ? res.saved_frontmatter + md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+          : md;
+        const saved = Object.assign({}, res, { savedMd, savedPath: path, joined: false });
         _finishInFlight(doc, promise);
-        _maybeFlushPending(doc, res, hostRef);
-        return Object.assign({}, res, { savedMd: md, savedPath: path, joined: false });
+        flight.followUpPromise = _maybeFlushPending(doc, saved, hostRef, md) || null;
+        return saved;
       },
       (err) => {
         _finishInFlight(doc, promise);
@@ -540,19 +586,20 @@
           doc.followUpPromise = null;
           doc.state = STATES.CONFLICT_PENDING;
         } else {
-          _maybeFlushPending(doc);
+          flight.followUpPromise = _maybeFlushPending(doc) || null;
         }
         throw err;
       },
     );
-    doc.inFlight = { md, path, promise };
+    const flight = { md, path, promise, hostRef, followUpPromise: null };
+    doc.inFlight = flight;
     return promise;
   }
 
   // 保存中に発生した編集を最新1件へcoalesceする（計画書§5工程1-2・工程1-6）。
   // 同時に複数回 requestSave が呼ばれても、進行中の保存が終わった直後に
   // 実行されるのは「最後に上書きされた1件」だけになる。
-  function _maybeFlushPending(doc, previousResult, previousHostRef) {
+  function _maybeFlushPending(doc, previousResult, previousHostRef, previousMd) {
     if (!doc.pendingFollowUp || doc.inFlight) return;
     const pending = doc.pendingFollowUp;
     doc.pendingFollowUp = null;
@@ -563,7 +610,15 @@
     const chainedResult = previousHostRef && pending.hostRef === previousHostRef
       ? previousResult
       : null;
-    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
+    // B (saving) -> A (queued revert) -> B (latest) has already reached disk.
+    // Retire the obsolete revert and acknowledge the actual saved metadata to
+    // every waiter, without publishing an unnecessary duplicate write.
+    if (chainedResult && pending.path === chainedResult.savedPath
+        && (pending.md === previousMd || pending.md === chainedResult.savedMd)) {
+      doc.state = STATES.CLEAN;
+      return Promise.resolve(chainedResult);
+    }
+    return _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
   }
 
   /**
@@ -609,7 +664,8 @@
       return _startSend(doc, hostRef, path, md, sendFn, null);
     }
 
-    if (doc.inFlight.md === md && doc.inFlight.path === path) {
+    const replacesOwnPending = doc.inFlight.hostRef === hostRef && doc.pendingFollowUp?.hostRef === hostRef;
+    if (doc.inFlight.md === md && doc.inFlight.path === path && !replacesOwnPending) {
       // 同一内容の保存が既に進行中 → 2本目を送らず合流する。
       return doc.inFlight.promise.then((res) => Object.assign({}, res, { joined: true }));
     }
@@ -617,9 +673,14 @@
     // 内容が異なる → 「最新1件」スロットを上書きし、既存の待機者は同じPromiseへ合流する。
     doc.pendingFollowUp = { md, path, hostRef, sendFn };
     if (!doc.followUpPromise) {
-      doc.followUpPromise = doc.inFlight.promise.catch(() => {}).then(() => {
+      const flight = doc.inFlight;
+      doc.followUpPromise = flight.promise.catch(() => {}).then(() => {
         doc.followUpPromise = null;
         _maybeFlushPending(doc);
+        // A follow-up may already have completed before this microtask runs.
+        // Keep its promise on the originating flight instead of guessing from
+        // the current inFlight slot (also covers a same-content retirement).
+        if (flight.followUpPromise) return flight.followUpPromise;
         // _maybeFlushPending は pendingFollowUp を doc.inFlight へ差し替えるだけなので、
         // ここで最終的な結果を待つには「今の doc.inFlight」を参照する必要がある。
         if (doc.inFlight) return doc.inFlight.promise;
@@ -750,6 +811,7 @@
     if (!doc || !doc.conflict) return false;
     if (generation != null && doc.conflict.generation !== generation) return false;
     doc.conflict = null;
+    doc.participants.forEach(host => uncertainWrites.get(host)?.delete(doc.key));
     doc.state = doc.inFlight ? STATES.SAVING : STATES.CLEAN;
     _persistConflict(doc);
     return true;
@@ -796,6 +858,7 @@
     getParticipants,
     getState,
     isSaving,
+    hasUnsettledSaveFrom,
     isConflictPending,
     getConflict,
     getLastRequest,

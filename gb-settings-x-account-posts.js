@@ -122,6 +122,8 @@
     let message = `@${data.username} のポストを保存しました。新規${data.created || 0}件、更新${data.updated || 0}件、取得${data.fetched || 0}件。`;
     if (data.skipped) message += ` 保存対象外${data.skipped}件。`;
     if (data.media_failed) message += ` メディア取得失敗${data.media_failed}件。`;
+    if (data.translation_pending_existing || data.translation_pending_replies) message += ` 翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`;
+    if (data.reply_unavailable) message += ` 返信取得失敗${data.reply_unavailable}件。`;
     if (data.stop_reason === 'repeated_pagination_token') message += ' X APIから同じページ情報が返されたため、安全のため停止しました。もう一度実行してください。';
     if (data.api_limit_reached) message += ' X APIの仕様上、最新3,200件が上限です。';
     return message;
@@ -171,7 +173,10 @@
     try {
       const data = await runBackgroundJob(
         '/x-bookmarks/account-posts/sync',
-        { username },
+        { username, ack_cost_notice: true,
+          include_replies: document.getElementById('x-account-posts-include-replies')?.checked === true,
+          ack_reply_cost_notice: document.getElementById('x-account-posts-include-replies')?.checked === true,
+          reply_budget_yen: Math.ceil(3200 * 93 * 0.015 * 150) },
         {
           resumeJobId: activeJobId || undefined,
           // 3,200件と画像を保存すると1時間を超えるため、時間だけを理由に失敗扱いにしない。
@@ -231,7 +236,9 @@
   }
 
   async function confirmAccountPostsCost(username) {
-    const message = `@${username} のポストを最大3,200件まで保存します。\nX APIの従量課金が発生します。料金と残高はX Developer Consoleで確認してください。\n\n続けますか？`;
+    const withReplies = document.getElementById('x-account-posts-include-replies')?.checked === true;
+    const replyCost = withReplies ? '\n元ポストと参照元（最大2件）のそれぞれに、最大30件の返信も取得します。投稿者情報を含む概算上限は約669,600円です（重複を割り引かず計算）。' : '\n参照元と投稿者情報も含む概算上限は約21,600円です（重複を割り引かず計算）。';
+    const message = `@${username} のポストを最大3,200件まで保存します。\nポスト取得分は約2,400円（$16）の目安です。${replyCost}\n概算1ドル＝150円。フォルダ確認・税等は別で、実費は契約条件や料金変更によって変わります。料金と残高はX Developer Consoleで確認してください。\n\nこの件数と費用目安で取得を始めますか？`;
     if (typeof cfConfirm === 'function') {
       return !!await cfConfirm(message, { okLabel: '保存を開始', cancelLabel: 'キャンセル' });
     }
@@ -451,6 +458,8 @@
         <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
       <div id="x-account-posts-list" data-e2e-id="x-account-posts-list"></div>
+      <label class="gb-field"><span><input type="checkbox" id="x-account-posts-include-replies"> 手動取得で各ポストの返信を最大30件取得する（追加料金）</span></label>
+      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、投稿者アイコン付きのノートとして保存します。返信の追加取得は定期実行には適用されません。</div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
     `;
     const input = container.querySelector('#x-account-posts-username');

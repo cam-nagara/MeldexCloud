@@ -225,7 +225,11 @@ function _globalFilterShouldBackgroundScan(filter = _globalFilter) {
 }
 function _showDatabaseByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilterHasType('database'); }
 function _showEntityByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilter.types.includes('entity') || _globalFilterHasType('database'); }
-function _showRegularNodeByGlobalFilter(item) { return !_isGlobalFilterEnabled() || matchesGlobalFilter(item); }
+function _showRegularNodeByGlobalFilter(item) {
+  return !_isGlobalFilterEnabled() || matchesGlobalFilter(item)
+    || item?.type === 'form-app' && (item.children || []).some(child =>
+      child.type === 'database' && _showDatabaseByGlobalFilter() && matchesGlobalFilter(child));
+}
 
 function _outlinerNormalizeComparePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -244,6 +248,7 @@ function _outlinerNodeIsCurrentOrSelected(node, data) {
 function _outlinerContainerNodeMatchesFilter(data) {
   if (!data) return false;
   if (data._isRoot) return true;
+  if (data.type === 'form-app') return _showRegularNodeByGlobalFilter(data);
   if (data.type === 'database') return _showDatabaseByGlobalFilter() && matchesGlobalFilter(data);
   if (data.type === 'folder') {
     return _hasAllGlobalTypesSelected()
@@ -746,7 +751,7 @@ function _folderHasFilterVisibleDescendant(childrenDiv, path) {
     for (const it of items) {
       if (!it || !it.path || seen.has(it.path)) continue;
       seen.add(it.path);
-      if (it.type === 'folder') {
+      if (it.type === 'folder' || it.type === 'form-app') {
         const r = walk(it.path);
         if (r === true) return true;
         if (r === 'unknown') unknown = true;
@@ -774,7 +779,7 @@ function _hideEmptyFilteredFolders() {
   allNodes.forEach(node => {
     const data = node._nodeData;
     if (!data) return;
-    if (data.type !== 'folder' && data.type !== 'database' && !data._isRoot) return;
+    if (data.type !== 'folder' && data.type !== 'database' && data.type !== 'form-app' && !data._isRoot) return;
     const childrenDiv = node.querySelector(':scope > .tree-children');
     if (!childrenDiv) return;
     const virtualManaged = childrenDiv.dataset.virtual === 'true' || !!childrenDiv._virtualOwnerContainer;

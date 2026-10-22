@@ -10288,6 +10288,277 @@
 
 ;
 
+/* === gb-note-templates.js === */
+;
+/* Reusable Markdown notes. Sheet defaults are durable snapshots of a template. */
+(function () {
+  'use strict';
+  const key = 'meldex-note-templates-v1';
+  const endpoint = '/personal-preferences/note-templates';
+  const clone = value => JSON.parse(JSON.stringify(value));
+  function currentContent(editor) {
+    const markdown = typeof _noteMarkdownFromEditorNonDestructive === 'function' ? _noteMarkdownFromEditorNonDestructive(editor) : htmlToMd(editor.innerHTML);
+    const frontmatter = editor.dataset.frontmatter || '';
+    return frontmatter && markdown.startsWith(frontmatter) ? markdown.slice(frontmatter.length) : markdown;
+  }
+  function validate(value) {
+    if (!value || value.schemaVersion !== 1 || typeof value.name !== 'string'
+      || !value.name.trim() || typeof value.content !== 'string'
+      || typeof value.id !== 'string' || !value.id.trim()) throw new Error('未対応または不正なノートテンプレートです');
+    return clone(value);
+  }
+  function validateList(templates) {
+    if (!Array.isArray(templates)) throw new Error('ノートテンプレート一覧が不正です');
+    const result = templates.map(validate);
+    if (new Set(result.map(item => item.id)).size !== result.length) throw new Error('ノートテンプレートのIDが重複しています');
+    return result;
+  }
+  async function load(options = {}) {
+    const remote = options.deviceOnly ? { available: false } : await apiFetch(endpoint, { silentError: true }).catch(error => {
+      if (window.MeldexStandaloneFS && Number(error.status || error.statusCode || error.response?.status) === 404) return { available: false };
+      throw error;
+    });
+    if (remote.available) {
+      if (remote.payload && remote.payload.schemaVersion !== 1) throw new Error('未対応のノートテンプレート一覧です');
+      const templates = validateList(remote.payload ? remote.payload.templates : []);
+      return { templates, payload: remote.payload, remote: true, revision: remote.revision, deviceAvailable: localStorage.getItem(key) != null };
+    }
+    const storageRevision = localStorage.getItem(key);
+    const saved = JSON.parse(storageRevision || '{"templates":[]}');
+    if (saved.schemaVersion != null && saved.schemaVersion !== 1 || !Array.isArray(saved.templates)) throw new Error('未対応または不正なノートテンプレート一覧です');
+    return { templates: validateList(saved.templates), payload: saved, remote: false, storageRevision };
+  }
+  async function persist(library, templates) {
+    if (library.remote) {
+      const result = await apiFetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: { ...library.payload, schemaVersion: 1, templates }, expectedRevision: library.revision || null }) });
+      if (!result.ok) throw new Error('テンプレートを保存できませんでした。一覧を開き直してください');
+      library.revision = result.revision;
+    } else {
+      const write = () => {
+        if (localStorage.getItem(key) !== library.storageRevision) throw new Error('テンプレート一覧が変更されています。開き直してください');
+        const text = JSON.stringify({ ...library.payload, schemaVersion: 1, templates }); localStorage.setItem(key, text); library.storageRevision = text;
+      };
+      if (navigator.locks?.request) await navigator.locks.request(key, write); else write();
+    }
+    library.templates = templates;
+  }
+  function button(label, run) {
+    const el = document.createElement('button'); el.type = 'button'; el.className = 'gb-btn'; el.textContent = label;
+    el.addEventListener('click', run); return el;
+  }
+  function confirmAction(message) {
+    if (!window.MeldexStandaloneFS) return cfConfirm(message);
+    return new Promise(resolve => {
+      let accepted = false;
+      const body = document.createElement('p'); body.textContent = message;
+      const cancel = button('キャンセル', () => modal.close('cancel'));
+      const accept = button('決定', () => { accepted = true; modal.close('confirm'); });
+      const modal = GBUI.createModal({ title: '確認', body, footer: [cancel, accept],
+        variant: 'standard', initialFocus: cancel, onClose: () => resolve(accepted) });
+      modal.open();
+    });
+  }
+  async function show(options = {}) {
+    const editor = options.editor || document.getElementById('page-content');
+    const path = editor?.dataset.path;
+    // Capture the source before the asynchronous library read can switch the active file.
+    const sourceContent = options.registerCurrent && editor ? currentContent(editor) : '';
+    const sourceName = String(path || '').split(/[\\/]/).pop()?.replace(/\.md$/i, '') || 'ノート';
+    const library = await load({ deviceOnly: options.deviceOnly });
+    const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
+    const body = document.createElement('div'); body.className = 'note-template-dialog';
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', 'ノートテンプレート');
+    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
+    const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
+    content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
+    const status = document.createElement('p'); status.setAttribute('role', 'status');
+    const help = document.createElement('p'); help.textContent = options.dbPath
+      ? 'このシートで今後作成するトピックに、選択したノートの内容をコピーします。既存トピックは変更しません。'
+      : '現在のノートから登録できます。本文はMarkdownで編集できます。';
+    body.append(help, GBUI.createField({ label: 'ノートテンプレート', input: select }),
+      GBUI.createField({ label: 'テンプレート名', input: name }),
+      GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
+    const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末'); body.prepend(location);
+    const fill = id => {
+      select.replaceChildren(new Option('新しいテンプレート', ''));
+      library.templates.forEach(item => select.add(new Option(item.name, item.id)));
+      select.value = id || '';
+    };
+    fill();
+    if (options.registerCurrent) { name.value = sourceName; content.value = sourceContent; }
+    select.addEventListener('change', () => {
+      const item = library.templates.find(item => item.id === select.value);
+      name.value = item?.name || ''; content.value = item?.content || '';
+    });
+    let busy = false;
+    const run = fn => async () => {
+      if (busy) return; busy = true; status.textContent = '';
+      const controls = [...modal.modal.querySelectorAll('input,textarea,select,button')].map(control => [control, control.disabled]);
+      controls.forEach(([control]) => { control.disabled = true; });
+      try { await fn(); } catch (error) { status.textContent = error.userMessage || error.message; }
+      finally { busy = false; controls.forEach(([control, disabled]) => { control.disabled = disabled; }); }
+    };
+    const save = button('テンプレートを保存', run(async () => {
+      const item = validate({ ...library.templates.find(item => item.id === select.value), schemaVersion: 1,
+        id: select.value || crypto.randomUUID(), name: name.value.trim(), content: content.value });
+      if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
+      await persist(library, [...library.templates.filter(other => other.id !== item.id), item]); fill(item.id); status.textContent = '保存しました';
+    }));
+    const remove = button('テンプレートを削除', run(async () => {
+      if (!select.value) return;
+      if (!await confirmAction('選択したノートテンプレートを削除しますか？')) return;
+      await persist(library, library.templates.filter(item => item.id !== select.value));
+      fill(); name.value = ''; content.value = ''; status.textContent = '削除しました';
+    }));
+    const use = button(options.dbPath ? 'シートに設定' : 'ノートに適用', run(async () => {
+      const item = library.templates.find(item => item.id === select.value);
+      if (!item) throw new Error('保存済みのテンプレートを選択してください');
+      if (name.value.trim() !== item.name || content.value !== item.content) throw new Error('変更したテンプレートを保存してから適用してください');
+      if (options.dbPath) {
+        await saveSheetDefault(options.dbPath, item, metadata.schema_revision || 0);
+      } else {
+        if (!editor?.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先のノートを開き直してください');
+        if (!await confirmAction('ノート本文を選択したテンプレートに置き換えますか？')) return;
+        if (!editor.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先が変わりました');
+        editor.focus(); const range = document.createRange(); range.selectNodeContents(editor);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        document.execCommand('insertHTML', false, mdToHtml(item.content, { basePath: path }));
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      modal.close('applied');
+    }));
+    const footer = [save, remove];
+    if (library.deviceAvailable || options.deviceOnly) {
+      footer.unshift(button(options.deviceOnly ? '個人設定のテンプレートに戻る' : 'この端末のテンプレートを開く', run(async () => {
+        const item = library.templates.find(item => item.id === select.value);
+        const dirty = name.value.trim() !== (item?.name || '') || content.value !== (item?.content || '');
+        if (dirty && !await confirmAction('保存していないテンプレートの変更を破棄して保存先を切り替えますか？')) return;
+        await modal.close('switched');
+        await show({ ...options, deviceOnly: !options.deviceOnly, registerCurrent: false });
+      })));
+    }
+    if (options.dbPath) {
+      status.textContent = '設定中: ' + (metadata.note_template?.name || 'なし');
+      footer.push(button('シートの設定を解除', run(async () => { await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0); modal.close('applied'); })));
+    } else if (editor) {
+      footer.unshift(button('現在のノートから作成', () => {
+        select.value = ''; name.value = ''; content.value = currentContent(editor); name.focus();
+      }));
+    }
+    footer.push(use);
+    const modal = GBUI.createModal({ id: 'note-templates', title: options.dbPath ? 'シートのノートテンプレート' : options.registerCurrent ? 'テンプレートに登録' : 'ノートテンプレート',
+      body, footer, variant: 'standard', geometryKey: 'note-templates', initialFocus: options.registerCurrent ? name : select,
+      onBeforeClose: reason => !busy || reason === 'applied' || reason === 'switched' });
+    modal.open();
+  }
+  async function saveSheetDefault(path, template, revision) {
+    const payload = { note_template: template ? validate(template) : null };
+    if (window.GbDbSchemaMutation?.saveMetadata) {
+      await window.GbDbSchemaMutation.saveMetadata(path, payload, { dbPath: path, dbMetadata: { schema_revision: revision } });
+    } else {
+      await apiPut('/db-metadata?path=' + encodeURIComponent(path), { ...payload,
+        expected_schema_revision: revision, operation_id: crypto.randomUUID() });
+    }
+    showStatus(template ? '新規トピックのノートテンプレートを設定しました' : 'ノートテンプレートの設定を解除しました');
+  }
+  window.MeldexNoteTemplates = Object.freeze({ show, load, validate });
+})();
+
+;
+
+/* === gb-sheet-default-form.js === */
+;
+/* A form-owned sheet opens its topics with the same live form definition. */
+(function () {
+  'use strict';
+  let sequence = 0;
+  const normal = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  async function mount(grid, data, path, metadata, options) {
+    if (!metadata?.default_form_path) return null;
+    const wrapper = document.createElement('section'); wrapper.className = 'meldex-sheet-topic-form';
+    grid.before(wrapper); wrapper.appendChild(grid);
+    const tabs = document.createElement('div'); tabs.className = 'el-tabbar'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'トピックの表示');
+    wrapper.prepend(tabs);
+    const panel = document.createElement('div'); panel.className = 'meldex-sheet-topic-form-panel'; wrapper.appendChild(panel);
+    panel.setAttribute('role', 'tabpanel'); grid.setAttribute('role', 'tabpanel');
+    const id = 'sheet-topic-form-' + (++sequence); panel.id = id; grid.id ||= id + '-columns';
+    const formTab = document.createElement('button'), columnsTab = document.createElement('button');
+    for (const [button, label, target] of [[formTab, 'フォーム', panel], [columnsTab, '列一覧', grid]]) {
+      button.type = 'button'; button.className = 'el-tab'; button.textContent = label; button.setAttribute('role', 'tab');
+      button.id = target.id + '-tab'; button.setAttribute('aria-controls', target.id); target.setAttribute('aria-labelledby', button.id); tabs.appendChild(button);
+    }
+    const show = form => {
+      grid.hidden = form; panel.hidden = !form;
+      for (const [button, selected] of [[formTab, form], [columnsTab, !form]]) {
+        button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; button.classList.toggle('active', selected);
+      }
+    };
+    columnsTab.addEventListener('click', async () => {
+      if (columnsTab.getAttribute('aria-selected') === 'true') return;
+      if (!await MeldexDbFormRuntime.confirmLeave(panel)) return;
+      renderEntityPropsGridInto(grid, data, path, { ...options, propTypes: metadata.property_types });
+      show(false);
+    });
+    formTab.addEventListener('click', async () => {
+      if (formTab.getAttribute('aria-selected') === 'true') return;
+      if (options.beforeWrite && !await options.beforeWrite()) return;
+      await render(true); show(true);
+    });
+    tabs.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault(); const target = event.key === 'Home' ? formTab : event.key === 'End' ? columnsTab : event.target === formTab ? columnsTab : formTab;
+      target.click(); target.focus();
+    });
+    show(true);
+    let renderGeneration = 0;
+    const render = async (refreshRecord = false) => {
+      const generation = ++renderGeneration;
+      panel.replaceChildren(document.createTextNode('フォームを読み込んでいます…'));
+      try {
+        const [loaded, record] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(metadata.default_form_path)),
+          refreshRecord ? apiFetch('/entity?path=' + encodeURIComponent(path)) : null]);
+        if (!panel.isConnected || generation !== renderGeneration) return;
+        if (record) Object.assign(data, record);
+        const doc = MeldexFormDocument.parse(loaded.content);
+        if (normal(doc.sheet.path) !== normal(options.parentDb)) {
+          const ids = await Promise.all([doc.sheet.path, options.parentDb].map(value => apiFetch('/file-id?path=' + encodeURIComponent(value))));
+          if (!ids[0]?.file_id || ids[0].file_id !== ids[1]?.file_id) throw new Error('フォームの参照先シートが変更されています');
+        }
+        if (!panel.isConnected || generation !== renderGeneration) return;
+        const types = metadata.property_types || {};
+        const config = normalizeDbFormConfig({ ...doc.formConfig, mode: 'entry' }, Object.keys(types), types);
+        const layout = doc.layout ? _elNormalizeLayout(doc.layout) : _elNormalizeLayout({ name: doc.title,
+          canvasSize: { w: 700, h: Math.max(200, config.fields.length * 160 + 20) },
+          cells: config.fields.map((prop, index) => ({ id: 'field-' + index, type: 'field', prop, x: 20, y: index * 160 + 10, w: 640, h: 150 })) });
+        layout.formConfig = MeldexDbFormModel.forLayout(layout, doc.formConfig);
+        panel.replaceChildren();
+        _elRenderLayoutBody(panel, data, path, { ...options, formLayout: layout, propTypes: types }, options.parentDb, layout.id, render);
+        if (!doc.layout) {
+          // The automatic layout has no authored coordinates to preserve.
+          // Keep its inputs and save controls inside narrow topic panels.
+          const canvas = panel.querySelector('.el-canvas');
+          if (canvas) {
+            Object.assign(canvas.style, { width: '100%', height: 'auto', display: 'grid', gap: '10px', padding: '10px', boxSizing: 'border-box' });
+            canvas.querySelectorAll('.el-cell').forEach(cell => Object.assign(cell.style,
+              { position: 'relative', left: '0', top: '0', width: '100%', minWidth: '0' }));
+          }
+        }
+      } catch (error) {
+        if (!panel.isConnected || generation !== renderGeneration) return;
+        panel.textContent = 'フォームを開けません: ' + (error.userMessage || error.message);
+        const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '再試行';
+        retry.addEventListener('click', () => render(true)); panel.appendChild(retry);
+      }
+    };
+    await render();
+    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel) };
+  }
+  window.MeldexSheetDefaultForm = Object.freeze({ mount });
+})();
+
+;
+
 /* === gb-scriptnote-role-model.js === */
 ;
 /* gb-scriptnote-role-model.js: ScriptNote schema v3 のキャラ・タイプ共通モデル */
@@ -16607,10 +16878,30 @@ const GBLayout = (() => {
     return (typeof GBLayout !== 'undefined' ? GBLayout.activePane : '') || '';
   }
 
-  function _openRailAppInMain(type) {
+  async function _openRailAppInMain(type) {
     const mainPaneId = _mainPaneIdForRailApp();
+    if (mainPaneId && GBLayout.isPaneLocked?.(mainPaneId)) {
+      if (typeof showStatus === 'function') showStatus('ロック中のパネルには開けません', true);
+      return;
+    }
     if (mainPaneId && typeof GBLayout?.setActivePane === 'function') {
       GBLayout.setActivePane(mainPaneId, { skipCallback: true });
+    }
+    if (!['folder', 'calendar'].includes(type)) {
+      if (localStorage.getItem('gb:rail-app-launch-mode') === 'last' && typeof navOpen === 'function') {
+        const entries = typeof _readStorageArray === 'function'
+          ? [..._readStorageArray('meldex-rail-last-files'), ..._readStorageArray('meldex-recent')] : [];
+        const entry = entries.find(item => item?.path && typeof _railAppType === 'function' && _railAppType(item.type) === type);
+        if (entry) {
+          const openEntry = { ...entry, type: entry.type === 'scenario' ? 'scriptnote' : entry.type };
+          try { return await navOpen(openEntry, { paneId: mainPaneId, preferTargetPane: true }); }
+          catch (err) {
+            if (typeof showStatus === 'function') showStatus(err.userMessage || '最後に開いたファイルを開けませんでした', true);
+            return;
+          }
+        }
+      }
+      if (typeof window.addPanelMenuTool === 'function') return window.addPanelMenuTool(type, { paneId: mainPaneId });
     }
     if (typeof window.openToolTab === 'function') {
       window.openToolTab(type, { paneId: mainPaneId, preferTargetPane: true });
@@ -57039,6 +57330,7 @@ function _sn2StopSep() {
 
     async function save() {
       if (state.disposed) return false;
+      if (state.saving && !await state.saving.catch(() => false)) return false;
       if (state.staticContent || !state.dirty) return true;
       if (!state.editor || state.root.dataset.readOnly === '1') return state.root.dataset.readOnly === '1';
       clearTimeout(state.timer);
@@ -57052,7 +57344,13 @@ function _sn2StopSep() {
         { reason: 'entity-detail-surface' },
       ))
         .then(saved => {
-          if (saved && state.changeSeq === savingSeq) state.dirty = false;
+          if (saved) {
+            if (state.data && state.editor?.dataset.lastSavedRevision) {
+              state.data.revision = Number(state.editor.dataset.lastSavedRevision);
+              state.data.page_content = state.editor.dataset.lastSavedMd || '';
+            }
+            if (state.changeSeq === savingSeq) state.dirty = false;
+          }
           return !!saved;
         })
         .finally(() => { state.saving = null; });
@@ -57067,6 +57365,7 @@ function _sn2StopSep() {
       if (state.titleFailed) return false;
       const links = root.querySelector('.meldex-entity-attachments-section');
       if (links?._linkedFiles && !await links._linkedFiles.flush()) return false;
+      if (state.defaultForm && !await state.defaultForm.flush()) return false;
       return save();
     }
 
@@ -57157,9 +57456,7 @@ function _sn2StopSep() {
       const parent = parentDir(state.path);
       const [data, meta, access] = await Promise.all([
         state.data || apiFetch('/entity?path=' + encodeURIComponent(state.path)),
-        options.propTypes
-          ? Promise.resolve({ property_types: options.propTypes })
-          : (parent ? apiFetch('/db-metadata?path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null),
+        parent ? apiFetch('/db-metadata?include_form=true&path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null,
         resolveReadOnly(state.path, options.readOnly),
       ]);
       if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
@@ -57276,6 +57573,16 @@ function _sn2StopSep() {
           ctx: options.ctx,
         });
       }
+
+      state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
+        parentDb: parent, readOnly: access.readOnly, ctx: options.ctx, beforeWrite: save, onRevision: revision => {
+          if (state.editor && !state.dirty && !state.saving
+            && String(data.page_content || '') === (state.editor.dataset.lastSavedMd || '')) {
+            state.editor.dataset.lastSavedRevision = String(revision);
+          }
+        },
+      });
+      if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
 
       if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
@@ -57978,8 +58285,8 @@ function _sn2StopSep() {
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
       if (result?.ok === false) {
         operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
-      } else if (Number(result?.failed || result?.errors || result?.media_failed || result?.author_icon_failed) > 0 || result?.folder_error) {
-        operation?.partial({ summary: result.summary || '処理が完了しました（一部失敗）', details: result.failure_samples || result.failures || [] });
+      } else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result?.[key]) > 0) || result?.folder_error) {
+        operation?.partial({ summary: result.summary || '処理が終了しました（未取得・翻訳待ちを含む）', details: result.failure_samples || result.failures || [] });
       } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
       return result;
     } catch (error) {
@@ -58149,6 +58456,8 @@ function _sn2StopSep() {
     let message = `@${data.username} のポストを保存しました。新規${data.created || 0}件、更新${data.updated || 0}件、取得${data.fetched || 0}件。`;
     if (data.skipped) message += ` 保存対象外${data.skipped}件。`;
     if (data.media_failed) message += ` メディア取得失敗${data.media_failed}件。`;
+    if (data.translation_pending_existing || data.translation_pending_replies) message += ` 翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`;
+    if (data.reply_unavailable) message += ` 返信取得失敗${data.reply_unavailable}件。`;
     if (data.stop_reason === 'repeated_pagination_token') message += ' X APIから同じページ情報が返されたため、安全のため停止しました。もう一度実行してください。';
     if (data.api_limit_reached) message += ' X APIの仕様上、最新3,200件が上限です。';
     return message;
@@ -58198,7 +58507,10 @@ function _sn2StopSep() {
     try {
       const data = await runBackgroundJob(
         '/x-bookmarks/account-posts/sync',
-        { username },
+        { username, ack_cost_notice: true,
+          include_replies: document.getElementById('x-account-posts-include-replies')?.checked === true,
+          ack_reply_cost_notice: document.getElementById('x-account-posts-include-replies')?.checked === true,
+          reply_budget_yen: Math.ceil(3200 * 93 * 0.015 * 150) },
         {
           resumeJobId: activeJobId || undefined,
           // 3,200件と画像を保存すると1時間を超えるため、時間だけを理由に失敗扱いにしない。
@@ -58258,7 +58570,9 @@ function _sn2StopSep() {
   }
 
   async function confirmAccountPostsCost(username) {
-    const message = `@${username} のポストを最大3,200件まで保存します。\nX APIの従量課金が発生します。料金と残高はX Developer Consoleで確認してください。\n\n続けますか？`;
+    const withReplies = document.getElementById('x-account-posts-include-replies')?.checked === true;
+    const replyCost = withReplies ? '\n元ポストと参照元（最大2件）のそれぞれに、最大30件の返信も取得します。投稿者情報を含む概算上限は約669,600円です（重複を割り引かず計算）。' : '\n参照元と投稿者情報も含む概算上限は約21,600円です（重複を割り引かず計算）。';
+    const message = `@${username} のポストを最大3,200件まで保存します。\nポスト取得分は約2,400円（$16）の目安です。${replyCost}\n概算1ドル＝150円。フォルダ確認・税等は別で、実費は契約条件や料金変更によって変わります。料金と残高はX Developer Consoleで確認してください。\n\nこの件数と費用目安で取得を始めますか？`;
     if (typeof cfConfirm === 'function') {
       return !!await cfConfirm(message, { okLabel: '保存を開始', cancelLabel: 'キャンセル' });
     }
@@ -58478,6 +58792,8 @@ function _sn2StopSep() {
         <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
       <div id="x-account-posts-list" data-e2e-id="x-account-posts-list"></div>
+      <label class="gb-field"><span><input type="checkbox" id="x-account-posts-include-replies"> 手動取得で各ポストの返信を最大30件取得する（追加料金）</span></label>
+      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、投稿者アイコン付きのノートとして保存します。返信の追加取得は定期実行には適用されません。</div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
     `;
     const input = container.querySelector('#x-account-posts-username');
@@ -77944,6 +78260,14 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="display">
         <div class="gb-section-title">表示オプション</div>
+        <label class="gb-field-row">
+          <span class="gb-label">左レールからアプリを開く時</span>
+          <select id="modal-rail-app-launch-mode" class="gb-select">
+            <option value="new" ${localStorage.getItem('gb:rail-app-launch-mode') !== 'last' ? 'selected' : ''}>新規作成</option>
+            <option value="last" ${localStorage.getItem('gb:rail-app-launch-mode') === 'last' ? 'selected' : ''}>最後に開いたファイルを開く</option>
+          </select>
+        </label>
+        <div class="gb-section-desc">ノート・シナリオ・シート・ボード・フォームに共通です。履歴がない場合は新規作成します。フォルダとスケジュールは従来の画面を開きます。</div>
         <div class="gb-check-row" style="flex-direction:column;align-items:flex-start;">
           <label class="gb-check">
             <input type="checkbox" id="modal-statusbar-hidden" ${localStorage.getItem('meldex-statusbar-hidden') === '1' ? 'checked' : ''}>
@@ -85021,6 +85345,8 @@ async function submitSettings() {
 
   // フォルダツリーの項目を開く操作（ダブルクリック/クリック）
   const treeOpenClickModeSelect = settingsControl('modal-tree-open-click-mode');
+  const railAppLaunchMode = settingsControl('modal-rail-app-launch-mode');
+  if (railAppLaunchMode) localStorage.setItem('gb:rail-app-launch-mode', railAppLaunchMode.value === 'last' ? 'last' : 'new');
   if (treeOpenClickModeSelect) {
     localStorage.setItem('gb:tree-open-click-mode', treeOpenClickModeSelect.value === 'single' ? 'single' : 'double');
   }
@@ -85905,6 +86231,7 @@ if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSiz
 
 // UI設定のサーバー永続保存（localStorageの主要設定をサーバーにバックアップ）
 const _UI_CONFIG_KEYS = [
+  'gb:rail-app-launch-mode',
   // UI設定
   'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden',
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
@@ -85943,6 +86270,7 @@ const _SETTINGS_PROFILE_KEYS = ['meldex-user', 'meldex-avatar', 'meldex-avatar-s
 // 「全設定を初期化」が削除できるのは、表示と操作の設定だけ。
 // profile/source/workspace/draft/session/作品データ/共有登録/秘密値は専用操作のみで変更する。
 const _SETTINGS_RESETTABLE_KEYS = [
+  'gb:rail-app-launch-mode',
   'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule',
   'meldex-statusbar-hidden', 'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion',
   'meldex-a11y-colorblind-safe', 'note-vertical', 'note-heading-indent', 'note-toc-visible',
@@ -86033,6 +86361,11 @@ async function _saveUiConfigToServer() {
 // ページ読み込み時にサーバーからUI設定を復元（localStorageが空の場合のみ）
 async function _restoreUiConfigFromServer() {
   try {
+    const initial = new Map();
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      initial.set(key, localStorage.getItem(key));
+    }
     const config = await apiFetch('/ui-config', { silentError: true });
     if (!config || typeof config !== 'object') return;
     let restored = false;
@@ -86043,6 +86376,8 @@ async function _restoreUiConfigFromServer() {
     const overwriteKeys = new Set();
     if (String(config['ui-scale-source'] || '') === 'manual'
       && String(localStorage.getItem('ui-scale-source') || '') !== 'manual'
+      && localStorage.getItem('ui-scale') === (initial.get('ui-scale') ?? null)
+      && localStorage.getItem('ui-scale-source') === (initial.get('ui-scale-source') ?? null)
       && config['ui-scale'] != null) {
       overwriteKeys.add('ui-scale');
       overwriteKeys.add('ui-scale-source');
@@ -86050,6 +86385,7 @@ async function _restoreUiConfigFromServer() {
     for (const [key, val] of Object.entries(config)) {
       if (key === 'folder-files-hidden') continue;
       if (val == null) continue;
+      if (localStorage.getItem(key) !== (initial.get(key) ?? null)) continue;
       if (localStorage.getItem(key) != null && !overwriteKeys.has(key)) continue;
       localStorage.setItem(key, val);
       restored = true;
@@ -93585,6 +93921,7 @@ async function resetLayoutToDefault() {
       token_url: getInputValue('x-bookmarks-token-url'),
       api_base: getInputValue('x-bookmarks-api-base'),
       scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
+      scheduled_translate: document.getElementById('x-bookmarks-scheduled-translate')?.checked === true,
     };
   }
 
@@ -93599,6 +93936,8 @@ async function resetLayoutToDefault() {
     setInputValue('x-bookmarks-api-base', config.api_base || '');
     const folders = document.getElementById('x-bookmarks-scheduled-folders');
     if (folders) folders.checked = config.scheduled_include_folders === true;
+    const translate = document.getElementById('x-bookmarks-scheduled-translate');
+    if (translate) translate.checked = config.scheduled_translate === true;
   }
 
   async function loadSharedSettings() {
@@ -93679,7 +94018,8 @@ async function resetLayoutToDefault() {
     const folderStateText = ` / フォルダ未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`;
     const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 投稿者アイコン${data?.downloaded_author_icons || 0} / 画像失敗${data?.media_failed || 0} / アイコン失敗${data?.author_icon_failed || 0}${folderText}`;
     const reasonText = reason ? ` / 停止: ${reason}` : '';
-    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${reasonText}`;
+    const translationText = ` / 今回の翻訳${data?.translated_existing || 0}件・未翻訳${data?.translation_pending_existing || 0}件 / 返信${data?.replies || 0}件・返信翻訳待ち${data?.translation_pending_replies || 0}件・返信取得失敗${data?.reply_unavailable || 0}件`;
+    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${translationText}${reasonText}`;
   }
 
   function openUrl(url) {
@@ -93718,6 +94058,8 @@ async function resetLayoutToDefault() {
       if (maxResults) maxResults.value = String(config.max_results || 100);
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders');
       if (scheduledFolders) scheduledFolders.checked = config.scheduled_include_folders === true;
+      const translate = document.getElementById('x-bookmarks-scheduled-translate');
+      if (translate) translate.checked = config.scheduled_translate === true;
       setInputValue('x-bookmarks-client-id', config.client_id || '');
       setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
       setInputValue('x-bookmarks-auth-url', config.auth_url || '');
@@ -93821,24 +94163,34 @@ async function resetLayoutToDefault() {
   }
 
   function setSyncBusy(isBusy) {
-    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates'].forEach(id => {
+    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations'].forEach(id => {
       const btn = document.getElementById(id);
       if (btn) btn.disabled = !!isBusy;
     });
   }
 
-  function confirmBookmarkSyncCost(maxResults) {
+  function replyBudgetYen(maxResults) {
+    return Math.ceil(Math.max(1, Math.min(5000, Number(maxResults) || 100)) * 93 * 0.015 * 150);
+  }
+
+  function confirmBookmarkSyncCost(maxResults, includeReplies = false) {
     const limit = Math.max(1, Number(maxResults) || 100);
     const estimatedOwnedUsd = limit * 0.001;
     const estimatedStandardUsd = limit * 0.005;
-    const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\n現在の公式料金例では、最大取得数分の目安は約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}です。フォルダ内の確認分は別に加算され、割引条件や料金変更によって実際の費用は変わります。\n\n従量課金で保存を始めますか？`;
+    const withAuthorsAndReferencesYen = Math.ceil(limit * 3 * 0.015 * 150);
+    const yen = value => Math.ceil(value).toLocaleString('ja-JP') + '円';
+    const replies = includeReplies
+      ? `\n元ポストと参照元（最大2件）のそれぞれに、返信を最大30件取得します。投稿者情報を含む返信ノート対象分の概算上限は約${yen(replyBudgetYen(limit))}です。重複を割り引かず計算しています。`
+      : `\n参照元ポストと投稿者情報も含む概算上限は約${yen(withAuthorsAndReferencesYen)}です（重複を割り引かず計算）。`;
+    const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\nポスト取得分の目安は約${yen(estimatedOwnedUsd * 150)}〜${yen(estimatedStandardUsd * 150)}です（約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}）。${replies}\n概算1ドル＝150円。フォルダ確認分・税等は別で、契約条件や料金変更によって実費は変わります。\n\nこの件数と費用目安で取得を始めますか？`;
     return window.confirm(message);
   }
 
   async function sync(mode) {
     if (syncInFlight) return;
     const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-    if (!confirmBookmarkSyncCost(maxResults)) return;
+    const includeReplies = document.getElementById('x-bookmarks-include-replies')?.checked === true;
+    if (!confirmBookmarkSyncCost(maxResults, includeReplies)) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
@@ -93850,7 +94202,9 @@ async function resetLayoutToDefault() {
       setStatus('Xブックマークを保存しています...', false);
       const data = await runBackgroundJob(
         '/x-bookmarks/sync',
-        { mode: mode || 'incremental', max_results: maxResults, ack_cost_notice: true },
+        { mode: mode || 'incremental', max_results: maxResults, ack_cost_notice: true,
+          include_replies: includeReplies, ack_reply_cost_notice: includeReplies,
+          reply_budget_yen: includeReplies ? replyBudgetYen(maxResults) : 0 },
         {
           onProgress: (progress) => {
             setStatus(formatJobProgress(progress, { unit: '件保存済み', defaultPhase: '取得中' }), false);
@@ -93917,12 +94271,56 @@ async function resetLayoutToDefault() {
   async function reimportPost(postId, saveDir) {
     const id = String(postId || '').trim();
     if (!id) throw new Error('ポストIDを確認できません');
-    const result = await apiPost('/x-bookmarks/reimport', {
+    if (!confirmBookmarkSyncCost(1, true)) return null;
+    const result = await runBackgroundJob('/x-bookmarks/reimport', {
       post_id: id,
       save_dir: saveDir || undefined,
-    }, { silentError: true });
+      include_replies: true, ack_reply_cost_notice: true, reply_budget_yen: replyBudgetYen(1),
+    }, { operationLabel: 'ポストと返信ノートを更新しています' });
     if (typeof showStatus === 'function') showStatus('Xからこのポストを再インポートしました');
     return result;
+  }
+
+  async function retryTranslations() {
+    if (syncInFlight) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      if (!await saveConfig({ silentError: true })) throw new Error('設定を保存できませんでした');
+      const result = await runBackgroundJob('/x-bookmarks/translations/retry', {}, {
+        operationLabel: '保存済みポストの翻訳を続けています', maxPolls: Number.POSITIVE_INFINITY,
+        onProgress: progress => setStatus(formatJobProgress(progress), false),
+      });
+      setStatus(result.summary, false);
+    } catch (err) {
+      setStatus('翻訳を続けられませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
+    }
+  }
+
+  async function enrichSavedNotes(includeReplies) {
+    if (syncInFlight) return;
+    const limit = includeReplies ? Number(document.getElementById('x-bookmarks-max-results')?.value || 100) : 5000;
+    if (includeReplies && !confirmBookmarkSyncCost(limit, true)) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      if (!await saveConfig({ silentError: true })) throw new Error('設定を保存できませんでした');
+      const result = await runBackgroundJob('/x-bookmarks/notes/enrich', {
+        max_results: limit, include_replies: includeReplies,
+        ack_reply_cost_notice: includeReplies,
+        reply_budget_yen: includeReplies ? replyBudgetYen(limit) : 0,
+      }, { operationLabel: includeReplies ? '保存済みの返信ノートを更新しています' : '保存済みのノートを作成しています',
+        onProgress: progress => setStatus(formatJobProgress(progress), false) });
+      setStatus(result.summary || `ノート${result.updated || 0}件を更新しました。返信${result.replies || 0}件。`, false);
+    } catch (err) {
+      setStatus('ノートを更新できませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
+    }
   }
 
   async function reimportEntry(entryPath, saveDir) {
@@ -94061,6 +94459,9 @@ async function resetLayoutToDefault() {
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
     document.getElementById('x-bookmarks-sync-folders')?.addEventListener('click', syncFolders);
+    document.getElementById('x-bookmarks-notes')?.addEventListener('click', () => enrichSavedNotes(false));
+    document.getElementById('x-bookmarks-replies')?.addEventListener('click', () => enrichSavedNotes(true));
+    document.getElementById('x-bookmarks-translations')?.addEventListener('click', retryTranslations);
     const consoleLink = document.getElementById('x-bookmarks-console-link');
     if (consoleLink) {
       consoleLink.setAttribute('data-gb-tooltip', X_DEVELOPER_CONSOLE_HELP);
@@ -94073,6 +94474,7 @@ async function resetLayoutToDefault() {
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-scheduled-folders')?.addEventListener('change', saveConfig);
+    document.getElementById('x-bookmarks-scheduled-translate')?.addEventListener('change', saveConfig);
     [
       'x-bookmarks-client-id',
       'x-bookmarks-redirect-uri',
@@ -94141,6 +94543,24 @@ async function resetLayoutToDefault() {
         </label>
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
+      <div class="gb-section-desc">日本語以外のポストは設定済みCLIで翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60件まで）。CLI未設定・失敗時も原文は保存します。</div>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <button type="button" id="x-bookmarks-translations" class="gb-btn gb-btn-sm">保存済みポストの翻訳を続ける（X追加取得なし）</button>
+      </div>
+      <div class="gb-section-desc">1時間60件の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。翻訳は1件あたり最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
+      <label class="gb-field-row" style="justify-content:flex-start;">
+        <input id="x-bookmarks-include-replies" type="checkbox" checked>
+        <span class="gb-label">手動保存時に返信を最大30件追加取得（追加料金あり・開始前に円の概算を確認）</span>
+      </label>
+      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、各トピックのノートへ保存します。外国語は原文と日本語訳を併記します。定期保存では返信を追加取得しません。</div>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <button type="button" id="x-bookmarks-notes" class="gb-btn gb-btn-sm">保存済みのノートを作成・更新（X追加取得なし）</button>
+        <button type="button" id="x-bookmarks-replies" class="gb-btn gb-btn-sm">保存済みの返信を追加取得（有料）</button>
+      </div>
+      <label class="gb-field-row" style="justify-content:flex-start;">
+        <input id="x-bookmarks-scheduled-translate" type="checkbox">
+        <span class="gb-label">定期保存でも日本語に翻訳（Xアカウントの保存と共通・CLI使用量を消費）</span>
+      </label>
       <div id="x-bookmarks-schedule-container" class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;"></div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <input id="x-bookmarks-scheduled-folders" type="checkbox">
@@ -94159,8 +94579,9 @@ async function resetLayoutToDefault() {
     `;
     bind();
     if (isCloudSurface()) {
-      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect']
+      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations']
         .forEach(id => { const control = document.getElementById(id); if (control) control.hidden = true; });
+      document.getElementById('x-bookmarks-include-replies')?.closest('label')?.setAttribute('hidden', '');
       const schedule = document.getElementById('x-bookmarks-schedule-container');
       if (schedule) schedule.hidden = true;
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');
@@ -95632,7 +96053,7 @@ async function resetLayoutToDefault() {
     const dir = join(root, kind); await ensureDir(store, dir); const path = join(dir, `${safe(row.name, 'Googleデータ')}_${String(row.id).slice(0, 12)}.md`);
     let old = ''; try { old = await store.readText(path); } catch {}
     const managed = `<!-- meldex-import:start source=google id=${row.id} -->\n${markdown}\n<!-- meldex-import:end -->`;
-    const body = /<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/.test(old) ? old.replace(/<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/, managed) : `# ${row.name}\n\n${managed}\n\n## メモ\n`;
+    const body = /<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/.test(old) ? old.replace(/<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/, managed) : `# ${row.name}\n\n${managed}\n`;
     await store.writeText(path, frontmatter({ type: 'imported-note', source: kind, external_id: row.id, external_updated_at: row.modifiedTime || '', external_status: 'available' }, body.replace(/^---[\s\S]*?---\s*/, ''))); return path;
   }
   function cellInfo(cell) {
@@ -96100,6 +96521,9 @@ async function resetLayoutToDefault() {
   const KIND_LABELS = {
     'notion-sync': 'Notion同期',
     'x-bookmarks': 'Xブックマーク',
+    'x-bookmark-notes': 'Xブックマークのノート',
+    'x-bookmark-post': 'Xポスト',
+    'x-bookmark-translations': 'Xポストの翻訳',
     'x-account-posts': 'Xアカウント投稿',
     'external-import': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
@@ -96178,7 +96602,7 @@ async function resetLayoutToDefault() {
         const result = job.result || {};
         const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
         if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-        else if (Number(result.failed || result.errors || result.media_failed || result.author_icon_failed) > 0 || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが完了しました（一部失敗）' });
+        else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
         else entry.handle.succeed(values);
         restoredJobs.delete(jobId);
       } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
@@ -102180,6 +102604,7 @@ async function openPage(label, path, opts) {
       // 工程1: 実処理は _runNoteAutoSave() へ集約（flushPendingEditorAutosave()と共有）。
       // 保存コーディネーター経由のsingle-flight/coalesceにより、blurと競合しない。
       window._pendingNoteAutoSavePc = null;
+      window._noteAutoSaveTimer = null;
       _runNoteAutoSave(pc, scheduledPath);
     }, 2000);
   };
@@ -104916,6 +105341,12 @@ function mdToHtml(md, options) {
     }
 
     // 空行
+    const xBoundary = trimmed.match(/^<!--\s*meldex-x-conversation:(start|end)\s*-->$/);
+    if (xBoundary) {
+      closeListAll();
+      html += `<span hidden contenteditable="false" data-x-conversation-boundary="${xBoundary[1]}"></span>`;
+      continue;
+    }
     if (trimmed === '') { closeListAll(); html += '<div><br></div>'; continue; }
 
     // 見出し（アイコン記法対応: ## :iconName: テキスト）
@@ -104958,7 +105389,7 @@ function mdToHtml(md, options) {
 
     // コールアウト: > [!iconName #color type] テキスト（後続の > 行も本文に含める）
     // 形式: > [!lightbulb #e6a700 warning] テキスト  or  > [!💡 info] テキスト（旧emoji互換）
-    const calloutMatch = line.match(/^>\s*\[!([^\s\]]+)\s*(#[0-9a-fA-F]{3,8})?\s*(info|warning|danger|success)?\]\s*(.*)$/);
+    const calloutMatch = line.match(/^>\s*\[!([^\s\]]+)\s*(#[0-9a-fA-F]{3,8})?\s*(info|warning|danger|success|x-post)?\]\s*(.*)$/);
     if (calloutMatch) {
       closeListAll();
       const cIconRaw = calloutMatch[1], cColor = calloutMatch[2] || '', cType = calloutMatch[3] || '', cTextParts = [calloutMatch[4]];
@@ -104967,7 +105398,9 @@ function mdToHtml(md, options) {
         cTextParts.push(lines[i].slice(2));
       }
       const cls = cType ? ' callout-' + cType : '';
-      const cBody = cTextParts.map(t => inlinemd(t)).join('<br>');
+      // Imported post text is literal: Markdown-looking user content must not
+      // create images, links or formatting when a saved conversation is opened.
+      const cBody = cTextParts.map(t => cType === 'x-post' ? esc(t) : inlinemd(t)).join('<br>');
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
       const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
@@ -105594,7 +106027,7 @@ function htmlToMd(html) {
           const bodyLines = body.split('\n');
           const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
-          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n';
+          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
         }
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
@@ -105602,6 +106035,9 @@ function htmlToMd(html) {
         return _noteStatusMarker(node) + _nlIdMarker(node) + trimmed + '\n';
       }
       case 'SPAN':
+        if (/^(start|end)$/.test(node.dataset?.xConversationBoundary || '')) {
+          return '<!-- meldex-x-conversation:' + node.dataset.xConversationBoundary + ' -->\n';
+        }
         // アノテート用 line-id span は MD に直接出力しない（ブロック先頭なら _nlIdMarker 経由で親側から emit される）
         if (node.classList?.contains('_nl-id')) return '';
         // コメントバッジ（Phase 2e-ii）は UI 装飾なので保存しない
@@ -164727,6 +165163,13 @@ function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
 }
 
 function _imageSrc(item, preferThumb, thumbSize) {
+  if (preferThumb && _attachmentKind(item) === 'video') {
+    const preview = item.thumb_url || item.preview_url || item.preview_src || item.thumb;
+    if (preview) {
+      if (/^(https?:|data:|blob:|\/)/i.test(preview)) return preview;
+      return '/api/media/file?path=' + encodeURIComponent(preview);
+    }
+  }
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
   // 動画は共通サムネイルAPIが先頭付近のフレームを生成する。PDFだけは
   // 生成契約がないため生ファイル表示へ戻す。
@@ -164746,7 +165189,7 @@ function _imageSrc(item, preferThumb, thumbSize) {
 // 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
 // 旧データや外部由来の値には無いので拡張子から補う。
 function _attachmentKind(item) {
-  const declared = String(item?.kind || '').toLowerCase();
+  const declared = String(item?.kind || item?.asset_kind || '').toLowerCase();
   if (declared === 'image' || declared === 'video' || declared === 'pdf') return declared;
   const source = String(item?.path || item?.src || item?.filename || item?.url || '');
   const ext = (source.split('?')[0].split('.').pop() || '').toLowerCase();
@@ -164769,15 +165212,16 @@ function _isAcceptedAttachmentFile(file, accept) {
   return type.startsWith('image/');
 }
 
-// 動画・PDFは縮小画像を作らないため、種別アイコンとファイル名のタイルで表す。
+// 画像・動画はサムネイルを使い、PDFは種別タイルで表す。
 // クリック位置の判定は .gb-image-thumb を使うので、画像と同じクラスを付ける。
 function _createAttachmentThumb(item, index) {
   const kind = _attachmentKind(item);
   const label = item?.caption || item?.filename || '';
-  if (kind === 'image') {
+  if (kind === 'image' || kind === 'video') {
     const host = document.createElement('span');
     host.className = 'gb-image-thumb';
     host.dataset.meldexImageHost = '1';
+    host.dataset.kind = kind;
     host.title = label;
     if (index != null) host.dataset.imageIndex = String(index);
     const img = document.createElement('img');
@@ -164803,9 +165247,17 @@ function _createAttachmentThumb(item, index) {
       });
     };
     const replaceFailedImage = () => {
+      // A removed virtual row must not start another request for the original.
+      // Keep the initial detached construction case until the next frame.
+      if (!host.isConnected) {
+        requestAnimationFrame(() => {
+          if (host.isConnected) replaceFailedImage();
+        });
+        return;
+      }
       // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
       // 切り替える。原寸も読めない時だけ中立タイルにする。
-      if (img.dataset.rawFallback !== '1') {
+      if (kind === 'image' && img.dataset.rawFallback !== '1') {
         const rawSrc = _imageSrc(item, false);
         if (rawSrc && rawSrc !== img.getAttribute('src')) {
           img.dataset.rawFallback = '1';
@@ -164813,20 +165265,12 @@ function _createAttachmentThumb(item, index) {
           return;
         }
       }
-      // file: URL は src 代入時に同期的に失敗し、呼出元が DOM へ追加する前に
-      // error が届くことがある。親がまだ無い時だけ次の描画まで待つ。
-      if (!host.isConnected) {
-        requestAnimationFrame(() => {
-          if (host.isConnected) replaceFailedImage();
-        });
-        return;
-      }
       const fallback = document.createElement('div');
       fallback.className = 'gb-image-thumb gb-attachment-tile gb-image-thumb-fallback';
-      fallback.dataset.kind = 'image';
+      fallback.dataset.kind = kind;
       if (index != null) fallback.dataset.imageIndex = String(index);
       fallback.title = label;
-      if (typeof lucide === 'function') fallback.innerHTML = lucide('image', 20) || '';
+      if (typeof lucide === 'function') fallback.innerHTML = lucide(kind === 'video' ? 'film' : 'image', 20) || '';
       const caption = document.createElement('span');
       caption.textContent = label || '画像';
       fallback.appendChild(caption);
@@ -164843,7 +165287,7 @@ function _createAttachmentThumb(item, index) {
       loadImage(_imageSrc(item, true));
       window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
     };
-    if (browserFiles && typeof IntersectionObserver === 'function') {
+    if (typeof IntersectionObserver === 'function') {
       _observeAttachmentImage(host, startImage);
     } else startImage();
     return _setupAttachmentThumbDrag(host, item);
@@ -164862,24 +165306,34 @@ function _createAttachmentThumb(item, index) {
 
 // Observe hosts rather than empty img bounds. Weak entries do not retain old sheets.
 const _attachmentImageStarts = new WeakMap();
+const _attachmentImageTimers = new WeakMap();
 let _attachmentImageObserver;
 function _observeAttachmentImage(host, start) {
   if (!_attachmentImageObserver) {
     _attachmentImageObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      _attachmentImageObserver.unobserve(entry.target);
-      const load = _attachmentImageStarts.get(entry.target);
-      _attachmentImageStarts.delete(entry.target);
-      if (entry.target.isConnected) load?.();
-    }
-  }, { rootMargin: '0px' });
+      for (const entry of entries) {
+        clearTimeout(_attachmentImageTimers.get(entry.target));
+        _attachmentImageTimers.delete(entry.target);
+        if (!entry.isIntersecting || !_attachmentImageStarts.has(entry.target)) continue;
+        // Skip rows only passing through the viewport during a rapid scroll.
+        _attachmentImageTimers.set(entry.target, setTimeout(() => {
+          _attachmentImageTimers.delete(entry.target);
+          if (!entry.target.isConnected) return;
+          _attachmentImageObserver.unobserve(entry.target);
+          const load = _attachmentImageStarts.get(entry.target);
+          _attachmentImageStarts.delete(entry.target);
+          load?.();
+        }, 80));
+      }
+    }, { rootMargin: '0px' });
     new MutationObserver(records => {
       for (const record of records) for (const node of record.removedNodes) {
         if (node.nodeType !== 1 || node.isConnected) continue;
         const hosts = [...node.querySelectorAll('[data-meldex-image-host]')];
         if (node.matches('[data-meldex-image-host]')) hosts.push(node);
         for (const old of hosts) {
+          clearTimeout(_attachmentImageTimers.get(old));
+          _attachmentImageTimers.delete(old);
           _attachmentImageObserver.unobserve(old);
         }
       }
@@ -165903,8 +166357,8 @@ if (typeof window !== 'undefined') {
       {"id":"trpg-39","type":"field","x":664,"y":1240,"w":312,"h":92,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"関係・絆","captionMode":"full"},
       {"id":"trpg-40","type":"field","x":24,"y":1344,"w":468,"h":140,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"経歴","captionMode":"full"},
       {"id":"trpg-41","type":"field","x":504,"y":1344,"w":472,"h":140,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#c4cabb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffcf5","transparent":false},"style":{"fontSize":15,"textColor":"#243c35"},"prop":"セッション記録","captionMode":"full"},
-      {"id":"trpg-42","type":"label","x":24,"y":1498,"w":952,"h":38,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#65736a"},"text":"汎用プリセット  /  能力値の目盛りは 0–10。利用するルールに合わせて変更できます。","captionMode":"full"}
-    ]},"columns":[{"id":"","name":"外見"},{"id":"","name":"キャラクター名"},{"id":"","name":"プレイヤー名"},{"id":"","name":"種族"},{"id":"","name":"クラス"},{"id":"","name":"レベル"},{"id":"","name":"年齢"},{"id":"","name":"所属"},{"id":"","name":"信条"},{"id":"","name":"筋力"},{"id":"","name":"敏捷"},{"id":"","name":"耐久"},{"id":"","name":"知力"},{"id":"","name":"感覚"},{"id":"","name":"精神"},{"id":"","name":"HP"},{"id":"","name":"最大HP"},{"id":"","name":"MP"},{"id":"","name":"最大MP"},{"id":"","name":"防御力"},{"id":"","name":"行動値"},{"id":"","name":"技能"},{"id":"","name":"特技・呪文"},{"id":"","name":"武器・防具"},{"id":"","name":"所持品"},{"id":"","name":"所持金"},{"id":"","name":"性格"},{"id":"","name":"目的"},{"id":"","name":"関係・絆"},{"id":"","name":"経歴"},{"id":"","name":"セッション記録"}],"metadata":{"title":"TRPG キャラクターシート（汎用）","description":"基本情報・6能力値とレーダー・HP/MP・技能・装備・人物設定をまとめたキャラクター記録用レイアウト。特定のゲームシステムには依存しません。","recommendedPropertyTypes":{"外見":{"type":"text"},"キャラクター名":{"type":"text"},"プレイヤー名":{"type":"text"},"種族":{"type":"text"},"クラス":{"type":"text"},"レベル":{"type":"number"},"年齢":{"type":"number"},"所属":{"type":"text"},"信条":{"type":"text"},"筋力":{"type":"number"},"敏捷":{"type":"number"},"耐久":{"type":"number"},"知力":{"type":"number"},"感覚":{"type":"number"},"精神":{"type":"number"},"HP":{"type":"number"},"最大HP":{"type":"number"},"MP":{"type":"number"},"最大MP":{"type":"number"},"防御力":{"type":"number"},"行動値":{"type":"number"},"技能":{"type":"text"},"特技・呪文":{"type":"text"},"武器・防具":{"type":"text"},"所持品":{"type":"text"},"所持金":{"type":"number"},"性格":{"type":"text"},"目的":{"type":"text"},"関係・絆":{"type":"text"},"経歴":{"type":"text"},"セッション記録":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。","同名の列は自動で対応付けられます。足りない項目は、レイアウトの欄にある「列を追加」から個別に追加できます。レイアウトの編集モードで既存の列へ変更することもできます。","画像欄は共通の画像です。トピックごとに人物画像を変える場合は、画像欄をシートの画像列のセルへ置き換えてください。","レーダーチャートの最大値は10です。セルの設定から変更できます。"]}},
+      {"id":"trpg-42","type":"label","x":24,"y":1498,"w":952,"h":38,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#65736a"},"text":"汎用テンプレート  /  能力値の目盛りは 0–10。利用するルールに合わせて変更できます。","captionMode":"full"}
+    ]},"columns":[{"id":"","name":"外見"},{"id":"","name":"キャラクター名"},{"id":"","name":"プレイヤー名"},{"id":"","name":"種族"},{"id":"","name":"クラス"},{"id":"","name":"レベル"},{"id":"","name":"年齢"},{"id":"","name":"所属"},{"id":"","name":"信条"},{"id":"","name":"筋力"},{"id":"","name":"敏捷"},{"id":"","name":"耐久"},{"id":"","name":"知力"},{"id":"","name":"感覚"},{"id":"","name":"精神"},{"id":"","name":"HP"},{"id":"","name":"最大HP"},{"id":"","name":"MP"},{"id":"","name":"最大MP"},{"id":"","name":"防御力"},{"id":"","name":"行動値"},{"id":"","name":"技能"},{"id":"","name":"特技・呪文"},{"id":"","name":"武器・防具"},{"id":"","name":"所持品"},{"id":"","name":"所持金"},{"id":"","name":"性格"},{"id":"","name":"目的"},{"id":"","name":"関係・絆"},{"id":"","name":"経歴"},{"id":"","name":"セッション記録"}],"metadata":{"title":"TRPG キャラクターシート（汎用）","description":"基本情報・6能力値とレーダー・HP/MP・技能・装備・人物設定をまとめたキャラクター記録用レイアウト。特定のゲームシステムには依存しません。","recommendedPropertyTypes":{"外見":{"type":"text"},"キャラクター名":{"type":"text"},"プレイヤー名":{"type":"text"},"種族":{"type":"text"},"クラス":{"type":"text"},"レベル":{"type":"number"},"年齢":{"type":"number"},"所属":{"type":"text"},"信条":{"type":"text"},"筋力":{"type":"number"},"敏捷":{"type":"number"},"耐久":{"type":"number"},"知力":{"type":"number"},"感覚":{"type":"number"},"精神":{"type":"number"},"HP":{"type":"number"},"最大HP":{"type":"number"},"MP":{"type":"number"},"最大MP":{"type":"number"},"防御力":{"type":"number"},"行動値":{"type":"number"},"技能":{"type":"text"},"特技・呪文":{"type":"text"},"武器・防具":{"type":"text"},"所持品":{"type":"text"},"所持金":{"type":"number"},"性格":{"type":"text"},"目的":{"type":"text"},"関係・絆":{"type":"text"},"経歴":{"type":"text"},"セッション記録":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準テンプレートを選ぶと、そのまま使えます。ファイルから読み込んでユーザーテンプレートとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。","同名の列は自動で対応付けられます。足りない項目は、レイアウトの欄にある「列を追加」から個別に追加できます。レイアウトの編集モードで既存の列へ変更することもできます。","画像欄は共通の画像です。トピックごとに人物画像を変える場合は、画像欄をシートの画像列のセルへ置き換えてください。","レーダーチャートの最大値は10です。セルの設定から変更できます。"]}},
     {"format":"meldex-topic-layout/v1","schemaVersion":1,"layout":{"id":"resume-profile","name":"履歴書・プロフィール","canvasSize":{"w":1000,"h":1470},"theme":{"bg":"#f8f9fb","fg":"#243344","fg2":"#64748b","accent":"#304b68","border":"#cbd3dd"},"cells":[
       {"id":"resume-1","type":"label","x":32,"y":32,"w":600,"h":52,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":32,"textColor":"#243344"},"text":"履 歴 書","captionMode":"full"},
       {"id":"resume-2","type":"field","x":688,"y":32,"w":280,"h":62,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"記入日","columnType":"date","captionMode":"full"},
@@ -165929,7 +166383,7 @@ if (typeof window !== 'undefined') {
       {"id":"resume-21","type":"field","x":512,"y":1104,"w":456,"h":172,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"自己PR","columnType":"text","captionMode":"full"},
       {"id":"resume-22","type":"field","x":32,"y":1288,"w":936,"h":98,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#cbd3dd","radius":3,"padding":10,"shadow":"none"},"background":{"color":"#ffffff","transparent":false},"style":{"fontSize":15,"textColor":"#243344"},"prop":"本人希望","columnType":"text","captionMode":"full"},
       {"id":"resume-23","type":"label","x":32,"y":1398,"w":936,"h":38,"frameStyle":{"lineStyle":"none","radius":3,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#64748b"},"text":"学歴・職歴は「年月 ＋ 内容」の形で、1件ずつ値を追加すると一覧で読みやすくなります。","captionMode":"full"}
-    ]},"columns":[{"id":"","name":"記入日","type":"date"},{"id":"","name":"氏名","type":"text"},{"id":"","name":"ふりがな","type":"text"},{"id":"","name":"生年月日","type":"date"},{"id":"","name":"写真","type":"image"},{"id":"","name":"住所","type":"text"},{"id":"","name":"電話番号","type":"text"},{"id":"","name":"メールアドレス","type":"text"},{"id":"","name":"応募職種","type":"text"},{"id":"","name":"学歴","type":"text"},{"id":"","name":"職歴","type":"text"},{"id":"","name":"資格・免許","type":"text"},{"id":"","name":"スキル","type":"text"},{"id":"","name":"志望動機","type":"text"},{"id":"","name":"自己PR","type":"text"},{"id":"","name":"本人希望","type":"text"}],"metadata":{"title":"履歴書・プロフィール","description":"基本情報、学歴・職歴、資格・スキル、志望動機・自己PRを整理する履歴書風トピックレイアウト。","recommendedPropertyTypes":{"記入日":{"type":"date"},"氏名":{"type":"text"},"ふりがな":{"type":"text"},"生年月日":{"type":"date"},"写真":{"type":"image"},"住所":{"type":"text"},"電話番号":{"type":"text"},"メールアドレス":{"type":"text"},"応募職種":{"type":"text"},"学歴":{"type":"text"},"職歴":{"type":"text"},"資格・免許":{"type":"text"},"スキル":{"type":"text"},"志望動機":{"type":"text"},"自己PR":{"type":"text"},"本人希望":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。同名の列は自動で対応付けられます。","足りない項目は、欄の「列を追加」から個別に追加できます。記入日・生年月日は日付列、写真は画像列、その他はテキスト列です。","写真はトピックごとの画像列です。レイアウト全体で共通の固定画像にはなりません。","学歴・職歴・資格などは、「年月＋内容」を1件ずつ値として追加すると、行ごとに読みやすく表示できます。","配布ファイルには入力値や写真を含みません。プレビューの人物・経歴・連絡先は架空の記入例です。"]}},
+    ]},"columns":[{"id":"","name":"記入日","type":"date"},{"id":"","name":"氏名","type":"text"},{"id":"","name":"ふりがな","type":"text"},{"id":"","name":"生年月日","type":"date"},{"id":"","name":"写真","type":"image"},{"id":"","name":"住所","type":"text"},{"id":"","name":"電話番号","type":"text"},{"id":"","name":"メールアドレス","type":"text"},{"id":"","name":"応募職種","type":"text"},{"id":"","name":"学歴","type":"text"},{"id":"","name":"職歴","type":"text"},{"id":"","name":"資格・免許","type":"text"},{"id":"","name":"スキル","type":"text"},{"id":"","name":"志望動機","type":"text"},{"id":"","name":"自己PR","type":"text"},{"id":"","name":"本人希望","type":"text"}],"metadata":{"title":"履歴書・プロフィール","description":"基本情報、学歴・職歴、資格・スキル、志望動機・自己PRを整理する履歴書風トピックレイアウト。","recommendedPropertyTypes":{"記入日":{"type":"date"},"氏名":{"type":"text"},"ふりがな":{"type":"text"},"生年月日":{"type":"date"},"写真":{"type":"image"},"住所":{"type":"text"},"電話番号":{"type":"text"},"メールアドレス":{"type":"text"},"応募職種":{"type":"text"},"学歴":{"type":"text"},"職歴":{"type":"text"},"資格・免許":{"type":"text"},"スキル":{"type":"text"},"志望動機":{"type":"text"},"自己PR":{"type":"text"},"本人希望":{"type":"text"}},"instructions":["トピックレイアウトの＋から標準テンプレートを選ぶと、そのまま使えます。ファイルから読み込んでユーザーテンプレートとして保存することもできます。","一覧から選ぶと現在のシートへレイアウトが追加されます。同名の列は自動で対応付けられます。","足りない項目は、欄の「列を追加」から個別に追加できます。記入日・生年月日は日付列、写真は画像列、その他はテキスト列です。","写真はトピックごとの画像列です。レイアウト全体で共通の固定画像にはなりません。","学歴・職歴・資格などは、「年月＋内容」を1件ずつ値として追加すると、行ごとに読みやすく表示できます。","配布ファイルには入力値や写真を含みません。プレビューの人物・経歴・連絡先は架空の記入例です。"]}},
     {"format":"meldex-topic-layout/v1","schemaVersion":1,"layout":{"id":"book-reading-notes","name":"一冊の読書ノート","canvasSize":{"w":1000,"h":1600},"theme":{"bg":"#f6f2eb","fg":"#38372f","fg2":"#777164","accent":"#735842","border":"#d6ccbb"},"cells":[
       {"id":"reading-1","type":"label","x":32,"y":24,"w":936,"h":48,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"color":"#735842","transparent":false},"style":{"fontSize":27,"textColor":"#fffdf8"},"text":"一冊の読書ノート","captionMode":"full"},
       {"id":"reading-2","type":"label","x":32,"y":78,"w":936,"h":28,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#777164"},"text":"BOOK NOTES  /  内容を知る・自分の言葉で考える・あとで活かす","captionMode":"full"},
@@ -165962,7 +166416,7 @@ if (typeof window !== 'undefined') {
       {"id":"reading-29","type":"field","x":32,"y":1422,"w":456,"h":94,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"関連する本・資料","columnType":"text","captionMode":"full"},
       {"id":"reading-30","type":"field","x":512,"y":1422,"w":456,"h":94,"frameStyle":{"lineStyle":"solid","lineWidth":1,"lineColor":"#d6ccbb","radius":5,"padding":10,"shadow":"none"},"background":{"color":"#fffdf8","transparent":false},"style":{"fontSize":15,"textColor":"#38372f"},"prop":"次に読みたい本","columnType":"text","captionMode":"full"},
       {"id":"reading-31","type":"label","x":32,"y":1528,"w":936,"h":42,"frameStyle":{"lineStyle":"none","radius":4,"padding":8,"lineWidth":0,"lineColor":"","shadow":"none"},"background":{"transparent":true,"color":""},"style":{"fontSize":12,"textColor":"#777164"},"text":"引用はページ・位置を添えて記録。長い記録や章ごとのメモは、トピック本文へ続けて書けます。","captionMode":"full"}
-    ]},"columns":[{"id":"","name":"表紙","type":"image"},{"id":"","name":"ジャンル","type":"text"},{"id":"","name":"書名","type":"text"},{"id":"","name":"著者","type":"text"},{"id":"","name":"出版社","type":"text"},{"id":"","name":"出版年","type":"number"},{"id":"","name":"ISBN","type":"text"},{"id":"","name":"書誌URL","type":"link"},{"id":"","name":"読書状況","type":"text"},{"id":"","name":"読書開始日","type":"date"},{"id":"","name":"読了日","type":"date"},{"id":"","name":"現在ページ","type":"number"},{"id":"","name":"総ページ","type":"number"},{"id":"","name":"評価（5点満点）","type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},{"id":"","name":"読む目的","type":"text"},{"id":"","name":"一言要約","type":"text"},{"id":"","name":"内容の要点","type":"text"},{"id":"","name":"キーワード","type":"text"},{"id":"","name":"引用・ページ","type":"text"},{"id":"","name":"感想・自分の考え","type":"text"},{"id":"","name":"疑問・調べたいこと","type":"text"},{"id":"","name":"活かしたいこと","type":"text"},{"id":"","name":"関連する本・資料","type":"text"},{"id":"","name":"次に読みたい本","type":"text"}],"metadata":{"title":"一冊の読書ノート","description":"1冊を1トピックとして、書誌情報・読書記録・要約・引用・自分の考え・今後の行動を残す読書ノート。","recommendedPropertyTypes":{"表紙":{"type":"image"},"ジャンル":{"type":"text"},"書名":{"type":"text"},"著者":{"type":"text"},"出版社":{"type":"text"},"出版年":{"type":"number"},"ISBN":{"type":"text"},"書誌URL":{"type":"link"},"読書状況":{"type":"text"},"読書開始日":{"type":"date"},"読了日":{"type":"date"},"現在ページ":{"type":"number"},"総ページ":{"type":"number"},"評価（5点満点）":{"type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},"読む目的":{"type":"text"},"一言要約":{"type":"text"},"内容の要点":{"type":"text"},"キーワード":{"type":"text"},"引用・ページ":{"type":"text"},"感想・自分の考え":{"type":"text"},"疑問・調べたいこと":{"type":"text"},"活かしたいこと":{"type":"text"},"関連する本・資料":{"type":"text"},"次に読みたい本":{"type":"text"}},"references":[{"title":"Moleskine Passion Journals Book","url":"https://www.moleskine.com/en-us/shop/notebooks/passion-notebooks/passion-journals-book-8058647620244.html","note":"紙の読書記録帳の実例。"},{"title":"Reading notes — Hannah Tyreman / Notion","url":"https://www.notion.com/en-gb/templates/reading-notes-241","note":"引用・要約・振り返り・問い・行動を分けて記録する構成を参考。"}],"instructions":["トピックレイアウトの＋から標準プリセットを選ぶと、そのまま使えます。ファイルから読み込んでユーザープリセットとして保存することもできます。","本1冊につき1トピックを作り、書名などを入力します。同名の列は自動で対応付けられます。","足りない項目は欄の「列を追加」から個別に追加できます。表紙は画像、日付は日付、ページ数・出版年は数値、評価はセレクト、書誌URLはリンク、その他はテキスト列です。","表紙は本ごとに異なる画像を登録できる画像列です。画像の取得・書誌情報の取得は自動では行いません。","評価は「★」「★★」「★★★」「★★★★」「★★★★★」から選択します。ページ数から進捗率を自動計算する機能は含みません。","引用はページ番号や電子書籍の位置と組み合わせて、1件ずつ値として記録すると読み返しやすくなります。引用と自分の感想は別の欄に残します。","要点・疑問・行動などは1件ずつ値を追加できます。長い文章や章ごとのメモは、トピック本文に書けます。","参考例の項目構成をもとに独自の配置を作成しています。テンプレート本文や画像は転載していません。","配布ファイルには本の情報・引用・感想・表紙を含みません。プレビューの本・文章・引用・表紙は架空の記入例です。"]}}
+    ]},"columns":[{"id":"","name":"表紙","type":"image"},{"id":"","name":"ジャンル","type":"text"},{"id":"","name":"書名","type":"text"},{"id":"","name":"著者","type":"text"},{"id":"","name":"出版社","type":"text"},{"id":"","name":"出版年","type":"number"},{"id":"","name":"ISBN","type":"text"},{"id":"","name":"書誌URL","type":"link"},{"id":"","name":"読書状況","type":"text"},{"id":"","name":"読書開始日","type":"date"},{"id":"","name":"読了日","type":"date"},{"id":"","name":"現在ページ","type":"number"},{"id":"","name":"総ページ","type":"number"},{"id":"","name":"評価（5点満点）","type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},{"id":"","name":"読む目的","type":"text"},{"id":"","name":"一言要約","type":"text"},{"id":"","name":"内容の要点","type":"text"},{"id":"","name":"キーワード","type":"text"},{"id":"","name":"引用・ページ","type":"text"},{"id":"","name":"感想・自分の考え","type":"text"},{"id":"","name":"疑問・調べたいこと","type":"text"},{"id":"","name":"活かしたいこと","type":"text"},{"id":"","name":"関連する本・資料","type":"text"},{"id":"","name":"次に読みたい本","type":"text"}],"metadata":{"title":"一冊の読書ノート","description":"1冊を1トピックとして、書誌情報・読書記録・要約・引用・自分の考え・今後の行動を残す読書ノート。","recommendedPropertyTypes":{"表紙":{"type":"image"},"ジャンル":{"type":"text"},"書名":{"type":"text"},"著者":{"type":"text"},"出版社":{"type":"text"},"出版年":{"type":"number"},"ISBN":{"type":"text"},"書誌URL":{"type":"link"},"読書状況":{"type":"text"},"読書開始日":{"type":"date"},"読了日":{"type":"date"},"現在ページ":{"type":"number"},"総ページ":{"type":"number"},"評価（5点満点）":{"type":"select","options":["★","★★","★★★","★★★★","★★★★★"]},"読む目的":{"type":"text"},"一言要約":{"type":"text"},"内容の要点":{"type":"text"},"キーワード":{"type":"text"},"引用・ページ":{"type":"text"},"感想・自分の考え":{"type":"text"},"疑問・調べたいこと":{"type":"text"},"活かしたいこと":{"type":"text"},"関連する本・資料":{"type":"text"},"次に読みたい本":{"type":"text"}},"references":[{"title":"Moleskine Passion Journals Book","url":"https://www.moleskine.com/en-us/shop/notebooks/passion-notebooks/passion-journals-book-8058647620244.html","note":"紙の読書記録帳の実例。"},{"title":"Reading notes — Hannah Tyreman / Notion","url":"https://www.notion.com/en-gb/templates/reading-notes-241","note":"引用・要約・振り返り・問い・行動を分けて記録する構成を参考。"}],"instructions":["トピックレイアウトの＋から標準テンプレートを選ぶと、そのまま使えます。ファイルから読み込んでユーザーテンプレートとして保存することもできます。","本1冊につき1トピックを作り、書名などを入力します。同名の列は自動で対応付けられます。","足りない項目は欄の「列を追加」から個別に追加できます。表紙は画像、日付は日付、ページ数・出版年は数値、評価はセレクト、書誌URLはリンク、その他はテキスト列です。","表紙は本ごとに異なる画像を登録できる画像列です。画像の取得・書誌情報の取得は自動では行いません。","評価は「★」「★★」「★★★」「★★★★」「★★★★★」から選択します。ページ数から進捗率を自動計算する機能は含みません。","引用はページ番号や電子書籍の位置と組み合わせて、1件ずつ値として記録すると読み返しやすくなります。引用と自分の感想は別の欄に残します。","要点・疑問・行動などは1件ずつ値を追加できます。長い文章や章ごとのメモは、トピック本文に書けます。","参考例の項目構成をもとに独自の配置を作成しています。テンプレート本文や画像は転載していません。","配布ファイルには本の情報・引用・感想・表紙を含みません。プレビューの本・文章・引用・表紙は架空の記入例です。"]}}
   ];
   // Return copies: editing or applying a preset must never change the standards.
   return Object.freeze({ getTemplates: () => JSON.parse(JSON.stringify(templates)) });
@@ -166137,8 +166591,10 @@ if (typeof window !== 'undefined') {
       // column instead of inferring the format from the currently active app.
       candidate.entry_path = path;
       candidate.property = prop;
+      if (ctx.options?.onRevision && ctx.data.revision != null) candidate.entry_revision = ctx.data.revision;
       const old = candidate.value;
-      const result = await _apiPutValue(candidate, { new_value: value });
+      const result = await _apiPutValue(candidate, { new_value: value,
+        ...(ctx.options?.onRevision && ctx.data.revision != null ? { baseRevision: ctx.data.revision } : {}) });
       noteRevision(ctx, result);
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
@@ -166170,6 +166626,7 @@ if (typeof window !== 'undefined') {
   function noteRevision(ctx, result) {
     if (result?.revision == null) return;
     ctx.data.revision = result.revision;
+    ctx.options?.onRevision?.(result.revision);
     Object.values(ctx.data.properties || {}).forEach(values => {
       if (Array.isArray(values)) values.forEach(value => { value.entry_revision = result.revision; });
     });
@@ -166217,6 +166674,7 @@ if (typeof window !== 'undefined') {
         savedValue = value; input.dataset.formDirty = String(read() !== savedValue);
         message.textContent = '保存しました';
         ctx.grid.querySelectorAll('.gb-form-layout-field').forEach(peer => peer._refreshFormField?.(prop, value, candidate));
+        if (typeof _elRefreshLayoutCharts === 'function') _elRefreshLayoutCharts(ctx);
       } catch (error) {
         message.textContent = '保存できません: ' + (error.userMessage || error.message || error);
         input.dataset.formDirty = 'true';
@@ -166255,6 +166713,7 @@ if (typeof window !== 'undefined') {
     return true;
   }
   function applyNewLayout(form, layout, propTypes, dbPath, ctx) {
+    form.classList.add('gb-form-custom-layout');
     const host = document.createElement('div'); host.className = 'el-host';
     const viewport = document.createElement('div'); viewport.className = 'el-viewport';
     const canvas = document.createElement('div'); canvas.className = 'el-canvas';
@@ -166263,6 +166722,16 @@ if (typeof window !== 'undefined') {
     if (typeof _elApplyLayoutTheme === 'function') _elApplyLayoutTheme(canvas, layout);
     const rows = [...form.querySelectorAll('.gb-form-input-row')];
     const placed = new Map();
+    const chartData = { properties: {} }, charts = [];
+    const refreshCharts = () => {
+      chartData.properties = Object.fromEntries([...placed].map(([prop, rows]) => {
+        const input = rows[0]?.querySelector('input,textarea,select');
+        return [prop, input ? [{ value: input.type === 'checkbox' ? input.checked : input.value, status: '採用' }] : []];
+      }));
+      charts.forEach(({ cell, element, context }) => {
+        if (element.isConnected) element.replaceChildren(_elBuildChartCellContent(cell, context, canvas));
+      });
+    };
     const sync = event => {
       const source = event.target;
       for (const row of placed.get(source.name) || []) {
@@ -166273,12 +166742,15 @@ if (typeof window !== 'undefined') {
         control.dataset.formDirty = 'true';
         row.querySelector('.gb-form-field-error').textContent = source.closest('.gb-form-input-row').querySelector('.gb-form-field-error').textContent;
       }
+      refreshCharts();
     };
     form.addEventListener('input', sync); form.addEventListener('change', sync);
     for (const cell of model().orderedCells(layout)) {
       if (cell.type !== 'field') {
-        const element = _elBuildCellElement(cell, { grid: host, entityPath: '', dbPath, data: { properties: {} }, layout,
-          editMode: false, readOnly: true, options: { readOnly: true, layoutDraft: { layout } }, propTypes, rerender() {} }, canvas);
+        const context = { grid: host, entityPath: '', dbPath, data: chartData, layout,
+          editMode: false, readOnly: true, options: { ctx, readOnly: true, layoutDraft: { layout } }, propTypes, rerender() {} };
+        const element = _elBuildCellElement(cell, context, canvas);
+        if (cell.type === 'chart' && (cell.chart?.chartType === 'radar' || cell.chart?.dataSource === 'entry')) charts.push({ cell, element, context });
         element.style.zIndex = String(layout.cells.indexOf(cell)); canvas.appendChild(element);
         continue;
       }
@@ -166296,10 +166768,20 @@ if (typeof window !== 'undefined') {
       }
       peers.push(row); placed.set(cell.prop, peers);
       const element = document.createElement('div'); element.className = 'el-cell el-cell-field gb-form-new-cell';
+      element.dataset.cellId = cell.id;
       element.style.zIndex = String(layout.cells.indexOf(cell));
       for (const [key, value] of Object.entries({ left: cell.x, top: cell.y, width: cell.w, height: cell.h })) element.style[key] = value + 'px';
       _elApplyCellStyle(element, cell, { editMode: false });
       const content = document.createElement('div'); content.className = 'el-cell-content'; content.appendChild(row); element.appendChild(content); canvas.appendChild(element);
+      const caption = row.querySelector('.gb-form-input-label');
+      if (caption) {
+        const text = document.createElement('span'); text.textContent = caption.textContent;
+        caption.replaceChildren(); caption.insertAdjacentHTML('beforeend', _elPropIconHtml(cell.prop, propTypes, 13)); caption.appendChild(text);
+        MeldexDbTopicLayoutStyle.applyCaptionMode(caption, text, row.querySelector('input,textarea,select'), cell,
+          model().forLayout(layout).labels?.[cell.prop] || cell.prop);
+        // The input owns the accessible label; the decorative caption must not be a second target.
+        caption.removeAttribute('aria-label');
+      }
       if (!Object.prototype.hasOwnProperty.call(propTypes, cell.prop)) {
         const control = row.querySelector('input,textarea,select'); if (control) control.disabled = true;
         const add = document.createElement('button'); add.type = 'button'; add.className = 'gb-btn'; add.textContent = '列を追加';
@@ -166326,6 +166808,13 @@ if (typeof window !== 'undefined') {
       }
     }
     form.querySelector('button[type=submit]').before(host);
+    refreshCharts();
+    requestAnimationFrame(() => {
+      for (const element of canvas.querySelectorAll('.gb-form-new-cell')) {
+        const cell = layout.cells.find(cell => cell.id === element.dataset.cellId);
+        if (cell) _elAutoFitCellText(element, cell);
+      }
+    });
   }
   async function confirmLeave(root) {
     for (const popup of document.querySelectorAll('.gb-form-subform-editor')) {
@@ -166384,6 +166873,7 @@ if (typeof window !== 'undefined') {
         const displayTypes = { ...propTypes };
         (layout?.cells || []).forEach(cell => { if (cell.type === 'field' && !displayTypes[cell.prop]) displayTypes[cell.prop] = { type: cell.columnType || 'text', options: cell.columnOptions || [] }; });
         const form = _buildFormAnswerPanel(dbPath, effective, displayTypes, false, { canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
+          if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
           const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';
           session.created.set(result.path, name);
           const option = document.createElement('option'); option.value = result.path; option.textContent = name; select.appendChild(option);
@@ -166469,15 +166959,14 @@ if (typeof window !== 'undefined') {
       content.replaceChildren(_buildFormEditorFields(ctx.dbPath, cfg, ctx.propTypes, render, null, () => {}));
     };
     render();
-    const close = _elAttachPopupCommon(popup, anchor);
-    popup.appendChild(button('適用', () => {
+    const apply = button('適用', () => {
       if (!popup.querySelectorAll('input:invalid').length && _elCanMutateGrid(ctx.grid, ctx.options)) {
         ctx.persist('フォーム: 入力設定とTab順', '', layout => { layout.formConfig = clone(cfg); });
         close(); ctx.rerender();
       }
-    }));
-    popup.appendChild(button('キャンセル', close));
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+    });
+    apply.classList.add('gb-btn-primary');
+    const close = _elAttachPopupCommon(popup, anchor, { id: 'form-input-settings', actions: [apply] });
   }
   function arrangeMenu(anchor, ctx, canvas) {
     const actions = [['left','左揃え'],['center','左右中央揃え'],['right','右揃え'],['top','上揃え'],['middle','上下中央揃え'],['bottom','下揃え'],
@@ -166527,7 +167016,7 @@ if (typeof window !== 'undefined') {
       saveActiveFormConfig(dbPath, next, ctx); renderDbFormView(ctx);
     };
     select.addEventListener('change', () => bind(select.value)); label.appendChild(select); row.appendChild(label);
-    row.appendChild(button('プリセットから追加', async event => {
+    row.appendChild(button('テンプレートから追加', async event => {
       const anchor = event.currentTarget;
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       const known = new Set(layouts.map(layout => layout.id));
@@ -166582,10 +167071,17 @@ if (typeof window !== 'undefined') {
   'use strict';
   const api = () => globalThis.MeldexDbFormRuntime;
   const normalize = path => typeof _dbNormalizePath === 'function' ? _dbNormalizePath(path) : api().normalPath(path);
+  function canonicalPath(path) {
+    const base = typeof state !== 'undefined' ? state.vaultPath : '';
+    const resolved = globalThis.GBPathUtils?.resolveForClipboard?.(path, base) || path;
+    const value = normalize(resolved);
+    return /^[A-Za-z]:\//.test(value) || value.startsWith('//') ? value.toLowerCase() : value;
+  }
   function targetsParent(childPath, relation, parentPath) {
     const target = typeof _dbResolveRelationDbPath === 'function' ? _dbResolveRelationDbPath(childPath, relation) : relation.relationDb || childPath;
-    const parent = typeof _dbResolveConfiguredRelationPath === 'function' ? _dbResolveConfiguredRelationPath(childPath, parentPath) : parentPath;
-    return normalize(target) === normalize(parent);
+    // The parent is an actual API path; only the relation target is a configured path.
+    const parent = parentPath;
+    return canonicalPath(target) === canonicalPath(parent);
   }
   function resolve(config, types) {
     const find = column => column?.id
@@ -166645,8 +167141,7 @@ if (typeof window !== 'undefined') {
     };
     popup.append(button('列を読み込む', load), relation, fields, message);
     path.addEventListener('change', () => { types = null; generation++; message.textContent = '「列を読み込む」で設定を確認してください'; });
-    const close = _elAttachPopupCommon(popup, anchor, { childSelector: '.db-picker-popup,[aria-modal="true"]' });
-    popup.appendChild(button('適用', () => {
+    const apply = button('適用', () => {
       if (!types || loadedPath !== path.value.trim() || !relation.value) { message.textContent = '関連シートと親参照列を確認してください'; return; }
       const selected = [...fields.querySelectorAll('input:checked')].map(input => input.value).filter(name => name !== relation.value);
       if (!selected.length) { message.textContent = '表示する列を1つ以上選んでください'; return; }
@@ -166655,14 +167150,15 @@ if (typeof window !== 'undefined') {
         const target = layout.cells.find(item => item.id === cell.id);
         if (target) {
           const column = name => ({ id: types[name]?.property_id || '', name });
-          target.subform = { title: title.value.trim(), dbPath: loadedPath,
+          target.subform = { ...target.subform, title: title.value.trim(), dbPath: loadedPath,
+            relationProp: relation.value, fields: selected,
             relationColumn: column(relation.value), columns: selected.map(column) };
         }
       });
       close(); ctx.rerender();
-    }));
-    popup.appendChild(button('キャンセル', close));
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { gap: 4 });
+    });
+    apply.classList.add('gb-btn-primary');
+    const close = _elAttachPopupCommon(popup, anchor, { id: 'form-subform-settings', actions: [apply] });
     if (path.value) load();
   }
   function render(cell, ctx) {
@@ -166718,9 +167214,9 @@ if (typeof window !== 'undefined') {
       panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', label);
       const close = _elAttachPopupCommon(panel, anchor || root, {
         beforeClose: () => api().confirmLeave(panel),
+        onClose: load,
         childSelector: '.gb-fmt-popup,.gb-palette,.gb-palette-popup,.status-dropdown,.cell-inline-dd,.user-dropdown,.gb-user-picker-dd,[aria-modal="true"]',
       });
-      panel.appendChild(button('閉じる', async () => { if (await close()) load(); }));
       return { panel, close };
     }
     async function openNew(types) {
@@ -166757,7 +167253,7 @@ if (typeof window !== 'undefined') {
     requestAnimationFrame(load);
     return root;
   }
-  globalThis.MeldexDbFormSubform = { render, settings, matches, parentTokens, resolve };
+  globalThis.MeldexDbFormSubform = { render, settings, matches, parentTokens, resolve, targetsParent };
 })();
 
 ;
@@ -166869,7 +167365,7 @@ if (typeof window !== 'undefined') {
     return mode;
   }
 
-  function createStyleControls(doc, cell, onChange) {
+  function createStyleControls(doc, cell, onChange, options = {}) {
     if (!doc || typeof doc.createElement !== 'function') throw new TypeError('document is required');
     let current = normalizeCellStyleContract(cell);
     const root = doc.createElement('div');
@@ -166902,13 +167398,14 @@ if (typeof window !== 'undefined') {
     const transparent = doc.createElement('input'); transparent.type = 'checkbox'; transparent.checked = current.background.transparent;
     transparent.addEventListener('change', () => { current.background.transparent = transparent.checked; emit(); });
     appendControlRow(doc, root, '背景を透明にする', transparent);
-    select('キャプション', current.captionMode,
+    if (options.caption !== false) select('キャプション', current.captionMode,
       [['full', 'アイコンと列名'], ['icon-only', 'アイコンのみ'], ['hidden', '非表示']],
       value => { current.captionMode = value; });
     return root;
   }
 
   function appendControlRow(doc, root, labelText, control) {
+    control.setAttribute('aria-label', labelText);
     const label = doc.createElement('label'); label.className = 'el-popup-row';
     const text = doc.createElement('span'); text.textContent = labelText; label.appendChild(text); label.appendChild(control); root.appendChild(label);
   }
@@ -167022,8 +167519,20 @@ if (typeof window !== 'undefined') {
       }
       return output;
     });
+    const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
+    // Chart-only columns also follow stable identities when a destination column was renamed.
+    for (const source of Array.isArray(template.columns) ? template.columns : []) {
+      const targets = (Array.isArray(targetColumns) ? targetColumns : []);
+      const byId = source.id && targets.find(target => target.id === source.id);
+      const byName = targets.filter(target => target.name === source.name);
+      const target = byId || (byName.length === 1 ? byName[0] : null);
+      if (target) names.set(source.name, target.name);
+    }
+    for (const cell of layout.cells) if (cell.type === 'chart' && object(cell.chart)) {
+      for (const key of ['xProperty', 'yProperty']) if (cell.chart[key]) cell.chart[key] = names.get(cell.chart[key]) || cell.chart[key];
+      if (Array.isArray(cell.chart.axes)) cell.chart.axes.forEach(axis => { if (object(axis)) axis.prop = names.get(axis.prop) || axis.prop; });
+    }
     if (object(layout.formConfig)) {
-      const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
       const name = value => names.get(value) || value;
       for (const key of ['fields', 'required']) if (Array.isArray(layout.formConfig[key])) layout.formConfig[key] = layout.formConfig[key].map(name);
       for (const key of ['labels', 'descriptions', 'placeholders']) if (object(layout.formConfig[key]))
@@ -167134,7 +167643,7 @@ if (typeof window !== 'undefined') {
       if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
         return { ...remote, source: 'device-cache', templates: latestCached };
       }
-      // 未同期の端末プリセットは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
+      // 未同期の端末テンプレートは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
       const templates = _mergeSharedTemplates(remote.templates, cached)
         .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       _cacheSharedTemplates(templates, opts.storage);
@@ -167167,7 +167676,7 @@ if (typeof window !== 'undefined') {
     const name = String(template.layout.name || '').trim();
     const fetcher = _sharedLibraryFetcher(opts.fetcher);
     const saveToDevice = (templates) => {
-      if (!_cacheSharedTemplates(templates, opts.storage)) throw new Error('プリセットの保存先を利用できません');
+      if (!_cacheSharedTemplates(templates, opts.storage)) throw new Error('テンプレートの保存先を利用できません');
       return { saved: true, shared: false, source: 'device-cache', templates };
     };
     if (!fetcher) {
@@ -167232,12 +167741,12 @@ if (typeof window !== 'undefined') {
       const oldName = String(previous?.layout?.name || '').trim();
       const index = previous ? current.findIndex(item => String(item.layout?.name || '').trim() === oldName) : -1;
       if (previous && (index < 0 || _templateFingerprint(current[index]) !== _templateFingerprint(previous))) {
-        throw new Error('プリセットが別の画面で変更されました。閉じてから読み直してください');
+        throw new Error('テンプレートが別の画面で変更されました。閉じてから読み直してください');
       }
       const name = String(template?.layout?.name || '').trim();
-      if (template && !name) throw new Error('プリセット名を入力してください');
+      if (template && !name) throw new Error('テンプレート名を入力してください');
       if (template && current.some((item, i) => i !== index && String(item.layout?.name || '').trim() === name)) {
-        throw new Error('同名のプリセットが既にあります');
+        throw new Error('同名のテンプレートが既にあります');
       }
       const next = current.map(clone);
       if (index >= 0) next.splice(index, 1, ...(template ? [clone(template)] : []));
@@ -167248,19 +167757,19 @@ if (typeof window !== 'undefined') {
           if (previous && (!template || oldName !== name)) deleted.add(oldName);
           if (template) deleted.delete(name);
           const saved = await _putSharedLibrary(fetcher, next, remote.revision, [...deleted]);
-          if (saved?.available === false) throw new Error('プリセットの保存先を利用できません');
+          if (saved?.available === false) throw new Error('テンプレートの保存先を利用できません');
         } catch (error) {
           if (attempt === 0 && _isConflict(error)) continue;
           throw error;
         }
       }
       try {
-        if (!_cacheSharedTemplates(next, opts.storage) && !remote.available) throw new Error('プリセットの保存先を利用できません');
+        if (!_cacheSharedTemplates(next, opts.storage) && !remote.available) throw new Error('テンプレートの保存先を利用できません');
       }
       catch (error) { if (!remote.available) throw error; }
       return { saved: true, shared: !!remote.available, templates: next };
     }
-    throw new Error('プリセットの保存が競合しました');
+    throw new Error('テンプレートの保存が競合しました');
   }
 
   return Object.freeze({
@@ -167415,6 +167924,7 @@ class FormAppComponent extends ToolComponent {
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
       this._mode = null;
+      this._pendingSheetSwitch = false;
       this._referenceRenames = [];
       this.definitionReadOnly = !!access.readOnly;
       const store = this.store = new MeldexFormDocument.Store(doc, loaded.etag, async (content, etag) => {
@@ -167435,10 +167945,16 @@ class FormAppComponent extends ToolComponent {
       this.state = { ...this.state, formPath: path, label: doc.display_title || doc.title };
       if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
       if (typeof addRecent === 'function') addRecent(this.state.label, path, 'form-app');
-      await this._loadSheet();
+      if (recover && JSON.stringify(store.doc.sheet) !== JSON.stringify(doc.sheet)) {
+        this._pendingSheetSwitch = true;
+        if (await store.save()) this._pendingSheetSwitch = false;
+        if (generation !== this._generation || this.store !== store) return false;
+      }
+      if (this._pendingSheetSwitch) this._blockSheetSwitch(store.doc.sheet.path);
+      else await this._loadSheet();
       if (generation !== this._generation) return false;
       this._render(); this._changed();
-      if (this.store.dirty && !this.definitionReadOnly) {
+      if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
       }
@@ -167518,7 +168034,17 @@ class FormAppComponent extends ToolComponent {
         if (!this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
           throw new Error('フォームを変更できません');
         this._mode = restored.formConfig?.mode;
-        if (previousPath !== restored.sheet.path) await this._loadSheet();
+        if (previousPath !== restored.sheet.path) {
+          this._pendingSheetSwitch = true;
+          clearTimeout(this._saveTimer);
+          const saved = await this._saveDefinitionAndSheet();
+          if (this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+          if (!saved) {
+            this._blockSheetSwitch(restored.sheet.path); this._render();
+            throw new Error(this.sheetError);
+          }
+          return;
+        }
         if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
       };
       historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
@@ -167576,20 +168102,49 @@ class FormAppComponent extends ToolComponent {
     }); return button;
   }
   async _leave() { return !this.el || await MeldexDbFormRuntime.confirmLeave(this.el); }
+  _blockSheetSwitch(path) {
+    if (this.ctx) { this.ctx.destroyed = true; this.ctx.writeBlocked = true; }
+    this.ctx = { dbPath: path, writeBlocked: true };
+    this.sheetError = '保存先の変更を保存できませんでした。「保存を再試行」で保存してから入力してください。';
+  }
+  async _saveDefinitionAndSheet() {
+    const store = this.store, generation = this._generation;
+    const saved = !store || await store.save();
+    if (saved && this.store === store && this._generation === generation && this._pendingSheetSwitch) {
+      this._pendingSheetSwitch = false;
+      await this._loadSheet();
+      if (this.store === store && this._generation === generation) this._render();
+    }
+    return saved;
+  }
   async _chooseSheet() {
     const select = this.sheetSelect;
     const path = select.value;
+    const store = this.store, generation = this._generation;
+    const current = () => this.store === store && this._generation === generation && this.el;
     if (path === this.ctx.dbPath) return;
     if (!await this._leave()) { select.value = this.ctx.dbPath; return; }
+    if (!current()) return;
     if (this.definitionReadOnly) return;
-    select.disabled = true; this.surface.inert = true;
+    const controls = [...select.closest('.gb-form-app-toolbar').querySelectorAll('button,select')]
+      .map(control => [control, control.disabled]);
+    controls.forEach(([control]) => { control.disabled = true; });
+    this.surface.inert = true;
     try {
       const id = path ? await apiFetch('/file-id?path=' + encodeURIComponent(path), { silentError: true }).catch(() => null) : null;
+      if (!current()) return;
       this._update(doc => { doc.sheet = { ...doc.sheet, path, id: id?.file_id || '' }; });
-      await this._loadSheet(); this._render();
+      clearTimeout(this._saveTimer);
+      this._pendingSheetSwitch = true;
+      const saved = await this._saveDefinitionAndSheet();
+      if (!current()) return;
+      if (!saved) {
+        this._blockSheetSwitch(path);
+        this._render();
+      }
     } finally {
-      select.disabled = this.definitionReadOnly;
-      if (this.surface) this.surface.inert = false;
+      controls.forEach(([control, disabled]) => { control.disabled = disabled; });
+      if (current() && this.surface) this.surface.inert = false;
     }
   }
   async _fillSheets(select) {
@@ -167606,25 +168161,28 @@ class FormAppComponent extends ToolComponent {
     } catch (error) { this.status.textContent = 'シート一覧を取得できません: ' + error.message; }
   }
   async _presetOptions(select) {
+    const choices = [];
     const add = (name, items, layouts = false) => {
       const group = document.createElement('optgroup'); group.label = name;
       items.forEach(item => {
-        const option = document.createElement('option'); option.value = String(this._choices.length); option.textContent = layouts ? item.name : item.layout.name;
-        this._choices.push({ item, layout: layouts }); group.appendChild(option);
+        const option = document.createElement('option'); option.value = String(choices.length); option.textContent = layouts ? item.name : item.layout.name;
+        choices.push({ item, layout: layouts }); group.appendChild(option);
       });
       select.appendChild(group);
     };
-    this._choices = [];
-    add('標準プリセット', MeldexDbTopicLayoutPresets.getTemplates());
+    select._templateChoices = choices;
+    add('標準テンプレート', MeldexDbTopicLayoutPresets.getTemplates());
     add('シートのレイアウト', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true);
     try {
       const library = await MeldexDbTopicLayoutStyle.loadSharedTemplateLibrary();
-      if (select.isConnected) add('ユーザープリセット', library.templates || []);
+      if (select.isConnected && select._templateChoices === choices) add('ユーザーテンプレート', library.templates || []);
     } catch (_) { /* Built-in and sheet layouts remain available offline. */ }
   }
   async _usePreset(select) {
-    const choice = this._choices[Number(select.value)]; select.value = '';
-    if (!choice || !await this._leave()) return;
+    if (select.value === '') return;
+    const choice = select._templateChoices?.[Number(select.value)]; select.value = '';
+    const store = this.store, generation = this._generation;
+    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return;
     this._mode = 'entry';
     let layout;
     if (choice.layout) layout = _elNormalizeLayout(MeldexFormDocument.clone(choice.item));
@@ -167637,7 +168195,8 @@ class FormAppComponent extends ToolComponent {
     this._render();
   }
   async _automaticLayout() {
-    if (!await this._leave()) return;
+    const store = this.store, generation = this._generation;
+    if (!await this._leave() || store !== this.store || generation !== this._generation) return;
     const fields = this.getConfig(this.ctx.pivotData?.properties || [], getPropertyTypes(this.ctx.dbPath, this.ctx)).fields;
     this._update(doc => {
       doc.layout = _elNormalizeLayout({ id: _elGenId('form'), name: 'フォーム', canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) },
@@ -167645,24 +168204,74 @@ class FormAppComponent extends ToolComponent {
       doc.layout.formConfig = MeldexDbFormModel.forLayout(doc.layout, doc.formConfig);
     }); this._render();
   }
+  async registerTemplate() {
+    this._commitFocusedControl();
+    const store = this.store;
+    if (!store) return;
+    // A definition snapshot deliberately excludes the destination sheet and response values.
+    const fields = this.getConfig(this.ctx.pivotData?.properties || [], getPropertyTypes(this.ctx.dbPath, this.ctx)).fields;
+    const layout = MeldexFormDocument.clone(this.getLayout() || {
+      id: _elGenId('form'), canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) },
+      cells: fields.map((prop, i) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + i * 140, w: 940, h: 120 })),
+    });
+    layout.formConfig = MeldexDbFormModel.forLayout(layout, store.doc.formConfig);
+    const columns = Object.entries(getPropertyTypes(this.ctx.dbPath, this.ctx)).map(([name, column]) => ({ ...column, name, id: column.property_id || '' }));
+    // Keep stable column identities even when the source uses an automatic layout.
+    layout.cells.filter(cell => cell.type === 'field').forEach(cell => { cell.columnId = columns.find(column => column.name === cell.prop)?.id || cell.columnId || ''; });
+    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.value = store.doc.title || layout.name || 'フォーム';
+    const body = document.createElement('div');
+    body.appendChild(GBUI.createField({ label: 'テンプレート名', input: name }));
+    const hint = document.createElement('p'); hint.textContent = '配置・書式・入力設定を登録します。他のフォームの「テンプレートを適用」から選べます。入力済みの値や参照先シートは含みません。'; body.appendChild(hint);
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); body.appendChild(status);
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録';
+    let busy = false;
+    const modal = GBUI.createModal({ id: 'form-register-template', title: 'テンプレートに登録', body, footer: [save], initialFocus: name,
+      onBeforeClose: () => !busy });
+    save.addEventListener('click', async () => {
+      if (busy) return;
+      if (!name.value.trim()) { status.textContent = 'テンプレート名を入力してください'; name.focus(); return; }
+      busy = true; save.disabled = true; name.disabled = true;
+      try {
+        layout.name = name.value.trim();
+        const template = MeldexDbTopicLayoutStyle.exportTemplate(layout, columns);
+        const result = await MeldexDbTopicLayoutStyle.saveSharedTemplateToLibrary(template);
+        if (!result.saved) throw new Error('同名のテンプレートがあります。別の名前で登録してください');
+        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。' : 'テンプレートに登録しました';
+        if (this.store === store && this.el?.isConnected) {
+          const select = this.el.querySelector('[data-form-templates]');
+          if (select) { select.replaceChildren(new Option(this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択', '')); this._presetOptions(select); }
+        }
+      } catch (error) { status.textContent = error.userMessage || error.message; }
+      finally { busy = false; save.disabled = false; name.disabled = false; }
+    });
+    modal.open();
+  }
   async _design() {
-    if (!await this._leave() || !this.getLayout()) return;
-    const root = this.surface, session = { editMode: true };
+    const owner = this.store, version = this._generation;
+    if (!await this._leave() || owner !== this.store || version !== this._generation || !this.getLayout()) return;
+    const root = this.surface, session = { editMode: true }, store = this.store, generation = this._generation;
     const render = () => {
+      _elCloseEditPopups();
       root.replaceChildren(this._button('配置編集を終了', () => this._render()));
       const editor = document.createElement('div'); root.appendChild(editor);
       const layout = this.getLayout();
       const types = getPropertyTypes(this.ctx.dbPath, this.ctx);
       _elRenderLayoutBody(editor, { properties: Object.fromEntries(Object.keys(types).map(name => [name, []])) }, '', {
-        ctx: this.ctx, propTypes: types, layoutDraft: { layout, session, persist: mutator => this._update(doc => mutator(doc.layout)) },
+        ctx: this.ctx, propTypes: types, layoutDraft: { layout, session, persist: mutator => {
+          if (!editor.isConnected || store !== this.store || generation !== this._generation) return false;
+          return this._update(doc => mutator(doc.layout));
+        } },
       }, this.ctx.dbPath, layout.id, render);
     }; this._designRender = render; render();
   }
   _render() {
     if (!this.el || !this.store) return;
+    if (this._designRender) _elCloseEditPopups();
     this._designRender = null;
     this.el.replaceChildren();
     const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
+    const menu = this._button('メニュー', event => showToolMenu(event, 'form-app', this));
+    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-label', 'メニュー'); menu.setAttribute('aria-haspopup', 'menu'); menu.innerHTML = lucide('menu', 16); bar.appendChild(menu);
     const source = document.createElement('label'); source.textContent = '参照先シート';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
     select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
@@ -167676,10 +168285,11 @@ class FormAppComponent extends ToolComponent {
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'フォームのレイアウト');
+      const templateLabel = document.createElement('label'); templateLabel.textContent = 'テンプレートを適用';
+      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
-      const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout()?.name || 'レイアウトを選択'; presets.appendChild(current);
-      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
+      const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
+      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); templateLabel.appendChild(presets); bar.appendChild(templateLabel); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
       const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }
@@ -167690,7 +168300,7 @@ class FormAppComponent extends ToolComponent {
     }));
     const saveBar = document.createElement('div'); saveBar.className = 'gb-form-app-save'; this.el.appendChild(saveBar);
     this.status = document.createElement('span'); this.status.setAttribute('role', 'status'); saveBar.appendChild(this.status);
-    this.retry = this._button('保存を再試行', () => this.store.save()); saveBar.appendChild(this.retry);
+    this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
     this.exportDraft = this._button('下書きを書き出す', () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(this.store.doc, null, 2)], { type: 'application/json' }));
       const link = document.createElement('a'); link.href = url;
@@ -167708,7 +168318,7 @@ class FormAppComponent extends ToolComponent {
     this._commitFocusedControl();
     if (!await this._leave()) return false;
     clearTimeout(this._saveTimer);
-    return !this.store || await this.store.save();
+    return this._saveDefinitionAndSheet();
   }
   async reload() {
     if (!await this.flush()) return false;
@@ -167724,7 +168334,7 @@ class FormAppComponent extends ToolComponent {
   saveDefinition() {
     this._commitFocusedControl();
     clearTimeout(this._saveTimer);
-    return this.store?.save();
+    return this._saveDefinitionAndSheet();
   }
   _commitFocusedControl() {
     const control = document.activeElement;
@@ -172856,14 +173466,19 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     const last = Math.min(rowTasks.length, first + visibleCount);
     if (!force && first === vState.start && last === vState.end) return;
 
-    vState.renderedRows.forEach(row => row.remove());
+    const previousRows = new Map();
+    vState.renderedRows.forEach((row, offset) => {
+      const index = vState.start + offset;
+      if (!force && index >= first && index < last) previousRows.set(index, row);
+      else row.remove();
+    });
     vState.renderedRows = [];
     _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight);
     _dbSetVirtualSpacerHeight(bottomSpacer, (rowTasks.length - last) * rowHeight);
 
     const frag = document.createDocumentFragment();
     for (let i = first; i < last; i++) {
-      const row = _dbRenderVirtualTask(rowTasks[i], config);
+      const row = previousRows.get(i) || _dbRenderVirtualTask(rowTasks[i], config);
       vState.renderedRows.push(row);
       frag.appendChild(row);
     }
@@ -174227,11 +174842,19 @@ function _getSelectedEntities(ctx) {
   return [...selected];
 }
 
+function _dbRowSelectionSurface(ctx) {
+  if (typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(ctx, ctx.dbPath)) {
+    return ctx.containerEl?.querySelector('.tree-view .db-tree-list')
+      || document.querySelector('#tree-view .db-tree-list');
+  }
+  return _paneEl(ctx, '#' + (ctx.tableId || 'pivot-table'));
+}
+
 function _setPaneAllRowsSelected(ctx, shouldSelect) {
   const c = ctx || _currentPaneState();
   const selected = _ensureSelectedEntities(c);
   if (!c || !selected) return false;
-  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const paneRoot = table || c.containerEl || document;
   const entityNames = shouldSelect && Array.isArray(c._lastEntityNames)
     ? c._lastEntityNames.filter(Boolean)
@@ -174244,7 +174867,7 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
   paneRoot.querySelectorAll('.row-select-cb').forEach(cb => {
     const checked = shouldSelect && nameSet.has(cb.dataset.entityName);
     cb.checked = checked;
-    cb.closest('tr')?.classList.toggle('row-selected', checked);
+    cb.closest('tr, .db-tree-row')?.classList.toggle('row-selected', checked);
     if (checked) lastChecked = cb;
   });
   paneRoot._lastSelectedCb = lastChecked;
@@ -174259,7 +174882,7 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
 function _syncPaneRowSelectHeader(ctx) {
   const c = ctx || _currentPaneState();
   if (!c) return;
-  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const checkbox = table?.querySelector?.('.row-select-all-cb');
   if (!checkbox) return;
   const visibleNames = Array.isArray(c._lastEntityNames) ? c._lastEntityNames.filter(Boolean) : [];
@@ -174370,7 +174993,7 @@ function _updateBulkEditBar(ctx) {
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
   _syncPaneRowSelectHeader(c);
-  const table = _paneEl(c, '#' + ((c && c.tableId) || 'pivot-table'));
+  const table = _dbRowSelectionSurface(c);
   const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
   if (selected.length === 0) {
@@ -180140,8 +180763,12 @@ function renderDbViewTabs(ctx) {
 function renderDbNoViewsGuide(ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
+  ctx.viewMode = 'pivot';
+  if (!ctx.embedded && dbPath === state.currentDbPath) state.view = 'pivot';
   if (typeof showView === 'function') showView('pivot', ctx);
-  const container = _paneEl(ctx, '.pivot-view') || (!ctx ? document.getElementById('pivot-view') : null);
+  const container = typeof _dbViewSurfaceEl === 'function'
+    ? _dbViewSurfaceEl(ctx, '.pivot-view', 'pivot-view')
+    : (_paneEl(ctx, '.pivot-view') || document.getElementById('pivot-view'));
   if (!container) return;
   container.innerHTML = '';
   const guide = document.createElement('div');
@@ -180155,6 +180782,7 @@ function renderDbNoViewsGuide(ctx) {
   desc.textContent = '+ボタンでビューを追加してください';
   const add = document.createElement('button');
   add.className = 'gb-btn primary';
+  add.dataset.e2eId = _dbE2eId(ctx, 'empty-view-add', dbPath);
   add.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 14px;';
   add.innerHTML = lucide('plus', 16) + ' ビューを追加';
   add.addEventListener('click', (ev) => doSaveViewWithTypeDirect('pivot', 'テーブル', { ctx, event: ev }));
@@ -180845,6 +181473,7 @@ function loadSavedView(idx, ctx, options = {}) {
   if (typeof _renderDbViewTabsSafely === 'function') _renderDbViewTabsSafely(ctx);
   else renderDbViewTabs(ctx);
   if (targetView === 'gallery') renderGallery(ctx);
+  else if (targetView === 'tree' && typeof renderDbTreeView === 'function') renderDbTreeView(ctx);
   else if (targetView === 'kanban') renderKanban(ctx);
   else if (targetView === 'timeline') renderTimeline(ctx);
   else if (targetView === 'gantt' && typeof renderGantt === 'function') renderGantt(ctx);
@@ -180870,15 +181499,18 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const currentType = currentView?.viewMode || 'pivot';
 
   const swapViews = (fromIdx, toIdx) => {
-    const views = getSavedViews(dbPath);
+    const cfg = getDbViewConfig(dbPath);
+    const views = cfg.savedViews || [];
     if (toIdx < 0 || toIdx >= views.length) return;
+    const ci = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
     const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
     [views[fromIdx], views[toIdx]] = [views[toIdx], views[fromIdx]];
-    setSavedViews(dbPath, views, { skipHistory: true });
     // currentViewIdxも追従
-    const ci = getCurrentViewIdx(dbPath);
-    if (ci === fromIdx) setCurrentViewIdx(dbPath, toIdx, { skipHistory: true });
-    else if (ci === toIdx) setCurrentViewIdx(dbPath, fromIdx, { skipHistory: true });
+    const nextIdx = ci === fromIdx ? toIdx : ci === toIdx ? fromIdx : ci;
+    cfg.currentViewIdx = nextIdx;
+    ctx.currentViewIdx = nextIdx;
+    ctx.currentViewId = String(views[nextIdx]?.id || '');
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
     if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
       pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
     }
@@ -180887,7 +181519,11 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
 
   const items = [
     { label: '名前を変更', action: () => {
-      setTimeout(() => startSavedViewInlineRename(targetTab, idx, ctx), 0);
+      setTimeout(() => {
+        const tabs = _paneEl(ctx, '.db-view-tabs');
+        const tab = targetTab?.isConnected ? targetTab : tabs?.querySelectorAll('.view-tab')[idx];
+        startSavedViewInlineRename(tab, idx, ctx);
+      }, 0);
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
     { type: 'sep' },
@@ -180908,14 +181544,17 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
     { label: '削除', action: async () => {
       if (!await cfConfirm('このビューを削除しますか？')) return;
       const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-      const views = getSavedViews(dbPath);
+      const cfg = getDbViewConfig(dbPath);
+      const curIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+      const views = cfg.savedViews || [];
       views.splice(idx, 1);
-      setSavedViews(dbPath, views, { skipHistory: true });
-      const curIdx = getCurrentViewIdx(dbPath);
       let nextIdx = curIdx;
       if (curIdx === idx) nextIdx = views.length > 0 ? Math.min(idx, views.length - 1) : -1;
-      else if (curIdx > idx) setCurrentViewIdx(dbPath, curIdx - 1, { skipHistory: true });
-      if (curIdx === idx) setCurrentViewIdx(dbPath, nextIdx, { skipHistory: true });
+      else if (curIdx > idx) nextIdx = curIdx - 1;
+      cfg.currentViewIdx = nextIdx;
+      ctx.currentViewIdx = nextIdx;
+      ctx.currentViewId = String(views[nextIdx]?.id || '');
+      saveDbViewConfig(dbPath, cfg, { skipHistory: true });
       if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
         pushDbViewConfigHistory(dbPath, 'シート表示: ビュー削除', before, captureDbViewConfigHistory(dbPath));
       }
@@ -180932,12 +181571,9 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target)) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  // Hover submenus are portaled to body. Treat every menu in the family as
+  // inside so pointerdown does not remove the type item before its click.
+  _installColHeaderMenuDismissHandlers();
 }
 
 /* ==============================
@@ -180957,6 +181593,9 @@ function _renderDbViewTabMenuItems(container, itemList) {
       const wrapper = document.createElement('div');
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
+      el.tabIndex = 0;
+      el.setAttribute('role', 'menuitem');
+      el.setAttribute('aria-haspopup', 'menu');
       el.innerHTML = item.label + (typeof submenuArrow === 'function' ? submenuArrow() : ' ▸');
       const sub = document.createElement('div');
       sub.className = 'gb-context-menu gb-context-submenu';
@@ -180967,6 +181606,19 @@ function _renderDbViewTabMenuItems(container, itemList) {
         el.addEventListener('mouseenter', () => { sub.style.display = 'block'; });
         wrapper.addEventListener('mouseleave', () => { sub.style.display = 'none'; });
       }
+      const openSubmenu = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        el.dispatchEvent(new MouseEvent('mouseenter'));
+        el.setAttribute('aria-expanded', 'true');
+      };
+      el.addEventListener('click', openSubmenu);
+      el.addEventListener('keydown', event => {
+        if (['Enter', ' ', 'ArrowRight'].includes(event.key)) {
+          openSubmenu(event);
+          sub.querySelector('[role="menuitem"]')?.focus();
+        }
+      });
       wrapper.appendChild(el);
       wrapper.appendChild(sub);
       container.appendChild(wrapper);
@@ -180974,11 +181626,19 @@ function _renderDbViewTabMenuItems(container, itemList) {
     }
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
+    el.setAttribute('role', 'menuitem');
     el.innerHTML = item.label;
     if (item.disabled) {
+      el.setAttribute('aria-disabled', 'true');
       el.style.opacity = '0.4';
       el.style.pointerEvents = 'none';
     } else {
+      el.tabIndex = 0;
+      el.addEventListener('keydown', event => {
+        if (!['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        el.click();
+      });
       el.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         closeColHeaderMenu();
@@ -186450,6 +187110,7 @@ function _elNormalizeLayout(layout) {
   out.name = String(src.name || '').trim() || 'レイアウト';
   const size = _elIsObj(src.canvasSize) ? src.canvasSize : {};
   out.canvasSize = {
+    ...size,
     w: _elClampNum(size.w, EL_CANVAS_MIN, EL_CANVAS_MAX, EL_DEFAULT_CANVAS_W),
     h: _elClampNum(size.h, EL_CANVAS_MIN, EL_CANVAS_MAX, EL_DEFAULT_CANVAS_H),
   };
@@ -186875,7 +187536,7 @@ function _elAddPresetLayout(context, template) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
   let imported;
-  _elMutateState(context.dbPath, 'トピックレイアウト: プリセットから追加', template.layout.name, state => {
+  _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, state => {
     const source = JSON.parse(JSON.stringify(template));
     if (state.layouts.some(item => item.name === source.layout.name)) {
       source.layout.name = _elMakeDuplicateName(source.layout.name, state.layouts);
@@ -186890,7 +187551,7 @@ function _elAddPresetLayout(context, template) {
   _elSession(context.grid, context.entityPath).tab = imported.layout.id;
   context.rerender?.();
   const missing = imported.mappings.filter(item => item.match === 'unresolved').length;
-  if (typeof showStatus === 'function') showStatus(missing ? `追加しました（未割り当ての列: ${missing}件）` : 'プリセットから追加しました');
+  if (typeof showStatus === 'function') showStatus(missing ? `追加しました（未割り当ての列: ${missing}件）` : 'テンプレートから追加しました');
 }
 
 async function _elShowAddLayoutMenu(anchor, context) {
@@ -186912,7 +187573,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   body.className = 'el-preset-popup';
   body.dataset.e2eId = 'entity-layout-add-menu';
   body.setAttribute('role', 'dialog');
-  body.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.setAttribute('aria-label', 'トピックレイアウトのテンプレート');
   body.setAttribute('aria-modal', 'false');
   body.tabIndex = -1;
   body._anchor = anchor;
@@ -186921,14 +187582,14 @@ async function _elShowAddLayoutMenu(anchor, context) {
   addLayout.setAttribute('role', 'menuitem'); addLayout.dataset.e2eId = 'entity-layout-tab-menu-new';
   body.appendChild(addLayout);
   const list = document.createElement('div'); list.className = 'el-preset-list';
-  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのテンプレート');
   body.appendChild(list);
   const actions = document.createElement('div'); actions.className = 'el-preset-actions'; body.appendChild(actions);
   const details = document.createElement('div'); details.className = 'el-preset-details'; details.hidden = true;
   body.appendChild(details);
   const nameRow = document.createElement('label'); nameRow.className = 'el-preset-name-row';
-  nameRow.textContent = 'プリセット名';
-  const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'プリセット名');
+  nameRow.textContent = 'テンプレート名';
+  const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'テンプレート名');
   nameRow.appendChild(name); details.appendChild(nameRow);
   const editor = document.createElement('div'); editor.className = 'el-preset-editor'; details.appendChild(editor);
   const message = document.createElement('div'); message.className = 'el-preset-message';
@@ -186939,7 +187600,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   const allTemplates = () => [...builtins, ...templates];
   const report = (text, error = false) => { message.textContent = text; message.dataset.error = String(error); };
   const canEdit = () => _elCanMutateGrid(context.grid, context.options) && context.grid.isConnected && body.isConnected;
-  const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないプリセットの変更を破棄しますか？'));
+  const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないテンプレートの変更を破棄しますか？'));
   const position = () => {
     if (!body.isConnected || !anchor.isConnected) return;
     if (typeof positionPopup === 'function') positionPopup(body, anchor.getBoundingClientRect(), { gap: 4 });
@@ -186989,7 +187650,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     draft.layout = _elNormalizeLayout(draft.layout);
     name.value = draft.layout.name; dirty = !saved;
     details.hidden = !edit; body.classList.toggle('is-editing', edit);
-    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'プリセットを選ぶとシートに追加します。');
+    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'テンプレートを選ぶとシートに追加します。');
     render(); refresh(); syncControls(); position();
     if (edit) name.focus({ preventScroll: true });
   };
@@ -186998,13 +187659,13 @@ async function _elShowAddLayoutMenu(anchor, context) {
     const copy = JSON.parse(JSON.stringify(template));
     copy.layout.name = _elMakeDuplicateName(copy.layout.name, allTemplates().map(item => item.layout));
     choose(copy);
-    report('標準プリセットを複製して編集します。「保存」で追加します。');
+    report('標準テンプレートを複製して編集します。「保存」で追加します。');
   };
   const refresh = () => {
     list.replaceChildren();
     if (!allTemplates().length) {
       const empty = document.createElement('div'); empty.className = 'el-preset-empty';
-      empty.textContent = '保存済みプリセットはありません'; list.appendChild(empty);
+      empty.textContent = '保存済みテンプレートはありません'; list.appendChild(empty);
     }
     allTemplates().forEach(template => {
       const builtin = builtins.includes(template);
@@ -187028,7 +187689,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
       }
       const label = document.createElement('span'); label.textContent = template.layout.name;
       apply.append(preview, label);
-      if (builtin) apply.setAttribute('aria-description', '標準プリセット');
+      if (builtin) apply.setAttribute('aria-description', '標準テンプレート');
       apply.addEventListener('click', async () => {
         if (canEdit() && await body._requestClose()) _elAddPresetLayout(context, template);
       });
@@ -187045,7 +187706,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
       row.appendChild(edit); list.appendChild(row);
     });
   };
-  const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいプリセット' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
+  const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいテンプレート' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
   const button = (key, label, icon, run) => {
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn gb-btn-icon';
     btn.innerHTML = typeof lucide === 'function' ? lucide(icon, 16) : label;
@@ -187069,7 +187730,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!layout) { report('先にトピックレイアウトのタブを選んでください', true); return; }
     if (await discard()) choose(api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData)));
   });
-  button('edit', '選択中のプリセットを編集', 'pencil', async () => {
+  button('edit', '選択中のテンプレートを編集', 'pencil', async () => {
     if (draft && selectedBuiltin) { editTemplate(draft, true); return; }
     if (draft) { details.hidden = false; body.classList.add('is-editing'); render(); syncControls(); position(); name.focus(); }
   });
@@ -187077,7 +187738,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft) return;
     const template = JSON.parse(JSON.stringify(draft)); template.layout.name = name.value.trim();
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
-    link.download = (template.layout.name || 'プリセット').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
+    link.download = (template.layout.name || 'テンプレート').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
     link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 0);
   });
   button('import', 'ファイルから読込', 'upload', () => {
@@ -187092,7 +187753,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     }); input.click();
   });
   const remove = button('delete', '削除', 'trash2', async () => {
-    if (!previous || !canEdit() || !await cfConfirm('プリセット「' + previous.layout.name + '」を削除しますか？')) return;
+    if (!previous || !canEdit() || !await cfConfirm('テンプレート「' + previous.layout.name + '」を削除しますか？')) return;
     if (!canEdit()) return;
     await persist(null);
   });
@@ -187111,8 +187772,8 @@ async function _elShowAddLayoutMenu(anchor, context) {
       }
       else { previous = null; draft = null; dirty = false; name.value = ''; details.hidden = true; body.classList.remove('is-editing'); render(); }
       refresh(); report(template
-        ? (result.shared ? 'プリセットを保存しました。' : 'この端末にプリセットを保存しました。')
-        : (result.shared ? 'プリセットを削除しました。' : 'この端末のプリセットを削除しました。'));
+        ? (result.shared ? 'テンプレートを保存しました。' : 'この端末にテンプレートを保存しました。')
+        : (result.shared ? 'テンプレートを削除しました。' : 'この端末のテンプレートを削除しました。'));
     } finally {
       busy = false; editor.inert = false; controls.forEach(item => { item.disabled = false; });
       syncControls();
@@ -187122,7 +187783,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft || !canEdit()) return;
     const template = JSON.parse(JSON.stringify(draft));
     template.layout.name = name.value.trim();
-    if (!template.layout.name) { report('プリセット名を入力してください', true); name.focus(); return; }
+    if (!template.layout.name) { report('テンプレート名を入力してください', true); name.focus(); return; }
     await persist(template);
   });
   remove.before(save);
@@ -187170,7 +187831,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   refresh();
   if (allTemplates().length) {
     const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
-  } else { report('プリセットを読み込んでいます…'); }
+  } else { report('テンプレートを読み込んでいます…'); }
   syncControls(); position(); addLayout.focus({ preventScroll: true });
   const initialLibraryVersion = libraryVersion;
   try {
@@ -187180,9 +187841,9 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft && allTemplates().length) {
       const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
     }
-    else if (!draft) { report('保存済みプリセットはありません。「追加」から作成できます。'); }
-    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のプリセットを表示しています。', true);
-  } catch (error) { report('プリセットを読み込めません: ' + (error?.message || error), true); }
+    else if (!draft) { report('保存済みテンプレートはありません。「追加」から作成できます。'); }
+    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のテンプレートを表示しています。', true);
+  } catch (error) { report('テンプレートを読み込めません: ' + (error?.message || error), true); }
   finally { syncControls(); position(); }
 }
 
@@ -187621,7 +188282,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
     : cell.type === 'label' ? (cell.text || '見出し')
       : cell.type === 'image' ? '画像'
         : cell.type === 'divider' ? '罫線'
-          : cell.type === 'chart' ? 'チャート' : cell.type;
+          : cell.type === 'chart' ? 'チャート' : cell.type === 'subform' ? '繰り返し項目' : cell.type;
   el.setAttribute('aria-label', typeLabel + 'のレイアウトセル');
   // フォーカスだけでも選択状態にして、ホバーを使えないキーボード操作から
   // 設定・削除ボタンへ Tab で到達できるようにする。
@@ -187640,7 +188301,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   settingsBtn.type = 'button';
   settingsBtn.className = 'el-cell-settings';
   settingsBtn.dataset.e2eId = 'entity-layout-cell-settings';
-  const settingsLabel = cell.type === 'image' ? '画像の設定'
+  const settingsLabel = cell.type === 'chart' ? 'チャートのデータ・表示設定' : cell.type === 'subform' ? '繰り返し項目の設定' : cell.type === 'image' ? '画像の設定'
     : cell.type === 'divider' ? '罫線の色' : 'セルの書式';
   settingsBtn.title = settingsLabel;
   settingsBtn.setAttribute('aria-label', settingsLabel);
@@ -187846,6 +188507,30 @@ function _elCloseEditPopups() {
 }
 
 function _elAttachPopupCommon(popup, anchorBtn, options = {}) {
+  if (popup.getAttribute('role') === 'dialog') {
+    const title = popup.getAttribute('aria-label') || popup.querySelector('.el-popup-title')?.textContent || '配置の設定';
+    popup.querySelector(':scope > .el-popup-title')?.remove();
+    popup.removeAttribute('role');
+    popup.removeAttribute('aria-label');
+    popup.classList.remove('gb-context-menu');
+    popup.classList.add('el-dialog-content');
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button'; dismiss.className = 'gb-btn'; dismiss.textContent = '閉じる';
+    dismiss.addEventListener('click', () => close('cancel'));
+    const modal = GBUI.createModal({
+      id: popup.dataset.e2eId || options.id,
+      title, body: popup, footer: [dismiss, ...(options.actions || [])],
+      closeLabel: 'ダイアログを閉じる',
+      extraClass: 'el-settings-dialog', initialFocus: options.initialFocus || popup.querySelector('input,select,textarea,button'),
+      returnFocus: anchorBtn, onBeforeClose: options.beforeClose,
+      onClose: () => { popup._cleanup?.(); options.onClose?.(); },
+    });
+    const close = reason => modal.close(typeof reason === 'string' ? reason : 'cancel');
+    close.footer = modal.footer;
+    popup._requestClose = close;
+    modal.open();
+    return close;
+  }
   document.body.appendChild(popup);
   const cleanupFns = [];
   popup._cleanup = () => { cleanupFns.splice(0).forEach(off => off()); };
@@ -187993,7 +188678,7 @@ function _elShowCanvasSizePopup(anchorBtn, ctx) {
     const h = _elClampNum(hInput.value, EL_CANVAS_MIN, EL_CANVAS_MAX, ctx.layout.canvasSize.h);
     close();
     ctx.persist('トピックレイアウト: キャンバスサイズ', w + 'x' + h, (layout) => {
-      layout.canvasSize = { w, h };
+      layout.canvasSize = { ...layout.canvasSize, w, h };
     });
     ctx.rerender();
   });
@@ -188024,6 +188709,8 @@ function _elBuildEditToolbar(ctx) {
     _elShowFieldPickerMenu(fieldBtn, ctx);
   });
   bar.appendChild(fieldBtn);
+  const inspector = document.createElement('button'); inspector.type = 'button'; inspector.className = 'gb-btn';
+  inspector.textContent = 'セル一覧・設定'; inspector.addEventListener('click', event => { event.stopPropagation(); _elShowCellInspector(inspector, ctx); }); bar.appendChild(inspector);
 
   if (typeof _elEditToolbarExtraItems === 'function') {
     _elEditToolbarExtraItems(ctx).forEach(btn => bar.appendChild(btn));
@@ -188327,14 +189014,17 @@ function _elAutoFitCellText(el, cell) {
   // 既定では周囲のUIと同じ文字サイズを保ち、長文はスクロールする。
   if (cell.style?.autoFit !== true) return;
   if (cell.type !== 'field' && cell.type !== 'label') return;
-  const body = el.querySelector('.el-cell-body');
+  const body = el.querySelector('.el-cell-body, .gb-form-input-row');
   if (!body || !body.isConnected || body.clientHeight === 0) return;
   body.style.fontSize = '';
   const base = parseFloat(getComputedStyle(body).fontSize) || 13;
+  const content = el.querySelector('.el-cell-content');
+  const availableHeight = content?.clientHeight || body.clientHeight;
+  const availableWidth = content?.clientWidth || body.clientWidth;
   let size = base;
   let guard = 60;
   while (guard-- > 0 && size > 8
-    && (body.scrollHeight > body.clientHeight + 1 || body.scrollWidth > body.clientWidth + 1)) {
+    && (body.scrollHeight > Math.min(body.clientHeight, availableHeight) + 1 || body.scrollWidth > Math.min(body.clientWidth, availableWidth) + 1)) {
     size -= 1;
     body.style.fontSize = size + 'px';
   }
@@ -188353,9 +189043,11 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
     return;
   }
   const values = { ..._elIsObj(cell.style) ? cell.style : {} };
+  const preview = { ...cell, style: values };
   // カラーパレットのドラッグは中間色ごとに onChange が飛ぶため、永続化（+取り消し履歴）は
   // 300msのデバウンスで1回にまとめる。画面への反映だけライブで行う。
   let persistTimer = null;
+  let closing = false;
   const flushPersist = () => {
     persistTimer = null;
     if (!ctx.grid?.isConnected) return;
@@ -188369,7 +189061,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       persistTimer = setTimeout(flushPersist, 120);
       return;
     }
-    const snapshot = { ..._elIsObj(cell.style) ? cell.style : {} };
+    const snapshot = { ...values };
     _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セル書式', (target) => {
       target.style = snapshot;
     });
@@ -188386,23 +189078,32 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
     },
     onChange: (prop, value) => {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-      if (value === '' || value == null || value === false) delete cell.style?.[prop];
-      else { if (!_elIsObj(cell.style)) cell.style = {}; cell.style[prop] = value; }
-      ctx.options?.layoutDraft?.onChange?.();
+      if (value === '' || value == null || value === false) delete values[prop];
+      else values[prop] = value;
       // ポップアップを開いたまま即時反映（再描画はしない）
       if (cellEl?.isConnected) {
+        const zIndex = cellEl.style.zIndex;
         cellEl.removeAttribute('style');
+        cellEl.style.zIndex = zIndex;
         cellEl.style.left = cell.x + 'px';
         cellEl.style.top = cell.y + 'px';
         cellEl.style.width = cell.w + 'px';
         cellEl.style.height = cell.h + 'px';
-        _elApplyCellStyle(cellEl, cell, ctx);
-        _elAutoFitCellText(cellEl, cell);
+        _elApplyCellStyle(cellEl, preview, ctx);
+        _elAutoFitCellText(cellEl, preview);
       }
       if (persistTimer) clearTimeout(persistTimer);
-      persistTimer = setTimeout(flushPersist, 300);
+      if (closing) flushPersist(); else persistTimer = setTimeout(flushPersist, 300);
     },
   });
+  if (popup) {
+    const cleanup = popup._gbFmtCleanup;
+    popup._gbFmtCleanup = () => {
+      closing = true;
+      if (persistTimer) { clearTimeout(persistTimer); flushPersist(); }
+      cleanup?.();
+    };
+  }
   if (ctx.options?.layoutDraft && popup) popup._cleanup = () => closeAllFormatPopups();
 }
 
@@ -188580,18 +189281,17 @@ function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
   let latest = globalThis.MeldexDbTopicLayoutStyle.normalizeCellStyleContract(cell);
   popup.appendChild(globalThis.MeldexDbTopicLayoutStyle.createStyleControls(document, latest, (next) => {
     latest = next;
-    Object.assign(cell, next);
-    if (cellEl?.isConnected) _elApplyCellStyle(cellEl, cell, ctx);
+    if (cellEl?.isConnected) _elApplyCellStyle(cellEl, next, ctx);
     const caption = cellEl?.querySelector?.('.el-cell-caption');
     const captionText = cellEl?.querySelector?.('.el-cell-caption-text');
     const body = cellEl?.querySelector?.('.el-cell-body');
-    globalThis.MeldexDbTopicLayoutStyle.applyCaptionMode(caption, captionText, body, cell, cell.prop || '列');
-  }));
+    globalThis.MeldexDbTopicLayoutStyle.applyCaptionMode(caption, captionText, body, next, cell.prop || '列');
+  }, { caption: cell.type === 'field' }));
   const textStyleBtn = document.createElement('button');
   textStyleBtn.type = 'button';
   textStyleBtn.className = 'gb-btn';
   textStyleBtn.textContent = '文字書式を開く';
-  popup.appendChild(textStyleBtn);
+  if (['field', 'label'].includes(cell.type)) popup.appendChild(textStyleBtn);
   const close = _elAttachPopupCommon(popup, anchorBtn);
   const persist = () => {
     _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セルの見た目', (target) => {
@@ -188601,7 +189301,76 @@ function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
     });
   };
   popup.addEventListener('change', persist);
-  textStyleBtn.addEventListener('click', () => { close(); _elOpenCellFormatPopup(anchorBtn, cell, ctx, cellEl); });
+  textStyleBtn.addEventListener('click', () => { close(); _elOpenCellFormatPopup(anchorBtn, latest, ctx, cellEl); });
+}
+
+/* Always-visible toolbar entry: every cell remains configurable without hover or dragging. */
+function _elShowCellInspector(anchor, ctx) {
+  _elCloseEditPopups();
+  const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup el-cell-inspector';
+  popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'セル一覧・設定');
+  const types = { field: '列', label: '見出し', image: '画像', divider: '罫線', chart: 'チャート', subform: '繰り返し項目' };
+  const select = document.createElement('select'); select.className = 'gb-input'; select.setAttribute('aria-label', '設定するセル');
+  ctx.layout.cells.forEach((cell, index) => select.add(new Option(`${index + 1}. ${types[cell.type] || cell.type}: ${cell.prop || cell.text || cell.subform?.title || ''}`, cell.id)));
+  select.value = ctx.session.selectedIds?.[0] || ctx.layout.cells[0]?.id || '';
+  popup.appendChild(select);
+  const body = document.createElement('div'); popup.appendChild(body);
+  const close = _elAttachPopupCommon(popup, anchor);
+  const render = () => {
+    body.replaceChildren();
+    close.footer.querySelector('[data-cell-apply]')?.remove();
+    const cell = ctx.layout.cells.find(item => item.id === select.value);
+    if (!cell) { body.textContent = '「列を配置」などからセルを追加してください。'; return; }
+    const element = [...ctx.grid.querySelectorAll('.el-cell')].find(item => item.dataset.cellId === cell.id);
+    if (element) _elSelectCellElement(element.parentElement, element);
+    const row = (label, input) => { if (input.type !== 'checkbox') input.classList.add('gb-input'); input.setAttribute('aria-label', label); const wrap = document.createElement('label'); wrap.className = 'el-popup-row'; wrap.append(document.createTextNode(label), input); body.appendChild(wrap); return input; };
+    const inputs = {};
+    for (const [key, label] of [['x','左から (px)'], ['y','上から (px)'], ['w','幅 (px)'], ['h','高さ (px)']]) {
+      const input = document.createElement('input'); input.type = 'number'; input.required = true; input.min = ['w','h'].includes(key) ? '24' : '0'; input.max = '8000'; input.value = cell[key]; input.disabled = !!cell.locked;
+      inputs[key] = row(label, input);
+    }
+    let prop, text;
+    if (cell.type === 'field') {
+      prop = document.createElement('select');
+      const names = [...new Set([cell.prop, ...Object.keys(ctx.propTypes || {})])].filter(Boolean);
+      names.forEach(name => prop.add(new Option(name + (ctx.propTypes[name] ? '' : '（シートにない列）'), name)));
+      prop.value = cell.prop || ''; row('参照する列', prop);
+    }
+    if (cell.type === 'label') { text = document.createElement('textarea'); text.value = cell.text || ''; row('見出しの本文', text); }
+    let autoFit;
+    if (['field', 'label'].includes(cell.type)) { autoFit = document.createElement('input'); autoFit.type = 'checkbox'; autoFit.checked = cell.style?.autoFit === true; row('文字をセルに自動フィット', autoFit); }
+    let alt;
+    if (cell.type === 'image') { alt = document.createElement('input'); alt.value = cell.image?.alt || ''; row('画像の代替テキスト', alt); }
+    const button = (label, run) => { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn'; btn.textContent = label; btn.addEventListener('click', run); body.appendChild(btn); return btn; };
+    const apply = button('位置・サイズ・内容を適用', () => {
+      if ([...Object.values(inputs)].some(input => !input.checkValidity())) { Object.values(inputs).find(input => !input.checkValidity())?.reportValidity(); return; }
+      ctx.persist('トピックレイアウト: セル設定', '', layout => {
+        const target = layout.cells.find(item => item.id === cell.id);
+        if (!target) return false;
+        if (!target.locked) Object.entries(inputs).forEach(([key, input]) => { target[key] = Number(input.value); });
+        if (text) target.text = text.value;
+        if (autoFit) target.style = { ...target.style, autoFit: autoFit.checked };
+        if (alt) target.image = { ...target.image, alt: alt.value };
+        if (prop) {
+          target.prop = prop.value; target.columnId = ctx.propTypes[prop.value]?.property_id || '';
+          if (ctx.propTypes[prop.value]) { delete target.unresolvedColumn; target.columnType = ctx.propTypes[prop.value].type; }
+          if (layout.formConfig && !layout.formConfig.fields?.includes(prop.value)) layout.formConfig.fields = [...(layout.formConfig.fields || []), prop.value];
+        }
+      });
+      close(); ctx.rerender();
+    });
+    apply.dataset.cellApply = '1'; apply.classList.add('gb-btn-primary'); close.footer.appendChild(apply);
+    button(cell.type === 'chart' ? 'チャートのデータ・表示設定' : '内容の詳細設定', () => { close(); _elOpenCellSettings(anchor, cell, ctx, element); });
+    button(['field', 'label'].includes(cell.type) ? '枠・背景・文字書式' : '枠・背景', () => { close(); _elShowTopicLayoutCellStylePopup(anchor, cell, ctx, element); });
+    for (const [label, front] of [['最前面へ', true], ['最背面へ', false]]) {
+      const btn = button(label, () => { ctx.persist('トピックレイアウト: 重なり順', '', layout => {
+        const index = layout.cells.findIndex(item => item.id === cell.id);
+        if (index < 0 || layout.cells[index].locked) return false;
+        const [target] = layout.cells.splice(index, 1); if (front) layout.cells.push(target); else layout.cells.unshift(target);
+      }); close(); ctx.rerender(); }); btn.disabled = !!cell.locked;
+    }
+  };
+  select.addEventListener('change', render); render();
 }
 
 /* --- レイアウト単位の配色テーマ（要望9） --- */
@@ -188765,22 +189534,26 @@ function _elFetchPivotData(dbPath) {
   const cached = _elPivotCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < EL_PIVOT_CACHE_MS) return cached.promise;
-  const promise = Promise.resolve(
+  const promise = Promise.resolve().then(() =>
     typeof apiFetch === 'function' ? apiFetch('/pivot?path=' + encodeURIComponent(key)) : null
   ).catch((error) => {
-    _elPivotCache.delete(key);
+    if (_elPivotCache.get(key)?.promise === promise) _elPivotCache.delete(key);
     throw error;
   });
   _elPivotCache.set(key, { at: now, promise });
   return promise;
 }
 
+function _elInvalidatePivotData(dbPath) {
+  _elPivotCache.delete(String(dbPath || ''));
+}
+
 /* 最新の列タイプ定義。マウント時に固定された ctx.propTypes ではなく、その場の
    getPropertyTypes を優先する（設定パネルで直前に追加・変更した列も候補へ出すため）。 */
 function _elChartPropTypes(ctx) {
   if (typeof getPropertyTypes === 'function') {
-    const fresh = getPropertyTypes(ctx.dbPath);
-    if (fresh && Object.keys(fresh).length) return { ...ctx.propTypes, ...fresh };
+    const fresh = getPropertyTypes(ctx.dbPath, ctx.options?.ctx);
+    if (fresh && typeof fresh === 'object') return fresh;
   }
   return ctx.propTypes || {};
 }
@@ -188792,7 +189565,7 @@ function _elEntityNumericValue(propName, ctx) {
     try {
       // formulaEvalForEntity は { value, error } を返す（他の全呼び出し元と同じ受け方にする）
       const result = formulaEvalForEntity(ptc.formula, ctx.data?.properties || {}, {
-        propTypes: ctx.propTypes,
+        propTypes: _elChartPropTypes(ctx),
         dbPath: ctx.dbPath,
       });
       if (result?.error) return 0;
@@ -188864,7 +189637,7 @@ function _elRenderRadarChart(axes, w, h, options = {}) {
       if (anchor === 'end') x = Math.max(approxWidth, rawX);
       else if (anchor === 'start') x = Math.min(w - approxWidth, rawX);
       else x = Math.max(approxWidth / 2, Math.min(w - approxWidth / 2, rawX));
-      svg.appendChild(svgText(x, y + 3, label, { fill: 'currentColor', fontSize: 13, anchor }));
+      svg.appendChild(svgText(x, Math.max(16, Math.min(h - 4, y + 3)), label, { fill: 'currentColor', fontSize: 13, anchor }));
     });
   }
   return svg;
@@ -188886,6 +189659,15 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
     return wrap;
   }
 
+  if (cfg.chartType === 'radar' || cfg.dataSource === 'entry') {
+    const missing = (Array.isArray(cfg.axes) ? cfg.axes : []).filter(axis => !_elNumericChartProps(ctx).includes(axis.prop));
+    if (missing.length) {
+      const hint = document.createElement('div'); hint.className = 'el-cell-placeholder';
+      hint.textContent = '参照する数値列が見つかりません: ' + missing.map(axis => axis.prop).join('、');
+      wrap.appendChild(hint); return wrap;
+    }
+  }
+
   if (cfg.chartType === 'radar') {
     const rawAxes = (Array.isArray(cfg.axes) ? cfg.axes : []).map(axis => ({
       prop: String(axis?.prop || ''),
@@ -188901,7 +189683,19 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
       value: axis.value,
       max: axis.explicitMax || sharedMax || autoMax,
     }));
-    wrap.appendChild(_elRenderRadarChart(axes, w, h, { showLabels: cfg.showLabels !== false }));
+    wrap.appendChild(_elRenderRadarChart(axes, w, h, { showLabels: cfg.showLabels !== false, showValues: cfg.showValues !== false }));
+    return wrap;
+  }
+
+  if (cfg.dataSource === 'entry') {
+    const axes = Array.isArray(cfg.axes) ? cfg.axes : [];
+    const palette = typeof _chartPaletteColors === 'function' ? _chartPaletteColors(cfg) : ['#7c9cff'];
+    const values = axes.map(axis => _elEntityNumericValue(axis.prop, ctx));
+    const data = { labels: axes.map(axis => axis.label || axis.prop), values,
+      colors: axes.map((_, i) => palette[i % palette.length]), total: values.reduce((sum, value) => sum + value, 0) };
+    const svg = cfg.chartType === 'pie' ? renderPieChart(data, w, h, cfg)
+      : cfg.chartType === 'line' ? renderLineChart(data, w, h, cfg) : renderBarChart(data, w, h, cfg);
+    if (svg) wrap.appendChild(svg);
     return wrap;
   }
 
@@ -188917,6 +189711,7 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
     showLabels: cfg.showLabels !== false,
     showLegend: cfg.showLegend !== false,
     palette: cfg.palette || 'default',
+    propertyTypes: _elChartPropTypes(ctx),
   };
   _elFetchPivotData(ctx.dbPath)
     .then(async (pivotData) => {
@@ -188925,9 +189720,10 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
         loading.textContent = 'チャートを読み込めませんでした';
         return;
       }
+      const chartOptions = { ctx: ctx.options?.ctx || ctx };
       const data = typeof prepareChartDataAsync === 'function'
-        ? await prepareChartDataAsync(pivotData, chartConfig, ctx.dbPath, {})
-        : prepareChartData(pivotData, chartConfig, ctx.dbPath, {});
+        ? await prepareChartDataAsync(pivotData, chartConfig, ctx.dbPath, chartOptions)
+        : prepareChartData(pivotData, chartConfig, ctx.dbPath, chartOptions);
       if (!wrap.isConnected) return;
       wrap.replaceChildren();
       if (!data || !Array.isArray(data.labels) || data.labels.length === 0) {
@@ -188948,6 +189744,14 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
       loading.textContent = 'チャートを読み込めませんでした';
     });
   return wrap;
+}
+
+function _elRefreshLayoutCharts(ctx) {
+  _elInvalidatePivotData(ctx.dbPath);
+  for (const element of ctx.grid.querySelectorAll('.el-cell-chart')) {
+    const cell = ctx.layout?.cells.find(item => item.id === element.dataset.cellId);
+    if (cell) element.replaceChildren(_elBuildChartCellContent(cell, ctx, element.parentElement));
+  }
 }
 
 /* --- chart セルの設定ポップアップ --- */
@@ -188974,157 +189778,96 @@ function _elShowChartCellPopup(anchorBtn, ctx, existingCell) {
   const popup = document.createElement('div');
   popup.className = 'gb-context-menu el-edit-popup el-chart-popup';
   popup.dataset.e2eId = 'entity-layout-chart-popup';
-
-  const title = document.createElement('div');
-  title.className = 'el-popup-title';
-  title.textContent = existingCell ? 'チャートの設定' : 'チャートセルを追加';
-  popup.appendChild(title);
-
-  const current = _elIsObj(existingCell?.chart) ? existingCell.chart : {};
-
-  const typeRow = document.createElement('label');
-  typeRow.className = 'el-popup-row';
-  const typeLabel = document.createElement('span');
-  typeLabel.textContent = '種類';
-  typeRow.appendChild(typeLabel);
-  const typeSelect = document.createElement('select');
-  typeSelect.className = 'gb-input';
-  typeSelect.dataset.e2eId = 'entity-layout-chart-type';
-  EL_CHART_TYPES.forEach(item => {
-    const option = document.createElement('option');
-    option.value = item.type;
-    option.textContent = item.label;
-    typeSelect.appendChild(option);
-  });
-  typeSelect.value = current.chartType || 'bar';
-  typeRow.appendChild(typeSelect);
-  popup.appendChild(typeRow);
-
-  const body = document.createElement('div');
-  body.className = 'el-chart-popup-body';
-  popup.appendChild(body);
-
-  const buildBody = () => {
-    body.replaceChildren();
-    if (typeSelect.value === 'radar') {
-      const hint = document.createElement('div');
-      hint.className = 'el-popup-hint';
-      hint.textContent = '軸にする数値列（3つ以上）';
-      body.appendChild(hint);
-      const numericProps = _elNumericChartProps(ctx);
-      if (numericProps.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'el-popup-hint';
-        none.textContent = '数値・数式の列がありません';
-        body.appendChild(none);
-      }
-      const selected = new Set((Array.isArray(current.axes) ? current.axes : []).map(a => a?.prop));
-      numericProps.forEach(prop => {
-        const row = document.createElement('label');
-        row.className = 'el-chart-axis-row';
-        const check = document.createElement('input');
-        check.type = 'checkbox';
-        check.checked = selected.has(prop);
-        check.dataset.prop = prop;
-        check.dataset.e2eId = 'entity-layout-chart-axis';
-        row.appendChild(check);
-        const span = document.createElement('span');
-        span.textContent = prop;
-        row.appendChild(span);
-        body.appendChild(row);
-      });
-      const maxRow = document.createElement('label');
-      maxRow.className = 'el-popup-row';
-      const maxLabel = document.createElement('span');
-      maxLabel.textContent = '最大値（空欄で自動）';
-      maxRow.appendChild(maxLabel);
-      const maxInput = document.createElement('input');
-      maxInput.type = 'number';
-      maxInput.min = '1';
-      maxInput.dataset.e2eId = 'entity-layout-chart-axis-max';
-      maxInput.value = current.axisMax > 0 ? String(current.axisMax) : '';
-      maxRow.appendChild(maxInput);
-      body.appendChild(maxRow);
-      return;
-    }
-    const makeSelectRow = (labelText, e2eId, options, value) => {
-      const row = document.createElement('label');
-      row.className = 'el-popup-row';
-      const span = document.createElement('span');
-      span.textContent = labelText;
-      row.appendChild(span);
-      const select = document.createElement('select');
-      select.className = 'gb-input';
-      select.dataset.e2eId = e2eId;
-      options.forEach(([optionValue, optionLabel]) => {
-        const option = document.createElement('option');
-        option.value = optionValue;
-        option.textContent = optionLabel;
-        select.appendChild(option);
-      });
-      select.value = value;
-      row.appendChild(select);
-      body.appendChild(row);
-      return select;
-    };
-    const allProps = _elAllChartProps(ctx);
-    const xSelect = makeSelectRow('横軸の列', 'entity-layout-chart-x',
-      allProps.map(prop => [prop, prop]), current.xProperty || allProps[0] || '');
-    const aggSelect = makeSelectRow('集計', 'entity-layout-chart-agg',
-      EL_CHART_AGGREGATIONS.map(item => [item.value, item.label]), current.yAggregation || 'count');
-    const numericProps = _elNumericChartProps(ctx);
-    const ySelect = makeSelectRow('値の列（件数以外）', 'entity-layout-chart-y',
-      [['', '（未選択）']].concat(numericProps.map(prop => [prop, prop])), current.yProperty || '');
-    body._collect = () => ({
-      xProperty: xSelect.value,
-      yAggregation: aggSelect.value,
-      yProperty: ySelect.value,
-    });
+  popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'チャートのデータ・表示設定');
+  const title = document.createElement('div'); title.className = 'el-popup-title';
+  title.textContent = existingCell ? 'チャートのデータ・表示設定' : 'チャートセルを追加'; popup.appendChild(title);
+  const draft = JSON.parse(JSON.stringify(_elIsObj(existingCell?.chart) ? existingCell.chart : {}));
+  const selectRow = (root, label, id, choices, value) => {
+    const row = document.createElement('label'); row.className = 'el-popup-row';
+    const text = document.createElement('span'); text.textContent = label;
+    const select = document.createElement('select'); select.className = 'gb-input'; select.dataset.e2eId = id; select.setAttribute('aria-label', label);
+    choices.forEach(([key, name]) => select.add(new Option(name, key)));
+    select.value = value; row.append(text, select); root.appendChild(row); return select;
   };
-  typeSelect.addEventListener('change', buildBody);
-  buildBody();
-
-  const applyBtn = document.createElement('button');
-  applyBtn.type = 'button';
-  applyBtn.className = 'gb-btn gb-btn-primary primary';
-  applyBtn.dataset.e2eId = 'entity-layout-chart-apply';
-  applyBtn.textContent = existingCell ? '適用' : '追加';
-  applyBtn.addEventListener('click', () => {
-    const chartType = typeSelect.value;
-    const chart = { chartType };
-    if (chartType === 'radar') {
-      chart.axes = Array.from(body.querySelectorAll('input[type="checkbox"][data-prop]'))
-        .filter(check => check.checked)
-        .map(check => ({ prop: check.dataset.prop }));
-      const axisMax = parseFloat(body.querySelector('[data-e2e-id="entity-layout-chart-axis-max"]')?.value || '');
-      if (Number.isFinite(axisMax) && axisMax > 0) chart.axisMax = axisMax;
-      if (chart.axes.length < 3) {
-        if (typeof showStatus === 'function') showStatus('レーダーには数値列を3つ以上選んでください', true);
-        return;
-      }
-    } else {
-      const collected = typeof body._collect === 'function' ? body._collect() : {};
-      chart.xProperty = collected.xProperty || '';
-      chart.yAggregation = collected.yAggregation || 'count';
-      chart.yProperty = collected.yProperty || '';
-      if (!chart.xProperty) {
-        if (typeof showStatus === 'function') showStatus('横軸の列を選んでください', true);
-        return;
-      }
-    }
-    close();
-    if (existingCell) {
-      _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: チャート設定', (target) => {
-        target.chart = chart;
+  const type = selectRow(popup, '種類', 'entity-layout-chart-type', EL_CHART_TYPES.map(item => [item.type,item.label]), draft.chartType || 'bar');
+  const source = selectRow(popup, 'データの範囲', 'entity-layout-chart-source', [['entry','このトピックの数値列'],['sheet','シート全体を集計']],
+    draft.chartType === 'radar' ? 'entry' : draft.dataSource || (existingCell ? 'sheet' : 'entry'));
+  const hint = document.createElement('p'); hint.className = 'el-popup-hint';
+  hint.textContent = '参照するのはシートの列です。同じ列を置いた入力セルの値が使われます。上から順に表示します。'; popup.appendChild(hint);
+  const body = document.createElement('div'); body.className = 'el-chart-popup-body'; popup.appendChild(body);
+  let collect = () => ({});
+  const build = () => {
+    Object.assign(draft, collect()); body.replaceChildren();
+    const radar = type.value === 'radar';
+    if (radar) source.value = 'entry'; source.disabled = radar;
+    hint.textContent = source.value === 'entry'
+      ? '参照する数値列を選びます。現在のトピックの値（新規入力では入力中の値）を、上から順に表示します。'
+      : '参照先シートの保存済みトピックを集計します。分類の列でグループを分け、値の列を指定した方法で集計します。';
+    if (source.value === 'entry') {
+      const numeric = _elNumericChartProps(ctx);
+      const saved = new Map((draft.axes || []).map(axis => [axis.prop,axis]));
+      const order = [...new Set([...(draft.axes || []).map(axis => axis.prop), ...numeric])];
+      const heading = document.createElement('div'); heading.className = 'el-chart-axis-settings el-popup-hint';
+      for (const text of ['参照する列', '表示名', radar ? '最大値' : '', '順序', '']) { const span = document.createElement('span'); span.textContent = text; heading.appendChild(span); }
+      body.appendChild(heading);
+      const list = document.createElement('div'); body.appendChild(list);
+      order.forEach(prop => {
+        const axis = saved.get(prop) || { prop };
+        const row = document.createElement('div'); row.className = 'el-chart-axis-settings';
+        const label = document.createElement('label');
+        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = saved.has(prop);
+        check.dataset.prop = prop; check.dataset.e2eId = 'entity-layout-chart-axis';
+        label.append(check, document.createTextNode(prop + (numeric.includes(prop) ? '' : '（数値列なし）')));
+        const caption = document.createElement('input'); caption.type = 'text'; caption.value = axis.label || ''; caption.placeholder = prop; caption.setAttribute('aria-label', '表示名: ' + prop);
+        const max = document.createElement('input'); max.type = 'number'; max.min = '0'; max.step = 'any'; max.value = axis.max > 0 ? axis.max : ''; max.placeholder = '自動'; max.disabled = !radar; max.setAttribute('aria-label', '軸の最大値: ' + prop);
+        row.append(label, caption, max);
+        for (const [text, up] of [['↑',true],['↓',false]]) {
+          const move = document.createElement('button'); move.type = 'button'; move.className = 'gb-btn'; move.textContent = text; move.setAttribute('aria-label', prop + (up ? 'を前へ' : 'を後へ'));
+          move.addEventListener('click', () => { if (up && row.previousElementSibling) list.insertBefore(row,row.previousElementSibling); else if (!up && row.nextElementSibling) list.insertBefore(row.nextElementSibling,row); }); row.appendChild(move);
+        }
+        row._axis = () => ({ ...axis, prop, label: caption.value.trim(), max: Number(max.value) || 0 });
+        list.appendChild(row);
       });
-      ctx.rerender();
+      if (!numeric.length) { const empty = document.createElement('p'); empty.textContent = '数値・数式の列をシートに追加してください。'; body.appendChild(empty); }
+      const maxRow = document.createElement('label'); maxRow.className = 'el-popup-row'; maxRow.textContent = '全軸の最大値（空欄で自動）';
+      const max = document.createElement('input'); max.type = 'number'; max.min = '0'; max.step = 'any'; max.value = draft.axisMax > 0 ? draft.axisMax : ''; max.dataset.e2eId = 'entity-layout-chart-axis-max'; maxRow.appendChild(max);
+      if (radar) body.appendChild(maxRow);
+      collect = () => ({ axes: [...list.children].filter(row => row.querySelector('input[type=checkbox]').checked).map(row => row._axis()), axisMax: Number(max.value) || 0 });
     } else {
-      _elAddCell(ctx, { type: 'chart', w: 320, h: 240, chart }, 'チャート');
+      const all = _elAllChartProps(ctx), numeric = _elNumericChartProps(ctx);
+      const x = selectRow(body, '分類・横軸の列', 'entity-layout-chart-x', [['','（未選択）'], ...all.map(prop => [prop,prop])], draft.xProperty || '');
+      const agg = selectRow(body, '集計', 'entity-layout-chart-agg', EL_CHART_AGGREGATIONS.map(item => [item.value,item.label]), draft.yAggregation || 'count');
+      const y = selectRow(body, '値・縦軸の列', 'entity-layout-chart-y', [['','（未選択）'], ...numeric.map(prop => [prop,prop])], draft.yProperty || '');
+      const toggle = () => { y.disabled = agg.value === 'count'; }; agg.addEventListener('change',toggle); toggle();
+      collect = () => ({ xProperty:x.value, yAggregation:agg.value, yProperty:y.value });
     }
+  };
+  type.addEventListener('change',build); source.addEventListener('change',build); build();
+  const flags = {};
+  for (const [key,label] of [['showLabels','ラベルを表示'],['showValues','レーダーの値を表示'],['showLegend','凡例を表示（円グラフ）']]) {
+    const row = document.createElement('label'); row.className = 'el-chart-axis-row';
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft[key] !== false; flags[key] = check;
+    row.append(check,document.createTextNode(label)); popup.appendChild(row);
+  }
+  const palette = selectRow(popup, '配色（棒・円・折れ線）', 'entity-layout-chart-palette', [['default','標準'],['warm','暖色'],['cool','寒色'],['themeAccent','テーマ色']], draft.palette || 'default');
+  // Preserve saved palettes that may have been created by another chart editor/version.
+  if (!palette.value && draft.palette) { palette.add(new Option(draft.palette,draft.palette)); palette.value = draft.palette; }
+  const error = document.createElement('p'); error.setAttribute('role','status'); popup.appendChild(error);
+  const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'gb-btn gb-btn-primary primary';
+  apply.dataset.e2eId = 'entity-layout-chart-apply'; apply.textContent = existingCell ? '適用' : '追加';
+  const close = _elAttachPopupCommon(popup, anchorBtn, { actions: [apply] });
+  apply.addEventListener('click', () => {
+    if ([...popup.querySelectorAll('input')].some(input => !input.checkValidity())) { error.textContent = '最大値は0以上の数値で指定してください'; return; }
+    const chart = { ...draft, ...collect(), chartType:type.value, dataSource:source.value, palette:palette.value };
+    Object.entries(flags).forEach(([key,check]) => { chart[key] = check.checked; });
+    if (chart.dataSource === 'entry' && (chart.axes.length < (chart.chartType === 'radar' ? 3 : 1) || chart.axes.some(axis => !_elNumericChartProps(ctx).includes(axis.prop)))) {
+      error.textContent = chart.chartType === 'radar' ? 'レーダーには有効な数値列を3つ以上選んでください' : '有効な数値列を1つ以上選んでください'; return;
+    }
+    if (chart.dataSource === 'sheet' && (!chart.xProperty || (chart.yAggregation !== 'count' && !chart.yProperty))) { error.textContent = '分類の列と、件数以外では値の列を選んでください'; return; }
+    close();
+    if (existingCell) { _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: チャート設定', target => { target.chart = chart; }); ctx.rerender(); }
+    else _elAddCell(ctx, { type:'chart', w:320, h:240, chart }, 'チャート');
   });
-  popup.appendChild(applyBtn);
-
-  const close = _elAttachPopupCommon(popup, anchorBtn);
 }
 
 ;
@@ -217031,7 +217774,7 @@ function setFolderSubfolderContentsEnabled(enabled) {
 }
 
 async function _folderFetchBrowseItems(path, options = {}) {
-  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
   if (options.isCurrent?.() === false) return [];
   if (!isFolderSubfolderContentsEnabled()) return direct;
   const result = [...direct];
@@ -217046,7 +217789,7 @@ async function _folderFetchBrowseItems(path, options = {}) {
     if (!key || visited.has(key)) continue;
     visited.add(key);
     try {
-      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true&form_hierarchy=true');
       if (options.isCurrent?.() === false) return [];
       children.forEach(child => {
         if (child?.type === 'folder' && child.path) queue.push(child.path);
@@ -217199,7 +217942,7 @@ async function openFolder(label, path, opts) {
 
     let fetchedItems = typeof _folderFetchBrowseItems === 'function'
       ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
-      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
     const browseIncomplete = fetchedItems._folderBrowseIncomplete || null;
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
@@ -217514,7 +218257,8 @@ function _getFolderFilteredItems() {
   // 検索欄のタグ条件（search側。フィルタの filterTags とは別物）。
   // 検索文字列が空でもタグ条件だけで絞り込めるようにする（2-F）。
   const hasSearchTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
-  return _folderItems.filter(item => {
+  return _folderItems.filter(function matches(item) {
+    if (item.type === 'form-app' && item.children?.some(matches)) return true;
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
     if (hasSearchTagCondition && !unifiedMatch) return false;
@@ -217540,7 +218284,7 @@ function _folderFilterChoices() {
   const extMap = new Map();
   const folderMap = new Map();
   const tagMap = new Map();
-  _folderItems.forEach(item => {
+  _folderItems.flatMap(item => [item, ...(item.type === 'form-app' ? item.children || [] : [])]).forEach(item => {
     const type = _folderItemTypeKey(item);
     if (type && !typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type));
     const ext = _folderItemExt(item);
@@ -218104,6 +218848,20 @@ function renderFolderGrid(opts) {
       showFolderItemContextMenu(e, item);
     };
 
+    if (item.type === 'form-app' && Array.isArray(item.children)) {
+      const children = document.createElement('div'); children.className = 'fv-form-sheets';
+      children.style.cssText = 'grid-column:1/-1;padding-left:8px;min-width:0;';
+      children.setAttribute('aria-label', 'フォーム内のシート');
+      for (const sheet of item.children) {
+        const open = document.createElement('button'); open.type = 'button'; open.className = 'gb-btn';
+        open.style.cssText = 'display:block;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        open.dataset.gbTooltip = sheet.name || sheet.path;
+        open.textContent = '↳ ' + (sheet.name || sheet.path); open.setAttribute('aria-label', 'シートを開く: ' + (sheet.name || sheet.path));
+        open.addEventListener('click', event => { event.stopPropagation(); selectDatabase(sheet.path); });
+        open.addEventListener('dblclick', event => event.stopPropagation()); children.appendChild(open);
+      }
+      el.appendChild(children);
+    }
     fragment.appendChild(el);
     }
     container.appendChild(fragment);
@@ -222857,6 +223615,7 @@ let _csvOpenSeq = 0;
 let _csvSaveVersion = 0;
 let _csvSaveInFlight = null;
 let _csvSaveQueued = false;
+const _csvSaveHost = {};
 let _csvLastSavedEtag = '';
 let _csvLastSavedTransportRevision = '';
 let _csvSheetModeActive = false;
@@ -223764,7 +224523,18 @@ async function _csvDrainSaveQueue() {
         : (_csvLastSavedEtag || '');
       if (guardedRevision) payload.if_match_etag = guardedRevision;
       if (_csvLastSavedTransportRevision) payload.transport_revision = _csvLastSavedTransportRevision;
-      const result = await apiPut('/file?path=' + encodeURIComponent(savePath), payload);
+      const send = previous => apiPut('/file?path=' + encodeURIComponent(savePath), {
+        ...payload,
+        ...(previous?.etag ? { if_match_etag: previous.etag,
+          transport_revision: previous.transport_revision || coordinator?.normalizeTransportRevision(coordinator.currentTransportName(), previous.etag) || '' } : {}),
+      });
+      const result = coordinator
+        ? await coordinator.requestSave(documentKey, _csvSaveHost, savePath, content, send, { reason: 'csv-auto' })
+        : await send();
+      if (result?.conflictPending || result?.queued) {
+        _csvDirty = true;
+        return false;
+      }
       if (_csvIsMissingSaveResult(result)) {
         _csvDirty = true;
         showStatus('CSVファイルが見つかりません。保存先を確認してください', true);
@@ -225353,7 +226123,7 @@ async function loadOutliner(options) {
       } catch (e) {
         // フォールバック: 従来のルートフォルダルート
         try {
-          const items = await apiFetch('/browse?all_files=true');
+          const items = await apiFetch('/browse?all_files=true&form_hierarchy=true');
           if (loadGeneration !== _outlinerLoadGeneration) {
             if (typeof _logPerfEvent === 'function') {
               _logPerfEvent('outliner.load.stale', perfStartedAt, { stage: 'legacy', reason: opts.reason || '' });
@@ -225617,7 +226387,7 @@ function _syncOutlinerResolvedItemType(node, item) {
   row.dataset.itemType = item.type || '';
   const toggle = row.querySelector('.tree-toggle');
   const children = node.querySelector(':scope > .tree-children');
-  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database');
+  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database' || item.type === 'form-app');
   if (previousType && previousType !== item.type && children) {
     children.replaceChildren();
     children.dataset.loaded = 'false';
@@ -226633,7 +227403,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
   const isUnavailableRoot = item.needsMapping === true;
-  const isExpandable = !isUnavailableRoot && (isFolder || isDB);
+  const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
 
   // Toggle arrow
   const toggle = document.createElement('span');
@@ -226752,7 +227522,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
     if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
-    if (!currentIsFolder && !currentIsDB) {
+    const currentIsForm = item.type === 'form-app';
+    if (!currentIsFolder && !currentIsDB && !currentIsForm) {
       row.click();
       return;
     }
@@ -226798,7 +227569,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
         childrenDiv._outlinerLoadToken = loadToken;
         let warmItems = [];
         try {
-          if (currentIsDB) {
+          if (currentIsForm) {
+            const children = Array.isArray(item.children) ? item.children : [];
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, children, rootPath, { folderItem: item, folderNode: div, kind: 'form-app' });
+            warmItems = children;
+          } else if (currentIsDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true', { foreground: true });
             window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
             const entityItems = _outlinerSheetTreeItems(item, pivotData);
@@ -226813,7 +227588,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true&form_hierarchy=true');
             const childList = Array.isArray(children) ? children : (Array.isArray(children?.items) ? children.items : []);
             let visibleChildren = childList.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
@@ -226858,7 +227633,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
               let match = false;
               if (d.type === 'entity') match = includeEntities && d.name && d.name.toLowerCase().includes(q);
               else match = d.name && d.name.toLowerCase().includes(q);
-              if (!match && d.type !== 'folder' && d.type !== 'database' && !d._isRoot) {
+              if (!match && d.type !== 'folder' && d.type !== 'database' && d.type !== 'form-app' && !d._isRoot) {
                 node.style.display = 'none';
               }
             });
@@ -227098,6 +227873,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
     e.dataTransfer.dropEffect = 'move';
     clearDragIndicators();
 
+    if (item._form_parent_path) {
+      row.classList.add('drag-over-inside');
+      return;
+    }
+
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
     const h = rect.height;
@@ -227186,6 +227966,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
       : row.classList.contains('drag-over-inside') ? 'inside'
       : 'below';
     clearDragIndicators();
+
+    if (item._form_parent_path && position !== 'inside') {
+      showStatus('このシートの中、または移動先のフォルダへドロップしてください');
+      return;
+    }
 
     // ワークスペースセクションのルート行への上下ドロップは、並び替えではなく
     // ルートフォルダ外（vaultルート）への実移動になってしまうため受け付けない
@@ -227386,6 +228171,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
           pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
         }
       }
+      if (nodes.some(node => node._nodeData?._form_parent_path)) await loadOutliner();
     })();
   });
 
@@ -227401,7 +228187,10 @@ function clearDragIndicators() {
 
 function _outlinerSheetTreeItems(item, pivotData) {
   const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
-    name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path,
+    name, type: 'entity',
+    path: pivotData.entities[name]?._entry_path || (typeof _entityPath === 'function'
+      ? _entityPath(item.path, name, pivotData) : item.path + '/' + name + (pivotData.new_format ? '.md' : '')),
+    _dbPath: item.path,
     entityData: pivotData.entities[name],
   }));
   const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
@@ -227432,7 +228221,7 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
       path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
         + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
-        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true';
+        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true&form_hierarchy=true';
     }
     if (_outlinerWarmKeys.has(path)) continue;
     _outlinerWarmKeys.add(path);
@@ -228972,6 +229761,10 @@ function getAddParentPath(nodeEl, nodeData, options = {}) {
   const isContainer = nodeData.type === 'folder'
     || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
+  if (nodeData._form_parent_path) {
+    const path = String(nodeData.path || '').replace(/\\/g, '/');
+    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
+  }
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
     // フォルダ/DBが展開中ならその中、閉じているなら同階層
@@ -229036,7 +229829,7 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, 
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true' + (options.detail ? '&detail=true' : ''),
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
       { skipBrowseCache: true, cache: 'reload' });
   } catch {
     return null;
@@ -230465,7 +231258,11 @@ function _globalFilterShouldBackgroundScan(filter = _globalFilter) {
 }
 function _showDatabaseByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilterHasType('database'); }
 function _showEntityByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilter.types.includes('entity') || _globalFilterHasType('database'); }
-function _showRegularNodeByGlobalFilter(item) { return !_isGlobalFilterEnabled() || matchesGlobalFilter(item); }
+function _showRegularNodeByGlobalFilter(item) {
+  return !_isGlobalFilterEnabled() || matchesGlobalFilter(item)
+    || item?.type === 'form-app' && (item.children || []).some(child =>
+      child.type === 'database' && _showDatabaseByGlobalFilter() && matchesGlobalFilter(child));
+}
 
 function _outlinerNormalizeComparePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -230484,6 +231281,7 @@ function _outlinerNodeIsCurrentOrSelected(node, data) {
 function _outlinerContainerNodeMatchesFilter(data) {
   if (!data) return false;
   if (data._isRoot) return true;
+  if (data.type === 'form-app') return _showRegularNodeByGlobalFilter(data);
   if (data.type === 'database') return _showDatabaseByGlobalFilter() && matchesGlobalFilter(data);
   if (data.type === 'folder') {
     return _hasAllGlobalTypesSelected()
@@ -230986,7 +231784,7 @@ function _folderHasFilterVisibleDescendant(childrenDiv, path) {
     for (const it of items) {
       if (!it || !it.path || seen.has(it.path)) continue;
       seen.add(it.path);
-      if (it.type === 'folder') {
+      if (it.type === 'folder' || it.type === 'form-app') {
         const r = walk(it.path);
         if (r === true) return true;
         if (r === 'unknown') unknown = true;
@@ -231014,7 +231812,7 @@ function _hideEmptyFilteredFolders() {
   allNodes.forEach(node => {
     const data = node._nodeData;
     if (!data) return;
-    if (data.type !== 'folder' && data.type !== 'database' && !data._isRoot) return;
+    if (data.type !== 'folder' && data.type !== 'database' && data.type !== 'form-app' && !data._isRoot) return;
     const childrenDiv = node.querySelector(':scope > .tree-children');
     if (!childrenDiv) return;
     const virtualManaged = childrenDiv.dataset.virtual === 'true' || !!childrenDiv._virtualOwnerContainer;
@@ -232690,7 +233488,7 @@ function applyTreeNameSearch() {
     const nameMatch = !!(q && includeName && d.name && d.name.toLowerCase().includes(q));
     const pathMatch = _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
     // フォルダ/ルートは名前マッチのみ
-    if (d.type === 'folder' || d._isRoot || d.type === 'database') {
+    if (d.type === 'folder' || d._isRoot || d.type === 'database' || d.type === 'form-app') {
       node._searchMatch = nameMatch || pathMatch;
       return;
     }
@@ -232727,7 +233525,7 @@ function applyTreeNameSearch() {
     if (node._searchMatch || node._searchAncestor) {
       node.style.display = '';
       // 祖先フォルダが閉じていれば開く
-      if (node._searchAncestor && (d.type === 'folder' || d.type === 'database' || d._isRoot)) {
+      if (node._searchAncestor && (d.type === 'folder' || d.type === 'database' || d.type === 'form-app' || d._isRoot)) {
         const toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
         const childrenDiv = node.querySelector(':scope > .tree-children');
         if (toggle && childrenDiv && toggle.dataset.expanded === 'false') {
@@ -236951,7 +237749,9 @@ const MeldexStartupTabGuard = (() => {
     if (!path) return { state: 'available' };
     const base = (typeof API_BASE !== 'undefined') ? API_BASE : '/api';
     const dbViewTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar']);
-    const endpoint = dbViewTypes.has(viewName)
+    const endpoint = viewName === 'entity'
+      ? (base + '/entity?path=' + encodeURIComponent(path))
+      : dbViewTypes.has(viewName)
       ? (base + '/check-type?path=' + encodeURIComponent(path))
       : (base + '/file-meta?path=' + encodeURIComponent(path));
     try {
@@ -240532,11 +241332,13 @@ const GBPaneBridge = (() => {
           GBLayout.setActivePane(paneId);
         }
         _schedulePanelCreatedFileListRefresh(path);
+        try { if (typeof addRecent === 'function') addRecent(name, path, toolType); }
+        catch (err) { console.warn('作成したファイルの履歴を保存できませんでした', err); }
         if (typeof showStatus === 'function') showStatus('作成しました: ' + name);
         return tabId;
       } catch (err) {
         if (pendingTabId) GBTabs.closeTab(paneId, pendingTabId, { skipHistory: true });
-        if (typeof showStatus === 'function') showStatus('作成に失敗しました', true);
+        if (typeof showStatus === 'function') showStatus(err.userMessage || '作成に失敗しました', true);
         return null;
       }
     }
@@ -244455,6 +245257,23 @@ let navNavigating = false; // 戻る/進む操作中フラグ
 const RECENT_MAX = 8;
 const RECENT_KEY = 'meldex-recent';
 
+function _railAppType(type) {
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'database'].includes(type)) return 'database';
+  if (type === 'scenario') return 'scriptnote';
+  return ['page', 'scriptnote', 'board', 'form-app'].includes(type) ? type : '';
+}
+
+function rememberRailAppFile(entry) {
+  if (window._skipLastViewSave || window._gbSingleWindow) return;
+  const type = entry?.calendarFile ? '' : _railAppType(entry?.type);
+  const path = entry?.path || entry?.dbPath || '';
+  if (!type || !path) return;
+  const recent = _readStorageArray('meldex-rail-last-files').filter(item => _railAppType(item?.type) !== type);
+  recent.unshift({ ...entry, path, type: entry.type === 'scenario' ? 'scriptnote' : (entry.calendarFile ? 'calendar' : entry.type) });
+  try { localStorage.setItem('meldex-rail-last-files', JSON.stringify(recent)); }
+  catch (err) { console.warn('アプリの起動履歴を保存できませんでした', err); }
+}
+
 function addRecent(label, path, type) {
   let recent = _readStorageArray(RECENT_KEY);
   recent = recent.filter(r => r.path !== path);
@@ -244462,6 +245281,7 @@ function addRecent(label, path, type) {
   recent.unshift({label, path, type, time: Date.now(), ...(fid ? { file_id: fid } : {})});
   if (recent.length > RECENT_MAX) recent.length = RECENT_MAX;
   localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+  rememberRailAppFile(recent[0]);
   if (typeof updateRecentItems === 'function') updateRecentItems();
 }
 
@@ -244764,21 +245584,23 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   let legacyTabsChanged = false;
 
   try {
-    const recent = _readStorageArray(RECENT_KEY);
-    recent.forEach(entry => {
-      if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
-      if (entry.path === newPath && exactLabel != null) {
-        entry.label = exactLabel;
-        recentChanged = true;
+    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
+      const recent = _readStorageArray(recentKey);
+      recent.forEach(entry => {
+        if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
+        if (entry.path === newPath && exactLabel != null) {
+          entry.label = exactLabel;
+          recentChanged = true;
+        }
+        if (entry.path === newPath && fileId) {
+          entry.file_id = fileId;
+          recentChanged = true;
+        }
+      });
+      if (recentChanged) {
+        localStorage.setItem(recentKey, JSON.stringify(recent));
+        if (typeof updateRecentItems === 'function') updateRecentItems();
       }
-      if (entry.path === newPath && fileId) {
-        entry.file_id = fileId;
-        recentChanged = true;
-      }
-    });
-    if (recentChanged) {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
-      if (typeof updateRecentItems === 'function') updateRecentItems();
     }
   } catch {}
 
@@ -244957,13 +245779,15 @@ function purgeAppPathReferences(paths) {
   _purgePublishStorageForDeletedPaths(deletedPaths);
 
   try {
-    const recent = _readStorageArray(RECENT_KEY);
-    const nextRecent = recent.filter(entry => {
-      return !_entryMatchesDeletedPaths(entry, deletedPaths);
-    });
-    if (nextRecent.length !== recent.length) {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
-      recentChanged = true;
+    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
+      const recent = _readStorageArray(recentKey);
+      const nextRecent = recent.filter(entry => {
+        return !_entryMatchesDeletedPaths(entry, deletedPaths);
+      });
+      if (nextRecent.length !== recent.length) {
+        localStorage.setItem(recentKey, JSON.stringify(nextRecent));
+        recentChanged = true;
+      }
     }
   } catch {}
 
@@ -245953,6 +246777,7 @@ function saveLastView(obj) {
     if (fid) obj.file_id = fid;
   }
   localStorage.setItem('lastView', JSON.stringify(obj));
+  rememberRailAppFile(obj);
 }
 
 function _isCloudPhase1UnsupportedOpenType(type) {
@@ -246479,14 +247304,80 @@ async function _gbAppPrepareFullFileWrite(path, body) {
   }
 }
 
+let _gbAppUiConfigWriteTail = Promise.resolve();
+const _gbAppPendingValueWrites = new Map();
+const _gbAppValueWriteTails = new Map();
+let _gbAppValueAccount = window.MeldexDropboxAuth?.getSession?.()?.accountId || '';
+window.addEventListener?.('meldex:dropbox-auth-session-changed', event => {
+  const account = String(event.detail?.accountId || '');
+  if (account !== _gbAppValueAccount) _gbAppPendingValueWrites.clear();
+  _gbAppValueAccount = account;
+});
+window.addEventListener?.('meldex:mode-changed', () => _gbAppPendingValueWrites.clear());
+
+async function _gbAppPutValueConfirmed(path, body, options) {
+  const key = String(path);
+  const previous = _gbAppValueWriteTails.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const send = payload => apiFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      ...(options || {}), body: JSON.stringify(payload), silentError: true });
+    const uncertain = _gbAppPendingValueWrites.get(key);
+    if (uncertain) {
+      const result = await send(uncertain);
+      _gbAppPendingValueWrites.delete(key);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+      const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
+      if (withoutId(body) === withoutId(uncertain)) return result;
+      // Only an ordinary candidate patch may follow its own confirmed patch.
+      // Whole-body edits and structural changes retain their original baseline.
+      const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
+      const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
+      if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)
+          && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
+          && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
+        body = { ...body, [baseKey]: result.revision };
+      }
+    }
+    const payload = { ...body, operation_id: body.operation_id || crypto.randomUUID() };
+    try { return await send(payload); }
+    catch (error) {
+      const unknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+        || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+      if (!unknown) throw error;
+      _gbAppPendingValueWrites.set(key, payload);
+      const result = await send(payload);
+      _gbAppPendingValueWrites.delete(key);
+      return result;
+    }
+  });
+  _gbAppValueWriteTails.set(key, pending);
+  try { return await pending; }
+  finally { if (_gbAppValueWriteTails.get(key) === pending) _gbAppValueWriteTails.delete(key); }
+}
+
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
-  const result = await apiFetch(path, {
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
+    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    _scheduleLinkDictionaryRefreshForMutation(path);
+    return result;
+  }
+  const requestOptions = {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
     ...(options || {}),
-  });
+  };
+  const send = () => apiFetch(path, requestOptions);
+  // Whole settings snapshots must commit in user request order. A failed
+  // snapshot rejects its own caller without poisoning subsequent saves.
+  let result;
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {
+    const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
+    _gbAppUiConfigWriteTail = pending;
+    result = await pending;
+  } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
@@ -248879,13 +249770,14 @@ window.addEventListener('beforeunload', (e) => {
     const pc = document.getElementById('page-content');
     const currentPath = pc?.dataset?.path;
     if (currentPath) {
-      const md = htmlToMd(pc?.innerHTML || '');
-      const fm = pc.dataset.frontmatter || '';
-      const full = fm ? fm + md : md;
+      const full = typeof _noteMarkdownFromEditorNonDestructive === 'function'
+        ? _noteMarkdownFromEditorNonDestructive(pc)
+        : (pc.dataset.frontmatter || '') + htmlToMd(pc?.innerHTML || '');
+      const unchanged = window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, full);
       const body = typeof _noteSavePayload === 'function'
         ? _noteSavePayload(pc, full)
         : { content: full, if_match_etag: pc?.dataset?.lastSavedEtag || '', skip_if_missing: true };
-      const noteSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
+      const noteSaveQueued = unchanged || _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
       unloadSaveQueued = noteSaveQueued && unloadSaveQueued;
       if (!noteSaveQueued) {
         window._noteAutoSaveTimer = setTimeout(() => {
@@ -250997,7 +251889,7 @@ function _resolveToolMenuButton(event) {
   return null;
 }
 
-function showToolMenu(e, toolType) {
+function showToolMenu(e, toolType, component) {
   e.stopPropagation();
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
@@ -251014,7 +251906,7 @@ function showToolMenu(e, toolType) {
   dd.setAttribute('aria-label', 'ツールメニュー');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;';
 
-  const items = buildToolMenuItems(toolType);
+  const items = buildToolMenuItems(toolType, component);
   _renderToolMenuItems(dd, items, false, dd);
 
   const rect = btn ? btn.getBoundingClientRect() : { left: e.clientX, bottom: e.clientY };
@@ -251819,9 +252711,11 @@ async function _deleteCurrentFile(toolType) {
   }
 }
 // ツール別メニュー項目
-function buildToolMenuItems(toolType) {
+function buildToolMenuItems(toolType, component) {
   const currentPath = getCurrentFilePath();
   const hasFile = !!currentPath;
+  const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
+  const formComponent = component || (activeTab && typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null);
   const newItemType = {
     page: 'page', scriptnote: 'scriptnote', database: 'database',
     board: 'board', 'form-app': 'form-app', calendar: 'calendar', csv: 'page', folder: 'page'
@@ -251938,16 +252832,24 @@ function buildToolMenuItems(toolType) {
   // --- ツール固有の項目（サブメニュー以外） ---
   const specific = {
     page: [
+      { label: 'テンプレートに登録', action: () => MeldexNoteTemplates.show({ registerCurrent: true }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
+      { label: 'ノートテンプレート...', action: () => MeldexNoteTemplates.show().catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('page', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: 'オプションを表示', action: context => { if (typeof _openDetailRightPanel === 'function') _openDetailRightPanel(context?.trigger); else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', context?.trigger); }, disabled: !hasFile },
       { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
+    ],
+    'form-app': [
+      { label: 'テンプレートに登録', action: () => {
+        return formComponent?.registerTemplate?.();
+      }, disabled: !formComponent?.store },
     ],
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
+      { label: '新規トピックのノートテンプレート...', action: () => MeldexNoteTemplates.show({ dbPath: currentPath }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
       { label: 'シート横断検索', action: context => { if (typeof showDbSearchModal === 'function') showDbSearchModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
@@ -256947,6 +257849,7 @@ function _dbTreeCreateColumnHeader({
   const more = document.createElement('button');
   more.type = 'button';
   more.className = 'db-tree-header-more';
+  more.dataset.e2eId = _dbE2eId(ctx, 'tree-column-menu', propName);
   more.innerHTML = lucide('moreHorizontal', 14);
   more.title = '列メニュー';
   more.setAttribute('aria-label', `${label.textContent}列メニュー`);
@@ -257085,7 +257988,7 @@ function _dbTreeRenderColumnHeaders(host, options) {
     pinnedKeys: keys.filter(key => Number.isFinite(pinnedOffsets[key])),
   };
   keys.forEach((propName, index) => {
-    host.appendChild(_dbTreeCreateColumnHeader({
+    const column = _dbTreeCreateColumnHeader({
       propName,
       index,
       hierarchy: index === 0,
@@ -257096,7 +257999,11 @@ function _dbTreeRenderColumnHeaders(host, options) {
       list,
       host,
       pinnedOffsets,
-    }));
+    });
+    if (index === 0 && typeof _createPaneRowSelectHeaderCheckbox === 'function') {
+      column.prepend(_createPaneRowSelectHeaderCheckbox(ctx));
+    }
+    host.appendChild(column);
   });
   const actions = document.createElement('span');
   actions.className = 'db-tree-header-actions';
@@ -257189,11 +258096,11 @@ function _dbTreeDefaultConfig(dbPath, ctx) {
   const has = name => props.includes(name);
   const tagDictionary = has('親グループ') && has('正式名') && has('種類');
   const relationProp = props.find(prop => {
-    const type = getPropertyTypes(dbPath, ctx)?.[prop]?.type;
-    return type === 'relation' || type === 'multi-relation';
+    const typeConfig = getPropertyTypes(dbPath, ctx)?.[prop] || {};
+    return typeConfig.type === 'relation' && (!typeConfig.relationDb || typeConfig.relationDb === dbPath);
   }) || '';
   return {
-    parentProp: has('親グループ') ? '親グループ' : relationProp,
+    parentProp: ['親グループ', '親トピック', '親'].find(has) || relationProp,
     orderProp: has('並び順') ? '並び順' : '',
     labelProp: has('正式名') ? '正式名' : '',
     typeProp: has('種類') ? '種類' : '',
@@ -257220,7 +258127,16 @@ function getDbTreeViewConfig(dbPath, ctx) {
     ? getCurrentDbViewConfigEntry(dbPath, { ctx })
     : null;
   const stored = view?.typeSpecific?.tree;
-  return { ..._dbTreeDefaultConfig(dbPath, ctx), ...(stored && typeof stored === 'object' ? stored : {}) };
+  const defaults = _dbTreeDefaultConfig(dbPath, ctx);
+  const config = { ...defaults, ...(stored && typeof stored === 'object' ? stored : {}) };
+  const data = ctx?.pivotData || state.pivotData || {};
+  const available = new Set([...(data.properties || []), ...Object.keys(getPropertyTypes(dbPath, ctx) || {})]
+    .filter(prop => typeof isDbPropertyDeleted !== 'function' || !isDbPropertyDeleted(dbPath, prop)));
+  ['parentProp', 'orderProp', 'labelProp', 'typeProp', 'colorProp', 'collapsedProp'].forEach(key => {
+    if (config[key] && !available.has(config[key])) config[key] = available.has(defaults[key]) ? defaults[key] : '';
+  });
+  if (!config.typeProp) config.parentTypeValue = '';
+  return config;
 }
 
 function setDbTreeViewConfig(dbPath, config, ctx) {
@@ -257506,8 +258422,10 @@ function _dbTreeValueRef(dbPath, entityName, propName, value, rawIndex, data) {
 
 async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, label) {
   if (!propName) return;
+  if (ctx?.dbPath && ctx.dbPath !== dbPath) throw new Error('表示中のシートが変わりました。対象のシートを開き直してください');
   const data = ctx?.pivotData || state.pivotData;
-  const entityData = data?.entities?.[entityName] || {};
+  const entityData = data?.entities?.[entityName];
+  if (!entityData) throw new Error('対象のトピックが見つかりません');
   const raw = Array.isArray(entityData[propName]) ? entityData[propName] : [];
   const adopted = typeof getAdoptedValueForWrite === 'function'
     ? getAdoptedValueForWrite(raw)
@@ -257524,12 +258442,17 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
     adopted.value = nextValue;
   } else {
     const entityPath = _entityPath(dbPath, entityName, data);
-    await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
-    entityData[propName] = [{ value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: 0 }];
+    const result = await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
+    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: result?.candidate_index ?? raw.length };
+    entityData[propName] = [...raw, added];
+    if (typeof _dbUndoValue === 'function') {
+      _dbUndoValue(label, added, '', nextValue, undefined, undefined, { dbPath, ctx });
+    }
   }
 }
 
 async function _dbTreeRefreshAfterEdit(dbPath, ctx) {
+  if (ctx?.dbPath && ctx.dbPath !== dbPath) return;
   if (typeof selectDatabase === 'function') {
     await selectDatabase(dbPath, ctx, {
       silent: true,
@@ -257544,7 +258467,12 @@ async function _dbTreeRefreshAfterEdit(dbPath, ctx) {
 }
 
 async function _dbTreeMoveNode(dbPath, ctx, model, config, node, target, mode) {
-  if (!node || !config.parentProp) return;
+  if (!node) return;
+  if (!config.parentProp) {
+    showStatus('ツリー設定で「親を表す列」を選ぶか、階層用の列を追加してください', true);
+    _dbTreeOpenOptions(ctx);
+    return;
+  }
   if (mode !== 'child' && !_dbTreeUsesHierarchyOrder(dbPath, ctx)) {
     showStatus('同じ階層で位置を変えるには、列メニューの並び替えを「階層の並び順」に戻してください。', true);
     return;
@@ -257653,8 +258581,38 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
     meta.append(dt, dd);
   });
   host.appendChild(meta);
+  if (config.parentProp) {
+    const parentLabel = document.createElement('label');
+    parentLabel.textContent = '親トピック';
+    const parentSelect = document.createElement('select');
+    parentSelect.className = 'db-tree-parent-select';
+    parentSelect.dataset.e2eId = _dbE2eId(ctx, 'tree-parent', node.entityName);
+    parentSelect.setAttribute('aria-label', '親トピック');
+    parentSelect.appendChild(new Option('最上位（親なし）', ''));
+    const model = ctx._dbTreeViewModel;
+    (model?.nodes || []).filter(candidate => !_dbTreeWouldCreateCycle(node, candidate)
+      && (!config.parentTypeValue || candidate.type === config.parentTypeValue))
+      .forEach(candidate => parentSelect.appendChild(new Option(
+        candidate.label === candidate.entityName ? candidate.label : `${candidate.label} (${candidate.entityName})`,
+        candidate.entityName,
+      )));
+    parentSelect.value = node.parent?.entityName || '';
+    const applyParent = document.createElement('button');
+    applyParent.type = 'button';
+    applyParent.dataset.e2eId = _dbE2eId(ctx, 'tree-parent-apply', node.entityName);
+    applyParent.textContent = '親を変更';
+    applyParent.addEventListener('click', async () => {
+      applyParent.disabled = true;
+      try {
+        await _dbTreeMoveNode(dbPath, ctx, model, config, node, model.byEntity.get(parentSelect.value) || null, 'child');
+      } finally { applyParent.disabled = false; }
+    });
+    parentLabel.appendChild(parentSelect);
+    host.append(parentLabel, applyParent);
+  }
   const open = document.createElement('button');
   open.type = 'button';
+  open.dataset.e2eId = _dbE2eId(ctx, 'tree-detail-open', node.entityName);
   open.textContent = 'トピックを開く';
   open.addEventListener('click', () => {
     const pathValue = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
@@ -257676,7 +258634,7 @@ function _dbTreeApplyCellPresentation(cell, value, propName, dbPath, ctx) {
     ? getDbColumnCellDisplay(dbPath, propName, ctx)
     : null;
   if (override) {
-    cell.dataset.cellOverflow = override.overflow;
+    cell.dataset.cellOverflow = propName === '__entity__' ? 'clip' : override.overflow;
     cell.style.setProperty('--db-tree-cell-lines', String(override.lines));
   }
   const color = typeof getCellColor === 'function' ? getCellColor(value, propName, dbPath, ctx) : null;
@@ -257686,13 +258644,19 @@ function _dbTreeApplyCellPresentation(cell, value, propName, dbPath, ctx) {
 
 function _dbTreeRowHeight(dbPath, columnKeys, ctx) {
   const base = typeof matchMedia === 'function' && matchMedia('(max-width: 720px)').matches ? 42 : 34;
-  if (typeof getDbColumnCellDisplay !== 'function') return base;
+  const types = getPropertyTypes(dbPath, ctx) || {};
+  const imageHeight = columnKeys.reduce((height, propName) => {
+    if (types[propName]?.type !== 'image') return height;
+    const size = typeof _imagePropOptions === 'function' ? _imagePropOptions(types[propName]).cellSize : 64;
+    return Math.max(height, size + 8);
+  }, base);
+  if (typeof getDbColumnCellDisplay !== 'function') return imageHeight;
   let maxLines = 1;
   columnKeys.forEach(propName => {
     const display = getDbColumnCellDisplay(dbPath, propName, ctx);
     if (display?.overflow === 'wrap') maxLines = Math.max(maxLines, Math.min(10, Number(display.lines) || 1));
   });
-  return base + (maxLines - 1) * 16;
+  return Math.max(imageHeight, base + (maxLines - 1) * 16);
 }
 
 function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
@@ -257731,6 +258695,35 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   nameCell.style.setProperty('--db-tree-depth', String(depth));
   _dbTreeApplyPinnedCell(nameCell, labelKey, pinnedOffsets);
   _dbTreeApplyCellPresentation(nameCell, node.label, labelKey, dbPath, ctx);
+  nameCell.dataset.cellOverflow = 'clip';
+  const selectedEntities = _ensureSelectedEntities(ctx);
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'row-select-cb';
+  checkbox.dataset.entityName = node.entityName;
+  checkbox.dataset.e2eId = _dbE2eId(ctx, 'tree-select', node.entityName);
+  checkbox.setAttribute('aria-label', `トピック選択: ${node.entityName}`);
+  checkbox.checked = selectedEntities.has(node.entityName);
+  row.classList.toggle('row-selected', checkbox.checked);
+  checkbox.addEventListener('click', event => {
+    event.stopPropagation();
+    const names = ctx._lastEntityNames || [];
+    const anchor = names.indexOf(ctx._dbTreeSelectionAnchor);
+    const end = names.indexOf(node.entityName);
+    const range = event.shiftKey && anchor >= 0 && end >= 0
+      ? names.slice(Math.min(anchor, end), Math.max(anchor, end) + 1) : [node.entityName];
+    range.forEach(name => checkbox.checked ? selectedEntities.add(name) : selectedEntities.delete(name));
+    ctx._dbTreeSelectionAnchor = node.entityName;
+    // Keep the clicked input mounted until its native input/change events and
+    // keyboard focus complete; rebuilding rows here suppresses those events.
+    parentEl.querySelectorAll('.row-select-cb').forEach(input => {
+      input.checked = selectedEntities.has(input.dataset.entityName);
+      input.closest('.db-tree-row')?.classList.toggle('row-selected', input.checked);
+    });
+    _updateBulkEditBar(ctx);
+  });
+  checkbox.addEventListener('pointerdown', event => event.stopPropagation());
+  nameCell.appendChild(checkbox);
   const grip = document.createElement('span');
   grip.className = 'db-tree-grip';
   grip.innerHTML = lucide('gripVertical', 13);
@@ -257740,9 +258733,12 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   const caret = document.createElement('button');
   caret.type = 'button';
   caret.className = 'db-tree-caret';
+  caret.dataset.e2eId = _dbE2eId(ctx, 'tree-caret', node.entityName);
+  caret.setAttribute('aria-label', `${node.label}: 子トピックはありません`);
   if (node.children.length) {
     caret.innerHTML = lucide(stateInfo.collapsed.has(node.entityName) ? 'chevronRight' : 'chevronDown', 14);
     caret.title = stateInfo.collapsed.has(node.entityName) ? '展開' : '折りたたむ';
+    caret.setAttribute('aria-label', `${caret.title}: ${node.label}`);
     caret.addEventListener('click', event => {
       event.stopPropagation();
       if (stateInfo.collapsed.has(node.entityName)) stateInfo.collapsed.delete(node.entityName);
@@ -257760,6 +258756,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   const label = document.createElement('span');
   label.className = 'db-tree-label';
   label.textContent = node.label;
+  label.title = node.label;
   if (_dbTreeEditableProperty(dbPath, ctx, config.labelProp, config)) {
     label.title = 'ダブルクリックして編集';
     label.addEventListener('dblclick', event => {
@@ -257774,18 +258771,64 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     count.textContent = String(node.children.length);
     nameCell.appendChild(count);
   }
+  const actions = document.createElement('span');
+  actions.className = 'db-tree-name-actions';
+  const action = (className, icon, title, handler) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.dataset.e2eId = _dbE2eId(ctx, className, node.entityName);
+    button.innerHTML = lucide(icon, 14);
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.addEventListener('pointerdown', event => event.stopPropagation());
+    button.addEventListener('dragstart', event => { event.preventDefault(); event.stopPropagation(); });
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      try { await handler(event); }
+      catch (error) { showStatus(error?.message || 'トピックの操作に失敗しました', true); }
+    });
+    actions.appendChild(button);
+  };
+  action('entity-row-open-btn', 'externalLink', '既定パネルで開く', event => {
+    const panel = getDbViewConfig(dbPath).defaultPanel || 'right-sidebar';
+    const path = row.dataset.meldexEntityPath;
+    const sourceEl = event.currentTarget;
+    if (['right-sidebar', 'float', 'sidebar'].includes(panel)) {
+      const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || ctx.paneId || '';
+      const options = { linkType: 'entity', sourceEl, sourcePaneId };
+      if (typeof openLinkInRightSidebar === 'function') return openLinkInRightSidebar(path, node.entityName, options);
+      if (typeof openLinkInRightPane === 'function') return openLinkInRightPane(path, node.entityName, options);
+    } else if (typeof openLinkInMainPane === 'function') return openLinkInMainPane(path, node.entityName, { linkType: 'entity' });
+    if (typeof selectEntity === 'function') return selectEntity(path);
+  });
+  action('entity-row-more-btn', 'moreHorizontal', `トピックのメニュー: ${node.entityName}`,
+    event => showDbCardContextMenu(event, dbPath, node.entityName));
+  nameCell.appendChild(actions);
   row.appendChild(nameCell);
 
   extraProps.forEach(propName => {
     const cell = document.createElement('div');
     cell.className = 'db-tree-value-cell';
     cell.dataset.propName = propName;
+    cell.dataset.e2eId = _dbE2eId(ctx, 'tree-value', `${node.entityName}:${propName}`);
     const rawValue = _dbTreeFirstValue(node.entityData, propName, ctx?.filter ?? state.filter ?? 'disabled');
     const displayValue = _dbTreeDisplayValue(rawValue);
     const cellText = document.createElement('span');
     cellText.className = 'db-tree-cell-text';
-    cellText.textContent = displayValue;
-    cell.appendChild(cellText);
+    const typeConfig = getPropertyTypes(dbPath, ctx)?.[propName];
+    const typed = ['image', 'checkbox'].includes(typeConfig?.type) && typeof createTypedValueElement === 'function';
+    if (typed) {
+      const raw = node.entityData[propName] || [];
+      const candidate = raw.find(value => value.value === rawValue) || { value: rawValue, status: '採用' };
+      cell.appendChild(createTypedValueElement(candidate, row.dataset.meldexEntityPath, propName,
+        typeof getThumbnailSize === 'function' ? getThumbnailSize(dbPath, { ctx }) : 'small', typeConfig,
+        { dbPath, ctx, filter: ctx.filter, imagePreviewCount: typeof getCellImageThumbCount === 'function' ? getCellImageThumbCount(dbPath, { ctx }) : 3 }));
+      cell.classList.add('db-tree-typed-cell');
+    } else {
+      cellText.textContent = displayValue;
+      cell.appendChild(cellText);
+    }
     _dbTreeApplyPinnedCell(cell, propName, pinnedOffsets);
     _dbTreeApplyCellPresentation(cell, rawValue, propName, dbPath, ctx);
     cell.title = _dbTreeEditableProperty(dbPath, ctx, propName, config)
@@ -257795,7 +258838,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     if (propName === config.colorProp && String(rawValue || '')) {
       cellText.style.color = String(rawValue);
     }
-    if (_dbTreeEditableProperty(dbPath, ctx, propName, config)) {
+    if (!typed && _dbTreeEditableProperty(dbPath, ctx, propName, config)) {
       cell.tabIndex = 0;
       cell.addEventListener('dblclick', event => {
         event.stopPropagation();
@@ -257816,6 +258859,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     const button = document.createElement('button');
     button.type = 'button';
     button.innerHTML = lucide(direction < 0 ? 'arrowUp' : 'arrowDown', 12);
+    button.dataset.e2eId = _dbE2eId(ctx, 'tree-move-' + direction, node.entityName);
     button.title = direction < 0 ? '同じ階層で前へ' : '同じ階層で次へ';
     button.disabled = !config.orderProp || !_dbTreeUsesHierarchyOrder(dbPath, ctx);
     if (!_dbTreeUsesHierarchyOrder(dbPath, ctx)) {
@@ -257836,10 +258880,16 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     parentEl.querySelectorAll('.db-tree-row[aria-selected="true"]').forEach(el => el.setAttribute('aria-selected', 'false'));
     row.setAttribute('aria-selected', 'true');
   });
+  row.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    showDbCardContextMenu(event, dbPath, node.entityName);
+  });
   row.addEventListener('keydown', event => {
     if (event.target !== row || event.key !== 'Enter' || event.isComposing) return;
     event.preventDefault();
-    _dbTreeEditProperty(dbPath, ctx, node, config.labelProp, config);
+    if (config.labelProp) _dbTreeEditProperty(dbPath, ctx, node, config.labelProp, config);
+    else actions.querySelector('.entity-row-open-btn')?.click();
   });
   row.addEventListener('dragstart', event => {
     stateInfo.dragging = node.entityName;
@@ -257936,18 +258986,32 @@ function renderDbTreeView(ctx) {
   toolbar.className = 'db-tree-toolbar';
   const search = document.createElement('input');
   search.type = 'search';
+  search.dataset.e2eId = _dbE2eId(ctx, 'tree-search', dbPath);
   search.placeholder = 'ツリーを検索';
   search.setAttribute('aria-label', 'ツリーを検索');
   const expand = document.createElement('button');
   expand.type = 'button';
+  expand.dataset.e2eId = _dbE2eId(ctx, 'tree-expand-all', dbPath);
   expand.innerHTML = lucide('unfoldVertical', 14) + ' すべて展開';
   const collapse = document.createElement('button');
   collapse.type = 'button';
+  collapse.dataset.e2eId = _dbE2eId(ctx, 'tree-collapse-all', dbPath);
   collapse.innerHTML = lucide('foldVertical', 14) + ' すべて折りたたむ';
   const settings = document.createElement('button');
   settings.type = 'button';
+  settings.dataset.e2eId = _dbE2eId(ctx, 'tree-settings', dbPath);
   settings.innerHTML = lucide('settings', 14) + ' ツリー設定';
   toolbar.append(search, expand, collapse, settings);
+  const changeParent = document.createElement('button');
+  changeParent.type = 'button';
+  changeParent.dataset.e2eId = _dbE2eId(ctx, 'tree-change-parent', dbPath);
+  changeParent.innerHTML = lucide('cornerDownRight', 14) + ' 親を変更';
+  changeParent.addEventListener('click', () => {
+    _dbTreeOpenOptions(ctx);
+    if (!ctx._dbTreeViewState?.selected) showStatus('親を変更するトピックの行を選択してください');
+    document.querySelector('#detail-tab-db-tree .db-tree-parent-select')?.focus();
+  });
+  toolbar.appendChild(changeParent);
   container.appendChild(toolbar);
   _dbTreeSetOptionTabVisible(true, ctx);
 
@@ -257957,16 +259021,36 @@ function renderDbTreeView(ctx) {
     const title = document.createElement('strong');
     title.textContent = '親を表す列を選択してください';
     const hint = document.createElement('span');
-    hint.textContent = '同じシート内のトピックを参照する列を使って階層を作ります。';
+    hint.textContent = '現在はすべて最上位です。「親を表す列」を設定してから、行を選んで「親を変更」するか、親にしたい行の中央へドラッグすると階層を作れます。';
     const button = document.createElement('button');
     button.type = 'button';
+    button.dataset.e2eId = _dbE2eId(ctx, 'tree-setup-settings', dbPath);
     button.className = 'primary';
     button.textContent = 'ツリー設定を開く';
     button.addEventListener('click', () => _dbTreeOpenOptions(ctx));
     empty.append(title, hint, button);
     container.appendChild(empty);
-    settings.addEventListener('click', () => _dbTreeOpenOptions(ctx));
-    return;
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.dataset.e2eId = _dbE2eId(ctx, 'tree-setup-create', dbPath);
+    create.textContent = '階層用の列を追加';
+    create.addEventListener('click', async () => {
+      create.disabled = true;
+      try {
+        const usedNames = new Set([...(data.properties || []), ...Object.keys(getPropertyTypes(dbPath, ctx) || {})]);
+        let propName = '親トピック';
+        for (let suffix = 2; usedNames.has(propName); suffix++) propName = `親トピック ${suffix}`;
+        if (!await setPropertyType(dbPath, propName, { type: 'relation', relationDb: '' }, ctx)) {
+          throw new Error('階層用の列を追加できませんでした');
+        }
+        setDbTreeViewConfig(dbPath, { ...config, parentProp: propName }, ctx);
+        await _dbTreeRefreshAfterEdit(dbPath, ctx);
+      } catch (error) {
+        showStatus(error?.message || '階層用の列を追加できませんでした', true);
+        create.disabled = false;
+      }
+    });
+    empty.appendChild(create);
   }
 
   const model = _dbTreeBuildModel(data, dbPath, ctx, config);
@@ -257974,9 +259058,12 @@ function renderDbTreeView(ctx) {
   const stateInfo = _dbTreeState(ctx, dbPath, model, config);
   const presetOptions = [...new Set(model.nodes.flatMap(node => node.presets))]
     .sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  // A deleted/changed preset column must not leave an invisible active filter.
+  if (!presetOptions.includes(stateInfo.presetFilter)) stateInfo.presetFilter = '';
   if (presetOptions.length) {
     const presetFilter = document.createElement('select');
     presetFilter.className = 'db-tree-preset-filter';
+    presetFilter.dataset.e2eId = _dbE2eId(ctx, 'tree-preset-filter', dbPath);
     presetFilter.setAttribute('aria-label', 'タグプリセットで絞り込む');
     const all = document.createElement('option');
     all.value = '';
@@ -257988,7 +259075,6 @@ function renderDbTreeView(ctx) {
       option.textContent = presetName;
       presetFilter.appendChild(option);
     });
-    if (!presetOptions.includes(stateInfo.presetFilter)) stateInfo.presetFilter = '';
     presetFilter.value = stateInfo.presetFilter;
     presetFilter.addEventListener('change', () => {
       stateInfo.presetFilter = presetFilter.value;
@@ -258114,8 +259200,10 @@ function renderDbTreeView(ctx) {
   const draw = () => {
     const visible = _dbTreeCombinedVisibility(model, stateInfo);
     visibleRows = _dbTreeFlattenVisible(model, stateInfo, visible);
+    ctx._lastEntityNames = visibleRows.map(({ node }) => node.entityName);
     lastWindow = '';
     renderWindow();
+    _syncPaneRowSelectHeader(ctx);
   };
   draw();
   list.addEventListener('scroll', () => {
@@ -258195,7 +259283,7 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
   const heading = document.createElement('h3');
   heading.textContent = 'ツリービュー設定';
   const hint = document.createElement('p');
-  hint.textContent = '階層に使う列を選びます。この設定は現在のビューに保存されます。';
+  hint.textContent = '「親を表す列」を選び、行を選択して「親トピック」を変更すると階層を作れます。行の中央へのドラッグでも親を変更できます。';
   section.append(heading, hint);
   const fields = [
     ['parentProp', '親を表す列', true],
@@ -258210,10 +259298,11 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
     const row = document.createElement('label');
     row.textContent = label;
     const select = document.createElement('select');
-    if (!required) {
+    select.dataset.e2eId = _dbE2eId(ctx, 'tree-setting-' + key, dbPath);
+    {
       const none = document.createElement('option');
       none.value = '';
-      none.textContent = '使用しない';
+      none.textContent = required ? '列を選択してください' : '使用しない';
       select.appendChild(none);
     }
     properties.forEach(propName => {
@@ -258231,6 +259320,7 @@ function _dbTreeRenderSettings(host, dbPath, ctx, config, properties) {
   actions.className = 'db-tree-settings-actions';
   const apply = document.createElement('button');
   apply.type = 'button';
+  apply.dataset.e2eId = _dbE2eId(ctx, 'tree-settings-apply', dbPath);
   apply.className = 'primary';
   apply.textContent = '適用';
   apply.addEventListener('click', () => {

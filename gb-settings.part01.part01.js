@@ -443,6 +443,14 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="display">
         <div class="gb-section-title">表示オプション</div>
+        <label class="gb-field-row">
+          <span class="gb-label">左レールからアプリを開く時</span>
+          <select id="modal-rail-app-launch-mode" class="gb-select">
+            <option value="new" ${localStorage.getItem('gb:rail-app-launch-mode') !== 'last' ? 'selected' : ''}>新規作成</option>
+            <option value="last" ${localStorage.getItem('gb:rail-app-launch-mode') === 'last' ? 'selected' : ''}>最後に開いたファイルを開く</option>
+          </select>
+        </label>
+        <div class="gb-section-desc">ノート・シナリオ・シート・ボード・フォームに共通です。履歴がない場合は新規作成します。フォルダとスケジュールは従来の画面を開きます。</div>
         <div class="gb-check-row" style="flex-direction:column;align-items:flex-start;">
           <label class="gb-check">
             <input type="checkbox" id="modal-statusbar-hidden" ${localStorage.getItem('meldex-statusbar-hidden') === '1' ? 'checked' : ''}>

@@ -183,14 +183,19 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     const last = Math.min(rowTasks.length, first + visibleCount);
     if (!force && first === vState.start && last === vState.end) return;
 
-    vState.renderedRows.forEach(row => row.remove());
+    const previousRows = new Map();
+    vState.renderedRows.forEach((row, offset) => {
+      const index = vState.start + offset;
+      if (!force && index >= first && index < last) previousRows.set(index, row);
+      else row.remove();
+    });
     vState.renderedRows = [];
     _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight);
     _dbSetVirtualSpacerHeight(bottomSpacer, (rowTasks.length - last) * rowHeight);
 
     const frag = document.createDocumentFragment();
     for (let i = first; i < last; i++) {
-      const row = _dbRenderVirtualTask(rowTasks[i], config);
+      const row = previousRows.get(i) || _dbRenderVirtualTask(rowTasks[i], config);
       vState.renderedRows.push(row);
       frag.appendChild(row);
     }

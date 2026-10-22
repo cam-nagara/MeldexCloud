@@ -928,10 +928,30 @@
     return (typeof GBLayout !== 'undefined' ? GBLayout.activePane : '') || '';
   }
 
-  function _openRailAppInMain(type) {
+  async function _openRailAppInMain(type) {
     const mainPaneId = _mainPaneIdForRailApp();
+    if (mainPaneId && GBLayout.isPaneLocked?.(mainPaneId)) {
+      if (typeof showStatus === 'function') showStatus('ロック中のパネルには開けません', true);
+      return;
+    }
     if (mainPaneId && typeof GBLayout?.setActivePane === 'function') {
       GBLayout.setActivePane(mainPaneId, { skipCallback: true });
+    }
+    if (!['folder', 'calendar'].includes(type)) {
+      if (localStorage.getItem('gb:rail-app-launch-mode') === 'last' && typeof navOpen === 'function') {
+        const entries = typeof _readStorageArray === 'function'
+          ? [..._readStorageArray('meldex-rail-last-files'), ..._readStorageArray('meldex-recent')] : [];
+        const entry = entries.find(item => item?.path && typeof _railAppType === 'function' && _railAppType(item.type) === type);
+        if (entry) {
+          const openEntry = { ...entry, type: entry.type === 'scenario' ? 'scriptnote' : entry.type };
+          try { return await navOpen(openEntry, { paneId: mainPaneId, preferTargetPane: true }); }
+          catch (err) {
+            if (typeof showStatus === 'function') showStatus(err.userMessage || '最後に開いたファイルを開けませんでした', true);
+            return;
+          }
+        }
+      }
+      if (typeof window.addPanelMenuTool === 'function') return window.addPanelMenuTool(type, { paneId: mainPaneId });
     }
     if (typeof window.openToolTab === 'function') {
       window.openToolTab(type, { paneId: mainPaneId, preferTargetPane: true });

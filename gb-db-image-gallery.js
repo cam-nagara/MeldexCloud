@@ -52,6 +52,13 @@ function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
 }
 
 function _imageSrc(item, preferThumb, thumbSize) {
+  if (preferThumb && _attachmentKind(item) === 'video') {
+    const preview = item.thumb_url || item.preview_url || item.preview_src || item.thumb;
+    if (preview) {
+      if (/^(https?:|data:|blob:|\/)/i.test(preview)) return preview;
+      return '/api/media/file?path=' + encodeURIComponent(preview);
+    }
+  }
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
   // 動画は共通サムネイルAPIが先頭付近のフレームを生成する。PDFだけは
   // 生成契約がないため生ファイル表示へ戻す。
@@ -71,7 +78,7 @@ function _imageSrc(item, preferThumb, thumbSize) {
 // 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
 // 旧データや外部由来の値には無いので拡張子から補う。
 function _attachmentKind(item) {
-  const declared = String(item?.kind || '').toLowerCase();
+  const declared = String(item?.kind || item?.asset_kind || '').toLowerCase();
   if (declared === 'image' || declared === 'video' || declared === 'pdf') return declared;
   const source = String(item?.path || item?.src || item?.filename || item?.url || '');
   const ext = (source.split('?')[0].split('.').pop() || '').toLowerCase();
@@ -94,15 +101,16 @@ function _isAcceptedAttachmentFile(file, accept) {
   return type.startsWith('image/');
 }
 
-// 動画・PDFは縮小画像を作らないため、種別アイコンとファイル名のタイルで表す。
+// 画像・動画はサムネイルを使い、PDFは種別タイルで表す。
 // クリック位置の判定は .gb-image-thumb を使うので、画像と同じクラスを付ける。
 function _createAttachmentThumb(item, index) {
   const kind = _attachmentKind(item);
   const label = item?.caption || item?.filename || '';
-  if (kind === 'image') {
+  if (kind === 'image' || kind === 'video') {
     const host = document.createElement('span');
     host.className = 'gb-image-thumb';
     host.dataset.meldexImageHost = '1';
+    host.dataset.kind = kind;
     host.title = label;
     if (index != null) host.dataset.imageIndex = String(index);
     const img = document.createElement('img');
@@ -128,9 +136,17 @@ function _createAttachmentThumb(item, index) {
       });
     };
     const replaceFailedImage = () => {
+      // A removed virtual row must not start another request for the original.
+      // Keep the initial detached construction case until the next frame.
+      if (!host.isConnected) {
+        requestAnimationFrame(() => {
+          if (host.isConnected) replaceFailedImage();
+        });
+        return;
+      }
       // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
       // 切り替える。原寸も読めない時だけ中立タイルにする。
-      if (img.dataset.rawFallback !== '1') {
+      if (kind === 'image' && img.dataset.rawFallback !== '1') {
         const rawSrc = _imageSrc(item, false);
         if (rawSrc && rawSrc !== img.getAttribute('src')) {
           img.dataset.rawFallback = '1';
@@ -138,20 +154,12 @@ function _createAttachmentThumb(item, index) {
           return;
         }
       }
-      // file: URL は src 代入時に同期的に失敗し、呼出元が DOM へ追加する前に
-      // error が届くことがある。親がまだ無い時だけ次の描画まで待つ。
-      if (!host.isConnected) {
-        requestAnimationFrame(() => {
-          if (host.isConnected) replaceFailedImage();
-        });
-        return;
-      }
       const fallback = document.createElement('div');
       fallback.className = 'gb-image-thumb gb-attachment-tile gb-image-thumb-fallback';
-      fallback.dataset.kind = 'image';
+      fallback.dataset.kind = kind;
       if (index != null) fallback.dataset.imageIndex = String(index);
       fallback.title = label;
-      if (typeof lucide === 'function') fallback.innerHTML = lucide('image', 20) || '';
+      if (typeof lucide === 'function') fallback.innerHTML = lucide(kind === 'video' ? 'film' : 'image', 20) || '';
       const caption = document.createElement('span');
       caption.textContent = label || '画像';
       fallback.appendChild(caption);
@@ -168,7 +176,7 @@ function _createAttachmentThumb(item, index) {
       loadImage(_imageSrc(item, true));
       window.MeldexImageLoading?.track?.(img, { host, label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
     };
-    if (browserFiles && typeof IntersectionObserver === 'function') {
+    if (typeof IntersectionObserver === 'function') {
       _observeAttachmentImage(host, startImage);
     } else startImage();
     return _setupAttachmentThumbDrag(host, item);
@@ -187,24 +195,34 @@ function _createAttachmentThumb(item, index) {
 
 // Observe hosts rather than empty img bounds. Weak entries do not retain old sheets.
 const _attachmentImageStarts = new WeakMap();
+const _attachmentImageTimers = new WeakMap();
 let _attachmentImageObserver;
 function _observeAttachmentImage(host, start) {
   if (!_attachmentImageObserver) {
     _attachmentImageObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      _attachmentImageObserver.unobserve(entry.target);
-      const load = _attachmentImageStarts.get(entry.target);
-      _attachmentImageStarts.delete(entry.target);
-      if (entry.target.isConnected) load?.();
-    }
-  }, { rootMargin: '0px' });
+      for (const entry of entries) {
+        clearTimeout(_attachmentImageTimers.get(entry.target));
+        _attachmentImageTimers.delete(entry.target);
+        if (!entry.isIntersecting || !_attachmentImageStarts.has(entry.target)) continue;
+        // Skip rows only passing through the viewport during a rapid scroll.
+        _attachmentImageTimers.set(entry.target, setTimeout(() => {
+          _attachmentImageTimers.delete(entry.target);
+          if (!entry.target.isConnected) return;
+          _attachmentImageObserver.unobserve(entry.target);
+          const load = _attachmentImageStarts.get(entry.target);
+          _attachmentImageStarts.delete(entry.target);
+          load?.();
+        }, 80));
+      }
+    }, { rootMargin: '0px' });
     new MutationObserver(records => {
       for (const record of records) for (const node of record.removedNodes) {
         if (node.nodeType !== 1 || node.isConnected) continue;
         const hosts = [...node.querySelectorAll('[data-meldex-image-host]')];
         if (node.matches('[data-meldex-image-host]')) hosts.push(node);
         for (const old of hosts) {
+          clearTimeout(_attachmentImageTimers.get(old));
+          _attachmentImageTimers.delete(old);
           _attachmentImageObserver.unobserve(old);
         }
       }

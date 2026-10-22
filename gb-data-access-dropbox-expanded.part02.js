@@ -1757,7 +1757,7 @@
     }
   }
 
-  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal }) {
+  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal, headers }) {
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -1817,7 +1817,7 @@
     if (pathname === '/media/rebuild-refs' && method === 'POST') {
       return { ok: true, refs: {}, hash_count: 0, skipped: true, reason: 'cloud-no-index-rebuild' };
     }
-    if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('include_form') === 'true');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/sheet-search' && method === 'GET') return _sheetSearch(await _requirePwaProvider('read'), url);
@@ -1839,7 +1839,7 @@
     }
     if (/^\/version\/(list-db|save-db|restore-db|delete-db|undelete-db)/.test(pathname)) {
       const route = pathname.replace('-db', '-folder');
-      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body });
+      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body, headers });
     }
 
     if (pathname === '/calendar-db/events' && method === 'GET') return _calendarDbEvents(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

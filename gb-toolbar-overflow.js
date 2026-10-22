@@ -90,6 +90,7 @@
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
+      text.title = text.textContent;
       if (source.tagName === 'BUTTON') {
         row.type = 'button';
         row.disabled = source.disabled;

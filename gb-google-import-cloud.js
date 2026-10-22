@@ -113,7 +113,7 @@
     const dir = join(root, kind); await ensureDir(store, dir); const path = join(dir, `${safe(row.name, 'Googleデータ')}_${String(row.id).slice(0, 12)}.md`);
     let old = ''; try { old = await store.readText(path); } catch {}
     const managed = `<!-- meldex-import:start source=google id=${row.id} -->\n${markdown}\n<!-- meldex-import:end -->`;
-    const body = /<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/.test(old) ? old.replace(/<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/, managed) : `# ${row.name}\n\n${managed}\n\n## メモ\n`;
+    const body = /<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/.test(old) ? old.replace(/<!-- meldex-import:start[\s\S]*?<!-- meldex-import:end -->/, managed) : `# ${row.name}\n\n${managed}\n`;
     await store.writeText(path, frontmatter({ type: 'imported-note', source: kind, external_id: row.id, external_updated_at: row.modifiedTime || '', external_status: 'available' }, body.replace(/^---[\s\S]*?---\s*/, ''))); return path;
   }
   function cellInfo(cell) {

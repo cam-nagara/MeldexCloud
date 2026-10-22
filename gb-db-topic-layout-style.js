@@ -103,7 +103,7 @@
     return mode;
   }
 
-  function createStyleControls(doc, cell, onChange) {
+  function createStyleControls(doc, cell, onChange, options = {}) {
     if (!doc || typeof doc.createElement !== 'function') throw new TypeError('document is required');
     let current = normalizeCellStyleContract(cell);
     const root = doc.createElement('div');
@@ -136,13 +136,14 @@
     const transparent = doc.createElement('input'); transparent.type = 'checkbox'; transparent.checked = current.background.transparent;
     transparent.addEventListener('change', () => { current.background.transparent = transparent.checked; emit(); });
     appendControlRow(doc, root, '背景を透明にする', transparent);
-    select('キャプション', current.captionMode,
+    if (options.caption !== false) select('キャプション', current.captionMode,
       [['full', 'アイコンと列名'], ['icon-only', 'アイコンのみ'], ['hidden', '非表示']],
       value => { current.captionMode = value; });
     return root;
   }
 
   function appendControlRow(doc, root, labelText, control) {
+    control.setAttribute('aria-label', labelText);
     const label = doc.createElement('label'); label.className = 'el-popup-row';
     const text = doc.createElement('span'); text.textContent = labelText; label.appendChild(text); label.appendChild(control); root.appendChild(label);
   }
@@ -256,8 +257,20 @@
       }
       return output;
     });
+    const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
+    // Chart-only columns also follow stable identities when a destination column was renamed.
+    for (const source of Array.isArray(template.columns) ? template.columns : []) {
+      const targets = (Array.isArray(targetColumns) ? targetColumns : []);
+      const byId = source.id && targets.find(target => target.id === source.id);
+      const byName = targets.filter(target => target.name === source.name);
+      const target = byId || (byName.length === 1 ? byName[0] : null);
+      if (target) names.set(source.name, target.name);
+    }
+    for (const cell of layout.cells) if (cell.type === 'chart' && object(cell.chart)) {
+      for (const key of ['xProperty', 'yProperty']) if (cell.chart[key]) cell.chart[key] = names.get(cell.chart[key]) || cell.chart[key];
+      if (Array.isArray(cell.chart.axes)) cell.chart.axes.forEach(axis => { if (object(axis)) axis.prop = names.get(axis.prop) || axis.prop; });
+    }
     if (object(layout.formConfig)) {
-      const names = new Map(mappings.filter(mapping => mapping.target).map(mapping => [mapping.sourceName, String(mapping.target.name)]));
       const name = value => names.get(value) || value;
       for (const key of ['fields', 'required']) if (Array.isArray(layout.formConfig[key])) layout.formConfig[key] = layout.formConfig[key].map(name);
       for (const key of ['labels', 'descriptions', 'placeholders']) if (object(layout.formConfig[key]))
@@ -368,7 +381,7 @@
       if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
         return { ...remote, source: 'device-cache', templates: latestCached };
       }
-      // 未同期の端末プリセットは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
+      // 未同期の端末テンプレートは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
       const templates = _mergeSharedTemplates(remote.templates, cached)
         .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
       _cacheSharedTemplates(templates, opts.storage);
@@ -401,7 +414,7 @@
     const name = String(template.layout.name || '').trim();
     const fetcher = _sharedLibraryFetcher(opts.fetcher);
     const saveToDevice = (templates) => {
-      if (!_cacheSharedTemplates(templates, opts.storage)) throw new Error('プリセットの保存先を利用できません');
+      if (!_cacheSharedTemplates(templates, opts.storage)) throw new Error('テンプレートの保存先を利用できません');
       return { saved: true, shared: false, source: 'device-cache', templates };
     };
     if (!fetcher) {
@@ -466,12 +479,12 @@
       const oldName = String(previous?.layout?.name || '').trim();
       const index = previous ? current.findIndex(item => String(item.layout?.name || '').trim() === oldName) : -1;
       if (previous && (index < 0 || _templateFingerprint(current[index]) !== _templateFingerprint(previous))) {
-        throw new Error('プリセットが別の画面で変更されました。閉じてから読み直してください');
+        throw new Error('テンプレートが別の画面で変更されました。閉じてから読み直してください');
       }
       const name = String(template?.layout?.name || '').trim();
-      if (template && !name) throw new Error('プリセット名を入力してください');
+      if (template && !name) throw new Error('テンプレート名を入力してください');
       if (template && current.some((item, i) => i !== index && String(item.layout?.name || '').trim() === name)) {
-        throw new Error('同名のプリセットが既にあります');
+        throw new Error('同名のテンプレートが既にあります');
       }
       const next = current.map(clone);
       if (index >= 0) next.splice(index, 1, ...(template ? [clone(template)] : []));
@@ -482,19 +495,19 @@
           if (previous && (!template || oldName !== name)) deleted.add(oldName);
           if (template) deleted.delete(name);
           const saved = await _putSharedLibrary(fetcher, next, remote.revision, [...deleted]);
-          if (saved?.available === false) throw new Error('プリセットの保存先を利用できません');
+          if (saved?.available === false) throw new Error('テンプレートの保存先を利用できません');
         } catch (error) {
           if (attempt === 0 && _isConflict(error)) continue;
           throw error;
         }
       }
       try {
-        if (!_cacheSharedTemplates(next, opts.storage) && !remote.available) throw new Error('プリセットの保存先を利用できません');
+        if (!_cacheSharedTemplates(next, opts.storage) && !remote.available) throw new Error('テンプレートの保存先を利用できません');
       }
       catch (error) { if (!remote.available) throw error; }
       return { saved: true, shared: !!remote.available, templates: next };
     }
-    throw new Error('プリセットの保存が競合しました');
+    throw new Error('テンプレートの保存が競合しました');
   }
 
   return Object.freeze({

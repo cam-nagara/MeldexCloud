@@ -192,8 +192,8 @@
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
       if (result?.ok === false) {
         operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
-      } else if (Number(result?.failed || result?.errors || result?.media_failed || result?.author_icon_failed) > 0 || result?.folder_error) {
-        operation?.partial({ summary: result.summary || '処理が完了しました（一部失敗）', details: result.failure_samples || result.failures || [] });
+      } else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result?.[key]) > 0) || result?.folder_error) {
+        operation?.partial({ summary: result.summary || '処理が終了しました（未取得・翻訳待ちを含む）', details: result.failure_samples || result.failures || [] });
       } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
       return result;
     } catch (error) {

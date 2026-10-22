@@ -1,3 +1,26 @@
+        const res = await apiPost('/outliner/rename', {
+          old_path: oldPath,
+          new_name: nv,
+          type: nodeData.type || 'page',
+          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
+        });
+        if (!res || !res.new_path) throw new Error('rename failed');
+        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
+        if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+      } catch (e) {
+        if (e && e.isTimeout) {
+          await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
+        } else {
+          // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+          labelEl.textContent = old;
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
+        }
+      }
+    }
+    if (onFinish) onFinish();
+  };
+
   input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();

@@ -1,3 +1,23 @@
+  document.querySelectorAll('[id="page-content"]').forEach(pageContent => {
+    if (pageContent.dataset.path) {
+      pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
+    }
+  });
+
+  if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
+    Object.keys(_sn2Editors).forEach(path => {
+      const mapped = _mapRenamedPath(path, oldPath, newPath);
+      if (mapped === path && !(path === oldPath && exactLabel != null)) return;
+      const editor = _sn2Editors[path];
+      delete _sn2Editors[path];
+      if (editor) editor._path = mapped;
+      _sn2Editors[mapped] = editor;
+      // ファイル名とファイルタイトルの一致（2026-07-21）: ツールバーからのタイトル
+      // 編集は既にリネームAPIと同期済みだが、ツリー側からの単独リネームでは
+      // doc.title と表示中の #title-input が追随していなかったため、ここで揃える。
+      // mapped === newPath は「このファイル自体がリネームされた」場合のみ真になり、
+      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
+      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
         editor.doc.title = exactLabel;
         const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
           ? editor.host.closest('.gb-scriptnote-root')
@@ -65,13 +85,15 @@ function purgeAppPathReferences(paths) {
   _purgePublishStorageForDeletedPaths(deletedPaths);
 
   try {
-    const recent = _readStorageArray(RECENT_KEY);
-    const nextRecent = recent.filter(entry => {
-      return !_entryMatchesDeletedPaths(entry, deletedPaths);
-    });
-    if (nextRecent.length !== recent.length) {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
-      recentChanged = true;
+    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
+      const recent = _readStorageArray(recentKey);
+      const nextRecent = recent.filter(entry => {
+        return !_entryMatchesDeletedPaths(entry, deletedPaths);
+      });
+      if (nextRecent.length !== recent.length) {
+        localStorage.setItem(recentKey, JSON.stringify(nextRecent));
+        recentChanged = true;
+      }
     }
   } catch {}
 
@@ -876,25 +898,3 @@ function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
   });
   return true;
 }
-
-// ナビゲーション履歴の戻る/進む
-function navBack(paneId) {
-  const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
-    ? GBPanelSet.rightRailNavigationState(paneId)
-    : null;
-  if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
-  const navState = _getNavState(paneId);
-  if (navState.index <= 0) return false;
-  const nextIndex = navState.index - 1;
-  const entry = navState.history[nextIndex];
-  if (!entry) return false;
-  try {
-    return _continuePaneHistoryAfterFlush(
-      navState, nextIndex, entry, _applyNavEntryToBoundTab(navState, entry),
-    );
-  } catch (e) {
-    navNavigating = false;
-    throw e;
-  }
-}
-function navForward(paneId) {

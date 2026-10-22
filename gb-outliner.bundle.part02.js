@@ -786,7 +786,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
   const isUnavailableRoot = item.needsMapping === true;
-  const isExpandable = !isUnavailableRoot && (isFolder || isDB);
+  const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
 
   // Toggle arrow
   const toggle = document.createElement('span');

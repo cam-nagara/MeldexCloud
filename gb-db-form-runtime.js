@@ -45,8 +45,10 @@
       // column instead of inferring the format from the currently active app.
       candidate.entry_path = path;
       candidate.property = prop;
+      if (ctx.options?.onRevision && ctx.data.revision != null) candidate.entry_revision = ctx.data.revision;
       const old = candidate.value;
-      const result = await _apiPutValue(candidate, { new_value: value });
+      const result = await _apiPutValue(candidate, { new_value: value,
+        ...(ctx.options?.onRevision && ctx.data.revision != null ? { baseRevision: ctx.data.revision } : {}) });
       noteRevision(ctx, result);
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
@@ -78,6 +80,7 @@
   function noteRevision(ctx, result) {
     if (result?.revision == null) return;
     ctx.data.revision = result.revision;
+    ctx.options?.onRevision?.(result.revision);
     Object.values(ctx.data.properties || {}).forEach(values => {
       if (Array.isArray(values)) values.forEach(value => { value.entry_revision = result.revision; });
     });
@@ -125,6 +128,7 @@
         savedValue = value; input.dataset.formDirty = String(read() !== savedValue);
         message.textContent = '保存しました';
         ctx.grid.querySelectorAll('.gb-form-layout-field').forEach(peer => peer._refreshFormField?.(prop, value, candidate));
+        if (typeof _elRefreshLayoutCharts === 'function') _elRefreshLayoutCharts(ctx);
       } catch (error) {
         message.textContent = '保存できません: ' + (error.userMessage || error.message || error);
         input.dataset.formDirty = 'true';
@@ -163,6 +167,7 @@
     return true;
   }
   function applyNewLayout(form, layout, propTypes, dbPath, ctx) {
+    form.classList.add('gb-form-custom-layout');
     const host = document.createElement('div'); host.className = 'el-host';
     const viewport = document.createElement('div'); viewport.className = 'el-viewport';
     const canvas = document.createElement('div'); canvas.className = 'el-canvas';
@@ -171,6 +176,16 @@
     if (typeof _elApplyLayoutTheme === 'function') _elApplyLayoutTheme(canvas, layout);
     const rows = [...form.querySelectorAll('.gb-form-input-row')];
     const placed = new Map();
+    const chartData = { properties: {} }, charts = [];
+    const refreshCharts = () => {
+      chartData.properties = Object.fromEntries([...placed].map(([prop, rows]) => {
+        const input = rows[0]?.querySelector('input,textarea,select');
+        return [prop, input ? [{ value: input.type === 'checkbox' ? input.checked : input.value, status: '採用' }] : []];
+      }));
+      charts.forEach(({ cell, element, context }) => {
+        if (element.isConnected) element.replaceChildren(_elBuildChartCellContent(cell, context, canvas));
+      });
+    };
     const sync = event => {
       const source = event.target;
       for (const row of placed.get(source.name) || []) {
@@ -181,12 +196,15 @@
         control.dataset.formDirty = 'true';
         row.querySelector('.gb-form-field-error').textContent = source.closest('.gb-form-input-row').querySelector('.gb-form-field-error').textContent;
       }
+      refreshCharts();
     };
     form.addEventListener('input', sync); form.addEventListener('change', sync);
     for (const cell of model().orderedCells(layout)) {
       if (cell.type !== 'field') {
-        const element = _elBuildCellElement(cell, { grid: host, entityPath: '', dbPath, data: { properties: {} }, layout,
-          editMode: false, readOnly: true, options: { readOnly: true, layoutDraft: { layout } }, propTypes, rerender() {} }, canvas);
+        const context = { grid: host, entityPath: '', dbPath, data: chartData, layout,
+          editMode: false, readOnly: true, options: { ctx, readOnly: true, layoutDraft: { layout } }, propTypes, rerender() {} };
+        const element = _elBuildCellElement(cell, context, canvas);
+        if (cell.type === 'chart' && (cell.chart?.chartType === 'radar' || cell.chart?.dataSource === 'entry')) charts.push({ cell, element, context });
         element.style.zIndex = String(layout.cells.indexOf(cell)); canvas.appendChild(element);
         continue;
       }
@@ -204,10 +222,20 @@
       }
       peers.push(row); placed.set(cell.prop, peers);
       const element = document.createElement('div'); element.className = 'el-cell el-cell-field gb-form-new-cell';
+      element.dataset.cellId = cell.id;
       element.style.zIndex = String(layout.cells.indexOf(cell));
       for (const [key, value] of Object.entries({ left: cell.x, top: cell.y, width: cell.w, height: cell.h })) element.style[key] = value + 'px';
       _elApplyCellStyle(element, cell, { editMode: false });
       const content = document.createElement('div'); content.className = 'el-cell-content'; content.appendChild(row); element.appendChild(content); canvas.appendChild(element);
+      const caption = row.querySelector('.gb-form-input-label');
+      if (caption) {
+        const text = document.createElement('span'); text.textContent = caption.textContent;
+        caption.replaceChildren(); caption.insertAdjacentHTML('beforeend', _elPropIconHtml(cell.prop, propTypes, 13)); caption.appendChild(text);
+        MeldexDbTopicLayoutStyle.applyCaptionMode(caption, text, row.querySelector('input,textarea,select'), cell,
+          model().forLayout(layout).labels?.[cell.prop] || cell.prop);
+        // The input owns the accessible label; the decorative caption must not be a second target.
+        caption.removeAttribute('aria-label');
+      }
       if (!Object.prototype.hasOwnProperty.call(propTypes, cell.prop)) {
         const control = row.querySelector('input,textarea,select'); if (control) control.disabled = true;
         const add = document.createElement('button'); add.type = 'button'; add.className = 'gb-btn'; add.textContent = '列を追加';
@@ -234,6 +262,13 @@
       }
     }
     form.querySelector('button[type=submit]').before(host);
+    refreshCharts();
+    requestAnimationFrame(() => {
+      for (const element of canvas.querySelectorAll('.gb-form-new-cell')) {
+        const cell = layout.cells.find(cell => cell.id === element.dataset.cellId);
+        if (cell) _elAutoFitCellText(element, cell);
+      }
+    });
   }
   async function confirmLeave(root) {
     for (const popup of document.querySelectorAll('.gb-form-subform-editor')) {
@@ -292,6 +327,7 @@
         const displayTypes = { ...propTypes };
         (layout?.cells || []).forEach(cell => { if (cell.type === 'field' && !displayTypes[cell.prop]) displayTypes[cell.prop] = { type: cell.columnType || 'text', options: cell.columnOptions || [] }; });
         const form = _buildFormAnswerPanel(dbPath, effective, displayTypes, false, { canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
+          if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
           const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';
           session.created.set(result.path, name);
           const option = document.createElement('option'); option.value = result.path; option.textContent = name; select.appendChild(option);

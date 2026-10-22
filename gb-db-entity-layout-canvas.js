@@ -153,7 +153,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
     : cell.type === 'label' ? (cell.text || '見出し')
       : cell.type === 'image' ? '画像'
         : cell.type === 'divider' ? '罫線'
-          : cell.type === 'chart' ? 'チャート' : cell.type;
+          : cell.type === 'chart' ? 'チャート' : cell.type === 'subform' ? '繰り返し項目' : cell.type;
   el.setAttribute('aria-label', typeLabel + 'のレイアウトセル');
   // フォーカスだけでも選択状態にして、ホバーを使えないキーボード操作から
   // 設定・削除ボタンへ Tab で到達できるようにする。
@@ -172,7 +172,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   settingsBtn.type = 'button';
   settingsBtn.className = 'el-cell-settings';
   settingsBtn.dataset.e2eId = 'entity-layout-cell-settings';
-  const settingsLabel = cell.type === 'image' ? '画像の設定'
+  const settingsLabel = cell.type === 'chart' ? 'チャートのデータ・表示設定' : cell.type === 'subform' ? '繰り返し項目の設定' : cell.type === 'image' ? '画像の設定'
     : cell.type === 'divider' ? '罫線の色' : 'セルの書式';
   settingsBtn.title = settingsLabel;
   settingsBtn.setAttribute('aria-label', settingsLabel);
@@ -378,6 +378,30 @@ function _elCloseEditPopups() {
 }
 
 function _elAttachPopupCommon(popup, anchorBtn, options = {}) {
+  if (popup.getAttribute('role') === 'dialog') {
+    const title = popup.getAttribute('aria-label') || popup.querySelector('.el-popup-title')?.textContent || '配置の設定';
+    popup.querySelector(':scope > .el-popup-title')?.remove();
+    popup.removeAttribute('role');
+    popup.removeAttribute('aria-label');
+    popup.classList.remove('gb-context-menu');
+    popup.classList.add('el-dialog-content');
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button'; dismiss.className = 'gb-btn'; dismiss.textContent = '閉じる';
+    dismiss.addEventListener('click', () => close('cancel'));
+    const modal = GBUI.createModal({
+      id: popup.dataset.e2eId || options.id,
+      title, body: popup, footer: [dismiss, ...(options.actions || [])],
+      closeLabel: 'ダイアログを閉じる',
+      extraClass: 'el-settings-dialog', initialFocus: options.initialFocus || popup.querySelector('input,select,textarea,button'),
+      returnFocus: anchorBtn, onBeforeClose: options.beforeClose,
+      onClose: () => { popup._cleanup?.(); options.onClose?.(); },
+    });
+    const close = reason => modal.close(typeof reason === 'string' ? reason : 'cancel');
+    close.footer = modal.footer;
+    popup._requestClose = close;
+    modal.open();
+    return close;
+  }
   document.body.appendChild(popup);
   const cleanupFns = [];
   popup._cleanup = () => { cleanupFns.splice(0).forEach(off => off()); };
@@ -525,7 +549,7 @@ function _elShowCanvasSizePopup(anchorBtn, ctx) {
     const h = _elClampNum(hInput.value, EL_CANVAS_MIN, EL_CANVAS_MAX, ctx.layout.canvasSize.h);
     close();
     ctx.persist('トピックレイアウト: キャンバスサイズ', w + 'x' + h, (layout) => {
-      layout.canvasSize = { w, h };
+      layout.canvasSize = { ...layout.canvasSize, w, h };
     });
     ctx.rerender();
   });
@@ -556,6 +580,8 @@ function _elBuildEditToolbar(ctx) {
     _elShowFieldPickerMenu(fieldBtn, ctx);
   });
   bar.appendChild(fieldBtn);
+  const inspector = document.createElement('button'); inspector.type = 'button'; inspector.className = 'gb-btn';
+  inspector.textContent = 'セル一覧・設定'; inspector.addEventListener('click', event => { event.stopPropagation(); _elShowCellInspector(inspector, ctx); }); bar.appendChild(inspector);
 
   if (typeof _elEditToolbarExtraItems === 'function') {
     _elEditToolbarExtraItems(ctx).forEach(btn => bar.appendChild(btn));

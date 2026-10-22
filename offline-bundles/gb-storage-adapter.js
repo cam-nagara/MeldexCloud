@@ -1408,6 +1408,19 @@
       }
     }
 
+    async readBytesSnapshot(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const meta = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!meta.rev) throw Object.assign(new Error('Dropboxの読込revisionを確認できません'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+      this._rememberMeta(normalized, meta);
+      return { bytes, revision: meta.rev };
+    }
+
     async readBytesFresh(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);

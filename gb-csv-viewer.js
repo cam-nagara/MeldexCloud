@@ -12,6 +12,7 @@ let _csvOpenSeq = 0;
 let _csvSaveVersion = 0;
 let _csvSaveInFlight = null;
 let _csvSaveQueued = false;
+const _csvSaveHost = {};
 let _csvLastSavedEtag = '';
 let _csvLastSavedTransportRevision = '';
 let _csvSheetModeActive = false;
@@ -919,7 +920,18 @@ async function _csvDrainSaveQueue() {
         : (_csvLastSavedEtag || '');
       if (guardedRevision) payload.if_match_etag = guardedRevision;
       if (_csvLastSavedTransportRevision) payload.transport_revision = _csvLastSavedTransportRevision;
-      const result = await apiPut('/file?path=' + encodeURIComponent(savePath), payload);
+      const send = previous => apiPut('/file?path=' + encodeURIComponent(savePath), {
+        ...payload,
+        ...(previous?.etag ? { if_match_etag: previous.etag,
+          transport_revision: previous.transport_revision || coordinator?.normalizeTransportRevision(coordinator.currentTransportName(), previous.etag) || '' } : {}),
+      });
+      const result = coordinator
+        ? await coordinator.requestSave(documentKey, _csvSaveHost, savePath, content, send, { reason: 'csv-auto' })
+        : await send();
+      if (result?.conflictPending || result?.queued) {
+        _csvDirty = true;
+        return false;
+      }
       if (_csvIsMissingSaveResult(result)) {
         _csvDirty = true;
         showStatus('CSVファイルが見つかりません。保存先を確認してください', true);

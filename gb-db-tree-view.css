@@ -16,6 +16,7 @@
   padding: 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
+  flex-wrap: wrap;
 }
 
 .db-tree-toolbar input,
@@ -50,6 +51,8 @@
   border: 1px solid var(--border);
   border-radius: 5px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .db-tree-content {
@@ -268,6 +271,14 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
 }
 
+.db-tree-row.row-selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
+.db-tree-row.row-selected > .is-pinned {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
 .db-tree-row > .is-pinned {
   position: sticky;
   z-index: 2;
@@ -295,6 +306,65 @@
   min-height: var(--db-tree-row-height);
   padding: 2px 8px 2px calc(8px + var(--db-tree-depth) * 22px);
   border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.db-tree-name-cell > :not(.db-tree-label) {
+  flex-shrink: 0;
+}
+
+.db-tree-name-cell .row-select-cb,
+.db-tree-header-cell .row-select-all-cb {
+  opacity: 1;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  margin: 0 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.db-tree-name-actions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.db-tree-name-actions > button {
+  display: inline-flex;
+  position: static;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  opacity: 1;
+  color: var(--fg2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.db-tree-name-actions > button:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.db-tree-typed-cell > .gb-image-cell,
+.db-tree-typed-cell > .cell-value {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.db-tree-parent-select {
+  width: 100%;
+  min-width: 0;
+  margin: 6px 0;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
 .db-tree-value-cell {
@@ -360,6 +430,7 @@
   border: 0;
   border-radius: 4px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .db-tree-caret:disabled {
@@ -387,6 +458,7 @@
 }
 
 .db-tree-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -493,6 +565,12 @@
   text-align: center;
 }
 
+.db-tree-setup-empty {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 12px;
+}
+
 .db-tree-option-section {
   display: grid;
   gap: 10px;
@@ -597,6 +675,19 @@
 }
 
 @media (pointer: coarse) {
+  .db-tree-name-actions > button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .db-tree-name-cell .row-select-cb,
+  .db-tree-header-cell .row-select-all-cb {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+  }
+
   .db-tree-row {
     --db-tree-row-height: 44px;
   }

@@ -360,6 +360,7 @@ function saveLastView(obj) {
     if (fid) obj.file_id = fid;
   }
   localStorage.setItem('lastView', JSON.stringify(obj));
+  rememberRailAppFile(obj);
 }
 
 function _isCloudPhase1UnsupportedOpenType(type) {
@@ -886,14 +887,80 @@ async function _gbAppPrepareFullFileWrite(path, body) {
   }
 }
 
+let _gbAppUiConfigWriteTail = Promise.resolve();
+const _gbAppPendingValueWrites = new Map();
+const _gbAppValueWriteTails = new Map();
+let _gbAppValueAccount = window.MeldexDropboxAuth?.getSession?.()?.accountId || '';
+window.addEventListener?.('meldex:dropbox-auth-session-changed', event => {
+  const account = String(event.detail?.accountId || '');
+  if (account !== _gbAppValueAccount) _gbAppPendingValueWrites.clear();
+  _gbAppValueAccount = account;
+});
+window.addEventListener?.('meldex:mode-changed', () => _gbAppPendingValueWrites.clear());
+
+async function _gbAppPutValueConfirmed(path, body, options) {
+  const key = String(path);
+  const previous = _gbAppValueWriteTails.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const send = payload => apiFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      ...(options || {}), body: JSON.stringify(payload), silentError: true });
+    const uncertain = _gbAppPendingValueWrites.get(key);
+    if (uncertain) {
+      const result = await send(uncertain);
+      _gbAppPendingValueWrites.delete(key);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+      const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
+      if (withoutId(body) === withoutId(uncertain)) return result;
+      // Only an ordinary candidate patch may follow its own confirmed patch.
+      // Whole-body edits and structural changes retain their original baseline.
+      const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
+      const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
+      if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)
+          && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
+          && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
+        body = { ...body, [baseKey]: result.revision };
+      }
+    }
+    const payload = { ...body, operation_id: body.operation_id || crypto.randomUUID() };
+    try { return await send(payload); }
+    catch (error) {
+      const unknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+        || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+      if (!unknown) throw error;
+      _gbAppPendingValueWrites.set(key, payload);
+      const result = await send(payload);
+      _gbAppPendingValueWrites.delete(key);
+      return result;
+    }
+  });
+  _gbAppValueWriteTails.set(key, pending);
+  try { return await pending; }
+  finally { if (_gbAppValueWriteTails.get(key) === pending) _gbAppValueWriteTails.delete(key); }
+}
+
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
-  const result = await apiFetch(path, {
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
+    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    _scheduleLinkDictionaryRefreshForMutation(path);
+    return result;
+  }
+  const requestOptions = {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
     ...(options || {}),
-  });
+  };
+  const send = () => apiFetch(path, requestOptions);
+  // Whole settings snapshots must commit in user request order. A failed
+  // snapshot rejects its own caller without poisoning subsequent saves.
+  let result;
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {
+    const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
+    _gbAppUiConfigWriteTail = pending;
+    result = await pending;
+  } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }

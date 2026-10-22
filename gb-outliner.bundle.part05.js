@@ -1,3 +1,22 @@
+          const mcFid = _pathToFileId(nodeData.path);
+          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
+          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
+        } else {
+          localStorage.removeItem('main-calendar-path');
+          localStorage.removeItem('main-calendar-id');
+          showStatus('メインカレンダー設定を解除しました');
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
+        }
+        },
+      });
+    });
+  }
+
+  // --- バージョン管理（フォルダのみ） ---
+  if (!isMulti && (isFolder || isDB) && nodeData.path) {
+    addSep();
+    addMenuItem('バージョンを保存', () => {
       closeTreeContextMenu();
       if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
     }, null, 'save');
@@ -427,6 +446,10 @@ function getAddParentPath(nodeEl, nodeData, options = {}) {
   const isContainer = nodeData.type === 'folder'
     || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
+  if (nodeData._form_parent_path) {
+    const path = String(nodeData.path || '').replace(/\\/g, '/');
+    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
+  }
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
     // フォルダ/DBが展開中ならその中、閉じているなら同階層
@@ -491,7 +514,7 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, 
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true' + (options.detail ? '&detail=true' : ''),
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
       { skipBrowseCache: true, cache: 'reload' });
   } catch {
     return null;
@@ -875,25 +898,3 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
     if (nodeData.path && nv !== old) {
       const oldPath = nodeData.path;
       try {
-        const res = await apiPost('/outliner/rename', {
-          old_path: oldPath,
-          new_name: nv,
-          type: nodeData.type || 'page',
-          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
-        });
-        if (!res || !res.new_path) throw new Error('rename failed');
-        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
-        if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-      } catch (e) {
-        if (e && e.isTimeout) {
-          await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
-        } else {
-          // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
-          labelEl.textContent = old;
-          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
-          showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
-        }
-      }
-    }
-    if (onFinish) onFinish();
-  };

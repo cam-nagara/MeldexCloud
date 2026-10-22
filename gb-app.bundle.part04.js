@@ -1,3 +1,92 @@
+    const oldPath = String(body?.old_path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
+      const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
+      _apiLockAddPath(paths, destinationBase);
+      const extension = _apiLockRenameExtension(oldPath);
+      if (extension) _apiLockAddPath(paths, destinationBase + extension);
+    }
+  } else if (route === '/entity/create') {
+    addBody('parent_path');
+  } else if (route === '/entity/rename') {
+    addBody('path');
+    const oldPath = String(body?.path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
+  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
+    addBody('target_path');
+  } else if (route === '/entity/auto-name') {
+    addBody('db_path');
+    addBody('entry_path');
+    addBody('path');
+  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
+    addBody('folder_path');
+    addBody('file_path');
+  } else if (route === '/import-csv' || route === '/import-xlsx') {
+    addBody('csv_path');
+    addBody('xlsx_path');
+    addBody('db_path');
+  } else if (route === '/public-form/submit') {
+    addBody('db_path');
+  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
+    addBoth('db_path');
+  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder' || route === '/version/delete-db') {
+    addBody('path');
+  }
+
+  return [...new Set(paths)];
+}
+
+function _apiLockBlockIfNeeded(path, opts) {
+  if (typeof isItemLocked !== 'function') return false;
+  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
+    try { return isItemLocked(p); } catch { return false; }
+  });
+  if (!lockedPath) return false;
+  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
+  const message = reason
+    ? `編集ロック中のため編集できません（理由: ${reason}）`
+    : '編集ロック中のため編集できません';
+  if (typeof showStatus === 'function') showStatus(message, true);
+  throw new Error(message);
+}
+
+function _apiUsesTransientActiveLock(path) {
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return false; }
+  return new Set([
+    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
+    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
+  ]).has(route);
+}
+
+// apiFetchをオーバーライドしてユーザー名を付加
+const _origApiFetch = apiFetch;
+apiFetch = async function(path, opts) {
+  opts = opts || {};
+  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+  _apiLockBlockIfNeeded(path, opts);
+  const activeLocks = window.MeldexActiveLocks;
+  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
+    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
+    : null;
+  const deferredCreateUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/add';
+  let mutationSucceeded = false;
+  try {
+    if (activeLocks?.beforeApiFetch) {
+      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+    }
+    // 表示名と安定IDを自動付与（監査ログ・版履歴の編集者帰属用）
+    const user = getUsername();
+    const actorId = window.MeldexProfileIdentity?.getStableActorId?.() || '';
+    const requestMethod = String(opts.method || 'GET').toUpperCase();
+    const mutationRequest = requestMethod !== 'GET' && requestMethod !== 'HEAD';
+    const identityParams = [];
+    if (user && user !== 'anonymous' && !/[?&]_user=/.test(path)) identityParams.push('_user=' + encodeURIComponent(user));
+    if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     const result = await _origApiFetch(path, opts);
@@ -809,92 +898,3 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     const preview = document.createElement('canvas');
     preview.className = 'screenshot-region-preview';
     preview.setAttribute('aria-hidden', 'true');
-    preview.width = canvas.width;
-    preview.height = canvas.height;
-    preview.getContext('2d').drawImage(canvas, 0, 0);
-    const maxW = Math.max(1, Math.floor(window.innerWidth * 0.94));
-    const maxH = Math.max(1, Math.floor(window.innerHeight * 0.82));
-    const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
-    preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
-    preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
-
-    const selection = document.createElement('div');
-    selection.className = 'screenshot-region-selection';
-    selection.setAttribute('aria-hidden', 'true');
-    selection.style.display = 'none';
-
-    const actions = document.createElement('div');
-    actions.className = 'screenshot-region-actions';
-    actions.style.width = '100%';
-    actions.style.minWidth = '0';
-    actions.setAttribute('aria-label', '範囲選択の操作');
-
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.style.flex = '0.8 1 0';
-    cancel.dataset.e2eId = 'screenshot-region-cancel';
-    cancel.textContent = 'キャンセル';
-
-    const ok = document.createElement('button');
-    ok.type = 'button';
-    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
-    ok.style.flex = '1.5 1 0';
-    ok.style.minWidth = '0';
-    ok.dataset.e2eId = 'screenshot-region-save';
-    ok.textContent = 'スクリーンショット撮影';
-
-    stage.append(preview, selection);
-    actions.append(cancel, ok);
-
-    let start = null;
-    let current = null;
-    let activePointerId = null;
-    let cleaned = false;
-    let result = null;
-    let modalApi = null;
-
-    const cleanup = (value, reason = 'programmatic') => {
-      if (cleaned) return;
-      result = value;
-      modalApi.close(reason);
-    };
-    const pointFromEvent = (ev) => {
-      const rect = preview.getBoundingClientRect();
-      return {
-        x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
-        y: Math.max(0, Math.min(rect.height, ev.clientY - rect.top)),
-        rect,
-      };
-    };
-    const visibleRect = () => {
-      if (!start || !current) return null;
-      const left = Math.min(start.x, current.x);
-      const top = Math.min(start.y, current.y);
-      const width = Math.abs(current.x - start.x);
-      const height = Math.abs(current.y - start.y);
-      return { left, top, width, height };
-    };
-    const updateSelection = () => {
-      const rect = visibleRect();
-      if (!rect || rect.width < 1 || rect.height < 1) {
-        selection.style.display = 'none';
-        return;
-      }
-      selection.style.display = 'block';
-      selection.style.left = rect.left + 'px';
-      selection.style.top = rect.top + 'px';
-      selection.style.width = rect.width + 'px';
-      selection.style.height = rect.height + 'px';
-    };
-    const canvasRegion = () => {
-      const rect = visibleRect();
-      if (!rect || rect.width < 4 || rect.height < 4) return null;
-      const bounds = preview.getBoundingClientRect();
-      const scaleX = canvas.width / bounds.width;
-      const scaleY = canvas.height / bounds.height;
-      const x = Math.max(0, Math.min(canvas.width - 1, rect.left * scaleX));
-      const y = Math.max(0, Math.min(canvas.height - 1, rect.top * scaleY));
-      return {
-        x,
-        y,

@@ -463,6 +463,23 @@ let navNavigating = false; // 戻る/進む操作中フラグ
 const RECENT_MAX = 8;
 const RECENT_KEY = 'meldex-recent';
 
+function _railAppType(type) {
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'database'].includes(type)) return 'database';
+  if (type === 'scenario') return 'scriptnote';
+  return ['page', 'scriptnote', 'board', 'form-app'].includes(type) ? type : '';
+}
+
+function rememberRailAppFile(entry) {
+  if (window._skipLastViewSave || window._gbSingleWindow) return;
+  const type = entry?.calendarFile ? '' : _railAppType(entry?.type);
+  const path = entry?.path || entry?.dbPath || '';
+  if (!type || !path) return;
+  const recent = _readStorageArray('meldex-rail-last-files').filter(item => _railAppType(item?.type) !== type);
+  recent.unshift({ ...entry, path, type: entry.type === 'scenario' ? 'scriptnote' : (entry.calendarFile ? 'calendar' : entry.type) });
+  try { localStorage.setItem('meldex-rail-last-files', JSON.stringify(recent)); }
+  catch (err) { console.warn('アプリの起動履歴を保存できませんでした', err); }
+}
+
 function addRecent(label, path, type) {
   let recent = _readStorageArray(RECENT_KEY);
   recent = recent.filter(r => r.path !== path);
@@ -470,6 +487,7 @@ function addRecent(label, path, type) {
   recent.unshift({label, path, type, time: Date.now(), ...(fid ? { file_id: fid } : {})});
   if (recent.length > RECENT_MAX) recent.length = RECENT_MAX;
   localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+  rememberRailAppFile(recent[0]);
   if (typeof updateRecentItems === 'function') updateRecentItems();
 }
 
@@ -772,21 +790,23 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   let legacyTabsChanged = false;
 
   try {
-    const recent = _readStorageArray(RECENT_KEY);
-    recent.forEach(entry => {
-      if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
-      if (entry.path === newPath && exactLabel != null) {
-        entry.label = exactLabel;
-        recentChanged = true;
+    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
+      const recent = _readStorageArray(recentKey);
+      recent.forEach(entry => {
+        if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
+        if (entry.path === newPath && exactLabel != null) {
+          entry.label = exactLabel;
+          recentChanged = true;
+        }
+        if (entry.path === newPath && fileId) {
+          entry.file_id = fileId;
+          recentChanged = true;
+        }
+      });
+      if (recentChanged) {
+        localStorage.setItem(recentKey, JSON.stringify(recent));
+        if (typeof updateRecentItems === 'function') updateRecentItems();
       }
-      if (entry.path === newPath && fileId) {
-        entry.file_id = fileId;
-        recentChanged = true;
-      }
-    });
-    if (recentChanged) {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
-      if (typeof updateRecentItems === 'function') updateRecentItems();
     }
   } catch {}
 
@@ -878,23 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   }
 
   // ペインを再マウントしない改名でも、各ノートの次回保存先を追従させる。
-  document.querySelectorAll('[id="page-content"]').forEach(pageContent => {
-    if (pageContent.dataset.path) {
-      pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
-    }
-  });
-
-  if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
-    Object.keys(_sn2Editors).forEach(path => {
-      const mapped = _mapRenamedPath(path, oldPath, newPath);
-      if (mapped === path && !(path === oldPath && exactLabel != null)) return;
-      const editor = _sn2Editors[path];
-      delete _sn2Editors[path];
-      if (editor) editor._path = mapped;
-      _sn2Editors[mapped] = editor;
-      // ファイル名とファイルタイトルの一致（2026-07-21）: ツールバーからのタイトル
-      // 編集は既にリネームAPIと同期済みだが、ツリー側からの単独リネームでは
-      // doc.title と表示中の #title-input が追随していなかったため、ここで揃える。
-      // mapped === newPath は「このファイル自体がリネームされた」場合のみ真になり、
-      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
-      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {

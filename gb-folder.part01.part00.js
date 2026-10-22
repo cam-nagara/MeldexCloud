@@ -908,7 +908,7 @@ function setFolderSubfolderContentsEnabled(enabled) {
 }
 
 async function _folderFetchBrowseItems(path, options = {}) {
-  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
   if (options.isCurrent?.() === false) return [];
   if (!isFolderSubfolderContentsEnabled()) return direct;
   const result = [...direct];
@@ -923,7 +923,7 @@ async function _folderFetchBrowseItems(path, options = {}) {
     if (!key || visited.has(key)) continue;
     visited.add(key);
     try {
-      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true&form_hierarchy=true');
       if (options.isCurrent?.() === false) return [];
       children.forEach(child => {
         if (child?.type === 'folder' && child.path) queue.push(child.path);

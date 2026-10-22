@@ -187,6 +187,7 @@
 
     async function save() {
       if (state.disposed) return false;
+      if (state.saving && !await state.saving.catch(() => false)) return false;
       if (state.staticContent || !state.dirty) return true;
       if (!state.editor || state.root.dataset.readOnly === '1') return state.root.dataset.readOnly === '1';
       clearTimeout(state.timer);
@@ -200,7 +201,13 @@
         { reason: 'entity-detail-surface' },
       ))
         .then(saved => {
-          if (saved && state.changeSeq === savingSeq) state.dirty = false;
+          if (saved) {
+            if (state.data && state.editor?.dataset.lastSavedRevision) {
+              state.data.revision = Number(state.editor.dataset.lastSavedRevision);
+              state.data.page_content = state.editor.dataset.lastSavedMd || '';
+            }
+            if (state.changeSeq === savingSeq) state.dirty = false;
+          }
           return !!saved;
         })
         .finally(() => { state.saving = null; });
@@ -215,6 +222,7 @@
       if (state.titleFailed) return false;
       const links = root.querySelector('.meldex-entity-attachments-section');
       if (links?._linkedFiles && !await links._linkedFiles.flush()) return false;
+      if (state.defaultForm && !await state.defaultForm.flush()) return false;
       return save();
     }
 
@@ -305,9 +313,7 @@
       const parent = parentDir(state.path);
       const [data, meta, access] = await Promise.all([
         state.data || apiFetch('/entity?path=' + encodeURIComponent(state.path)),
-        options.propTypes
-          ? Promise.resolve({ property_types: options.propTypes })
-          : (parent ? apiFetch('/db-metadata?path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null),
+        parent ? apiFetch('/db-metadata?include_form=true&path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null,
         resolveReadOnly(state.path, options.readOnly),
       ]);
       if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
@@ -424,6 +430,16 @@
           ctx: options.ctx,
         });
       }
+
+      state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
+        parentDb: parent, readOnly: access.readOnly, ctx: options.ctx, beforeWrite: save, onRevision: revision => {
+          if (state.editor && !state.dirty && !state.saving
+            && String(data.page_content || '') === (state.editor.dataset.lastSavedMd || '')) {
+            state.editor.dataset.lastSavedRevision = String(revision);
+          }
+        },
+      });
+      if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
 
       if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {

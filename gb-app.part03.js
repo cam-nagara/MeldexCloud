@@ -777,13 +777,14 @@ window.addEventListener('beforeunload', (e) => {
     const pc = document.getElementById('page-content');
     const currentPath = pc?.dataset?.path;
     if (currentPath) {
-      const md = htmlToMd(pc?.innerHTML || '');
-      const fm = pc.dataset.frontmatter || '';
-      const full = fm ? fm + md : md;
+      const full = typeof _noteMarkdownFromEditorNonDestructive === 'function'
+        ? _noteMarkdownFromEditorNonDestructive(pc)
+        : (pc.dataset.frontmatter || '') + htmlToMd(pc?.innerHTML || '');
+      const unchanged = window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, full);
       const body = typeof _noteSavePayload === 'function'
         ? _noteSavePayload(pc, full)
         : { content: full, if_match_etag: pc?.dataset?.lastSavedEtag || '', skip_if_missing: true };
-      const noteSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
+      const noteSaveQueued = unchanged || _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
       unloadSaveQueued = noteSaveQueued && unloadSaveQueued;
       if (!noteSaveQueued) {
         window._noteAutoSaveTimer = setTimeout(() => {

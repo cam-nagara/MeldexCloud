@@ -4511,6 +4511,19 @@
       }
     }
 
+    async readBytesSnapshot(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const meta = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!meta.rev) throw Object.assign(new Error('Dropboxの読込revisionを確認できません'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+      this._rememberMeta(normalized, meta);
+      return { bytes, revision: meta.rev };
+    }
+
     async readBytesFresh(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
@@ -7939,7 +7952,9 @@
   }
 
   function _jsonHeaders(headers) {
-    return { 'Content-Type': 'application/json', ...(headers || {}) };
+    const result = new Headers(headers || undefined);
+    if (!result.has('Content-Type')) result.set('Content-Type', 'application/json');
+    return result;
   }
 
   function _requestMethod(opts) {
@@ -9485,7 +9500,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -10162,6 +10177,7 @@
     return NOT_HANDLED;
   }
 
+  let _pwaUiConfigWriteTail = Promise.resolve();
   async function requestJson(path, opts) {
     const started = performance.now();
     const requestOpts = opts || {};
@@ -10172,7 +10188,20 @@
       payload: _summarizePayload(requestOpts.body),
     };
     if (_runtime()?.isBrowserDataMode?.()) {
-      const localResult = await _pwaJsonRequest(path, requestOpts);
+      const endpoint = String(path || '').split('?')[0].replace(/^\/api/, '');
+      const changesUiConfig = _requestMethod(requestOpts) !== 'GET'
+        && (endpoint === '/ui-config' || /^\/ui-config\/history\/[^/]+\/restore$/.test(endpoint));
+      const send = () => _pwaJsonRequest(path, requestOpts);
+      let localResult;
+      if (changesUiConfig) {
+        // The browser implementation awaits hashing/history before publishing.
+        // Serialize both ordinary saves and restores, including other tabs.
+        const run = () => globalThis.navigator?.locks?.request
+          ? navigator.locks.request(PWA_UI_CONFIG_KEY, send) : send();
+        const pending = _pwaUiConfigWriteTail.catch(() => {}).then(run);
+        _pwaUiConfigWriteTail = pending;
+        localResult = await pending;
+      } else localResult = await send();
       if (localResult === NOT_HANDLED) {
         _logCompare({ ...logBase, adapter: `${mode}-unhandled`, durationMs: Math.round(performance.now() - started) });
         const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
@@ -11497,7 +11526,7 @@
       };
       const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
       contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
-      const existingTotal = await this._totalBytesForKind(kind, docId);
+      const existingTotal = policy.maxTotalBytes == null ? 0 : await this._totalBytesForKind(kind, docId);
       contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
 
       const mode = currentRevision ? { '.tag': 'update', update: currentRevision } : 'add';
@@ -25188,6 +25217,69 @@
 
   const _parsedSheetTexts = new WeakMap();
   const _folderNoteFlights = new WeakMap();
+  const _frontmatterReadRevision = Symbol('meldex-frontmatter-read-revision');
+  const _jsonReadRevision = Symbol('meldex-json-read-revision');
+  const _sheetReadRows = Symbol('meldex-sheet-read-rows');
+  const _valueWriteIntent = Symbol('meldex-value-write-intent');
+
+  async function _prepareValueWrite(body) {
+    if (!body?.operation_id || body[_valueWriteIntent]) return body;
+    const id = String(body.operation_id);
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(id)) throw Object.assign(new Error('保存操作IDが不正です'), { status: 400 });
+    const hash = await window.MeldexSystemStorage.computeRevision(body);
+    return { ...body, [_valueWriteIntent]: { id, hash } };
+  }
+
+  function _valueWriteReplay(frontmatter, body) {
+    const intent = body?.[_valueWriteIntent], receipt = frontmatter.meldex_value_write;
+    if (!intent || !receipt || receipt.id !== intent.id) return null;
+    if (receipt.hash !== intent.hash) throw Object.assign(new Error('保存操作IDが別の内容で再利用されています'), { status: 409, code: 'operation_id_conflict' });
+    return { ...receipt.result };
+  }
+
+  function _finishValueWrite(frontmatter, body, result) {
+    const current = Number(frontmatter.meldex_revision || 0);
+    for (const key of ['baseRevision', 'base_revision', 'entryRevision', 'revision']) {
+      if (body?.[key] == null || body[key] === '') continue;
+      if (!Number.isInteger(Number(body[key])) || Number(body[key]) !== current) {
+        throw Object.assign(new Error('トピックが別の画面または端末で更新されています'), { status: 409, code: 'entry_revision_conflict' });
+      }
+      break;
+    }
+    frontmatter.meldex_revision = current + 1;
+    result.revision = current + 1;
+    const intent = body?.[_valueWriteIntent];
+    if (intent) frontmatter.meldex_value_write = { ...intent, result: { ...result } };
+    return result;
+  }
+
+  async function _readVersionedJson(provider, path) {
+    const read = provider.readBytesSnapshot || provider.readBytesFresh;
+    if (typeof read !== 'function') return _readJsonSafe(provider, path, null);
+    let snapshot;
+    try { snapshot = await read.call(provider, path); }
+    catch (error) {
+      if (error?.status === 404 || error?.name === 'NotFoundError'
+          || /not_found|ファイルが見つかりません/.test(String(error?.message || ''))) return null;
+      throw error;
+    }
+    const value = JSON.parse(new TextDecoder().decode(snapshot.bytes));
+    if (value && typeof value === 'object') {
+      const basis = { provider, path, revision: snapshot.revision, content: JSON.stringify(value) };
+      value[_jsonReadRevision] = basis;
+      if (value.rows && typeof value.rows === 'object') value.rows[_jsonReadRevision] = basis;
+    }
+    return value;
+  }
+
+  async function _writeVersionedJson(provider, path, value, source = value) {
+    if (typeof provider.uploadBytesConditional !== 'function') return provider.writeJson(path, value);
+    const basis = source?.[_jsonReadRevision];
+    if (basis && (basis.provider !== provider || basis.path !== path)) {
+      throw Object.assign(new Error('管理データの読込元と保存先が一致しません'), { status: 409 });
+    }
+    return provider.uploadBytesConditional(path, new TextEncoder().encode(JSON.stringify(value, null, 2)), basis?.revision ?? null);
+  }
   function _parsedSheetText(provider, path, text) {
     let cache = _parsedSheetTexts.get(provider);
     if (!cache) { cache = new Map(); _parsedSheetTexts.set(provider, cache); }
@@ -25203,11 +25295,35 @@
   }
 
   async function _readFrontmatterFile(provider, path) {
-    return _parsedSheetText(provider, path, await _readText(provider, path, ''));
+    const read = provider.readBytesSnapshot || provider.readBytesFresh;
+    if (typeof read !== 'function') return _parsedSheetText(provider, path, await _readText(provider, path, ''));
+    let snapshot;
+    try { snapshot = await read.call(provider, path); }
+    catch (error) {
+      if (error?.status !== 404 && error?.name !== 'NotFoundError'
+          && !/not_found|ファイルが見つかりません/.test(String(error?.message || ''))) throw error;
+      snapshot = { bytes: new Uint8Array(), revision: null };
+    }
+    const parsed = _parsedSheetText(provider, path, new TextDecoder().decode(snapshot.bytes));
+    // Symbols survive object spread but are absent from YAML/JSON. Keep the
+    // revision with this private edit snapshot, never in a mutable path cache.
+    parsed.frontmatter[_frontmatterReadRevision] = { provider, path: _normalizeFolderPath(path), revision: snapshot.revision };
+    return parsed;
   }
 
   async function _writeFrontmatterFile(provider, path, frontmatter, body) {
-    await provider.writeText(_normalizeFolderPath(path), _frontmatterText(frontmatter || {}, body || ''));
+    const normalized = _normalizeFolderPath(path);
+    const content = _frontmatterText(frontmatter || {}, body || '');
+    const snapshot = frontmatter?.[_frontmatterReadRevision];
+    if (typeof provider.uploadBytesConditional === 'function') {
+      if (snapshot && (snapshot.provider !== provider || snapshot.path !== normalized)) {
+        throw Object.assign(new Error('読込元と保存先が一致しません'), { status: 409, code: 'snapshot_target_mismatch' });
+      }
+      await provider.uploadBytesConditional(normalized, new TextEncoder().encode(content), snapshot?.revision ?? null);
+    } else {
+      if (snapshot) throw Object.assign(new Error('条件付き保存を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+      await provider.writeText(normalized, content);
+    }
   }
 
   async function _requireUnlocked(provider, path, options) {
@@ -25436,7 +25552,7 @@
   // `_readJsonSafe` だけで完結し追加のネットワーク往復は発生しない。
   // 失敗した時だけ確認のためstatPathを呼ぶ。
   async function _readSheetManifest(provider, dbPath) {
-    const data = await _readJsonSafe(provider, _sheetManifestPath(dbPath), null);
+    const data = await _readVersionedJson(provider, _sheetManifestPath(dbPath));
     const valid = data && typeof data === 'object' && !Array.isArray(data)
       && data.kind === SHEET_CLOUD_MANIFEST_KIND
       && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
@@ -25451,7 +25567,7 @@
   }
 
   async function _readSheetShard(provider, dbPath, shardFileName) {
-    const data = await _readJsonSafe(provider, _sheetShardPath(dbPath, shardFileName), null);
+    const data = await _readVersionedJson(provider, _sheetShardPath(dbPath, shardFileName));
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     if (data.kind !== SHEET_CLOUD_SHARD_KIND) return null;
     if (!data.rows || typeof data.rows !== 'object' || Array.isArray(data.rows)) return null;
@@ -25505,6 +25621,7 @@
       created: String(manifest.created || ''),
       modified: String(manifest.modified || ''),
       rows,
+      [_sheetReadRows]: JSON.parse(JSON.stringify(rows)),
     };
   }
 
@@ -25580,6 +25697,12 @@
         updated: String(row.updated || ''),
       };
     });
+    const readRows = store[_sheetReadRows] || rawRows[_sheetReadRows]
+      || (store[_jsonReadRevision] ? JSON.parse(store[_jsonReadRevision].content).rows : null);
+    if (readRows) {
+      out[_sheetReadRows] = readRows;
+      out.rows[_sheetReadRows] = readRows;
+    }
     return out;
   }
 
@@ -25596,7 +25719,7 @@
       return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest, signal), dbPath);
     }
     const storePath = _sheetStorePath(dbPath);
-    const raw = await _readJsonSafe(provider, storePath, null);
+    const raw = await _readVersionedJson(provider, storePath);
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) return _normalizeSheetStore(raw, dbPath);
     const unreadable = new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
     if (typeof provider?.statPath === 'function') {
@@ -25647,11 +25770,11 @@
   }
 
   async function _writeSheetShard(provider, dbPath, shardFileName, rows) {
-    await provider.writeJson(_sheetShardPath(dbPath, shardFileName), {
+    await _writeVersionedJson(provider, _sheetShardPath(dbPath, shardFileName), {
       kind: SHEET_CLOUD_SHARD_KIND,
       schema_version: 1,
       rows,
-    });
+    }, rows);
   }
 
   async function _writeSheetManifest(provider, dbPath, manifest) {
@@ -25664,7 +25787,13 @@
       created: manifest.created || now,
       modified: now,
     };
-    await provider.writeJson(_sheetManifestPath(dbPath), next);
+    const previous = manifest[_jsonReadRevision]?.content;
+    if (previous) {
+      const before = JSON.parse(previous), after = { ...next };
+      delete before.modified; delete after.modified;
+      if (JSON.stringify(before) === JSON.stringify(after)) return next;
+    }
+    await _writeVersionedJson(provider, _sheetManifestPath(dbPath), next);
     return next;
   }
 
@@ -25707,6 +25836,20 @@
   // SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS 間隔でしか更新しない。
   // 独立レビューで指摘: 空スタブのままだと、マニフェスト方式を知らない
   // 旧版が実データのあるシートを「0件」と誤読する）。
+  async function _unusedSheetShardName(provider, dbPath, startIndex, reserved = []) {
+    // Failed/unacknowledged migrations may leave unreferenced shards. Preserve
+    // them and allocate another name; never overwrite one with a new snapshot.
+    for (let index = startIndex; index < startIndex + 10000; index += 1) {
+      const name = `_meldex_sheet.cloud.shard-${String(index).padStart(3, '0')}.json`;
+      if (reserved.includes(name)) continue;
+      const path = _sheetShardPath(dbPath, name);
+      const exists = typeof provider.statPath === 'function'
+        ? await provider.statPath(path) : await _resolveEntryHandle(provider, path);
+      if (!exists) return name;
+    }
+    throw Object.assign(new Error('シートの新しい保管ファイル名を確保できません'), { status: 409 });
+  }
+
   async function _migrateSheetRowsToShards(provider, dbPath, rows) {
     const now = _nowIso();
     const manifest = {
@@ -25720,13 +25863,13 @@
     };
     const entries = Object.entries(rows || {});
     if (!entries.length) {
-      const shardFileName = '_meldex_sheet.cloud.shard-000.json';
+      const shardFileName = await _unusedSheetShardName(provider, dbPath, 0);
       manifest.shards.push(shardFileName);
       await _writeSheetShard(provider, dbPath, shardFileName, {});
     } else {
       for (let index = 0; index < entries.length; index += SHEET_CLOUD_SHARD_MAX_ROWS) {
         const chunkEntries = entries.slice(index, index + SHEET_CLOUD_SHARD_MAX_ROWS);
-        const shardFileName = `_meldex_sheet.cloud.shard-${String(Math.floor(index / SHEET_CLOUD_SHARD_MAX_ROWS)).padStart(3, '0')}.json`;
+        const shardFileName = await _unusedSheetShardName(provider, dbPath, manifest.shards.length, manifest.shards);
         manifest.shards.push(shardFileName);
         const chunkRows = {};
         chunkEntries.forEach(([fileName, row]) => {
@@ -25755,7 +25898,7 @@
     }
     const upsertsByShard = {};
     const removalsByShard = {};
-    changedFileNames.forEach((fileName) => {
+    for (const fileName of changedFileNames) {
       const row = rows ? rows[fileName] : undefined;
       const existingAssignment = rowShard[fileName];
       const hasAssignment = !!existingAssignment && shards.includes(existingAssignment);
@@ -25764,13 +25907,15 @@
           (removalsByShard[existingAssignment] || (removalsByShard[existingAssignment] = [])).push(fileName);
           delete rowShard[fileName];
         }
-        return;
+        continue;
       }
       let shardFileName = hasAssignment ? existingAssignment : null;
       if (!shardFileName) {
         shardFileName = shards.find(name => (counts[name] || 0) < SHEET_CLOUD_SHARD_MAX_ROWS) || null;
         if (!shardFileName) {
-          shardFileName = `_meldex_sheet.cloud.shard-${String(shards.length).padStart(3, '0')}.json`;
+          // Names can have gaps after a recovered migration; length is not an
+          // unused index. Check the provider as well as the manifest.
+          shardFileName = await _unusedSheetShardName(provider, dbPath, shards.length, shards);
           shards.push(shardFileName);
           counts[shardFileName] = 0;
         }
@@ -25778,11 +25923,20 @@
         counts[shardFileName] = (counts[shardFileName] || 0) + 1;
       }
       (upsertsByShard[shardFileName] || (upsertsByShard[shardFileName] = {}))[fileName] = row;
-    });
+    }
     const touchedShards = new Set([...Object.keys(upsertsByShard), ...Object.keys(removalsByShard)]);
     for (const shardFileName of touchedShards) {
       const shard = await _readSheetShard(provider, dbPath, shardFileName);
       const mergedRows = { ...(shard ? shard.rows : {}) };
+      const beforeRows = rows?.[_sheetReadRows];
+      if (beforeRows) {
+        const affected = [...Object.keys(upsertsByShard[shardFileName] || {}), ...(removalsByShard[shardFileName] || [])];
+        for (const fileName of affected) {
+          if (JSON.stringify(beforeRows[fileName] || null) !== JSON.stringify(mergedRows[fileName] || null)) {
+            throw Object.assign(new Error('シートの保存待ち中にトピックが更新されています'), { status: 409, code: 'entry_revision_conflict' });
+          }
+        }
+      }
       (removalsByShard[shardFileName] || []).forEach((fileName) => { delete mergedRows[fileName]; });
       Object.assign(mergedRows, upsertsByShard[shardFileName] || {});
       await _writeSheetShard(provider, dbPath, shardFileName, mergedRows);
@@ -25813,7 +25967,8 @@
           await _writeLegacySheetStoreMirror(provider, dbPath, normalized.rows);
         }
       } else {
-        await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
+        const affected = [...new Set([...Object.keys(normalized.rows[_sheetReadRows] || {}), ...Object.keys(normalized.rows)])];
+        await _writeChangedRowsToShards(provider, dbPath, manifest, affected, normalized.rows);
       }
       return normalized;
     }
@@ -25821,7 +25976,7 @@
       await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
       return normalized;
     }
-    await provider.writeJson(_sheetStorePath(dbPath), normalized);
+    await _writeVersionedJson(provider, _sheetStorePath(dbPath), normalized);
     return normalized;
   }
 
@@ -25890,7 +26045,9 @@
       dbPath,
       fileName,
       path: _joinPath(dbPath, fileName),
-      frontmatter: { ...(row.frontmatter || {}) },
+      frontmatter: { ...(row.frontmatter || {}), [_frontmatterReadRevision]: {
+        provider, path: _joinPath(dbPath, fileName), row: JSON.stringify([row.frontmatter || {}, String(row.body || '')]),
+      } },
       body: String(row.body || ''),
     };
   }
@@ -25901,6 +26058,14 @@
     let store = await _ensureSheetStore(provider, dbPath);
     const fileName = _sheetStoreFileName(normalized);
     const fm = { ...(frontmatter || {}) };
+    const basis = fm[_frontmatterReadRevision];
+    if (basis?.row != null) {
+      const current = store.rows[fileName];
+      if (!current || current.deleted || basis.provider !== provider || basis.path !== normalized
+          || JSON.stringify([current.frontmatter || {}, String(current.body || '')]) !== basis.row) {
+        throw Object.assign(new Error('トピックが別の画面または端末で更新されています'), { status: 409, code: 'entry_revision_conflict' });
+      }
+    }
     if (!fm.type) fm.type = 'settings-entry';
     store.rows[fileName] = {
       file_name: fileName,
@@ -26035,6 +26200,7 @@
         rich_html: candidate.rich_html || '',
         property: prop,
         candidate_index: index,
+        entry_revision: Number(parsed.frontmatter.meldex_revision || 0),
       }));
     });
     return {
@@ -26078,7 +26244,7 @@
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
-    const entity = { _entry_path: entryPath };
+    const entity = { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) };
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
     if (frontmatter.modified_by) entity._modified_by = String(frontmatter.modified_by);
@@ -26101,6 +26267,7 @@
           rich_html: candidate.rich_html || '',
           property: propName,
           candidate_index: index,
+          entry_revision: Number(frontmatter.meldex_revision || 0),
         }));
       if (rows.length) entity[propName] = rows;
     });
@@ -26361,7 +26528,7 @@
 
   async function _readEntity(provider, rawPath) {
     let path = _normalizeFolderPath(rawPath);
-    const storeEntry = await _readSheetStoreEntry(provider, path).catch(() => null);
+    const storeEntry = await _readSheetStoreEntry(provider, path);
     if (storeEntry) {
       return _entityPayloadFromParsed(storeEntry.path, {
         frontmatter: storeEntry.frontmatter,
@@ -26395,8 +26562,10 @@
   }
 
   function _applySettingsEntryValueUpdate(parsed, path, body) {
+    const replay = _valueWriteReplay(parsed.frontmatter, body);
+    if (replay) return { body: parsed.body || '', result: replay, replay: true };
     if (body && Object.prototype.hasOwnProperty.call(body, 'new_body')) {
-      return { body: body.new_body || '', result: { ok: true } };
+      return { body: body.new_body || '', result: _finishValueWrite(parsed.frontmatter, body, { ok: true }) };
     }
     if (String(parsed.frontmatter.type || '') !== 'settings-entry') throw new Error('値更新対象が settings-entry ではありません');
     const prop = String(body?.property || '');
@@ -26447,7 +26616,7 @@
     parsed.frontmatter.properties = props;
     return {
       body: parsed.body || '',
-      result: { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex },
+      result: _finishValueWrite(parsed.frontmatter, body, { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex }),
     };
   }
 
@@ -26519,6 +26688,7 @@
     });
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
+    if (applied.replay) return applied.result;
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, parsed.frontmatter, String(body?.property || ''),
     );
@@ -26595,18 +26765,28 @@
   }
 
   async function _updateValue(provider, path, body) {
+    body = await _prepareValueWrite(body);
     const normalized = _normalizeFolderPath(path);
+    // Entity reads already prefer the canonical sheet store. Writes must use
+    // that same source even when a compatibility Markdown mirror still exists.
+    // Otherwise a successful mirror write can leave the visible row unchanged.
+    if (await _readSheetStoreEntry(provider, normalized)) {
+      return _updateSheetStoreValue(provider, normalized, body || {});
+    }
     const entry = await _resolveEntryHandle(provider, normalized);
     if (!entry || entry.kind !== 'file') {
       return _updateSheetStoreValue(provider, normalized, body || {});
     }
     await _requireUnlocked(provider, normalized, { action: 'update-value' });
     const parsed = await _readFrontmatterFile(provider, normalized);
+    const replay = _valueWriteReplay(parsed.frontmatter, body);
+    if (replay) return replay;
     const type = String(parsed.frontmatter.type || '');
     const history = _sharedEditHistory();
     const actor = history?.actor?.(null, body || {}) || null;
     const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     if (body && Object.prototype.hasOwnProperty.call(body, 'new_body')) {
+      const savedResult = _finishValueWrite(parsed.frontmatter, body, { ok: true });
       return _trackSharedEdit(history, provider, {
         path: normalized,
         currentContent: historyBefore,
@@ -26618,7 +26798,7 @@
         propertyName: '_body',
       }, async () => {
         await _writeEntity(provider, normalized, parsed.frontmatter, body.new_body || '');
-        return { ok: true };
+        return savedResult;
       });
     }
     if (type === 'calendar-event') {
@@ -26626,6 +26806,7 @@
         const key = 'new_' + field;
         if (body && Object.prototype.hasOwnProperty.call(body, key)) parsed.frontmatter[field] = body[key];
       });
+      const savedResult = _finishValueWrite(parsed.frontmatter, body, { ok: true });
       return _trackSharedEdit(history, provider, {
         path: normalized,
         currentContent: historyBefore,
@@ -26636,7 +26817,7 @@
         fileKind: 'calendar-event',
       }, async () => {
         await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
-        return { ok: true };
+        return savedResult;
       });
     }
     await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
@@ -26672,6 +26853,7 @@
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
     await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
     await _rejectImportLockedPropertyEdit(provider, _dirname(entryPath), [prop]);
+    if (await _readSheetStoreEntry(provider, entryPath)) return _addSheetStoreValue(provider, body || {});
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
@@ -26725,6 +26907,10 @@
     // 汚染済みの制作管理シートは、この時点で修復してから保存方式を判定する
     // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
     await _repairProductionSheetStoreIfNeeded(provider, parent);
+    const sheetMetadata = (await _folderFrontmatter(provider, parent)).frontmatter || {};
+    const template = sheetMetadata.note_template;
+    if (template != null && (template.schemaVersion !== 1 || typeof template.content !== 'string')) throw new Error('未対応または不正なノートテンプレートです');
+    const noteContent = template?.content || '';
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
     if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
       const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
@@ -26751,15 +26937,15 @@
     return _trackSharedEdit(history, provider, {
       path,
       currentContent: '',
-      nextContent: { frontmatter, body: '' },
+      nextContent: { frontmatter, body: noteContent },
       actor,
       exists: false,
       snapshotPath: parent,
       snapshotKind: 'folder',
       fileKind: 'settings-entry',
     }, async () => {
-      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
-      else await _writeFrontmatterFile(provider, path, frontmatter, '');
+      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, noteContent);
+      else await _writeFrontmatterFile(provider, path, frontmatter, noteContent);
       return {
         ok: true,
         path,
@@ -26777,8 +26963,8 @@
     if (!path || !newName) throw new Error('path, new_name は必須です');
     _rejectProductionStructureMutation(path, '名前変更');
     const titleHelperAvailable = window.GBPathUtils?.displayTitle;
-    const previousTitleEntry = titleHelperAvailable ? await _readSheetStoreEntry(provider,path).catch(() => null) : null;
-    const previousTitleParsed = previousTitleEntry || (titleHelperAvailable ? await _readFrontmatterFile(provider,path).catch(() => null) : null);
+    const previousTitleEntry = titleHelperAvailable ? await _readSheetStoreEntry(provider,path) : null;
+    const previousTitleParsed = previousTitleEntry || (titleHelperAvailable ? await _readFrontmatterFile(provider,path) : null);
     if (window.GBPathUtils?.isDisplayTitleRename('/entity/rename',body) || typeof previousTitleParsed?.frontmatter?.display_title === 'string') {
       const storedTitleEntry = previousTitleEntry;
       const parsed = previousTitleParsed || await _readFrontmatterFile(provider,path);
@@ -26806,7 +26992,7 @@
       _dirname(path),
       newName + (_basename(path).toLowerCase().endsWith('.md') ? '.md' : '')
     );
-    const stored = await _readSheetStoreEntry(provider, path).catch(() => null);
+    const stored = await _readSheetStoreEntry(provider, path);
     if (stored) {
       const entryId = String(stored.frontmatter?.id || '');
       if (expectedEntryId && entryId && entryId !== expectedEntryId) {
@@ -26867,7 +27053,7 @@
       };
     }
     const destinationStored = expectedEntryId
-      ? await _readSheetStoreEntry(provider, requestedDest).catch(() => null)
+      ? await _readSheetStoreEntry(provider, requestedDest)
       : null;
     const destinationStoredId = String(destinationStored?.frontmatter?.id || '');
     if (destinationStored && destinationStoredId === expectedEntryId) {
@@ -26883,7 +27069,7 @@
     }
     const entry = await _resolveEntryHandle(provider, path);
     if (!entry) {
-      const reconciledStored = await _readSheetStoreEntry(provider, requestedDest).catch(() => null);
+      const reconciledStored = await _readSheetStoreEntry(provider, requestedDest);
       const reconciledHandle = reconciledStored
         ? null
         : await _resolveEntryHandle(provider, requestedDest).catch(() => null);
@@ -26951,7 +27137,27 @@
     return result;
   }
 
-  async function _dbMetadata(provider, path) {
+  async function _resolveSheetDefaultForm(provider, path, preferred) {
+    const sheet = _normalizeFolderPath(path);
+    let malformedPreferred = null, found = null;
+    const matches = async candidate => {
+      try {
+        const doc = JSON.parse(await provider.readText(candidate));
+        return doc.fileType === 'meldex-form' && doc.schema_version === 1
+          && _normalizeFolderPath(doc.sheet?.path) === sheet;
+      } catch (error) {
+        if (candidate === preferred && error instanceof SyntaxError) malformedPreferred = preferred;
+        return false;
+      }
+    };
+    if (preferred && await matches(preferred)) return preferred;
+    await _iterateWorkspaceFiles(provider, async candidate => {
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
+    }, '');
+    return found || malformedPreferred;
+  }
+
+  async function _dbMetadata(provider, path, includeForm = false) {
     const target = _normalizeFolderPath(path);
     const note = await _folderFrontmatter(provider, target);
     const fm = note.frontmatter || {};
@@ -26966,6 +27172,8 @@
       property_ids: fm.property_ids && typeof fm.property_ids === 'object' ? fm.property_ids : {},
       schema_revision: Number(fm.schema_revision || 0),
       schema_operations: fm.schema_operations && typeof fm.schema_operations === 'object' ? fm.schema_operations : {},
+      note_template: fm.note_template || null,
+      default_form_path: includeForm ? await _resolveSheetDefaultForm(provider, path, fm.default_form_path) : fm.default_form_path || null,
       property_layout: fm.property_layout || null,
       property_layout_templates: Array.isArray(fm.property_layout_templates) ? fm.property_layout_templates : [],
       publish: fm.publish || null,
@@ -27220,6 +27428,7 @@
 
   async function _putDbMetadata(provider, path, body) {
     const target = _normalizeFolderPath(path);
+    if (body?.note_template != null && (body.note_template.schemaVersion !== 1 || typeof body.note_template.content !== 'string' || typeof body.note_template.name !== 'string' || !body.note_template.name.trim())) throw new Error('未対応または不正なノートテンプレートです');
     _rejectProductionReservedLegacyPropertyObject(target, body?.property_types);
     const preflightNote = _isProductionManagementSheetMetadataPath(target)
       ? await _readFrontmatterFile(provider, _joinPath(target, _basename(target) + '.md'))
@@ -27257,7 +27466,7 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage', 'computed_props', 'attachment_folder',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props', 'attachment_folder', 'note_template', 'default_form_path',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
@@ -30223,7 +30432,7 @@
     }
   }
 
-  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal }) {
+  handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal, headers }) {
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -30283,7 +30492,7 @@
     if (pathname === '/media/rebuild-refs' && method === 'POST') {
       return { ok: true, refs: {}, hash_count: 0, skipped: true, reason: 'cloud-no-index-rebuild' };
     }
-    if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('include_form') === 'true');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/sheet-search' && method === 'GET') return _sheetSearch(await _requirePwaProvider('read'), url);
@@ -30305,7 +30514,7 @@
     }
     if (/^\/version\/(list-db|save-db|restore-db|delete-db|undelete-db)/.test(pathname)) {
       const route = pathname.replace('-db', '-folder');
-      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body });
+      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body, headers });
     }
 
     if (pathname === '/calendar-db/events' && method === 'GET') return _calendarDbEvents(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
@@ -34048,7 +34257,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
     return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
   }
 
-  handlers.push(async ({ method, body, url, pathname, signal }) => {
+  handlers.push(async ({ method, body, url, pathname, signal, headers }) => {
     if (pathname === '/cloud/space-usage' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
@@ -34456,6 +34665,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (foldersOnly) continue;
         if (item) items.push({ ...item, linked: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
       }
+      if (_boolParam(url.searchParams.get('form_hierarchy'))) {
+        const nested = new Set();
+        for (const item of items) {
+          if (item.type !== 'form-app') continue;
+          try {
+            const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
+            const sheetPath = _normalizeFolderPath(doc.sheet.path);
+            const handle = await _resolveEntryHandle(provider, sheetPath);
+            if (!handle) continue;
+            const child = await _buildBrowseItem(provider, sheetPath, handle, { allFiles, detail, signal, classifyDirectories: true });
+            if (child?.type !== 'database') continue;
+            item.children = [{ ...child, _form_parent_path: item.path }]; nested.add(sheetPath);
+          } catch (_) { /* A broken form reference never hides its sheet. */ }
+        }
+        return items.filter(item => item.type !== 'database' || !nested.has(_normalizeFolderPath(item.path)));
+      }
       return items;
     }
     if (pathname === '/check-type' && method === 'GET') {
@@ -34505,11 +34731,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const token = String(etag || '');
       const providerId = String(meta?.id || '');
       const identity = window.MeldexDocumentIdentity;
-      const identityFormat = identity?.formatForPath?.(filePath);
       let content = fileContent;
-      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
         content = await provider.readText(filePath).catch(() => '');
       }
+      const identityFormat = identity?.formatForPath?.(filePath, content);
       const documentId = identityFormat
         ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
         : '';
@@ -34572,6 +34798,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return token;
     }
 
+    async function _readFileSnapshot(provider, filePath, entry) {
+      if (typeof provider.readBytesSnapshot === 'function') {
+        const snapshot = await provider.readBytesSnapshot(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      if (typeof provider.readBytesFresh === 'function') {
+        const snapshot = await provider.readBytesFresh(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      const before = await _fileEtag(provider, filePath, entry);
+      const bytes = new TextEncoder().encode(await provider.readText(filePath));
+      const after = await _fileEtag(provider, filePath, entry);
+      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+      return { bytes, etag: after };
+    }
+
+    function _savedNoteMetadata(filePath, content) {
+      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
+      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
+    }
+
     if (pathname === '/file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -34588,9 +34835,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           size: Number(stats.size || 0),
         };
       }
-      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
-        const file = await provider.downloadAsFile(filePath);
-        const bytes = await file.arrayBuffer();
+      const snapshot = await _readFileSnapshot(provider, filePath, entry);
+      if (/\.csv$/i.test(filePath)) {
+        const bytes = snapshot.bytes;
         const view = new Uint8Array(bytes);
         const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
         let content;
@@ -34602,7 +34849,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           encoding = 'cp932';
         }
         const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
-        const etag = await _fileEtag(provider, filePath, entry);
+        const etag = snapshot.etag;
         return {
           path: filePath,
           content,
@@ -34613,8 +34860,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           newline: dialect.newline || '\n',
         };
       }
-      const etag = await _fileEtag(provider, filePath, entry);
-      const content = await provider.readText(filePath);
+      const etag = snapshot.etag;
+      const content = new TextDecoder().decode(snapshot.bytes);
       return {
         path: filePath,
         content,
@@ -34652,10 +34899,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
         _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
-      if (expectedEtag && entry) {
-        const currentEtag = await _fileEtag(provider, filePath, entry);
-        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
-      }
+      const snapshot = entry ? await _readFileSnapshot(provider, filePath, entry) : null;
       let commitEtag = expectedEtag;
       if (forceOverwrite && entry && !commitEtag) {
         if (typeof provider.refreshMetadata !== 'function') {
@@ -34671,7 +34915,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
       }
-      const currentContent = entry ? await provider.readText(filePath) : '';
+      const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
       const titleHelper = window.GBPathUtils?.displayTitle;
       const storedTitle = titleHelper?.read(currentContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
@@ -34698,6 +34942,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ).text;
         }
       }
+      const canonical = value => String(value).replace(/\r\n/g, '\n');
+      if (entry && canonical(content) === canonical(currentContent)) {
+        // A committed write may have lost its response. Acknowledge the exact
+        // current snapshot without another upload or another history version.
+        await _prepareCloudFileEdit(provider, filePath, currentContent, currentContent, _versionActor(url, body), snapshot.etag, true);
+        return {
+          ok: true, unchanged: true,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, snapshot.etag, null, currentContent),
+          ..._savedNoteMetadata(filePath, currentContent),
+        };
+      }
+      if (entry && expectedEtag && expectedEtag !== snapshot.etag) {
+        let baselineMatches = false;
+        if (docIdentityFmt === 'note' && typeof body?.base_content === 'string') {
+          const id = window.MeldexDocumentIdentity.readDocumentId(currentContent, 'note');
+          const baseline = id ? window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(body.base_content, 'note', id).text : body.base_content;
+          baselineMatches = canonical(baseline) === canonical(currentContent);
+        }
+        if (!baselineMatches) _throwEtagConflict(filePath, expectedEtag, snapshot.etag);
+        commitEtag = snapshot.etag;
+      }
       const history = await _prepareCloudFileEdit(
         provider, filePath, currentContent, content, _versionActor(url, body), commitEtag, !!entry,
       );
@@ -34714,7 +34979,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           entry ? commitEtag : null,
         );
       } catch (error) {
-        await _abortCloudFileEdit(history);
+        const uncertain = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+          || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+        // A lost upload ACK is not proof of an aborted write. Keep its durable
+        // intent so the next identical-content confirmation can reconcile it.
+        if (!uncertain) await _abortCloudFileEdit(history);
         throw error;
       }
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
@@ -34722,6 +34991,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        ..._savedNoteMetadata(filePath, content),
         history_recorded: !historySyncPending,
         history_sync_pending: historySyncPending,
       };
@@ -35153,6 +35423,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
       const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
+      const createText = async (path, text) => {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+        }
+        const identity = window.MeldexDocumentIdentity;
+        const format = identity?.formatForPath?.(path, text);
+        const content = format ? identity.ensureDocumentId(text, format).text : text;
+        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
+      };
       const blockedCreate = {
         database: ['シート', 'Phase 4'],
         calendar: ['カレンダー', 'Phase 3'],
@@ -35167,7 +35446,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (type === 'page') {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
-        await provider.writeText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
+        await createText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
         return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
@@ -35178,9 +35457,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'scriptnote') {
-        const labelName = await _uniqueName(provider, parent, label, '.scriptnote.json');
-        const targetPath = _joinPath(parent, labelName + '.scriptnote.json');
-        await provider.writeJson(targetPath, {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-scenario');
+        const targetPath = _joinPath(parent, labelName + '.mel-scenario');
+        await createText(targetPath, JSON.stringify({
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
@@ -35194,18 +35473,33 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           notes: [],
           rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
-        });
+        }, null, 2));
         return { ok: true, node: { type: 'scriptnote', label: shown(labelName), path: targetPath } };
       }
       if (type === 'form-app') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-form');
         const targetPath = _joinPath(parent, labelName + '.mel-form');
-        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:''},layout:null,formConfig:{mode:'entry'}},null,2);
+        const createdSheet = await window.MeldexDataAccess.requestJson('/outliner/add', {
+          method: 'POST', headers, body: { type: 'database', parent, label: labelName + 'のシート' },
+        });
+        const sheetPath = createdSheet?.node?.path;
+        if (!sheetPath) throw new Error('シートを作成できませんでした');
+        let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:sheetPath},layout:null,formConfig:{mode:'entry'}},null,2);
         content = titled(content,targetPath);
         if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
-        await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
-          method: 'PUT', body: { content, create_only: true },
-        });
+        try {
+          await window.MeldexDataAccess.requestJson('/db-metadata?path=' + encodeURIComponent(sheetPath), {
+            method: 'PUT', headers, body: { default_form_path: targetPath },
+          });
+          await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+            method: 'PUT', headers, body: { content, create_only: true },
+          });
+        } catch (error) {
+          // A remote write may have committed before its response was lost.
+          // Retain the sheet rather than risk deleting a form's answer data.
+          error.userMessage = 'フォームの作成を確認できませんでした。シートは「' + sheetPath + '」に残っています。';
+          throw error;
+        }
         return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
       }
       if (type === 'board') {
@@ -35214,7 +35508,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
         boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
-        await provider.writeText(targetPath, boardContent);
+        await createText(targetPath, boardContent);
         return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: shown(labelName), path: targetPath } };
       }
       if (type === 'calendar') {
@@ -35250,7 +35544,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const loaded = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{method:'GET'});
         const content = titleHelper.write(loaded.content,newName,titlePath,body?.type);
         const saved = await window.MeldexDataAccess.requestJson('/file?path='+encodeURIComponent(titlePath),{
-          method:'PUT',body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
+          method:'PUT',headers,body:{content,display_title:newName,if_match_etag:loaded.etag,transport_revision:loaded.transport_revision},
         });
         return {...saved,ok:true,new_path:oldPath,new_name:newName,title_only:true,file_id:_fnvFileId(oldPath)};
       }
@@ -51102,6 +51396,7 @@ document.addEventListener('DOMContentLoaded', () => {
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
+      text.title = text.textContent;
       if (source.tagName === 'BUTTON') {
         row.type = 'button';
         row.disabled = source.disabled;
@@ -53615,6 +53910,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const raw = String(value || '').trim();
     if (!raw) return '';
     const lower = raw.toLowerCase();
+    if (lower.startsWith('image:')) {
+      try {
+        const path = decodeURIComponent(raw.slice(6)).replace(/\\/g, '/');
+        if (!path || path.length > 2048 || /[:\x00-\x1f]/.test(path)
+          || path.startsWith('/') || path.split('/').includes('..')) return '';
+        return 'image:' + encodeURIComponent(path);
+      } catch (_) { return ''; }
+    }
     if (lower.startsWith('lucide:')) {
       const name = raw.slice(raw.indexOf(':') + 1).trim();
       return name ? 'lucide:' + name : '';
@@ -53634,6 +53937,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function parseSpec(value) {
     const spec = normalizeSpec(value);
     if (!spec) return { type: '', spec: '', label: '' };
+    if (spec.startsWith('image:')) return { type: 'image', spec, path: decodeURIComponent(spec.slice(6)), label: '画像' };
     if (spec.toLowerCase().startsWith('lucide:')) {
       const name = spec.slice(7);
       return { type: 'lucide', spec: 'lucide:' + name, name, label: _toKebab(name), search: name + ' ' + _toKebab(name) };
@@ -53644,13 +53948,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function sameSpec(a, b) {
-    return normalizeSpec(a).toLowerCase() === normalizeSpec(b).toLowerCase();
+    const left = normalizeSpec(a), right = normalizeSpec(b);
+    if (left.startsWith('image:') || right.startsWith('image:')) return left === right;
+    return left.toLowerCase() === right.toLowerCase();
   }
 
   function render(spec, size, options = {}) {
     const parsed = parseSpec(spec);
     const px = Math.max(10, Number(size) || 20);
     const className = options.className ? ' ' + options.className : '';
+    if (parsed.type === 'image') {
+      const src = '/api/media/file?path=' + encodeURIComponent(parsed.path);
+      return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
+    }
     if (parsed.type === 'lucide') {
       if (typeof global.lucide === 'function' && hasLucideName(parsed.name)) {
         return global.lucide(parsed.name, px);
@@ -58037,6 +58347,7 @@ if (typeof window !== 'undefined') {
 
   /** @type {Map<string, DocRecord>} */
   const docs = new Map();
+  const uncertainWrites = new WeakMap();
   /** @type {Map<string, string>} path -> stable documentKey */
   const pathAliases = new Map();
   const CONFLICT_STORAGE_KEY = 'meldex-document-save-conflicts-v1';
@@ -58465,6 +58776,12 @@ if (typeof window !== 'undefined') {
     return !!(doc && doc.inFlight);
   }
 
+  function hasUnsettledSaveFrom(documentKey, hostRef) {
+    const doc = docs.get(documentKey);
+    return !!doc && (doc.inFlight?.hostRef === hostRef || doc.pendingFollowUp?.hostRef === hostRef
+      || uncertainWrites.get(hostRef)?.has(doc.key));
+  }
+
   // 「保存理由（入力停止、blurと移動先、タブ切替、終了前）の記録」（計画書§4.1）。
   // 直近1件だけを保持する軽量な記録に留める（永続化・履歴一覧化はスコープ外）。
   function markDirty(documentKey, hostRef, opts) {
@@ -58488,16 +58805,55 @@ if (typeof window !== 'undefined') {
     }
   }
 
+  function _uncertainWriteError(error) {
+    return error?.isTimeout || error?.name === 'AbortError'
+      || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
+      || Number(error?.status) >= 500;
+  }
+
+  async function _confirmedSend(doc, hostRef, path, md, sendFn, previousResult) {
+    // The note adapter already retains its exact serialized payload, including
+    // frontmatter. Other document adapters retain their immutable send closure.
+    if (sendFn.confirmsWrites || !hostRef || !['object', 'function'].includes(typeof hostRef)) {
+      return sendFn(previousResult || null);
+    }
+    const writes = uncertainWrites.get(hostRef) || new Map();
+    uncertainWrites.set(hostRef, writes);
+    const pending = writes.get(doc.key);
+    if (pending) {
+      const recovered = await pending.sendFn(pending.previousResult);
+      if (recovered?.skipped || recovered?.queued) return recovered;
+      writes.delete(doc.key);
+      if (pending.path === path && pending.md === md) return recovered;
+      previousResult = Object.assign({}, recovered, { savedMd: pending.md, savedPath: pending.path });
+    }
+    try {
+      return await sendFn(previousResult || null);
+    } catch (error) {
+      if (!_uncertainWriteError(error)) throw error;
+      writes.set(doc.key, { path, md, sendFn, previousResult: previousResult || null });
+      // Replaying this exact request is safe only at an idempotent CAS endpoint.
+      // Never fetch a newer revision and attach it to unconfirmed user content.
+      const recovered = await sendFn(previousResult || null);
+      if (!recovered?.skipped && !recovered?.queued) writes.delete(doc.key);
+      return recovered;
+    }
+  }
+
   function _startSend(doc, hostRef, path, md, sendFn, previousResult) {
     doc.state = STATES.SAVING;
     doc.participants.add(hostRef);
     // 同じ文書キュー内の追送だけは直前の成功応答を渡し、CAS revisionを
     // R0→R1へ連鎖させる。path/contentは各requestSave呼出時の固定値を維持する。
-    const promise = Promise.resolve().then(() => sendFn(previousResult || null)).then(
+    const promise = Promise.resolve().then(() => _confirmedSend(doc, hostRef, path, md, sendFn, previousResult)).then(
       (res) => {
+        const savedMd = typeof res?.saved_frontmatter === 'string'
+          ? res.saved_frontmatter + md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+          : md;
+        const saved = Object.assign({}, res, { savedMd, savedPath: path, joined: false });
         _finishInFlight(doc, promise);
-        _maybeFlushPending(doc, res, hostRef);
-        return Object.assign({}, res, { savedMd: md, savedPath: path, joined: false });
+        flight.followUpPromise = _maybeFlushPending(doc, saved, hostRef, md) || null;
+        return saved;
       },
       (err) => {
         _finishInFlight(doc, promise);
@@ -58511,19 +58867,20 @@ if (typeof window !== 'undefined') {
           doc.followUpPromise = null;
           doc.state = STATES.CONFLICT_PENDING;
         } else {
-          _maybeFlushPending(doc);
+          flight.followUpPromise = _maybeFlushPending(doc) || null;
         }
         throw err;
       },
     );
-    doc.inFlight = { md, path, promise };
+    const flight = { md, path, promise, hostRef, followUpPromise: null };
+    doc.inFlight = flight;
     return promise;
   }
 
   // 保存中に発生した編集を最新1件へcoalesceする（計画書§5工程1-2・工程1-6）。
   // 同時に複数回 requestSave が呼ばれても、進行中の保存が終わった直後に
   // 実行されるのは「最後に上書きされた1件」だけになる。
-  function _maybeFlushPending(doc, previousResult, previousHostRef) {
+  function _maybeFlushPending(doc, previousResult, previousHostRef, previousMd) {
     if (!doc.pendingFollowUp || doc.inFlight) return;
     const pending = doc.pendingFollowUp;
     doc.pendingFollowUp = null;
@@ -58534,7 +58891,15 @@ if (typeof window !== 'undefined') {
     const chainedResult = previousHostRef && pending.hostRef === previousHostRef
       ? previousResult
       : null;
-    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
+    // B (saving) -> A (queued revert) -> B (latest) has already reached disk.
+    // Retire the obsolete revert and acknowledge the actual saved metadata to
+    // every waiter, without publishing an unnecessary duplicate write.
+    if (chainedResult && pending.path === chainedResult.savedPath
+        && (pending.md === previousMd || pending.md === chainedResult.savedMd)) {
+      doc.state = STATES.CLEAN;
+      return Promise.resolve(chainedResult);
+    }
+    return _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, chainedResult);
   }
 
   /**
@@ -58580,7 +58945,8 @@ if (typeof window !== 'undefined') {
       return _startSend(doc, hostRef, path, md, sendFn, null);
     }
 
-    if (doc.inFlight.md === md && doc.inFlight.path === path) {
+    const replacesOwnPending = doc.inFlight.hostRef === hostRef && doc.pendingFollowUp?.hostRef === hostRef;
+    if (doc.inFlight.md === md && doc.inFlight.path === path && !replacesOwnPending) {
       // 同一内容の保存が既に進行中 → 2本目を送らず合流する。
       return doc.inFlight.promise.then((res) => Object.assign({}, res, { joined: true }));
     }
@@ -58588,9 +58954,14 @@ if (typeof window !== 'undefined') {
     // 内容が異なる → 「最新1件」スロットを上書きし、既存の待機者は同じPromiseへ合流する。
     doc.pendingFollowUp = { md, path, hostRef, sendFn };
     if (!doc.followUpPromise) {
-      doc.followUpPromise = doc.inFlight.promise.catch(() => {}).then(() => {
+      const flight = doc.inFlight;
+      doc.followUpPromise = flight.promise.catch(() => {}).then(() => {
         doc.followUpPromise = null;
         _maybeFlushPending(doc);
+        // A follow-up may already have completed before this microtask runs.
+        // Keep its promise on the originating flight instead of guessing from
+        // the current inFlight slot (also covers a same-content retirement).
+        if (flight.followUpPromise) return flight.followUpPromise;
         // _maybeFlushPending は pendingFollowUp を doc.inFlight へ差し替えるだけなので、
         // ここで最終的な結果を待つには「今の doc.inFlight」を参照する必要がある。
         if (doc.inFlight) return doc.inFlight.promise;
@@ -58721,6 +59092,7 @@ if (typeof window !== 'undefined') {
     if (!doc || !doc.conflict) return false;
     if (generation != null && doc.conflict.generation !== generation) return false;
     doc.conflict = null;
+    doc.participants.forEach(host => uncertainWrites.get(host)?.delete(doc.key));
     doc.state = doc.inFlight ? STATES.SAVING : STATES.CLEAN;
     _persistConflict(doc);
     return true;
@@ -58767,6 +59139,7 @@ if (typeof window !== 'undefined') {
     getParticipants,
     getState,
     isSaving,
+    hasUnsettledSaveFrom,
     isConflictPending,
     getConflict,
     getLastRequest,
@@ -58823,6 +59196,13 @@ if (typeof window !== 'undefined') {
   // 将来課題とし、ここでは「サーバー再読込済み内容へフォールバックした値を
   // 本当の未保存内容であるかのように自動一致判定してしまう」誤爆だけを防ぐ。
   const _restoredConflictDocKeys = new Set();
+  const _uncertainSaves = new WeakMap();
+
+  function _uncertainWriteError(error) {
+    return error?.isTimeout || error?.name === 'AbortError'
+      || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
+      || Number(error?.status) >= 500;
+  }
 
   function documentKeyForPath(path) {
     const coordinator = _coordinator();
@@ -58862,7 +59242,12 @@ if (typeof window !== 'undefined') {
   // 再変換、PUT、etag更新、履歴追加を一切行わない」の判定に使う。
   function isUnchanged(hostEl, md) {
     const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
-    return md === prevSaved;
+    const coordinator = _coordinator();
+    const key = hostEl?.dataset?.documentKey || documentKeyForPath(hostEl?.dataset?.path || '');
+    // A -> B (saving) -> A is a new edit: the outstanding B may still reach disk.
+    // An unchanged sibling must not submit its old copy over another host's edit.
+    return md === prevSaved && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
+      && !_uncertainSaves.get(hostEl)?.has(hostEl?.dataset?.path || '');
   }
 
   // 文書単位のarbiterへ「このホストは今この文書を表示している」ことだけを
@@ -58966,6 +59351,7 @@ if (typeof window !== 'undefined') {
     // コーディネーターだけが解除を拒否しているのにUI側だけ消すと、未解決競合を
     // ユーザーが再確認できなくなる（計画書§5工程2-A項目8）。
     if (!resolved) return false;
+    coordinator.getParticipants(documentKey).forEach(host => _uncertainSaves.get(host)?.delete(path));
     _safety()?.clearConflict?.(path);
     _hideConflictPendingBanner(documentKey);
     _restoredConflictDocKeys.delete(documentKey);
@@ -59258,10 +59644,28 @@ if (typeof window !== 'undefined') {
     // なっていた場合、その新しいetagをこの古い文書のPUTへ誤って付けてしまい、
     // 本来成功するはずの保存がfalse-positiveな409になり得た。
     const etagAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedEtag) || '';
+    const baselineAtRequestTime = hostEl?.dataset?.lastSavedMd;
+    const frontmatterAtRequestTime = hostEl?.dataset?.frontmatter || '';
     const transportRevisionAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedTransportRevision)
       || coordinator.normalizeTransportRevision?.(coordinator.currentTransportName(), etagAtRequestTime)
       || etagAtRequestTime;
-    const sendFn = (previousResult) => {
+    const sendFn = async (previousResult) => {
+      const uncertainSaves = _uncertainSaves.get(hostEl) || new Map();
+      _uncertainSaves.set(hostEl, uncertainSaves);
+      const uncertainSave = uncertainSaves.get(path);
+      if (uncertainSave) {
+        // A previous retry can also lose its ACK. Resolve that SAME operation
+        // before any newer text is allowed to use a revision. Keep it across
+        // failed saves in this host; drafts remain the durable recovery copy.
+        const recovered = await window.apiPut('/file?path=' + encodeURIComponent(path), uncertainSave.payload);
+        if (recovered?.skipped) return recovered;
+        uncertainSaves.delete(path);
+        previousResult = Object.assign({}, recovered, { savedMd:
+          typeof recovered?.saved_frontmatter === 'string'
+            ? recovered.saved_frontmatter + uncertainSave.md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+            : uncertainSave.md,
+        });
+      }
       const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
       const revisionForWrite = chainedRevision
         ? coordinator.normalizeTransportRevision(
@@ -59275,20 +59679,37 @@ if (typeof window !== 'undefined') {
       const extraWithRevision = Object.assign({
         if_match_etag: guardedEtag,
         transport_revision: revisionForWrite,
+        ...(typeof baselineAtRequestTime === 'string'
+          ? { base_content: previousResult?.savedMd ?? baselineAtRequestTime } : {}),
       }, options.extra || {});
-      return window.apiPut(
-        '/file?path=' + encodeURIComponent(path),
-        typeof window._noteSavePayload === 'function'
+      const payload = typeof window._noteSavePayload === 'function'
           ? window._noteSavePayload(hostEl, md, extraWithRevision)
           : {
             content: md,
             if_match_etag: guardedEtag,
             transport_revision: revisionForWrite,
             skip_if_missing: true,
-            ...(options.extra || {}),
-          },
-      );
+            ...extraWithRevision,
+          };
+      const url = '/file?path=' + encodeURIComponent(path);
+      try {
+        return await window.apiPut(url, payload, { silentError: true });
+      } catch (error) {
+        if (!_uncertainWriteError(error)) {
+          _safety()?.reportApiError?.(url, { method: 'PUT', body: JSON.stringify(payload) }, error);
+          throw error;
+        }
+        // Retry the SAME write with its ORIGINAL CAS precondition once. A lost
+        // ACK can mean the first write already committed (or is still running).
+        // The backend converges identical content; different external content
+        // still fails CAS. Never attach a freshly fetched revision to newer text.
+        uncertainSaves.set(path, { payload, md });
+        const recovered = await window.apiPut(url, payload);
+        uncertainSaves.delete(path);
+        return recovered;
+      }
     };
+    sendFn.confirmsWrites = true;
     return coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
       reason: options.reason || 'save',
       focusTarget: options.focusTarget || null,
@@ -59298,6 +59719,14 @@ if (typeof window !== 'undefined') {
       // 送っていないため、baseline同期（他ホストへの追従）を一切行わない
       // ——ここで触ると「未送信の内容が保存された」ことになってしまう。
       if (res && res.conflictPending) return res;
+      if (!res?.skipped && hostEl?.dataset?.path === path
+          && typeof res?.saved_frontmatter === 'string'
+          && (hostEl.dataset.frontmatter || '') === frontmatterAtRequestTime) {
+        // Keep newer input/format changes intact; only acknowledge the metadata
+        // paired with this save. The caller advances lastSavedMd/etag afterwards.
+        hostEl.dataset.frontmatter = res.saved_frontmatter;
+        hostEl._noteEditSerializeCache = null;
+      }
       const savedMd = (res && res.savedMd != null) ? res.savedMd : md;
       _syncSiblingBaselines(
         documentKey,
@@ -63571,6 +64000,12 @@ ${reason.message}`
       action: 'フォルダツリーを更新し、開き直してください。',
     },
     {
+      test: info => info.code === 'local_api_token_required',
+      title: 'Meldexの内部接続が切れました',
+      message: '画面とMeldex本体の接続情報が一致していません。',
+      action: '編集中の内容を控えてから、Meldexを終了して起動し直してください。',
+    },
+    {
       test: info => info.status === 403 || /forbidden|許可されていない|禁止|権限/i.test(info.raw),
       title: '操作する権限がありません',
       message: '現在の権限ではこの操作を実行できません。',
@@ -63637,7 +64072,7 @@ ${reason.message}`
 
   function _code(error) {
     if (error == null || typeof error === 'string') return '';
-    return String(error.meldexCode || error.code || error.payload?.code || error.detail?.code || '');
+    return String(error.meldexCode || error.code || error.payload?.code || error.payload?.detail?.code || error.detail?.code || '');
   }
 
   function translate(error, context) {
@@ -75275,7 +75710,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function isTextLikePath(path) {
     const lower = String(path || '').toLowerCase();
-    return /\.(?:md|json|txt|csv|html?|js|css|mel-board|mel-sheet|mel-scenario|mel-timer)$/.test(lower)
+    return /\.(?:md|json|txt|csv|html?|js|css|mel-board|mel-sheet|mel-scenario|mel-timer|mel-form)$/.test(lower)
       || /\.(?:scriptnote|timer)\.json$/.test(lower);
   }
 

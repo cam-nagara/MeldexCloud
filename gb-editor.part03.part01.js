@@ -39,7 +39,7 @@
 
     // コールアウト: > [!iconName #color type] テキスト（後続の > 行も本文に含める）
     // 形式: > [!lightbulb #e6a700 warning] テキスト  or  > [!💡 info] テキスト（旧emoji互換）
-    const calloutMatch = line.match(/^>\s*\[!([^\s\]]+)\s*(#[0-9a-fA-F]{3,8})?\s*(info|warning|danger|success)?\]\s*(.*)$/);
+    const calloutMatch = line.match(/^>\s*\[!([^\s\]]+)\s*(#[0-9a-fA-F]{3,8})?\s*(info|warning|danger|success|x-post)?\]\s*(.*)$/);
     if (calloutMatch) {
       closeListAll();
       const cIconRaw = calloutMatch[1], cColor = calloutMatch[2] || '', cType = calloutMatch[3] || '', cTextParts = [calloutMatch[4]];
@@ -48,7 +48,9 @@
         cTextParts.push(lines[i].slice(2));
       }
       const cls = cType ? ' callout-' + cType : '';
-      const cBody = cTextParts.map(t => inlinemd(t)).join('<br>');
+      // Imported post text is literal: Markdown-looking user content must not
+      // create images, links or formatting when a saved conversation is opened.
+      const cBody = cTextParts.map(t => cType === 'x-post' ? esc(t) : inlinemd(t)).join('<br>');
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
       const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
@@ -675,7 +677,7 @@ function htmlToMd(html) {
           const bodyLines = body.split('\n');
           const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
-          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n';
+          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
         }
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
@@ -683,6 +685,9 @@ function htmlToMd(html) {
         return _noteStatusMarker(node) + _nlIdMarker(node) + trimmed + '\n';
       }
       case 'SPAN':
+        if (/^(start|end)$/.test(node.dataset?.xConversationBoundary || '')) {
+          return '<!-- meldex-x-conversation:' + node.dataset.xConversationBoundary + ' -->\n';
+        }
         // アノテート用 line-id span は MD に直接出力しない（ブロック先頭なら _nlIdMarker 経由で親側から emit される）
         if (node.classList?.contains('_nl-id')) return '';
         // コメントバッジ（Phase 2e-ii）は UI 装飾なので保存しない

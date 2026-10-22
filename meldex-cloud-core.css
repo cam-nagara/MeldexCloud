@@ -4494,6 +4494,7 @@ mark.db-find-current-text {
   padding: 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
+  flex-wrap: wrap;
 }
 
 .db-tree-toolbar input,
@@ -4528,6 +4529,8 @@ mark.db-find-current-text {
   border: 1px solid var(--border);
   border-radius: 5px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .db-tree-content {
@@ -4746,6 +4749,14 @@ mark.db-find-current-text {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
 }
 
+.db-tree-row.row-selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
+.db-tree-row.row-selected > .is-pinned {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
 .db-tree-row > .is-pinned {
   position: sticky;
   z-index: 2;
@@ -4773,6 +4784,65 @@ mark.db-find-current-text {
   min-height: var(--db-tree-row-height);
   padding: 2px 8px 2px calc(8px + var(--db-tree-depth) * 22px);
   border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.db-tree-name-cell > :not(.db-tree-label) {
+  flex-shrink: 0;
+}
+
+.db-tree-name-cell .row-select-cb,
+.db-tree-header-cell .row-select-all-cb {
+  opacity: 1;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  margin: 0 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.db-tree-name-actions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.db-tree-name-actions > button {
+  display: inline-flex;
+  position: static;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  opacity: 1;
+  color: var(--fg2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.db-tree-name-actions > button:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.db-tree-typed-cell > .gb-image-cell,
+.db-tree-typed-cell > .cell-value {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.db-tree-parent-select {
+  width: 100%;
+  min-width: 0;
+  margin: 6px 0;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
 .db-tree-value-cell {
@@ -4838,6 +4908,7 @@ mark.db-find-current-text {
   border: 0;
   border-radius: 4px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .db-tree-caret:disabled {
@@ -4865,6 +4936,7 @@ mark.db-find-current-text {
 }
 
 .db-tree-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4971,6 +5043,12 @@ mark.db-find-current-text {
   text-align: center;
 }
 
+.db-tree-setup-empty {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 12px;
+}
+
 .db-tree-option-section {
   display: grid;
   gap: 10px;
@@ -5075,6 +5153,19 @@ mark.db-find-current-text {
 }
 
 @media (pointer: coarse) {
+  .db-tree-name-actions > button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .db-tree-name-cell .row-select-cb,
+  .db-tree-header-cell .row-select-all-cb {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+  }
+
   .db-tree-row {
     --db-tree-row-height: 44px;
   }
@@ -5176,6 +5267,17 @@ mark.db-find-current-text {
   padding: 4px;
   min-width: 140px;
 }
+/* Settings use the common modal shell; menus retain their compact spacing. */
+.el-edit-popup:not([role="menu"]):not(.el-dialog-content) { padding: var(--ui-space-6); }
+.el-settings-dialog { width: 640px; }
+.el-settings-dialog > .gb-modal-body { min-width: 0; }
+.el-settings-dialog .el-dialog-content {
+  position: static; width: auto; min-width: 0; max-width: none;
+  max-height: none; overflow: visible; padding: 0; gap: var(--ui-space-4);
+}
+.el-settings-dialog .el-dialog-content input:not([type="checkbox"]):not([type="radio"]),
+.el-settings-dialog .el-dialog-content select,
+.el-settings-dialog .el-dialog-content textarea { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .el-tab-menu-item {
   display: flex;
   align-items: center;
@@ -5400,7 +5502,14 @@ mark.db-find-current-text {
   overflow: hidden;
 }
 .el-cell-chart-content svg { max-width: 100%; max-height: 100%; }
-.el-chart-popup { min-width: 220px; max-height: 60vh; overflow-y: auto; }
+.el-chart-popup { width: min(500px, calc(100vw - 24px)); min-width: 220px; max-height: 75vh; overflow-y: auto; gap: 8px; }
+.el-chart-popup .el-popup-row select { width: 220px; max-width: 100%; }
+.el-cell-inspector { min-width: 300px; max-height: 75vh; overflow: auto; gap: 8px; }
+.el-cell-inspector > div { display: flex; flex-direction: column; gap: 6px; }
+.el-chart-axis-settings { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(70px, 1fr) 65px auto auto; gap: 4px; align-items: center; }
+.el-chart-axis-settings input { min-width: 0; width: 100%; box-sizing: border-box; }
+.el-chart-axis-settings label { display: flex; align-items: center; }
+.el-chart-axis-settings label input { width: auto; }
 .el-chart-popup-body {
   display: flex;
   flex-direction: column;
@@ -5603,6 +5712,7 @@ mark.db-find-current-text {
 .gb-form-binding, .gb-form-record-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; }
 .gb-form-binding label { display: flex; align-items: center; gap: 8px; }
 .gb-form-record-panel, .gb-form-layout-editor { min-width: 0; width: 100%; }
+.gb-form-answer.gb-form-custom-layout { width: 100%; max-width: none; min-width: 0; box-sizing: border-box; }
 .gb-form-record-panel .el-viewport, .gb-form-layout-editor .el-viewport { max-height: 72vh; }
 .gb-form-layout-field { display: flex; flex-direction: column; gap: 4px; }
 .gb-form-layout-field input, .gb-form-layout-field select, .gb-form-layout-field textarea { max-width: 100%; box-sizing: border-box; font: inherit; }
@@ -27380,8 +27490,25 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   max-width: 100%;
   flex-wrap: nowrap !important;
   overflow: visible !important;
+  white-space: nowrap;
 }
 .gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
+/* Item names stay on one line before width measurement and in overflow menus. */
+:is(.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar,
+    .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar,
+    .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar,
+    [role="toolbar"]:not([aria-orientation="vertical"])) :is(button, label, select, .tb-label),
+.gb-toolbar-overflow-host > :is(.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title),
+.db-view-tabs .view-tab-label {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+:is([class*="toolbar"], [id$="-toolbar"], .tl-settings) :is(button, select, .tb-label) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 .gb-toolbar-overflow-host > :is(.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title) {
   flex: 1 1 auto;
   min-width: 48px;
@@ -27440,10 +27567,10 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   color: inherit;
   font: inherit;
   text-align: left;
-  white-space: normal;
+  white-space: nowrap;
 }
 .gb-tbo-row > :is(svg, .ico) { flex: 0 0 16px; width: 16px; height: 16px; }
-.gb-tbo-row > span { overflow-wrap: anywhere; }
+.gb-tbo-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gb-tbo-row > :is(input, select) { min-width: 0; max-width: 55%; margin-left: auto; }
 .gb-tbo-row:hover:not(:disabled), .gb-tbo-row.active { background: var(--ui-hover-bg, var(--bg3)); }
 .gb-tbo-row:disabled { opacity: .45; }

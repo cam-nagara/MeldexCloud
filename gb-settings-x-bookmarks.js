@@ -23,6 +23,7 @@
       token_url: getInputValue('x-bookmarks-token-url'),
       api_base: getInputValue('x-bookmarks-api-base'),
       scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
+      scheduled_translate: document.getElementById('x-bookmarks-scheduled-translate')?.checked === true,
     };
   }
 
@@ -37,6 +38,8 @@
     setInputValue('x-bookmarks-api-base', config.api_base || '');
     const folders = document.getElementById('x-bookmarks-scheduled-folders');
     if (folders) folders.checked = config.scheduled_include_folders === true;
+    const translate = document.getElementById('x-bookmarks-scheduled-translate');
+    if (translate) translate.checked = config.scheduled_translate === true;
   }
 
   async function loadSharedSettings() {
@@ -117,7 +120,8 @@
     const folderStateText = ` / フォルダ未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`;
     const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 投稿者アイコン${data?.downloaded_author_icons || 0} / 画像失敗${data?.media_failed || 0} / アイコン失敗${data?.author_icon_failed || 0}${folderText}`;
     const reasonText = reason ? ` / 停止: ${reason}` : '';
-    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${reasonText}`;
+    const translationText = ` / 今回の翻訳${data?.translated_existing || 0}件・未翻訳${data?.translation_pending_existing || 0}件 / 返信${data?.replies || 0}件・返信翻訳待ち${data?.translation_pending_replies || 0}件・返信取得失敗${data?.reply_unavailable || 0}件`;
+    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${translationText}${reasonText}`;
   }
 
   function openUrl(url) {
@@ -156,6 +160,8 @@
       if (maxResults) maxResults.value = String(config.max_results || 100);
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders');
       if (scheduledFolders) scheduledFolders.checked = config.scheduled_include_folders === true;
+      const translate = document.getElementById('x-bookmarks-scheduled-translate');
+      if (translate) translate.checked = config.scheduled_translate === true;
       setInputValue('x-bookmarks-client-id', config.client_id || '');
       setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
       setInputValue('x-bookmarks-auth-url', config.auth_url || '');
@@ -259,24 +265,34 @@
   }
 
   function setSyncBusy(isBusy) {
-    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates'].forEach(id => {
+    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations'].forEach(id => {
       const btn = document.getElementById(id);
       if (btn) btn.disabled = !!isBusy;
     });
   }
 
-  function confirmBookmarkSyncCost(maxResults) {
+  function replyBudgetYen(maxResults) {
+    return Math.ceil(Math.max(1, Math.min(5000, Number(maxResults) || 100)) * 93 * 0.015 * 150);
+  }
+
+  function confirmBookmarkSyncCost(maxResults, includeReplies = false) {
     const limit = Math.max(1, Number(maxResults) || 100);
     const estimatedOwnedUsd = limit * 0.001;
     const estimatedStandardUsd = limit * 0.005;
-    const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\n現在の公式料金例では、最大取得数分の目安は約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}です。フォルダ内の確認分は別に加算され、割引条件や料金変更によって実際の費用は変わります。\n\n従量課金で保存を始めますか？`;
+    const withAuthorsAndReferencesYen = Math.ceil(limit * 3 * 0.015 * 150);
+    const yen = value => Math.ceil(value).toLocaleString('ja-JP') + '円';
+    const replies = includeReplies
+      ? `\n元ポストと参照元（最大2件）のそれぞれに、返信を最大30件取得します。投稿者情報を含む返信ノート対象分の概算上限は約${yen(replyBudgetYen(limit))}です。重複を割り引かず計算しています。`
+      : `\n参照元ポストと投稿者情報も含む概算上限は約${yen(withAuthorsAndReferencesYen)}です（重複を割り引かず計算）。`;
+    const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\nポスト取得分の目安は約${yen(estimatedOwnedUsd * 150)}〜${yen(estimatedStandardUsd * 150)}です（約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}）。${replies}\n概算1ドル＝150円。フォルダ確認分・税等は別で、契約条件や料金変更によって実費は変わります。\n\nこの件数と費用目安で取得を始めますか？`;
     return window.confirm(message);
   }
 
   async function sync(mode) {
     if (syncInFlight) return;
     const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-    if (!confirmBookmarkSyncCost(maxResults)) return;
+    const includeReplies = document.getElementById('x-bookmarks-include-replies')?.checked === true;
+    if (!confirmBookmarkSyncCost(maxResults, includeReplies)) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
@@ -288,7 +304,9 @@
       setStatus('Xブックマークを保存しています...', false);
       const data = await runBackgroundJob(
         '/x-bookmarks/sync',
-        { mode: mode || 'incremental', max_results: maxResults, ack_cost_notice: true },
+        { mode: mode || 'incremental', max_results: maxResults, ack_cost_notice: true,
+          include_replies: includeReplies, ack_reply_cost_notice: includeReplies,
+          reply_budget_yen: includeReplies ? replyBudgetYen(maxResults) : 0 },
         {
           onProgress: (progress) => {
             setStatus(formatJobProgress(progress, { unit: '件保存済み', defaultPhase: '取得中' }), false);
@@ -355,12 +373,56 @@
   async function reimportPost(postId, saveDir) {
     const id = String(postId || '').trim();
     if (!id) throw new Error('ポストIDを確認できません');
-    const result = await apiPost('/x-bookmarks/reimport', {
+    if (!confirmBookmarkSyncCost(1, true)) return null;
+    const result = await runBackgroundJob('/x-bookmarks/reimport', {
       post_id: id,
       save_dir: saveDir || undefined,
-    }, { silentError: true });
+      include_replies: true, ack_reply_cost_notice: true, reply_budget_yen: replyBudgetYen(1),
+    }, { operationLabel: 'ポストと返信ノートを更新しています' });
     if (typeof showStatus === 'function') showStatus('Xからこのポストを再インポートしました');
     return result;
+  }
+
+  async function retryTranslations() {
+    if (syncInFlight) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      if (!await saveConfig({ silentError: true })) throw new Error('設定を保存できませんでした');
+      const result = await runBackgroundJob('/x-bookmarks/translations/retry', {}, {
+        operationLabel: '保存済みポストの翻訳を続けています', maxPolls: Number.POSITIVE_INFINITY,
+        onProgress: progress => setStatus(formatJobProgress(progress), false),
+      });
+      setStatus(result.summary, false);
+    } catch (err) {
+      setStatus('翻訳を続けられませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
+    }
+  }
+
+  async function enrichSavedNotes(includeReplies) {
+    if (syncInFlight) return;
+    const limit = includeReplies ? Number(document.getElementById('x-bookmarks-max-results')?.value || 100) : 5000;
+    if (includeReplies && !confirmBookmarkSyncCost(limit, true)) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      if (!await saveConfig({ silentError: true })) throw new Error('設定を保存できませんでした');
+      const result = await runBackgroundJob('/x-bookmarks/notes/enrich', {
+        max_results: limit, include_replies: includeReplies,
+        ack_reply_cost_notice: includeReplies,
+        reply_budget_yen: includeReplies ? replyBudgetYen(limit) : 0,
+      }, { operationLabel: includeReplies ? '保存済みの返信ノートを更新しています' : '保存済みのノートを作成しています',
+        onProgress: progress => setStatus(formatJobProgress(progress), false) });
+      setStatus(result.summary || `ノート${result.updated || 0}件を更新しました。返信${result.replies || 0}件。`, false);
+    } catch (err) {
+      setStatus('ノートを更新できませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
+    }
   }
 
   async function reimportEntry(entryPath, saveDir) {
@@ -499,6 +561,9 @@
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
     document.getElementById('x-bookmarks-sync-folders')?.addEventListener('click', syncFolders);
+    document.getElementById('x-bookmarks-notes')?.addEventListener('click', () => enrichSavedNotes(false));
+    document.getElementById('x-bookmarks-replies')?.addEventListener('click', () => enrichSavedNotes(true));
+    document.getElementById('x-bookmarks-translations')?.addEventListener('click', retryTranslations);
     const consoleLink = document.getElementById('x-bookmarks-console-link');
     if (consoleLink) {
       consoleLink.setAttribute('data-gb-tooltip', X_DEVELOPER_CONSOLE_HELP);
@@ -511,6 +576,7 @@
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-scheduled-folders')?.addEventListener('change', saveConfig);
+    document.getElementById('x-bookmarks-scheduled-translate')?.addEventListener('change', saveConfig);
     [
       'x-bookmarks-client-id',
       'x-bookmarks-redirect-uri',
@@ -579,6 +645,24 @@
         </label>
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
+      <div class="gb-section-desc">日本語以外のポストは設定済みCLIで翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60件まで）。CLI未設定・失敗時も原文は保存します。</div>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <button type="button" id="x-bookmarks-translations" class="gb-btn gb-btn-sm">保存済みポストの翻訳を続ける（X追加取得なし）</button>
+      </div>
+      <div class="gb-section-desc">1時間60件の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。翻訳は1件あたり最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
+      <label class="gb-field-row" style="justify-content:flex-start;">
+        <input id="x-bookmarks-include-replies" type="checkbox" checked>
+        <span class="gb-label">手動保存時に返信を最大30件追加取得（追加料金あり・開始前に円の概算を確認）</span>
+      </label>
+      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、各トピックのノートへ保存します。外国語は原文と日本語訳を併記します。定期保存では返信を追加取得しません。</div>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <button type="button" id="x-bookmarks-notes" class="gb-btn gb-btn-sm">保存済みのノートを作成・更新（X追加取得なし）</button>
+        <button type="button" id="x-bookmarks-replies" class="gb-btn gb-btn-sm">保存済みの返信を追加取得（有料）</button>
+      </div>
+      <label class="gb-field-row" style="justify-content:flex-start;">
+        <input id="x-bookmarks-scheduled-translate" type="checkbox">
+        <span class="gb-label">定期保存でも日本語に翻訳（Xアカウントの保存と共通・CLI使用量を消費）</span>
+      </label>
       <div id="x-bookmarks-schedule-container" class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;"></div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <input id="x-bookmarks-scheduled-folders" type="checkbox">
@@ -597,8 +681,9 @@
     `;
     bind();
     if (isCloudSurface()) {
-      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect']
+      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations']
         .forEach(id => { const control = document.getElementById(id); if (control) control.hidden = true; });
+      document.getElementById('x-bookmarks-include-replies')?.closest('label')?.setAttribute('hidden', '');
       const schedule = document.getElementById('x-bookmarks-schedule-container');
       if (schedule) schedule.hidden = true;
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');

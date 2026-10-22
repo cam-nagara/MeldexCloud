@@ -406,8 +406,12 @@ function renderDbViewTabs(ctx) {
 function renderDbNoViewsGuide(ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
+  ctx.viewMode = 'pivot';
+  if (!ctx.embedded && dbPath === state.currentDbPath) state.view = 'pivot';
   if (typeof showView === 'function') showView('pivot', ctx);
-  const container = _paneEl(ctx, '.pivot-view') || (!ctx ? document.getElementById('pivot-view') : null);
+  const container = typeof _dbViewSurfaceEl === 'function'
+    ? _dbViewSurfaceEl(ctx, '.pivot-view', 'pivot-view')
+    : (_paneEl(ctx, '.pivot-view') || document.getElementById('pivot-view'));
   if (!container) return;
   container.innerHTML = '';
   const guide = document.createElement('div');
@@ -421,6 +425,7 @@ function renderDbNoViewsGuide(ctx) {
   desc.textContent = '+ボタンでビューを追加してください';
   const add = document.createElement('button');
   add.className = 'gb-btn primary';
+  add.dataset.e2eId = _dbE2eId(ctx, 'empty-view-add', dbPath);
   add.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 14px;';
   add.innerHTML = lucide('plus', 16) + ' ビューを追加';
   add.addEventListener('click', (ev) => doSaveViewWithTypeDirect('pivot', 'テーブル', { ctx, event: ev }));
@@ -1111,6 +1116,7 @@ function loadSavedView(idx, ctx, options = {}) {
   if (typeof _renderDbViewTabsSafely === 'function') _renderDbViewTabsSafely(ctx);
   else renderDbViewTabs(ctx);
   if (targetView === 'gallery') renderGallery(ctx);
+  else if (targetView === 'tree' && typeof renderDbTreeView === 'function') renderDbTreeView(ctx);
   else if (targetView === 'kanban') renderKanban(ctx);
   else if (targetView === 'timeline') renderTimeline(ctx);
   else if (targetView === 'gantt' && typeof renderGantt === 'function') renderGantt(ctx);
@@ -1136,15 +1142,18 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const currentType = currentView?.viewMode || 'pivot';
 
   const swapViews = (fromIdx, toIdx) => {
-    const views = getSavedViews(dbPath);
+    const cfg = getDbViewConfig(dbPath);
+    const views = cfg.savedViews || [];
     if (toIdx < 0 || toIdx >= views.length) return;
+    const ci = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
     const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
     [views[fromIdx], views[toIdx]] = [views[toIdx], views[fromIdx]];
-    setSavedViews(dbPath, views, { skipHistory: true });
     // currentViewIdxも追従
-    const ci = getCurrentViewIdx(dbPath);
-    if (ci === fromIdx) setCurrentViewIdx(dbPath, toIdx, { skipHistory: true });
-    else if (ci === toIdx) setCurrentViewIdx(dbPath, fromIdx, { skipHistory: true });
+    const nextIdx = ci === fromIdx ? toIdx : ci === toIdx ? fromIdx : ci;
+    cfg.currentViewIdx = nextIdx;
+    ctx.currentViewIdx = nextIdx;
+    ctx.currentViewId = String(views[nextIdx]?.id || '');
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
     if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
       pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
     }
@@ -1153,7 +1162,11 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
 
   const items = [
     { label: '名前を変更', action: () => {
-      setTimeout(() => startSavedViewInlineRename(targetTab, idx, ctx), 0);
+      setTimeout(() => {
+        const tabs = _paneEl(ctx, '.db-view-tabs');
+        const tab = targetTab?.isConnected ? targetTab : tabs?.querySelectorAll('.view-tab')[idx];
+        startSavedViewInlineRename(tab, idx, ctx);
+      }, 0);
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
     { type: 'sep' },

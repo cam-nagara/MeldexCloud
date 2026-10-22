@@ -61,6 +61,7 @@ function _elNormalizeLayout(layout) {
   out.name = String(src.name || '').trim() || 'レイアウト';
   const size = _elIsObj(src.canvasSize) ? src.canvasSize : {};
   out.canvasSize = {
+    ...size,
     w: _elClampNum(size.w, EL_CANVAS_MIN, EL_CANVAS_MAX, EL_DEFAULT_CANVAS_W),
     h: _elClampNum(size.h, EL_CANVAS_MIN, EL_CANVAS_MAX, EL_DEFAULT_CANVAS_H),
   };
@@ -486,7 +487,7 @@ function _elAddPresetLayout(context, template) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
   let imported;
-  _elMutateState(context.dbPath, 'トピックレイアウト: プリセットから追加', template.layout.name, state => {
+  _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, state => {
     const source = JSON.parse(JSON.stringify(template));
     if (state.layouts.some(item => item.name === source.layout.name)) {
       source.layout.name = _elMakeDuplicateName(source.layout.name, state.layouts);
@@ -501,7 +502,7 @@ function _elAddPresetLayout(context, template) {
   _elSession(context.grid, context.entityPath).tab = imported.layout.id;
   context.rerender?.();
   const missing = imported.mappings.filter(item => item.match === 'unresolved').length;
-  if (typeof showStatus === 'function') showStatus(missing ? `追加しました（未割り当ての列: ${missing}件）` : 'プリセットから追加しました');
+  if (typeof showStatus === 'function') showStatus(missing ? `追加しました（未割り当ての列: ${missing}件）` : 'テンプレートから追加しました');
 }
 
 async function _elShowAddLayoutMenu(anchor, context) {
@@ -523,7 +524,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   body.className = 'el-preset-popup';
   body.dataset.e2eId = 'entity-layout-add-menu';
   body.setAttribute('role', 'dialog');
-  body.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  body.setAttribute('aria-label', 'トピックレイアウトのテンプレート');
   body.setAttribute('aria-modal', 'false');
   body.tabIndex = -1;
   body._anchor = anchor;
@@ -532,14 +533,14 @@ async function _elShowAddLayoutMenu(anchor, context) {
   addLayout.setAttribute('role', 'menuitem'); addLayout.dataset.e2eId = 'entity-layout-tab-menu-new';
   body.appendChild(addLayout);
   const list = document.createElement('div'); list.className = 'el-preset-list';
-  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのプリセット');
+  list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'トピックレイアウトのテンプレート');
   body.appendChild(list);
   const actions = document.createElement('div'); actions.className = 'el-preset-actions'; body.appendChild(actions);
   const details = document.createElement('div'); details.className = 'el-preset-details'; details.hidden = true;
   body.appendChild(details);
   const nameRow = document.createElement('label'); nameRow.className = 'el-preset-name-row';
-  nameRow.textContent = 'プリセット名';
-  const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'プリセット名');
+  nameRow.textContent = 'テンプレート名';
+  const name = document.createElement('input'); name.type = 'text'; name.setAttribute('aria-label', 'テンプレート名');
   nameRow.appendChild(name); details.appendChild(nameRow);
   const editor = document.createElement('div'); editor.className = 'el-preset-editor'; details.appendChild(editor);
   const message = document.createElement('div'); message.className = 'el-preset-message';
@@ -550,7 +551,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   const allTemplates = () => [...builtins, ...templates];
   const report = (text, error = false) => { message.textContent = text; message.dataset.error = String(error); };
   const canEdit = () => _elCanMutateGrid(context.grid, context.options) && context.grid.isConnected && body.isConnected;
-  const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないプリセットの変更を破棄しますか？'));
+  const discard = async () => !dirty || (typeof cfConfirm === 'function' && await cfConfirm('保存していないテンプレートの変更を破棄しますか？'));
   const position = () => {
     if (!body.isConnected || !anchor.isConnected) return;
     if (typeof positionPopup === 'function') positionPopup(body, anchor.getBoundingClientRect(), { gap: 4 });
@@ -600,7 +601,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     draft.layout = _elNormalizeLayout(draft.layout);
     name.value = draft.layout.name; dirty = !saved;
     details.hidden = !edit; body.classList.toggle('is-editing', edit);
-    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'プリセットを選ぶとシートに追加します。');
+    report(edit ? '配置や書式を編集し、「保存」で確定します。' : 'テンプレートを選ぶとシートに追加します。');
     render(); refresh(); syncControls(); position();
     if (edit) name.focus({ preventScroll: true });
   };
@@ -609,13 +610,13 @@ async function _elShowAddLayoutMenu(anchor, context) {
     const copy = JSON.parse(JSON.stringify(template));
     copy.layout.name = _elMakeDuplicateName(copy.layout.name, allTemplates().map(item => item.layout));
     choose(copy);
-    report('標準プリセットを複製して編集します。「保存」で追加します。');
+    report('標準テンプレートを複製して編集します。「保存」で追加します。');
   };
   const refresh = () => {
     list.replaceChildren();
     if (!allTemplates().length) {
       const empty = document.createElement('div'); empty.className = 'el-preset-empty';
-      empty.textContent = '保存済みプリセットはありません'; list.appendChild(empty);
+      empty.textContent = '保存済みテンプレートはありません'; list.appendChild(empty);
     }
     allTemplates().forEach(template => {
       const builtin = builtins.includes(template);
@@ -639,7 +640,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
       }
       const label = document.createElement('span'); label.textContent = template.layout.name;
       apply.append(preview, label);
-      if (builtin) apply.setAttribute('aria-description', '標準プリセット');
+      if (builtin) apply.setAttribute('aria-description', '標準テンプレート');
       apply.addEventListener('click', async () => {
         if (canEdit() && await body._requestClose()) _elAddPresetLayout(context, template);
       });
@@ -656,7 +657,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
       row.appendChild(edit); list.appendChild(row);
     });
   };
-  const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいプリセット' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
+  const newDraft = () => api.exportTemplate(_elNormalizeLayout({ name: '新しいテンプレート' }), _elTopicLayoutColumns(context.dbPath, context.pivotData));
   const button = (key, label, icon, run) => {
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn gb-btn-icon';
     btn.innerHTML = typeof lucide === 'function' ? lucide(icon, 16) : label;
@@ -680,7 +681,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!layout) { report('先にトピックレイアウトのタブを選んでください', true); return; }
     if (await discard()) choose(api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData)));
   });
-  button('edit', '選択中のプリセットを編集', 'pencil', async () => {
+  button('edit', '選択中のテンプレートを編集', 'pencil', async () => {
     if (draft && selectedBuiltin) { editTemplate(draft, true); return; }
     if (draft) { details.hidden = false; body.classList.add('is-editing'); render(); syncControls(); position(); name.focus(); }
   });
@@ -688,7 +689,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft) return;
     const template = JSON.parse(JSON.stringify(draft)); template.layout.name = name.value.trim();
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
-    link.download = (template.layout.name || 'プリセット').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
+    link.download = (template.layout.name || 'テンプレート').replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
     link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 0);
   });
   button('import', 'ファイルから読込', 'upload', () => {
@@ -703,7 +704,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     }); input.click();
   });
   const remove = button('delete', '削除', 'trash2', async () => {
-    if (!previous || !canEdit() || !await cfConfirm('プリセット「' + previous.layout.name + '」を削除しますか？')) return;
+    if (!previous || !canEdit() || !await cfConfirm('テンプレート「' + previous.layout.name + '」を削除しますか？')) return;
     if (!canEdit()) return;
     await persist(null);
   });
@@ -722,8 +723,8 @@ async function _elShowAddLayoutMenu(anchor, context) {
       }
       else { previous = null; draft = null; dirty = false; name.value = ''; details.hidden = true; body.classList.remove('is-editing'); render(); }
       refresh(); report(template
-        ? (result.shared ? 'プリセットを保存しました。' : 'この端末にプリセットを保存しました。')
-        : (result.shared ? 'プリセットを削除しました。' : 'この端末のプリセットを削除しました。'));
+        ? (result.shared ? 'テンプレートを保存しました。' : 'この端末にテンプレートを保存しました。')
+        : (result.shared ? 'テンプレートを削除しました。' : 'この端末のテンプレートを削除しました。'));
     } finally {
       busy = false; editor.inert = false; controls.forEach(item => { item.disabled = false; });
       syncControls();
@@ -733,7 +734,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft || !canEdit()) return;
     const template = JSON.parse(JSON.stringify(draft));
     template.layout.name = name.value.trim();
-    if (!template.layout.name) { report('プリセット名を入力してください', true); name.focus(); return; }
+    if (!template.layout.name) { report('テンプレート名を入力してください', true); name.focus(); return; }
     await persist(template);
   });
   remove.before(save);
@@ -781,7 +782,7 @@ async function _elShowAddLayoutMenu(anchor, context) {
   refresh();
   if (allTemplates().length) {
     const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
-  } else { report('プリセットを読み込んでいます…'); }
+  } else { report('テンプレートを読み込んでいます…'); }
   syncControls(); position(); addLayout.focus({ preventScroll: true });
   const initialLibraryVersion = libraryVersion;
   try {
@@ -791,9 +792,9 @@ async function _elShowAddLayoutMenu(anchor, context) {
     if (!draft && allTemplates().length) {
       const first = allTemplates()[0]; choose(first, first, false, builtins.includes(first));
     }
-    else if (!draft) { report('保存済みプリセットはありません。「追加」から作成できます。'); }
-    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のプリセットを表示しています。', true);
-  } catch (error) { report('プリセットを読み込めません: ' + (error?.message || error), true); }
+    else if (!draft) { report('保存済みテンプレートはありません。「追加」から作成できます。'); }
+    if (library.error) report('共有先を読み込めませんでした。標準とこの端末のテンプレートを表示しています。', true);
+  } catch (error) { report('テンプレートを読み込めません: ' + (error?.message || error), true); }
   finally { syncControls(); position(); }
 }
 

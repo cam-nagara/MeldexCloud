@@ -1,3 +1,92 @@
+    preview.width = canvas.width;
+    preview.height = canvas.height;
+    preview.getContext('2d').drawImage(canvas, 0, 0);
+    const maxW = Math.max(1, Math.floor(window.innerWidth * 0.94));
+    const maxH = Math.max(1, Math.floor(window.innerHeight * 0.82));
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+    preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
+    preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
+
+    const selection = document.createElement('div');
+    selection.className = 'screenshot-region-selection';
+    selection.setAttribute('aria-hidden', 'true');
+    selection.style.display = 'none';
+
+    const actions = document.createElement('div');
+    actions.className = 'screenshot-region-actions';
+    actions.style.width = '100%';
+    actions.style.minWidth = '0';
+    actions.setAttribute('aria-label', '範囲選択の操作');
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.style.flex = '0.8 1 0';
+    cancel.dataset.e2eId = 'screenshot-region-cancel';
+    cancel.textContent = 'キャンセル';
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.style.flex = '1.5 1 0';
+    ok.style.minWidth = '0';
+    ok.dataset.e2eId = 'screenshot-region-save';
+    ok.textContent = 'スクリーンショット撮影';
+
+    stage.append(preview, selection);
+    actions.append(cancel, ok);
+
+    let start = null;
+    let current = null;
+    let activePointerId = null;
+    let cleaned = false;
+    let result = null;
+    let modalApi = null;
+
+    const cleanup = (value, reason = 'programmatic') => {
+      if (cleaned) return;
+      result = value;
+      modalApi.close(reason);
+    };
+    const pointFromEvent = (ev) => {
+      const rect = preview.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, ev.clientY - rect.top)),
+        rect,
+      };
+    };
+    const visibleRect = () => {
+      if (!start || !current) return null;
+      const left = Math.min(start.x, current.x);
+      const top = Math.min(start.y, current.y);
+      const width = Math.abs(current.x - start.x);
+      const height = Math.abs(current.y - start.y);
+      return { left, top, width, height };
+    };
+    const updateSelection = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 1 || rect.height < 1) {
+        selection.style.display = 'none';
+        return;
+      }
+      selection.style.display = 'block';
+      selection.style.left = rect.left + 'px';
+      selection.style.top = rect.top + 'px';
+      selection.style.width = rect.width + 'px';
+      selection.style.height = rect.height + 'px';
+    };
+    const canvasRegion = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 4 || rect.height < 4) return null;
+      const bounds = preview.getBoundingClientRect();
+      const scaleX = canvas.width / bounds.width;
+      const scaleY = canvas.height / bounds.height;
+      const x = Math.max(0, Math.min(canvas.width - 1, rect.left * scaleX));
+      const y = Math.max(0, Math.min(canvas.height - 1, rect.top * scaleY));
+      return {
+        x,
+        y,
         width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
         height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
       };
@@ -809,92 +898,3 @@ function _handleViewerFolderNavRequest(msg, targetIframe = null) {
 }
 
 window.addEventListener('message', (e) => {
-  const sourceIframe = _getTrustedEmbeddedMessageIframe(e);
-  if (!sourceIframe) return;
-  const msg = e.data;
-  if (!msg || !msg.type) return;
-  // サブパネルのビューワー（2つ目の表示面）は、メインの「現在のファイル」（state.currentPagePath）・
-  // フォルダツリーの選択・プロパティを書き換えない。書き換えると、メインで開いているノートのタブ状態や
-  // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
-  const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
-  if (msg.type === 'viewer-current-file-changed') {
-    if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
-    return;
-  }
-  if (msg.type === 'viewer-sheet-context-request' && window.MeldexViewerSheetContext) {
-    window.MeldexViewerSheetContext.handleRequest(msg, e.source);
-    return;
-  }
-  if (msg.type === 'viewer-sheet-row-nav-request' && window.MeldexViewerSheetContext) {
-    window.MeldexViewerSheetContext.handleRowNavigation(msg, e.source);
-    return;
-  }
-  if (msg.type === 'viewer-folder-nav-request') {
-    _handleViewerFolderNavRequest(msg, fromSubpanelViewer ? sourceIframe : null);
-    return;
-  }
-  const reloadEmbeddedAnnotations = () => {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
-      _loadAnnotationsToIframe();
-    }
-  };
-  // HTMLビューワーiframeからのステータス通知
-  if (msg.type === 'board-status') { showStatus(msg.message, msg.isError); }
-  // ヒストリー更新通知
-  if (msg.type === 'history-update') { renderHistoryList(); }
-  // HTMLビューワーiframe内メモからの保存依頼
-  if (msg.type === 'ann-save-stroke') {
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath, type: msg.annType,
-      data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, 'アノテート: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
-    }).catch((err) => {
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
-      }
-      if (typeof showStatus === 'function') showStatus('アノテートの保存に失敗しました: ' + (err?.message || err || ''), true);
-    });
-  }
-  if (msg.type === 'ann-delete') {
-    if (msg.annId) {
-      (async () => {
-        const before = typeof _fetchAnnotationHistoryRow === 'function'
-          ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
-          : null;
-        await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
-        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, msg.annId);
-        reloadEmbeddedAnnotations();
-      })().catch(() => {});
-    }
-  }
-  if (msg.type === 'ann-delete-note') {
-    if (msg.annId && msg.data) {
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, { data: msg.data }, 'アノテート: 削除', msg.annId)
-          .then(reloadEmbeddedAnnotations)
-          .catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), { data: msg.data }).then(reloadEmbeddedAnnotations).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-update-note') {
-    if (msg.annId && (msg.data || msg.color)) {
-      const body = msg.color ? { color: msg.color } : { data: msg.data };
-      const label = msg.color ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), body).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-create-note') {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
-    if (!embedded && !msg.targetPath && typeof createNote === 'function') {

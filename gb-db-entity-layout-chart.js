@@ -33,22 +33,26 @@ function _elFetchPivotData(dbPath) {
   const cached = _elPivotCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < EL_PIVOT_CACHE_MS) return cached.promise;
-  const promise = Promise.resolve(
+  const promise = Promise.resolve().then(() =>
     typeof apiFetch === 'function' ? apiFetch('/pivot?path=' + encodeURIComponent(key)) : null
   ).catch((error) => {
-    _elPivotCache.delete(key);
+    if (_elPivotCache.get(key)?.promise === promise) _elPivotCache.delete(key);
     throw error;
   });
   _elPivotCache.set(key, { at: now, promise });
   return promise;
 }
 
+function _elInvalidatePivotData(dbPath) {
+  _elPivotCache.delete(String(dbPath || ''));
+}
+
 /* 最新の列タイプ定義。マウント時に固定された ctx.propTypes ではなく、その場の
    getPropertyTypes を優先する（設定パネルで直前に追加・変更した列も候補へ出すため）。 */
 function _elChartPropTypes(ctx) {
   if (typeof getPropertyTypes === 'function') {
-    const fresh = getPropertyTypes(ctx.dbPath);
-    if (fresh && Object.keys(fresh).length) return { ...ctx.propTypes, ...fresh };
+    const fresh = getPropertyTypes(ctx.dbPath, ctx.options?.ctx);
+    if (fresh && typeof fresh === 'object') return fresh;
   }
   return ctx.propTypes || {};
 }
@@ -60,7 +64,7 @@ function _elEntityNumericValue(propName, ctx) {
     try {
       // formulaEvalForEntity は { value, error } を返す（他の全呼び出し元と同じ受け方にする）
       const result = formulaEvalForEntity(ptc.formula, ctx.data?.properties || {}, {
-        propTypes: ctx.propTypes,
+        propTypes: _elChartPropTypes(ctx),
         dbPath: ctx.dbPath,
       });
       if (result?.error) return 0;
@@ -132,7 +136,7 @@ function _elRenderRadarChart(axes, w, h, options = {}) {
       if (anchor === 'end') x = Math.max(approxWidth, rawX);
       else if (anchor === 'start') x = Math.min(w - approxWidth, rawX);
       else x = Math.max(approxWidth / 2, Math.min(w - approxWidth / 2, rawX));
-      svg.appendChild(svgText(x, y + 3, label, { fill: 'currentColor', fontSize: 13, anchor }));
+      svg.appendChild(svgText(x, Math.max(16, Math.min(h - 4, y + 3)), label, { fill: 'currentColor', fontSize: 13, anchor }));
     });
   }
   return svg;
@@ -154,6 +158,15 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
     return wrap;
   }
 
+  if (cfg.chartType === 'radar' || cfg.dataSource === 'entry') {
+    const missing = (Array.isArray(cfg.axes) ? cfg.axes : []).filter(axis => !_elNumericChartProps(ctx).includes(axis.prop));
+    if (missing.length) {
+      const hint = document.createElement('div'); hint.className = 'el-cell-placeholder';
+      hint.textContent = '参照する数値列が見つかりません: ' + missing.map(axis => axis.prop).join('、');
+      wrap.appendChild(hint); return wrap;
+    }
+  }
+
   if (cfg.chartType === 'radar') {
     const rawAxes = (Array.isArray(cfg.axes) ? cfg.axes : []).map(axis => ({
       prop: String(axis?.prop || ''),
@@ -169,7 +182,19 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
       value: axis.value,
       max: axis.explicitMax || sharedMax || autoMax,
     }));
-    wrap.appendChild(_elRenderRadarChart(axes, w, h, { showLabels: cfg.showLabels !== false }));
+    wrap.appendChild(_elRenderRadarChart(axes, w, h, { showLabels: cfg.showLabels !== false, showValues: cfg.showValues !== false }));
+    return wrap;
+  }
+
+  if (cfg.dataSource === 'entry') {
+    const axes = Array.isArray(cfg.axes) ? cfg.axes : [];
+    const palette = typeof _chartPaletteColors === 'function' ? _chartPaletteColors(cfg) : ['#7c9cff'];
+    const values = axes.map(axis => _elEntityNumericValue(axis.prop, ctx));
+    const data = { labels: axes.map(axis => axis.label || axis.prop), values,
+      colors: axes.map((_, i) => palette[i % palette.length]), total: values.reduce((sum, value) => sum + value, 0) };
+    const svg = cfg.chartType === 'pie' ? renderPieChart(data, w, h, cfg)
+      : cfg.chartType === 'line' ? renderLineChart(data, w, h, cfg) : renderBarChart(data, w, h, cfg);
+    if (svg) wrap.appendChild(svg);
     return wrap;
   }
 
@@ -185,6 +210,7 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
     showLabels: cfg.showLabels !== false,
     showLegend: cfg.showLegend !== false,
     palette: cfg.palette || 'default',
+    propertyTypes: _elChartPropTypes(ctx),
   };
   _elFetchPivotData(ctx.dbPath)
     .then(async (pivotData) => {
@@ -193,9 +219,10 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
         loading.textContent = 'チャートを読み込めませんでした';
         return;
       }
+      const chartOptions = { ctx: ctx.options?.ctx || ctx };
       const data = typeof prepareChartDataAsync === 'function'
-        ? await prepareChartDataAsync(pivotData, chartConfig, ctx.dbPath, {})
-        : prepareChartData(pivotData, chartConfig, ctx.dbPath, {});
+        ? await prepareChartDataAsync(pivotData, chartConfig, ctx.dbPath, chartOptions)
+        : prepareChartData(pivotData, chartConfig, ctx.dbPath, chartOptions);
       if (!wrap.isConnected) return;
       wrap.replaceChildren();
       if (!data || !Array.isArray(data.labels) || data.labels.length === 0) {
@@ -216,6 +243,14 @@ function _elBuildChartCellContent(cell, ctx, canvasEl) {
       loading.textContent = 'チャートを読み込めませんでした';
     });
   return wrap;
+}
+
+function _elRefreshLayoutCharts(ctx) {
+  _elInvalidatePivotData(ctx.dbPath);
+  for (const element of ctx.grid.querySelectorAll('.el-cell-chart')) {
+    const cell = ctx.layout?.cells.find(item => item.id === element.dataset.cellId);
+    if (cell) element.replaceChildren(_elBuildChartCellContent(cell, ctx, element.parentElement));
+  }
 }
 
 /* --- chart セルの設定ポップアップ --- */
@@ -242,155 +277,94 @@ function _elShowChartCellPopup(anchorBtn, ctx, existingCell) {
   const popup = document.createElement('div');
   popup.className = 'gb-context-menu el-edit-popup el-chart-popup';
   popup.dataset.e2eId = 'entity-layout-chart-popup';
-
-  const title = document.createElement('div');
-  title.className = 'el-popup-title';
-  title.textContent = existingCell ? 'チャートの設定' : 'チャートセルを追加';
-  popup.appendChild(title);
-
-  const current = _elIsObj(existingCell?.chart) ? existingCell.chart : {};
-
-  const typeRow = document.createElement('label');
-  typeRow.className = 'el-popup-row';
-  const typeLabel = document.createElement('span');
-  typeLabel.textContent = '種類';
-  typeRow.appendChild(typeLabel);
-  const typeSelect = document.createElement('select');
-  typeSelect.className = 'gb-input';
-  typeSelect.dataset.e2eId = 'entity-layout-chart-type';
-  EL_CHART_TYPES.forEach(item => {
-    const option = document.createElement('option');
-    option.value = item.type;
-    option.textContent = item.label;
-    typeSelect.appendChild(option);
-  });
-  typeSelect.value = current.chartType || 'bar';
-  typeRow.appendChild(typeSelect);
-  popup.appendChild(typeRow);
-
-  const body = document.createElement('div');
-  body.className = 'el-chart-popup-body';
-  popup.appendChild(body);
-
-  const buildBody = () => {
-    body.replaceChildren();
-    if (typeSelect.value === 'radar') {
-      const hint = document.createElement('div');
-      hint.className = 'el-popup-hint';
-      hint.textContent = '軸にする数値列（3つ以上）';
-      body.appendChild(hint);
-      const numericProps = _elNumericChartProps(ctx);
-      if (numericProps.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'el-popup-hint';
-        none.textContent = '数値・数式の列がありません';
-        body.appendChild(none);
-      }
-      const selected = new Set((Array.isArray(current.axes) ? current.axes : []).map(a => a?.prop));
-      numericProps.forEach(prop => {
-        const row = document.createElement('label');
-        row.className = 'el-chart-axis-row';
-        const check = document.createElement('input');
-        check.type = 'checkbox';
-        check.checked = selected.has(prop);
-        check.dataset.prop = prop;
-        check.dataset.e2eId = 'entity-layout-chart-axis';
-        row.appendChild(check);
-        const span = document.createElement('span');
-        span.textContent = prop;
-        row.appendChild(span);
-        body.appendChild(row);
-      });
-      const maxRow = document.createElement('label');
-      maxRow.className = 'el-popup-row';
-      const maxLabel = document.createElement('span');
-      maxLabel.textContent = '最大値（空欄で自動）';
-      maxRow.appendChild(maxLabel);
-      const maxInput = document.createElement('input');
-      maxInput.type = 'number';
-      maxInput.min = '1';
-      maxInput.dataset.e2eId = 'entity-layout-chart-axis-max';
-      maxInput.value = current.axisMax > 0 ? String(current.axisMax) : '';
-      maxRow.appendChild(maxInput);
-      body.appendChild(maxRow);
-      return;
-    }
-    const makeSelectRow = (labelText, e2eId, options, value) => {
-      const row = document.createElement('label');
-      row.className = 'el-popup-row';
-      const span = document.createElement('span');
-      span.textContent = labelText;
-      row.appendChild(span);
-      const select = document.createElement('select');
-      select.className = 'gb-input';
-      select.dataset.e2eId = e2eId;
-      options.forEach(([optionValue, optionLabel]) => {
-        const option = document.createElement('option');
-        option.value = optionValue;
-        option.textContent = optionLabel;
-        select.appendChild(option);
-      });
-      select.value = value;
-      row.appendChild(select);
-      body.appendChild(row);
-      return select;
-    };
-    const allProps = _elAllChartProps(ctx);
-    const xSelect = makeSelectRow('横軸の列', 'entity-layout-chart-x',
-      allProps.map(prop => [prop, prop]), current.xProperty || allProps[0] || '');
-    const aggSelect = makeSelectRow('集計', 'entity-layout-chart-agg',
-      EL_CHART_AGGREGATIONS.map(item => [item.value, item.label]), current.yAggregation || 'count');
-    const numericProps = _elNumericChartProps(ctx);
-    const ySelect = makeSelectRow('値の列（件数以外）', 'entity-layout-chart-y',
-      [['', '（未選択）']].concat(numericProps.map(prop => [prop, prop])), current.yProperty || '');
-    body._collect = () => ({
-      xProperty: xSelect.value,
-      yAggregation: aggSelect.value,
-      yProperty: ySelect.value,
-    });
+  popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'チャートのデータ・表示設定');
+  const title = document.createElement('div'); title.className = 'el-popup-title';
+  title.textContent = existingCell ? 'チャートのデータ・表示設定' : 'チャートセルを追加'; popup.appendChild(title);
+  const draft = JSON.parse(JSON.stringify(_elIsObj(existingCell?.chart) ? existingCell.chart : {}));
+  const selectRow = (root, label, id, choices, value) => {
+    const row = document.createElement('label'); row.className = 'el-popup-row';
+    const text = document.createElement('span'); text.textContent = label;
+    const select = document.createElement('select'); select.className = 'gb-input'; select.dataset.e2eId = id; select.setAttribute('aria-label', label);
+    choices.forEach(([key, name]) => select.add(new Option(name, key)));
+    select.value = value; row.append(text, select); root.appendChild(row); return select;
   };
-  typeSelect.addEventListener('change', buildBody);
-  buildBody();
-
-  const applyBtn = document.createElement('button');
-  applyBtn.type = 'button';
-  applyBtn.className = 'gb-btn gb-btn-primary primary';
-  applyBtn.dataset.e2eId = 'entity-layout-chart-apply';
-  applyBtn.textContent = existingCell ? '適用' : '追加';
-  applyBtn.addEventListener('click', () => {
-    const chartType = typeSelect.value;
-    const chart = { chartType };
-    if (chartType === 'radar') {
-      chart.axes = Array.from(body.querySelectorAll('input[type="checkbox"][data-prop]'))
-        .filter(check => check.checked)
-        .map(check => ({ prop: check.dataset.prop }));
-      const axisMax = parseFloat(body.querySelector('[data-e2e-id="entity-layout-chart-axis-max"]')?.value || '');
-      if (Number.isFinite(axisMax) && axisMax > 0) chart.axisMax = axisMax;
-      if (chart.axes.length < 3) {
-        if (typeof showStatus === 'function') showStatus('レーダーには数値列を3つ以上選んでください', true);
-        return;
-      }
-    } else {
-      const collected = typeof body._collect === 'function' ? body._collect() : {};
-      chart.xProperty = collected.xProperty || '';
-      chart.yAggregation = collected.yAggregation || 'count';
-      chart.yProperty = collected.yProperty || '';
-      if (!chart.xProperty) {
-        if (typeof showStatus === 'function') showStatus('横軸の列を選んでください', true);
-        return;
-      }
-    }
-    close();
-    if (existingCell) {
-      _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: チャート設定', (target) => {
-        target.chart = chart;
+  const type = selectRow(popup, '種類', 'entity-layout-chart-type', EL_CHART_TYPES.map(item => [item.type,item.label]), draft.chartType || 'bar');
+  const source = selectRow(popup, 'データの範囲', 'entity-layout-chart-source', [['entry','このトピックの数値列'],['sheet','シート全体を集計']],
+    draft.chartType === 'radar' ? 'entry' : draft.dataSource || (existingCell ? 'sheet' : 'entry'));
+  const hint = document.createElement('p'); hint.className = 'el-popup-hint';
+  hint.textContent = '参照するのはシートの列です。同じ列を置いた入力セルの値が使われます。上から順に表示します。'; popup.appendChild(hint);
+  const body = document.createElement('div'); body.className = 'el-chart-popup-body'; popup.appendChild(body);
+  let collect = () => ({});
+  const build = () => {
+    Object.assign(draft, collect()); body.replaceChildren();
+    const radar = type.value === 'radar';
+    if (radar) source.value = 'entry'; source.disabled = radar;
+    hint.textContent = source.value === 'entry'
+      ? '参照する数値列を選びます。現在のトピックの値（新規入力では入力中の値）を、上から順に表示します。'
+      : '参照先シートの保存済みトピックを集計します。分類の列でグループを分け、値の列を指定した方法で集計します。';
+    if (source.value === 'entry') {
+      const numeric = _elNumericChartProps(ctx);
+      const saved = new Map((draft.axes || []).map(axis => [axis.prop,axis]));
+      const order = [...new Set([...(draft.axes || []).map(axis => axis.prop), ...numeric])];
+      const heading = document.createElement('div'); heading.className = 'el-chart-axis-settings el-popup-hint';
+      for (const text of ['参照する列', '表示名', radar ? '最大値' : '', '順序', '']) { const span = document.createElement('span'); span.textContent = text; heading.appendChild(span); }
+      body.appendChild(heading);
+      const list = document.createElement('div'); body.appendChild(list);
+      order.forEach(prop => {
+        const axis = saved.get(prop) || { prop };
+        const row = document.createElement('div'); row.className = 'el-chart-axis-settings';
+        const label = document.createElement('label');
+        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = saved.has(prop);
+        check.dataset.prop = prop; check.dataset.e2eId = 'entity-layout-chart-axis';
+        label.append(check, document.createTextNode(prop + (numeric.includes(prop) ? '' : '（数値列なし）')));
+        const caption = document.createElement('input'); caption.type = 'text'; caption.value = axis.label || ''; caption.placeholder = prop; caption.setAttribute('aria-label', '表示名: ' + prop);
+        const max = document.createElement('input'); max.type = 'number'; max.min = '0'; max.step = 'any'; max.value = axis.max > 0 ? axis.max : ''; max.placeholder = '自動'; max.disabled = !radar; max.setAttribute('aria-label', '軸の最大値: ' + prop);
+        row.append(label, caption, max);
+        for (const [text, up] of [['↑',true],['↓',false]]) {
+          const move = document.createElement('button'); move.type = 'button'; move.className = 'gb-btn'; move.textContent = text; move.setAttribute('aria-label', prop + (up ? 'を前へ' : 'を後へ'));
+          move.addEventListener('click', () => { if (up && row.previousElementSibling) list.insertBefore(row,row.previousElementSibling); else if (!up && row.nextElementSibling) list.insertBefore(row.nextElementSibling,row); }); row.appendChild(move);
+        }
+        row._axis = () => ({ ...axis, prop, label: caption.value.trim(), max: Number(max.value) || 0 });
+        list.appendChild(row);
       });
-      ctx.rerender();
+      if (!numeric.length) { const empty = document.createElement('p'); empty.textContent = '数値・数式の列をシートに追加してください。'; body.appendChild(empty); }
+      const maxRow = document.createElement('label'); maxRow.className = 'el-popup-row'; maxRow.textContent = '全軸の最大値（空欄で自動）';
+      const max = document.createElement('input'); max.type = 'number'; max.min = '0'; max.step = 'any'; max.value = draft.axisMax > 0 ? draft.axisMax : ''; max.dataset.e2eId = 'entity-layout-chart-axis-max'; maxRow.appendChild(max);
+      if (radar) body.appendChild(maxRow);
+      collect = () => ({ axes: [...list.children].filter(row => row.querySelector('input[type=checkbox]').checked).map(row => row._axis()), axisMax: Number(max.value) || 0 });
     } else {
-      _elAddCell(ctx, { type: 'chart', w: 320, h: 240, chart }, 'チャート');
+      const all = _elAllChartProps(ctx), numeric = _elNumericChartProps(ctx);
+      const x = selectRow(body, '分類・横軸の列', 'entity-layout-chart-x', [['','（未選択）'], ...all.map(prop => [prop,prop])], draft.xProperty || '');
+      const agg = selectRow(body, '集計', 'entity-layout-chart-agg', EL_CHART_AGGREGATIONS.map(item => [item.value,item.label]), draft.yAggregation || 'count');
+      const y = selectRow(body, '値・縦軸の列', 'entity-layout-chart-y', [['','（未選択）'], ...numeric.map(prop => [prop,prop])], draft.yProperty || '');
+      const toggle = () => { y.disabled = agg.value === 'count'; }; agg.addEventListener('change',toggle); toggle();
+      collect = () => ({ xProperty:x.value, yAggregation:agg.value, yProperty:y.value });
     }
+  };
+  type.addEventListener('change',build); source.addEventListener('change',build); build();
+  const flags = {};
+  for (const [key,label] of [['showLabels','ラベルを表示'],['showValues','レーダーの値を表示'],['showLegend','凡例を表示（円グラフ）']]) {
+    const row = document.createElement('label'); row.className = 'el-chart-axis-row';
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft[key] !== false; flags[key] = check;
+    row.append(check,document.createTextNode(label)); popup.appendChild(row);
+  }
+  const palette = selectRow(popup, '配色（棒・円・折れ線）', 'entity-layout-chart-palette', [['default','標準'],['warm','暖色'],['cool','寒色'],['themeAccent','テーマ色']], draft.palette || 'default');
+  // Preserve saved palettes that may have been created by another chart editor/version.
+  if (!palette.value && draft.palette) { palette.add(new Option(draft.palette,draft.palette)); palette.value = draft.palette; }
+  const error = document.createElement('p'); error.setAttribute('role','status'); popup.appendChild(error);
+  const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'gb-btn gb-btn-primary primary';
+  apply.dataset.e2eId = 'entity-layout-chart-apply'; apply.textContent = existingCell ? '適用' : '追加';
+  const close = _elAttachPopupCommon(popup, anchorBtn, { actions: [apply] });
+  apply.addEventListener('click', () => {
+    if ([...popup.querySelectorAll('input')].some(input => !input.checkValidity())) { error.textContent = '最大値は0以上の数値で指定してください'; return; }
+    const chart = { ...draft, ...collect(), chartType:type.value, dataSource:source.value, palette:palette.value };
+    Object.entries(flags).forEach(([key,check]) => { chart[key] = check.checked; });
+    if (chart.dataSource === 'entry' && (chart.axes.length < (chart.chartType === 'radar' ? 3 : 1) || chart.axes.some(axis => !_elNumericChartProps(ctx).includes(axis.prop)))) {
+      error.textContent = chart.chartType === 'radar' ? 'レーダーには有効な数値列を3つ以上選んでください' : '有効な数値列を1つ以上選んでください'; return;
+    }
+    if (chart.dataSource === 'sheet' && (!chart.xProperty || (chart.yAggregation !== 'count' && !chart.yProperty))) { error.textContent = '分類の列と、件数以外では値の列を選んでください'; return; }
+    close();
+    if (existingCell) { _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: チャート設定', target => { target.chart = chart; }); ctx.rerender(); }
+    else _elAddCell(ctx, { type:'chart', w:320, h:240, chart }, 'チャート');
   });
-  popup.appendChild(applyBtn);
-
-  const close = _elAttachPopupCommon(popup, anchorBtn);
 }

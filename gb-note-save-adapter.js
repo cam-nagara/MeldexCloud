@@ -36,6 +36,13 @@
   // 将来課題とし、ここでは「サーバー再読込済み内容へフォールバックした値を
   // 本当の未保存内容であるかのように自動一致判定してしまう」誤爆だけを防ぐ。
   const _restoredConflictDocKeys = new Set();
+  const _uncertainSaves = new WeakMap();
+
+  function _uncertainWriteError(error) {
+    return error?.isTimeout || error?.name === 'AbortError'
+      || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''))
+      || Number(error?.status) >= 500;
+  }
 
   function documentKeyForPath(path) {
     const coordinator = _coordinator();
@@ -75,7 +82,12 @@
   // 再変換、PUT、etag更新、履歴追加を一切行わない」の判定に使う。
   function isUnchanged(hostEl, md) {
     const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
-    return md === prevSaved;
+    const coordinator = _coordinator();
+    const key = hostEl?.dataset?.documentKey || documentKeyForPath(hostEl?.dataset?.path || '');
+    // A -> B (saving) -> A is a new edit: the outstanding B may still reach disk.
+    // An unchanged sibling must not submit its old copy over another host's edit.
+    return md === prevSaved && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
+      && !_uncertainSaves.get(hostEl)?.has(hostEl?.dataset?.path || '');
   }
 
   // 文書単位のarbiterへ「このホストは今この文書を表示している」ことだけを
@@ -179,6 +191,7 @@
     // コーディネーターだけが解除を拒否しているのにUI側だけ消すと、未解決競合を
     // ユーザーが再確認できなくなる（計画書§5工程2-A項目8）。
     if (!resolved) return false;
+    coordinator.getParticipants(documentKey).forEach(host => _uncertainSaves.get(host)?.delete(path));
     _safety()?.clearConflict?.(path);
     _hideConflictPendingBanner(documentKey);
     _restoredConflictDocKeys.delete(documentKey);
@@ -471,10 +484,28 @@
     // なっていた場合、その新しいetagをこの古い文書のPUTへ誤って付けてしまい、
     // 本来成功するはずの保存がfalse-positiveな409になり得た。
     const etagAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedEtag) || '';
+    const baselineAtRequestTime = hostEl?.dataset?.lastSavedMd;
+    const frontmatterAtRequestTime = hostEl?.dataset?.frontmatter || '';
     const transportRevisionAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedTransportRevision)
       || coordinator.normalizeTransportRevision?.(coordinator.currentTransportName(), etagAtRequestTime)
       || etagAtRequestTime;
-    const sendFn = (previousResult) => {
+    const sendFn = async (previousResult) => {
+      const uncertainSaves = _uncertainSaves.get(hostEl) || new Map();
+      _uncertainSaves.set(hostEl, uncertainSaves);
+      const uncertainSave = uncertainSaves.get(path);
+      if (uncertainSave) {
+        // A previous retry can also lose its ACK. Resolve that SAME operation
+        // before any newer text is allowed to use a revision. Keep it across
+        // failed saves in this host; drafts remain the durable recovery copy.
+        const recovered = await window.apiPut('/file?path=' + encodeURIComponent(path), uncertainSave.payload);
+        if (recovered?.skipped) return recovered;
+        uncertainSaves.delete(path);
+        previousResult = Object.assign({}, recovered, { savedMd:
+          typeof recovered?.saved_frontmatter === 'string'
+            ? recovered.saved_frontmatter + uncertainSave.md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+            : uncertainSave.md,
+        });
+      }
       const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
       const revisionForWrite = chainedRevision
         ? coordinator.normalizeTransportRevision(
@@ -488,20 +519,37 @@
       const extraWithRevision = Object.assign({
         if_match_etag: guardedEtag,
         transport_revision: revisionForWrite,
+        ...(typeof baselineAtRequestTime === 'string'
+          ? { base_content: previousResult?.savedMd ?? baselineAtRequestTime } : {}),
       }, options.extra || {});
-      return window.apiPut(
-        '/file?path=' + encodeURIComponent(path),
-        typeof window._noteSavePayload === 'function'
+      const payload = typeof window._noteSavePayload === 'function'
           ? window._noteSavePayload(hostEl, md, extraWithRevision)
           : {
             content: md,
             if_match_etag: guardedEtag,
             transport_revision: revisionForWrite,
             skip_if_missing: true,
-            ...(options.extra || {}),
-          },
-      );
+            ...extraWithRevision,
+          };
+      const url = '/file?path=' + encodeURIComponent(path);
+      try {
+        return await window.apiPut(url, payload, { silentError: true });
+      } catch (error) {
+        if (!_uncertainWriteError(error)) {
+          _safety()?.reportApiError?.(url, { method: 'PUT', body: JSON.stringify(payload) }, error);
+          throw error;
+        }
+        // Retry the SAME write with its ORIGINAL CAS precondition once. A lost
+        // ACK can mean the first write already committed (or is still running).
+        // The backend converges identical content; different external content
+        // still fails CAS. Never attach a freshly fetched revision to newer text.
+        uncertainSaves.set(path, { payload, md });
+        const recovered = await window.apiPut(url, payload);
+        uncertainSaves.delete(path);
+        return recovered;
+      }
     };
+    sendFn.confirmsWrites = true;
     return coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
       reason: options.reason || 'save',
       focusTarget: options.focusTarget || null,
@@ -511,6 +559,14 @@
       // 送っていないため、baseline同期（他ホストへの追従）を一切行わない
       // ——ここで触ると「未送信の内容が保存された」ことになってしまう。
       if (res && res.conflictPending) return res;
+      if (!res?.skipped && hostEl?.dataset?.path === path
+          && typeof res?.saved_frontmatter === 'string'
+          && (hostEl.dataset.frontmatter || '') === frontmatterAtRequestTime) {
+        // Keep newer input/format changes intact; only acknowledge the metadata
+        // paired with this save. The caller advances lastSavedMd/etag afterwards.
+        hostEl.dataset.frontmatter = res.saved_frontmatter;
+        hostEl._noteEditSerializeCache = null;
+      }
       const savedMd = (res && res.savedMd != null) ? res.savedMd : md;
       _syncSiblingBaselines(
         documentKey,

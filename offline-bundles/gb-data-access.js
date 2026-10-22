@@ -253,7 +253,9 @@
   }
 
   function _jsonHeaders(headers) {
-    return { 'Content-Type': 'application/json', ...(headers || {}) };
+    const result = new Headers(headers || undefined);
+    if (!result.has('Content-Type')) result.set('Content-Type', 'application/json');
+    return result;
   }
 
   function _requestMethod(opts) {
@@ -1799,7 +1801,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -2476,6 +2478,7 @@
     return NOT_HANDLED;
   }
 
+  let _pwaUiConfigWriteTail = Promise.resolve();
   async function requestJson(path, opts) {
     const started = performance.now();
     const requestOpts = opts || {};
@@ -2486,7 +2489,20 @@
       payload: _summarizePayload(requestOpts.body),
     };
     if (_runtime()?.isBrowserDataMode?.()) {
-      const localResult = await _pwaJsonRequest(path, requestOpts);
+      const endpoint = String(path || '').split('?')[0].replace(/^\/api/, '');
+      const changesUiConfig = _requestMethod(requestOpts) !== 'GET'
+        && (endpoint === '/ui-config' || /^\/ui-config\/history\/[^/]+\/restore$/.test(endpoint));
+      const send = () => _pwaJsonRequest(path, requestOpts);
+      let localResult;
+      if (changesUiConfig) {
+        // The browser implementation awaits hashing/history before publishing.
+        // Serialize both ordinary saves and restores, including other tabs.
+        const run = () => globalThis.navigator?.locks?.request
+          ? navigator.locks.request(PWA_UI_CONFIG_KEY, send) : send();
+        const pending = _pwaUiConfigWriteTail.catch(() => {}).then(run);
+        _pwaUiConfigWriteTail = pending;
+        localResult = await pending;
+      } else localResult = await send();
       if (localResult === NOT_HANDLED) {
         _logCompare({ ...logBase, adapter: `${mode}-unhandled`, durationMs: Math.round(performance.now() - started) });
         const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
