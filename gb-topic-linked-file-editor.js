@@ -263,6 +263,7 @@
     if (!access.readOnly) {
       const add = document.createElement('button');
       add.type = 'button'; add.className = 'gb-btn'; add.textContent = 'メッセージを追加';
+      add.dataset.action = 'add-message';
       add.addEventListener('click', () => {
         const message = { role: 'user', content: '', id: crypto.randomUUID() };
         messages.push(message); renderMessage(message); schedule();

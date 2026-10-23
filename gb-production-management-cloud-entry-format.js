@@ -56,7 +56,9 @@
         }
       });
     }
-    if (!properties['作品タイトル'] && !properties['作品タイトル_話数'] && entry?.inferredWorkTitle) {
+    const hasWorkAssignment = ['作品タイトル', '作品タイトル_話数']
+      .some(name => Object.prototype.hasOwnProperty.call(properties, name));
+    if (!hasWorkAssignment && entry?.inferredWorkTitle) {
       // 旧タスクは作品列を持たないことがある。所属する登録済みタスクシートから
       // 読み取り時だけ補完し、利用者のMarkdown自体は書き換えない。
       properties['作品タイトル'] = String(entry.inferredWorkTitle);

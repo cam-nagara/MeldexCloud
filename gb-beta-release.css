@@ -568,6 +568,7 @@
 
 #meldex-install-prompt-overlay .meldex-install-prompt-modal > .gb-modal-body,
 #meldex-install-help-overlay .meldex-install-help-modal > .gb-modal-body,
+#quick-memo-install-overlay .meldex-install-help-modal > .gb-modal-body,
 #meldex-cloud-home-first-overlay .meldex-cloud-home-first-modal > .gb-modal-body,
 #meldex-beta-consent-overlay .meldex-beta-consent-modal > .gb-modal-body {
   overflow-x: hidden !important;

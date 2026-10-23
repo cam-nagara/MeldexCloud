@@ -288,8 +288,11 @@
       return null;
     }
 
-    const source = trigger || (typeof HTMLElement !== 'undefined' && document.activeElement instanceof HTMLElement
+    const requestedSource = trigger || (typeof HTMLElement !== 'undefined' && document.activeElement instanceof HTMLElement
       ? document.activeElement : null);
+    const overflowSource = requestedSource?.closest?.('.gb-tbo-hidden')
+      ?.closest?.('.gb-toolbar-overflow-host')?.querySelector('.gb-toolbar-overflow-button');
+    const source = overflowSource || requestedSource;
     const panel = document.createElement('section');
     panel.className = 'gb-production-bulk-create';
     panel.dataset.e2eId = 'production-bulk-create-form';

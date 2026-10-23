@@ -775,7 +775,18 @@ function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, 
           _unregisterTreeSubtree(node);
           node.remove();
         });
-        merged.forEach(child => container.appendChild(nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath)));
+        // Moving an existing row to the same parent still detaches it. Keep
+        // unchanged rows in place so read-time projection preserves focus.
+        let nextNode = container.querySelector(':scope > .tree-node');
+        merged.forEach(child => {
+          const node = nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath);
+          if (node === nextNode) {
+            nextNode = node.nextElementSibling;
+            while (nextNode && !nextNode.matches('.tree-node')) nextNode = nextNode.nextElementSibling;
+          } else {
+            container.insertBefore(node, nextNode);
+          }
+        });
       }
       applyGlobalFilter();
       _snapshotBaseTreeVisibility();
@@ -887,14 +898,3 @@ function _setOutlinerDeletePending(paths, pending) {
 function _prepareOutlinerDeleteTargets(items) {
   const seen = new Set();
   const unique = (Array.isArray(items) ? items : [])
-    .filter(item => item && item.path)
-    .map(item => ({
-      name: item.name || item.label || String(item.path).split('/').pop() || '',
-      path: item.path,
-      type: item.type || 'page',
-      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-      _comparePath: _normalizeOutlinerPathForCompare(item.path),
-    }))
-    .filter(item => {
-      if (!item._comparePath || seen.has(item._comparePath)) return false;
-      seen.add(item._comparePath);

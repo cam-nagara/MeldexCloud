@@ -589,7 +589,23 @@
     };
 
     function _loadVersionTab(tabId, path, vType) {
-      if (!tabId || !path) return;
+      if (!tabId) return;
+      if (typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout()
+          && typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.open === 'function') {
+        const match = _findTabByIdInAnyGroup(tabId);
+        const paneEl = match && GBLayout.paneMap?.[match.paneId]?.el;
+        if (match?.panelsetNode && !paneEl?.getClientRects?.().length) {
+          const paneNode = GBLayout.findNode(GBLayout.root, match.paneId)?.node;
+          const tabIdx = paneNode?.tabs?.findIndex(tab => tab.id === tabId) ?? -1;
+          if (tabIdx >= 0) {
+            // Phone renders only the work pane; mount this exact history tab
+            // through the same temporary popup used by other auxiliary panels.
+            GBDockPopup.open({ panelsetNode: match.panelsetNode, groupId: match.groupId,
+              paneNode, tab: paneNode.tabs[tabIdx], tabIdx, anchorEl: document.activeElement });
+          }
+        }
+      }
+      if (!path) return;
       const comp = typeof getComponentInstance === 'function' ? getComponentInstance(tabId) : null;
       if (comp && comp._loadVersions) comp._loadVersions(path, vType || 'file');
     }

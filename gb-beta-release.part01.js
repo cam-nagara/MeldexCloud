@@ -951,7 +951,7 @@
   async function installMeldexApp() {
     const options = arguments[0] || {};
     if (_isDesktopInstallHost()) {
-      showMeldexInstallHelpDialog();
+      showMeldexInstallHelpDialog({ onManualDone: options.onManualDone });
       return { ok: false, manual: true };
     }
     if (_isStandaloneDisplayMode()) {

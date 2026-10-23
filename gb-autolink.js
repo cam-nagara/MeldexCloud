@@ -238,11 +238,15 @@ const MeldexAutoLink = (() => {
     if (_dictScope !== _normalizeDictScope(wf)) return false;
     if (!wf || !filePath) return true;
     const roots = [wf];
+    const files = [filePath];
     const vaultPath = (typeof state !== 'undefined' && state?.vaultPath) ? String(state.vaultPath) : '';
     if (vaultPath && !/^[A-Za-z]:[\\/]/.test(wf) && !String(wf).startsWith('/')) {
       roots.push(vaultPath.replace(/\\/g, '/') + '/' + String(wf).replace(/^\/+/, ''));
     }
-    return roots.some(root => _isPathInside(filePath, root));
+    if (vaultPath && !/^(?:[A-Za-z]:[\\/]|\/)/.test(String(filePath))) {
+      files.push(vaultPath.replace(/\\/g, '/') + '/' + String(filePath));
+    }
+    return files.some(file => roots.some(root => _isPathInside(file, root)));
   }
 
   // ── HTML文字列版（ノート、ボード、詳細パネル用） ──

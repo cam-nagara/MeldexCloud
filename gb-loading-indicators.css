@@ -124,7 +124,7 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray {
   position: fixed;
-  /* 設定などのダイアログ表示中も、進捗を暗転背景より手前で読めるようにする。 */
+  /* 通常時の進捗は通知レイヤーに表示する。ダイアログ表示中は下の規則で背面へ置く。 */
   z-index: var(--ui-z-toast, 400);
   /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
   right: calc(14px + var(--gb-rail-width, 38px) + 8px);
@@ -141,6 +141,11 @@ img.meldex-image-load-error {
 }
 
 .meldex-operation-tray[hidden] { display: none; }
+
+/* Modal actions must remain above background progress, including on phones. */
+body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-operation-tray {
+  z-index: calc(var(--ui-z-modal, 300) - 1);
+}
 
 .meldex-operation-tray-header {
   display: flex;

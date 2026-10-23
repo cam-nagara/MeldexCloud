@@ -489,6 +489,10 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
 }
 
 function bdGetActiveBoardRoot() {
+  // Embedded boards can own the legacy runtime inside an entity pane. The
+  // canonical canvas follows that owner even while another pane stays active.
+  const runtimeRoot = document.getElementById?.('bd-canvas')?.closest?.('.gb-canvas-root');
+  if (runtimeRoot) return runtimeRoot;
   if (typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined' && typeof getComponentInstance === 'function') {
     const tab = GBTabs.getActiveTab?.(GBLayout.activePane);
     const comp = tab ? getComponentInstance(tab.id) : null;

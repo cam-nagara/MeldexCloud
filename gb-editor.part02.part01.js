@@ -1439,10 +1439,10 @@ function getWorkFolder(path) {
   const key = _workFolderPathKey(path);
   const vault = typeof state !== 'undefined' ? _workFolderPathKey(state.vaultPath) : '';
   const absolute = value => /^(?:[a-z]:|\/)/i.test(value);
-  const candidates = [key, ...(!absolute(key) && vault ? [vault + '/' + key] : [])];
+  const candidates = [key, ...(!absolute(key) && vault ? [_workFolderPathKey(vault + '/' + key)] : [])];
   return records.filter(record => {
     const root = _workFolderPathKey(record.path);
-    const roots = [root, ...(!absolute(root) && vault ? [vault + '/' + root] : [])];
+    const roots = [root, ...(!absolute(root) && vault ? [_workFolderPathKey(vault + '/' + root)] : [])];
     return candidates.some(candidate => roots.some(base => candidate === base || candidate.startsWith(base + '/')));
   }).sort((a, b) => b.path.length - a.path.length)[0]?.path || '';
 }

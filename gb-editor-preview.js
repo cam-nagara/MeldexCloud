@@ -72,13 +72,21 @@ function _updateLinkedPreview(filePath, preloadedData) {
   }
 }
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const media = e.target.closest('.embed-media');
   if (!media) return;
   const path = media.dataset.path;
   if (path) {
-    _updateLinkedPreview(path);
     const name = media.dataset.name || path.split('/').pop();
+    if (typeof openLinkedPathInRightSidebar === 'function') {
+      try {
+        await openLinkedPathInRightSidebar(path, name, { sourceEl: media });
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '添付ファイルを開けませんでした', true);
+      }
+      return;
+    }
+    _updateLinkedPreview(path);
     if (typeof showDetailPanel === 'function') {
       showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);margin-bottom:8px;">${esc(name)}</div>

@@ -86,8 +86,8 @@
       if (source.hidden) return;
       const row = document.createElement(source.tagName === 'BUTTON' ? 'button' : 'label');
       row.className = 'gb-context-menu-item gb-tbo-row';
-      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.action || '';
-      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
+      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
+      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
       text.title = text.textContent;

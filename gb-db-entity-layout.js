@@ -1049,7 +1049,10 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     const focusTabId = session.pendingTabFocus;
     session.pendingTabFocus = '';
     requestAnimationFrame(() => {
-      const focusTab = Array.from(tabs.querySelectorAll('.el-tab'))
+      // 設定保存による再描画が同じフレームに重なっても、退避した旧タブへ
+      // フォーカスしない。別エントリ・別タブへ進んだ予約も破棄する。
+      if (!grid.isConnected || _elSessionByGrid.get(grid) !== session || session.tab !== focusTabId) return;
+      const focusTab = Array.from(grid.querySelectorAll(':scope > .el-tabbar .el-tabs > .el-tab'))
         .find(candidate => candidate.dataset.tabId === focusTabId);
       try { focusTab?.focus({ preventScroll: true }); } catch { /* ignore */ }
     });

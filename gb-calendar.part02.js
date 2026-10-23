@@ -795,7 +795,8 @@ function _startAlarmChecker(dbPath,events) {
    ============================== */
 const _dayLabels = ['日','月','火','水','木','金','土'];
 
-async function _showTemplateModal(dbPath) {
+async function _showTemplateModal(dbPath, options = {}) {
+  const returnFocus = options.returnFocus ?? document.activeElement;
   let templates = [];
   const content=document.createElement('div');
   content.innerHTML='<div id="tmpl-status" role="status" aria-live="polite"></div><div id="tmpl-list"></div>';
@@ -805,6 +806,7 @@ async function _showTemplateModal(dbPath) {
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-list',title:'週間テンプレート',body:[...content.childNodes],footer:[createButton,closeButton],
     variant:'standard',geometryKey:'calendar-db-template-list',minWidth:'0',initialFocus:'#tmpl-create',
+    returnFocus,
     closeLabel:'週間テンプレートを閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
   });
   const o=modalApi.overlay,panel=modalApi.modal,list=panel.querySelector('#tmpl-list'),status=panel.querySelector('#tmpl-status');
@@ -828,7 +830,7 @@ async function _showTemplateModal(dbPath) {
   list.addEventListener('click',async(event)=>{
     const btn=event.target.closest('button[data-action]');if(!btn||busy)return;
     const action=btn.dataset.action,tid=btn.dataset.tid;
-    if(action==='edit'){modalApi.close('edit');_editTemplate(dbPath,tid);return;}
+    if(action==='edit'){modalApi.close('edit');_editTemplate(dbPath,tid,{returnFocus});return;}
     if(action==='delete'){
       const target=templates.find(t=>String(t.id)===String(tid));
       if(deleteConfirmPending)return;
@@ -850,7 +852,7 @@ async function _showTemplateModal(dbPath) {
     while (names.includes(name)) { idx++; name = '無題' + idx; }
     setBusy(true);try {
       const res = await apiPost('/cal/schedule-templates', { name, entries: [], user: _getUser() });
-      setBusy(false);modalApi.close('created');_editTemplate(dbPath,res.id);
+      setBusy(false);modalApi.close('created');_editTemplate(dbPath,res.id,{returnFocus});
     } catch { status.textContent='作成に失敗しました。もう一度お試しください。'; }
     finally{if(modalApi.isOpen())setBusy(false);}
   });
@@ -863,12 +865,13 @@ function _addMinutes(timeStr, minutes) {
   return _p2(Math.floor(total / 60) % 24) + ':' + _p2(total % 60);
 }
 
-async function _editTemplate(dbPath, tid) {
+async function _editTemplate(dbPath, tid, options = {}) {
+  const returnFocus = options.returnFocus ?? document.activeElement;
   let templates = [];
   try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); }
-  catch { showStatus('テンプレートの読み込みに失敗しました', true); await _showTemplateModal(dbPath); return; }
+  catch { showStatus('テンプレートの読み込みに失敗しました', true); await _showTemplateModal(dbPath,{returnFocus}); return; }
   const t = templates.find(x => String(x.id) === String(tid));
-  if (!t) { showStatus('テンプレートが見つかりません', true); await _showTemplateModal(dbPath); return; }
+  if (!t) { showStatus('テンプレートが見つかりません', true); await _showTemplateModal(dbPath,{returnFocus}); return; }
 
   let entriesHtml = '';
   (t.entries || []).forEach(e => { entriesHtml += _templateEntryRow(e); });
@@ -886,6 +889,7 @@ async function _editTemplate(dbPath, tid) {
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-edit',title:`テンプレート編集: ${t.name}`,body:[...content.childNodes],footer:[cancelButton,saveButton],
     variant:'standard',geometryKey:'calendar-db-template-edit',minWidth:'0',initialFocus:'#tmpl-name',
+    returnFocus,
     closeLabel:'テンプレート編集を閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
   });
   const o=modalApi.overlay,panel=modalApi.modal,status=panel.querySelector('#tmpl-edit-status');
@@ -895,7 +899,7 @@ async function _editTemplate(dbPath, tid) {
   modalApi.open();
   panel.querySelector('#tmpl-add-entry').addEventListener('click', () => { panel.querySelector('#tmpl-entries').insertAdjacentHTML('beforeend', _templateEntryRow({})); });
   panel.querySelector('#tmpl-entries').addEventListener('click',event=>{const btn=event.target.closest('button[data-action]');if(btn&&!busy)btn.closest('.tmpl-entry')?.remove();});
-  cancelButton.addEventListener('click', () => { if(modalApi.close('cancel'))_showTemplateModal(dbPath); });
+  cancelButton.addEventListener('click', () => { if(modalApi.close('cancel'))_showTemplateModal(dbPath,{returnFocus}); });
   saveButton.addEventListener('click', async () => {
     if(busy)return;
     const name = panel.querySelector('#tmpl-name').value.trim() || '無題';
@@ -909,7 +913,7 @@ async function _editTemplate(dbPath, tid) {
       });
     });
     setBusy(true);status.textContent='保存中...';
-    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました');setBusy(false);modalApi.close('saved');_showTemplateModal(dbPath); }
+    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました');setBusy(false);modalApi.close('saved');_showTemplateModal(dbPath,{returnFocus}); }
     catch { status.textContent='保存に失敗しました。入力内容を保ったまま再試行できます。';showStatus('保存に失敗', true); }
     finally{if(modalApi.isOpen())setBusy(false);}
   });

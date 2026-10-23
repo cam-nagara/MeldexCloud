@@ -340,7 +340,11 @@ function _flushNoteDraftReservation(pc, options) {
   if (!draftPath) return;
   if (composingBlocked) return;
   const md = _noteMarkdownFromEditorNonDestructive(pc);
-  window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+  // 手動保存が入力の退避タイマーより先に完了した場合、保存済みの本文を
+  // 遅れて未保存ドラフトへ戻さない。保存後に追加入力があれば退避する。
+  if (md !== (pc.dataset.lastSavedMd || '')) {
+    window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+  }
   _maybeRefreshNoteTocAfterEdit(pc);
 }
 

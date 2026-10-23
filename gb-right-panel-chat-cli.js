@@ -41,8 +41,16 @@
   async function cliAuthResponse(response) {
     let payload = null;
     try { payload = await response.json(); } catch {}
-    if (!response.ok) throw new Error(payload?.detail || payload?.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(cliHttpErrorText(payload?.detail || payload?.message, response.status));
     return payload || {};
+  }
+
+  function cliHttpErrorText(detail, status) {
+    if (detail && typeof detail === 'object') {
+      return [detail.message || detail.error || detail.code,
+        detail.required_action?.message || detail.required_action?.label].filter(Boolean).join('\n') || `HTTP ${status}`;
+    }
+    return String(detail || `HTTP ${status}`);
   }
 
   function attachCliAuthRecovery(host, provider) {
@@ -1280,7 +1288,7 @@
       });
       if (!response.ok) {
         let errorText = '';
-        try { errorText = (await response.json())?.detail || ''; } catch {
+        try { errorText = cliHttpErrorText((await response.json())?.detail, response.status); } catch {
           try { errorText = await response.text(); } catch {}
         }
         throw new Error(errorText || ('HTTP ' + response.status));

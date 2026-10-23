@@ -357,10 +357,23 @@
       const normalized = remote
         ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
         : normalizeRegistryPayload(incoming);
-      normalized.updatedAt = _now();
+      if (remote && JSON.stringify(normalized.roots.map(_rootMergeKey))
+          === JSON.stringify(remote.registry.roots.map(_rootMergeKey))) {
+        _lastRegistry = remote.registry;
+        _writeJson(CACHE_KEY, remote.registry);
+        return remote.registry;
+      }
+      const initialSnapshot = options.initialSnapshot === true && !managed.record;
+      normalized.updatedAt = initialSnapshot ? '1970-01-01T00:00:00.000Z' : _now();
+      if (initialSnapshot) {
+        normalized.roots = normalized.roots.map(root => ({...root,
+          createdAt: normalized.updatedAt, updatedAt: normalized.updatedAt,
+        }));
+      }
       try {
         await managed.adapter.save(managed.kind, REGISTRY_DOCUMENT_ID, normalized, {
           expectedRevision: managed.record?.revision ?? null,
+          ...(initialSnapshot ? {initialSnapshot: true} : {}),
         });
         _lastRegistry = normalized;
         _writeJson(CACHE_KEY, normalized);
@@ -429,7 +442,7 @@
       const migrated = await _migrateLegacyTeamRegistry();
       if (migrated) return migrated;
       const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
-      if (options?.writeIfMissing !== false) return await writeRegistry(seeded);
+      if (options?.writeIfMissing !== false) return await writeRegistry(seeded, {initialSnapshot: true});
       return seeded;
     } catch (err) {
       if (_isRegistryNotFoundError(err)) {
@@ -437,7 +450,7 @@
         if (migrated) return migrated;
         const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
         if (options?.writeIfMissing !== false) {
-          try { return await writeRegistry(seeded); } catch {}
+          try { return await writeRegistry(seeded, {initialSnapshot: true}); } catch {}
         }
         _lastRegistry = seeded;
         _writeJson(CACHE_KEY, seeded);

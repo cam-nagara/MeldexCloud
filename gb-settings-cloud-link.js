@@ -77,6 +77,11 @@
     return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
   }
 
+  function _identifyCloudLinkHelp(host, identity) {
+    const help = host?.querySelector?.('.gb-field-help');
+    if (help) help.dataset.e2eId = identity;
+  }
+
   /* ==============================
      状態カード
      ============================== */
@@ -116,6 +121,7 @@
     const line2 = document.createElement('div');
     line2.className = 'gb-section-desc';
     line2.innerHTML = `ソースフォルダはこのDropboxにつないだすべての端末で共通です。 ${_cloudLinkHelp('デスクトップ版MeldexはDropboxアプリ経由で同じフォルダを開けます。')}`;
+    _identifyCloudLinkHelp(line2, 'settings-cloud-source-sharing-help');
     card.append(title, line1, line2);
 
     _appendWorkspaceJoinSection(card, container);
@@ -183,12 +189,14 @@
     joinBtn.type = 'button';
     joinBtn.className = 'gb-btn gb-btn-sm';
     joinBtn.textContent = '共有ワークスペースに参加';
+    joinBtn.dataset.e2eId = 'settings-cloud-workspace-join';
     joinBtn.addEventListener('click', () => _joinSharedWorkspace(container, joinBtn));
 
     const makeBtn = document.createElement('button');
     makeBtn.type = 'button';
     makeBtn.className = 'gb-btn gb-btn-sm';
     makeBtn.textContent = 'このフォルダを共有ワークスペースにする';
+    makeBtn.dataset.e2eId = 'settings-cloud-workspace-create';
     makeBtn.addEventListener('click', () => _makeOrJoinSharedWorkspace(container, makeBtn));
 
     btnRow.append(joinBtn, makeBtn);
@@ -439,6 +447,7 @@
     redoBtn.type = 'button';
     redoBtn.className = 'gb-btn gb-btn-sm gb-btn-quiet';
     redoBtn.textContent = '指定し直す…';
+    redoBtn.dataset.e2eId = 'settings-dropbox-root-reselect';
     redoBtn.addEventListener('click', () => _specifyDropboxSyncRoot(container, redoBtn));
     redoRow.appendChild(redoBtn);
     card.appendChild(redoRow);
@@ -448,6 +457,7 @@
     const line1 = document.createElement('div');
     line1.className = 'gb-section-desc';
     line1.innerHTML = `Dropboxアプリが見つかりません。 ${_cloudLinkHelp('Dropboxの中にデータを置くと、ブラウザ版Meldexや他のPCと共有できます。')}`;
+    _identifyCloudLinkHelp(line1, 'settings-dropbox-root-availability-help');
     card.appendChild(line1);
 
     const btnRow = document.createElement('div');
@@ -457,6 +467,7 @@
     btn.type = 'button';
     btn.className = 'gb-btn gb-btn-sm';
     btn.textContent = 'フォルダを指定…';
+    btn.dataset.e2eId = 'settings-dropbox-root-select';
     btn.addEventListener('click', () => _specifyDropboxSyncRoot(container, btn));
     btnRow.appendChild(btn);
     card.appendChild(btnRow);
@@ -541,6 +552,7 @@
     explain.className = 'gb-section-desc';
     explain.style.marginTop = '6px';
     explain.innerHTML = `Dropboxの中に置いたソースフォルダは、同じDropboxにつないだブラウザ版Meldexや他のPCにも自動で表示されます。 ${_cloudLinkHelp('共有の設定はDropbox内に保存されます。')}`;
+    _identifyCloudLinkHelp(explain, 'settings-dropbox-source-sharing-help');
     card.appendChild(explain);
 
     await _appendDesktopWorkspaceJoinSection(card, container);
@@ -866,12 +878,14 @@
     joinBtn.className = 'gb-btn gb-btn-sm';
     joinBtn.textContent = '共有ワークスペースに参加';
     joinBtn.addEventListener('click', () => _desktopJoinWorkspace(container, joinBtn));
+    joinBtn.dataset.e2eId = 'settings-desktop-workspace-join';
 
     const makeBtn = document.createElement('button');
     makeBtn.type = 'button';
     makeBtn.className = 'gb-btn gb-btn-sm';
     makeBtn.textContent = 'このフォルダを共有ワークスペースにする';
     makeBtn.addEventListener('click', () => _desktopMakeWorkspace(container, makeBtn));
+    makeBtn.dataset.e2eId = 'settings-desktop-workspace-create';
 
     btnRow.append(joinBtn, makeBtn);
     card.appendChild(btnRow);

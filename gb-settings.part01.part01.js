@@ -1246,6 +1246,17 @@ async function showSettingsModal(opts) {
       settingsStateController?.open(item.dataset.target);
     });
   });
+  const webClipHelp = o.querySelector('[data-settings-webclip-desktop] .gb-section-title .gb-field-help');
+  if (webClipHelp) webClipHelp.dataset.e2eId = 'settings-webclip-desktop-help';
+  const apiKeySection = o.querySelector('#modal-gemini-key')?.closest('.gb-section');
+  for (const [selector, id] of [
+    ['.gb-section-title .gb-field-help', 'settings-llm-api-keys-help'],
+    ['.gb-label .gb-field-help', 'settings-llm-cloud-keys-help'],
+    ['.gb-section-desc .gb-field-help', 'settings-llm-privacy-help'],
+  ]) {
+    const help = apiKeySection?.querySelector(selector);
+    if (help) help.dataset.e2eId = id;
+  }
   if (typeof bindSettingsThemePanel === 'function') bindSettingsThemePanel(o);
   window.MeldexMobileWebClipSettings?.bind?.(o);
   // モバイル時: 全パネルを非表示にして、セクションリストのみ表示

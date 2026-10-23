@@ -1,3 +1,14 @@
+    }
+  }
+
+  function setBoardTheme(board, id) {
+    if (!board) return;
+    const nextThemeId = _normalizeThemeIdWithPromotedCustom(id) || '';
+    if (String(board.themeId || '') === nextThemeId) {
+      applyBoardThemeRuntime(board);
+      return false;
+    }
+    if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
     board.themeId = nextThemeId;
     applyBoardThemeRuntime(board);
     if (typeof global.bdRender === 'function' && isBoardRenderReady(board)) global.bdRender();

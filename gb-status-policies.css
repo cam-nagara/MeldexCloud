@@ -686,6 +686,10 @@
   color: var(--danger);
 }
 
+body[data-cloud-mobile="1"] .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+  :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
+body[data-mobile-ui-local="1"] .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+  :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
 body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-inner-tab,
 body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-inner-tab,
 body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-btn,
@@ -720,6 +724,8 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
     border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0;
   }
 
+  .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+    :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
   .modal .knowledge-layer-view .gb-inner-tab {
     height: auto;
     min-height: var(--ui-h-touch);

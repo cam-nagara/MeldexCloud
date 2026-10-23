@@ -3858,7 +3858,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!filePath) throw new Error('path は必須です');
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
+      if (!entry || entry.kind !== 'file') {
+        throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+          status: 404, code: 'file_missing', meldexCode: 'file_missing',
+        });
+      }
       if (_boolParam(url.searchParams.get('metadata_only'))) {
         const etag = await _fileEtag(provider, filePath, entry);
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
@@ -4653,73 +4657,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
     }
-
-    if (pathname === '/outliner/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      _rejectProductionStructureMutation(body?.path || '', '削除');
-      const confirmationItem = {
-        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
-      };
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
-        item: confirmationItem, receipt: consumed.receipt,
-        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-      });
-    }
-
-    if (pathname === '/outliner/delete-batch' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
-      const confirmationItems = items.map(item => ({
-        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
-      }));
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
-      const results = [];
-      for (const item of confirmationItems) {
-        try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
-            item, receipt: consumed.receipt,
-            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-          }) });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
-      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
-        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
-          const sidecarPath = _csvMetadataPath(originalPath);
-          await _directoryHandle(provider, _dirname(sidecarPath), true);
-          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
-          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
-        });
-      }
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: originalPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
 /* gb-data-access-dropbox-fileops move-route continuation. */
     if (pathname === '/outliner/move' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -4973,6 +4910,73 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
  * Dropbox static runtime: trash listing, restore, permanent delete, empty,
  * and the terminal capability fallbacks. Continues the shared fileops IIFE.
  */
+    if (pathname === '/outliner/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      _rejectProductionStructureMutation(body?.path || '', '削除');
+      const confirmationItem = {
+        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
+      };
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
+      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
+        item: confirmationItem, receipt: consumed.receipt,
+        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+      });
+    }
+
+    if (pathname === '/outliner/delete-batch' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
+      const confirmationItems = items.map(item => ({
+        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
+      }));
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
+      const results = [];
+      for (const item of confirmationItems) {
+        try {
+          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
+            item, receipt: consumed.receipt,
+            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+          }) });
+        } catch (error) {
+          results.push({ ok: false, error: error?.message || String(error) });
+        }
+      }
+      return { ok: true, results };
+    }
+
+    if (pathname === '/outliner/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, trashName);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      await _moveEntry(provider, trashPath, originalPath);
+      const warnings = [];
+      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
+      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
+        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
+          const sidecarPath = _csvMetadataPath(originalPath);
+          await _directoryHandle(provider, _dirname(sidecarPath), true);
+          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
+          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
+        });
+      }
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+    }
+
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];

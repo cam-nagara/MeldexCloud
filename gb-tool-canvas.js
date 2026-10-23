@@ -69,7 +69,14 @@ class CanvasComponent extends ToolComponent {
   activate() {
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
-    if (isPaneActive) _bdSetActiveBoardRootIds(this.el, this.idSuffix);
+    if (isPaneActive) {
+      // Visible split panes are not deactivated by the layout bridge. Hand off
+      // the shared runtime before changing its root so each pane keeps its camera.
+      const previous = CanvasComponent._runtimeOwner;
+      if (previous && previous !== this && previous.el) previous.deactivate();
+      CanvasComponent._runtimeOwner = this;
+      _bdSetActiveBoardRootIds(this.el, this.idSuffix);
+    }
     // 保存された背景色を復元
     const ownTab = this._ownTab();
     if (ownTab?.type === 'board') {
@@ -159,7 +166,7 @@ class CanvasComponent extends ToolComponent {
   deactivate() {
     super.deactivate();
     // 未保存があれば保存
-    if (bd.dirty && bd.path) {
+    if (bd.dirty && bd.path && bd.path === (this.state.boardPath || bd.path)) {
       bdSave();
     }
     // bd の state を自分のインスタンスに dump（次 activate 時に restore する）
@@ -170,6 +177,7 @@ class CanvasComponent extends ToolComponent {
     if (this._interactionCleanup) { this._interactionCleanup(); this._interactionCleanup = null; }
     if (this._keyboardCleanup) { this._keyboardCleanup(); this._keyboardCleanup = null; }
     _bdRestoreBoardRootIds(this.el, this.idSuffix);
+    if (CanvasComponent._runtimeOwner === this) CanvasComponent._runtimeOwner = null;
   }
 
   destroy() {
@@ -177,10 +185,11 @@ class CanvasComponent extends ToolComponent {
     if (this._interactionCleanup) { this._interactionCleanup(); this._interactionCleanup = null; }
     if (this._keyboardCleanup) { this._keyboardCleanup(); this._keyboardCleanup = null; }
     // 未保存があれば保存
-    if (bd.dirty && bd.path) {
+    if (bd.dirty && bd.path && bd.path === (this.state.boardPath || bd.path)) {
       bdSave();
     }
     _bdRestoreBoardRootIds(this.el, this.idSuffix);
+    if (CanvasComponent._runtimeOwner === this) CanvasComponent._runtimeOwner = null;
     super.destroy();
   }
 

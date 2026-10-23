@@ -1,3 +1,14 @@
+    .filter(item => item && item.path)
+    .map(item => ({
+      name: item.name || item.label || String(item.path).split('/').pop() || '',
+      path: item.path,
+      type: item.type || 'page',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+      _comparePath: _normalizeOutlinerPathForCompare(item.path),
+    }))
+    .filter(item => {
+      if (!item._comparePath || seen.has(item._comparePath)) return false;
+      seen.add(item._comparePath);
       return true;
     })
     .sort((a, b) => a._comparePath.split('/').length - b._comparePath.split('/').length);
@@ -887,14 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     const mainCalPath = localStorage.getItem('main-calendar-path');
     const nodeFid = _pathToFileId(nodeData.path);
     const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;
-    const calPanel = _outlinerCreateSubmenu('メインカレンダー');
-    _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
-    [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
-      _outlinerAppendMenuItem(calPanel, {
-        html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
-        checked: isMain === val,
-        action: () => {
-        closeTreeContextMenu();
-        const before = _captureMainCalendarSettingsHistory();
-        if (val) {
-          localStorage.setItem('main-calendar-path', nodeData.path);

@@ -364,6 +364,8 @@
   // リフレッシュ・navPush の同一タブ内ファイル切替）から気軽に重複して呼んでよい。
   function _syncFollowingVersionTabs() {
     if (_versionFollowSyncing) return;
+    // A pinned version is a utility view, not a new content target to follow.
+    if (GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'version') return;
     if (typeof _getCurrentVersionTarget !== 'function') return;
     const followers = _collectFollowingVersionTabs();
     if (!followers.length) return;

@@ -817,9 +817,14 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   }
   const rootedHistoryPath = /^(?:[a-z]:[\\/]|\/)/i.test(path)
     || (!String(path).startsWith('_chat/') && String(path).replace(/\\/g, '/').includes('/_chat/'));
-  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath ? _detectSourceFolderFromPath(path) : '';
-  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
   const historyContext = await window.GBChatStorageContext.resolveForHistory();
+  const homeHistoryPrefix = _chatNormalizePath(historyContext.sourceFolder) + '/_chat/llm/';
+  const isRootedHomeHistory = _chatNormalizePath(path).startsWith(homeHistoryPrefix);
+  // The reference selector may omit Home while listing another source. Its
+  // relative-path fallback must not override the known history storage root.
+  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath
+    ? (isRootedHomeHistory ? historyContext.sourceFolder : _detectSourceFolderFromPath(path)) : '';
+  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
   const legacySource = explicitSourceFolder && _chatNormalizePath(explicitSourceFolder) !== _chatNormalizePath(historyContext.sourceFolder);
   if (legacySource && explicitSourceFolder !== _chatSourceFolderValue()) {
     const switched = await _chatSwitchSourceFolderForOpen(explicitSourceFolder, { skipSave: true });

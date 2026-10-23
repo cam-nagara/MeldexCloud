@@ -1,3 +1,7 @@
+    if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };
+    if (pathname === '/autostart' && method === 'GET') return { supported: false, enabled: false };
+    if (pathname === '/autostart' && method === 'POST') return { ok: false, supported: false };
+    if (pathname === '/chat/config' && method === 'GET') return _llmConfigShape();
     if (pathname === '/chat/config' && (method === 'PUT' || method === 'POST')) return { ok: false, unsupported: true };
     if (pathname === '/extensions/status' && method === 'GET') return { pillow: false, clip: false, caldav: false };
     if (pathname === '/extensions/install' && method === 'POST') return { ok: false, error: 'ブラウザ版では拡張インストールに対応していません' };

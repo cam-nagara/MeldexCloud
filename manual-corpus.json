@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.415",
+  "manual_version": "0.7.416",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "aff95ee7dbfa1295735f0f61bdc51a3dde57dff97e7ab1dbfb4b0e4f45fd82a1",
+  "source_digest": "d595645d0eb499d33577e0d706129c37d332add1d8bbc2106f2898671ddb9099",
   "document_count": 209,
   "chunk_count": 1924,
   "documents": [
@@ -235,7 +235,7 @@
       "path": "03_設定と連携/CLI MCP連携.md",
       "title": "CLI MCP連携",
       "category": "設定・外部連携",
-      "source_sha256": "4ebd5708b555ba9799d5afab0b7ae903b4c11785b3109932bca2854ca3749b6d",
+      "source_sha256": "dec88cdfaaef4f2dba8508da7a9a7e81e6deccbd59e10b82657f3c381d3f7294",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%20MCP%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -249,7 +249,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "13b73a6e870074b736335ccbbc2ab06936e0323cec9657147bccffe2f0452be0",
+      "source_sha256": "e5fc24d29939c7b92845086f1baed8174edbdd559869d5c17b165d425639c7a5",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -9109,7 +9109,7 @@
       "category": "設定・外部連携",
       "heading": "CLI MCP連携",
       "anchor": "cli-mcp",
-      "text": "Codex CLI / Claude Code / Antigravity CLI などの外部CLIから、Meldexのファイル、シート、ナレッジ、編集履歴をMCP経由で操作するための設定です。\n外部CLI側のLLMが判断し、Meldexは保存、検索、権限判定、ファイルロック、編集履歴記録を担当します。\nMeldexのチャット欄から Codex CLI / Claude Code / Antigravity CLI へ直接送信したい場合は、先に CLIチャット連携 を参照してください。\nこのページは、外部CLI側からMeldexを操作するMCP設定を説明します。",
+      "text": "Codex CLI / Claude Code / Antigravity CLI などの外部CLIから、Meldexのファイル、シート、ナレッジ、編集履歴をMCP経由で操作するための設定です。\n外部CLI側のLLMが判断し、Meldexは保存、検索、権限判定、ファイルロック、編集履歴記録を担当します。\nmeldex_read_project_overview の permissions.write は、認証済みユーザーの編集権限と現在の対象範囲を示します。変更先ごとの編集ロック・権限は保存時にも確認します。書込みを許可されていない場合は、理由と管理者への編集権限依頼などの必要な操作が返ります。\nシートの作成では meldex_get_feature_manifest(feature=\"sheet\") の作成手順と各ツールの入力仕様を確認してください。get_feature_schema / validate_feature_payload は生成計画全体を検証するもので、create_sheet の path・title だけの引数とは異なります。能力台帳を読み取れない場合は、旧Schemaだけで作成せず、Meldexを更新してください。\nMeldexのチャット欄から Codex CLI / Claude Code / Antigravity CLI へ直接送信したい場合は、先に CLIチャット連携 を参照してください。\nこのページは、外部CLI側からMeldexを操作するMCP設定を説明します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%20MCP%E9%80%A3%E6%90%BA.md&section=cli-mcp"
     },
     {
@@ -9419,7 +9419,7 @@
       "category": "チャット・AI",
       "heading": "CLIチャット連携",
       "anchor": "cli",
-      "text": "Meldexのチャットから、Codex CLI / Claude Code / Antigravity CLI を呼び出して会話するための設定です。\n通常のLLMチャットとは別に、PCに入っているCLIをMeldexから起動します。",
+      "text": "Meldexのチャットから、Codex CLI / Claude Code / Antigravity CLI を呼び出して会話するための設定です。\n通常のLLMチャットとは別に、PCに入っているCLIをMeldexから起動します。\nCLIへは、現在選択しているソースフォルダ・作品フォルダ・対象ファイルを継続実行ごとに渡します。作品フォルダが見つからない場合や、過去の対象と現在の対象が食い違う場合は、そのまま別作品へ操作せず停止します。チャットの対象を選び直して再送信してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli"
     },
     {

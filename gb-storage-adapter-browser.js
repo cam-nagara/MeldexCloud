@@ -335,13 +335,19 @@
     }
 
     _syncWorkspaceState() {
-      _runtime()?.setWorkspaceState?.({
+      const runtime = _runtime();
+      const next = {
         kind: 'browser',
         name: 'この端末',
         path: STORAGE_ROOT_NAME,
         access: 'editor',
         shared: false,
-      });
+      };
+      const current = runtime?.getWorkspaceState?.();
+      const keys = Object.keys(next);
+      if (current && Object.keys(current).length === keys.length
+        && keys.every(key => current[key] === next[key])) return;
+      runtime?.setWorkspaceState?.(next);
     }
 
     async restoreWorkspace() {

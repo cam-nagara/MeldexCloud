@@ -172,12 +172,18 @@
     const resourceId = _pmCloudTopicResourceId(mutationId);
     const fallbackLabel = kind === 'note' ? '新規ノート' : '新規チャット';
     const label = String(body?.label || fallbackLabel).trim().replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) || fallbackLabel;
-    const user = String(body?.current_user || global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous')
+    const user = String(body?.current_user || (typeof getUsername === 'function' ? getUsername() : '')
+      || window.state?.currentUser?.name || window.currentUser?.name || window.currentUser || 'anonymous')
       .replace(/[\\/:*?"<>|]+/g, '_') || 'anonymous';
     const userSegment = user === '.' || user === '..' ? 'anonymous' : user;
+    const chatHome = kind === 'chat' ? await window.MeldexDataAccess?.requestJson?.('/home-folder') : null;
+    if (kind === 'chat' && (!chatHome?.path || chatHome.exists === false)) {
+      throw _pmCloudError(409, '関連チャットの保存先を準備できませんでした。ホームフォルダ設定を確認してください');
+    }
+    const chatHistoryPath = kind === 'chat' ? internals._joinPath('_chat/llm', userSegment, `${label}-${resourceId.slice(-8)}.md`) : '';
     const resourcePath = kind === 'note'
       ? `_meldex/topics/v1/resources/${encodeURIComponent(topicId)}/${resourceId}.md`
-      : `_chat/llm/${userSegment}/${label}-${resourceId.slice(-8)}.md`;
+      : internals._joinPath(chatHome.path, chatHistoryPath);
     const created = new Date().toISOString();
     const content = kind === 'note'
       ? `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(resourceId)}\n---\n# ${label}\n\n`
@@ -191,6 +197,7 @@
       if (!currentText) { await provider.writeText(resourcePath, content); wroteResource = true; }
       const resource = { resourceId, resourceType: kind === 'note' ? 'note-link' : 'chat-link', href: resourcePath,
         label, creationMutationId: mutationId };
+      if (kind === 'chat') resource.homeHistoryPath = chatHistoryPath;
       const updateEnvelope = current => {
         const base = current?.record ? current : envelope;
         const resources = Array.isArray(base.record.resources) ? [...base.record.resources] : [];

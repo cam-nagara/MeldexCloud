@@ -447,9 +447,7 @@
 
         const menu = document.createElement('div');
         menu.className = 'meldex-entity-attachment-menu ab-dropdown-menu';
-        menu.style.position = 'absolute';
-        menu.style.top = '100%';
-        menu.style.right = '0';
+        menu.style.position = 'fixed';
         menu.style.zIndex = '1000';
         menu.style.background = 'var(--bg-panel, #252526)';
         menu.style.border = '1px solid var(--border-color, #3c3c3c)';
@@ -509,8 +507,15 @@
         };
         setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
 
-        addContainer.appendChild(menu);
-        if (typeof positionPopup === 'function') positionPopup(menu, addBtn.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+        // The common positioner uses viewport coordinates. Mount outside the
+        // scrolling entity pane so its offsets and clipping do not apply.
+        document.body.appendChild(menu);
+        const anchor = addBtn.getBoundingClientRect();
+        if (typeof positionPopup === 'function') positionPopup(menu, anchor, { prefer: 'below', gap: 4 });
+        else {
+          menu.style.left = Math.max(4, anchor.right - menu.offsetWidth) + 'px';
+          menu.style.top = anchor.bottom + 4 + 'px';
+        }
         if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
       }
 
@@ -539,6 +544,8 @@
         nameSpan.setAttribute('aria-selected', 'false');
         nameSpan.dataset.allowReadonly = '1';
         nameSpan.dataset.attachmentId = item.id;
+        nameSpan.dataset.action = 'select-attachment';
+        nameSpan.dataset.e2eId = `entity-attachment-select-${item.id}`;
         nameSpan.tabIndex = -1;
         nameSpan.textContent = item.name || item.path.split('/').pop();
         nameSpan.title = item.path || '';
@@ -569,6 +576,9 @@
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'meldex-entity-attachment-del-btn';
+          delBtn.dataset.action = 'remove-attachment';
+          delBtn.dataset.attachmentId = item.id;
+          delBtn.dataset.e2eId = `entity-attachment-remove-${item.id}`;
           const deletesLinkedFile = item.mode !== 'link';
           delBtn.title = deletesLinkedFile ? 'リンク先ファイルを削除' : 'リンクを外す';
           delBtn.ariaLabel = delBtn.title;

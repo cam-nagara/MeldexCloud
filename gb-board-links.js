@@ -321,6 +321,7 @@ async function _bdFireSelectAutoSubpanel(seq, nodeId) {
   await openLinkedPathInRightPane(resolved.path, node.text || '', {
     linkType: resolved.type || '',
     reveal: false,
+    selectionPreviewSeq: seq,
   });
 }
 
@@ -802,7 +803,9 @@ async function openLinkedPathInRightSidebar(path, label, options) {
 
 async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
+  if (opts.reveal !== false) bdRequestLinkedSelectionAutoSubpanel(null);
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  if (opts.selectionPreviewSeq != null && opts.selectionPreviewSeq !== _bdSelectAutoSubpanelSeq) return false;
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を

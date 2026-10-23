@@ -1668,10 +1668,23 @@
       const normalized = remote
         ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
         : normalizeRegistryPayload(incoming);
-      normalized.updatedAt = _now();
+      if (remote && JSON.stringify(normalized.roots.map(_rootMergeKey))
+          === JSON.stringify(remote.registry.roots.map(_rootMergeKey))) {
+        _lastRegistry = remote.registry;
+        _writeJson(CACHE_KEY, remote.registry);
+        return remote.registry;
+      }
+      const initialSnapshot = options.initialSnapshot === true && !managed.record;
+      normalized.updatedAt = initialSnapshot ? '1970-01-01T00:00:00.000Z' : _now();
+      if (initialSnapshot) {
+        normalized.roots = normalized.roots.map(root => ({...root,
+          createdAt: normalized.updatedAt, updatedAt: normalized.updatedAt,
+        }));
+      }
       try {
         await managed.adapter.save(managed.kind, REGISTRY_DOCUMENT_ID, normalized, {
           expectedRevision: managed.record?.revision ?? null,
+          ...(initialSnapshot ? {initialSnapshot: true} : {}),
         });
         _lastRegistry = normalized;
         _writeJson(CACHE_KEY, normalized);
@@ -1740,7 +1753,7 @@
       const migrated = await _migrateLegacyTeamRegistry();
       if (migrated) return migrated;
       const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
-      if (options?.writeIfMissing !== false) return await writeRegistry(seeded);
+      if (options?.writeIfMissing !== false) return await writeRegistry(seeded, {initialSnapshot: true});
       return seeded;
     } catch (err) {
       if (_isRegistryNotFoundError(err)) {
@@ -1748,7 +1761,7 @@
         if (migrated) return migrated;
         const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
         if (options?.writeIfMissing !== false) {
-          try { return await writeRegistry(seeded); } catch {}
+          try { return await writeRegistry(seeded, {initialSnapshot: true}); } catch {}
         }
         _lastRegistry = seeded;
         _writeJson(CACHE_KEY, seeded);
@@ -11554,8 +11567,13 @@
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
       const initialSnapshot = opts.initialSnapshot === true;
       const initialEpoch = '1970-01-01T00:00:00.000Z';
-      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
-          && ['theme-settings', 'restore-point-policy'].includes(docId)
+      const initialRegistry = kind === contract.SystemStorageKind.FOLDER_ASSOCIATIONS && docId === 'source-folders'
+        && payload.version === 1 && Array.isArray(payload.roots) && payload.roots.every(root =>
+          root && root.createdAt === initialEpoch && root.updatedAt === initialEpoch
+          && root.deleted === false && root.deletedAt === '');
+      const initialBoundary = initialRegistry ? `initial-source-registry:${docId}` : `initial-preference:${docId}`;
+      if (initialSnapshot && !(((kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)) || initialRegistry)
           && expectedRevision === null && payload.updatedAt === initialEpoch)) {
         throw new contract.SystemStorageError('初期設定の作成条件が不正です');
       }
@@ -11565,7 +11583,7 @@
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
       const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
-        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && record.boundary === initialBoundary && record.createdAt === initialEpoch
         && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
       if (sameInitial(existing)) return existing;
 
@@ -11603,7 +11621,7 @@
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
+        boundary: initialSnapshot ? initialBoundary : this._boundary,
       };
       const envelope = contract.recordToEnvelope(record);
       const bytes = new TextEncoder().encode(initialSnapshot
@@ -35024,7 +35042,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!filePath) throw new Error('path は必須です');
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
+      if (!entry || entry.kind !== 'file') {
+        throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+          status: 404, code: 'file_missing', meldexCode: 'file_missing',
+        });
+      }
       if (_boolParam(url.searchParams.get('metadata_only'))) {
         const etag = await _fileEtag(provider, filePath, entry);
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
@@ -35819,73 +35841,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
     }
-
-    if (pathname === '/outliner/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      _rejectProductionStructureMutation(body?.path || '', '削除');
-      const confirmationItem = {
-        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
-      };
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
-        item: confirmationItem, receipt: consumed.receipt,
-        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-      });
-    }
-
-    if (pathname === '/outliner/delete-batch' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
-      const confirmationItems = items.map(item => ({
-        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
-      }));
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
-      const results = [];
-      for (const item of confirmationItems) {
-        try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
-            item, receipt: consumed.receipt,
-            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-          }) });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
-      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
-        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
-          const sidecarPath = _csvMetadataPath(originalPath);
-          await _directoryHandle(provider, _dirname(sidecarPath), true);
-          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
-          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
-        });
-      }
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: originalPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
 /* gb-data-access-dropbox-fileops move-route continuation. */
     if (pathname === '/outliner/move' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -36139,6 +36094,73 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
  * Dropbox static runtime: trash listing, restore, permanent delete, empty,
  * and the terminal capability fallbacks. Continues the shared fileops IIFE.
  */
+    if (pathname === '/outliner/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      _rejectProductionStructureMutation(body?.path || '', '削除');
+      const confirmationItem = {
+        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
+      };
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
+      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
+        item: confirmationItem, receipt: consumed.receipt,
+        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+      });
+    }
+
+    if (pathname === '/outliner/delete-batch' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
+      const confirmationItems = items.map(item => ({
+        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
+      }));
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
+      const results = [];
+      for (const item of confirmationItems) {
+        try {
+          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
+            item, receipt: consumed.receipt,
+            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+          }) });
+        } catch (error) {
+          results.push({ ok: false, error: error?.message || String(error) });
+        }
+      }
+      return { ok: true, results };
+    }
+
+    if (pathname === '/outliner/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, trashName);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      await _moveEntry(provider, trashPath, originalPath);
+      const warnings = [];
+      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
+      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
+        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
+          const sidecarPath = _csvMetadataPath(originalPath);
+          await _directoryHandle(provider, _dirname(sidecarPath), true);
+          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
+          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
+        });
+      }
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+    }
+
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];
@@ -41329,6 +41351,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (!access.readOnly) {
       const add = document.createElement('button');
       add.type = 'button'; add.className = 'gb-btn'; add.textContent = 'メッセージを追加';
+      add.dataset.action = 'add-message';
       add.addEventListener('click', () => {
         const message = { role: 'user', content: '', id: crypto.randomUUID() };
         messages.push(message); renderMessage(message); schedule();
@@ -41802,9 +41825,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
         const menu = document.createElement('div');
         menu.className = 'meldex-entity-attachment-menu ab-dropdown-menu';
-        menu.style.position = 'absolute';
-        menu.style.top = '100%';
-        menu.style.right = '0';
+        menu.style.position = 'fixed';
         menu.style.zIndex = '1000';
         menu.style.background = 'var(--bg-panel, #252526)';
         menu.style.border = '1px solid var(--border-color, #3c3c3c)';
@@ -41864,8 +41885,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         };
         setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
 
-        addContainer.appendChild(menu);
-        if (typeof positionPopup === 'function') positionPopup(menu, addBtn.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+        // The common positioner uses viewport coordinates. Mount outside the
+        // scrolling entity pane so its offsets and clipping do not apply.
+        document.body.appendChild(menu);
+        const anchor = addBtn.getBoundingClientRect();
+        if (typeof positionPopup === 'function') positionPopup(menu, anchor, { prefer: 'below', gap: 4 });
+        else {
+          menu.style.left = Math.max(4, anchor.right - menu.offsetWidth) + 'px';
+          menu.style.top = anchor.bottom + 4 + 'px';
+        }
         if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
       }
 
@@ -41894,6 +41922,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         nameSpan.setAttribute('aria-selected', 'false');
         nameSpan.dataset.allowReadonly = '1';
         nameSpan.dataset.attachmentId = item.id;
+        nameSpan.dataset.action = 'select-attachment';
+        nameSpan.dataset.e2eId = `entity-attachment-select-${item.id}`;
         nameSpan.tabIndex = -1;
         nameSpan.textContent = item.name || item.path.split('/').pop();
         nameSpan.title = item.path || '';
@@ -41924,6 +41954,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'meldex-entity-attachment-del-btn';
+          delBtn.dataset.action = 'remove-attachment';
+          delBtn.dataset.attachmentId = item.id;
+          delBtn.dataset.e2eId = `entity-attachment-remove-${item.id}`;
           const deletesLinkedFile = item.mode !== 'link';
           delBtn.title = deletesLinkedFile ? 'リンク先ファイルを削除' : 'リンクを外す';
           delBtn.ariaLabel = delBtn.title;
@@ -51591,8 +51624,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (source.hidden) return;
       const row = document.createElement(source.tagName === 'BUTTON' ? 'button' : 'label');
       row.className = 'gb-context-menu-item gb-tbo-row';
-      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.action || '';
-      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
+      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
+      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
       text.title = text.textContent;
@@ -60996,7 +61029,7 @@ if (typeof window !== 'undefined') {
   async function installMeldexApp() {
     const options = arguments[0] || {};
     if (_isDesktopInstallHost()) {
-      showMeldexInstallHelpDialog();
+      showMeldexInstallHelpDialog({ onManualDone: options.onManualDone });
       return { ok: false, manual: true };
     }
     if (_isStandaloneDisplayMode()) {
@@ -72521,6 +72554,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
       for (const states of Object.values(theme.ui.themeUiApplications || {})) {
         if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
       }
+      // The starter rail uses white icons. Shade only its shipped background;
+      // saved custom themes keep their explicit foreground and background.
+      const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])
+        || normalizeThemeColor(theme.board?.accent) || '#569cd6';
+      const railBackground = '#' + railAccent.slice(1).match(/../g)
+        .map(channel => Math.round(parseInt(channel, 16) * 0.9).toString(16).padStart(2, '0')).join('');
+      theme.ui.themeUiApplications['collapse-button'].selected.bg = 'color:' + railBackground;
       for (const id of ['left-chrome', 'collapse-button', 'folder', 'folder-tree-folder']) {
         if (theme.ui.themeUiApplications?.[id]?.normal) theme.ui.themeUiApplications[id].normal.bg = THEME_UI_VALUE_NONE;
       }
@@ -72558,6 +72598,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function getThemeById(id) {
+    _ensureInitialCustomThemeCleanup();
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
@@ -72569,7 +72610,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _ensureInitialCustomThemeCleanup();
     const migrated = global.MeldexThemeMigration?.migrateEditorThemeStorage?.(DEFAULT_THEME_KEY) || '';
     const stored = localStorage.getItem(DEFAULT_THEME_KEY) || migrated || 'builtin-dark';
-    const archivedTarget = _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
+    // 復元済みのカスタムIDは有効な保存先。移行アーカイブを理由に組込みへ
+    // 戻すと、配色移行が非表示のアーカイブだけを更新して元の配色を失う。
+    const archivedTarget = !_readRawCustomThemes().some(theme => theme.id === stored)
+      && _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
     const next = _normalizeDefaultThemeId(archivedTarget || stored.replace(/^custom-simple-(dark|light|pastel|earth)$/, 'builtin-$1'));
     if (stored && next !== stored) {
       try { localStorage.setItem(DEFAULT_THEME_KEY, next); } catch {}
@@ -78322,13 +78366,19 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
 
     _syncWorkspaceState() {
-      _runtime()?.setWorkspaceState?.({
+      const runtime = _runtime();
+      const next = {
         kind: 'browser',
         name: 'この端末',
         path: STORAGE_ROOT_NAME,
         access: 'editor',
         shared: false,
-      });
+      };
+      const current = runtime?.getWorkspaceState?.();
+      const keys = Object.keys(next);
+      if (current && Object.keys(current).length === keys.length
+        && keys.every(key => current[key] === next[key])) return;
+      runtime?.setWorkspaceState?.(next);
     }
 
     async restoreWorkspace() {

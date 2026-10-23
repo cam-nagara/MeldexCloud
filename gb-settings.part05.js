@@ -653,7 +653,7 @@ function _settingsThemePreviewSupplement(appId) {
     target.app ? ownSections.has(target.app)
       : appId === 'main' || !windowOnly.has(target.id)
   ).map(_settingsThemePreviewPaletteTarget).join('');
-  return `<details class="settings-theme-extra-elements"><summary data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
 }
 
 function _settingsThemePreviewPaletteTarget(target) {

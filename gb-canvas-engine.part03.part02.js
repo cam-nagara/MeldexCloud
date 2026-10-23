@@ -563,6 +563,8 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  // シート欄のフォーカス中の入力も、純粋なスナップショットとは分けて保存前に確定する。
+  window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
   // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
@@ -585,6 +587,7 @@ async function bdSave() {
   while (pendingNodeTextWrites) {
     if (!await pendingNodeTextWrites) return false;
     if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+    window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
     markdown = bdToMd();
     pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
   }

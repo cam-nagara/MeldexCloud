@@ -112,6 +112,7 @@
     { id: 'delete', label: '削除', icon: 'trash2', action: () => _callGlobal('bdDeleteSelected') },
     { id: 'duplicate', label: '複製', icon: 'copy', action: () => _boardDuplicateSelected() },
     { id: 'reset-rotation', label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
+    { id: 'minimap', label: 'ミニマップ', icon: 'map', action: () => _callGlobal('bdToggleMinimap') },
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [

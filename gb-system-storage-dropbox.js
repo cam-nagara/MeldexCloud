@@ -531,8 +531,13 @@
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
       const initialSnapshot = opts.initialSnapshot === true;
       const initialEpoch = '1970-01-01T00:00:00.000Z';
-      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
-          && ['theme-settings', 'restore-point-policy'].includes(docId)
+      const initialRegistry = kind === contract.SystemStorageKind.FOLDER_ASSOCIATIONS && docId === 'source-folders'
+        && payload.version === 1 && Array.isArray(payload.roots) && payload.roots.every(root =>
+          root && root.createdAt === initialEpoch && root.updatedAt === initialEpoch
+          && root.deleted === false && root.deletedAt === '');
+      const initialBoundary = initialRegistry ? `initial-source-registry:${docId}` : `initial-preference:${docId}`;
+      if (initialSnapshot && !(((kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)) || initialRegistry)
           && expectedRevision === null && payload.updatedAt === initialEpoch)) {
         throw new contract.SystemStorageError('初期設定の作成条件が不正です');
       }
@@ -542,7 +547,7 @@
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
       const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
-        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && record.boundary === initialBoundary && record.createdAt === initialEpoch
         && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
       if (sameInitial(existing)) return existing;
 
@@ -580,7 +585,7 @@
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
+        boundary: initialSnapshot ? initialBoundary : this._boundary,
       };
       const envelope = contract.recordToEnvelope(record);
       const bytes = new TextEncoder().encode(initialSnapshot

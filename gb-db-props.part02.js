@@ -159,7 +159,8 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
 // ギャラリー/カンバンカード右クリックメニュー
 function showDbCardContextMenu(e, dbPath, entityName, propName) {
   closeColHeaderMenu();
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
+  const tableCtx = e?.target?.closest?.('tbody')?._meldexCtx;
+  const ctx = tableCtx && !tableCtx.destroyed ? tableCtx : typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath })
     : null;
   const targetDbPath = ctx?.dbPath || dbPath || state.currentDbPath;
@@ -172,7 +173,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   ) || null;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
-  const ep = _entityPath(targetDbPath, entityName, pivotData);
+  const sourceRow = e?.target?.closest?.('tr[data-entity-name]');
+  const rowPath = sourceRow?.dataset?.entityName === entityName ? sourceRow.dataset.meldexEntityPath : '';
+  const ep = rowPath || _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
   // サブパネル内では、右サイドバーで開く・チャットを開く等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。

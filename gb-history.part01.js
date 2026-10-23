@@ -921,6 +921,10 @@ function _getCurrentVersionTarget() {
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
     ? GBTabs.getActiveTab(GBLayout.activePane)
     : null;
+  if (activeTab?.type === 'scriptnote') {
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null;
+    return { path: component?.state?.scenarioPath || activeTab.state?.scenarioPath || activeTab.path || '', type: 'file' };
+  }
   if (state.view === 'page') { const pc = document.getElementById('page-content'); path = pc?.dataset?.path || ''; }
   else if (state.view === 'entity') { const ep = state.currentEntityPath; path = ep ? (ep.endsWith('.md') ? ep : ep + '/_freetext.md') : ''; }
   else if (state.view === 'board') { path = bd.path || ''; }

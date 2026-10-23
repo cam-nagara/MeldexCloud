@@ -113,7 +113,19 @@
         ? await _pmCloudEnsureProjectlessTaskSheet(provider, internals, journal)
         : await _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal);
       if (surface === 'calendar') { await _pmCloudJournalCalendar(journal, 'events'); await _pmCloudJournalCalendar(journal, 'calendars'); }
-      const entry = await _pmCloudWriteNewEntry(provider, internals, 'タスクリスト', sheet, name, props, journal, key);
+      let entry = await _pmCloudWriteNewEntry(provider, internals, 'タスクリスト', sheet, name, props, journal, key);
+      const sourceId = String(entry.frontmatter?.topicRef?.sourceId || _pmCloudProductionSourceId(provider, internals));
+      const topicId = String(entry.frontmatter?.topicRef?.topicId || entry.frontmatter.id);
+      const topicPath = `_meldex/topics/v1/sources/${encodeURIComponent(sourceId)}/records/${encodeURIComponent(topicId)}.json`;
+      await _pmCloudJournalText(journal, topicPath);
+      await _pmCloudEnsureTaskTopic(provider, internals, entry);
+      const reparsed = await _pmCloudReadFrontmatter(provider, entry.path);
+      entry = {
+        ...entry,
+        frontmatter: reparsed.frontmatter || entry.frontmatter,
+        body: reparsed.body || entry.body,
+        transportRevision: await _pmCloudEntryTransportRevision(provider, entry.path, reparsed),
+      };
       if (surface === 'calendar') await _pmCloudSyncTaskEvent(provider, internals, entry.path, entry.frontmatter);
       return { ok: true, surface, template_id: String(template.frontmatter?.id || template.name), row: _pmCloudEntryRow(entry), cloud: true };
     } catch (error) { return _pmCloudRollbackMutation(journal, error); }

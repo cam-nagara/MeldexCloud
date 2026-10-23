@@ -91,6 +91,7 @@
     const records = this._selectedEventRecords();
     const selectedIds = new Set(records.map(ev => String(ev?.id || '')));
     this._contentEl?.classList?.toggle?.('gb-cal-has-event-selection', selectedIds.size > 0);
+    const selectionCopies = new Map();
     this._contentEl?.querySelectorAll?.('[data-event-id]').forEach(card => {
       const id = card.dataset.eventId || '';
       card.classList.toggle('gb-cal-event-selected', selectedIds.has(id));
@@ -102,6 +103,10 @@
         check.setAttribute('aria-label', '選択');
         card.insertBefore(check, card.firstChild);
       }
+      const identity = JSON.stringify([this.tabId || this.paneId || 'calendar', card.dataset.calendarId || '_calendar', id]);
+      const copy = selectionCopies.get(identity) || 0;
+      selectionCopies.set(identity, copy + 1);
+      check.dataset.e2eId = 'calendar-event-select-' + encodeURIComponent(identity) + '-' + copy;
       const selected = selectedIds.has(id);
       check.checked = selected;
       check.setAttribute('aria-checked', selected ? 'true' : 'false');

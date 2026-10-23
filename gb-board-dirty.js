@@ -317,7 +317,7 @@ function bdFlushDirtyComments(state) {
 
 function bdFlushDirtyMinimap(dirtyState) {
   if (!dirtyState.dirtyMinimap || typeof bdUpdateMinimap !== 'function') return;
-  const pane = document.getElementById('gb-preview-pane');
+  const pane = typeof bdGetMinimapPane === 'function' ? bdGetMinimapPane() : document.getElementById('gb-preview-pane');
   if (!pane || (typeof state !== 'undefined' && state.view !== 'board')) return;
   if (typeof bdShouldRenderMinimapInPreviewPane === 'function' && !bdShouldRenderMinimapInPreviewPane(pane)) return;
   // ノード/接続/スタイル更新系の dirty はキャッシュも無効化 (bdTransform からの pure transform 呼び出しと区別する)

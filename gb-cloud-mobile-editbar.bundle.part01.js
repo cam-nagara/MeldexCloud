@@ -116,6 +116,7 @@
     { id: 'delete', label: '削除', icon: 'trash2', action: () => _callGlobal('bdDeleteSelected') },
     { id: 'duplicate', label: '複製', icon: 'copy', action: () => _boardDuplicateSelected() },
     { id: 'reset-rotation', label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
+    { id: 'minimap', label: 'ミニマップ', icon: 'map', action: () => _callGlobal('bdToggleMinimap') },
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [
@@ -897,4 +898,3 @@
       // （本体 gb-annotations の _annotationSelectTool と同じ設計）。
       if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
     });
-    const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;

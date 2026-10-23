@@ -1,3 +1,4 @@
+    const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
   }
 

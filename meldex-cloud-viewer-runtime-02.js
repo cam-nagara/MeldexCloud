@@ -2401,8 +2401,13 @@
       const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
       const initialSnapshot = opts.initialSnapshot === true;
       const initialEpoch = '1970-01-01T00:00:00.000Z';
-      if (initialSnapshot && !(kind === contract.SystemStorageKind.USER_PREFERENCES
-          && ['theme-settings', 'restore-point-policy'].includes(docId)
+      const initialRegistry = kind === contract.SystemStorageKind.FOLDER_ASSOCIATIONS && docId === 'source-folders'
+        && payload.version === 1 && Array.isArray(payload.roots) && payload.roots.every(root =>
+          root && root.createdAt === initialEpoch && root.updatedAt === initialEpoch
+          && root.deleted === false && root.deletedAt === '');
+      const initialBoundary = initialRegistry ? `initial-source-registry:${docId}` : `initial-preference:${docId}`;
+      if (initialSnapshot && !(((kind === contract.SystemStorageKind.USER_PREFERENCES
+          && ['theme-settings', 'restore-point-policy'].includes(docId)) || initialRegistry)
           && expectedRevision === null && payload.updatedAt === initialEpoch)) {
         throw new contract.SystemStorageError('初期設定の作成条件が不正です');
       }
@@ -2412,7 +2417,7 @@
       const existing = await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
       const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
-        && record.boundary === `initial-preference:${docId}` && record.createdAt === initialEpoch
+        && record.boundary === initialBoundary && record.createdAt === initialEpoch
         && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
       if (sameInitial(existing)) return existing;
 
@@ -2450,7 +2455,7 @@
         payload,
         createdAt: existing ? existing.createdAt : timestamp,
         updatedAt: timestamp,
-        boundary: initialSnapshot ? `initial-preference:${docId}` : this._boundary,
+        boundary: initialSnapshot ? initialBoundary : this._boundary,
       };
       const envelope = contract.recordToEnvelope(record);
       const bytes = new TextEncoder().encode(initialSnapshot
@@ -3501,10 +3506,23 @@
       const normalized = remote
         ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
         : normalizeRegistryPayload(incoming);
-      normalized.updatedAt = _now();
+      if (remote && JSON.stringify(normalized.roots.map(_rootMergeKey))
+          === JSON.stringify(remote.registry.roots.map(_rootMergeKey))) {
+        _lastRegistry = remote.registry;
+        _writeJson(CACHE_KEY, remote.registry);
+        return remote.registry;
+      }
+      const initialSnapshot = options.initialSnapshot === true && !managed.record;
+      normalized.updatedAt = initialSnapshot ? '1970-01-01T00:00:00.000Z' : _now();
+      if (initialSnapshot) {
+        normalized.roots = normalized.roots.map(root => ({...root,
+          createdAt: normalized.updatedAt, updatedAt: normalized.updatedAt,
+        }));
+      }
       try {
         await managed.adapter.save(managed.kind, REGISTRY_DOCUMENT_ID, normalized, {
           expectedRevision: managed.record?.revision ?? null,
+          ...(initialSnapshot ? {initialSnapshot: true} : {}),
         });
         _lastRegistry = normalized;
         _writeJson(CACHE_KEY, normalized);
@@ -3573,7 +3591,7 @@
       const migrated = await _migrateLegacyTeamRegistry();
       if (migrated) return migrated;
       const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
-      if (options?.writeIfMissing !== false) return await writeRegistry(seeded);
+      if (options?.writeIfMissing !== false) return await writeRegistry(seeded, {initialSnapshot: true});
       return seeded;
     } catch (err) {
       if (_isRegistryNotFoundError(err)) {
@@ -3581,7 +3599,7 @@
         if (migrated) return migrated;
         const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
         if (options?.writeIfMissing !== false) {
-          try { return await writeRegistry(seeded); } catch {}
+          try { return await writeRegistry(seeded, {initialSnapshot: true}); } catch {}
         }
         _lastRegistry = seeded;
         _writeJson(CACHE_KEY, seeded);
@@ -13598,7 +13616,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!filePath) throw new Error('path は必須です');
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
+      if (!entry || entry.kind !== 'file') {
+        throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+          status: 404, code: 'file_missing', meldexCode: 'file_missing',
+        });
+      }
       if (_boolParam(url.searchParams.get('metadata_only'))) {
         const etag = await _fileEtag(provider, filePath, entry);
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
@@ -14393,73 +14415,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
     }
-
-    if (pathname === '/outliner/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      _rejectProductionStructureMutation(body?.path || '', '削除');
-      const confirmationItem = {
-        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
-      };
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
-        item: confirmationItem, receipt: consumed.receipt,
-        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-      });
-    }
-
-    if (pathname === '/outliner/delete-batch' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
-      const confirmationItems = items.map(item => ({
-        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
-      }));
-      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
-      const results = [];
-      for (const item of confirmationItems) {
-        try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
-            item, receipt: consumed.receipt,
-            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-          }) });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
-      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
-        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
-          const sidecarPath = _csvMetadataPath(originalPath);
-          await _directoryHandle(provider, _dirname(sidecarPath), true);
-          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
-          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
-        });
-      }
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: originalPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
 /* gb-data-access-dropbox-fileops move-route continuation. */
     if (pathname === '/outliner/move' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -14713,6 +14668,73 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
  * Dropbox static runtime: trash listing, restore, permanent delete, empty,
  * and the terminal capability fallbacks. Continues the shared fileops IIFE.
  */
+    if (pathname === '/outliner/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      _rejectProductionStructureMutation(body?.path || '', '削除');
+      const confirmationItem = {
+        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
+      };
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
+      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
+        item: confirmationItem, receipt: consumed.receipt,
+        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+      });
+    }
+
+    if (pathname === '/outliner/delete-batch' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
+      const confirmationItems = items.map(item => ({
+        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
+      }));
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
+      const results = [];
+      for (const item of confirmationItems) {
+        try {
+          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
+            item, receipt: consumed.receipt,
+            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+          }) });
+        } catch (error) {
+          results.push({ ok: false, error: error?.message || String(error) });
+        }
+      }
+      return { ok: true, results };
+    }
+
+    if (pathname === '/outliner/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, trashName);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      await _moveEntry(provider, trashPath, originalPath);
+      const warnings = [];
+      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
+      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
+        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
+          const sidecarPath = _csvMetadataPath(originalPath);
+          await _directoryHandle(provider, _dirname(sidecarPath), true);
+          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
+          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
+        });
+      }
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+    }
+
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];
@@ -20779,8 +20801,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (source.hidden) return;
       const row = document.createElement(source.tagName === 'BUTTON' ? 'button' : 'label');
       row.className = 'gb-context-menu-item gb-tbo-row';
-      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.action || '';
-      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.action || 'control');
+      row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
+      row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
       text.textContent = label(source);
       text.title = text.textContent;

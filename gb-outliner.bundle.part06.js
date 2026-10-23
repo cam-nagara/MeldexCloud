@@ -1,3 +1,14 @@
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
+    const nv = input.value.trim() || '無題';
+    labelEl.textContent = nv;
+
+    // ファイル/フォルダの実体をリネーム
+    if (nodeData.path && nv !== old) {
+      const oldPath = nodeData.path;
+      try {
+        const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page',

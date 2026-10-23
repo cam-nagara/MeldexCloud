@@ -1422,9 +1422,10 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   background: var(--bg3);
 }
 .gf-chip.is-active.is-muted {
-  color: var(--ui-accent-fg, var(--ui-fg-strong, #fff));
+  /* The saved type selection remains outlined while filtering is off. */
+  color: var(--fg);
   border-color: var(--accent);
-  background: var(--accent);
+  background: var(--bg3);
 }
 .gf-filter-popup #gf-modified-days {
   box-sizing: border-box;

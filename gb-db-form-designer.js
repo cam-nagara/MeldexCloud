@@ -3,8 +3,9 @@
   'use strict';
   const model = () => globalThis.MeldexDbFormModel;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const button = (label, run) => {
+  const button = (label, run, identity) => {
     const element = document.createElement('button'); element.type = 'button'; element.className = 'gb-btn';
+    if (identity) element.dataset.e2eId = identity;
     element.textContent = label; element.addEventListener('click', event => { event.stopPropagation(); run(event); }); return element;
   };
   function appendRules(root, cfg, property, type, save) {
@@ -86,9 +87,13 @@
     if (ctx?.formApp) return;
     if (cfg.betaFeedbackRelay || cfg.customInstructionsRelay) return;
     if (!MeldexDbFormRuntime.writable(root, dbPath, ctx)) return;
+    const owner = ctx?.containerEl || root;
+    const surface = owner.closest?.('.gb-pane')?.dataset.paneId || owner.id || root.parentElement?.id || 'form';
+    const identity = action => ['db-form-binding', surface, dbPath, cfg.id || 'default', action].map(encodeURIComponent).join(':');
     const row = document.createElement('div'); row.className = 'gb-form-binding';
     const label = document.createElement('label'); label.textContent = '共通レイアウト';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '共通レイアウト');
+    select.dataset.e2eId = identity('layout');
     const layouts = _elGetState(dbPath).layouts;
     for (const item of [{ id: '', name: '従来の自動配置フォーム' }, ...layouts]) {
       const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; option.selected = cfg.layoutId === item.id;
@@ -110,7 +115,7 @@
         const added = _elGetState(dbPath).layouts.find(layout => !known.has(layout.id));
         if (added) bind(added.id, true);
       } });
-    }));
+    }, identity('template')));
     row.appendChild(button('現在の項目から配置を作成', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       let id;
@@ -123,12 +128,12 @@
         }));
       }, { ctx });
       bind(id, true);
-    }));
+    }, identity('create')));
     if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       const editor = document.createElement('div'); editor.className = 'gb-form-layout-editor'; root.replaceChildren(row, editor);
       row.querySelectorAll('button').forEach(control => { control.disabled = true; }); select.disabled = true;
-      row.appendChild(button('配置編集を終了', () => renderDbFormView(ctx)));
+      row.appendChild(button('配置編集を終了', () => renderDbFormView(ctx), identity('finish')));
       const session = { editMode: true };
       const render = () => {
         editor.replaceChildren();
@@ -141,7 +146,7 @@
           }, { ctx, onRestore: () => { if (editor.isConnected) render(); } });
         } } }, dbPath, layout.id, render);
       }; render();
-    }));
+    }, identity('edit')));
     root.appendChild(row);
   }
   globalThis.MeldexDbFormDesigner = { appendRules, settings, addTools, buildViewSelector };

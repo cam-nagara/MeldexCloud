@@ -868,6 +868,12 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   align-items: stretch;
 }
 
+.gb-production-collaboration-feedback {
+  flex-basis: 100%;
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
 .gb-production-sidebar-button {
   min-width: 0;
   max-width: 100%;

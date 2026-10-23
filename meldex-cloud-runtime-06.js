@@ -1155,8 +1155,11 @@
       return null;
     }
 
-    const source = trigger || (typeof HTMLElement !== 'undefined' && document.activeElement instanceof HTMLElement
+    const requestedSource = trigger || (typeof HTMLElement !== 'undefined' && document.activeElement instanceof HTMLElement
       ? document.activeElement : null);
+    const overflowSource = requestedSource?.closest?.('.gb-tbo-hidden')
+      ?.closest?.('.gb-toolbar-overflow-host')?.querySelector('.gb-toolbar-overflow-button');
+    const source = overflowSource || requestedSource;
     const panel = document.createElement('section');
     panel.className = 'gb-production-bulk-create';
     panel.dataset.e2eId = 'production-bulk-create-form';
@@ -5223,6 +5226,32 @@
 (function() {
   'use strict';
 
+  function openTopicResource(resource, entryPath) {
+    const path = String(resource?.href || resource?.path || resource?.url || '').trim();
+    const isChat = String(resource?.resourceType || '').includes('chat');
+    if (isChat && resource?.homeHistoryPath !== undefined) {
+      const historyPath = String(resource.homeHistoryPath || '').replace(/\\/g, '/');
+      if (!/^_chat\/llm\/[^/]+\/[^/]+\.md$/.test(historyPath)
+          || historyPath.split('/').some(part => part === '.' || part === '..')
+          || typeof window.openSavedChat !== 'function') {
+        if (typeof showStatus === 'function') showStatus('このチャットのホーム内の保存先を確認できません', true);
+        return false;
+      }
+      return window.openSavedChat(historyPath);
+    }
+    if (isChat && /^_chat\/llm\//.test(path.replace(/\\/g, '/'))) {
+      const sourceFolder = typeof _detectSourceFolderFromPath === 'function' ? _detectSourceFolderFromPath(entryPath) : '';
+      if (!sourceFolder || typeof window.openSavedChat !== 'function') {
+        if (typeof showStatus === 'function') showStatus('このチャットを保存したソースフォルダを確認できません', true);
+        return false;
+      }
+      return window.openSavedChat(path, '', sourceFolder);
+    }
+    return window.MeldexSheetEntryAttachments?.openAttachment?.({
+      path, name: path.split('/').pop(), kind: isChat ? 'chat' : 'note',
+    }, entryPath);
+  }
+
   const STATE = new WeakMap();
   const EVENT_REQUESTS = new WeakMap();
   let LAST_BODY = null;
@@ -5789,12 +5818,7 @@
           link.textContent = String(resource?.label || resource?.title || href || '関連リソース');
           link.dataset.e2eId = 'gb-production-topic-resource-open';
           link.dataset.resourcePath = href;
-          link.addEventListener('click', () => {
-            window.MeldexSheetEntryAttachments?.openAttachment?.({
-              path: href, name: href.split('/').pop(),
-              kind: String(resource?.resourceType || '').includes('chat') ? 'chat' : 'note',
-            }, entryPath);
-          });
+          link.addEventListener('click', () => openTopicResource(resource, entryPath));
           const detach = document.createElement('button');
           detach.type = 'button'; detach.textContent = 'リンク解除'; detach.disabled = !!availability.blocked;
           detach.dataset.e2eId = 'gb-production-topic-resource-detach';
@@ -5979,13 +6003,25 @@
     collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
     collaboration.setAttribute('role', 'group');
     collaboration.setAttribute('aria-label', 'タスクについて相談・確認');
+    const collaborationFeedback = document.createElement('div');
+    collaborationFeedback.className = 'gb-production-collaboration-feedback';
+    collaborationFeedback.dataset.e2eId = 'gb-production-task-collaboration-feedback';
+    collaborationFeedback.setAttribute('role', 'alert');
+    collaborationFeedback.hidden = true;
     const runCollaboration = async (control, failureMessage, callback) => {
       if (control.dataset.busy === 'true') return;
+      collaborationFeedback.hidden = true;
+      collaborationFeedback.textContent = '';
       control.dataset.busy = 'true';
       control.disabled = true;
       control.setAttribute('aria-busy', 'true');
       try { await callback(); }
-      catch (error) { status(error?.message || failureMessage, true); }
+      catch (error) {
+        const message = error?.message || failureMessage;
+        collaborationFeedback.textContent = message;
+        collaborationFeedback.hidden = false;
+        status(message, true);
+      }
       finally {
         control.dataset.busy = 'false';
         control.disabled = false;
@@ -5997,6 +6033,7 @@
       await openPage(row.name || '制作タスク', row.path);
       openRightPanelTab('annotation', { surface: 'main' });
       const annotationOpened = document.getElementById('right-panel')?.classList.contains('open')
+        || (window.GBDockPopup?.isOpen?.() && window.GBDockPopup.getCurrentPopupTarget?.()?.tabType === 'annotation')
         || (typeof GBTabs !== 'undefined' && !!GBTabs.findPaneWithTab?.('annotation', ''));
       if (annotationOpened) {
         document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
@@ -6015,7 +6052,7 @@
     }));
     notifications.dataset.e2eId = 'gb-production-task-collaboration-notifications';
     notifications.dataset.gbTooltip = '現在の通知を確認します';
-    collaboration.append(annotation, notifications);
+    collaboration.append(annotation, notifications, collaborationFeedback);
     form.appendChild(actions);
     form.appendChild(collaboration);
     window.MeldexProductionUiAvailability?.markWriteForm?.(form);
@@ -6255,6 +6292,7 @@
   }
 
   window.MeldexProductionSidebar = Object.freeze({
+    openTopicResource,
     render,
     openTask,
     syncTask,

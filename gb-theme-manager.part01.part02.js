@@ -555,6 +555,13 @@
       for (const states of Object.values(theme.ui.themeUiApplications || {})) {
         if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
       }
+      // The starter rail uses white icons. Shade only its shipped background;
+      // saved custom themes keep their explicit foreground and background.
+      const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])
+        || normalizeThemeColor(theme.board?.accent) || '#569cd6';
+      const railBackground = '#' + railAccent.slice(1).match(/../g)
+        .map(channel => Math.round(parseInt(channel, 16) * 0.9).toString(16).padStart(2, '0')).join('');
+      theme.ui.themeUiApplications['collapse-button'].selected.bg = 'color:' + railBackground;
       for (const id of ['left-chrome', 'collapse-button', 'folder', 'folder-tree-folder']) {
         if (theme.ui.themeUiApplications?.[id]?.normal) theme.ui.themeUiApplications[id].normal.bg = THEME_UI_VALUE_NONE;
       }
@@ -592,6 +599,7 @@
   }
 
   function getThemeById(id) {
+    _ensureInitialCustomThemeCleanup();
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
@@ -603,7 +611,10 @@
     _ensureInitialCustomThemeCleanup();
     const migrated = global.MeldexThemeMigration?.migrateEditorThemeStorage?.(DEFAULT_THEME_KEY) || '';
     const stored = localStorage.getItem(DEFAULT_THEME_KEY) || migrated || 'builtin-dark';
-    const archivedTarget = _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
+    // 復元済みのカスタムIDは有効な保存先。移行アーカイブを理由に組込みへ
+    // 戻すと、配色移行が非表示のアーカイブだけを更新して元の配色を失う。
+    const archivedTarget = !_readRawCustomThemes().some(theme => theme.id === stored)
+      && _readPromotedInitialThemeSources().find(entry => entry.theme.id === stored)?.targetId;
     const next = _normalizeDefaultThemeId(archivedTarget || stored.replace(/^custom-simple-(dark|light|pastel|earth)$/, 'builtin-$1'));
     if (stored && next !== stored) {
       try { localStorage.setItem(DEFAULT_THEME_KEY, next); } catch {}

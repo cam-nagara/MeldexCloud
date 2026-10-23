@@ -8,6 +8,60 @@ let _bdMinimapCacheDirty = true;
 
 function bdInvalidateMinimapCache() { _bdMinimapCacheDirty = true; }
 
+function _bdMinimapBoardCanvas() {
+  return (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : null)
+    || document.getElementById('bd-canvas');
+}
+
+function bdGetMinimapPane() {
+  const panel = _bdMinimapBoardCanvas()?.querySelector(':scope > .bd-minimap-panel');
+  return panel && !panel.hidden ? panel.querySelector('[data-bd-minimap-pane]') : document.getElementById('gb-preview-pane');
+}
+
+function bdShowMinimap(show = true) {
+  const owner = _bdMinimapBoardCanvas();
+  if (!owner) return null;
+  let panel = owner.querySelector(':scope > .bd-minimap-panel');
+  if (!panel && show) {
+    panel = document.createElement('section');
+    panel.className = 'bd-minimap-panel';
+    panel.setAttribute('aria-label', 'ボードのミニマップ');
+    panel.style.cssText = 'position:absolute;right:12px;bottom:76px;width:min(260px,calc(100% - 24px));height:180px;max-height:calc(100% - 100px);z-index:20;display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden;box-shadow:0 3px 12px #0003;';
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-left:12px;flex-shrink:0;';
+    const title = document.createElement('span'); title.textContent = 'ミニマップ';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'gb-btn';
+    close.textContent = '×'; close.setAttribute('aria-label', 'ミニマップを閉じる');
+    close.dataset.e2eId = 'bd-minimap-close:' + (owner.closest('.gb-pane')?.dataset.paneId || 'board');
+    close.style.cssText = 'min-width:44px;min-height:44px;border:0;border-radius:0;';
+    close.addEventListener('click', () => { panel.hidden = true; panel.style.display = 'none'; });
+    header.append(title, close);
+    const pane = document.createElement('div'); pane.dataset.bdMinimapPane = '1'; pane.dataset.previewMode = 'board';
+    pane.style.cssText = 'flex:1;min-height:0;overflow:hidden;';
+    panel.append(header, pane);
+    panel.addEventListener('pointerdown', () => {
+      const paneId = owner.closest('.gb-pane')?.dataset.paneId;
+      if (paneId && typeof GBLayout !== 'undefined'
+          && (GBLayout.activePane !== paneId || _bdMinimapBoardCanvas() !== owner)) {
+        GBLayout.setActivePane(paneId, { sync: true });
+      }
+    }, true);
+    for (const type of ['pointerdown', 'click', 'wheel']) panel.addEventListener(type, event => event.stopPropagation());
+    owner.appendChild(panel);
+  }
+  if (!panel) return null;
+  panel.hidden = !show; panel.style.display = show ? 'flex' : 'none';
+  if (show) { bdInvalidateMinimapCache(); bdUpdateMinimap(); }
+  return panel.querySelector('[data-bd-minimap-pane]');
+}
+
+function bdToggleMinimap() {
+  const panel = _bdMinimapBoardCanvas()?.querySelector(':scope > .bd-minimap-panel');
+  return bdShowMinimap(!panel || panel.hidden);
+}
+
+if (typeof window !== 'undefined') window.addEventListener?.('resize', () => bdUpdateMinimap());
+
 function bdShouldRenderMinimapInPreviewPane(pane) {
   if (!pane || typeof state === 'undefined' || state.view !== 'board') return false;
   const mode = String(pane.dataset?.previewMode || '');
@@ -177,7 +231,7 @@ function _bdBindPreviewMinimapInteraction(canvas) {
     const offsetY = height / 2 - centerY * scale;
     const worldX = (event.clientX - rect.left - offsetX) / scale;
     const worldY = (event.clientY - rect.top - offsetY) / scale;
-    const boardCanvas = document.getElementById('bd-canvas');
+    const boardCanvas = _bdMinimapBoardCanvas();
     if (!boardCanvas) return;
     const zoom = _bdSafeMinimapZoom();
     bd.panX = boardCanvas.clientWidth / 2 - worldX * zoom;
@@ -194,7 +248,7 @@ function _bdBindPreviewMinimapInteraction(canvas) {
 }
 
 function _bdDrawPreviewMinimap() {
-  const pane = document.getElementById('gb-preview-pane');
+  const pane = bdGetMinimapPane();
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
   if (!bd.nodes.length) {
     pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">トピックがありません</div>';
@@ -208,7 +262,7 @@ function _bdDrawPreviewMinimap() {
     canvas.style.cssText = 'width:100%;height:100%;cursor:crosshair;';
     pane.appendChild(canvas);
     // パネルサイズ変化に追従（フィット倍率がパネルサイズに依存するため必須）
-    if (typeof ResizeObserver === 'function' && !pane._bdMinimapRO) {
+    if (typeof ResizeObserver === 'function' && !pane.hasAttribute('data-bd-minimap-pane') && !pane._bdMinimapRO) {
       pane._bdMinimapRO = new ResizeObserver(() => {
         if (state.view === 'board') bdUpdateMinimap();
       });
@@ -254,7 +308,7 @@ function _bdDrawPreviewMinimap() {
 
   // 合成: ノード/接続線キャッシュを転写 → ビューポート枠を重ねる
   ctx.drawImage(_bdMinimapCacheOffscreen, 0, 0, pixelW, pixelH, 0, 0, W, H);
-  const cv = document.getElementById('bd-canvas');
+  const cv = _bdMinimapBoardCanvas();
   if (cv) {
     _bdDrawMinimapViewport(ctx, cv, scale, ox, oy, accentColor, _bdSafeMinimapZoom());
   }

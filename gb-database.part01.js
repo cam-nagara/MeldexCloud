@@ -30,6 +30,29 @@ function _resolveDatabasePaneContext(ctx, options) {
     return ctx;
   }
   let candidate = ctx || _currentPaneState();
+  let joinedLayoutContext = false;
+  // Direct/legacy entry points can run before the layout bridge registers its
+  // context. Join that same live pane so its deferred load coalesces instead
+  // of replacing a cell editor with a second load into the global proxy.
+  const joinLiveLayoutContext = () => {
+    if (typeof _globalPaneState === 'function' && candidate === _globalPaneState()
+      && typeof GBLayout !== 'undefined' && GBLayout.activePane
+      && GBLayout.findNode?.(GBLayout.root, GBLayout.activePane)?.node) {
+      const livePaneId = GBLayout.activePane;
+      const liveContent = GBLayout.paneMap?.[livePaneId]?.contentEl;
+      if (liveContent && typeof getPaneContext === 'function') {
+        const liveContext = getPaneContext(livePaneId)
+          || (typeof createPaneContext === 'function' ? createPaneContext(livePaneId) : null);
+        if (liveContext) {
+          liveContext.containerEl = liveContent;
+          candidate = liveContext;
+          joinedLayoutContext = true;
+          if (typeof setActivePane === 'function') setActivePane(livePaneId);
+        }
+      }
+    }
+  };
+  joinLiveLayoutContext();
   const containerDetached = !!(candidate?.containerEl && !document.body.contains(candidate.containerEl));
   // 埋め込みシート（MeldexProductionSheetEmbed 等）は GBLayout のレイアウトツリーへ
   // 意図的に未登録の専用 ctx を使う（グローバル副作用ゼロの設計）。そのため paneId は
@@ -45,9 +68,12 @@ function _resolveDatabasePaneContext(ctx, options) {
   const paneMissing = !isConnectedOffTreeCtx && !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
   const shouldUseActivePane = !isConnectedOffTreeCtx && !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
   if (paneMissing || containerDetached || shouldUseActivePane) candidate = _currentPaneState();
-  if (!explicitCtx && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
+  if (!explicitCtx && !joinedLayoutContext && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     candidate = _globalPaneState();
   }
+  // A restored sidebar can fall back to the global proxy above after the
+  // first join attempt. Resolve that fallback now, before async loading starts.
+  joinLiveLayoutContext();
   return candidate;
 }
 

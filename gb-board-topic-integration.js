@@ -1251,6 +1251,10 @@
           return true;
         };
         editors.push(commit);
+        input.addEventListener('input', () => {
+          if (!input.readOnly && !blocked() && input.isConnected && board.path === path
+            && board.topicViewDocument?.documentId === documentId) global.bdDirty?.();
+        });
         input.addEventListener('change', () => {
           if (commit()) renderMixedSheet(board, viewId, mountPoint, readOnly);
         });
@@ -1311,6 +1315,11 @@
         attached.root.dataset.bdTopicViewMobile = '1';
         root.prepend(attached.root);
       }
+      if (root === desktopRoot && global.MeldexToolbarOverflow?.setup) {
+        const overflow = global.MeldexToolbarOverflow.setup({ toolbar: root });
+        global.MeldexToolbarOverflow.setup({ toolbar: root,
+          keep: [...new Set([...(overflow?.keep || []), '[data-bd-topic-view-controls]'])] });
+      }
       toolbars.push(attached);
     });
     const toolbar = toolbars.find((item) => item.root?.parentElement === desktopRoot) || toolbars[0];
@@ -1328,7 +1337,7 @@
   }
 
   global.MeldexBoardTopicIntegration = Object.freeze({
-    parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, serializeFrontmatter,
+    parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, commitPendingEdits, serializeFrontmatter,
     switchView, switchMixedView, mixedSheetRows, teardownMixedSheetView, showMixedViewEmptyState, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
     installSaveHook, destroy,
   });

@@ -8745,6 +8745,10 @@
           return true;
         };
         editors.push(commit);
+        input.addEventListener('input', () => {
+          if (!input.readOnly && !blocked() && input.isConnected && board.path === path
+            && board.topicViewDocument?.documentId === documentId) global.bdDirty?.();
+        });
         input.addEventListener('change', () => {
           if (commit()) renderMixedSheet(board, viewId, mountPoint, readOnly);
         });
@@ -8805,6 +8809,11 @@
         attached.root.dataset.bdTopicViewMobile = '1';
         root.prepend(attached.root);
       }
+      if (root === desktopRoot && global.MeldexToolbarOverflow?.setup) {
+        const overflow = global.MeldexToolbarOverflow.setup({ toolbar: root });
+        global.MeldexToolbarOverflow.setup({ toolbar: root,
+          keep: [...new Set([...(overflow?.keep || []), '[data-bd-topic-view-controls]'])] });
+      }
       toolbars.push(attached);
     });
     const toolbar = toolbars.find((item) => item.root?.parentElement === desktopRoot) || toolbars[0];
@@ -8822,7 +8831,7 @@
   }
 
   global.MeldexBoardTopicIntegration = Object.freeze({
-    parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, serializeFrontmatter,
+    parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, commitPendingEdits, serializeFrontmatter,
     switchView, switchMixedView, mixedSheetRows, teardownMixedSheetView, showMixedViewEmptyState, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
     installSaveHook, destroy,
   });
@@ -32855,6 +32864,8 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  // シート欄のフォーカス中の入力も、純粋なスナップショットとは分けて保存前に確定する。
+  window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
   // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
@@ -32877,6 +32888,7 @@ async function bdSave() {
   while (pendingNodeTextWrites) {
     if (!await pendingNodeTextWrites) return false;
     if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+    window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
     markdown = bdToMd();
     pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
   }
@@ -33684,6 +33696,60 @@ let _bdMinimapCacheDirty = true;
 
 function bdInvalidateMinimapCache() { _bdMinimapCacheDirty = true; }
 
+function _bdMinimapBoardCanvas() {
+  return (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : null)
+    || document.getElementById('bd-canvas');
+}
+
+function bdGetMinimapPane() {
+  const panel = _bdMinimapBoardCanvas()?.querySelector(':scope > .bd-minimap-panel');
+  return panel && !panel.hidden ? panel.querySelector('[data-bd-minimap-pane]') : document.getElementById('gb-preview-pane');
+}
+
+function bdShowMinimap(show = true) {
+  const owner = _bdMinimapBoardCanvas();
+  if (!owner) return null;
+  let panel = owner.querySelector(':scope > .bd-minimap-panel');
+  if (!panel && show) {
+    panel = document.createElement('section');
+    panel.className = 'bd-minimap-panel';
+    panel.setAttribute('aria-label', 'ボードのミニマップ');
+    panel.style.cssText = 'position:absolute;right:12px;bottom:76px;width:min(260px,calc(100% - 24px));height:180px;max-height:calc(100% - 100px);z-index:20;display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden;box-shadow:0 3px 12px #0003;';
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-left:12px;flex-shrink:0;';
+    const title = document.createElement('span'); title.textContent = 'ミニマップ';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'gb-btn';
+    close.textContent = '×'; close.setAttribute('aria-label', 'ミニマップを閉じる');
+    close.dataset.e2eId = 'bd-minimap-close:' + (owner.closest('.gb-pane')?.dataset.paneId || 'board');
+    close.style.cssText = 'min-width:44px;min-height:44px;border:0;border-radius:0;';
+    close.addEventListener('click', () => { panel.hidden = true; panel.style.display = 'none'; });
+    header.append(title, close);
+    const pane = document.createElement('div'); pane.dataset.bdMinimapPane = '1'; pane.dataset.previewMode = 'board';
+    pane.style.cssText = 'flex:1;min-height:0;overflow:hidden;';
+    panel.append(header, pane);
+    panel.addEventListener('pointerdown', () => {
+      const paneId = owner.closest('.gb-pane')?.dataset.paneId;
+      if (paneId && typeof GBLayout !== 'undefined'
+          && (GBLayout.activePane !== paneId || _bdMinimapBoardCanvas() !== owner)) {
+        GBLayout.setActivePane(paneId, { sync: true });
+      }
+    }, true);
+    for (const type of ['pointerdown', 'click', 'wheel']) panel.addEventListener(type, event => event.stopPropagation());
+    owner.appendChild(panel);
+  }
+  if (!panel) return null;
+  panel.hidden = !show; panel.style.display = show ? 'flex' : 'none';
+  if (show) { bdInvalidateMinimapCache(); bdUpdateMinimap(); }
+  return panel.querySelector('[data-bd-minimap-pane]');
+}
+
+function bdToggleMinimap() {
+  const panel = _bdMinimapBoardCanvas()?.querySelector(':scope > .bd-minimap-panel');
+  return bdShowMinimap(!panel || panel.hidden);
+}
+
+if (typeof window !== 'undefined') window.addEventListener?.('resize', () => bdUpdateMinimap());
+
 function bdShouldRenderMinimapInPreviewPane(pane) {
   if (!pane || typeof state === 'undefined' || state.view !== 'board') return false;
   const mode = String(pane.dataset?.previewMode || '');
@@ -33853,7 +33919,7 @@ function _bdBindPreviewMinimapInteraction(canvas) {
     const offsetY = height / 2 - centerY * scale;
     const worldX = (event.clientX - rect.left - offsetX) / scale;
     const worldY = (event.clientY - rect.top - offsetY) / scale;
-    const boardCanvas = document.getElementById('bd-canvas');
+    const boardCanvas = _bdMinimapBoardCanvas();
     if (!boardCanvas) return;
     const zoom = _bdSafeMinimapZoom();
     bd.panX = boardCanvas.clientWidth / 2 - worldX * zoom;
@@ -33870,7 +33936,7 @@ function _bdBindPreviewMinimapInteraction(canvas) {
 }
 
 function _bdDrawPreviewMinimap() {
-  const pane = document.getElementById('gb-preview-pane');
+  const pane = bdGetMinimapPane();
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
   if (!bd.nodes.length) {
     pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">トピックがありません</div>';
@@ -33884,7 +33950,7 @@ function _bdDrawPreviewMinimap() {
     canvas.style.cssText = 'width:100%;height:100%;cursor:crosshair;';
     pane.appendChild(canvas);
     // パネルサイズ変化に追従（フィット倍率がパネルサイズに依存するため必須）
-    if (typeof ResizeObserver === 'function' && !pane._bdMinimapRO) {
+    if (typeof ResizeObserver === 'function' && !pane.hasAttribute('data-bd-minimap-pane') && !pane._bdMinimapRO) {
       pane._bdMinimapRO = new ResizeObserver(() => {
         if (state.view === 'board') bdUpdateMinimap();
       });
@@ -33930,7 +33996,7 @@ function _bdDrawPreviewMinimap() {
 
   // 合成: ノード/接続線キャッシュを転写 → ビューポート枠を重ねる
   ctx.drawImage(_bdMinimapCacheOffscreen, 0, 0, pixelW, pixelH, 0, 0, W, H);
-  const cv = document.getElementById('bd-canvas');
+  const cv = _bdMinimapBoardCanvas();
   if (cv) {
     _bdDrawMinimapViewport(ctx, cv, scale, ox, oy, accentColor, _bdSafeMinimapZoom());
   }
@@ -37968,6 +38034,9 @@ function bdShowZoomMenu(anchor) {
   menu.appendChild(_bdHudMenuItem('<span style="display:inline-block;width:14px;"></span>フィットマップ', () => {
     if (typeof bdFitAll === 'function') bdFitAll();
   }));
+  const minimap = _bdHudMenuItem('ミニマップ', () => bdToggleMinimap());
+  minimap.dataset.e2eId = 'bd-minimap-toggle';
+  menu.appendChild(minimap);
   if (typeof positionPopup === 'function') {
     positionPopup(menu, rect);
   } else if (typeof clampPopupToViewport === 'function') {
@@ -37978,9 +38047,7 @@ function bdShowZoomMenu(anchor) {
   });
 }
 
-// v0.5.285 でフローティングミニマップ (bdToggleMinimap / _bdDrawFloatingMinimap /
-// _bdMinimapVisible) を削除。ビューワーパネル側のミニマップ (gb-canvas-minimap.js
-// `_bdDrawPreviewMinimap`) で同じ目的を達成するため。
+// ミニマップは gb-canvas-minimap.js がボード内に表示する。
 
 // --- Node Shapes ---
 const BD_SHAPES = ['rect','ellipse','pill','octagon','cloud','fluffy','thorn','thorn-curve'];
@@ -42646,6 +42713,10 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
 }
 
 function bdGetActiveBoardRoot() {
+  // Embedded boards can own the legacy runtime inside an entity pane. The
+  // canonical canvas follows that owner even while another pane stays active.
+  const runtimeRoot = document.getElementById?.('bd-canvas')?.closest?.('.gb-canvas-root');
+  if (runtimeRoot) return runtimeRoot;
   if (typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined' && typeof getComponentInstance === 'function') {
     const tab = GBTabs.getActiveTab?.(GBLayout.activePane);
     const comp = tab ? getComponentInstance(tab.id) : null;
@@ -43522,6 +43593,7 @@ async function _bdFireSelectAutoSubpanel(seq, nodeId) {
   await openLinkedPathInRightPane(resolved.path, node.text || '', {
     linkType: resolved.type || '',
     reveal: false,
+    selectionPreviewSeq: seq,
   });
 }
 
@@ -44003,7 +44075,9 @@ async function openLinkedPathInRightSidebar(path, label, options) {
 
 async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
+  if (opts.reveal !== false) bdRequestLinkedSelectionAutoSubpanel(null);
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  if (opts.selectionPreviewSeq != null && opts.selectionPreviewSeq !== _bdSelectAutoSubpanelSeq) return false;
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
@@ -49677,7 +49751,7 @@ function bdFlushDirtyComments(state) {
 
 function bdFlushDirtyMinimap(dirtyState) {
   if (!dirtyState.dirtyMinimap || typeof bdUpdateMinimap !== 'function') return;
-  const pane = document.getElementById('gb-preview-pane');
+  const pane = typeof bdGetMinimapPane === 'function' ? bdGetMinimapPane() : document.getElementById('gb-preview-pane');
   if (!pane || (typeof state !== 'undefined' && state.view !== 'board')) return;
   if (typeof bdShouldRenderMinimapInPreviewPane === 'function' && !bdShouldRenderMinimapInPreviewPane(pane)) return;
   // ノード/接続/スタイル更新系の dirty はキャッシュも無効化 (bdTransform からの pure transform 呼び出しと区別する)
@@ -53452,7 +53526,14 @@ class CanvasComponent extends ToolComponent {
   activate() {
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
-    if (isPaneActive) _bdSetActiveBoardRootIds(this.el, this.idSuffix);
+    if (isPaneActive) {
+      // Visible split panes are not deactivated by the layout bridge. Hand off
+      // the shared runtime before changing its root so each pane keeps its camera.
+      const previous = CanvasComponent._runtimeOwner;
+      if (previous && previous !== this && previous.el) previous.deactivate();
+      CanvasComponent._runtimeOwner = this;
+      _bdSetActiveBoardRootIds(this.el, this.idSuffix);
+    }
     // 保存された背景色を復元
     const ownTab = this._ownTab();
     if (ownTab?.type === 'board') {
@@ -53542,7 +53623,7 @@ class CanvasComponent extends ToolComponent {
   deactivate() {
     super.deactivate();
     // 未保存があれば保存
-    if (bd.dirty && bd.path) {
+    if (bd.dirty && bd.path && bd.path === (this.state.boardPath || bd.path)) {
       bdSave();
     }
     // bd の state を自分のインスタンスに dump（次 activate 時に restore する）
@@ -53553,6 +53634,7 @@ class CanvasComponent extends ToolComponent {
     if (this._interactionCleanup) { this._interactionCleanup(); this._interactionCleanup = null; }
     if (this._keyboardCleanup) { this._keyboardCleanup(); this._keyboardCleanup = null; }
     _bdRestoreBoardRootIds(this.el, this.idSuffix);
+    if (CanvasComponent._runtimeOwner === this) CanvasComponent._runtimeOwner = null;
   }
 
   destroy() {
@@ -53560,10 +53642,11 @@ class CanvasComponent extends ToolComponent {
     if (this._interactionCleanup) { this._interactionCleanup(); this._interactionCleanup = null; }
     if (this._keyboardCleanup) { this._keyboardCleanup(); this._keyboardCleanup = null; }
     // 未保存があれば保存
-    if (bd.dirty && bd.path) {
+    if (bd.dirty && bd.path && bd.path === (this.state.boardPath || bd.path)) {
       bdSave();
     }
     _bdRestoreBoardRootIds(this.el, this.idSuffix);
+    if (CanvasComponent._runtimeOwner === this) CanvasComponent._runtimeOwner = null;
     super.destroy();
   }
 
@@ -64445,7 +64528,7 @@ function _sn2StopSep() {
   function interactionLocked(instance) {
     return instance.locks.size > 0
       || document.body.classList.contains('bsa-resizing-sidebar')
-      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"]');
+      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"], [data-bd-topic-view-controls] details[open]');
   }
 
   function edgeSensorSize(instance) {
@@ -69435,6 +69518,10 @@ function _getCurrentVersionTarget() {
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
     ? GBTabs.getActiveTab(GBLayout.activePane)
     : null;
+  if (activeTab?.type === 'scriptnote') {
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null;
+    return { path: component?.state?.scenarioPath || activeTab.state?.scenarioPath || activeTab.path || '', type: 'file' };
+  }
   if (state.view === 'page') { const pc = document.getElementById('page-content'); path = pc?.dataset?.path || ''; }
   else if (state.view === 'entity') { const ep = state.currentEntityPath; path = ep ? (ep.endsWith('.md') ? ep : ep + '/_freetext.md') : ''; }
   else if (state.view === 'board') { path = bd.path || ''; }
@@ -74414,6 +74501,11 @@ ${spEsc(actionText)}</pre>
     return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
   }
 
+  function _identifyCloudLinkHelp(host, identity) {
+    const help = host?.querySelector?.('.gb-field-help');
+    if (help) help.dataset.e2eId = identity;
+  }
+
   /* ==============================
      状態カード
      ============================== */
@@ -74453,6 +74545,7 @@ ${spEsc(actionText)}</pre>
     const line2 = document.createElement('div');
     line2.className = 'gb-section-desc';
     line2.innerHTML = `ソースフォルダはこのDropboxにつないだすべての端末で共通です。 ${_cloudLinkHelp('デスクトップ版MeldexはDropboxアプリ経由で同じフォルダを開けます。')}`;
+    _identifyCloudLinkHelp(line2, 'settings-cloud-source-sharing-help');
     card.append(title, line1, line2);
 
     _appendWorkspaceJoinSection(card, container);
@@ -74520,12 +74613,14 @@ ${spEsc(actionText)}</pre>
     joinBtn.type = 'button';
     joinBtn.className = 'gb-btn gb-btn-sm';
     joinBtn.textContent = '共有ワークスペースに参加';
+    joinBtn.dataset.e2eId = 'settings-cloud-workspace-join';
     joinBtn.addEventListener('click', () => _joinSharedWorkspace(container, joinBtn));
 
     const makeBtn = document.createElement('button');
     makeBtn.type = 'button';
     makeBtn.className = 'gb-btn gb-btn-sm';
     makeBtn.textContent = 'このフォルダを共有ワークスペースにする';
+    makeBtn.dataset.e2eId = 'settings-cloud-workspace-create';
     makeBtn.addEventListener('click', () => _makeOrJoinSharedWorkspace(container, makeBtn));
 
     btnRow.append(joinBtn, makeBtn);
@@ -74776,6 +74871,7 @@ ${spEsc(actionText)}</pre>
     redoBtn.type = 'button';
     redoBtn.className = 'gb-btn gb-btn-sm gb-btn-quiet';
     redoBtn.textContent = '指定し直す…';
+    redoBtn.dataset.e2eId = 'settings-dropbox-root-reselect';
     redoBtn.addEventListener('click', () => _specifyDropboxSyncRoot(container, redoBtn));
     redoRow.appendChild(redoBtn);
     card.appendChild(redoRow);
@@ -74785,6 +74881,7 @@ ${spEsc(actionText)}</pre>
     const line1 = document.createElement('div');
     line1.className = 'gb-section-desc';
     line1.innerHTML = `Dropboxアプリが見つかりません。 ${_cloudLinkHelp('Dropboxの中にデータを置くと、ブラウザ版Meldexや他のPCと共有できます。')}`;
+    _identifyCloudLinkHelp(line1, 'settings-dropbox-root-availability-help');
     card.appendChild(line1);
 
     const btnRow = document.createElement('div');
@@ -74794,6 +74891,7 @@ ${spEsc(actionText)}</pre>
     btn.type = 'button';
     btn.className = 'gb-btn gb-btn-sm';
     btn.textContent = 'フォルダを指定…';
+    btn.dataset.e2eId = 'settings-dropbox-root-select';
     btn.addEventListener('click', () => _specifyDropboxSyncRoot(container, btn));
     btnRow.appendChild(btn);
     card.appendChild(btnRow);
@@ -74878,6 +74976,7 @@ ${spEsc(actionText)}</pre>
     explain.className = 'gb-section-desc';
     explain.style.marginTop = '6px';
     explain.innerHTML = `Dropboxの中に置いたソースフォルダは、同じDropboxにつないだブラウザ版Meldexや他のPCにも自動で表示されます。 ${_cloudLinkHelp('共有の設定はDropbox内に保存されます。')}`;
+    _identifyCloudLinkHelp(explain, 'settings-dropbox-source-sharing-help');
     card.appendChild(explain);
 
     await _appendDesktopWorkspaceJoinSection(card, container);
@@ -75203,12 +75302,14 @@ ${spEsc(actionText)}</pre>
     joinBtn.className = 'gb-btn gb-btn-sm';
     joinBtn.textContent = '共有ワークスペースに参加';
     joinBtn.addEventListener('click', () => _desktopJoinWorkspace(container, joinBtn));
+    joinBtn.dataset.e2eId = 'settings-desktop-workspace-join';
 
     const makeBtn = document.createElement('button');
     makeBtn.type = 'button';
     makeBtn.className = 'gb-btn gb-btn-sm';
     makeBtn.textContent = 'このフォルダを共有ワークスペースにする';
     makeBtn.addEventListener('click', () => _desktopMakeWorkspace(container, makeBtn));
+    makeBtn.dataset.e2eId = 'settings-desktop-workspace-create';
 
     btnRow.append(joinBtn, makeBtn);
     card.appendChild(btnRow);
@@ -79110,6 +79211,17 @@ async function showSettingsModal(opts) {
       settingsStateController?.open(item.dataset.target);
     });
   });
+  const webClipHelp = o.querySelector('[data-settings-webclip-desktop] .gb-section-title .gb-field-help');
+  if (webClipHelp) webClipHelp.dataset.e2eId = 'settings-webclip-desktop-help';
+  const apiKeySection = o.querySelector('#modal-gemini-key')?.closest('.gb-section');
+  for (const [selector, id] of [
+    ['.gb-section-title .gb-field-help', 'settings-llm-api-keys-help'],
+    ['.gb-label .gb-field-help', 'settings-llm-cloud-keys-help'],
+    ['.gb-section-desc .gb-field-help', 'settings-llm-privacy-help'],
+  ]) {
+    const help = apiKeySection?.querySelector(selector);
+    if (help) help.dataset.e2eId = id;
+  }
   if (typeof bindSettingsThemePanel === 'function') bindSettingsThemePanel(o);
   window.MeldexMobileWebClipSettings?.bind?.(o);
   // モバイル時: 全パネルを非表示にして、セクションリストのみ表示
@@ -87663,7 +87775,7 @@ function _settingsThemePreviewSupplement(appId) {
     target.app ? ownSections.has(target.app)
       : appId === 'main' || !windowOnly.has(target.id)
   ).map(_settingsThemePreviewPaletteTarget).join('');
-  return `<details class="settings-theme-extra-elements"><summary data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
 }
 
 function _settingsThemePreviewPaletteTarget(target) {
@@ -94624,6 +94736,10 @@ async function resetLayoutToDefault() {
       <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
+    container.querySelectorAll('.gb-field-help').forEach(help => {
+      const control = help.closest('label')?.querySelector('input[id], select[id]');
+      help.dataset.e2eId = 'settings-x-bookmarks-help-' + (control?.id || 'summary');
+    });
     bind();
     if (isCloudSurface()) {
       ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations']
@@ -100689,11 +100805,15 @@ const MeldexAutoLink = (() => {
     if (_dictScope !== _normalizeDictScope(wf)) return false;
     if (!wf || !filePath) return true;
     const roots = [wf];
+    const files = [filePath];
     const vaultPath = (typeof state !== 'undefined' && state?.vaultPath) ? String(state.vaultPath) : '';
     if (vaultPath && !/^[A-Za-z]:[\\/]/.test(wf) && !String(wf).startsWith('/')) {
       roots.push(vaultPath.replace(/\\/g, '/') + '/' + String(wf).replace(/^\/+/, ''));
     }
-    return roots.some(root => _isPathInside(filePath, root));
+    if (vaultPath && !/^(?:[A-Za-z]:[\\/]|\/)/.test(String(filePath))) {
+      files.push(vaultPath.replace(/\\/g, '/') + '/' + String(filePath));
+    }
+    return files.some(file => roots.some(root => _isPathInside(file, root)));
   }
 
   // ── HTML文字列版（ノート、ボード、詳細パネル用） ──
@@ -101953,7 +102073,11 @@ function _flushNoteDraftReservation(pc, options) {
   if (!draftPath) return;
   if (composingBlocked) return;
   const md = _noteMarkdownFromEditorNonDestructive(pc);
-  window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+  // 手動保存が入力の退避タイマーより先に完了した場合、保存済みの本文を
+  // 遅れて未保存ドラフトへ戻さない。保存後に追加入力があれば退避する。
+  if (md !== (pc.dataset.lastSavedMd || '')) {
+    window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+  }
   _maybeRefreshNoteTocAfterEdit(pc);
 }
 
@@ -105281,10 +105405,10 @@ function getWorkFolder(path) {
   const key = _workFolderPathKey(path);
   const vault = typeof state !== 'undefined' ? _workFolderPathKey(state.vaultPath) : '';
   const absolute = value => /^(?:[a-z]:|\/)/i.test(value);
-  const candidates = [key, ...(!absolute(key) && vault ? [vault + '/' + key] : [])];
+  const candidates = [key, ...(!absolute(key) && vault ? [_workFolderPathKey(vault + '/' + key)] : [])];
   return records.filter(record => {
     const root = _workFolderPathKey(record.path);
-    const roots = [root, ...(!absolute(root) && vault ? [vault + '/' + root] : [])];
+    const roots = [root, ...(!absolute(root) && vault ? [_workFolderPathKey(vault + '/' + root)] : [])];
     return candidates.some(candidate => roots.some(base => candidate === base || candidate.startsWith(base + '/')));
   }).sort((a, b) => b.path.length - a.path.length)[0]?.path || '';
 }
@@ -109570,13 +109694,21 @@ function _updateLinkedPreview(filePath, preloadedData) {
   }
 }
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const media = e.target.closest('.embed-media');
   if (!media) return;
   const path = media.dataset.path;
   if (path) {
-    _updateLinkedPreview(path);
     const name = media.dataset.name || path.split('/').pop();
+    if (typeof openLinkedPathInRightSidebar === 'function') {
+      try {
+        await openLinkedPathInRightSidebar(path, name, { sourceEl: media });
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '添付ファイルを開けませんでした', true);
+      }
+      return;
+    }
+    _updateLinkedPreview(path);
     if (typeof showDetailPanel === 'function') {
       showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);margin-bottom:8px;">${esc(name)}</div>
@@ -115058,10 +115190,10 @@ function onStampSend(inputId, sendFn) {
     else { _cache.clear(); _inflight.clear(); }
   }
 
-  async function get(vk) {
+  async function get(vk, { retry = false } = {}) {
     if (!vk) return null;
     const cached = _cache.get(vk);
-    if (cached) return cached;
+    if (cached && (cached.status !== 'error' || !retry)) return cached;
     if (_inflight.has(vk)) return _inflight.get(vk);
     const p = (async () => {
       try {
@@ -115078,6 +115210,7 @@ function onStampSend(inputId, sendFn) {
           locked_by: raw?.locked_by || '',
         };
         _cache.set(vk, entry);
+        _notifyChange(vk);
         return entry;
       } catch (error) {
         const entry = {
@@ -115149,7 +115282,9 @@ function onStampSend(inputId, sendFn) {
   // §8.4 ロック中の操作ブロック。解除を促し、解除したら true。キャンセルなら false。
   async function guardAction(vk, kind) {
     if (!vk) return true;
-    const entry = _cache.get(vk) || await get(vk);
+    // A failed startup/auth/network request must not block this view forever.
+    // Retry on the next explicit action, remaining fail-closed until it succeeds.
+    const entry = await get(vk, { retry: true });
     if (entry?.status === 'error') {
       if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。通信状態を確認して再試行してください', true);
       return false;
@@ -115173,7 +115308,7 @@ function onStampSend(inputId, sendFn) {
   // ロック切替（UI アイコンから）
   async function toggle(vk, kind, getState) {
     if (!vk) return;
-    const loaded = await get(vk);
+    const loaded = await get(vk, { retry: true });
     if (loaded?.status === 'error') {
       if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。再試行してください', true);
       return;
@@ -115286,7 +115421,12 @@ function onStampSend(inputId, sendFn) {
     }
     btn._viewLockClickHandler = async (ev) => {
       ev.preventDefault(); ev.stopPropagation();
-      if (_cache.get(vk)?.status === 'error') invalidate(vk);
+      if (_cache.get(vk)?.status === 'error') {
+        // The error icon promises a retry, not a change to the lock state.
+        await get(vk, { retry: true });
+        render();
+        return;
+      }
       await toggle(vk, kind, getState);
       render();
     };
@@ -124305,6 +124445,7 @@ function hideBoardNoteTab() {
     const records = this._selectedEventRecords();
     const selectedIds = new Set(records.map(ev => String(ev?.id || '')));
     this._contentEl?.classList?.toggle?.('gb-cal-has-event-selection', selectedIds.size > 0);
+    const selectionCopies = new Map();
     this._contentEl?.querySelectorAll?.('[data-event-id]').forEach(card => {
       const id = card.dataset.eventId || '';
       card.classList.toggle('gb-cal-event-selected', selectedIds.has(id));
@@ -124316,6 +124457,10 @@ function hideBoardNoteTab() {
         check.setAttribute('aria-label', '選択');
         card.insertBefore(check, card.firstChild);
       }
+      const identity = JSON.stringify([this.tabId || this.paneId || 'calendar', card.dataset.calendarId || '_calendar', id]);
+      const copy = selectionCopies.get(identity) || 0;
+      selectionCopies.set(identity, copy + 1);
+      check.dataset.e2eId = 'calendar-event-select-' + encodeURIComponent(identity) + '-' + copy;
       const selected = selectedIds.has(id);
       check.checked = selected;
       check.setAttribute('aria-checked', selected ? 'true' : 'false');
@@ -134582,12 +134727,18 @@ function hideBoardNoteTab() {
     const resourceId = _pmCloudTopicResourceId(mutationId);
     const fallbackLabel = kind === 'note' ? '新規ノート' : '新規チャット';
     const label = String(body?.label || fallbackLabel).trim().replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) || fallbackLabel;
-    const user = String(body?.current_user || global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous')
+    const user = String(body?.current_user || (typeof getUsername === 'function' ? getUsername() : '')
+      || window.state?.currentUser?.name || window.currentUser?.name || window.currentUser || 'anonymous')
       .replace(/[\\/:*?"<>|]+/g, '_') || 'anonymous';
     const userSegment = user === '.' || user === '..' ? 'anonymous' : user;
+    const chatHome = kind === 'chat' ? await window.MeldexDataAccess?.requestJson?.('/home-folder') : null;
+    if (kind === 'chat' && (!chatHome?.path || chatHome.exists === false)) {
+      throw _pmCloudError(409, '関連チャットの保存先を準備できませんでした。ホームフォルダ設定を確認してください');
+    }
+    const chatHistoryPath = kind === 'chat' ? internals._joinPath('_chat/llm', userSegment, `${label}-${resourceId.slice(-8)}.md`) : '';
     const resourcePath = kind === 'note'
       ? `_meldex/topics/v1/resources/${encodeURIComponent(topicId)}/${resourceId}.md`
-      : `_chat/llm/${userSegment}/${label}-${resourceId.slice(-8)}.md`;
+      : internals._joinPath(chatHome.path, chatHistoryPath);
     const created = new Date().toISOString();
     const content = kind === 'note'
       ? `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(resourceId)}\n---\n# ${label}\n\n`
@@ -134601,6 +134752,7 @@ function hideBoardNoteTab() {
       if (!currentText) { await provider.writeText(resourcePath, content); wroteResource = true; }
       const resource = { resourceId, resourceType: kind === 'note' ? 'note-link' : 'chat-link', href: resourcePath,
         label, creationMutationId: mutationId };
+      if (kind === 'chat') resource.homeHistoryPath = chatHistoryPath;
       const updateEnvelope = current => {
         const base = current?.record ? current : envelope;
         const resources = Array.isArray(base.record.resources) ? [...base.record.resources] : [];
@@ -135121,7 +135273,9 @@ function hideBoardNoteTab() {
         }
       });
     }
-    if (!properties['作品タイトル'] && !properties['作品タイトル_話数'] && entry?.inferredWorkTitle) {
+    const hasWorkAssignment = ['作品タイトル', '作品タイトル_話数']
+      .some(name => Object.prototype.hasOwnProperty.call(properties, name));
+    if (!hasWorkAssignment && entry?.inferredWorkTitle) {
       // 旧タスクは作品列を持たないことがある。所属する登録済みタスクシートから
       // 読み取り時だけ補完し、利用者のMarkdown自体は書き換えない。
       properties['作品タイトル'] = String(entry.inferredWorkTitle);
@@ -135738,7 +135892,19 @@ function hideBoardNoteTab() {
         ? await _pmCloudEnsureProjectlessTaskSheet(provider, internals, journal)
         : await _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal);
       if (surface === 'calendar') { await _pmCloudJournalCalendar(journal, 'events'); await _pmCloudJournalCalendar(journal, 'calendars'); }
-      const entry = await _pmCloudWriteNewEntry(provider, internals, 'タスクリスト', sheet, name, props, journal, key);
+      let entry = await _pmCloudWriteNewEntry(provider, internals, 'タスクリスト', sheet, name, props, journal, key);
+      const sourceId = String(entry.frontmatter?.topicRef?.sourceId || _pmCloudProductionSourceId(provider, internals));
+      const topicId = String(entry.frontmatter?.topicRef?.topicId || entry.frontmatter.id);
+      const topicPath = `_meldex/topics/v1/sources/${encodeURIComponent(sourceId)}/records/${encodeURIComponent(topicId)}.json`;
+      await _pmCloudJournalText(journal, topicPath);
+      await _pmCloudEnsureTaskTopic(provider, internals, entry);
+      const reparsed = await _pmCloudReadFrontmatter(provider, entry.path);
+      entry = {
+        ...entry,
+        frontmatter: reparsed.frontmatter || entry.frontmatter,
+        body: reparsed.body || entry.body,
+        transportRevision: await _pmCloudEntryTransportRevision(provider, entry.path, reparsed),
+      };
       if (surface === 'calendar') await _pmCloudSyncTaskEvent(provider, internals, entry.path, entry.frontmatter);
       return { ok: true, surface, template_id: String(template.frontmatter?.id || template.name), row: _pmCloudEntryRow(entry), cloud: true };
     } catch (error) { return _pmCloudRollbackMutation(journal, error); }
@@ -140632,6 +140798,7 @@ function hideBoardNoteTab() {
     { id: 'delete', label: '削除', icon: 'trash2', action: () => _callGlobal('bdDeleteSelected') },
     { id: 'duplicate', label: '複製', icon: 'copy', action: () => _boardDuplicateSelected() },
     { id: 'reset-rotation', label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
+    { id: 'minimap', label: 'ミニマップ', icon: 'map', action: () => _callGlobal('bdToggleMinimap') },
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [
@@ -149264,7 +149431,8 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
 // ギャラリー/カンバンカード右クリックメニュー
 function showDbCardContextMenu(e, dbPath, entityName, propName) {
   closeColHeaderMenu();
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
+  const tableCtx = e?.target?.closest?.('tbody')?._meldexCtx;
+  const ctx = tableCtx && !tableCtx.destroyed ? tableCtx : typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath })
     : null;
   const targetDbPath = ctx?.dbPath || dbPath || state.currentDbPath;
@@ -149277,7 +149445,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   ) || null;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
-  const ep = _entityPath(targetDbPath, entityName, pivotData);
+  const sourceRow = e?.target?.closest?.('tr[data-entity-name]');
+  const rowPath = sourceRow?.dataset?.entityName === entityName ? sourceRow.dataset.meldexEntityPath : '';
+  const ep = rowPath || _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
   // サブパネル内では、右サイドバーで開く・チャットを開く等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
@@ -167221,8 +167391,9 @@ if (typeof window !== 'undefined') {
   'use strict';
   const model = () => globalThis.MeldexDbFormModel;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const button = (label, run) => {
+  const button = (label, run, identity) => {
     const element = document.createElement('button'); element.type = 'button'; element.className = 'gb-btn';
+    if (identity) element.dataset.e2eId = identity;
     element.textContent = label; element.addEventListener('click', event => { event.stopPropagation(); run(event); }); return element;
   };
   function appendRules(root, cfg, property, type, save) {
@@ -167304,9 +167475,13 @@ if (typeof window !== 'undefined') {
     if (ctx?.formApp) return;
     if (cfg.betaFeedbackRelay || cfg.customInstructionsRelay) return;
     if (!MeldexDbFormRuntime.writable(root, dbPath, ctx)) return;
+    const owner = ctx?.containerEl || root;
+    const surface = owner.closest?.('.gb-pane')?.dataset.paneId || owner.id || root.parentElement?.id || 'form';
+    const identity = action => ['db-form-binding', surface, dbPath, cfg.id || 'default', action].map(encodeURIComponent).join(':');
     const row = document.createElement('div'); row.className = 'gb-form-binding';
     const label = document.createElement('label'); label.textContent = '共通レイアウト';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '共通レイアウト');
+    select.dataset.e2eId = identity('layout');
     const layouts = _elGetState(dbPath).layouts;
     for (const item of [{ id: '', name: '従来の自動配置フォーム' }, ...layouts]) {
       const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; option.selected = cfg.layoutId === item.id;
@@ -167328,7 +167503,7 @@ if (typeof window !== 'undefined') {
         const added = _elGetState(dbPath).layouts.find(layout => !known.has(layout.id));
         if (added) bind(added.id, true);
       } });
-    }));
+    }, identity('template')));
     row.appendChild(button('現在の項目から配置を作成', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       let id;
@@ -167341,12 +167516,12 @@ if (typeof window !== 'undefined') {
         }));
       }, { ctx });
       bind(id, true);
-    }));
+    }, identity('create')));
     if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
       const editor = document.createElement('div'); editor.className = 'gb-form-layout-editor'; root.replaceChildren(row, editor);
       row.querySelectorAll('button').forEach(control => { control.disabled = true; }); select.disabled = true;
-      row.appendChild(button('配置編集を終了', () => renderDbFormView(ctx)));
+      row.appendChild(button('配置編集を終了', () => renderDbFormView(ctx), identity('finish')));
       const session = { editMode: true };
       const render = () => {
         editor.replaceChildren();
@@ -167359,7 +167534,7 @@ if (typeof window !== 'undefined') {
           }, { ctx, onRestore: () => { if (editor.isConnected) render(); } });
         } } }, dbPath, layout.id, render);
       }; render();
-    }));
+    }, identity('edit')));
     root.appendChild(row);
   }
   globalThis.MeldexDbFormDesigner = { appendRules, settings, addTools, buildViewSelector };
@@ -173907,6 +174082,29 @@ function _resolveDatabasePaneContext(ctx, options) {
     return ctx;
   }
   let candidate = ctx || _currentPaneState();
+  let joinedLayoutContext = false;
+  // Direct/legacy entry points can run before the layout bridge registers its
+  // context. Join that same live pane so its deferred load coalesces instead
+  // of replacing a cell editor with a second load into the global proxy.
+  const joinLiveLayoutContext = () => {
+    if (typeof _globalPaneState === 'function' && candidate === _globalPaneState()
+      && typeof GBLayout !== 'undefined' && GBLayout.activePane
+      && GBLayout.findNode?.(GBLayout.root, GBLayout.activePane)?.node) {
+      const livePaneId = GBLayout.activePane;
+      const liveContent = GBLayout.paneMap?.[livePaneId]?.contentEl;
+      if (liveContent && typeof getPaneContext === 'function') {
+        const liveContext = getPaneContext(livePaneId)
+          || (typeof createPaneContext === 'function' ? createPaneContext(livePaneId) : null);
+        if (liveContext) {
+          liveContext.containerEl = liveContent;
+          candidate = liveContext;
+          joinedLayoutContext = true;
+          if (typeof setActivePane === 'function') setActivePane(livePaneId);
+        }
+      }
+    }
+  };
+  joinLiveLayoutContext();
   const containerDetached = !!(candidate?.containerEl && !document.body.contains(candidate.containerEl));
   // 埋め込みシート（MeldexProductionSheetEmbed 等）は GBLayout のレイアウトツリーへ
   // 意図的に未登録の専用 ctx を使う（グローバル副作用ゼロの設計）。そのため paneId は
@@ -173922,9 +174120,12 @@ function _resolveDatabasePaneContext(ctx, options) {
   const paneMissing = !isConnectedOffTreeCtx && !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
   const shouldUseActivePane = !isConnectedOffTreeCtx && !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
   if (paneMissing || containerDetached || shouldUseActivePane) candidate = _currentPaneState();
-  if (!explicitCtx && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
+  if (!explicitCtx && !joinedLayoutContext && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     candidate = _globalPaneState();
   }
+  // A restored sidebar can fall back to the global proxy above after the
+  // first join attempt. Resolve that fallback now, before async loading starts.
+  joinLiveLayoutContext();
   return candidate;
 }
 
@@ -188412,7 +188613,10 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     const focusTabId = session.pendingTabFocus;
     session.pendingTabFocus = '';
     requestAnimationFrame(() => {
-      const focusTab = Array.from(tabs.querySelectorAll('.el-tab'))
+      // 設定保存による再描画が同じフレームに重なっても、退避した旧タブへ
+      // フォーカスしない。別エントリ・別タブへ進んだ予約も破棄する。
+      if (!grid.isConnected || _elSessionByGrid.get(grid) !== session || session.tab !== focusTabId) return;
+      const focusTab = Array.from(grid.querySelectorAll(':scope > .el-tabbar .el-tabs > .el-tab'))
         .find(candidate => candidate.dataset.tabId === focusTabId);
       try { focusTab?.focus({ preventScroll: true }); } catch { /* ignore */ }
     });
@@ -197850,7 +198054,8 @@ function _startAlarmChecker(dbPath,events) {
    ============================== */
 const _dayLabels = ['日','月','火','水','木','金','土'];
 
-async function _showTemplateModal(dbPath) {
+async function _showTemplateModal(dbPath, options = {}) {
+  const returnFocus = options.returnFocus ?? document.activeElement;
   let templates = [];
   const content=document.createElement('div');
   content.innerHTML='<div id="tmpl-status" role="status" aria-live="polite"></div><div id="tmpl-list"></div>';
@@ -197860,6 +198065,7 @@ async function _showTemplateModal(dbPath) {
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-list',title:'週間テンプレート',body:[...content.childNodes],footer:[createButton,closeButton],
     variant:'standard',geometryKey:'calendar-db-template-list',minWidth:'0',initialFocus:'#tmpl-create',
+    returnFocus,
     closeLabel:'週間テンプレートを閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
   });
   const o=modalApi.overlay,panel=modalApi.modal,list=panel.querySelector('#tmpl-list'),status=panel.querySelector('#tmpl-status');
@@ -197883,7 +198089,7 @@ async function _showTemplateModal(dbPath) {
   list.addEventListener('click',async(event)=>{
     const btn=event.target.closest('button[data-action]');if(!btn||busy)return;
     const action=btn.dataset.action,tid=btn.dataset.tid;
-    if(action==='edit'){modalApi.close('edit');_editTemplate(dbPath,tid);return;}
+    if(action==='edit'){modalApi.close('edit');_editTemplate(dbPath,tid,{returnFocus});return;}
     if(action==='delete'){
       const target=templates.find(t=>String(t.id)===String(tid));
       if(deleteConfirmPending)return;
@@ -197905,7 +198111,7 @@ async function _showTemplateModal(dbPath) {
     while (names.includes(name)) { idx++; name = '無題' + idx; }
     setBusy(true);try {
       const res = await apiPost('/cal/schedule-templates', { name, entries: [], user: _getUser() });
-      setBusy(false);modalApi.close('created');_editTemplate(dbPath,res.id);
+      setBusy(false);modalApi.close('created');_editTemplate(dbPath,res.id,{returnFocus});
     } catch { status.textContent='作成に失敗しました。もう一度お試しください。'; }
     finally{if(modalApi.isOpen())setBusy(false);}
   });
@@ -197918,12 +198124,13 @@ function _addMinutes(timeStr, minutes) {
   return _p2(Math.floor(total / 60) % 24) + ':' + _p2(total % 60);
 }
 
-async function _editTemplate(dbPath, tid) {
+async function _editTemplate(dbPath, tid, options = {}) {
+  const returnFocus = options.returnFocus ?? document.activeElement;
   let templates = [];
   try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); }
-  catch { showStatus('テンプレートの読み込みに失敗しました', true); await _showTemplateModal(dbPath); return; }
+  catch { showStatus('テンプレートの読み込みに失敗しました', true); await _showTemplateModal(dbPath,{returnFocus}); return; }
   const t = templates.find(x => String(x.id) === String(tid));
-  if (!t) { showStatus('テンプレートが見つかりません', true); await _showTemplateModal(dbPath); return; }
+  if (!t) { showStatus('テンプレートが見つかりません', true); await _showTemplateModal(dbPath,{returnFocus}); return; }
 
   let entriesHtml = '';
   (t.entries || []).forEach(e => { entriesHtml += _templateEntryRow(e); });
@@ -197941,6 +198148,7 @@ async function _editTemplate(dbPath, tid) {
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-edit',title:`テンプレート編集: ${t.name}`,body:[...content.childNodes],footer:[cancelButton,saveButton],
     variant:'standard',geometryKey:'calendar-db-template-edit',minWidth:'0',initialFocus:'#tmpl-name',
+    returnFocus,
     closeLabel:'テンプレート編集を閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
   });
   const o=modalApi.overlay,panel=modalApi.modal,status=panel.querySelector('#tmpl-edit-status');
@@ -197950,7 +198158,7 @@ async function _editTemplate(dbPath, tid) {
   modalApi.open();
   panel.querySelector('#tmpl-add-entry').addEventListener('click', () => { panel.querySelector('#tmpl-entries').insertAdjacentHTML('beforeend', _templateEntryRow({})); });
   panel.querySelector('#tmpl-entries').addEventListener('click',event=>{const btn=event.target.closest('button[data-action]');if(btn&&!busy)btn.closest('.tmpl-entry')?.remove();});
-  cancelButton.addEventListener('click', () => { if(modalApi.close('cancel'))_showTemplateModal(dbPath); });
+  cancelButton.addEventListener('click', () => { if(modalApi.close('cancel'))_showTemplateModal(dbPath,{returnFocus}); });
   saveButton.addEventListener('click', async () => {
     if(busy)return;
     const name = panel.querySelector('#tmpl-name').value.trim() || '無題';
@@ -197964,7 +198172,7 @@ async function _editTemplate(dbPath, tid) {
       });
     });
     setBusy(true);status.textContent='保存中...';
-    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました');setBusy(false);modalApi.close('saved');_showTemplateModal(dbPath); }
+    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました');setBusy(false);modalApi.close('saved');_showTemplateModal(dbPath,{returnFocus}); }
     catch { status.textContent='保存に失敗しました。入力内容を保ったまま再試行できます。';showStatus('保存に失敗', true); }
     finally{if(modalApi.isOpen())setBusy(false);}
   });
@@ -207961,9 +208169,14 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   }
   const rootedHistoryPath = /^(?:[a-z]:[\\/]|\/)/i.test(path)
     || (!String(path).startsWith('_chat/') && String(path).replace(/\\/g, '/').includes('/_chat/'));
-  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath ? _detectSourceFolderFromPath(path) : '';
-  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
   const historyContext = await window.GBChatStorageContext.resolveForHistory();
+  const homeHistoryPrefix = _chatNormalizePath(historyContext.sourceFolder) + '/_chat/llm/';
+  const isRootedHomeHistory = _chatNormalizePath(path).startsWith(homeHistoryPrefix);
+  // The reference selector may omit Home while listing another source. Its
+  // relative-path fallback must not override the known history storage root.
+  const inferredSourceFolder = sourceFolder === undefined && rootedHistoryPath
+    ? (isRootedHomeHistory ? historyContext.sourceFolder : _detectSourceFolderFromPath(path)) : '';
+  const explicitSourceFolder = String(sourceFolder || inferredSourceFolder || '');
   const legacySource = explicitSourceFolder && _chatNormalizePath(explicitSourceFolder) !== _chatNormalizePath(historyContext.sourceFolder);
   if (legacySource && explicitSourceFolder !== _chatSourceFolderValue()) {
     const switched = await _chatSwitchSourceFolderForOpen(explicitSourceFolder, { skipSave: true });
@@ -213331,8 +213544,16 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   async function cliAuthResponse(response) {
     let payload = null;
     try { payload = await response.json(); } catch {}
-    if (!response.ok) throw new Error(payload?.detail || payload?.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(cliHttpErrorText(payload?.detail || payload?.message, response.status));
     return payload || {};
+  }
+
+  function cliHttpErrorText(detail, status) {
+    if (detail && typeof detail === 'object') {
+      return [detail.message || detail.error || detail.code,
+        detail.required_action?.message || detail.required_action?.label].filter(Boolean).join('\n') || `HTTP ${status}`;
+    }
+    return String(detail || `HTTP ${status}`);
   }
 
   function attachCliAuthRecovery(host, provider) {
@@ -214570,7 +214791,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       });
       if (!response.ok) {
         let errorText = '';
-        try { errorText = (await response.json())?.detail || ''; } catch {
+        try { errorText = cliHttpErrorText((await response.json())?.detail, response.status); } catch {
           try { errorText = await response.text(); } catch {}
         }
         throw new Error(errorText || ('HTTP ' + response.status));
@@ -228624,7 +228845,18 @@ function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, 
           _unregisterTreeSubtree(node);
           node.remove();
         });
-        merged.forEach(child => container.appendChild(nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath)));
+        // Moving an existing row to the same parent still detaches it. Keep
+        // unchanged rows in place so read-time projection preserves focus.
+        let nextNode = container.querySelector(':scope > .tree-node');
+        merged.forEach(child => {
+          const node = nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath);
+          if (node === nextNode) {
+            nextNode = node.nextElementSibling;
+            while (nextNode && !nextNode.matches('.tree-node')) nextNode = nextNode.nextElementSibling;
+          } else {
+            container.insertBefore(node, nextNode);
+          }
+        });
       }
       applyGlobalFilter();
       _snapshotBaseTreeVisibility();
@@ -239845,6 +240077,8 @@ const GBPaneBridge = (() => {
   // リフレッシュ・navPush の同一タブ内ファイル切替）から気軽に重複して呼んでよい。
   function _syncFollowingVersionTabs() {
     if (_versionFollowSyncing) return;
+    // A pinned version is a utility view, not a new content target to follow.
+    if (GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'version') return;
     if (typeof _getCurrentVersionTarget !== 'function') return;
     const followers = _collectFollowingVersionTabs();
     if (!followers.length) return;
@@ -241730,7 +241964,23 @@ const GBPaneBridge = (() => {
     };
 
     function _loadVersionTab(tabId, path, vType) {
-      if (!tabId || !path) return;
+      if (!tabId) return;
+      if (typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout()
+          && typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.open === 'function') {
+        const match = _findTabByIdInAnyGroup(tabId);
+        const paneEl = match && GBLayout.paneMap?.[match.paneId]?.el;
+        if (match?.panelsetNode && !paneEl?.getClientRects?.().length) {
+          const paneNode = GBLayout.findNode(GBLayout.root, match.paneId)?.node;
+          const tabIdx = paneNode?.tabs?.findIndex(tab => tab.id === tabId) ?? -1;
+          if (tabIdx >= 0) {
+            // Phone renders only the work pane; mount this exact history tab
+            // through the same temporary popup used by other auxiliary panels.
+            GBDockPopup.open({ panelsetNode: match.panelsetNode, groupId: match.groupId,
+              paneNode, tab: paneNode.tabs[tabIdx], tabIdx, anchorEl: document.activeElement });
+          }
+        }
+      }
+      if (!path) return;
       const comp = typeof getComponentInstance === 'function' ? getComponentInstance(tabId) : null;
       if (comp && comp._loadVersions) comp._loadVersions(path, vType || 'file');
     }
@@ -242261,10 +242511,22 @@ const GBPaneBridge = (() => {
     }
     const operationSource = openOpts.source ?? openOpts.sourceEl ?? openOpts.sourcePaneId ?? openOpts.paneId ?? openOpts.surface;
     if (!_guardRightSidebarTool(toolType, operationSource)) return false;
+    if (toolType === 'chat' && !window._gbSingleWindow && window.GBChatSidebar) {
+      if (openOpts.toggleExisting && window.GBChatSidebar.isOpen?.()) {
+        window.GBChatSidebar.close?.();
+        return;
+      }
+      if (window.GBChatSidebar.open?.()) return;
+    }
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
     const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
     const preserveWorkActive = !mobileSinglePane && _isPassiveToolPaneTab(toolType, { type: toolType, path: '' });
     if (typeof GBDockPopup !== 'undefined') {
+      if (mobileSinglePane && GBDockPopup.getCurrentPopupTarget?.()?.tabType === popupToolType) {
+        if (openOpts.toggleExisting) GBDockPopup.close?.();
+        else GBDockPopup.activateTabType?.(popupToolType, '');
+        return;
+      }
       if (openOpts.userIntent && typeof GBDockPopup.close === 'function') {
         // 明示的な表示コマンドは、一時ポップアップから本体へ戻して展開する。
         GBDockPopup.close();
@@ -242278,6 +242540,22 @@ const GBPaneBridge = (() => {
     if (existing) {
       const paneId = existing.paneId;
       const activePane = GBLayout.activePane;
+      const paneElement = GBLayout.paneMap?.[paneId]?.el;
+      if (mobileSinglePane && existing.panelsetNode && !paneElement?.getClientRects?.().length
+          && typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.open === 'function') {
+        // Phone layout renders the work pane only. Reuse the existing dock
+        // popup to mount this auxiliary pane without changing Desktop layout.
+        const paneNode = GBLayout.findNode(GBLayout.root, paneId)?.node;
+        const tabIdx = paneNode?.tabs?.findIndex(tab => tab.id === existing.tabId) ?? -1;
+        if (tabIdx >= 0) {
+          const contentPane = _getContentPane(activePane) || _getFileOpenPane(activePane);
+          GBDockPopup.open({ panelsetNode: existing.panelsetNode, groupId: existing.groupId,
+            paneNode, tab: paneNode.tabs[tabIdx], tabIdx,
+            anchorEl: operationSource?.nodeType ? operationSource : document.activeElement });
+          if (toolType === 'detail') _syncDetailForActivePane(contentPane || activePane);
+          return existing.tabId;
+        }
+      }
       // toggleRightPanelTab() だけが同一ペイン時のクローズを許可する。
       // openRightPanelTab()/switchRightTab() は既存タブを必ずアクティブ化する。
       const existingVisible = typeof GBLayout.isPaneVisible === 'function'

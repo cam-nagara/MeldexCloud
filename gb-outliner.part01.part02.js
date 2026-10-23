@@ -893,7 +893,18 @@ function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, 
           _unregisterTreeSubtree(node);
           node.remove();
         });
-        merged.forEach(child => container.appendChild(nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath)));
+        // Moving an existing row to the same parent still detaches it. Keep
+        // unchanged rows in place so read-time projection preserves focus.
+        let nextNode = container.querySelector(':scope > .tree-node');
+        merged.forEach(child => {
+          const node = nodes.get(child.path) || createTreeNodeFromBrowse(child, rootPath);
+          if (node === nextNode) {
+            nextNode = node.nextElementSibling;
+            while (nextNode && !nextNode.matches('.tree-node')) nextNode = nextNode.nextElementSibling;
+          } else {
+            container.insertBefore(node, nextNode);
+          }
+        });
       }
       applyGlobalFilter();
       _snapshotBaseTreeVisibility();

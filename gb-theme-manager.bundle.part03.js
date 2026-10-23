@@ -1,3 +1,14 @@
+  }
+
+  function handlePaletteDomMutations(mutations) {
+    if (paletteMutationTouchesTargets(mutations)) invalidatePaletteTargetCache();
+  }
+
+  function collectPaletteTargets(options = {}) {
+    if (!options.force && _paletteTargetCache) return _paletteTargetCache;
+    ensurePaletteObserver();
+    const targets = [];
+    PALETTE_TARGET_SPECS.forEach(([selector, target]) => {
       document.querySelectorAll(selector).forEach((el, index) => {
         targets.push({ el, index, target });
       });
@@ -887,14 +898,3 @@
         const t = readBoardThemeVar('--bd-auto-align');
         if (t !== '') board.autoAlign = t !== '0';
       }
-    }
-  }
-
-  function setBoardTheme(board, id) {
-    if (!board) return;
-    const nextThemeId = _normalizeThemeIdWithPromotedCustom(id) || '';
-    if (String(board.themeId || '') === nextThemeId) {
-      applyBoardThemeRuntime(board);
-      return false;
-    }
-    if (typeof global.bdPushUndo === 'function') global.bdPushUndo();

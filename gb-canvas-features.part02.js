@@ -878,6 +878,9 @@ function bdShowZoomMenu(anchor) {
   menu.appendChild(_bdHudMenuItem('<span style="display:inline-block;width:14px;"></span>フィットマップ', () => {
     if (typeof bdFitAll === 'function') bdFitAll();
   }));
+  const minimap = _bdHudMenuItem('ミニマップ', () => bdToggleMinimap());
+  minimap.dataset.e2eId = 'bd-minimap-toggle';
+  menu.appendChild(minimap);
   if (typeof positionPopup === 'function') {
     positionPopup(menu, rect);
   } else if (typeof clampPopupToViewport === 'function') {
@@ -888,9 +891,7 @@ function bdShowZoomMenu(anchor) {
   });
 }
 
-// v0.5.285 でフローティングミニマップ (bdToggleMinimap / _bdDrawFloatingMinimap /
-// _bdMinimapVisible) を削除。ビューワーパネル側のミニマップ (gb-canvas-minimap.js
-// `_bdDrawPreviewMinimap`) で同じ目的を達成するため。
+// ミニマップは gb-canvas-minimap.js がボード内に表示する。
 
 // --- Node Shapes ---
 const BD_SHAPES = ['rect','ellipse','pill','octagon','cloud','fluffy','thorn','thorn-curve'];

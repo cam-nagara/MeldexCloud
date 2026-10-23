@@ -61,10 +61,10 @@
     else { _cache.clear(); _inflight.clear(); }
   }
 
-  async function get(vk) {
+  async function get(vk, { retry = false } = {}) {
     if (!vk) return null;
     const cached = _cache.get(vk);
-    if (cached) return cached;
+    if (cached && (cached.status !== 'error' || !retry)) return cached;
     if (_inflight.has(vk)) return _inflight.get(vk);
     const p = (async () => {
       try {
@@ -81,6 +81,7 @@
           locked_by: raw?.locked_by || '',
         };
         _cache.set(vk, entry);
+        _notifyChange(vk);
         return entry;
       } catch (error) {
         const entry = {
@@ -152,7 +153,9 @@
   // §8.4 ロック中の操作ブロック。解除を促し、解除したら true。キャンセルなら false。
   async function guardAction(vk, kind) {
     if (!vk) return true;
-    const entry = _cache.get(vk) || await get(vk);
+    // A failed startup/auth/network request must not block this view forever.
+    // Retry on the next explicit action, remaining fail-closed until it succeeds.
+    const entry = await get(vk, { retry: true });
     if (entry?.status === 'error') {
       if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。通信状態を確認して再試行してください', true);
       return false;
@@ -176,7 +179,7 @@
   // ロック切替（UI アイコンから）
   async function toggle(vk, kind, getState) {
     if (!vk) return;
-    const loaded = await get(vk);
+    const loaded = await get(vk, { retry: true });
     if (loaded?.status === 'error') {
       if (typeof showStatus === 'function') showStatus('表示ロックを確認できません。再試行してください', true);
       return;
@@ -289,7 +292,12 @@
     }
     btn._viewLockClickHandler = async (ev) => {
       ev.preventDefault(); ev.stopPropagation();
-      if (_cache.get(vk)?.status === 'error') invalidate(vk);
+      if (_cache.get(vk)?.status === 'error') {
+        // The error icon promises a retry, not a change to the lock state.
+        await get(vk, { retry: true });
+        render();
+        return;
+      }
       await toggle(vk, kind, getState);
       render();
     };

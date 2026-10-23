@@ -14335,9 +14335,10 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   background: var(--bg3);
 }
 .gf-chip.is-active.is-muted {
-  color: var(--ui-accent-fg, var(--ui-fg-strong, #fff));
+  /* The saved type selection remains outlined while filtering is off. */
+  color: var(--fg);
   border-color: var(--accent);
-  background: var(--accent);
+  background: var(--bg3);
 }
 .gf-filter-popup #gf-modified-days {
   box-sizing: border-box;
@@ -20654,6 +20655,12 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-sidebar-actions {
   flex-wrap: wrap;
   align-items: stretch;
+}
+
+.gb-production-collaboration-feedback {
+  flex-basis: 100%;
+  color: var(--red);
+  overflow-wrap: anywhere;
 }
 
 .gb-production-sidebar-button {
@@ -27612,6 +27619,7 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 @media (pointer: coarse), (max-width: 640px) {
   .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
+  .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }
 
 
@@ -29275,6 +29283,7 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 
 #meldex-install-prompt-overlay .meldex-install-prompt-modal > .gb-modal-body,
 #meldex-install-help-overlay .meldex-install-help-modal > .gb-modal-body,
+#quick-memo-install-overlay .meldex-install-help-modal > .gb-modal-body,
 #meldex-cloud-home-first-overlay .meldex-cloud-home-first-modal > .gb-modal-body,
 #meldex-beta-consent-overlay .meldex-beta-consent-modal > .gb-modal-body {
   overflow-x: hidden !important;
@@ -31667,7 +31676,7 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray {
   position: fixed;
-  /* 設定などのダイアログ表示中も、進捗を暗転背景より手前で読めるようにする。 */
+  /* 通常時の進捗は通知レイヤーに表示する。ダイアログ表示中は下の規則で背面へ置く。 */
   z-index: var(--ui-z-toast, 400);
   /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
   right: calc(14px + var(--gb-rail-width, 38px) + 8px);
@@ -31684,6 +31693,11 @@ img.meldex-image-load-error {
 }
 
 .meldex-operation-tray[hidden] { display: none; }
+
+/* Modal actions must remain above background progress, including on phones. */
+body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-operation-tray {
+  z-index: calc(var(--ui-z-modal, 300) - 1);
+}
 
 .meldex-operation-tray-header {
   display: flex;
@@ -32539,6 +32553,10 @@ img.meldex-image-load-error {
   color: var(--danger);
 }
 
+body[data-cloud-mobile="1"] .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+  :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
+body[data-mobile-ui-local="1"] .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+  :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
 body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-inner-tab,
 body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-inner-tab,
 body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-btn,
@@ -32573,6 +32591,8 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
     border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0;
   }
 
+  .knowledge-home-modal :is(.knowledge-layer-view, .taste-principles-view)
+    :is(.gb-inner-tab, .gb-btn, .gb-input, .gb-select, .gb-check, .taste-card-weight),
   .modal .knowledge-layer-view .gb-inner-tab {
     height: auto;
     min-height: var(--ui-h-touch);

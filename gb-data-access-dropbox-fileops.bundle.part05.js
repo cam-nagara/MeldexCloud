@@ -266,7 +266,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!filePath) throw new Error('path は必須です');
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
+      if (!entry || entry.kind !== 'file') {
+        throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+          status: 404, code: 'file_missing', meldexCode: 'file_missing',
+        });
+      }
       if (_boolParam(url.searchParams.get('metadata_only'))) {
         const etag = await _fileEtag(provider, filePath, entry);
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
@@ -894,7 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
-        await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
-      }
-      if (type === 'scriptnote') {

@@ -367,10 +367,22 @@
     }
     const operationSource = openOpts.source ?? openOpts.sourceEl ?? openOpts.sourcePaneId ?? openOpts.paneId ?? openOpts.surface;
     if (!_guardRightSidebarTool(toolType, operationSource)) return false;
+    if (toolType === 'chat' && !window._gbSingleWindow && window.GBChatSidebar) {
+      if (openOpts.toggleExisting && window.GBChatSidebar.isOpen?.()) {
+        window.GBChatSidebar.close?.();
+        return;
+      }
+      if (window.GBChatSidebar.open?.()) return;
+    }
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
     const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
     const preserveWorkActive = !mobileSinglePane && _isPassiveToolPaneTab(toolType, { type: toolType, path: '' });
     if (typeof GBDockPopup !== 'undefined') {
+      if (mobileSinglePane && GBDockPopup.getCurrentPopupTarget?.()?.tabType === popupToolType) {
+        if (openOpts.toggleExisting) GBDockPopup.close?.();
+        else GBDockPopup.activateTabType?.(popupToolType, '');
+        return;
+      }
       if (openOpts.userIntent && typeof GBDockPopup.close === 'function') {
         // 明示的な表示コマンドは、一時ポップアップから本体へ戻して展開する。
         GBDockPopup.close();
@@ -384,6 +396,22 @@
     if (existing) {
       const paneId = existing.paneId;
       const activePane = GBLayout.activePane;
+      const paneElement = GBLayout.paneMap?.[paneId]?.el;
+      if (mobileSinglePane && existing.panelsetNode && !paneElement?.getClientRects?.().length
+          && typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.open === 'function') {
+        // Phone layout renders the work pane only. Reuse the existing dock
+        // popup to mount this auxiliary pane without changing Desktop layout.
+        const paneNode = GBLayout.findNode(GBLayout.root, paneId)?.node;
+        const tabIdx = paneNode?.tabs?.findIndex(tab => tab.id === existing.tabId) ?? -1;
+        if (tabIdx >= 0) {
+          const contentPane = _getContentPane(activePane) || _getFileOpenPane(activePane);
+          GBDockPopup.open({ panelsetNode: existing.panelsetNode, groupId: existing.groupId,
+            paneNode, tab: paneNode.tabs[tabIdx], tabIdx,
+            anchorEl: operationSource?.nodeType ? operationSource : document.activeElement });
+          if (toolType === 'detail') _syncDetailForActivePane(contentPane || activePane);
+          return existing.tabId;
+        }
+      }
       // toggleRightPanelTab() だけが同一ペイン時のクローズを許可する。
       // openRightPanelTab()/switchRightTab() は既存タブを必ずアクティブ化する。
       const existingVisible = typeof GBLayout.isPaneVisible === 'function'

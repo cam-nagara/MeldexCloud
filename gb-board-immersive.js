@@ -155,7 +155,7 @@
   function interactionLocked(instance) {
     return instance.locks.size > 0
       || document.body.classList.contains('bsa-resizing-sidebar')
-      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"]');
+      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"], [data-bd-topic-view-controls] details[open]');
   }
 
   function edgeSensorSize(instance) {

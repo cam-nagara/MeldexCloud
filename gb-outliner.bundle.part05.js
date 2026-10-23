@@ -1,3 +1,14 @@
+    const calPanel = _outlinerCreateSubmenu('メインカレンダー');
+    _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
+    [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
+      _outlinerAppendMenuItem(calPanel, {
+        html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
+        checked: isMain === val,
+        action: () => {
+        closeTreeContextMenu();
+        const before = _captureMainCalendarSettingsHistory();
+        if (val) {
+          localStorage.setItem('main-calendar-path', nodeData.path);
           const mcFid = _pathToFileId(nodeData.path);
           if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
           showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
@@ -887,14 +898,3 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
   input.addEventListener('dblclick', (e) => e.stopPropagation());
 
   let finished = false;
-  const finish = async () => {
-    if (finished) return;
-    finished = true;
-    const nv = input.value.trim() || '無題';
-    labelEl.textContent = nv;
-
-    // ファイル/フォルダの実体をリネーム
-    if (nodeData.path && nv !== old) {
-      const oldPath = nodeData.path;
-      try {
-        const res = await apiPost('/outliner/rename', {

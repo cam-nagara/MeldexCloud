@@ -679,6 +679,10 @@
       <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
+    container.querySelectorAll('.gb-field-help').forEach(help => {
+      const control = help.closest('label')?.querySelector('input[id], select[id]');
+      help.dataset.e2eId = 'settings-x-bookmarks-help-' + (control?.id || 'summary');
+    });
     bind();
     if (isCloudSurface()) {
       ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations']
