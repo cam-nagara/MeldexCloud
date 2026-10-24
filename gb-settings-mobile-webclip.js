@@ -8,16 +8,18 @@
   function render() {
     return `
       <section class="gb-section gb-section--boxed" data-settings-view="web-clipper" data-e2e-id="settings-mobile-webclip">
-        <div class="gb-section-title">モバイル版（iPhone・iPad・Android）</div>
+        <div class="gb-section-title">スマホからURLを送る</div>
         <div class="gb-section-desc">
-          Safari・Chromeなどの共有からMeldexへ送ると、ページ本文を取得してDropboxの「Web Clipper」へ保存します。
-          Safariでは表示中のページを優先し、その他のブラウザでは共有されたURLをMeldexが開き直して取得します。
+          Androidはホーム画面に追加したMeldexへの共有、iPhoneは共有メニューのショートカットからURLを送れます。
+          DropboxのWeb受信箱に保管し、PC版Meldexが起動中に本文・画像・取得できる動画を保存します。PC停止中の分は次回起動時に取得します。
         </div>
         <div class="gb-section-desc" style="margin-top:8px;">
-          ログインが必要なページや取得を拒否するページは、本文の一部またはURLのみの保存になります。画像とPDFも共有できます。
+          PCにも登録したDropboxフォルダを送信先に選んでください。初期設定は1分ごとの確認で、「定期実行」のWeb受信箱から周期変更・停止ができます。
+          ログインが必要なページや分割配信・DRM動画などは取得できない場合があります。
         </div>
+        <button type="button" class="gb-btn" data-webclip-inbox-open>Web受信箱を開く</button>
         <div class="gb-separator" style="margin:12px 0;"></div>
-        <div class="gb-section-title">共有保存用 owner端末</div>
+        <div class="gb-section-title">専用アプリ向けの共有保存用 owner端末</div>
         <div class="gb-section-desc">信頼済みの所有者端末から、5分で失効する一回限りQRを発行します。新端末はMeldexアプリ内の「端末登録QRを読み取る」からだけ読み取ります。</div>
         <div class="gb-section-desc" style="margin-top:6px;">登録先はQR発行元と同じDropbox所有者アカウントの本人端末に限ります。登録端末はowner署名能力を安全領域へ保持します。紛失時は直ちに失効してください。owner鍵をローテーションすると全登録端末が無効になり、再登録が必要です。</div>
         <div class="gb-field-row" style="justify-content:flex-start;margin-top:8px;">
@@ -91,6 +93,10 @@
     const section = root?.querySelector?.('[data-e2e-id="settings-mobile-webclip"]');
     if (!section || section.dataset.ownerDeviceBound === '1') return;
     section.dataset.ownerDeviceBound = '1';
+    section.querySelector('[data-webclip-inbox-open]')?.addEventListener('click', () => {
+      const url = global.MeldexWebClipInbox?.receiverUrl?.();
+      if (url) global.open(url, '_blank', 'noopener');
+    });
     const button = section.querySelector('[data-e2e-id="webclip-owner-device-issue"]');
     const result = section.querySelector('[data-webclip-owner-device-result]');
     button?.addEventListener('click', async () => {

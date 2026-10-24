@@ -81,6 +81,10 @@
   const failedLocalWrites = new Set();
 
   document.addEventListener('DOMContentLoaded', () => {
+    if (window.MeldexWebClipInbox?.isReceiver()) {
+      window.MeldexWebClipInbox.open().catch(error => console.error('Web受信箱を初期化できません', error));
+      return;
+    }
     init().catch(error => {
       console.error('quick memo initialization failed', error);
       setStatus('クイックメモを初期化できませんでした: ' + (error?.message || error), true);

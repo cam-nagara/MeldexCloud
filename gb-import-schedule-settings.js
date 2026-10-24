@@ -16,6 +16,7 @@
     'x-bookmarks': 'Xブックマーク',
     'x-account-posts': 'Xアカウント投稿',
     'external-import-set': '外部取り込み',
+    'webclip-inbox': 'Web受信箱',
   };
   const USER_FACING_CATEGORIES = new Set(Object.keys(CATEGORY_LABELS));
 
@@ -169,7 +170,7 @@
         status.textContent = '削除できませんでした: ' + (err.userMessage || err.message || err);
       }
     });
-    row.appendChild(deleteBtn);
+    if (entry.category !== 'webclip-inbox') row.appendChild(deleteBtn);
     card.appendChild(row);
 
     return card;

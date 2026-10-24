@@ -1,0 +1,13 @@
+.qm-shell.webclip-inbox { display:block; box-sizing:border-box; width:100%; max-width:720px; height:100dvh; margin:0 auto; padding:20px; overflow:auto; line-height:1.6; }
+.webclip-inbox h1 { font-size:24px; margin:0 0 12px; }
+.webclip-inbox label { display:block; margin:14px 0; }
+.webclip-inbox input, .webclip-inbox select, .webclip-inbox button { box-sizing:border-box; min-height:44px; font:inherit; border:1px solid var(--border,#555); border-radius:6px; background:var(--bg2,#202328); color:var(--fg,#eee); padding:10px; }
+.webclip-inbox input, .webclip-inbox select { display:block; width:100%; margin-top:5px; }
+.webclip-inbox button { margin:6px 8px 6px 0; cursor:pointer; }
+.webclip-inbox button:disabled { opacity:.55; cursor:default; }
+.webclip-inbox #clip-send { background:var(--accent,#397bc9); color:white; }
+.webclip-inbox #clip-status { min-height:48px; padding:10px; background:var(--bg2,#202328); border-radius:6px; }
+.webclip-inbox #clip-status[data-error="1"] { color:var(--danger,#ff8e8e); }
+.webclip-inbox details { margin:12px 0; }
+.webclip-inbox summary { min-height:44px; cursor:pointer; }
+.webclip-inbox [hidden] { display:none!important; }

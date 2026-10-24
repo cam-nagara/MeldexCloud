@@ -5,6 +5,11 @@
   "id": "./Meldex.html",
   "start_url": "./Meldex.html",
   "scope": "./",
+  "share_target": {
+    "action": "./apps/quick-memo/",
+    "method": "GET",
+    "params": {"title": "clip_title", "text": "clip_text", "url": "clip_url"}
+  },
   "display": "standalone",
   "display_override": [
     "standalone",

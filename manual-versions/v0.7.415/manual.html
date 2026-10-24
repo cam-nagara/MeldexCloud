@@ -10514,6 +10514,8 @@ Meldexのカレンダーデータ
 <li>ブラウザ右上の<strong>Meldex Web Clipper</strong>アイコンを押す</li>
 <li>保存方法を選び、<strong>Meldexに保存</strong>を押す</li>
 </ol>
+<p><strong>記事</strong>または<strong>ページ全体</strong>で<strong>記事内の画像・動画も保存</strong>をONにすると、取得できた画像と動画を保存先の添付フォルダへファイルとして保存します。保存したページは、その添付ファイルを参照します。チェックをOFFにすると、画像・動画のファイルは保存しません。<strong>簡易記事</strong>は本文のみの保存です。</p>
+<p>動画はMP4・WebM・MOVなどの直接取得できるファイルが対象です。画像は1件25MB以下、動画も1件25MB以下で、記事1件につき画像は最大30件、動画は最大10件を保存します。ブラウザで取得できない場合はMeldex側でも取得を試みますが、ログイン権限が必要なものや取得を拒否されるもの、分割配信の動画（HLS・DASH）などは保存できない場合があります。</p>
 <p>ページ内の画像をまとめて保存する場合は、保存方法で<strong>ページ画像を選ぶ</strong>を選びます。画像一覧が開いたら、形式・最小幅・最小高さで絞り込み、保存する画像とMeldex内の保存先フォルダを選んでください。保存先はホームフォルダだけでなく、Meldexへ登録済みのソースフォルダやワークスペースからも選べます。</p>
 </div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-0fd56974b047--_5" data-manual-anchor="_5">画像をドラッグして保存する</h3><div class="manual-outline-content">
 <ol>
@@ -10552,6 +10554,16 @@ Meldexのカレンダーデータ
 <li><strong>画像を保存</strong></li>
 <li><strong>リンク先を保存</strong></li>
 </ul>
+</div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-0fd56974b047--androidiphoneurlpc" data-manual-anchor="androidiphoneurlpc">Android・iPhoneからURLを送り、PCで取得する</h3><div class="manual-outline-content">
+<p>設定の<strong>Webクリップ → Web Clipper</strong>から<strong>Web受信箱を開く</strong>を押します。スマホで同じCloud版の受信箱を開き、Dropboxへ接続してください。送信先には、PC版Meldexにも登録してあるDropboxフォルダを選びます。スマホへ専用アプリを配布したり、署名したりする必要はありません。</p>
+<ul>
+<li><strong>Android</strong>: Cloud版MeldexをChromeのメニューからアプリとしてインストールします。保存したいページの共有で<strong>Meldex BETA</strong>を選び、受信箱の<strong>Web受信箱へ送る</strong>を押します。共有先が更新されない場合は、保留中のメモやURLを送信済みであることを確認し、Cloud版を更新してからインストールし直してください。</li>
+<li><strong>iPhone</strong>: 「ショートカット」で<strong>Meldexに保存</strong>を作り、<strong>共有シートに表示</strong>をON、入力の種類を<strong>URL</strong>にします。「URLエンコード」で「ショートカットの入力」をエンコードし、「テキスト」に受信箱画面の<strong>ショートカットの送信先URL</strong>とエンコード済みURLの変数をつなぎ、「URLを開く」に渡します。Chromeなどの共有から<strong>Meldexに保存</strong>を選ぶと受信箱が開きます。初回はDropboxへ接続し、<strong>Web受信箱へ送る</strong>を押してください。</li>
+</ul>
+<p>URLを直接貼り付けて送信することもできます。<strong>受信箱に保存しました</strong>と表示されれば、スマホの画面を閉じても要求はDropboxに残ります。通信に失敗した場合は、同じ画面を開き直して再送できます。</p>
+<p>PC版Meldexは起動時と既定1分ごとに未取得URLを確認し、<code>Web Clipper</code>へ本文・画像・直接取得できる動画を保存します。PC停止中・スリープ中の分は、次回起動・復帰後に取得します。取得に失敗したURLは再試行し、取得済みのURLを重複保存しません。周期変更・一時停止・手動取得は<strong>定期実行 → Web受信箱</strong>で操作できます。複数のPCを使う場合は、取得を担当する1台だけで定期実行をONにしてください。</p>
+<p>スマホ側では<strong>取得結果を確認</strong>から、取得済み・再試行待ち・一部メディア未取得を確認できます。PCにもDropboxアプリの同期設定が必要です。送信先の受信箱がPC側へ同期されていない場合や、そのフォルダがPC版Meldexへ登録されていない場合は取得されません。</p>
+<p>取得するのはURL先の公開ページです。スマホのログイン状態は引き継ぎません。ログイン必須ページ、JavaScriptを実行しないと本文が現れないページ、分割配信・DRM動画などは取得できない場合があります。</p>
 <hr>
 </div></section></div></section><section class="manual-outline-section manual-outline-level-2" data-outline-level="2"><h2 id="manual-0fd56974b047--x" data-manual-anchor="x">Xブックマーク保存</h2><div class="manual-outline-content">
 <p>設定 → <strong>Webクリップ</strong> → <strong>Xブックマーク</strong> では、自分のXブックマークをMeldex内のシートへ保存できます。Xに投稿、フォロー、いいね、DM送信を行う機能ではありません。</p>
