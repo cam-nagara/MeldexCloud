@@ -1,3 +1,14 @@
+  const normalizedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
+  normalizedPaths.forEach(path => {
+    if (pending) _outlinerPendingDeletePaths.add(path);
+    else _outlinerPendingDeletePaths.delete(path);
+  });
+  return normalizedPaths;
+}
+
+function _prepareOutlinerDeleteTargets(items) {
+  const seen = new Set();
+  const unique = (Array.isArray(items) ? items : [])
     .filter(item => item && item.path)
     .map(item => ({
       name: item.name || item.label || String(item.path).split('/').pop() || '',
@@ -887,14 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
           },
         });
       });
-    }
-  }
-
-  const _locked = nodeData.path ? isItemLocked(nodeData.path) : false;
-
-  // --- メインカレンダーに設定（calendarタイプのみ） ---
-  if (!isMulti && nodeData.type === 'calendar' && nodeData.path) {
-    const mainCalId = localStorage.getItem('main-calendar-id');
-    const mainCalPath = localStorage.getItem('main-calendar-path');
-    const nodeFid = _pathToFileId(nodeData.path);
-    const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;

@@ -1,3 +1,9 @@
+  input.focus();
+  // クリックがrowのclickイベントにバブルしてファイルを開くのを防止
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('dblclick', (e) => e.stopPropagation());
+
+  let finished = false;
   const finish = async () => {
     if (finished) return;
     finished = true;
@@ -779,6 +785,10 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     const nd = nodeEl._nodeData;
     if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
+  }
+  if (typeof _folderImportOsDrop === 'function') {
+    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
+    return;
   }
   const progress = window.MeldexOperationProgress?.begin?.({
     kind: 'file-import',

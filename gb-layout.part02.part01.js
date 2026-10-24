@@ -528,10 +528,12 @@
   }
 
   function _findAxisEdgeSegment(node, direction, edge) {
+    if (!node || node.collapsed) return null;
     const inlineRoot = _axisInlineRoot(node, direction);
     if (inlineRoot) return _findAxisEdgeSegment(inlineRoot, direction, edge);
     if (node?.type === 'split' && node.direction === direction && !node.collapsed && Array.isArray(node.children)) {
-      return _findAxisEdgeSegment(edge === 'last' ? node.children[1] : node.children[0], direction, edge);
+      return _findAxisEdgeSegment(edge === 'last' ? node.children[1] : node.children[0], direction, edge)
+        || _findAxisEdgeSegment(edge === 'last' ? node.children[0] : node.children[1], direction, edge);
     }
     return node || null;
   }
@@ -553,6 +555,14 @@
     const second = splitEl?.querySelector?.(':scope > .gb-split-second');
     if (!first || !second) return;
     const key = direction === 'horizontal' ? 'width' : 'height';
+    if (splitNode.children.some(child => child.collapsed)) {
+      for (const [index, child] of splitNode.children.entries()) {
+        const element = index === 0 ? first : second;
+        element.style.flex = child.collapsed ? '0 0 auto' : '1 1 0';
+        element.style[key] = child.collapsed ? `${index === 0 ? firstSize : secondSize}px` : '0px';
+      }
+      return;
+    }
     first.style.flex = 'none';
     second.style.flex = 'none';
     first.style[key] = `${firstSize}${unit}`;
@@ -566,8 +576,9 @@
     const firstSpan = _axisSpan(node.children[0], direction, segmentSizes, handleSizes);
     const secondSpan = _axisSpan(node.children[1], direction, segmentSizes, handleSizes);
     const total = firstSpan + secondSpan;
-    if (total > 0) node.ratio = Math.max(0.01, Math.min(0.99, firstSpan / total));
-    if (unit === '%') {
+    const hasCollapsedChild = node.children.some(child => child.collapsed);
+    if (total > 0 && !hasCollapsedChild) node.ratio = Math.max(0.01, Math.min(0.99, firstSpan / total));
+    if (unit === '%' && !hasCollapsedChild) {
       const containerSpan = total + (handleSizes.get(node.id) || 0);
       const firstPct = containerSpan > 0 ? (firstSpan / containerSpan) * 100 : node.ratio * 100;
       const secondPct = containerSpan > 0 ? (secondSpan / containerSpan) * 100 : (100 - node.ratio * 100);
@@ -590,14 +601,16 @@
     const right = _findAxisEdgeSegment(node.children?.[1], direction, 'first');
     const segments = _collectAxisSegments(axisRoot, direction);
     const leftIndex = segments.indexOf(left);
-    if (!left?.id || !right?.id || leftIndex < 0 || segments[leftIndex + 1] !== right) {
+    const rightIndex = segments.indexOf(right);
+    if (!left?.id || !right?.id || leftIndex < 0 || rightIndex <= leftIndex
+        || segments.slice(leftIndex + 1, rightIndex).some(segment => !segment.collapsed)) {
       return null;
     }
     const segmentSizes = new Map();
     const handleSizes = new Map();
     for (const segment of segments) {
       const size = _axisSegmentSize(segment, direction);
-      if (!Number.isFinite(size) || size <= 0) {
+      if (!Number.isFinite(size) || (size <= 0 && !segment.collapsed)) {
         return null;
       }
       segmentSizes.set(segment.id, size);

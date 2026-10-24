@@ -66,6 +66,7 @@ function _chatSerializableQueueScope(scope) {
   return {
     sessionId: String(value.sessionId || ''),
     targetPath: String(value.targetPath || ''),
+    targets: Array.isArray(value.targets) ? value.targets.map(item => ({ path: String(item.path || ''), kind: String(item.kind || '') })) : [],
     workspaceId: String(value.workspaceId || ''),
     sourceFolder: String(value.sourceFolder || ''),
     mode: String(value.mode || ''),
@@ -74,7 +75,7 @@ function _chatSerializableQueueScope(scope) {
 
 function _chatQueueScopeKey(scope) {
   const value = _chatSerializableQueueScope(scope);
-  return [value.mode, value.workspaceId, value.sourceFolder, value.sessionId, value.targetPath].join('\u001f');
+  return [value.mode, value.workspaceId, value.sourceFolder, value.sessionId, value.targetPath, JSON.stringify(value.targets)].join('\u001f');
 }
 
 function _chatDraftScope(message) {
@@ -115,6 +116,7 @@ function _chatCurrentQueueScope() {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
     targetPath: String(_chatState.streamingTargetPath || (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.targetPath || '')) || ''),
+    targets: _chatState.activeExecution?.targets || (typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets() : []),
     workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
@@ -127,6 +129,7 @@ function _chatQueueScopesMatch(scope, current) {
   if (String(scope.workspaceId || '') !== String(current.workspaceId || '')) return false;
   if (String(scope.sourceFolder || '') !== String(current.sourceFolder || '')) return false;
   if (String(scope.targetPath || '') !== String(current.targetPath || '')) return false;
+  if (scope.targets?.length && current.targets?.length && JSON.stringify(scope.targets) !== JSON.stringify(current.targets)) return false;
   const scopeSession = String(scope.sessionId || '');
   const currentSession = String(current.sessionId || '');
   if (scopeSession || currentSession) return scopeSession === currentSession;

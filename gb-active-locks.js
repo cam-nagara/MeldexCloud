@@ -170,27 +170,51 @@
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     headers.set(HEADER, token());
     const requestOptions = { ...(opts || {}), headers };
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDataAccess?.requestJson) {
-      let body = requestOptions.body;
-      if (typeof body === 'string' && body) {
-        try { body = JSON.parse(body); } catch {}
+    // This request runs before apiFetch's mutation timeout. Bound both fetch
+    // and response-body reads, and fail closed before attempting a write.
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        const error = new Error('編集ロックの応答を確認できませんでした。接続を確認してください');
+        error.code = 'active_lock_timeout';
+        reject(error);
+      }, 15000);
+    });
+    try {
+      const request = (async () => {
+        if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDataAccess?.requestJson) {
+          let body = requestOptions.body;
+          if (typeof body === 'string' && body) {
+            try { body = JSON.parse(body); } catch {}
+          }
+          return window.MeldexDataAccess.requestJson(path, { ...requestOptions, body, signal: controller.signal });
+        }
+        const res = await fetch(API_BASE + path, { ...requestOptions, signal: controller.signal });
+        if (!res.ok) {
+          let payload = null;
+          let detail = res.statusText || '';
+          try {
+            payload = await res.clone().json();
+            detail = payload?.detail?.message || payload?.detail || payload?.error || detail;
+          } catch {}
+          const error = new Error(typeof detail === 'string' ? detail : (detail?.message || `HTTP ${res.status}`));
+          error.status = res.status;
+          error.payload = payload;
+          throw error;
+        }
+        return await res.json();
+      })();
+      return await Promise.race([request, timeout]);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timedOut = new Error('編集ロックの応答を確認できませんでした。保存処理は開始していません。接続を確認してください');
+        timedOut.code = 'active_lock_timeout';
+        throw timedOut;
       }
-      return window.MeldexDataAccess.requestJson(path, { ...requestOptions, body });
-    }
-    const res = await fetch(API_BASE + path, requestOptions);
-    if (!res.ok) {
-      let payload = null;
-      let detail = res.statusText || '';
-      try {
-        payload = await res.clone().json();
-        detail = payload?.detail?.message || payload?.detail || payload?.error || detail;
-      } catch {}
-      const error = new Error(typeof detail === 'string' ? detail : (detail?.message || `HTTP ${res.status}`));
-      error.status = res.status;
-      error.payload = payload;
       throw error;
-    }
-    return res.json();
+    } finally { clearTimeout(timer); }
   }
 
   function _lockBody(path, options) {
@@ -216,9 +240,16 @@
     const normalized = _normalizePath(path);
     if (!normalized) return null;
     if (_isLockExemptPath(normalized)) return null;
-    // A previous completed creation can release in the background. Its DELETE
-    // must finish before this operation acquires a new lease on the same path.
-    if (pendingReleases.has(normalized)) await pendingReleases.get(normalized);
+    // Paths may have relative/absolute or case aliases. Wait for all this
+    // holder's DELETEs; an uncertain release requires a new holder via reload.
+    while (pendingReleases.size) {
+      const released = await Promise.all([...pendingReleases.values()]);
+      if (released.some(result => result?.ok === false)) {
+        const error = new Error('前回の編集ロック解除を確認できません。接続の回復後に画面を再読込してください。保存処理は開始していません');
+        error.code = 'active_lock_release_unknown';
+        throw error;
+      }
+    }
     lastUsedAt.set(normalized, Date.now());
     const current = localLocks.get(normalized);
     const needsDescendantCheck = options?.includeDescendants === true || options?.include_descendants === true;
@@ -260,12 +291,13 @@
   }
 
   function _releaseLock(path, keepalive) {
-    // 解放はベストエフォート（失敗してもリース期限切れで自然消滅するため黙殺してよい）
+    // A failed/aborted DELETE may still arrive at the server. Its caller keeps
+    // a barrier until reload (which creates a different holder ID).
     const query = new URLSearchParams({ path, holder_id: holderId() });
     return _jsonFetch('/active-lock?' + query.toString(), {
       method: 'DELETE',
       keepalive: !!keepalive,
-    }).catch(() => {});
+    });
   }
 
   async function acquireMutationLocks(candidates) {
@@ -295,14 +327,16 @@
   }
 
   async function releaseMutationLocks(paths) {
+    const releases = [];
     for (const path of [...(paths || [])].reverse()) {
       const current = mutationLockRefs.get(path);
       if (!current) continue;
       current.count -= 1;
       if (current.count > 0) continue;
       mutationLockRefs.delete(path);
-      if (current.owned) await releaseLock(path);
+      if (current.owned) releases.push(releaseLock(path));
     }
+    await Promise.all(releases);
   }
 
   async function withMutationLocks(candidates, operation) {
@@ -325,16 +359,21 @@
   async function releaseLock(path, options) {
     const normalized = _normalizePath(path);
     if (!normalized) return { ok: true, removed: false };
+    if (pendingReleases.has(normalized)) return pendingReleases.get(normalized);
     const removed = localLocks.delete(normalized);
     lastUsedAt.delete(normalized);
     mutationLockRefs.delete(normalized);
     _stopHeartbeatIfIdle();
-    const release = _releaseLock(normalized, !!options?.keepalive);
+    const release = _releaseLock(normalized, !!options?.keepalive).then(
+      () => ({ ok: true, removed }),
+      () => ({ ok: false, removed, error_code: 'active_lock_release_unknown' }),
+    );
     pendingReleases.set(normalized, release);
-    try { await release; } finally {
+    const result = await release;
+    if (result.ok) {
       if (pendingReleases.get(normalized) === release) pendingReleases.delete(normalized);
     }
-    return { ok: true, removed };
+    return result;
   }
 
   async function relocateLock(oldPath, newPath) {
@@ -347,10 +386,7 @@
     const entry = await ensureLock(next, {
       includeDescendants: previousEntry?.include_descendants === true,
     });
-    localLocks.delete(previous);
-    lastUsedAt.delete(previous);
-    await _releaseLock(previous, false);
-    _stopHeartbeatIfIdle();
+    await releaseLock(previous);
     return entry;
   }
 
@@ -362,10 +398,7 @@
         return;
       }
       if (now - (lastUsedAt.get(path) || 0) <= IDLE_RELEASE_MS) return;
-      localLocks.delete(path);
-      lastUsedAt.delete(path);
-      mutationLockRefs.delete(path);
-      _releaseLock(path, false);
+      void releaseLock(path);
     });
     // ロックを持たないパスの最終使用時刻は不要なので掃除する
     [...lastUsedAt.keys()].forEach(path => {
@@ -427,18 +460,7 @@
 
   async function releaseAll() {
     const paths = [...localLocks.keys()];
-    localLocks.clear();
-    lastUsedAt.clear();
-    mutationLockRefs.clear();
-    _stopHeartbeatIfIdle();
-    if (!paths.length) return;
-    try {
-      await _jsonFetch('/active-lock/release-all', {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify({ token: token(), holder_id: holderId() }),
-      });
-    } catch {}
+    return Promise.all(paths.map(path => releaseLock(path, { keepalive: true })));
   }
 
   // トークンが端末単位の共有になったため、release-all（トークン全解放）を
@@ -446,11 +468,7 @@
   // このウィンドウが取得したパスだけを個別に解放する。
   function _releaseWindowLocks() {
     const paths = [...localLocks.keys()];
-    localLocks.clear();
-    lastUsedAt.clear();
-    mutationLockRefs.clear();
-    _stopHeartbeatIfIdle();
-    paths.forEach(path => { _releaseLock(path, true); });
+    paths.forEach(path => { void releaseLock(path, { keepalive: true }); });
   }
 
   window.addEventListener('pagehide', () => {

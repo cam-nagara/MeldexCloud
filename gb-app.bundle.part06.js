@@ -1,3 +1,7 @@
+
+function _handleViewerFolderNavRequest(msg, targetIframe = null) {
+  const direction = Number(msg?.direction) < 0 ? -1 : 1;
+  const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
   _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe).then(moved => {
     if (!moved && typeof showStatus === 'function') {
       showStatus('画像またはPDFがあるフォルダがありません', true);
@@ -894,7 +898,3 @@ function showLoading(msg, opts) {
   if (!group) {
     const label = _loadingText(msg);
     const common = _commonLoadingProgress();
-    group = { key, label, refs: 0, operation: common?.begin({
-      kind: 'loading', label, mode: 'indeterminate', background: false,
-      delayMs: 300, showInTray: true, priority: 40,
-    }) || null };

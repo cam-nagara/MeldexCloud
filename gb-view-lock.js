@@ -488,6 +488,24 @@
         }
         const prevValue = el._vlPrevValue !== undefined ? el._vlPrevValue : readValue(el);
         const inputReplay = captureInputReplay(e, el);
+        // ロック状態の初回取得中にドラッグ開始を失わない。解除・確認が
+        // 成功し、同じポインターを押し続けている場合だけ開始を再配信する。
+        let pointerEnded = false;
+        let latestPointer = e;
+        const pointerEnd = event => { if (event.pointerId === e.pointerId) pointerEnded = true; };
+        const pointerMove = event => { if (event.pointerId === e.pointerId) latestPointer = event; };
+        const replayPointer = e.type === 'pointerdown' && typeof PointerEvent === 'function';
+        if (replayPointer) {
+          document.addEventListener('pointerup', pointerEnd, true);
+          document.addEventListener('pointercancel', pointerEnd, true);
+          document.addEventListener('pointermove', pointerMove, true);
+        }
+        const cleanupPointer = () => {
+          if (!replayPointer) return;
+          document.removeEventListener('pointerup', pointerEnd, true);
+          document.removeEventListener('pointercancel', pointerEnd, true);
+          document.removeEventListener('pointermove', pointerMove, true);
+        };
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         guardAction(info.viewKey, info.kind).then((ok) => {
@@ -502,12 +520,19 @@
               el.click();
             } else if (inputReplay) {
               replayInput(el, inputReplay);
+            } else if (replayPointer && !pointerEnded && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {
+              const init = event => ({ bubbles: true, cancelable: true, pointerId: e.pointerId,
+                pointerType: e.pointerType, isPrimary: e.isPrimary, button: 0, buttons: 1,
+                clientX: event.clientX, clientY: event.clientY });
+              el.dispatchEvent(new PointerEvent('pointerdown', init(e)));
+              if (latestPointer !== e) document.dispatchEvent(new PointerEvent('pointermove', init(latestPointer)));
             }
           } catch (_) {}
           finally {
+            cleanupPointer();
             delete el._vlPrevValue;
           }
-        });
+        }).catch(() => { cleanupPointer(); delete el._vlPrevValue; });
       } catch (_) {}
     };
     document.addEventListener('pointerdown', rememberValue, { capture: true });

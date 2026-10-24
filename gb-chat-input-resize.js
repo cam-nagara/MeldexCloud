@@ -15,7 +15,8 @@
       (parseFloat(style.borderTopWidth) || 0) +
       (parseFloat(style.borderBottomWidth) || 0);
     return {
-      min: (minRows || 2) * lineHeight + padding,
+      min: Math.max((minRows || 2) * lineHeight + padding,
+        parseFloat(style.getPropertyValue('--chat-composer-min-height')) || 0),
       autoMax: (maxRows || 8) * lineHeight + padding,
     };
   }
@@ -88,6 +89,19 @@
     const input = document.getElementById(cfg.inputId);
     if (!handle || !input || handle.dataset.chatResizeBound === '1') return;
     handle.dataset.chatResizeBound = '1';
+    if (typeof ResizeObserver !== 'undefined') {
+      const team = cfg.inputId === 'team-input';
+      const controls = document.getElementById(team ? 'team-send-btn' : 'chat-send-btn')?.parentElement;
+      const composer = document.getElementById(team ? 'team-composer' : 'chat-composer');
+      if (controls && composer) {
+        const syncMinimum = () => {
+          const height = controls.getBoundingClientRect().height;
+          if (height > 0) composer.style.setProperty('--chat-composer-min-height', height + 'px');
+        };
+        new ResizeObserver(syncMinimum).observe(controls);
+        syncMinimum();
+      }
+    }
     if (!handle.getAttribute('role')) handle.setAttribute('role', 'separator');
     if (!handle.getAttribute('aria-orientation')) handle.setAttribute('aria-orientation', 'horizontal');
     if (!handle.getAttribute('aria-controls')) handle.setAttribute('aria-controls', cfg.inputId);

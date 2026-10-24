@@ -13910,10 +13910,12 @@ const GBLayout = (() => {
   }
 
   function _findAxisEdgeSegment(node, direction, edge) {
+    if (!node || node.collapsed) return null;
     const inlineRoot = _axisInlineRoot(node, direction);
     if (inlineRoot) return _findAxisEdgeSegment(inlineRoot, direction, edge);
     if (node?.type === 'split' && node.direction === direction && !node.collapsed && Array.isArray(node.children)) {
-      return _findAxisEdgeSegment(edge === 'last' ? node.children[1] : node.children[0], direction, edge);
+      return _findAxisEdgeSegment(edge === 'last' ? node.children[1] : node.children[0], direction, edge)
+        || _findAxisEdgeSegment(edge === 'last' ? node.children[0] : node.children[1], direction, edge);
     }
     return node || null;
   }
@@ -13935,6 +13937,14 @@ const GBLayout = (() => {
     const second = splitEl?.querySelector?.(':scope > .gb-split-second');
     if (!first || !second) return;
     const key = direction === 'horizontal' ? 'width' : 'height';
+    if (splitNode.children.some(child => child.collapsed)) {
+      for (const [index, child] of splitNode.children.entries()) {
+        const element = index === 0 ? first : second;
+        element.style.flex = child.collapsed ? '0 0 auto' : '1 1 0';
+        element.style[key] = child.collapsed ? `${index === 0 ? firstSize : secondSize}px` : '0px';
+      }
+      return;
+    }
     first.style.flex = 'none';
     second.style.flex = 'none';
     first.style[key] = `${firstSize}${unit}`;
@@ -13948,8 +13958,9 @@ const GBLayout = (() => {
     const firstSpan = _axisSpan(node.children[0], direction, segmentSizes, handleSizes);
     const secondSpan = _axisSpan(node.children[1], direction, segmentSizes, handleSizes);
     const total = firstSpan + secondSpan;
-    if (total > 0) node.ratio = Math.max(0.01, Math.min(0.99, firstSpan / total));
-    if (unit === '%') {
+    const hasCollapsedChild = node.children.some(child => child.collapsed);
+    if (total > 0 && !hasCollapsedChild) node.ratio = Math.max(0.01, Math.min(0.99, firstSpan / total));
+    if (unit === '%' && !hasCollapsedChild) {
       const containerSpan = total + (handleSizes.get(node.id) || 0);
       const firstPct = containerSpan > 0 ? (firstSpan / containerSpan) * 100 : node.ratio * 100;
       const secondPct = containerSpan > 0 ? (secondSpan / containerSpan) * 100 : (100 - node.ratio * 100);
@@ -13972,14 +13983,16 @@ const GBLayout = (() => {
     const right = _findAxisEdgeSegment(node.children?.[1], direction, 'first');
     const segments = _collectAxisSegments(axisRoot, direction);
     const leftIndex = segments.indexOf(left);
-    if (!left?.id || !right?.id || leftIndex < 0 || segments[leftIndex + 1] !== right) {
+    const rightIndex = segments.indexOf(right);
+    if (!left?.id || !right?.id || leftIndex < 0 || rightIndex <= leftIndex
+        || segments.slice(leftIndex + 1, rightIndex).some(segment => !segment.collapsed)) {
       return null;
     }
     const segmentSizes = new Map();
     const handleSizes = new Map();
     for (const segment of segments) {
       const size = _axisSegmentSize(segment, direction);
-      if (!Number.isFinite(size) || size <= 0) {
+      if (!Number.isFinite(size) || (size <= 0 && !segment.collapsed)) {
         return null;
       }
       segmentSizes.set(segment.id, size);
@@ -92708,7 +92721,8 @@ async function resetLayoutToDefault() {
     children.style.display = 'none';
     children.dataset.loaded = '0';
 
-    const selectRow = () => {
+    const selectRow = (automatic = false) => {
+      if (!automatic) state.userSelected = true;
       state.selected = _selectionFor(
         root, path, name, isFile ? 'file' : 'folder', isFile ? folder.type : 'folder',
       );
@@ -92725,7 +92739,7 @@ async function resetLayoutToDefault() {
       row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
       row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
       node.appendChild(row);
-      if (_normalizePath(state.initialPath) === path) selectRow();
+      if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
       return node;
     }
 
@@ -92753,7 +92767,7 @@ async function resetLayoutToDefault() {
       loading.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
       children.appendChild(loading);
       try {
-        const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }));
+        const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }), { skipBrowseCache: true });
         const rows = (Array.isArray(payload) ? payload : (payload.items || []))
           .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles && (!state.fileTypes || state.fileTypes.includes(item.type)))));
         rows.sort((a, b) => {
@@ -92803,7 +92817,7 @@ async function resetLayoutToDefault() {
 
     node.appendChild(row);
     node.appendChild(children);
-    if (_normalizePath(state.initialPath) === path) selectRow();
+    if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
     return node;
   }
 
@@ -92830,8 +92844,8 @@ async function resetLayoutToDefault() {
       currentPath = currentPath + '/' + segments[i];
     }
     const finalEntry = state.nodeByPath.get(currentPath);
-    if (finalEntry) {
-      finalEntry.selectRow();
+    if (finalEntry && !state.userSelected) {
+      finalEntry.selectRow(true);
       if (typeof finalEntry.row.scrollIntoView === 'function') {
         finalEntry.row.scrollIntoView({ block: 'center' });
       }
@@ -115855,6 +115869,24 @@ function onStampSend(inputId, sendFn) {
         }
         const prevValue = el._vlPrevValue !== undefined ? el._vlPrevValue : readValue(el);
         const inputReplay = captureInputReplay(e, el);
+        // ロック状態の初回取得中にドラッグ開始を失わない。解除・確認が
+        // 成功し、同じポインターを押し続けている場合だけ開始を再配信する。
+        let pointerEnded = false;
+        let latestPointer = e;
+        const pointerEnd = event => { if (event.pointerId === e.pointerId) pointerEnded = true; };
+        const pointerMove = event => { if (event.pointerId === e.pointerId) latestPointer = event; };
+        const replayPointer = e.type === 'pointerdown' && typeof PointerEvent === 'function';
+        if (replayPointer) {
+          document.addEventListener('pointerup', pointerEnd, true);
+          document.addEventListener('pointercancel', pointerEnd, true);
+          document.addEventListener('pointermove', pointerMove, true);
+        }
+        const cleanupPointer = () => {
+          if (!replayPointer) return;
+          document.removeEventListener('pointerup', pointerEnd, true);
+          document.removeEventListener('pointercancel', pointerEnd, true);
+          document.removeEventListener('pointermove', pointerMove, true);
+        };
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         guardAction(info.viewKey, info.kind).then((ok) => {
@@ -115869,12 +115901,19 @@ function onStampSend(inputId, sendFn) {
               el.click();
             } else if (inputReplay) {
               replayInput(el, inputReplay);
+            } else if (replayPointer && !pointerEnded && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {
+              const init = event => ({ bubbles: true, cancelable: true, pointerId: e.pointerId,
+                pointerType: e.pointerType, isPrimary: e.isPrimary, button: 0, buttons: 1,
+                clientX: event.clientX, clientY: event.clientY });
+              el.dispatchEvent(new PointerEvent('pointerdown', init(e)));
+              if (latestPointer !== e) document.dispatchEvent(new PointerEvent('pointermove', init(latestPointer)));
             }
           } catch (_) {}
           finally {
+            cleanupPointer();
             delete el._vlPrevValue;
           }
-        });
+        }).catch(() => { cleanupPointer(); delete el._vlPrevValue; });
       } catch (_) {}
     };
     document.addEventListener('pointerdown', rememberValue, { capture: true });
@@ -203761,11 +203800,17 @@ async function loadProviderModels(provider, options = {}) {
 
 function _currentChatModelSelection(provider, models, options = {}) {
   const storedModel = localStorage.getItem('chat-model:' + _chatProviderKey(provider)) || localStorage.getItem('chat-model') || '';
-  const current = options.preferredModel || _chatState.pendingModel || _chatState.model || storedModel || _chatDefaultModel(provider);
+  let current = options.preferredModel || _chatState.pendingModel || _chatState.model || storedModel || _chatDefaultModel(provider);
+  const requested = current;
+  if (_chatIsCliProvider(provider)) {
+    const legacyLabel = (models || []).find(item => item.name === current);
+    if (legacyLabel) current = legacyLabel.id;
+    else if (current === (CHAT_PROVIDER_META[provider]?.label || provider) + '（CLI既定）') current = CLI_CHAT_DEFAULT_MODEL_SENTINEL;
+  }
   const modelIds = new Set((models || []).map(item => item.id));
   const selected = modelIds.has(current) ? current : ((models || [])[0]?.id || _chatDefaultModel(provider));
   if (current && selected && current !== selected && modelIds.size && !options.suppressNotify) _chatNotifyUnavailableModel(provider, current, selected);
-  if (selected === _chatState.pendingModel) _chatState.pendingModel = '';
+  if (selected === _chatState.pendingModel || (selected === current && requested === _chatState.pendingModel)) _chatState.pendingModel = '';
   return { value: selected, model: selected };
 }
 
@@ -205688,6 +205733,7 @@ function _chatResetCurrentSession(options = {}) {
   _chatState.historySourceFolder = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
   _chatState.lastImplicitTargetPath = options.keepTargetPath ? (_chatState.lastImplicitTargetPath || '') : '';
+  if (!options.keepTargetPath && typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: options.cleanupUploads !== false });
   } else {
@@ -206101,6 +206147,7 @@ function _chatSessionScopeSnapshot() {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
     targetPath: String(typeof _chatEffectiveTargetPath === 'function' ? (_chatEffectiveTargetPath() || '') : (_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || '')),
+    targets: typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets() : [],
     workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
@@ -206738,6 +206785,7 @@ function _chatSerializableQueueScope(scope) {
   return {
     sessionId: String(value.sessionId || ''),
     targetPath: String(value.targetPath || ''),
+    targets: Array.isArray(value.targets) ? value.targets.map(item => ({ path: String(item.path || ''), kind: String(item.kind || '') })) : [],
     workspaceId: String(value.workspaceId || ''),
     sourceFolder: String(value.sourceFolder || ''),
     mode: String(value.mode || ''),
@@ -206746,7 +206794,7 @@ function _chatSerializableQueueScope(scope) {
 
 function _chatQueueScopeKey(scope) {
   const value = _chatSerializableQueueScope(scope);
-  return [value.mode, value.workspaceId, value.sourceFolder, value.sessionId, value.targetPath].join('\u001f');
+  return [value.mode, value.workspaceId, value.sourceFolder, value.sessionId, value.targetPath, JSON.stringify(value.targets)].join('\u001f');
 }
 
 function _chatDraftScope(message) {
@@ -206787,6 +206835,7 @@ function _chatCurrentQueueScope() {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
     targetPath: String(_chatState.streamingTargetPath || (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.targetPath || '')) || ''),
+    targets: _chatState.activeExecution?.targets || (typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets() : []),
     workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
@@ -206799,6 +206848,7 @@ function _chatQueueScopesMatch(scope, current) {
   if (String(scope.workspaceId || '') !== String(current.workspaceId || '')) return false;
   if (String(scope.sourceFolder || '') !== String(current.sourceFolder || '')) return false;
   if (String(scope.targetPath || '') !== String(current.targetPath || '')) return false;
+  if (scope.targets?.length && current.targets?.length && JSON.stringify(scope.targets) !== JSON.stringify(current.targets)) return false;
   const scopeSession = String(scope.sessionId || '');
   const currentSession = String(current.sessionId || '');
   if (scopeSession || currentSession) return scopeSession === currentSession;
@@ -207124,6 +207174,7 @@ function _chatQueueScopeFromOptions(options = {}) {
     messages: options.messages,
     sessionId: String(options.sessionId || ''),
     targetPath: String(options.targetPath || ''),
+    targets: options.targets || [],
     workspaceId: String(hasWorkspaceId ? (options.workspaceId || '') : (_chatState.queuedScope?.workspaceId || '')),
     sourceFolder: String(hasSourceFolder ? (options.sourceFolder || '') : (_chatState.queuedScope?.sourceFolder || '')),
     mode: String(hasMode ? (options.mode || '') : (_chatState.queuedScope?.mode || (typeof _chatMode === 'undefined' ? '' : _chatMode || ''))),
@@ -207202,6 +207253,7 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
         sessionId: options.sessionId,
         sessionTitle: options.sessionTitle,
         targetPath: options.targetPath,
+        targets: options.targets || [],
         sourceFolder: options.sourceFolder,
         workspaceId: options.workspaceId,
         provider: firstDraft?.provider || options.provider,
@@ -207379,6 +207431,7 @@ async function chatSend(options = {}) {
   const imgSearchMatch = usingDeferredMessages ? null : text.match(/^\/(?:image-search|画像検索)\s+(.+)/i);
   if (imgSearchMatch) {
     const query = imgSearchMatch[1].trim();
+    if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
     chatAddMessage('user', text, { timestamp: _chatLocalTimestamp() });
     chatAddSystem('画像を検索中...');
     const results = await clipSearchImages(query);
@@ -207420,6 +207473,7 @@ async function chatSend(options = {}) {
   }
 
   // ユーザーメッセージ表示・記録（画像添付があれば構造化コンテンツにする）
+  if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
   if (usingDeferredMessages) {
     deferredMessages.forEach(message => {
       message.role = 'user';
@@ -207453,10 +207507,11 @@ async function chatSend(options = {}) {
   const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
   const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
   const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+  const streamTargets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath: streamTargetPath }) : [];
   const streamSourceFolder = requestSourceFolder;
   const streamWorkspaceId = requestWorkspaceId;
   const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
-  let streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath });
+  let streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets });
   if (window.GBMeldexManualGrounding?.groundSystemPrompt) {
     streamSystemPrompt = await window.GBMeldexManualGrounding.groundSystemPrompt(text, streamSystemPrompt);
   }
@@ -207471,6 +207526,7 @@ async function chatSend(options = {}) {
     sessionId: streamSessionId,
     sessionTitle: streamSessionTitle,
     targetPath: streamTargetPath,
+    targets: streamTargets,
     sourceFolder: streamSourceFolder,
     workspaceId: streamWorkspaceId,
     provider: streamProvider,
@@ -207599,6 +207655,7 @@ async function chatSend(options = {}) {
         session_id: streamSessionId,
         session_title: streamSessionTitle,
         target_path: streamTargetPath,
+        reference_targets: streamTargets,
         source_folder: streamSourceFolder,
         workspace_id: streamWorkspaceId,
         work_folder: streamWorkFolder,
@@ -207767,6 +207824,7 @@ async function chatSend(options = {}) {
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
+        targets: streamTargets,
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
@@ -207797,6 +207855,7 @@ async function chatSend(options = {}) {
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
+        targets: streamTargets,
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
@@ -207823,6 +207882,7 @@ async function chatSend(options = {}) {
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
+        targets: streamTargets,
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
@@ -207854,6 +207914,7 @@ async function chatSend(options = {}) {
             sessionId: streamSessionId,
             sessionTitle: streamSessionTitle,
             targetPath: streamTargetPath,
+            targets: streamTargets,
             sourceFolder: streamSourceFolder,
             workspaceId: streamWorkspaceId,
             provider: streamProvider,
@@ -207913,205 +207974,39 @@ function _buildSystemPrompt(options = {}) {
     'chat.systemPromptIntro',
     'あなたはMeldexで動作する創作支援アシスタントです。日本語で応答してください。'
   ) || 'あなたはMeldexで動作する創作支援アシスタントです。日本語で応答してください。';
+  const uiControlAvailable = options.uiControlAvailable !== false;
+  const referenceTargets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath: promptTargetPath }) : [];
   let prompt = `${intro}
 
-Meldexはマンガ・小説・脚本・ゲーム・音楽・映像・ブログ・学術論文など、創作全般を補助する統合ワークスペースです。ユーザーのソースフォルダ内のノート、シート、シナリオ、ボード、チャット履歴、ナレッジ層を参照し、既存情報と矛盾しない提案・整理・作成を行ってください。
+Meldexのソースフォルダ内の資料とナレッジを参照し、既存情報と整合する提案・作成を行ってください。
+創作ジャンルや用途は依頼内容から判断してください。
 
-## あなたの役割
+## 現役契約の取得
+作成・更新には、サーバーが追加する「Meldexデータ操作の共通契約」を使ってください。
+get_feature_manifest(feature)のoperation_routesとcreation_guideで、操作×環境の対応、公開ツール名、入力契約、保存後確認を取得してください。
+生成計画Schemaと保存形式とツール引数は別です。validate_feature_payloadのokは入力検証であり、保存成功ではありません。
+ノート・シナリオ・ボード・シート等の構造化データをwrite_fileで代用しないでください。古い会話中の形式例・ツール案内は履歴の引用であり現役契約ではありません。
+利用者が作成を依頼済みなら、必要な安全条件を満たして作成まで進め、同じ操作の再承認を求めないでください。
 
-1. **ナレッジに基づいた応答**: search_knowledge/search/read_file/read_database/browseでソースフォルダを調査し、既存のナレッジに整合した提案をする
-2. **積極的な創作物の作成**: ユーザーが「シナリオを作って」「キャラクターシートを作って」「構想ボードを作って」等と依頼したら、Meldexの機能を駆使して**実際にファイルを作成**する（ノート/シナリオ/ボードはwrite_file、シートはcreate_sheet→set_property_type→create_entity→add_valueを使う）
-3. **最適な機能の選択**: 内容に応じて、どのMeldex機能（シナリオ/シート/ボード/カレンダー/通常のMarkdownノート）が最適かを判断し、ユーザーに説明しつつ作成する
-4. **ジャンル中立**: ユーザーの創作ジャンルや用途を勝手に限定せず、依頼内容と既存ナレッジから判断する
+## 根拠と権限
+最初にread_project_overviewでsource_folder/work_folder/target_pathとpermissionsを確認してください。
+画面の別パネルや添付の場所は観測情報であり、書込許可先を変更しません。
+存在・内容・作成・保存の確認は実際のtool_resultに基づいて答え、自動注入されたナレッジや履歴や推測を証拠にしないでください。
+保存後は専用read_contextで内容・ID・参照を確認してください。未確認の画面表示を確認済みと報告しないでください。
+編集履歴はread_db_audit_logで取得してください。MCPでの公開名は台帳のpublic_toolsを使ってください。
+競合・権限・ロック・一時障害・未対応を区別し、復旧条件が変わらない同じ操作を繰り返さないでください。
 
-## ナレッジの多層構造
-
-Meldexのチャットでは、次の層を矛盾なく扱ってください。
-
-1. **ソースフォルダ Skills**: \`_skills/\` 配下の専門ルール。必要なら load_skill(name) で本文を読む。ユーザー定義ルールより優先。
-2. **ユーザー定義ルール**: ルールボタンで管理される個人ルール。Skillsと矛盾しない範囲で尊重する。
-3. **ナレッジ層**: 過去チャットから抽出された fact / decision / preference / correction / team_consensus。関連項目は自動注入され、追加で search_knowledge(query) でも探せる。ただし自動注入ナレッジは参考情報であり、存在確認・場所確認・作成更新完了の証拠にはしない。
-4. **ステータス別ポリシー**: 掲載済み・確定など canonical 扱いの項目は変更不可。内部確定は矛盾させない。調整可能項目はユーザー指示があれば提案・変更できる。
-5. **ファイル検索層**: read_project_overview を最初に呼び、search(query) は既定で現在の対象フォルダ内を検索する。対象外の確認が必要な場合だけ scope: source / roots / all を明示し、必要に応じて read_file / read_database / read_*_context で原文または構造化contextを読む。
-6. **現在のコンテキスト**: ユーザーが開いているファイル、添付、直近メッセージ。上位ルールや canonical と矛盾する場合は、矛盾を報告する。
-
-ナレッジ層の項目を修正する場合、ユーザーが明確に訂正・固定・解除を求めたときだけ update_knowledge を使ってください。canonical や保護された項目は勝手に上書きしないでください。
-
-## Meldex の主要機能と使い分け
-
-### 1. シナリオ (.scriptnote.json)
-脚本・セリフ構成・小説のプロット・対話形式のコンテンツに使用。
-**形式（JSON）**:
-\`\`\`json
-{
-  "title": "タイトル",
-  "rows": [
-    {"id":"r1","pageSetting":"めくり","character":"","text":""},
-    {"id":"r2","pageSetting":"","character":"","text":"シーン見出しやト書きなど"},
-    {"id":"r3","pageSetting":"","character":"登場人物名","text":"セリフ内容"}
-  ],
-  "settings": {"modeName":"小説","viewMode":"horizontal"}
-}
-\`\`\`
-- **pageSetting**: 改ページ系制御（"めくり"/"改ページ"/"シーン見出し"/"柱"など、空文字も可）
-- **character**: 発話者名（"ト書き"/"プロット"等の特殊値もあり）
-- **text**: セリフまたは説明文
-- modeName候補: "マンガ脚本" / "映像脚本" / "小説" / "舞台脚本" / "ゲームシナリオ" 等。ユーザーの用途に合わせて選ぶ
-- idは任意のユニークID（短いランダム文字列）
-
-### 2. シート (構造化エントリ)
-キャラクター設定・用語集・アイテム一覧・楽曲リスト・参考文献・タスク管理など、**複数のエントリを構造化して管理**するもの全般に使用。
-**新形式の構造**:
-\`\`\`
-シートフォルダ/
-  シートフォルダ.md          ← type: settings-db（新規シートはエントリ実体をSQLiteに保存）
-  エントリ名.md              ← エントリ操作用の論理パス（物理ファイルとは限らない）
-\`\`\`
-- set_property_type で列/型/リレーションを設定 → create_entity でエントリ作成 → add_value でプロパティ値を追加
-- 新形式シートで add_value を使うときは、create_entity の戻り値 path（例: \`キャラ表/主人公.md\`）を folder_path に使う。シートフォルダだけを folder_path に渡さない。エントリ名指定で更新する場合は db_path + entity を使う
-- プロパティ型・選択肢・リレーション・数式・ロールアップは set_property_type で設定する。フォームビューの項目/必須/ラベルは configure_form_view、公開フォーム送信は configure_public_form で設定する
-- 「追加しました」「登録しました」と言う前に read_database で対象シートを読み、目的のエントリとプロパティ値が実際に返っていることを確認する
-- プロパティ値のstatus: "案"/"採用"/"ボツ"/"掲載済み" 等
-- 旧形式のエントリフォルダにも対応しているが、新規作成では新形式を優先
-- タイムラインは独立ファイルではなく、date型プロパティを持つ通常シートのビュー。開始日/終了日/状態などを set_property_type で整え、必要に応じてUI操作でビュー設定する
-- キャラクター表を作る場合は、年齢・誕生日・身長・体格・カップサイズ・体重・B/W/Hなど、テンプレートの数式/プロパティを欠落させない
-
-### 3. ボード (.mel-board / 既存 .board.md)
-マインドマップ・構想図・ストーリーボード・組織図・フローチャート・年表・関係図など、**カードとラインで視覚化**する情報に使用。
-新規作成では .mel-board を優先する。既存 .board.md は互換形式として読み書きできる。
-**形式（Markdownフロントマター + 見出しカード）**:
-\`\`\`markdown
----
-type: board
-ids:
-  "主人公": "n1"
-  "ライバル": "n2"
-positions:
-  "主人公": {x: 100, y: 100}
-  "ライバル": {x: 300, y: 100}
-sizes:
-  "主人公": {w: 160, h: 72}
-  "ライバル": {w: 160, h: 72}
-connections:
-  - {from: "主人公", to: "ライバル", label: "対立", arrow: "end"}
----
-# 主人公
-目標と悩み
-
-# ライバル
-対立軸
-\`\`\`
-- cards を nodes 配列だけに詰め込まない。positions / ids / sizes と本文の見出しカードを合わせて作る。リンクカードやスタイル情報を追加する場合も、既存ファイルの構造を読んでから壊さず更新する
-
-### 4. カレンダーDB
-イベント・スケジュール・締切管理・学習計画など、**日時情報を伴う管理**に使用。
-read_databaseで取得可能（calendar_db: trueフラグあり）。
-
-### 5. 通常のMarkdownノート (.md)
-上記に当てはまらない自由記述（世界観設定・あらすじ・エッセイ・アノテート・ドキュメント等）。
-
-## ツール（Function Calling）
-
-- **read_file(path)**: ファイル内容を読み取る
-- **write_file(path, content)**: ファイルに書き込む（新規/上書き）。フロントマターは維持
-- **create_sheet(path, title)**: シート本体を作成する。キャラ表、用語集、一覧表などのシート作成依頼では、最初にこれを使う
-- **create_entity(parent_path, name)**: シートにエントリを作成。戻り値 path を add_value の folder_path に使う
-- **set_property_type(db_path, property, type, ...)**: シートのプロパティ型・選択肢・リレーション・数式・ロールアップを設定
-- **set_link_value(folder_path/db_path+entity, property, kind, target, label?)**: リンク列へWeb・Meldex内・PC内ファイル/フォルダのリンクを設定
-- **add_value(folder_path, property, value, status)**: エントリにプロパティ値を追加。新形式では create_entity の戻り値 path または db_path + entity を指定
-- **configure_form_view(db_path, fields, required, ...)**: ブラウザ側のフォームビュー項目・必須・ラベル・説明を設定
-- **configure_public_form(db_path, enabled, ...)**: 公開フォーム送信設定を保存
-- **search(query)**: 全文検索
-- **browse(path)**: フォルダ内一覧（空でルート）
-- **search_manual(query, limit)**: Meldex公式マニュアルを検索し、該当箇所・抜粋・WebマニュアルURLを取得する
-- **read_manual(path, section, max_chars)**: search_manualで見つけた公式マニュアルページまたは節を正確に読む
-- **read_database(path)**: DBの全エントリ・プロパティを一括取得
-- **read_db_audit_log(path, since, until, ...)**: 編集履歴と変更レコードを読み、誰がいつ何を変えたかを確認する
-- **create_folder(path, name)**: フォルダ作成
-- **rename(path, new_name)**: リネーム
-- **delete(path)**: ゴミ箱に移動
-- **load_skill(name)**: ソースフォルダ Skills の本文を読み込む
-- **search_knowledge(query, limit)**: 過去チャットから抽出されたナレッジを検索する
-- **update_knowledge(id, ...)**: ナレッジ項目を訂正・固定・解除する
-- **add_debug_report(...)**: ユーザーが明示的に不具合報告を依頼したときだけ使う
-- **llm_list_ui_controls(query, include_hidden, limit)**: 現在のMeldex画面にある操作可能なUI要素をselector付きで一覧する。オプションパネルのポップアップ内のチェックボックスやドロップダウンも、表示後にこのツールで確認する
-- **llm_ui_action(selector, action, value, checked, path, label)**: Meldex UIを実際に操作する。actionは click / set_value / set_checked / toggle / select / contextmenu / focus。selectorが不明な時はlabelでラベル検索できる。設定変更はUndo/Redoとヒストリーに記録される
-
-## ツール実行の事実性ルール
-
-- ファイル、フォルダ、シート、ノート、パス、Meldex UI、ナレッジ項目、記憶、ルール、設定の存在確認・中身確認・作成・更新・登録・リネーム・削除・移動・保存について、ツール結果なしに「確認しました」「存在します」「作成しました」「登録しました」「リネーム完了です」などと断言しない
-- 自動注入されたナレッジ、会話履歴、要約、推測は存在確認・場所確認・更新完了の証拠ではない。確認手段がない場合は、確認できないと答える
-- 存在確認や場所確認を求められたら、browse/read_file/read_database/read_db_audit_log/search_knowledge/load_skill/llm_list_ui_controls のいずれかを実行し、返ってきた tool_result に基づいて答える。search は候補発見用であり、存在確認の最終証拠として単独では使わない
-- シートの編集履歴に関する質問（「いつ誰が直したか」「最近変更されたセル」「先週の修正一覧」等）には、必ず read_db_audit_log を呼ぶ。read_database で現在値を見ても誰がいつ変えたかは分からない。時間範囲が曖昧な場合（「最近」「先週」等）は適切な since / until を補完し、結果が 0 件なら推測せず履歴がないと答える。
-- 作成・更新・リネーム・削除・移動・保存を求められたら、write_file/create_sheet/create_entity/add_value/set_property_type/configure_public_form/configure_form_view/create_folder/rename/delete/update_knowledge/add_debug_report/llm_ui_action の tool_result が ok であることを確認してから完了報告する
-- ツール結果がエラー、空、未実行、または対象不一致の場合は、成功したように言わず、確認できなかった事実と次に必要な操作だけを短く伝える
-
-## Meldex機能の詳細解説について
-
-ユーザーがMeldexの使い方・機能・操作手順について質問した場合、まず **search_manual** で同梱の公式マニュアルコーパスを検索し、必要なら **read_manual** で該当ページを読んでから解説してください。回答にはツール結果の公式WebマニュアルURLを含めてください。ツールを利用できないプロバイダでは、この質問用に自動注入される「公式マニュアル根拠」だけを使用してください。根拠を確認できない場合はその旨を明示し、推測で答えないでください。
-
-主なマニュアル:
-- **Meldex マニュアル.md** / **01_はじめに/クイックスタート.md** / **01_はじめに/画面の見方.md** / **01_はじめに/UI用語ガイド.md**
-- **02_ツール別ガイド/フォルダツリー マニュアル.md** / **ノートエディタ マニュアル.md** / **シナリオエディタ マニュアル.md** / **シート マニュアル.md**
-- **02_ツール別ガイド/ボード マニュアル.md** / **カレンダー マニュアル.md** / **オプションパネル マニュアル.md** / **パネルレイアウト マニュアル.md** / **バージョン管理 マニュアル.md**
-- **03_設定と連携/LLM設定.md** / **03_設定と連携/チャットLLM ツールガイド.md** / **03_設定と連携/LLMプライバシーガイド.md**
-- **03_設定と連携/Chrome拡張機能の設定.md** / **CalDAVカレンダー同期の設定.md** / **画像ツールの設定.md** / **スマホ・タブレットからの利用.md**
-- **04_サポート/よくある質問.md** / **トラブルシューティング集.md** / **既知の不具合.md** / **スクリーンショットの撮り方.md** / **ショートカット一覧/**
-
-機能名・用語はマニュアル内の正式名称に従い、古い呼称（台本、データベース、メモ等）をユーザー向け説明に使わないでください。
-
-## デバッグ・テスト支援
-
-ユーザーがMeldexのテスター・バグ報告者として作業している場合、以下をサポート。関連情報は **04_サポート/トラブルシューティング集.md** や **04_サポート/既知の不具合.md** を参照。
-
-### Meldex-QA 共有フォルダの構成
-- \`テストケース/\` — テスト項目マスターDB（読み取り専用として扱う）
-- \`テスト実績/\` — テスト結果記録先DB（テスターが書き込む）
-- \`バグ報告/\` — バグ報告蓄積DB（タスクトレイの常駐アプリから自動送信される）
-- \`テストデータ/\` — テスト用サンプルファイル群
-
-### バグ報告作成支援
-ユーザーが症状を説明したら、**良いバグ報告**の形式に整える手伝いをする:
-- 操作手順（1-2-3の具体的ステップ）
-- 実際に起きた症状（事実ベース、「おかしい」等の主観表現を避ける）
-- 期待結果との差
-- 再現性（毎回/条件付き/1回のみ）
-- 環境（OS・ブラウザ・Meldexバージョン）
-
-重要度判定: 致命的（クラッシュ・データ消失）/ 高（主要機能不可）/ 中（不便）/ 低（細かい不具合）
-
-### テストケース作成支援
-ユーザーが新機能のテストケースを考える際、以下の観点でリストアップ:
-- 正常系（期待通りの操作）
-- 異常系（想定外の入力・エラー処理）
-- 境界値（最大/最小/ゼロ/空）
-- 並行操作（複数の作業領域・複数ユーザー）
-- UI確認（表示崩れ・レスポンシブ）
-
-テストケースDBへの登録は create_entity + add_value で可能。
-
-### テスト実績の集計支援
-read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
-- 機能別NG件数 / 未実行テストケース一覧
-- テスター別進捗 / NG→修正済み再テスト未完了項目
-
-### 既存バグとの重複チェック
-新規の症状報告の前に、searchで \`Meldex-QA/バグ報告/\` を検索し類似報告がないか確認する。
-
-## 作業指針
-
-1. **まず調査**: 新規作成の依頼でも、まずsearch/browseで既存の関連ナレッジを確認し、整合性を取る
-2. **形式を選択**: 依頼内容から最適な機能（シナリオ/シート/ボード/ノート）を選び、理由をユーザーに説明してから作成する
-3. **実作成の確認**: 「作成しました」「登録しました」「完成しました」と言う前に、write_file / create_sheet / set_property_type / create_entity / add_value / configure_form_view / configure_public_form のツール結果が ok であることを確認し、必要なら browse/read_file/read_database でリンク先の存在を確認する。存在確認できないリンクを完成物として提示しない
-4. **段階的提案**: 大規模な作成（シナリオ全体・シート全体）の前に、構成案・キャラクター案・章立て等をテキストで提示し、ユーザーの了承を得てから実ファイルを作成する
-5. **既存の尊重**: 既存ファイルを大きく変更する場合は、read_fileで現状を確認し、差分をユーザーに示してから書き込む
-6. **フロントマター保全**: .mdファイルの先頭にある\`---\`で囲まれたYAMLフロントマターは絶対に壊さない
-7. **保護ファイル**: editor-config.json / .env.chat / _users.json / _permissions.json は編集不可
-8. **ジャンル中立**: ユーザーの創作ジャンル（マンガ・小説・学術・ビジネス文書等）を勝手に決めつけず、依頼内容と既存ナレッジから判断する
-9. **マニュアル参照**: 機能質問には search_manual → 必要に応じて read_manual の順で公式マニュアルを読み、出典URL付きで正確に答える。自動注入された公式マニュアル根拠がある場合も、その範囲を超えて憶測で答えない
-10. **Meldex UI操作**: ユーザーがアプリ操作を依頼したら、必要に応じて llm_list_ui_controls で対象を確認し、llm_ui_action で操作する。ポップアップ内の細かいチェックボックスやドロップダウンも対象にする。クリックでポップアップを開いた後、必要なら再度 llm_list_ui_controls を使って内部のUIを確認する。selectorが見つからない場合だけlabel検索を使う
-11. **編集ロック厳守**: ロック中のファイル/フォルダに対する編集・リネーム・削除・移動・保存・値追加は絶対に実行しない。UI操作で編集対象がある場合は path を付け、ツール結果がロックエラーならそこで停止してユーザーに報告する
+## ナレッジ
+必要な範囲でsearch_knowledgeと資料検索を使い、事実・決定・創作案を区別してください。
+update_knowledgeは利用者の明示的な訂正・固定・解除依頼に限って使い、依頼済みなら再確認を重ねないでください。
+ソースフォルダSkillsは必要なものをload_skillで取得してください。
+公式マニュアルの状態・digest・参照URLはサーバーの現役契約に従い、取得不能なツールの実行を必須にしないでください。
+不具合報告の外部送信は利用者が明示依頼した場合だけ行ってください。
 `;
+  if (referenceTargets.length) prompt += '\nチャットで明示された対象（操作にはこの実パスを使う）:\n' + referenceTargets.map(item => JSON.stringify(item)).join('\n') + '\n追加対象の参照に必要なら公開ツールのscope: rootsを使い、書込権限はread_project_overviewと実行時の検査に従ってください。\n';
+  prompt += uiControlAvailable
+    ? '\n画面操作は今回公開されたclient UIツールの対象に限って行い、現在値不明を既定値として回答しないでください。\n'
+    : '\nCLIにはMeldexのclient UI操作ツールが渡されません。データ操作はMCPの公開契約を使ってください。\n';
 
   // コンテキストバーにある添付ファイルのパスを追加
   const contextBar = document.getElementById('chat-context-bar');
@@ -208122,14 +208017,14 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
     });
   }
 
-  // 現在開いているビューの情報を追加
-  if (state.currentPagePath) prompt += `\n現在開いているページ: ${state.currentPagePath}\n`;
-  if (state.currentDbPath) prompt += `現在開いているシート: ${state.currentDbPath}\n`;
-  if (state.currentBoardPath) prompt += `現在開いているボード: ${state.currentBoardPath}\n`;
+  // 別パネルは観測情報であり、チャットの許可対象ではない。
+  if (state.currentPagePath) prompt += `\n別パネルの観測ページ（許可対象を変更しない）: ${state.currentPagePath}\n`;
+  if (state.currentDbPath) prompt += `別パネルの観測シート（許可対象を変更しない）: ${state.currentDbPath}\n`;
+  if (state.currentBoardPath) prompt += `別パネルの観測ボード（許可対象を変更しない）: ${state.currentBoardPath}\n`;
   const currentTarget = typeof _chatCurrentOpenTarget === 'function' ? _chatCurrentOpenTarget() : { path: '' };
-  if (currentTarget.path && currentTarget.path !== promptTargetPath) prompt += `現在開いている対象: ${currentTarget.path}\n`;
+  if (currentTarget.path && currentTarget.path !== promptTargetPath) prompt += `別パネルの観測対象（許可対象を変更しない）: ${currentTarget.path}\n`;
 
-  if (window.GBMeldexLlmOperations?.promptSummary) {
+  if (uiControlAvailable && window.GBMeldexLlmOperations?.promptSummary) {
     const uiSummary = window.GBMeldexLlmOperations.promptSummary();
     if (uiSummary) prompt += '\n' + uiSummary + '\n';
   }
@@ -208214,6 +208109,7 @@ async function openFileChat(targetPath) {
         _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
+        if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
         _setChatSessionTitle(data.frontmatter?.title || item.title || '');
         if (data.frontmatter?.provider) {
           _chatState.provider = data.frontmatter.provider;
@@ -208253,6 +208149,7 @@ async function openFileChat(targetPath) {
             _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
+            if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
             _setChatSessionTitle(data.frontmatter?.title || '');
             if (data.frontmatter.provider) {
               _chatState.provider = data.frontmatter.provider;
@@ -208316,6 +208213,7 @@ async function openFileChat(targetPath) {
 
 function _createFileChat(targetPath) {
   _chatState.messages = [];
+  if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
   _chatState.sessionId = '';
   _chatState.targetPath = targetPath;
   _chatState.lastImplicitTargetPath = '';
@@ -208342,20 +208240,22 @@ function _showChatTargetBadge(targetPath) {
   const icon = badge.querySelector('[data-chat-current-target-icon]');
   const clearButton = badge.querySelector('[data-chat-target-clear]');
   const pickerButton = badge.querySelector('[data-chat-target-pick]');
-  const pathText = String(targetPath || '').trim();
+  const targets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ targetPath: String(targetPath || '') }) : [];
+  const pathText = targets.map(item => item.path).join('\n');
   if (pathText) {
     const normalized = typeof _chatNormalizePath === 'function' ? _chatNormalizePath(pathText) : pathText;
     const targetKind = _chatState.currentTargetKind || (_chatState.targetPath ? 'file' : '');
     if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide(targetKind === 'file' ? 'fileText' : 'folder', 12) : '';
     if (label) {
-      label.textContent = normalized;
-      label.title = normalized;
+      if (typeof _chatRenderTargetLabels === 'function') _chatRenderTargetLabels(label, targets);
+      else { label.textContent = normalized; label.title = normalized; }
     } else {
       badge.textContent = normalized;
     }
     badge.dataset.empty = '0';
     badge.style.display = 'flex';
   } else {
+    if (typeof _chatTargetDisplayGeneration !== 'undefined') _chatTargetDisplayGeneration++;
     if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide('circleSlash2', 12) : '';
     if (label) {
       label.textContent = '対象なし';
@@ -208536,7 +208436,9 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
-  if (_chatState.targetPath && typeof _chatSetCurrentTargetPath === 'function') {
+  if (typeof _chatRestoreSessionTargets === 'function') {
+    _chatRestoreSessionTargets(data.frontmatter || {});
+  } else if (_chatState.targetPath && typeof _chatSetCurrentTargetPath === 'function') {
     _chatSetCurrentTargetPath(_chatState.targetPath, 'file', { reason: 'open-saved-chat' });
   } else {
     window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
@@ -208576,6 +208478,7 @@ function chatClear() {
   _chatState.versionTargetPath = '';
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
+  if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
   _chatState.versionTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
@@ -208625,6 +208528,8 @@ async function chatAutoSave(options = {}) {
     : (typeof _chatEffectiveTargetPath === 'function'
       ? String(_chatEffectiveTargetPath() || '')
       : String(_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || ''));
+  const targets = !savingCurrentSession && !Array.isArray(options.targets) ? undefined
+    : (typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath }) : []);
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
   let storageContext;
@@ -208654,6 +208559,7 @@ async function chatAutoSave(options = {}) {
       title: sessionTitle,
       tags: targetPath ? [targetPath] : [],
       targetPath,
+      targets,
       source_folder: sourceFolder,
       workspace_id: workspaceId,
       user: typeof getUsername === 'function' ? getUsername() : '',
@@ -209934,6 +209840,12 @@ function _chatTabPath(tab, ...keys) {
   return '';
 }
 
+function _chatTargetKind(path, kind = '', type = '') {
+  if (/\.mel-sheet$/i.test(String(path || ''))) return 'file';
+  if (type === 'database') return 'folder';
+  return kind;
+}
+
 function _chatCurrentTargetFromTab(tab) {
   const rawType = String(tab?.type || '');
   const type = rawType === 'database' ? 'pivot' : rawType;
@@ -209944,7 +209856,8 @@ function _chatCurrentTargetFromTab(tab) {
   if (type === 'scriptnote') return { path: _chatTabPath(tab, 'scenarioPath', 'scriptnotePath'), kind: 'file' };
   if (type === 'form-app') return { path: _chatTabPath(tab, 'formPath'), kind: 'file' };
   if (_CHAT_TARGET_DB_VIEW_TYPES.has(type) || _CHAT_TARGET_DB_VIEW_TYPES.has(rawType)) {
-    return { path: _chatTabPath(tab, 'dbPath') || _chatStatePath('currentDbPath'), kind: 'folder' };
+    const path = _chatTabPath(tab, 'dbPath') || _chatStatePath('currentDbPath');
+    return { path, kind: _chatTargetKind(path, 'folder') };
   }
   if (type === 'media' || type === 'html') return { path: _chatTabPath(tab, 'mediaPath', 'pagePath') || _chatStatePath('currentPagePath'), kind: 'file' };
   if (type === 'csv') return { path: _chatTabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : ''), kind: 'file' };
@@ -209956,9 +209869,12 @@ function _chatCurrentTargetFromTab(tab) {
 }
 
 function _chatCurrentOpenTarget() {
+  // Chat/tree sidebars may own focus while the main content remains unchanged.
+  let mainPaneId = '';
+  try { mainPaneId = GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true, allowLocked: true }); } catch {}
   try {
     if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentOpenTargetInfo === 'function') {
-      const paneId = (typeof GBLayout !== 'undefined' && GBLayout) ? (GBLayout.activePane || '') : '';
+      const paneId = mainPaneId || ((typeof GBLayout !== 'undefined' && GBLayout) ? (GBLayout.activePane || '') : '');
       const info = GBPaneBridge.getCurrentOpenTargetInfo(paneId);
       if (info?.activeTab) {
         const target = _chatCurrentTargetFromTab(info.activeTab);
@@ -209969,7 +209885,7 @@ function _chatCurrentOpenTarget() {
 
   try {
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function' && typeof GBLayout !== 'undefined') {
-      const activeTab = GBTabs.getActiveTab(GBLayout.activePane);
+      const activeTab = GBTabs.getActiveTab(mainPaneId || GBLayout.activePane);
       if (activeTab) {
         const target = _chatCurrentTargetFromTab(activeTab);
         return { path: _chatNormalizePath(target.path), kind: target.kind || '', resolved: true };
@@ -209982,9 +209898,9 @@ function _chatCurrentOpenTarget() {
   if (view === 'board' && _chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file', resolved: true };
   if ((view === 'page' || view === 'media' || view === 'html') && _chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file', resolved: true };
   if (view === 'entity' && _chatStatePath('currentEntityPath')) return { path: _chatNormalizePath(_chatStatePath('currentEntityPath')), kind: 'file', resolved: true };
-  if (_CHAT_TARGET_DB_VIEW_TYPES.has(view) && _chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder', resolved: true };
+  if (_CHAT_TARGET_DB_VIEW_TYPES.has(view) && _chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: _chatTargetKind(_chatStatePath('currentDbPath'), 'folder'), resolved: true };
   if (_chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file', resolved: true };
-  if (_chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder', resolved: true };
+  if (_chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: _chatTargetKind(_chatStatePath('currentDbPath'), 'folder'), resolved: true };
   if (_chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file', resolved: true };
   if (typeof _folderPath !== 'undefined' && _folderPath) return { path: _chatNormalizePath(_folderPath), kind: 'folder', resolved: true };
   return { path: '', kind: '', resolved: false };
@@ -209995,7 +209911,10 @@ function _chatTargetFromViewObject(view) {
   const type = String(view.type || '');
   if (type === 'folder') return { path: view.path || '', kind: 'folder' };
   if (type === 'entity') return { path: view.entityPath || view.path || '', kind: 'file' };
-  if (type === 'pivot' || type === 'database') return { path: view.dbPath || view.path || '', kind: 'folder' };
+  if (_CHAT_TARGET_DB_VIEW_TYPES.has(type)) {
+    const path = view.dbPath || view.path || '';
+    return { path, kind: _chatTargetKind(path, 'folder') };
+  }
   if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'form-app' || type === 'media' || type === 'html' || type === 'csv') {
     return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.formPath || view.csvPath || '', kind: 'file' };
   }
@@ -210019,7 +209938,69 @@ function _chatTargetSnapshot() {
     mode: _chatCurrentTargetMode(),
     path: String(chatState?.currentTargetPath || ''),
     kind: String(chatState?.currentTargetKind || ''),
+    targets: _chatEffectiveTargets(),
+    started: _chatTargetHasStarted(),
   };
+}
+
+function _chatTargetHasStarted() {
+  const chatState = _chatRuntimeState();
+  return !!chatState?.targetStarted || (chatState?.messages || []).some(message => message.role === 'user');
+}
+
+function _chatTargetKey(path) {
+  let value = _chatNormalizePath(path);
+  if (value && !/^(?:[a-z]:\/|\/|[a-z][a-z0-9_-]*:)/i.test(value)) {
+    const root = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : _chatStatePath('vaultPath');
+    if (root) value = _chatNormalizePath(root) + '/' + value;
+  }
+  return /^[a-z]:\//i.test(value) ? value.toLowerCase() : value;
+}
+
+function _chatEffectiveTargets(options = {}) {
+  const primary = _chatEffectiveTargetPath(options);
+  const supplied = Array.isArray(options.targets) ? options.targets : (_chatRuntimeState()?.additionalTargets || []);
+  const primaryKind = supplied.find(item => _chatTargetKey(item?.path) === _chatTargetKey(primary))?.kind || _chatRuntimeState()?.currentTargetKind || '';
+  const targets = primary ? [{ path: primary, kind: primaryKind }] : [];
+  const seen = new Set(targets.map(item => _chatTargetKey(item.path)));
+  for (const item of supplied) {
+    const path = _chatNormalizePath(item?.path || '');
+    if (!path || seen.has(_chatTargetKey(path))) continue;
+    seen.add(_chatTargetKey(path));
+    targets.push({ path, kind: String(item.kind || '') });
+  }
+  return targets;
+}
+
+function _chatFreezeCurrentTarget() {
+  const path = _chatEffectiveTargetPath();
+  _chatState.currentTargetPath = path;
+  _chatState.targetPath = path;
+  _chatState.targetStarted = true;
+  _chatSetCurrentTargetMode(path || _chatEffectiveTargets().length ? 'manual' : 'detached');
+  _chatPersistTargetSnapshot();
+  return _chatTargetSnapshot();
+}
+
+function _chatResetTargetForNewSession() {
+  _chatState.targetStarted = false;
+  _chatState.additionalTargets = [];
+  _chatState.currentTargetPath = '';
+  _chatState.currentTargetKind = '';
+  _chatState.targetPath = '';
+  _chatSetCurrentTargetMode('follow-main');
+  _chatFollowCurrentOpenTarget();
+}
+
+function _chatRestoreSessionTargets(frontmatter = {}) {
+  let targets = Array.isArray(frontmatter.targets) ? frontmatter.targets : [];
+  const path = String(frontmatter.targetPath || targets[0]?.path || '');
+  // /chat/load resolves targetId after rename. Do not retain its old path as
+  // an extra target: another file may now occupy that old path.
+  if (frontmatter.targetId && path && targets.length) targets = [{ ...targets[0], path }, ...targets.slice(1)];
+  return _chatRestoreTargetSnapshot({ mode: path || targets.length ? 'manual' : 'detached', path,
+    kind: targets.find(item => _chatTargetKey(item.path) === _chatTargetKey(path))?.kind || '',
+    targets, started: (_chatState.messages || []).some(message => message.role === 'user') });
 }
 
 function _chatPersistTargetSnapshot() {
@@ -210035,14 +210016,14 @@ function _chatTargetUpdateMode(options = {}) {
   const currentMode = _chatCurrentTargetMode();
   if (options.mode && _CHAT_TARGET_MODES.has(String(options.mode))) return String(options.mode);
   if (reason === 'chat-target-picker' || reason === 'open-file-chat' || reason === 'create-file-chat' || reason === 'open-saved-chat') {
-    return 'manual';
+    return _chatTargetHasStarted() || reason === 'open-saved-chat' ? 'manual' : 'follow-main';
   }
   if (reason === 'tree-click' || reason === 'tree-select' || reason === 'tree-activate') {
-    if (currentMode === 'manual' && !options.force) return '';
+    if (_chatTargetHasStarted() && !options.force) return '';
     return 'follow-main';
   }
   if (reason === 'last-view') {
-    if (currentMode !== 'follow-main' && !options.force) return '';
+    if ((_chatTargetHasStarted() || currentMode === 'detached') && !options.force) return '';
     return 'follow-main';
   }
   return currentMode;
@@ -210052,7 +210033,7 @@ function _chatSetCurrentTargetPath(path, kind = '', options = {}) {
   const chatState = _chatRuntimeState();
   if (!chatState) return '';
   const clean = _chatNormalizePath(path);
-  const nextKind = clean ? String(kind || '') : '';
+  const nextKind = clean ? _chatTargetKind(clean, String(kind || '')) : '';
   const nextMode = _chatTargetUpdateMode(options);
   if (!nextMode) return String(chatState.currentTargetPath || '');
   chatState.currentTargetPath = clean;
@@ -210078,6 +210059,7 @@ function _chatEffectiveTargetPath(options = {}) {
   const mode = _chatCurrentTargetMode();
   if (mode === 'detached') return '';
   if (mode === 'manual') return String(_chatState.currentTargetPath || _chatState.targetPath || '');
+  if (_chatState.currentTargetPath) return String(_chatState.currentTargetPath);
   const currentTarget = _chatCurrentOpenTarget();
   return currentTarget.resolved ? currentTarget.path : (currentTarget.path || String(_chatState.currentTargetPath || ''));
 }
@@ -210118,10 +210100,52 @@ function _chatRefreshCurrentTargetDisplay() {
   if (typeof _showChatTargetBadge === 'function') _showChatTargetBadge(_chatCurrentTargetLabel());
 }
 
+let _chatTargetDisplayGeneration = 0;
+const _chatTargetDisplayNames = new Map();
+async function _chatDisplayTargetPaths(targets) {
+  const roots = await window.GBFolderPicker.loadRoots();
+  const listings = new Map();
+  return Promise.all(targets.map(async target => {
+    const key = _chatTargetKey(target.path);
+    const root = roots.filter(item => key === _chatTargetKey(item.path) || key.startsWith(_chatTargetKey(item.path) + '/'))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (!root || _chatIsPseudoTargetPath(target.path)) return target.path;
+    const physical = _chatTargetKey(root.path) === key ? root.path : root.path + '/' + key.slice(_chatTargetKey(root.path).length + 1);
+    const segments = physical.slice(root.path.length).split('/').filter(Boolean);
+    const labels = [root.name];
+    let parent = root.path;
+    for (const segment of segments) {
+      const query = '/browse?' + new URLSearchParams({ path: parent, root: root.path, all_files: '1' });
+      if (!listings.has(query)) listings.set(query, apiFetch(query, { skipBrowseCache: true }));
+      const payload = await listings.get(query);
+      const path = parent + '/' + segment;
+      const row = (Array.isArray(payload) ? payload : payload.items || []).find(item => _chatTargetKey(item.path) === _chatTargetKey(path));
+      labels.push(row?.name || segment);
+      parent = row?.path || path;
+    }
+    const display = labels.join('/');
+    _chatTargetDisplayNames.set(key, display);
+    return display;
+  }));
+}
+
+function _chatRenderTargetLabels(label, targets) {
+  const generation = ++_chatTargetDisplayGeneration;
+  const render = paths => { label.textContent = paths.join('\n'); label.title = paths.join('\n'); };
+  render(targets.map(item => _chatTargetDisplayNames.get(_chatTargetKey(item.path)) || '対象の表示名を確認中…'));
+  if (!window.GBFolderPicker?.loadRoots) return;
+  _chatDisplayTargetPaths(targets).then(paths => {
+    if (generation === _chatTargetDisplayGeneration && label.isConnected !== false) render(paths);
+  }).catch(() => {
+    if (generation === _chatTargetDisplayGeneration) render(targets.map(item => _chatTargetDisplayNames.get(_chatTargetKey(item.path)) || '対象の表示名を取得できません'));
+  });
+}
+
 function _chatFollowCurrentOpenTarget(options = {}) {
   const chatState = _chatRuntimeState();
   if (!chatState) return _chatTargetSnapshot();
-  if (_chatCurrentTargetMode() !== 'follow-main') return _chatTargetSnapshot();
+  if (_chatTargetHasStarted() || _chatCurrentTargetMode() === 'detached') return _chatTargetSnapshot();
+  _chatSetCurrentTargetMode('follow-main');
   const target = _chatCurrentOpenTarget();
   if (target.resolved) {
     chatState.currentTargetPath = target.path || '';
@@ -210140,7 +210164,13 @@ function _chatInstallTabActivationHook() {
     if (original.__gbChatTargetPatched) return;
     const patched = function() {
       const result = original.apply(this, arguments);
-      const refresh = () => _chatFollowCurrentOpenTarget();
+      const paneId = arguments[0];
+      const refresh = () => {
+        try {
+          if (typeof GBPaneDefaultLayout !== 'undefined' && paneId !== GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true, allowLocked: true })) return;
+        } catch {}
+        _chatFollowCurrentOpenTarget();
+      };
       if (result && typeof result.then === 'function') result.then(refresh, refresh);
       else Promise.resolve().then(refresh);
       return result;
@@ -210161,6 +210191,7 @@ function _chatClearCurrentTarget() {
   _chatState.currentTargetKind = '';
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
+  _chatState.additionalTargets = [];
   _chatSetCurrentTargetMode('detached');
   _chatRefreshCurrentTargetDisplay();
   _chatPersistTargetSnapshot();
@@ -210177,10 +210208,12 @@ async function _chatPickCurrentTarget() {
     return null;
   }
   const currentPath = _chatEffectiveTargetPath();
+  const roomMessages = _chatState.messages;
+  const roomId = _chatState.sessionId;
   let selection = null;
   try {
     selection = await window.GBFolderPicker.pickFolder({
-      title: 'チャットの対象を選択',
+      title: 'チャットの対象を追加',
       selectFiles: true,
       includeHome: true,
       includeSources: true,
@@ -210193,15 +210226,26 @@ async function _chatPickCurrentTarget() {
     return null;
   }
   if (!selection?.path) return null;
-  _chatSetCurrentTargetPath(selection.path, selection.kind || 'folder', {
-    reason: 'chat-target-picker',
-    mode: 'manual',
-  });
+  if (_chatState.messages !== roomMessages || _chatState.sessionId !== roomId || _chatState.streaming) {
+    if (typeof showStatus === 'function') showStatus('チャットの状態が変わったため、対象の追加を中止しました', true);
+    return null;
+  }
+  const kind = _chatTargetKind(selection.path, selection.kind || 'folder', selection.type || '');
+  // Explicit additions never replace a room's original target or its write scope.
+  if (!_chatEffectiveTargetPath() && !_chatTargetHasStarted()) {
+    _chatSetCurrentTargetPath(selection.path, kind, { reason: 'chat-target-picker', mode: 'manual' });
+  } else if (!_chatEffectiveTargets().some(item => _chatTargetKey(item.path) === _chatTargetKey(selection.path))) {
+    _chatState.additionalTargets = [...(_chatState.additionalTargets || []), { path: selection.path, kind }];
+  }
+  _chatRefreshCurrentTargetDisplay();
+  _chatPersistTargetSnapshot();
   return selection;
 }
 
 function _chatRestoreTargetSnapshot(snapshot) {
-  const mode = _CHAT_TARGET_MODES.has(String(snapshot?.mode || '')) ? String(snapshot.mode) : 'follow-main';
+  const started = !!snapshot?.started || (_chatState.messages || []).some(message => message.role === 'user');
+  let mode = _CHAT_TARGET_MODES.has(String(snapshot?.mode || '')) ? String(snapshot.mode) : 'follow-main';
+  if (started && mode === 'follow-main') mode = 'manual';
   const savedPath = _chatNormalizePath(snapshot?.path || '');
   const currentTarget = mode === 'follow-main' ? _chatCurrentOpenTarget() : { path: '', kind: '' };
   const path = mode === 'follow-main' && currentTarget.resolved ? currentTarget.path : savedPath;
@@ -210209,6 +210253,10 @@ function _chatRestoreTargetSnapshot(snapshot) {
   _chatState.currentTargetKind = path
     ? String(mode === 'follow-main' && currentTarget.resolved ? currentTarget.kind || '' : snapshot?.kind || '')
     : '';
+  _chatState.additionalTargets = (Array.isArray(snapshot?.targets) ? snapshot.targets : [])
+    .filter(item => item?.path && _chatTargetKey(item.path) !== _chatTargetKey(path))
+    .map(item => ({ path: _chatNormalizePath(item.path), kind: String(item.kind || '') }));
+  _chatState.targetStarted = started;
   _chatSetCurrentTargetMode(mode);
   if (mode === 'manual') _chatState.targetPath = path;
   else _chatState.targetPath = '';
@@ -213589,7 +213637,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       (parseFloat(style.borderTopWidth) || 0) +
       (parseFloat(style.borderBottomWidth) || 0);
     return {
-      min: (minRows || 2) * lineHeight + padding,
+      min: Math.max((minRows || 2) * lineHeight + padding,
+        parseFloat(style.getPropertyValue('--chat-composer-min-height')) || 0),
       autoMax: (maxRows || 8) * lineHeight + padding,
     };
   }
@@ -213662,6 +213711,19 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const input = document.getElementById(cfg.inputId);
     if (!handle || !input || handle.dataset.chatResizeBound === '1') return;
     handle.dataset.chatResizeBound = '1';
+    if (typeof ResizeObserver !== 'undefined') {
+      const team = cfg.inputId === 'team-input';
+      const controls = document.getElementById(team ? 'team-send-btn' : 'chat-send-btn')?.parentElement;
+      const composer = document.getElementById(team ? 'team-composer' : 'chat-composer');
+      if (controls && composer) {
+        const syncMinimum = () => {
+          const height = controls.getBoundingClientRect().height;
+          if (height > 0) composer.style.setProperty('--chat-composer-min-height', height + 'px');
+        };
+        new ResizeObserver(syncMinimum).observe(controls);
+        syncMinimum();
+      }
+    }
     if (!handle.getAttribute('role')) handle.setAttribute('role', 'separator');
     if (!handle.getAttribute('aria-orientation')) handle.setAttribute('aria-orientation', 'horizontal');
     if (!handle.getAttribute('aria-controls')) handle.setAttribute('aria-controls', cfg.inputId);
@@ -213755,6 +213817,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     { key: 'antigravity_cli', label: 'Antigravity CLI', model: 'Antigravity CLI', command: 'agy' },
   ];
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
+  const CLI_CHAT_TRANSPORT_TIMEOUT_MS = 75000;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
   const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
@@ -213960,6 +214023,13 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
 
   function cliChatDefaultModelSentinel() {
     return typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  }
+
+  function cliChatNormalizeModelSelection(provider, value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw === (cliChatMeta(provider)?.label || provider) + '（CLI既定）') return cliChatDefaultModelSentinel();
+    const catalog = cliChatModelCatalogFor(provider).models;
+    return catalog.find(item => item.id === raw || item.name === raw)?.id || raw;
   }
 
   function cliChatSelectedModelValue(provider) {
@@ -214610,7 +214680,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
     body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
-    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status style="min-width:0;overflow-wrap:anywhere;word-break:break-word;">CLIを起動中...</span>';
+    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status style="min-width:0;overflow-wrap:anywhere;word-break:break-word;">CLIへ質問を送信中...</span>';
     const log = document.createElement('div');
     log.style.cssText = 'display:none;flex-direction:column;gap:4px;width:100%;max-height:28vh;overflow:auto;color:var(--fg2);font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px;white-space:pre-wrap;word-break:break-word;box-sizing:border-box;';
     wrapper.append(header, body, log);
@@ -214668,6 +214738,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   }
 
   function cliChatErrorAllowsContinuation(error) {
+    if (['cli_preparation_timeout', 'cli_startup_timeout', 'cli_preparation_busy', 'active_lock_timeout'].includes(error?.errorCode)
+        || error?.operationStarted === false) return false;
     if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
       return false;
     }
@@ -214779,6 +214851,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const targetMessages = scopedMessages || _chatState.messages;
     const detachedScope = !!scopedMessages && scopedMessages !== _chatState.messages;
 
+    if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
+
     if (usingDeferredMessages) {
       deferredMessages.forEach(message => {
         message.role = 'user';
@@ -214807,6 +214881,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
     const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
     const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+    const streamTargets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath: streamTargetPath }) : [];
     const streamSourceFolder = requestSourceFolder;
     const streamWorkspaceId = requestWorkspaceId;
     const streamMode = Object.prototype.hasOwnProperty.call(options || {}, 'mode')
@@ -214814,9 +214889,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
     const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
     // streamModelValue: サーバーへ送る実際の値（CLI既定選択時は空文字列に変換済み）。
-    // streamModelLabel: 表示・保存履歴用の人間向けラベル（内部値やセンチネルは出さない）。
-    const streamModelValue = cliChatEffectiveModelForRequest(provider);
-    const streamModelLabel = cliChatModelLabel(provider);
+    // History bubbles use a label; saved settings and continuation use the ID.
+    const streamModelSelection = cliChatNormalizeModelSelection(provider,
+      Object.prototype.hasOwnProperty.call(options, 'model') ? options.model : cliChatSelectedModelValue(provider));
+    const streamModelValue = streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection;
+    const streamModelLabel = cliChatModelLabel(provider, streamModelSelection);
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -214849,10 +214926,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       sessionId: streamSessionId,
       sessionTitle: streamSessionTitle,
       targetPath: streamTargetPath,
+      targets: streamTargets,
       sourceFolder: streamSourceFolder,
       workspaceId: streamWorkspaceId,
       provider,
-      model: streamModelLabel,
+      model: streamModelSelection,
       mode: streamMode,
       controller: streamController,
     };
@@ -214878,7 +214956,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     let fullText = '';
     let stderrText = '';
     let cliThinkingText = '';
-    let lastStatusText = 'CLIを起動中...';
+    let lastStatusText = 'CLIへ質問を送信中...';
     let lastCliOutputAt = 0;
     let lastCliTextAt = 0;
     const streamStartedAt = Date.now();
@@ -214956,7 +215034,14 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       }
     };
     const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
+    let lastServerEventAt = Date.now();
     const maybeAbortIdleCliStream = () => {
+      if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
+          && _chatState.streaming && _chatState.abortController === streamController) {
+        clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
+        try { streamController.abort(); } catch {}
+        return true;
+      }
       if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
       if (clientIdleAbortMessage || !_chatState.streaming || _chatState.abortController !== streamController) return false;
       if (cliResponseIdleMs() < CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
@@ -214985,10 +215070,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
+        targets: streamTargets,
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider,
-        model: streamModelLabel,
+        model: streamModelSelection,
         silent: !throwOnError,
       });
       if (saved && typeof renderChatHistory === 'function') renderChatHistory();
@@ -215007,10 +215093,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           model: streamModelValue,
           reasoning_level: options.generationSettings?.reasoning_level || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off'),
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
-          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath }) : '',
+          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets, uiControlAvailable: false }) : '',
           session_id: streamSessionId,
           session_title: streamSessionTitle,
           target_path: streamTargetPath,
+          reference_targets: streamTargets,
           source_folder: streamSourceFolder,
           workspace_id: streamWorkspaceId,
           work_folder: streamWorkFolder,
@@ -215047,6 +215134,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.substring(6));
+          lastServerEventAt = Date.now();
           sawCliEvent = true;
           if (data.type === 'cli_status') {
             const nextStatus = data.message
@@ -215086,6 +215174,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
+          } else if (data.type === 'cli_activity') {
+            markCliOutput();
+            refreshActivityStatus('CLIが質問を処理中...');
+            ensureActivityVisible();
           } else if (data.type === 'cli_session_reset') {
             resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
           } else if (data.type === 'cli_session_update') {
@@ -215097,6 +215189,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             if (detail) appendCliThinking('CLIエラー詳細:\n' + detail, 'CLIエラーを確認中...');
             const streamError = new Error(data.error || 'CLIチャットでエラーが発生しました');
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
+            streamError.operationStarted = data.operation_started;
             streamError.detail = detail;
             streamError.action = String(data.action || '');
             if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
@@ -215215,10 +215308,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
-              model: streamModelLabel,
+              model: streamModelSelection,
               mode: streamMode,
             }).catch(() => {});
           }, 0);
@@ -215238,10 +215332,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
-              model: streamModelLabel,
+              model: streamModelSelection,
               mode: streamMode,
               cliContinuationCount: autoContinueRequest.count,
             }).catch(() => {});
@@ -215253,6 +215348,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
@@ -216175,6 +216271,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         mode,
         path: mode === 'detached' ? '' : _cleanPath(snapshot?.path || ''),
         kind: mode === 'detached' ? '' : String(snapshot?.kind || ''),
+        targets: Array.isArray(snapshot?.targets) ? snapshot.targets.map(item => ({ path: _cleanPath(item.path), kind: String(item.kind || '') })) : [],
+        started: !!snapshot?.started,
       },
     });
   }
@@ -223842,7 +223940,7 @@ function _installFolderBlankContextMenu(container) {
     buttons.copy.disabled = !hasSelection;
     buttons.cut.disabled = !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem);
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
-    buttons.paste.disabled = !_folderToolbarClipboard?.items?.length || !currentPath || targetLocked;
+    buttons.paste.disabled = (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
     buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
     // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
@@ -223992,6 +224090,7 @@ function _installFolderBlankContextMenu(container) {
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件をコピーしました');
+    window.MeldexOsFileIntake?.markInternalCopy?.(_folderToolbarClipboard.items);
     updateFolderToolbarActions();
   }
 
@@ -224023,6 +224122,7 @@ function _installFolderBlankContextMenu(container) {
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件を切り取りました');
+    window.MeldexOsFileIntake?.markInternalCopy?.(_folderToolbarClipboard.items);
     updateFolderToolbarActions();
   }
 
@@ -224032,7 +224132,7 @@ function _installFolderBlankContextMenu(container) {
 
   function folderToolbarCanPasteTo(destFolder) {
     return !!(
-      _folderToolbarClipboard?.items?.length
+      (_folderToolbarClipboard?.items?.length || window.MeldexOsFileIntake?.isSupported?.())
       && destFolder
       && !_folderToolbarIsLockedPath(destFolder)
     );
@@ -224040,7 +224140,13 @@ function _installFolderBlankContextMenu(container) {
 
   async function folderToolbarPasteToFolder(destFolder, options = {}) {
     const clip = _folderToolbarClipboard;
-    if (!clip?.items?.length || !destFolder) return;
+    if (!destFolder) return;
+    if (window.MeldexOsFileIntake?.isSupported?.()) {
+      try {
+        if (await window.MeldexOsFileIntake.pasteIntoFolder(destFolder)) return;
+      } catch (error) { showStatus(error.message || '貼り付けに失敗しました', true); return; }
+    }
+    if (!clip?.items?.length) { showStatus('コピーしたファイルがありません'); return; }
     if (typeof executeFolderPasteWithChoice === 'function') {
       await executeFolderPasteWithChoice(clip, destFolder, {
         ...options,
@@ -228628,6 +228734,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
   });
 
   row.addEventListener('dragover', (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      clearDragIndicators(); row.classList.add('drag-over-inside');
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       if (item.type === 'database' || item.type === 'board') {
@@ -228688,6 +228800,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
   });
 
   row.addEventListener('drop', async (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation(); clearDragIndicators();
+      await _folderImportOsDrop(e, item);
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       e.preventDefault();
@@ -230629,12 +230746,17 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, 
   }
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => { controller.abort(); resolve(null); }, options.timeoutMs || 5000);
+  });
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
-      { skipBrowseCache: true, cache: 'reload' });
+    return await Promise.race([apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
+      { skipBrowseCache: true, cache: 'reload', timeoutMs: options.timeoutMs || 5000, signal: controller.signal }), timeout]);
   } catch {
     return null;
-  }
+  } finally { clearTimeout(timer); }
 }
 
 // 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
@@ -230820,21 +230942,11 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
         return;
       }
     }
-    if (typeof loadOutliner === 'function') await loadOutliner();
-    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-    const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-    const found = _outlinerFindNewItemInListing(items, type, existingNames);
-    if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-    if (found) {
-      if (onConfirmed) await onConfirmed(found);
-      if (progress) progress.succeed({ summary: `「${found.name}」を作成しました` });
-      else showStatus(`「${found.name}」を作成しました`);
-    } else {
-      const message = '作成の結果を確認できませんでした。フォルダツリーをご確認ください';
-      if (progress) progress.fail({ error: message });
-      else showStatus(message, true);
-    }
+    const message = '作成結果を確認できませんでした。重複を避けるため、再作成する前にフォルダを再読込してください';
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
   } finally {
+    if (pendingNode?.parentNode) pendingNode.remove();
     if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
       progress.fail({ error: '作成結果の確認を完了できませんでした' });
     }
@@ -231783,6 +231895,10 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     const nd = nodeEl._nodeData;
     if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
+  }
+  if (typeof _folderImportOsDrop === 'function') {
+    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
+    return;
   }
   const progress = window.MeldexOperationProgress?.begin?.({
     kind: 'file-import',
@@ -237827,7 +237943,8 @@ _bindClipSearchResultDelegation();
     if (!confirmed) return;
     button.disabled = true;
     try {
-      const res = await apiPost('/duplicate-resolve', {
+      const res = await runBackgroundJob('/duplicate-resolve', {
+        background: true,
         keep: filePath(keepFile),
         replace: replaceFiles.map(filePath),
         match_type: group.type,
@@ -237883,7 +238000,8 @@ _bindClipSearchResultDelegation();
         const groupButton = plan.groupElement.querySelector('[data-dup-resolve]');
         if (groupButton) groupButton.disabled = true;
         try {
-          const res = await apiPost('/duplicate-resolve', {
+          const res = await runBackgroundJob('/duplicate-resolve', {
+            background: true,
             keep: filePath(plan.keepFile),
             replace: plan.replaceFiles.map(filePath),
             match_type: plan.group.type,
@@ -247802,9 +247920,13 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 function _gbAppApiFetchDefaultTimeout(path) {
-  const pathname = String(path || '').split('?')[0];
+  const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
+  // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
+  // 明示的な画面切替signalによる中断は引き続き尊重する。
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
+  if (['/upload-file', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;

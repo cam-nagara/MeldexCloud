@@ -128,7 +128,7 @@
     buttons.copy.disabled = !hasSelection;
     buttons.cut.disabled = !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem);
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
-    buttons.paste.disabled = !_folderToolbarClipboard?.items?.length || !currentPath || targetLocked;
+    buttons.paste.disabled = (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
     buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
     // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
@@ -278,6 +278,7 @@
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件をコピーしました');
+    window.MeldexOsFileIntake?.markInternalCopy?.(_folderToolbarClipboard.items);
     updateFolderToolbarActions();
   }
 
@@ -309,6 +310,7 @@
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件を切り取りました');
+    window.MeldexOsFileIntake?.markInternalCopy?.(_folderToolbarClipboard.items);
     updateFolderToolbarActions();
   }
 
@@ -318,7 +320,7 @@
 
   function folderToolbarCanPasteTo(destFolder) {
     return !!(
-      _folderToolbarClipboard?.items?.length
+      (_folderToolbarClipboard?.items?.length || window.MeldexOsFileIntake?.isSupported?.())
       && destFolder
       && !_folderToolbarIsLockedPath(destFolder)
     );
@@ -326,7 +328,13 @@
 
   async function folderToolbarPasteToFolder(destFolder, options = {}) {
     const clip = _folderToolbarClipboard;
-    if (!clip?.items?.length || !destFolder) return;
+    if (!destFolder) return;
+    if (window.MeldexOsFileIntake?.isSupported?.()) {
+      try {
+        if (await window.MeldexOsFileIntake.pasteIntoFolder(destFolder)) return;
+      } catch (error) { showStatus(error.message || '貼り付けに失敗しました', true); return; }
+    }
+    if (!clip?.items?.length) { showStatus('コピーしたファイルがありません'); return; }
     if (typeof executeFolderPasteWithChoice === 'function') {
       await executeFolderPasteWithChoice(clip, destFolder, {
         ...options,

@@ -84,6 +84,7 @@ function _chatResetCurrentSession(options = {}) {
   _chatState.historySourceFolder = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
   _chatState.lastImplicitTargetPath = options.keepTargetPath ? (_chatState.lastImplicitTargetPath || '') : '';
+  if (!options.keepTargetPath && typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: options.cleanupUploads !== false });
   } else {
@@ -497,6 +498,7 @@ function _chatSessionScopeSnapshot() {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
     targetPath: String(typeof _chatEffectiveTargetPath === 'function' ? (_chatEffectiveTargetPath() || '') : (_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || '')),
+    targets: typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets() : [],
     workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),

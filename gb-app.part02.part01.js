@@ -524,9 +524,13 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 function _gbAppApiFetchDefaultTimeout(path) {
-  const pathname = String(path || '').split('?')[0];
+  const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
+  // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
+  // 明示的な画面切替signalによる中断は引き続き尊重する。
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
+  if (['/upload-file', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;

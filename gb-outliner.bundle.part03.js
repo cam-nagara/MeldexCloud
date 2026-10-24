@@ -320,6 +320,12 @@
   });
 
   row.addEventListener('dragover', (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      clearDragIndicators(); row.classList.add('drag-over-inside');
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       if (item.type === 'database' || item.type === 'board') {
@@ -380,6 +386,11 @@
   });
 
   row.addEventListener('drop', async (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation(); clearDragIndicators();
+      await _folderImportOsDrop(e, item);
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       e.preventDefault();
@@ -887,14 +898,3 @@ function isOutlinerDeletePendingPath(path) {
 }
 
 function _setOutlinerDeletePending(paths, pending) {
-  const normalizedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
-  normalizedPaths.forEach(path => {
-    if (pending) _outlinerPendingDeletePaths.add(path);
-    else _outlinerPendingDeletePaths.delete(path);
-  });
-  return normalizedPaths;
-}
-
-function _prepareOutlinerDeleteTargets(items) {
-  const seen = new Set();
-  const unique = (Array.isArray(items) ? items : [])

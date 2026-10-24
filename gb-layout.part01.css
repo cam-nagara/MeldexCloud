@@ -751,7 +751,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 5.6em;
+  min-height: var(--chat-composer-min-height, 5.6em);
   max-height: min(56vh, 360px);
   padding: 8px;
   background: var(--chat-input-bg);
@@ -842,6 +842,7 @@ body.chat-composer-resizing {
 }
 #chat-input,
 #team-input {
+  min-height: var(--chat-composer-min-height, 5.6em);
   border-top-color: var(--chat-border) !important;
   border-top-left-radius: 6px !important;
   border-top-right-radius: 6px !important;

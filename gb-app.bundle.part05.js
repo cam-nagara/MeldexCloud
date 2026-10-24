@@ -1,3 +1,7 @@
+      resolve(null);
+      return;
+    }
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
     stage.dataset.e2eId = 'screenshot-region-stage';
@@ -894,7 +898,3 @@ async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath, ta
   }
   return false;
 }
-
-function _handleViewerFolderNavRequest(msg, targetIframe = null) {
-  const direction = Number(msg?.direction) < 0 ? -1 : 1;
-  const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);

@@ -294,7 +294,7 @@
       reset,
       flush: finishPending,
       getHtml: () => editor.innerHTML,
-      hasContent: () => Boolean(editor.innerText.trim() || editor.querySelector('img')),
+      hasContent: () => Boolean(editor.innerText.trim() || editor.querySelector('img, video')),
       setActive(value) {
         active = Boolean(value);
         if (!active) hidePopup();

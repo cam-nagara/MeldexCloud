@@ -438,6 +438,12 @@
   });
 
   row.addEventListener('dragover', (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      clearDragIndicators(); row.classList.add('drag-over-inside');
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       if (item.type === 'database' || item.type === 'board') {
@@ -498,6 +504,11 @@
   });
 
   row.addEventListener('drop', async (e) => {
+    if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
+      e.preventDefault(); e.stopPropagation(); clearDragIndicators();
+      await _folderImportOsDrop(e, item);
+      return;
+    }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
     if (topicMime && e.dataTransfer?.types?.includes(topicMime)) {
       e.preventDefault();

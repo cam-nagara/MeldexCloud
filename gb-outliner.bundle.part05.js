@@ -1,3 +1,14 @@
+    }
+  }
+
+  const _locked = nodeData.path ? isItemLocked(nodeData.path) : false;
+
+  // --- メインカレンダーに設定（calendarタイプのみ） ---
+  if (!isMulti && nodeData.type === 'calendar' && nodeData.path) {
+    const mainCalId = localStorage.getItem('main-calendar-id');
+    const mainCalPath = localStorage.getItem('main-calendar-path');
+    const nodeFid = _pathToFileId(nodeData.path);
+    const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;
     const calPanel = _outlinerCreateSubmenu('メインカレンダー');
     _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
     [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
@@ -523,12 +534,17 @@ async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, 
   }
   const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
   const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => { controller.abort(); resolve(null); }, options.timeoutMs || 5000);
+  });
   try {
-    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
-      { skipBrowseCache: true, cache: 'reload' });
+    return await Promise.race([apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
+      { skipBrowseCache: true, cache: 'reload', timeoutMs: options.timeoutMs || 5000, signal: controller.signal }), timeout]);
   } catch {
     return null;
-  }
+  } finally { clearTimeout(timer); }
 }
 
 // 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
@@ -714,21 +730,11 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
         return;
       }
     }
-    if (typeof loadOutliner === 'function') await loadOutliner();
-    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-    const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-    const found = _outlinerFindNewItemInListing(items, type, existingNames);
-    if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-    if (found) {
-      if (onConfirmed) await onConfirmed(found);
-      if (progress) progress.succeed({ summary: `「${found.name}」を作成しました` });
-      else showStatus(`「${found.name}」を作成しました`);
-    } else {
-      const message = '作成の結果を確認できませんでした。フォルダツリーをご確認ください';
-      if (progress) progress.fail({ error: message });
-      else showStatus(message, true);
-    }
+    const message = '作成結果を確認できませんでした。重複を避けるため、再作成する前にフォルダを再読込してください';
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
   } finally {
+    if (pendingNode?.parentNode) pendingNode.remove();
     if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
       progress.fail({ error: '作成結果の確認を完了できませんでした' });
     }
@@ -892,9 +898,3 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
   input.style.cssText = 'width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:2px;padding:1px 4px;font-size:13px;outline:none;';
   labelEl.textContent = '';
   labelEl.appendChild(input);
-  input.focus();
-  // クリックがrowのclickイベントにバブルしてファイルを開くのを防止
-  input.addEventListener('click', (e) => e.stopPropagation());
-  input.addEventListener('dblclick', (e) => e.stopPropagation());
-
-  let finished = false;

@@ -162,6 +162,7 @@
     if (title) frontmatter.push('title: ' + _yamlString(title));
     if (targetPath) frontmatter.push('targetPath: ' + _yamlString(targetPath));
     if (targetId) frontmatter.push('targetId: ' + _yamlString(targetId));
+    if (Array.isArray(body?.targets)) frontmatter.push('targets: ' + JSON.stringify(body.targets.map(item => ({ path: String(item.path || ''), kind: String(item.kind || '') }))));
     if (archivedHistory.length) frontmatter.push('archived_history: ' + JSON.stringify(archivedHistory));
     frontmatter.push('messages: ' + JSON.stringify(messages), '---', '');
     const bodyLines = messages.map(message => {
@@ -385,13 +386,15 @@
     const savePath = _resolveChatPath(sourceFolder, body?.path || '');
     await _directoryHandle(provider, _dirname(savePath), true);
     let preservedCreated = '';
+    let preservedTargets;
     try {
       const existing = _parsePwaChatFrontmatter(await provider.readText(savePath));
       preservedCreated = String(existing.frontmatter.created || '');
+      preservedTargets = existing.frontmatter.targets;
     } catch {
       // 初回保存では既存ファイルがないため、そのまま新しい作成日時を使う。
     }
-    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), _preservedCreated: preservedCreated }));
+    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), targets: body?.targets ?? preservedTargets, _preservedCreated: preservedCreated }));
     const result = { ok: true, path: _clientPath(sourceFolder, savePath), user: String(body?.user || '') };
     const extractor = window.MeldexKnowledgeCloudExtractor;
     if (typeof extractor?.extractAfterChatSave === 'function') {

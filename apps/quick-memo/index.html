@@ -94,9 +94,11 @@
         <button id="voiceResumeBtn" class="qm-icon qm-lucide-button" type="button" title="録音再開" aria-label="録音再開" style="display:none;"></button>
         <button id="voiceStopBtn" class="qm-icon qm-lucide-button" type="button" title="録音終了" aria-label="録音終了" style="display:none;"></button>
       </div>
+      <button id="attachmentDoneBtn" type="button" hidden>添付を確定</button>
     </nav>
 
     <section class="qm-surface">
+      <div id="attachmentPreview" class="qm-attachment-preview" hidden></div>
       <div id="editor" class="qm-editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
       <canvas id="drawingCanvas" tabindex="0" class="qm-canvas" aria-label="手書きメモ" style="display:none;"></canvas>
       <div id="voicePanel" class="qm-voice" style="display:none;">
@@ -126,13 +128,19 @@
   </section>
 
   <div class="qm-create-wrap">
-    <button id="createMemoBtn" class="qm-create-button" type="button" title="新規メモを追加" aria-label="新規メモを追加" aria-haspopup="menu" aria-expanded="false" aria-controls="createMemoMenu"><span class="ico ico-plus" aria-hidden="true"></span></button>
-    <div id="createMemoMenu" class="qm-menu qm-create-menu" role="menu" aria-label="新しいメモの形式" hidden>
-      <button type="button" role="menuitem" data-new-memo-mode="text"><span class="ico ico-fileText" aria-hidden="true"></span>テキスト</button>
-      <button type="button" role="menuitem" data-new-memo-mode="pen"><span class="ico ico-pencil" aria-hidden="true"></span>ペン</button>
-      <button type="button" role="menuitem" data-new-memo-mode="voice"><span class="ico ico-mic" aria-hidden="true"></span>ボイス</button>
+    <button id="createMemoBtn" class="qm-create-button" type="button" title="メモに添付" aria-label="メモに添付" aria-haspopup="menu" aria-expanded="false" aria-controls="createMemoMenu"><span class="ico ico-plus" aria-hidden="true"></span></button>
+    <div id="createMemoMenu" class="qm-menu qm-create-menu" role="menu" aria-label="メモに添付する内容" hidden>
+      <button type="button" role="menuitem" data-attach-memo-mode="pen"><span class="ico ico-pencil" aria-hidden="true"></span>ペン</button>
+      <button type="button" role="menuitem" data-attach-memo-mode="voice"><span class="ico ico-mic" aria-hidden="true"></span>ボイス</button>
+      <button type="button" role="menuitem" data-attach-memo-mode="image"><span class="ico ico-image" aria-hidden="true"></span>画像</button>
+      <button type="button" role="menuitem" data-attach-memo-mode="video"><span class="ico ico-video" aria-hidden="true"></span>動画</button>
     </div>
   </div>
+
+  <div class="qm-save-wrap"><button id="completeMemoBtn" class="qm-complete-button" type="button"><span class="ico ico-save" aria-hidden="true"></span>保存</button></div>
+  <input id="imageAttachmentInput" type="file" accept="image/*" aria-label="画像を添付" multiple hidden>
+  <input id="videoAttachmentInput" type="file" accept="video/*" aria-label="動画を添付" multiple hidden>
+  <dialog id="memoSavedDialog" class="qm-save-dialog" aria-label="保存完了"><p>保存しました</p><button id="memoSavedCloseBtn" type="button" autofocus>閉じる</button></dialog>
 
   <span id="syncStatus" data-status-owner="quick-memo" class="qm-sr-status" role="status" aria-live="polite">端末に保存済み</span>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>

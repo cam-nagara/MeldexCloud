@@ -16607,27 +16607,51 @@
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     headers.set(HEADER, token());
     const requestOptions = { ...(opts || {}), headers };
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDataAccess?.requestJson) {
-      let body = requestOptions.body;
-      if (typeof body === 'string' && body) {
-        try { body = JSON.parse(body); } catch {}
+    // This request runs before apiFetch's mutation timeout. Bound both fetch
+    // and response-body reads, and fail closed before attempting a write.
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        const error = new Error('編集ロックの応答を確認できませんでした。接続を確認してください');
+        error.code = 'active_lock_timeout';
+        reject(error);
+      }, 15000);
+    });
+    try {
+      const request = (async () => {
+        if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDataAccess?.requestJson) {
+          let body = requestOptions.body;
+          if (typeof body === 'string' && body) {
+            try { body = JSON.parse(body); } catch {}
+          }
+          return window.MeldexDataAccess.requestJson(path, { ...requestOptions, body, signal: controller.signal });
+        }
+        const res = await fetch(API_BASE + path, { ...requestOptions, signal: controller.signal });
+        if (!res.ok) {
+          let payload = null;
+          let detail = res.statusText || '';
+          try {
+            payload = await res.clone().json();
+            detail = payload?.detail?.message || payload?.detail || payload?.error || detail;
+          } catch {}
+          const error = new Error(typeof detail === 'string' ? detail : (detail?.message || `HTTP ${res.status}`));
+          error.status = res.status;
+          error.payload = payload;
+          throw error;
+        }
+        return await res.json();
+      })();
+      return await Promise.race([request, timeout]);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timedOut = new Error('編集ロックの応答を確認できませんでした。保存処理は開始していません。接続を確認してください');
+        timedOut.code = 'active_lock_timeout';
+        throw timedOut;
       }
-      return window.MeldexDataAccess.requestJson(path, { ...requestOptions, body });
-    }
-    const res = await fetch(API_BASE + path, requestOptions);
-    if (!res.ok) {
-      let payload = null;
-      let detail = res.statusText || '';
-      try {
-        payload = await res.clone().json();
-        detail = payload?.detail?.message || payload?.detail || payload?.error || detail;
-      } catch {}
-      const error = new Error(typeof detail === 'string' ? detail : (detail?.message || `HTTP ${res.status}`));
-      error.status = res.status;
-      error.payload = payload;
       throw error;
-    }
-    return res.json();
+    } finally { clearTimeout(timer); }
   }
 
   function _lockBody(path, options) {
@@ -16653,9 +16677,16 @@
     const normalized = _normalizePath(path);
     if (!normalized) return null;
     if (_isLockExemptPath(normalized)) return null;
-    // A previous completed creation can release in the background. Its DELETE
-    // must finish before this operation acquires a new lease on the same path.
-    if (pendingReleases.has(normalized)) await pendingReleases.get(normalized);
+    // Paths may have relative/absolute or case aliases. Wait for all this
+    // holder's DELETEs; an uncertain release requires a new holder via reload.
+    while (pendingReleases.size) {
+      const released = await Promise.all([...pendingReleases.values()]);
+      if (released.some(result => result?.ok === false)) {
+        const error = new Error('前回の編集ロック解除を確認できません。接続の回復後に画面を再読込してください。保存処理は開始していません');
+        error.code = 'active_lock_release_unknown';
+        throw error;
+      }
+    }
     lastUsedAt.set(normalized, Date.now());
     const current = localLocks.get(normalized);
     const needsDescendantCheck = options?.includeDescendants === true || options?.include_descendants === true;
@@ -16697,12 +16728,13 @@
   }
 
   function _releaseLock(path, keepalive) {
-    // 解放はベストエフォート（失敗してもリース期限切れで自然消滅するため黙殺してよい）
+    // A failed/aborted DELETE may still arrive at the server. Its caller keeps
+    // a barrier until reload (which creates a different holder ID).
     const query = new URLSearchParams({ path, holder_id: holderId() });
     return _jsonFetch('/active-lock?' + query.toString(), {
       method: 'DELETE',
       keepalive: !!keepalive,
-    }).catch(() => {});
+    });
   }
 
   async function acquireMutationLocks(candidates) {
@@ -16732,14 +16764,16 @@
   }
 
   async function releaseMutationLocks(paths) {
+    const releases = [];
     for (const path of [...(paths || [])].reverse()) {
       const current = mutationLockRefs.get(path);
       if (!current) continue;
       current.count -= 1;
       if (current.count > 0) continue;
       mutationLockRefs.delete(path);
-      if (current.owned) await releaseLock(path);
+      if (current.owned) releases.push(releaseLock(path));
     }
+    await Promise.all(releases);
   }
 
   async function withMutationLocks(candidates, operation) {
@@ -16762,16 +16796,21 @@
   async function releaseLock(path, options) {
     const normalized = _normalizePath(path);
     if (!normalized) return { ok: true, removed: false };
+    if (pendingReleases.has(normalized)) return pendingReleases.get(normalized);
     const removed = localLocks.delete(normalized);
     lastUsedAt.delete(normalized);
     mutationLockRefs.delete(normalized);
     _stopHeartbeatIfIdle();
-    const release = _releaseLock(normalized, !!options?.keepalive);
+    const release = _releaseLock(normalized, !!options?.keepalive).then(
+      () => ({ ok: true, removed }),
+      () => ({ ok: false, removed, error_code: 'active_lock_release_unknown' }),
+    );
     pendingReleases.set(normalized, release);
-    try { await release; } finally {
+    const result = await release;
+    if (result.ok) {
       if (pendingReleases.get(normalized) === release) pendingReleases.delete(normalized);
     }
-    return { ok: true, removed };
+    return result;
   }
 
   async function relocateLock(oldPath, newPath) {
@@ -16784,10 +16823,7 @@
     const entry = await ensureLock(next, {
       includeDescendants: previousEntry?.include_descendants === true,
     });
-    localLocks.delete(previous);
-    lastUsedAt.delete(previous);
-    await _releaseLock(previous, false);
-    _stopHeartbeatIfIdle();
+    await releaseLock(previous);
     return entry;
   }
 
@@ -16799,10 +16835,7 @@
         return;
       }
       if (now - (lastUsedAt.get(path) || 0) <= IDLE_RELEASE_MS) return;
-      localLocks.delete(path);
-      lastUsedAt.delete(path);
-      mutationLockRefs.delete(path);
-      _releaseLock(path, false);
+      void releaseLock(path);
     });
     // ロックを持たないパスの最終使用時刻は不要なので掃除する
     [...lastUsedAt.keys()].forEach(path => {
@@ -16864,18 +16897,7 @@
 
   async function releaseAll() {
     const paths = [...localLocks.keys()];
-    localLocks.clear();
-    lastUsedAt.clear();
-    mutationLockRefs.clear();
-    _stopHeartbeatIfIdle();
-    if (!paths.length) return;
-    try {
-      await _jsonFetch('/active-lock/release-all', {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify({ token: token(), holder_id: holderId() }),
-      });
-    } catch {}
+    return Promise.all(paths.map(path => releaseLock(path, { keepalive: true })));
   }
 
   // トークンが端末単位の共有になったため、release-all（トークン全解放）を
@@ -16883,11 +16905,7 @@
   // このウィンドウが取得したパスだけを個別に解放する。
   function _releaseWindowLocks() {
     const paths = [...localLocks.keys()];
-    localLocks.clear();
-    lastUsedAt.clear();
-    mutationLockRefs.clear();
-    _stopHeartbeatIfIdle();
-    paths.forEach(path => { _releaseLock(path, true); });
+    paths.forEach(path => { void releaseLock(path, { keepalive: true }); });
   }
 
   window.addEventListener('pagehide', () => {
@@ -20080,6 +20098,7 @@
     if (title) frontmatter.push('title: ' + _yamlString(title));
     if (targetPath) frontmatter.push('targetPath: ' + _yamlString(targetPath));
     if (targetId) frontmatter.push('targetId: ' + _yamlString(targetId));
+    if (Array.isArray(body?.targets)) frontmatter.push('targets: ' + JSON.stringify(body.targets.map(item => ({ path: String(item.path || ''), kind: String(item.kind || '') }))));
     if (archivedHistory.length) frontmatter.push('archived_history: ' + JSON.stringify(archivedHistory));
     frontmatter.push('messages: ' + JSON.stringify(messages), '---', '');
     const bodyLines = messages.map(message => {
@@ -20303,13 +20322,15 @@
     const savePath = _resolveChatPath(sourceFolder, body?.path || '');
     await _directoryHandle(provider, _dirname(savePath), true);
     let preservedCreated = '';
+    let preservedTargets;
     try {
       const existing = _parsePwaChatFrontmatter(await provider.readText(savePath));
       preservedCreated = String(existing.frontmatter.created || '');
+      preservedTargets = existing.frontmatter.targets;
     } catch {
       // 初回保存では既存ファイルがないため、そのまま新しい作成日時を使う。
     }
-    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), _preservedCreated: preservedCreated }));
+    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), targets: body?.targets ?? preservedTargets, _preservedCreated: preservedCreated }));
     const result = { ok: true, path: _clientPath(sourceFolder, savePath), user: String(body?.user || '') };
     const extractor = window.MeldexKnowledgeCloudExtractor;
     if (typeof extractor?.extractAfterChatSave === 'function') {
@@ -55459,6 +55480,135 @@ const MeldexDnD = (() => {
     hideDropCaret,
     setCaretFromPoint
   };
+})();
+
+;
+
+/* === gb-os-file-intake.js === */
+;
+/* Share native/Explorer file paste with each app's existing drop/save handler. */
+(function () {
+  'use strict';
+  let pending = null;
+  let lastTarget = null;
+  document.addEventListener('pointerdown', event => { lastTarget = surface(event.target); }, true);
+  const visibleTarget = element => element?.isConnected && element.getClientRects().length ? element : null;
+  const isSupported = () => !['dropbox', 'browser', 'server'].includes(document.body?.dataset.cloudMode || '')
+    && !window.MeldexRuntimeAdapter?.isPwaMode?.();
+  function surface(element) {
+    const editable = element?.closest?.('input, textarea, [contenteditable="true"]');
+    const own = element?.closest?.('.gb-image-cell, #page-content, #entity-freetext, #chat-rich-input, #chat-input, #team-input, input[type="file"]');
+    if (editable && !own) return null;
+    return own || element?.closest?.('#bd-canvas, #folder-view, #outliner-tree');
+  }
+  function targetFor(element) {
+    return surface(element) || ((element === document.body || element === document.documentElement)
+      && !document.querySelector('[role="dialog"][aria-modal="true"]') ? visibleTarget(lastTarget) : null);
+  }
+  function folderFor(element) {
+    if (element?.closest?.('#outliner-tree')) {
+      const row = (element.closest('.tree-node') || document.querySelector('#outliner-tree .tree-node.selected'))?._nodeData;
+      if (row?.path) return row.type === 'folder' || row.type === 'database' ? row.path : row.path.replace(/[/\\][^/\\]+$/, '');
+      return typeof state !== 'undefined' ? state.vaultPath : '';
+    }
+    return element?.closest?.('#folder-view') && typeof _folderPath !== 'undefined' ? _folderPath : '';
+  }
+  function dispatchFiles(target, files) {
+    if (!target?.isConnected || !files.length) return false;
+    const transfer = new DataTransfer();
+    files.forEach(file => transfer.items.add(file));
+    transfer.effectAllowed = 'copy';
+    if (target.matches('input[type="file"]')) {
+      target.files = transfer.files;
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    const selection = window.getSelection();
+    const caret = selection?.rangeCount && target.contains(selection.anchorNode) ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    const rect = caret?.width || caret?.height ? caret : target.getBoundingClientRect();
+    const event = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer,
+      clientX: rect.left + Math.min(10, rect.width / 2), clientY: rect.top + Math.min(10, rect.height / 2) });
+    Object.defineProperty(event, 'meldexFilePaste', { value: true });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+  async function pasteIntoFolder(path, snapshot) {
+    if (!path || !isSupported()) return false;
+    const data = snapshot || await apiPost('/os-clipboard/read', {}, { silentError: true });
+    if (!data.items?.length) return false;
+    const result = await runBackgroundJob('/os-clipboard/import', { ticket: data.ticket, path });
+    if (!result?.ok) throw new Error(result?.error || '貼り付け処理の完了を確認できませんでした');
+    if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'os-clipboard' });
+    if (typeof openFolder === 'function' && typeof _folderPath !== 'undefined' && _folderPath === path) {
+      await openFolder(document.getElementById('folder-title')?.textContent || path, path, { silent: true, skipNavPush: true });
+    }
+    showStatus(`${result.paths.length}件を${data.cut ? '移動' : '貼り付け'}しました`);
+    return true;
+  }
+  async function nativePaste(target, ticket) {
+    const data = await apiPost('/os-clipboard/read', {}, { silentError: true });
+    if (!ticket.isCurrent() || !data.items?.length) return;
+    const folder = folderFor(target);
+    if (folder) { await pasteIntoFolder(folder, data); return; }
+    const files = [];
+    for (const item of data.items) {
+      if (item.directory) throw new Error('フォルダはフォルダツリーまたはフォルダパネルへ貼り付けてください');
+      const response = await fetch(API_BASE + '/os-clipboard/file?' + new URLSearchParams({ ticket: data.ticket, index: item.index }));
+      if (!response.ok) throw new Error('コピー元を読み取れません。もう一度コピーしてください');
+      const blob = await response.blob();
+      files.push(new File([blob], item.name, { type: blob.type }));
+    }
+    if (ticket.isCurrent()) dispatchFiles(target, files);
+  }
+  document.addEventListener('paste', event => {
+    const target = targetFor(event.target);
+    if (!target || !event.clipboardData?.files?.length) return;
+    if (pending) pending.cancelled = true;
+    // Plain text/HTML paste remains owned by the editor. File paste uses exactly
+    // the existing drop contract, including locks, versions and failure drafts.
+    event.preventDefault(); event.stopImmediatePropagation();
+    const folder = folderFor(target);
+    if (folder && typeof _folderImportOsDrop === 'function') {
+      const dataTransfer = event.clipboardData;
+      _folderImportOsDrop({ dataTransfer }, { type: 'folder', path: folder }).catch(error => showStatus(error.message, true));
+    } else dispatchFiles(target, Array.from(event.clipboardData.files));
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || String(event.key).toLowerCase() !== 'v' || event.repeat || event.isComposing || !isSupported()) return;
+    const target = targetFor(event.target);
+    if (!target) return;
+    const folder = folderFor(target);
+    if (folder && typeof folderToolbarPasteToFolder === 'function') {
+      event.preventDefault(); event.stopImmediatePropagation();
+      folderToolbarPasteToFolder(folder);
+      return;
+    }
+    if (pending) pending.cancelled = true;
+    const originalPath = target.dataset.path || target.dataset.entityPath || '';
+    const originalGeneration = target._openPageLoadSeq;
+    const originalBoard = target.closest('#bd-canvas') && typeof bd !== 'undefined' ? bd.path : null;
+    const originalChat = typeof _chatState !== 'undefined' ? _chatState.messages : null;
+    const ticket = { cancelled: false, isCurrent: () => !ticket.cancelled && visibleTarget(target)
+      && originalPath === (target.dataset.path || target.dataset.entityPath || '')
+      && originalGeneration === target._openPageLoadSeq
+      && (originalBoard === null || (typeof bd !== 'undefined' && originalBoard === bd.path))
+      && (!target.closest('#rp-chat') || typeof _chatState === 'undefined' || originalChat === _chatState.messages) };
+    pending = ticket;
+    // Do not suppress the browser's normal text/image paste while the OS bridge
+    // checks CF_HDROP. A real file paste event cancels this fallback above.
+    nativePaste(target, ticket).catch(error => {
+      if (!ticket.cancelled && error?.status !== 409) showStatus(error.message, true);
+    }).finally(() => { if (pending === ticket) pending = null; });
+  }, true);
+  document.addEventListener('dragover', event => {
+    if (Array.from(event.dataTransfer?.types || []).includes('Files') && surface(event.target)) event.preventDefault();
+  }, true);
+  const markInternalCopy = items => {
+    // Replace a previous Explorer CF_HDROP when the user copies Meldex items.
+    // Otherwise the next paste could import an older OS selection instead.
+    navigator.clipboard?.writeText?.(items.map(item => item.path).join('\n')).catch(() => {});
+  };
+  window.MeldexOsFileIntake = { isSupported, pasteIntoFolder, dispatchFiles, markInternalCopy };
 })();
 
 ;

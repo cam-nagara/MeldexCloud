@@ -20,7 +20,10 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .chat-target-actions {

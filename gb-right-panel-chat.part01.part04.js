@@ -81,6 +81,7 @@ function _chatQueueScopeFromOptions(options = {}) {
     messages: options.messages,
     sessionId: String(options.sessionId || ''),
     targetPath: String(options.targetPath || ''),
+    targets: options.targets || [],
     workspaceId: String(hasWorkspaceId ? (options.workspaceId || '') : (_chatState.queuedScope?.workspaceId || '')),
     sourceFolder: String(hasSourceFolder ? (options.sourceFolder || '') : (_chatState.queuedScope?.sourceFolder || '')),
     mode: String(hasMode ? (options.mode || '') : (_chatState.queuedScope?.mode || (typeof _chatMode === 'undefined' ? '' : _chatMode || ''))),
@@ -159,6 +160,7 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
         sessionId: options.sessionId,
         sessionTitle: options.sessionTitle,
         targetPath: options.targetPath,
+        targets: options.targets || [],
         sourceFolder: options.sourceFolder,
         workspaceId: options.workspaceId,
         provider: firstDraft?.provider || options.provider,
@@ -336,6 +338,7 @@ async function chatSend(options = {}) {
   const imgSearchMatch = usingDeferredMessages ? null : text.match(/^\/(?:image-search|画像検索)\s+(.+)/i);
   if (imgSearchMatch) {
     const query = imgSearchMatch[1].trim();
+    if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
     chatAddMessage('user', text, { timestamp: _chatLocalTimestamp() });
     chatAddSystem('画像を検索中...');
     const results = await clipSearchImages(query);
@@ -377,6 +380,7 @@ async function chatSend(options = {}) {
   }
 
   // ユーザーメッセージ表示・記録（画像添付があれば構造化コンテンツにする）
+  if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
   if (usingDeferredMessages) {
     deferredMessages.forEach(message => {
       message.role = 'user';
@@ -410,10 +414,11 @@ async function chatSend(options = {}) {
   const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
   const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
   const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+  const streamTargets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath: streamTargetPath }) : [];
   const streamSourceFolder = requestSourceFolder;
   const streamWorkspaceId = requestWorkspaceId;
   const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
-  let streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath });
+  let streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets });
   if (window.GBMeldexManualGrounding?.groundSystemPrompt) {
     streamSystemPrompt = await window.GBMeldexManualGrounding.groundSystemPrompt(text, streamSystemPrompt);
   }
@@ -428,6 +433,7 @@ async function chatSend(options = {}) {
     sessionId: streamSessionId,
     sessionTitle: streamSessionTitle,
     targetPath: streamTargetPath,
+    targets: streamTargets,
     sourceFolder: streamSourceFolder,
     workspaceId: streamWorkspaceId,
     provider: streamProvider,

@@ -180,6 +180,8 @@
         mode,
         path: mode === 'detached' ? '' : _cleanPath(snapshot?.path || ''),
         kind: mode === 'detached' ? '' : String(snapshot?.kind || ''),
+        targets: Array.isArray(snapshot?.targets) ? snapshot.targets.map(item => ({ path: _cleanPath(item.path), kind: String(item.kind || '') })) : [],
+        started: !!snapshot?.started,
       },
     });
   }

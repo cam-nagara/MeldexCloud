@@ -42,6 +42,8 @@
     voiceStarting: false,
     lastSaveError: '',
     creatingMemo: false,
+    completingMemo: false,
+    attachmentPromise: null,
   };
   if (typeof window !== 'undefined') {
     window.MeldexQuickMemo = window.MeldexQuickMemo || {};
@@ -52,7 +54,7 @@
     // Meldex本体のフロートパネル（gb-quick-memo-panel.js）が、閉じる前に
     // 書きかけを保存させるために呼ぶ。単独アプリでも同じ経路を使える。
     window.MeldexQuickMemo.flush = () => saveNow({ manual: true });
-    window.MeldexQuickMemo.prepareClose = () => finalizeVoiceForClose();
+    window.MeldexQuickMemo.prepareClose = async () => (await state.attachmentPromise) !== false && finalizeVoiceForClose();
   }
 
   // Meldex本体のフロートパネル等へ埋め込まれている状態。埋め込み時は
@@ -121,7 +123,9 @@
       'syncStatus', 'menuBtn', 'quickMemoMenu', 'listBtn', 'menuListBtn', 'workspaceBtn',
       'installBtn', 'newMemoBtn', 'saveBtn', 'storageLocation',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
-      'createMemoBtn', 'createMemoMenu', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
+      'createMemoBtn', 'createMemoMenu', 'completeMemoBtn', 'memoSavedDialog', 'memoSavedCloseBtn',
+      'imageAttachmentInput', 'videoAttachmentInput', 'attachmentDoneBtn', 'attachmentPreview',
+      'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
       'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
       'voiceRecordBtn', 'voicePauseBtn', 'voiceResumeBtn', 'voiceStopBtn',
       'voicePanel', 'voiceTimer', 'voiceTranscript', 'voiceStatus',
@@ -309,18 +313,52 @@
     });
     on(els.titleInput, 'input', scheduleSave);
     on(els.saveBtn, 'click', () => { closeMenu({ restoreFocus: true }); saveNow({ manual: true }); });
-    on(els.newMemoBtn, 'click', () => { closeMenu(); openCreateMenu(); });
+    on(els.completeMemoBtn, 'click', completeMemo);
+    on(els.memoSavedCloseBtn, 'click', () => els.memoSavedDialog.close());
+    on(els.newMemoBtn, 'click', () => { closeMenu(); startNewMemo('text'); });
     on(els.createMemoBtn, 'click', () => {
       closeMenu();
+      libraryController.hide();
       if (els.createMemoMenu.hidden) openCreateMenu();
       else closeCreateMenu(true);
     });
     on(els.createMemoMenu, 'click', async event => {
-      const button = event.target.closest('[data-new-memo-mode]');
-      if (!button || button.disabled) return;
+      const button = event.target.closest('[data-attach-memo-mode]');
+      if (!button || button.disabled || state.completingMemo || state.creatingMemo) return;
       closeCreateMenu();
-      const created = await startNewMemo(button.dataset.newMemoMode);
-      if (!created) els.createMemoBtn.focus();
+      const mode = button.dataset.attachMemoMode;
+      if (mode === 'image' || mode === 'video') {
+        (mode === 'image' ? els.imageAttachmentInput : els.videoAttachmentInput).click();
+      } else {
+        if (!await finalizeVoiceForClose()) return;
+        switchMode(mode);
+        if (mode === 'pen') els.drawingCanvas.focus({ preventScroll: true });
+        if (mode === 'voice') els.voiceRecordBtn.focus({ preventScroll: true });
+      }
+    });
+    [els.imageAttachmentInput, els.videoAttachmentInput].forEach(input => on(input, 'change', () => {
+      attachMemoFiles(Array.from(input.files || []));
+      input.value = '';
+    }));
+    on(els.editor, 'paste', event => {
+      if (!event.clipboardData?.files?.length) return;
+      event.preventDefault();
+      attachMemoFiles(Array.from(event.clipboardData.files));
+    });
+    const attachmentSurface = els.editor.closest('.qm-surface');
+    on(attachmentSurface, 'dragover', event => {
+      if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault();
+    });
+    on(attachmentSurface, 'drop', event => {
+      if (!event.dataTransfer?.files?.length) return;
+      event.preventDefault(); event.stopPropagation();
+      attachMemoFiles(Array.from(event.dataTransfer.files));
+    });
+    on(els.attachmentDoneBtn, 'click', async () => {
+      if (!await finalizeVoiceForClose()) return;
+      await drawingController.flush?.();
+      switchMode('text');
+      scheduleSave();
     });
     on(document, 'pointerdown', event => {
       if (!els.createMemoMenu.contains(event.target) && !els.createMemoBtn.contains(event.target)) closeCreateMenu();
@@ -388,7 +426,7 @@
 
   function openCreateMenu() {
     if (state.creatingMemo) return;
-    const voice = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
+    const voice = els.createMemoMenu.querySelector('[data-attach-memo-mode="voice"]');
     voice.hidden = !voiceAvailable();
     els.createMemoMenu.hidden = false;
     els.createMemoBtn.setAttribute('aria-expanded', 'true');
@@ -411,7 +449,7 @@
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
     state.currentMode = nextMode;
     document.body.dataset.memoMode = state.currentMode;
-    els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
+    els.editor.style.display = '';
     els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
     els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
     els.voiceRecordBtn.disabled = !speechAvailable;
@@ -421,13 +459,15 @@
       group.style.display = shown ? '' : 'none';
       if (shown) hasToolbarForMode = true;
     });
-    if (els.toolbar) els.toolbar.style.display = hasToolbarForMode ? '' : 'none';
-    editorController.setActive(state.currentMode === 'text');
+    if (els.toolbar) els.toolbar.style.display = hasToolbarForMode || state.currentMode !== 'text' ? '' : 'none';
+    editorController.setActive(true);
     drawingController.setActive(state.currentMode === 'pen');
     const historyVisible = state.currentMode !== 'voice';
     els.undoBtn.style.display = historyVisible ? '' : 'none';
     els.redoBtn.style.display = historyVisible ? '' : 'none';
     updateHistoryButtons();
+    if (els.attachmentDoneBtn) els.attachmentDoneBtn.hidden = state.currentMode === 'text';
+    renderAttachmentPreview();
     if (state.currentMode === 'text') focusEditorSoon();
   }
 
@@ -508,6 +548,7 @@
       text: els.editor.innerText.trim(),
       drawing_png: drawingController.toDataURL(),
       audio_clips: [...state.audioClips],
+      inline_media_version: 1,
       input_mode: state.currentMode,
       source_url: state.share?.source_url || draft.source_url || '',
       share_title: state.share?.share_title || draft.share_title || '',
@@ -530,15 +571,16 @@
     window.__MELDEX_QUICK_MEMO_TEST__.mergeMemoDraft = mergeMemoDraft;
   }
 
-  async function startNewMemo(mode = 'text') {
+  async function startNewMemo(mode = 'text', options = {}) {
     if (state.creatingMemo) return false;
     state.creatingMemo = true;
     els.createMemoBtn.disabled = true;
     try {
+      if ((await state.attachmentPromise) === false) return false;
       if (!await finalizeVoiceForClose()) return false;
       await drawingController.flush?.();
       const current = collectMemo();
-      if ((current.server_path || draftHasContent(current)) && (!persistDraft(current) || !enqueueMemo(current))) {
+      if (!options.alreadySaved && (current.server_path || draftHasContent(current)) && (!persistDraft(current) || !enqueueMemo(current))) {
         setStatus('メモを端末内へ保存できませんでした', true);
         return false;
       }
@@ -584,11 +626,92 @@
     }
   }
 
+  async function completeMemo() {
+    if (state.completingMemo || state.creatingMemo) return;
+    state.completingMemo = true;
+    els.completeMemoBtn.disabled = true;
+    els.createMemoBtn.disabled = true;
+    const epoch = state.memoEpoch;
+    try {
+      if ((await state.attachmentPromise) === false) return;
+      if (!await saveNow({ manual: true }) || epoch !== state.memoEpoch) return;
+      await new Promise(resolve => {
+        els.memoSavedDialog.addEventListener('close', resolve, { once: true });
+        els.memoSavedDialog.showModal();
+      });
+      if (epoch === state.memoEpoch) await startNewMemo('text', { alreadySaved: true });
+    } catch (error) {
+      setStatus('保存できませんでした: ' + (error?.message || error) + '。入力を保持しています', true);
+    } finally {
+      state.completingMemo = false;
+      els.completeMemoBtn.disabled = false;
+      els.createMemoBtn.disabled = false;
+    }
+  }
+
+  function renderAttachmentPreview() {
+    const host = els.attachmentPreview;
+    if (!host) return;
+    host.replaceChildren();
+    if (state.currentMode !== 'text') { host.hidden = true; return; }
+    const drawing = drawingController.toDataURL();
+    if (drawing) {
+      const image = document.createElement('img');
+      image.src = drawing;
+      image.alt = '添付した手書きメモ';
+      host.appendChild(image);
+    }
+    state.audioClips.forEach((src, index) => {
+      const audio = document.createElement('audio');
+      audio.src = src; audio.controls = true; audio.preload = 'metadata';
+      audio.setAttribute('aria-label', `添付した録音 ${index + 1}`);
+      host.appendChild(audio);
+    });
+    host.hidden = !host.childNodes.length;
+  }
+
+  function attachMemoFiles(files) {
+    if (!files.length || state.attachmentPromise || state.completingMemo) return;
+    const epoch = state.memoEpoch;
+    const maxFile = 32 * 1024 * 1024;
+    const maxTotal = 64 * 1024 * 1024;
+    state.attachmentPromise = (async () => {
+      const allowed = /^(?:image\/(?:png|jpeg|webp|gif|avif|heic|heif)|video\/(?:mp4|webm|ogg|quicktime|3gpp))$/;
+      const existing = Array.from(els.editor.querySelectorAll('img[src], video[src]'))
+        .reduce((size, node) => size + (node.getAttribute('src') || '').length * .75, 0);
+      if (files.some(file => file.size > maxFile) || files.reduce((size, file) => size + file.size, existing) > maxTotal) {
+        throw new Error('画像・動画は1件32MB、合計64MB以内にしてください');
+      }
+      const fragments = [];
+      for (const file of files) {
+        const extensionMime = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp',
+          avif:'image/avif', heic:'image/heic', heif:'image/heif', mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', '3gp':'video/3gpp' };
+        const mime = String(file.type || extensionMime[file.name.split('.').pop().toLowerCase()] || '').toLowerCase();
+        if (!allowed.test(mime)) throw new Error('添付できる画像または動画を選択してください');
+        setStatus('添付ファイルを読み込み中...');
+        const raw = await blobToDataUrl(file);
+        const data = raw.replace(/^data:[^,]*,/, 'data:' + mime + ';base64,');
+        const name = escAttr(file.name || (mime.startsWith('image/') ? '画像' : '動画'));
+        fragments.push(mime.startsWith('image/')
+          ? `<p><img src="${data}" alt="${name}"></p>`
+          : `<p><video src="${data}" controls playsinline preload="metadata" aria-label="${name}"></video></p>`);
+      }
+      if (epoch !== state.memoEpoch) return;
+      editorController.mutate(() => els.editor.insertAdjacentHTML('beforeend', fragments.join('')));
+      switchMode('text');
+      scheduleSave();
+      return true;
+    })().catch(error => { setStatus('添付できませんでした: ' + (error?.message || error), true); return false; })
+      .finally(() => { state.attachmentPromise = null; });
+    return state.attachmentPromise;
+  }
+
   function resetDrawingCanvas() {
     drawingController.reset('');
   }
 
   async function preserveCurrentForNavigation() {
+    if ((await state.attachmentPromise) === false) throw new Error('添付ファイルを読み込めませんでした');
     if (!await finalizeVoiceForClose()) throw new Error('音声入力を確定できませんでした');
     await drawingController.flush?.();
     const current = collectMemo();
@@ -737,7 +860,7 @@
       String(draft.title || '').trim()
       || String(draft.text || '').trim()
       || content.textContent.trim()
-      || content.querySelector('img[src]')
+      || content.querySelector('img[src], video[src]')
       || draft.drawing_png
       || draft.audio_clips?.length
     );
@@ -787,9 +910,10 @@
   }
 
   async function saveNow(opts) {
+    if ((await state.attachmentPromise) === false) return false;
     clearTimeout(state.saveTimer);
     state.saveTimer = 0;
-    if (opts?.manual && (state.recording || state.speech)) await finalizeVoiceForClose();
+    if (opts?.manual && (state.recording || state.speech) && !await finalizeVoiceForClose()) return false;
     await drawingController.flush?.();
     const memo = collectMemo();
     if (!memo.server_path && !draftHasContent(memo)) return flushPendingQueue();
@@ -820,7 +944,7 @@
       hasFinalDestination: () => true,
       getCloseState() {
         const capturing = state.voiceStarting || !!state.pendingVoice || !!state.recording || !!state.speech || !!state.voiceFinalizePromise;
-        const pendingLocal = !!state.saveTimer || state.localSaveFailed;
+        const pendingLocal = !!state.attachmentPromise || !!state.saveTimer || state.localSaveFailed;
         return {
           appId: 'quick-memo',
           state: state.localSaveFailed ? 'error'
@@ -846,12 +970,14 @@
         };
       },
       async prepareClose() {
+        if ((await state.attachmentPromise) === false) return false;
         clearTimeout(state.saveTimer);
         state.saveTimer = 0;
         if (!await finalizeVoiceForClose()) return false;
         return true;
       },
       async flushLocal() {
+        if ((await state.attachmentPromise) === false) return false;
         clearTimeout(state.saveTimer);
         state.saveTimer = 0;
         const memo = collectMemo();
@@ -1338,7 +1464,7 @@
     }
     // Cloudはブラウザ内で録音し、有料の文字起こしAPIへ自動送信しない。
     if (!voiceAvailable()) {
-      const voiceOption = els.createMemoMenu.querySelector('[data-new-memo-mode="voice"]');
+      const voiceOption = els.createMemoMenu.querySelector('[data-attach-memo-mode="voice"]');
       if (voiceOption) {
         voiceOption.disabled = true;
         voiceOption.hidden = true;
@@ -1424,6 +1550,18 @@
     if (!els.syncStatus) return;
     els.syncStatus.textContent = message;
     els.syncStatus.classList.toggle('qm-toast-error', !!isError);
+    if (isError) {
+      if (typeof window.showStatus === 'function') window.showStatus(message, true);
+      else {
+        const toast = document.getElementById('standalone-toast');
+        if (toast) {
+          toast.textContent = message;
+          toast.classList.add('visible', 'error');
+          clearTimeout(state.errorToastTimer);
+          state.errorToastTimer = setTimeout(() => toast.classList.remove('visible'), 6500);
+        }
+      }
+    }
   }
 
   // --- タグチップ ---------------------------------------------------------
@@ -1852,19 +1990,9 @@
     container.classList.toggle('qm-tag-chips--overflow', overflowing);
   }
 
-  function _ensureTagRailHelp() {
-    const label = document.querySelector('#tagSelector .qm-tag-label');
-    if (!label || label.dataset.helpAttached === '1' || typeof window.fieldHelp !== 'function') return;
-    label.dataset.helpAttached = '1';
-    label.insertAdjacentHTML('beforeend', window.fieldHelp(
-      '登録したクイックメモタグだけを表示します。＋から専用タグの追加や共通タグの登録ができます',
-    ));
-  }
-
   function renderTagChips() {
     const container = els.tagChips;
     if (!container) return;
-    _ensureTagRailHelp();
     container.innerHTML = '';
     const ordered = _tagRailCandidateOrder();
     const alwaysShown = ordered.filter(tag => state.selectedTags.includes(tag));

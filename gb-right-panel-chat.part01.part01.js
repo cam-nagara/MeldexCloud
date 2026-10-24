@@ -796,11 +796,17 @@ async function loadProviderModels(provider, options = {}) {
 
 function _currentChatModelSelection(provider, models, options = {}) {
   const storedModel = localStorage.getItem('chat-model:' + _chatProviderKey(provider)) || localStorage.getItem('chat-model') || '';
-  const current = options.preferredModel || _chatState.pendingModel || _chatState.model || storedModel || _chatDefaultModel(provider);
+  let current = options.preferredModel || _chatState.pendingModel || _chatState.model || storedModel || _chatDefaultModel(provider);
+  const requested = current;
+  if (_chatIsCliProvider(provider)) {
+    const legacyLabel = (models || []).find(item => item.name === current);
+    if (legacyLabel) current = legacyLabel.id;
+    else if (current === (CHAT_PROVIDER_META[provider]?.label || provider) + '（CLI既定）') current = CLI_CHAT_DEFAULT_MODEL_SENTINEL;
+  }
   const modelIds = new Set((models || []).map(item => item.id));
   const selected = modelIds.has(current) ? current : ((models || [])[0]?.id || _chatDefaultModel(provider));
   if (current && selected && current !== selected && modelIds.size && !options.suppressNotify) _chatNotifyUnavailableModel(provider, current, selected);
-  if (selected === _chatState.pendingModel) _chatState.pendingModel = '';
+  if (selected === _chatState.pendingModel || (selected === current && requested === _chatState.pendingModel)) _chatState.pendingModel = '';
   return { value: selected, model: selected };
 }
 

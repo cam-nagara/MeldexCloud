@@ -14,6 +14,7 @@
     { key: 'antigravity_cli', label: 'Antigravity CLI', model: 'Antigravity CLI', command: 'agy' },
   ];
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
+  const CLI_CHAT_TRANSPORT_TIMEOUT_MS = 75000;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
   const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
@@ -219,6 +220,13 @@
 
   function cliChatDefaultModelSentinel() {
     return typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  }
+
+  function cliChatNormalizeModelSelection(provider, value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw === (cliChatMeta(provider)?.label || provider) + '（CLI既定）') return cliChatDefaultModelSentinel();
+    const catalog = cliChatModelCatalogFor(provider).models;
+    return catalog.find(item => item.id === raw || item.name === raw)?.id || raw;
   }
 
   function cliChatSelectedModelValue(provider) {
@@ -869,7 +877,7 @@
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
     body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
-    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status style="min-width:0;overflow-wrap:anywhere;word-break:break-word;">CLIを起動中...</span>';
+    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status style="min-width:0;overflow-wrap:anywhere;word-break:break-word;">CLIへ質問を送信中...</span>';
     const log = document.createElement('div');
     log.style.cssText = 'display:none;flex-direction:column;gap:4px;width:100%;max-height:28vh;overflow:auto;color:var(--fg2);font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px;white-space:pre-wrap;word-break:break-word;box-sizing:border-box;';
     wrapper.append(header, body, log);
@@ -927,6 +935,8 @@
   }
 
   function cliChatErrorAllowsContinuation(error) {
+    if (['cli_preparation_timeout', 'cli_startup_timeout', 'cli_preparation_busy', 'active_lock_timeout'].includes(error?.errorCode)
+        || error?.operationStarted === false) return false;
     if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
       return false;
     }
@@ -1038,6 +1048,8 @@
     const targetMessages = scopedMessages || _chatState.messages;
     const detachedScope = !!scopedMessages && scopedMessages !== _chatState.messages;
 
+    if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
+
     if (usingDeferredMessages) {
       deferredMessages.forEach(message => {
         message.role = 'user';
@@ -1066,6 +1078,7 @@
     const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
     const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
     const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+    const streamTargets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ ...options, targetPath: streamTargetPath }) : [];
     const streamSourceFolder = requestSourceFolder;
     const streamWorkspaceId = requestWorkspaceId;
     const streamMode = Object.prototype.hasOwnProperty.call(options || {}, 'mode')
@@ -1073,9 +1086,11 @@
       : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
     const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
     // streamModelValue: サーバーへ送る実際の値（CLI既定選択時は空文字列に変換済み）。
-    // streamModelLabel: 表示・保存履歴用の人間向けラベル（内部値やセンチネルは出さない）。
-    const streamModelValue = cliChatEffectiveModelForRequest(provider);
-    const streamModelLabel = cliChatModelLabel(provider);
+    // History bubbles use a label; saved settings and continuation use the ID.
+    const streamModelSelection = cliChatNormalizeModelSelection(provider,
+      Object.prototype.hasOwnProperty.call(options, 'model') ? options.model : cliChatSelectedModelValue(provider));
+    const streamModelValue = streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection;
+    const streamModelLabel = cliChatModelLabel(provider, streamModelSelection);
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -1108,10 +1123,11 @@
       sessionId: streamSessionId,
       sessionTitle: streamSessionTitle,
       targetPath: streamTargetPath,
+      targets: streamTargets,
       sourceFolder: streamSourceFolder,
       workspaceId: streamWorkspaceId,
       provider,
-      model: streamModelLabel,
+      model: streamModelSelection,
       mode: streamMode,
       controller: streamController,
     };
@@ -1137,7 +1153,7 @@
     let fullText = '';
     let stderrText = '';
     let cliThinkingText = '';
-    let lastStatusText = 'CLIを起動中...';
+    let lastStatusText = 'CLIへ質問を送信中...';
     let lastCliOutputAt = 0;
     let lastCliTextAt = 0;
     const streamStartedAt = Date.now();
@@ -1215,7 +1231,14 @@
       }
     };
     const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
+    let lastServerEventAt = Date.now();
     const maybeAbortIdleCliStream = () => {
+      if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
+          && _chatState.streaming && _chatState.abortController === streamController) {
+        clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
+        try { streamController.abort(); } catch {}
+        return true;
+      }
       if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
       if (clientIdleAbortMessage || !_chatState.streaming || _chatState.abortController !== streamController) return false;
       if (cliResponseIdleMs() < CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
@@ -1244,10 +1267,11 @@
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
+        targets: streamTargets,
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider,
-        model: streamModelLabel,
+        model: streamModelSelection,
         silent: !throwOnError,
       });
       if (saved && typeof renderChatHistory === 'function') renderChatHistory();
@@ -1266,10 +1290,11 @@
           model: streamModelValue,
           reasoning_level: options.generationSettings?.reasoning_level || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off'),
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
-          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath }) : '',
+          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets, uiControlAvailable: false }) : '',
           session_id: streamSessionId,
           session_title: streamSessionTitle,
           target_path: streamTargetPath,
+          reference_targets: streamTargets,
           source_folder: streamSourceFolder,
           workspace_id: streamWorkspaceId,
           work_folder: streamWorkFolder,
@@ -1306,6 +1331,7 @@
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.substring(6));
+          lastServerEventAt = Date.now();
           sawCliEvent = true;
           if (data.type === 'cli_status') {
             const nextStatus = data.message
@@ -1345,6 +1371,10 @@
             }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
+          } else if (data.type === 'cli_activity') {
+            markCliOutput();
+            refreshActivityStatus('CLIが質問を処理中...');
+            ensureActivityVisible();
           } else if (data.type === 'cli_session_reset') {
             resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
           } else if (data.type === 'cli_session_update') {
@@ -1356,6 +1386,7 @@
             if (detail) appendCliThinking('CLIエラー詳細:\n' + detail, 'CLIエラーを確認中...');
             const streamError = new Error(data.error || 'CLIチャットでエラーが発生しました');
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
+            streamError.operationStarted = data.operation_started;
             streamError.detail = detail;
             streamError.action = String(data.action || '');
             if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
@@ -1474,10 +1505,11 @@
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
-              model: streamModelLabel,
+              model: streamModelSelection,
               mode: streamMode,
             }).catch(() => {});
           }, 0);
@@ -1497,10 +1529,11 @@
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
-              model: streamModelLabel,
+              model: streamModelSelection,
               mode: streamMode,
               cliContinuationCount: autoContinueRequest.count,
             }).catch(() => {});
@@ -1512,6 +1545,7 @@
               sessionId: streamSessionId,
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              targets: streamTargets,
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,

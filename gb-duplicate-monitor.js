@@ -243,7 +243,8 @@
     if (!confirmed) return;
     button.disabled = true;
     try {
-      const res = await apiPost('/duplicate-resolve', {
+      const res = await runBackgroundJob('/duplicate-resolve', {
+        background: true,
         keep: filePath(keepFile),
         replace: replaceFiles.map(filePath),
         match_type: group.type,
@@ -299,7 +300,8 @@
         const groupButton = plan.groupElement.querySelector('[data-dup-resolve]');
         if (groupButton) groupButton.disabled = true;
         try {
-          const res = await apiPost('/duplicate-resolve', {
+          const res = await runBackgroundJob('/duplicate-resolve', {
+            background: true,
             keep: filePath(plan.keepFile),
             replace: plan.replaceFiles.map(filePath),
             match_type: plan.group.type,

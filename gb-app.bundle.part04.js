@@ -1,3 +1,7 @@
+    addBody('path');
+  } else if (route === '/outliner/duplicate') {
+    const srcPath = String(body?.path || '').trim();
+    if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
   } else if (route === '/outliner/save-as') {
     addBody('path');
     addBody('dest_folder');
@@ -894,7 +898,3 @@ function _cropScreenshotCanvas(canvas, region) {
 function _selectScreenshotRegionFromCanvas(canvas) {
   return new Promise(resolve => {
     if (typeof window.GBUI?.createModal !== 'function') {
-      resolve(null);
-      return;
-    }
-    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;

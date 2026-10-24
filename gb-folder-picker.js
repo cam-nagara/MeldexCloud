@@ -248,7 +248,8 @@
     children.style.display = 'none';
     children.dataset.loaded = '0';
 
-    const selectRow = () => {
+    const selectRow = (automatic = false) => {
+      if (!automatic) state.userSelected = true;
       state.selected = _selectionFor(
         root, path, name, isFile ? 'file' : 'folder', isFile ? folder.type : 'folder',
       );
@@ -265,7 +266,7 @@
       row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
       row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
       node.appendChild(row);
-      if (_normalizePath(state.initialPath) === path) selectRow();
+      if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
       return node;
     }
 
@@ -293,7 +294,7 @@
       loading.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
       children.appendChild(loading);
       try {
-        const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }));
+        const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }), { skipBrowseCache: true });
         const rows = (Array.isArray(payload) ? payload : (payload.items || []))
           .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles && (!state.fileTypes || state.fileTypes.includes(item.type)))));
         rows.sort((a, b) => {
@@ -343,7 +344,7 @@
 
     node.appendChild(row);
     node.appendChild(children);
-    if (_normalizePath(state.initialPath) === path) selectRow();
+    if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
     return node;
   }
 
@@ -370,8 +371,8 @@
       currentPath = currentPath + '/' + segments[i];
     }
     const finalEntry = state.nodeByPath.get(currentPath);
-    if (finalEntry) {
-      finalEntry.selectRow();
+    if (finalEntry && !state.userSelected) {
+      finalEntry.selectRow(true);
       if (typeof finalEntry.row.scrollIntoView === 'function') {
         finalEntry.row.scrollIntoView({ block: 'center' });
       }
