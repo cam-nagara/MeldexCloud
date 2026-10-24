@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.418-5bbf797b92a7201b8cb9",
+  "version": "0.7.419-15c1e264ad8e131f7b7f",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -805,7 +805,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "e0b48c00ff9ab49f050bcbd3d3d3a23feb056effb01c17b50d7315ccf99a265f"
+      "sha256": "f4b5b8f09fcf17d9a57bf478e7b55816f17b13488e621df6f3518d2f83ab8c84"
     },
     {
       "path": "gb-color-palette.js",
@@ -3665,7 +3665,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "9186bca304cd9390e28e98a16ef83c24be5e9c4cf42b4347dacc0767399d50bc"
+      "sha256": "07514a3f241c067926582922d5767f217e921ed05219d76e10fbf41a21094cff"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3677,15 +3677,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "143d5141c4572451e01a1f8d427ae629b5923ac17d6b90c39af0d3359086f7ff"
+      "sha256": "3c212f548071cbbffa4d281633dfd3367cdf806270401dae4805e605ce91ca4a"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "4060d338d3c7591ec3b91f05447d90051c7f4beabdd1b4af074bd91fa2561ee4"
+      "sha256": "0946ad3212d40724ca58262f1e24ed58cc5e48389f5fd8ffe53d4148a5e2c2a2"
     },
     {
       "path": "manual.html",
-      "sha256": "3f2e66e5b74b96b98f7986b867d88454ea98a5e6ee110fef1b936ef32608e422"
+      "sha256": "7d4c09de2eb2a4ba46a83dc83e872af028dae104f71c5ee2f68771d4441fb05e"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3969,7 +3969,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "afce979d4c879c0ca75a704529cbee47d85e94214fa5e55c080aaa7285bce6e8"
+      "sha256": "e2645c9dad66e8aa148e3b191ce62683d0dbb8bd55e08cadf6ee9bb9bc81eaf5"
     },
     {
       "path": "public-legal.css",
@@ -4169,7 +4169,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "fa8d1c1066a218c0a2784bdf61afce76fa81ea26a134e3a1e23f29510190a4a5"
+      "sha256": "1815c99d347f50d1f08a2edf8bd4aa0898eae7e690a21da3e65897c2d71c40ed"
     },
     {
       "path": "viewer-annotation-legacy.js",
