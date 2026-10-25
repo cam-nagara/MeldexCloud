@@ -1,9 +1,9 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-10-24T23:34:48.488842+00:00",
+  "generatedAt": "2026-10-24T23:56:49.967167+00:00",
   "semver": "0.7.419",
   "variant": "cloud-beta",
-  "sourceSha": "5d1268cc0918a0ac102fe13837ac420b7ce5aaaa",
+  "sourceSha": "5d6e4e19ec61ab9adfc6ee05dc759cfb7d78aa7e",
   "publicRepoCommit": null,
   "externalValueSources": {
     "cloudPublicUrl": {
@@ -22,7 +22,7 @@
   "files": {
     ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ".gitattributes": "8b9c3028d6467ff3be7c793141927841d70f47f52d0590677438f488ca154992",
-    "index.html": "07514a3f241c067926582922d5767f217e921ed05219d76e10fbf41a21094cff",
+    "index.html": "31bc7a4c39576f6004cd295d2019d71923e453bf999b5d13afb00a55dcb61efb",
     "manual.html": "7d4c09de2eb2a4ba46a83dc83e872af028dae104f71c5ee2f68771d4441fb05e",
     "public-standalone-apps.css": "76c5f5b575c6177bc85efcdd0adba31a7034dbbba018f08368b1a171d0ad7dd3",
     "public-index.css": "ac6c725e109dcb4e210affc7e22c6d73de75b9d3980cc64c8a924814be91f4d0",
@@ -61,11 +61,11 @@
     "manual-corpus.json": "3c212f548071cbbffa4d281633dfd3367cdf806270401dae4805e605ce91ca4a",
     "public-standalone-apps.js": "4ada082a6476ea479b557e7d511f7e58e7fe68c2e8acade84c62d5fa02dc32b3",
     "public-cloud-release-status.js": "3979cb75d3282f1bd364ffb5350aebadb0355bca346ec8d8f68c7d6961d4ff09",
-    "Meldex.html": "95046c1c93be3fab2de322402567ce6d079c8adfae13f15de47031d5caebbd9e",
+    "Meldex.html": "63f1fd0019c24f73adedfa7ade0db5781d4c2596b2fadd67be5eb965334226e1",
     "manifest.json": "f3dafe30445525b814614fcda49a40068408201343fb17c0700084ebfe95fc25",
     "sw.js": "5f4041882190391ae1f2a07016e71646b7a286cb84fe5b270fbbb80a088365c8",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "38e16ceb0c9e2b852b42925934f94bc3e1addc0bfa9c5fc0dff772d4d4f76b96",
+    "offline-shell-manifest.json": "70b9c75c46a5f75694e003bf5751cb5500fb58a5bc95bbbf08b0fe136db92062",
     "gb-config.js": "239237c9c956599735b1531697c6ca6ef38794f484d584e987d98d3f60792640",
     "gb-cloud-runtime-config.js": "f4b5b8f09fcf17d9a57bf478e7b55816f17b13488e621df6f3518d2f83ab8c84",
     "meldex-cloud-runtime-01.js": "8c14c732123e2f7d234245a1d834916921bc8a340096ff8cbddc50c245ca9147",

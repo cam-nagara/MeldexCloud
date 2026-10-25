@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.419-15c1e264ad8e131f7b7f",
+  "version": "0.7.419-95fdd386c8585ebe0552",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -3665,7 +3665,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "07514a3f241c067926582922d5767f217e921ed05219d76e10fbf41a21094cff"
+      "sha256": "31bc7a4c39576f6004cd295d2019d71923e453bf999b5d13afb00a55dcb61efb"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3801,7 +3801,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "95046c1c93be3fab2de322402567ce6d079c8adfae13f15de47031d5caebbd9e"
+      "sha256": "63f1fd0019c24f73adedfa7ade0db5781d4c2596b2fadd67be5eb965334226e1"
     },
     {
       "path": "Meldex.ico",
@@ -3969,7 +3969,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "e2645c9dad66e8aa148e3b191ce62683d0dbb8bd55e08cadf6ee9bb9bc81eaf5"
+      "sha256": "d6f609cc28fce02fefe0cd0868161a56ff23662fca67833e39d21d89c4d88e38"
     },
     {
       "path": "public-legal.css",
@@ -4017,7 +4017,7 @@
     },
     {
       "path": "quick-memo.html",
-      "sha256": "792603540943652640b1204f455fc0399ae88ebf77d17321a7feef603e76cc03"
+      "sha256": "80ece6681419f8f6d272d0f9ccbae23a2cfd530bde354584c810d2f4e2dcf46c"
     },
     {
       "path": "quick-memo.js",
@@ -4241,7 +4241,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "80b3661606b2a22e6300234238a730e6abe7b63f15de61cf1885a97064605d5e"
+      "sha256": "bfcc539fcb19c526519202b8d06909fd211c2287877cdd871816951d5438e14b"
     },
     {
       "path": "webclip-inbox.css",
