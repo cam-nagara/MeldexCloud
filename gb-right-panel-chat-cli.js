@@ -1091,6 +1091,9 @@
       Object.prototype.hasOwnProperty.call(options, 'model') ? options.model : cliChatSelectedModelValue(provider));
     const streamModelValue = streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection;
     const streamModelLabel = cliChatModelLabel(provider, streamModelSelection);
+    // 送信開始時に固定する。旧形式の待機メッセージへ後から選んだ高速設定を持ち込まない。
+    const streamGenerationSettings = { ...(options.generationSettings
+      || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings(provider, streamModelSelection) : {})) };
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -1288,7 +1291,8 @@
         body: JSON.stringify({
           provider,
           model: streamModelValue,
-          reasoning_level: options.generationSettings?.reasoning_level || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off'),
+          reasoning_level: streamGenerationSettings.reasoning_level || 'off',
+          speed_mode: streamGenerationSettings.speed_mode || 'default',
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
           system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets, uiControlAvailable: false }) : '',
           session_id: streamSessionId,

@@ -60,7 +60,8 @@
 
   function select(options, value, e2eId) {
     const element = document.createElement('select');
-    element.className = 'gb-select gb-select-sm';
+    const sizeClass = options.length && options.every(([, label]) => Array.from(String(label)).length <= 8) ? 'gb-select-medium' : 'gb-select-column';
+    element.className = 'gb-select gb-select-sm ' + sizeClass;
     options.forEach(([key, label]) => {
       const option = document.createElement('option'); option.value = key; option.textContent = label; element.appendChild(option);
     });

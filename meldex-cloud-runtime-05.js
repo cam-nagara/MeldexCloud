@@ -10377,7 +10377,7 @@
     const library = await load({ deviceOnly: options.deviceOnly });
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
     const body = document.createElement('div'); body.className = 'note-template-dialog';
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', 'ノートテンプレート');
+    const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', 'ノートテンプレート');
     const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
     const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
     content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
@@ -11666,6 +11666,7 @@ const GBLayout = (() => {
   let _maximizedPaneId = null;    // 最大化中のペインID
   let _savedRootForMaximize = null; // 最大化前のルートツリー
   let _loadedLayoutFromStorage = false;
+  let _lastExpandedDockId = '';
   const SAVE_LAYOUT_DEBOUNCE_MS = 80;
   let _saveLayoutTimer = null;
   let _saveLayoutPending = false;
@@ -12602,6 +12603,38 @@ const GBLayout = (() => {
     return Number(targetNode?.defaultPopupWidth || 0) > 0;
   }
 
+  // 固定サイドバーを同時に開いても、文書を数文字幅まで圧縮しない。
+  // 内容やタブは閉じず、操作中でない補助ドックを既存のレールへ折りたたむ。
+  function _ensureReadableMainPane() {
+    if (_isMobileLayout() || _maximizedPaneId || !_hasFixedRailRoles(_root)) return;
+    const main = _collectFixedRailPanes(_root).find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
+    if (!main) return;
+    const available = _layoutEl?.clientWidth || window.innerWidth;
+    const minimum = Math.min(400, available - 100);
+    const widthOfMain = (node, width) => {
+      if (!node || node.collapsed) return 0;
+      if (node.id === main.id) return width;
+      if (node.type === 'panelset') {
+        const group = node.groups?.find(item => item.id === node.activeGroupId) || node.groups?.[0];
+        return widthOfMain(group?.root, Math.max(0, width - 32));
+      }
+      if (node.type !== 'split') return 0;
+      if (node.direction !== 'horizontal') return Math.max(...node.children.map(child => widthOfMain(child, width)));
+      const space = Math.max(0, width - 4);
+      const [a, b] = node.children;
+      const first = a.collapsed ? 32 : b.collapsed ? space - 32 : space * node.ratio;
+      return Math.max(widthOfMain(a, first), widthOfMain(b, space - first));
+    };
+    const docks = ['left-sidebar', 'right-sidebar', 'chat-sidebar']
+      .map(role => _findFixedRailPanelset(_root, role)).filter(Boolean)
+      .filter(dock => !dock.collapsed && dock.id !== _lastExpandedDockId);
+    for (const dock of docks) {
+      if (widthOfMain(_root, available) >= minimum) break;
+      dock.collapsed = true;
+      _adjustSplitForCollapse(dock, { skipRender: true });
+    }
+  }
+
   // 左右レール導入後、内側の水平split（作業領域 | 右サイドバー）は panelset で
   // ラップされるため、split そのものでも panelset 越しでも取り出せるようにする。
   function _innerHorizontalSplit(node) {
@@ -12642,6 +12675,9 @@ const GBLayout = (() => {
   }
 
   function _adjustSplitForCollapse(targetNode, options) {
+    if (!targetNode.collapsed && ['left-sidebar', 'right-sidebar', 'chat-sidebar'].includes(targetNode.meldexRole)) {
+      _lastExpandedDockId = targetNode.id;
+    }
     // targetNodeはペインまたはsplitノード
     const parentInfo = findParent(_root, targetNode.id);
     if (!parentInfo) return;
@@ -14956,6 +14992,7 @@ const GBLayout = (() => {
   function render() {
     if (!_layoutEl) return;
     _root = window.GBChatSidebar?.ensure?.(_root) || _root;
+    _ensureReadableMainPane();
     // Phase 5 安全策: ポップアップ表示中に再レンダリングすると、ポップアップ内に
     // 移動した pane DOM が innerHTML = '' で消える一方、_state.originalParent が
     // 新しい DOM に差し替わってしまい孤立する。事前にポップアップを閉じて pane DOM
@@ -23692,6 +23729,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
 <div class="field"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
 <div class="field gb-cal-task-form-wide"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
 </div>`;
+  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
+  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'tk-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -24105,6 +24144,8 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${esc(endValue)}"></div></div>
 <div class="field"><label>種別</label><select id="sh-type" class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
 <div class="field"><label>メモ</label><textarea id="sh-note" class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>`;
+  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
+  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.id = 'sh-cancel'; cancelButton.className = 'sh-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -24118,9 +24159,15 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     historyButton.type = 'button'; historyButton.id = 'sh-history'; historyButton.className = 'sh-history gb-btn gb-btn-sm'; historyButton.textContent = '版を見る';
   }
   let busy = false, deleteConfirmPending = false;
+  const secondaryActions = document.createElement('div');
+  secondaryActions.className = 'gb-modal-footer-left';
+  secondaryActions.append(...[deleteButton, historyButton].filter(Boolean));
+  const primaryActions = document.createElement('div');
+  primaryActions.className = 'gb-modal-footer-group';
+  primaryActions.append(cancelButton, saveButton);
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-shift', title: existing ? 'シフト編集' : '新規シフト', body: [...content.childNodes],
-    footer: [deleteButton, historyButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
+    footer: [existing ? secondaryActions : null, primaryActions].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
     minWidth: '0', initialFocus: '#sh-user', closeLabel: 'シフト編集を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: () => !busy,
   });
@@ -24463,14 +24510,14 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
   const dl = ['日','月','火','水','木','金','土'];
   const entryRow = (e) => `<div class="tmpl-entry" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-size:12px;">
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">${dl.map((d,i)=>`<option value="${i}" ${(e?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}</select>
-    <input type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
-    <input type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
-    <input type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
+    <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <button type="button" class="tmpl-entry-del" aria-label="エントリを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
   const content = document.createElement('div');
   content.innerHTML = `<div id="tmpl-edit-status" role="status" aria-live="polite"></div>
-    <div class="field"><label>名前</label><input id="tmpl-name" class="tmpl-name" type="text" value="${esc(t.name)}"></div>
+    <div class="field"><label>名前</label><input id="tmpl-name" class="tmpl-name gb-input" type="text" value="${esc(t.name)}"></div>
     <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:4px;">エントリ（1週間分）</div>
     <div id="tmpl-entries" class="tmpl-entries">${entriesHtml}</div>
     <button id="tmpl-add-entry" type="button" class="tmpl-add-entry gb-btn gb-btn-sm">+ エントリ追加</button>`;
@@ -44786,7 +44833,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
       </label>
       <label class="bd-bulk-import-field" for="${viewId}">
         <span class="bd-bulk-import-label">ビュー ${fieldHelp('選択したビューのフィルタを適用します')}</span>
-        <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
+        <select id="${viewId}" class="gb-select gb-select-column bd-bulk-import-select" data-bdbl-view></select>
       </label>
       <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>`;
     const cancelBtn = document.createElement('button');
@@ -64144,12 +64191,14 @@ function _sn2StopSep() {
     const nameCell = document.createElement('td');
     const name = document.createElement('input');
     name.type = 'text';
+    name.className = 'gb-input';
     name.value = column.name;
     name.setAttribute('aria-label', `列${index + 1}の名前`);
     name.dataset.field = 'name';
     nameCell.appendChild(name);
     const typeCell = document.createElement('td');
     const type = document.createElement('select');
+    type.className = 'gb-select gb-select-medium';
     type.dataset.field = 'type';
     type.setAttribute('aria-label', `列${index + 1}のタイプ`);
     [
@@ -64167,6 +64216,7 @@ function _sn2StopSep() {
     const formulaCell = document.createElement('td');
     const formula = document.createElement('input');
     formula.type = 'text';
+    formula.className = 'gb-input';
     formula.value = column.formula;
     formula.placeholder = '=prop("単価") * prop("数量")';
     formula.dataset.field = 'formula';
@@ -64318,7 +64368,13 @@ function _sn2StopSep() {
       '<select id="csv-item-column" name="item-column"></select>' +
       '</div>' +
       '<div class="csv-convert-columns"><table><thead><tr><th>列名</th><th>タイプ</th><th>数式</th><th>注意</th></tr></thead><tbody></tbody></table></div>' +
-      '<div class="csv-dialog-actions"><button type="button" data-command="cancel">キャンセル</button><button type="button" data-command="submit">シートを作成</button></div>';
+      '<div class="csv-dialog-actions"><button type="button" class="gb-btn gb-btn-sm" data-command="cancel">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-command="submit">シートを作成</button></div>';
+    dialog.querySelectorAll('input:not([type="checkbox"])').forEach(control => control.classList.add('gb-input'));
+    dialog.querySelectorAll('select').forEach(control => control.classList.add('gb-select'));
+    dialog.querySelector('[name="mode"]').classList.add('gb-select-medium');
+    dialog.querySelector('[name="item-column"]').classList.add('gb-select-column');
+    dialog.querySelector('[name="has-header"]').parentElement.classList.add('gb-check');
+    dialog.querySelector('[name="sheet-name"]').setAttribute('data-gb-tooltip-disabled', 'true');
     dialog.querySelector('[name="destination-parent"]').value = parts.parent;
     dialog.querySelector('[name="sheet-name"]').value = parts.name;
     dialog.querySelector('[name="has-header"]').checked = hasHeader;
@@ -72796,8 +72852,9 @@ ${spEsc(actionText)}</pre>
         btn.textContent = choice.label;
         btn.dataset.spChoice = String(choice.value || '');
         btn.dataset.e2eId = 'status-policy-choice-' + (String(choice.value || 'cancel').replace(/[^a-z0-9_-]+/gi, '-'));
-        if (choice.primary) btn.className = 'primary';
-        if (choice.danger) btn.className = 'danger';
+        btn.className = 'gb-btn gb-btn-sm';
+        if (choice.primary) btn.classList.add('gb-btn-primary', 'primary');
+        if (choice.danger) btn.classList.add('gb-btn-danger', 'danger');
         btn.addEventListener('click', async () => {
           if (busy) return;
           if (typeof choice.action !== 'function') {
@@ -88486,7 +88543,7 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
     <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-summary="1">
       <div class="gb-section-title">${lucide('palette', 14)} テーマ</div>
       <div class="gb-field-row" style="align-items:center;">
-        <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select" style="flex:1;min-width:180px;">
+        <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select gb-select-column">
           ${themeOptions}
         </select>
         ${_settingsThemeMenuButton()}
@@ -97093,6 +97150,7 @@ async function resetLayoutToDefault() {
     'external-import': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
     'enex-import': 'ENEX取り込み',
+    'webclip-inbox': 'Web受信箱',
   };
   const restoredJobs = new Map();
   const foregroundStack = [];
@@ -97124,6 +97182,13 @@ async function resetLayoutToDefault() {
     if (!api || !job?.id) return null;
     const jobId = String(job.id);
     let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
+    // 定期巡回だけでは通知しない。実際の取得開始か、取得結果・失敗を待つ。
+    if (!handle && job.kind === 'webclip-inbox'
+        && ['queued', 'running'].includes(job.status)
+        && !job.progress?.current && !(Number(job.progress?.processed) > 0)) {
+      restoredJobs.set(jobId, { handle: null, misses: 0 });
+      return null;
+    }
     if (!handle) {
       handle = api.begin({
         id: 'job-' + jobId,
@@ -97159,35 +97224,73 @@ async function resetLayoutToDefault() {
     return handle;
   }
 
+  async function _scheduledJobSnapshot(jobId) {
+    const data = await apiFetch('/import-schedules', { silentError: true });
+    for (const schedule of (Array.isArray(data?.schedules) ? data.schedules : [])) {
+      const run = schedule.last_run;
+      if (String(run?.job_id || '') !== jobId || !['done', 'error', 'cancelled'].includes(run.status)) continue;
+      const legacyXSummary = run.status === 'done' && schedule.category === 'x-bookmarks'
+        && typeof run.summary?.ok !== 'boolean';
+      return {
+        id: jobId, kind: schedule.category, label: schedule.label, status: legacyXSummary ? 'unknown' : run.status,
+        result: { ...(run.summary || {}), summary: legacyXSummary
+          ? '処理終了の記録はありますが、項目別の結果は残っていません。取り込み予定の前回結果を確認してください。'
+          : '定期実行の結果を保存済みの記録から確認しました' },
+        error: run.error,
+      };
+    }
+    return null;
+  }
+
   async function _resolveMissingJob(jobId, entry) {
+    let job;
     try {
-      const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
-      entry.misses = 0;
-      if (job?.status === 'done') {
-        const result = job.result || {};
-        const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
-        if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-        else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
-        else entry.handle.succeed(values);
-        restoredJobs.delete(jobId);
-      } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
-        entry.handle.cancelled({ summary: '取り込みを中止しました' });
-        restoredJobs.delete(jobId);
-      } else if (job?.status === 'error') {
-        entry.handle.fail({
-          error: job.error || '取り込みに失敗しました',
-          details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
-        });
-        restoredJobs.delete(jobId);
-      } else if (job) {
-        _syncJob(job);
-      }
+      job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
     } catch (error) {
-      entry.misses += 1;
-      if (entry.misses < 2 || !/404/.test(String(error?.message || ''))) return;
-      const status = entry.handle.getState()?.status;
-      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.fail({ error: '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。' });
+      if (!/404/.test(String(error?.message || ''))) { entry.misses = 0; return; }
+      if (++entry.misses < 2) return;
+      // 完了ジョブは1時間で破棄され、再起動でもメモリから消える。
+      // 予定の永続記録が同じjob_idを示す場合だけ、その確定結果を採用する。
+      try { job = await _scheduledJobSnapshot(jobId); }
+      catch (_) { return; } // 記録の取得失敗も処理そのものの失敗にはしない。
+      if (!job) {
+        const status = entry.handle?.getState()?.status;
+        if (status === 'running' || status === 'queued' || status === 'cancelling') {
+          entry.handle.unknown({ summary: 'ジョブの記録を取得できないため、完了・失敗を判定できません。取り込み予定の前回結果を確認してください。' });
+        }
+        restoredJobs.delete(jobId);
+        return;
+      }
+    }
+    entry.misses = 0;
+    if (job?.status === 'done') {
+      const result = job.result || {};
+      if (!entry.handle && job.kind === 'webclip-inbox'
+          && result.ok !== false && !['saved', 'failed', 'recovered'].some(key => Number(result[key]) > 0)) {
+        restoredJobs.delete(jobId);
+        return;
+      }
+      entry.handle = entry.handle || _syncJob(job);
+      const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
+      if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
+      else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
+      else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
+    } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
+      entry.handle?.cancelled({ summary: '取り込みを中止しました' });
+      restoredJobs.delete(jobId);
+    } else if (job?.status === 'error') {
+      entry.handle = entry.handle || _syncJob(job);
+      entry.handle.fail({
+        error: job.error || '取り込みに失敗しました',
+        details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
+      });
+      restoredJobs.delete(jobId);
+    } else if (job?.status === 'unknown') {
+      entry.handle?.unknown({ summary: job.result?.summary || '取り込み結果の内訳を確認できません。' });
+      restoredJobs.delete(jobId);
+    } else if (job) {
+      _syncJob(job);
     }
   }
 
@@ -127019,7 +127122,7 @@ function hideBoardNoteTab() {
     const label = document.createElement('label');
     label.textContent = 'ワークスペース';
     const select = document.createElement('select');
-    select.className = 'gb-cal-calendar-team-folder';
+    select.className = 'gb-cal-calendar-team-folder gb-select gb-select-column';
     select.innerHTML = '<option value="">読み込み中...</option>';
     select.setAttribute('aria-label', 'ワークスペース');
     const canEdit = this._calUserCanEditCalendar(cal);
@@ -127590,6 +127693,8 @@ function hideBoardNoteTab() {
         <button type="button" class="att-csv-format" data-format="smaregi">スマレジ向け勤務実績</button>
         <button type="button" class="att-csv-format" data-format="moneyforward">マネーフォワード日次打刻</button>
       </div></div>`;
+    content.querySelectorAll('input').forEach(el => el.classList.add('gb-input'));
+    content.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'att-csv-close gb-btn gb-btn-sm';
@@ -133816,8 +133921,10 @@ function hideBoardNoteTab() {
     const exportKinds = _pmCloudExportKinds();
     const kind = _pmSelect(exportKinds, exportKinds[0]);
     kind.dataset.e2eId = 'production-export-kind';
+    kind.classList.add('gb-select-medium');
     const format = _pmSelect(['csv', 'xlsx'], 'csv');
     format.dataset.e2eId = 'production-export-format';
+    format.classList.add('gb-select-short');
     const from = _pmInput('', '2026-05-01');
     from.dataset.e2eId = 'production-export-from';
     const to = _pmInput('', '2026-05-31');
@@ -145610,9 +145717,9 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'link', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
 
   const rowSelect = (id, label, options, value, placeholder = '(なし)', help = '') => `
-    <div class="field gb-field" style="margin-top:6px;">
+    <div class="field gb-field-select-row">
       <label class="gb-label" for="${id}">${label}${help ? ' ' + fieldHelp(help, { e2eId: `${id}-help` }) : ''}</label>
-      <select id="${id}" class="gb-select" data-e2e-id="${id}" style="width:100%;box-sizing:border-box;">
+      <select id="${id}" class="gb-select gb-select-column" data-e2e-id="${id}">
         <option value="">${placeholder}</option>
         ${options.map(p => `<option value="${esc(p)}" ${value===p?'selected':''}>${esc(p)}</option>`).join('')}
       </select>
@@ -145621,16 +145728,15 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const wrap = document.createElement('div');
   wrap.id = 'dbcfg-calendar-mapping';
   wrap.className = 'field';
-  wrap.style.marginTop = '10px';
   wrap.innerHTML = `
     <div class="gb-check-help-row">
-      <label class="gb-check" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-height:44px;">
+      <label class="gb-check dbcfg-check-row">
         <input id="dbcfg-calmap-enabled" type="checkbox" data-e2e-id="dbcfg-calmap-enabled" aria-controls="dbcfg-calendar-mapping-fields" aria-expanded="${current?.startProp ? 'true' : 'false'}" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
         <span>任意シートをカレンダー表示に連携する</span>
       </label>
       ${fieldHelp('連携すると、このシートの既存イベントは日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーシート側で行います。', { e2eId: 'db-calendar-mapping-help' })}
     </div>
-    <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
+    <div id="dbcfg-calendar-mapping-fields" class="dbcfg-section-content"${current?.startProp ? '' : ' hidden'}>
       ${rowSelect('dbcfg-calmap-start', '開始列', dateProps, current?.startProp || '', '(必須)')}
       ${rowSelect('dbcfg-calmap-end', '終了列', dateProps, current?.endProp || '', undefined, '開始列が期間付き日時なら、終了列を空にしても終了日時を拾います')}
       ${rowSelect('dbcfg-calmap-title', 'タイトル列', textLikeProps, current?.titleProp || '', '(トピック名)')}
@@ -145644,6 +145750,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
 
   if (dateProps.length === 0) {
     const note = document.createElement('div');
+    note.className = 'dbcfg-section-content';
     note.style.cssText = 'font-size:11px;color:var(--red);margin-top:6px;';
     note.textContent = '日時列がないため、カレンダー連携は設定できません。';
     wrap.appendChild(note);
@@ -145652,7 +145759,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const enabled = wrap.querySelector('#dbcfg-calmap-enabled');
   const fields = wrap.querySelector('#dbcfg-calendar-mapping-fields');
   enabled?.addEventListener('change', () => {
-    if (fields) fields.style.display = enabled.checked ? '' : 'none';
+    if (fields) fields.hidden = !enabled.checked;
     enabled.setAttribute('aria-expanded', enabled.checked ? 'true' : 'false');
   });
 
@@ -146338,6 +146445,13 @@ function isSingleValueSheetPath(path) {
 function hidesCandidateStatusUi(dbPath) {
   if (!isSingleValueSheetPath(dbPath)) return false;
   return typeof getStatusEnabled !== 'function' || !getStatusEnabled(dbPath);
+}
+
+// OFFにしても保存済みのステータスやビューの絞り込み設定は保持する。
+// 描画・ロールアップへ渡す実効フィルタだけを無効化する。
+function _dbStatusFilterMode(dbPath, filterMode) {
+  return dbPath && typeof getStatusEnabled === 'function' && !getStatusEnabled(dbPath)
+    ? 'disabled' : filterMode;
 }
 
 // スタッフ管理シート（正本）の列保護レベルを判定する。
@@ -150814,7 +150928,7 @@ function closeConditionModal(listSelector) {
 
 function createConditionFieldBlock(labelText, control) {
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:block;margin:0 0 8px;';
+  wrap.className = 'gb-field-select-row';
   const label = document.createElement(control?.id ? 'label' : 'div');
   if (control?.id) {
     label.setAttribute('for', control.id);
@@ -150822,6 +150936,7 @@ function createConditionFieldBlock(labelText, control) {
   }
   label.textContent = labelText;
   label.style.cssText = 'font-size:11px;color:var(--ui-fg-muted, var(--fg2));margin:0 0 4px;';
+  label.style.flex = '0 0 96px';
   wrap.appendChild(label);
   wrap.appendChild(control);
   return wrap;
@@ -150854,7 +150969,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(head);
 
   const fieldSel = document.createElement('select');
-  fieldSel.className = 'af-field gb-select';
+  fieldSel.className = 'af-field gb-select gb-select-medium';
   styleConditionControl(fieldSel);
   [['value', '値'], ['status', 'ステータス']].forEach(([value, label]) => {
     const opt = document.createElement('option');
@@ -150866,7 +150981,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(createConditionFieldBlock('対象', fieldSel));
 
   const propSel = document.createElement('select');
-  propSel.className = 'af-prop gb-select';
+  propSel.className = 'af-prop gb-select gb-select-column';
   styleConditionControl(propSel);
   propOptions.forEach((prop) => {
     const opt = document.createElement('option');
@@ -150879,7 +150994,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(createConditionFieldBlock('列', propSel));
 
   const opSel = document.createElement('select');
-  opSel.className = 'af-op gb-select';
+  opSel.className = 'af-op gb-select gb-select-short';
   styleConditionControl(opSel);
   ops.forEach(([value, label]) => {
     const opt = document.createElement('option');
@@ -150895,7 +151010,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   valInput.type = 'text';
   valInput.placeholder = '値';
   valInput.value = f?.value ?? '';
-  styleConditionControl(valInput, 'font-size:12px;padding:2px 4px;');
+  styleConditionControl(valInput, 'width:auto;flex:1 1 240px;font-size:12px;padding:2px 4px;');
   row.appendChild(createConditionFieldBlock('値', valInput));
 
   const commonTagsDatalist = document.createElement('datalist');
@@ -151080,8 +151195,8 @@ function showUnifiedFilterModal() {
     <div style="margin-bottom:12px;">
       <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">列の値フィルター</div>
       <div id="uf-col-filters"></div>
-      <div class="uf-column-filter-add" style="display:flex;gap:4px;margin-top:6px;">
-        <select id="uf-col-filter-add-select" class="gb-select gb-select-sm" style="flex:1;"></select>
+      <div class="uf-column-filter-add">
+        <select id="uf-col-filter-add-select" class="gb-select gb-select-column" aria-label="値で絞り込む列"></select>
         <button type="button" class="gb-btn gb-btn-sm uf-open-column-filter" data-action="_ufOpenColumnValueFilterFromDialog()" style="font-size:11px;">値を選択...</button>
       </div>
     </div>`;
@@ -151173,10 +151288,10 @@ function _ufConditionRow(f, dbPath, ctx) {
   const resolvedDbPath = dbPath || state.currentDbPath;
   const isCommonTags = selectedProp !== '*' && getPropertyTypes(resolvedDbPath)?.[selectedProp]?.type === 'common-tags';
   const valueListAttr = isCommonTags ? ` list="${datalistId}" placeholder="タグ名の一部を入力"` : '';
-  return `<div class="uf-cond" data-uf-common-tags-datalist-id="${datalistId}" style="display:flex;gap:4px;margin-bottom:4px;align-items:center;font-size:12px;">
-    <select data-field="field" class="gb-select gb-select-sm"><option value="value" ${f?.field==='value'?'selected':''}>値</option><option value="status" ${f?.field==='status'?'selected':''}>ステータス</option></select>
-    <select data-field="property" class="gb-select gb-select-sm" style="flex:1;"><option value="*" ${selectedProp==='*'?'selected':''}>すべての列</option>${propOpts}</select>
-    <select data-field="operator" class="gb-select gb-select-sm">
+  return `<div class="uf-cond" data-uf-common-tags-datalist-id="${datalistId}">
+    <select data-field="field" class="gb-select gb-select-short" aria-label="条件の対象"><option value="value" ${f?.field==='value'?'selected':''}>値</option><option value="status" ${f?.field==='status'?'selected':''}>ステータス</option></select>
+    <select data-field="property" class="gb-select gb-select-column" aria-label="対象の列"><option value="*" ${selectedProp==='*'?'selected':''}>すべての列</option>${propOpts}</select>
+    <select data-field="operator" class="gb-select gb-select-short" aria-label="条件の比較">
       <option value="contains" ${f?.operator==='contains'?'selected':''}>含む</option>
       <option value="not_contains" ${f?.operator==='not_contains'?'selected':''}>含まない</option>
       <option value="equals" ${f?.operator==='equals'?'selected':''}>一致</option>
@@ -151184,7 +151299,7 @@ function _ufConditionRow(f, dbPath, ctx) {
       <option value="empty" ${f?.operator==='empty'?'selected':''}>空</option>
       <option value="not_empty" ${f?.operator==='not_empty'?'selected':''}>空でない</option>
     </select>
-    <input type="text" data-field="value" class="gb-input gb-input-sm" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;"${valueListAttr}>
+    <input type="text" data-field="value" class="gb-input" aria-label="条件の値" value="${esc(f?.value ?? '')}"${valueListAttr}>
     <datalist id="${datalistId}"></datalist>
     <button type="button" class="gb-btn gb-btn-sm gb-btn-icon uf-remove-condition" aria-label="条件を削除" data-action="this.parentElement.remove()" style="color:var(--red);background:none;border:none;cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
@@ -154804,6 +154919,7 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
 
 async function flushPendingDbPropertySettings(dbPath) {
   const target = _ptNormalizeDbPath(dbPath || '');
+  if (typeof flushPendingDbColorSaves === 'function') await flushPendingDbColorSaves(target);
   const roots = Array.from(document.querySelectorAll('[data-pt-root]')).filter(root => {
     const rootPath = _ptNormalizeDbPath(_ptState(root)?.dbPath || '');
     return typeof root._ptFlushAutosave === 'function' && (!target || rootPath === target);
@@ -155349,18 +155465,12 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
-  let values = filterValues(rawValues, undefined, ctx?.filter);
+  let values = filterValues(rawValues, undefined, ctx?.filter, dbPath);
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
-  // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-  // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25。gb-db-table.part02.js と同期）。
-  // 1セル1値で運用するシート（制作管理）は対象外。ただしそのシートで「ステータス機能」を
-  // オンにした場合は従来どおり出す（hidesCandidateStatusUi）。
-  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-  const forceStatusDot = values.length > 1 && !hideStatusUi;
   values.forEach(cellVal => {
-    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
+    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
   });
   // 単独の「＋」は元データ0件だけ。フィルターで候補値が見えなくなっても生成しない。
   if (typeof _cellUiShouldShowStandaloneAdd === 'function'
@@ -155810,8 +155920,8 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, trigge
   }
   const seq = ++_conditionalColorDialogSeq;
   const body = document.createElement('div');
-  body.innerHTML = `<div class="field gb-field"><label class="gb-label" for="cc-picker-prop">列</label>
-      <select id="cc-picker-prop" class="gb-select" data-e2e-id="cc-picker-prop" style="width:100%;box-sizing:border-box;">
+  body.innerHTML = `<div class="field gb-field-select-row gb-field-select-row--compact-label"><label class="gb-label" for="cc-picker-prop">列</label>
+      <select id="cc-picker-prop" class="gb-select gb-select-column" data-e2e-id="cc-picker-prop">
         ${visibleProps.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
       </select>
     </div>`;
@@ -155877,9 +155987,9 @@ function addConditionalColorRow(container, rule) {
 
   const opEl = document.createElement('select');
   opEl.id = `cc-op-${seq}`;
-  opEl.className = 'cc-op gb-select';
+  opEl.className = 'cc-op gb-select gb-select-short';
   opEl.dataset.e2eId = 'cc-rule-op';
-  styleConditionControl(opEl);
+  styleConditionControl(opEl, 'width:96px;max-width:100%;');
   ops.forEach(([value, label]) => {
     const opt = document.createElement('option');
     opt.value = value;
@@ -156026,6 +156136,49 @@ function getCellColor(value, propName, dbPath, ctx = null) {
    - 候補名の確定保存時に色も同じ変更としてリネーム/削除する
 */
 
+const _dbPendingColorSaves = new Map();
+const _dbColorSaveQueues = new Map();
+
+function _dbColorSavePathKey(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+// ポップアップを閉じた直後の再読込でも、デバウンス中の色を保存してから読む。
+function scheduleDbColorSave(sw, dbPath, save) {
+  clearTimeout(sw._dbOptionColorSaveTimer);
+  let promise = null;
+  let timer = null;
+  const pending = {
+    dbPath,
+    flush() {
+      clearTimeout(timer);
+      if (!promise) {
+        const key = _dbColorSavePathKey(dbPath);
+        // 同じシートの色保存は、設定の読取と履歴登録も含めて順序を保つ。
+        const previous = _dbColorSaveQueues.get(key);
+        promise = Promise.resolve(previous).catch(() => {}).then(save).finally(() => {
+          if (_dbPendingColorSaves.get(sw) === pending) _dbPendingColorSaves.delete(sw);
+          if (_dbColorSaveQueues.get(key) === promise) _dbColorSaveQueues.delete(key);
+        });
+        _dbColorSaveQueues.set(key, promise);
+      }
+      return promise;
+    },
+  };
+  _dbPendingColorSaves.set(sw, pending);
+  timer = setTimeout(() => pending.flush().catch(() => {}), 250);
+  sw._dbOptionColorSaveTimer = timer;
+}
+
+async function flushPendingDbColorSaves(dbPath) {
+  const target = _dbColorSavePathKey(dbPath);
+  while (true) {
+    const pending = [..._dbPendingColorSaves.values()].filter(item => !target || _dbColorSavePathKey(item.dbPath) === target);
+    if (!pending.length) return;
+    await Promise.all(pending.map(item => item.flush()));
+  }
+}
+
 // hex 3桁/6桁のみ有効な色として扱う。'transparent' や不正値は「未設定」として扱う
 function _dbOptionColorIsValidHex(hex) {
   return typeof hex === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex.trim());
@@ -156125,10 +156278,10 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
     ? _dbPaneContextsForPath(dbPath)
     : [];
   if (ctx && !contexts.includes(ctx)) contexts.push(ctx);
-  const roots = contexts.map(item => item?.containerEl).filter(Boolean);
-  if (!roots.length && typeof document !== 'undefined') roots.push(document);
+  const views = contexts.filter(item => item?.containerEl).map(item => ({ root: item.containerEl, ctx: item }));
+  if (!views.length && typeof document !== 'undefined') views.push({ root: document, ctx });
 
-  roots.forEach(root => {
+  views.forEach(({ root, ctx }) => {
     root.querySelectorAll?.('td[data-prop-name]').forEach(td => {
       if (td.dataset.propName !== propName) return;
       td.querySelectorAll('.cell-select-val, .multi-select-tag').forEach(chip => {
@@ -156234,21 +156387,208 @@ function appendDbOptionColorSwatch(itemEl, opts) {
     e.stopPropagation();
     openColorPalette(sw, getDbOptionColor(getConfig(), option) || '', (color) => {
       paint(color); // ライブでスウォッチへ反映
-      clearTimeout(sw._dbOptionColorSaveTimer);
+      refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx);
       // ライブ変更のたびに保存せずデバウンスして setPropertyType を呼ぶ
-      sw._dbOptionColorSaveTimer = setTimeout(() => {
+      scheduleDbColorSave(sw, dbPath, () =>
         setDbOptionColorAndSave(dbPath, propName, option, color, ctx).then((ok) => {
           if (ok) {
             if (typeof opts.onChanged === 'function') opts.onChanged();
           } else {
             paint();
+            refreshDbOptionColorInOpenViews(dbPath, propName, option, getDbOptionColor(getConfig(), option), ctx);
           }
-        });
-      }, 250);
+        })
+      );
     });
   });
   itemEl.appendChild(sw);
   return sw;
+}
+
+// 選択肢の削除はセルの「解除」と別操作。画面のフィルタや部分キャッシュではなく、
+// 正本の全候補から削除対象を集め、値と列設定を同じUndo操作として扱う。
+function _dbSelectOptionDeleteWrites(pivot, dbPath, propName, option, type) {
+  const writes = [];
+  Object.entries(pivot?.entities || {}).forEach(([name, entity]) => {
+    (entity[propName] || []).forEach(value => {
+      const oldValue = String(value.value ?? '');
+      const tokens = type === 'multi-select' ? oldValue.split(',').map(v => v.trim()).filter(Boolean) : [oldValue];
+      if (!tokens.includes(option)) return;
+      const nextValue = type === 'multi-select' ? tokens.filter(v => v !== option).join(', ') : '';
+      const entryPath = entity._entry_path || value.entry_path || _entityPath(dbPath, name, pivot);
+      writes.push({ ref: { ...value, entry_path: entryPath, property: propName }, oldValue, nextValue });
+    });
+  });
+  return writes.sort((a, b) => String(a.ref.file).localeCompare(String(b.ref.file))
+    || Number(b.ref.candidate_index ?? -1) - Number(a.ref.candidate_index ?? -1));
+}
+
+function _dbOptionDeleteConfigKey(config) {
+  const ordered = value => Array.isArray(value) ? value.map(ordered)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
+  return JSON.stringify(ordered(config || {}));
+}
+
+async function _dbRestoreDeletedOptionWrites(writes) {
+  const restored = [];
+  const remaining = [];
+  const entities = new Map();
+  // 履歴作成後に別画面で値が変わっていた場合は、その値を上書きしない。
+  for (const write of writes.filter(item => item.nextValue)) {
+    const ref = { ...write.ref };
+    const path = ref.entry_path || ref.file;
+    if (!entities.has(path)) entities.set(path, await apiFetch('/entity?path=' + encodeURIComponent(path),
+      { skipBrowseCache: true, cache: 'reload' }));
+    if (ref.candidate_index != null) {
+      ref.candidate_index -= writes.filter(item => !item.nextValue && item.ref.file === ref.file
+        && item.ref.candidate_index < write.ref.candidate_index).length;
+    }
+    const current = entities.get(path).properties?.[ref.property] || [];
+    const saved = ref.candidate_index != null ? current[ref.candidate_index] : current.find(value => value.file === ref.file);
+    if (!saved || String(saved.value ?? '') !== write.nextValue) throw new Error('対象の値が変更されています。再読み込みして確認してください');
+    ref.entry_revision = entities.get(path).revision ?? saved.entry_revision ?? ref.entry_revision;
+    remaining.push({ ref, write });
+  }
+  try {
+    // 削除後の候補番号に補正してから、残っている複数選択の値を戻す。
+    for (const { ref, write } of remaining) {
+      await _apiPutValue(ref, { new_value: write.oldValue });
+      restored.push({ ref, write, created: false });
+    }
+    for (const write of [...writes].reverse().filter(item => !item.nextValue)) {
+      const old = write.ref;
+      const result = await _apiPostValue(old.entry_path || old.file, old.property, write.oldValue,
+        old.status || '採用', old.note || '', old.rich_html, old);
+      restored.push({ ref: { ...old, file: result.path || old.file,
+        candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
+    }
+  } catch (error) {
+    // Undoの途中で失敗しても、成功した分だけ復元された状態を残さない。
+    const failures = [];
+    for (const item of restored.reverse()) {
+      try { await _apiPutValue(item.ref, item.created ? { _delete: true } : { new_value: item.write.nextValue }); }
+      catch (rollbackError) { failures.push(rollbackError); }
+    }
+    if (failures.length) {
+      const failed = new Error('値の復元に失敗しました。再読み込みして保存状態を確認してください');
+      failed.cause = error;
+      throw failed;
+    }
+    throw error;
+  }
+}
+
+async function _dbApplyDeletedOptionWrites(writes) {
+  const completed = [];
+  try {
+    for (const write of writes) {
+      await _apiPutValue(write.ref, write.nextValue ? { new_value: write.nextValue } : { _delete: true });
+      completed.push(write);
+    }
+  } catch (error) {
+    await _dbRestoreDeletedOptionWrites(completed);
+    throw error;
+  }
+}
+
+async function deleteDbSelectOptionAndSave(dbPath, propName, option, ctx, beforeConfirm) {
+  let committed = false;
+  try {
+    const lockMessage = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName, ctx) : '';
+    if (lockMessage) throw new Error(lockMessage);
+    await flushPendingDbColorSaves(dbPath);
+    let before = JSON.parse(JSON.stringify(getPropertyTypes(dbPath, ctx)?.[propName] || {}));
+    const optionType = String(before.type || '').replace(/_/g, '-');
+    if (!['select', 'multi-select'].includes(optionType) || before.optionSource) throw new Error('この選択肢は参照元で変更してください');
+    const protection = _dbOptionColorProtectionReason(typeof _dbSchemaProtectionLevel === 'function'
+      ? _dbSchemaProtectionLevel(dbPath, propName) : null);
+    if (protection) throw new Error(protection);
+    const readWrites = async () => _dbSelectOptionDeleteWrites(await apiFetch('/pivot?path=' + encodeURIComponent(dbPath),
+      { skipBrowseCache: true, cache: 'reload' }), dbPath, propName, String(option), optionType);
+    let writes = await readWrites();
+    beforeConfirm?.();
+    if (!await cfConfirm(`選択肢「${option}」を削除しますか？\nこの選択肢を含む${writes.length}件の値からも削除します。複数選択の他の値は残ります。`,
+      { danger: true, okLabel: '削除' })) return false;
+    let after = JSON.parse(JSON.stringify(before));
+    after.options = (after.options || []).filter(value => value !== option);
+    if (after.optionColors) delete after.optionColors[option];
+    if (after.option_ids) delete after.option_ids[option];
+    const saveConfig = async config => {
+      const restoring = config === before;
+      if (await setPropertyType(dbPath, propName, JSON.parse(JSON.stringify(config)), ctx) === false) {
+        throw new Error('保護されている列のため変更できません');
+      }
+      // 保存時に付与される安定IDも、以後の競合判定と履歴へ引き継ぐ。
+      const stored = JSON.parse(JSON.stringify(getPropertyTypes(dbPath, ctx)?.[propName] || config));
+      if (restoring) before = stored;
+      else after = stored;
+    };
+    const reload = async () => {
+      if (typeof _ptReloadOtherDbContexts === 'function') await _ptReloadOtherDbContexts(dbPath, ctx);
+      await selectDatabase(dbPath, ctx, { silent: true });
+    };
+    const remove = async () => {
+      // 確認中・Undo後の候補番号や保存済みデータを再取得する。
+      const current = await readWrites();
+      const signature = item => JSON.stringify([item.ref.entry_id || item.ref.entry_path || item.ref.file,
+        item.oldValue, item.ref.status || '', item.ref.note || '']);
+      const expected = new Map();
+      writes.forEach(item => expected.set(signature(item), (expected.get(signature(item)) || 0) + 1));
+      current.forEach(item => expected.set(signature(item), (expected.get(signature(item)) || 0) - 1));
+      if ([...expected.values()].some(count => count < 0)) throw new Error('対象の値が変更されています。もう一度削除してください');
+      if (_dbOptionDeleteConfigKey(getPropertyTypes(dbPath, ctx)?.[propName]) !== _dbOptionDeleteConfigKey(before)) {
+        throw new Error('列設定が変更されています。もう一度削除してください');
+      }
+      await _dbApplyDeletedOptionWrites(current);
+      try { await saveConfig(after); }
+      catch (error) { await _dbRestoreDeletedOptionWrites(current); throw error; }
+      writes = current;
+    };
+    await remove();
+    committed = true;
+    historyPush('選択肢削除: ' + propName + '=' + option,
+      async () => {
+        if (_dbOptionDeleteConfigKey(getPropertyTypes(dbPath, ctx)?.[propName]) !== _dbOptionDeleteConfigKey(after)) {
+          throw new Error('列設定が変更されています。再読み込みして確認してください');
+        }
+        await saveConfig(before);
+        try { await _dbRestoreDeletedOptionWrites(writes); }
+        catch (error) { await saveConfig(after); throw error; }
+        await reload();
+      },
+      async () => { await remove(); await reload(); }, _dbScope(dbPath));
+    await reload();
+    showStatus('選択肢「' + option + '」を削除しました');
+    return true;
+  } catch (error) {
+    showStatus((committed ? '選択肢は削除しましたが、表示更新に失敗: ' : '選択肢の削除に失敗: ') + (error?.message || error), true);
+    return false;
+  }
+}
+
+function appendDbOptionDeleteButton(item, opts) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet db-option-delete';
+  button.dataset.e2eId = 'db-select-option-delete';
+  button.setAttribute('aria-label', opts.option + ' を選択肢から削除');
+  button.title = '選択肢から削除';
+  button.innerHTML = lucide('trash-2', 14);
+  const config = getPropertyTypes(opts.dbPath, opts.ctx)?.[opts.propName] || {};
+  const reason = config.optionSource ? '動的な選択肢は参照元で変更してください'
+    : _dbOptionColorProtectionReason(typeof _dbSchemaProtectionLevel === 'function'
+      ? _dbSchemaProtectionLevel(opts.dbPath, opts.propName) : null);
+  if (reason) { button.disabled = true; button.title = reason; }
+  button.addEventListener('pointerdown', event => event.stopPropagation());
+  button.addEventListener('click', async event => {
+    event.stopPropagation();
+    button.disabled = true;
+    await deleteDbSelectOptionAndSave(opts.dbPath, opts.propName, opts.option, opts.ctx, opts.beforeConfirm);
+    button.disabled = Boolean(reason);
+  });
+  item.classList.add('db-select-option-row');
+  item.appendChild(button);
+  return button;
 }
 
 // プロパティ設定画面: 選択肢の色エディタを描画する。
@@ -156986,7 +157326,7 @@ function _dbLinkShowEditor(initial, anchorEl) {
     const body = document.createElement('div');
     body.className = 'db-link-editor-body';
     body.innerHTML = `
-      <label>種類<select class="gb-select" data-link-kind>
+      <label>種類<select class="gb-select gb-select-medium" data-link-kind>
         <option value="web">Web</option><option value="meldex">Meldex内</option>
         <option value="local-file">PC内ファイル</option><option value="local-folder">PC内フォルダ</option>
       </select></label>
@@ -158053,6 +158393,17 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
+  // 値のあるリレーションは、クリックでもキーボードでも同じ置換エディタを使う。
+  // 空セル用の追加経路では既存選択・解除・逆参照の更新を扱えない。
+  if ((type === 'relation' || type === 'multi-relation') && typeof _showRelationDropdown === 'function') {
+    const values = ((ctx && ctx.pivotData) || state.pivotData)?.entities?.[entityName]?.[propName] || [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(values) : null)
+      || values.find(value => value?.file);
+    if (existing) {
+      _showRelationDropdown(td, existing, entityPath, propName, { ...ptc, __sourceDbPath: dbPath }, type === 'multi-relation');
+      return;
+    }
+  }
   const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link'].includes(type);
   const existingInlineEditor = td.querySelector('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor');
   if (existingInlineEditor) {
@@ -158135,6 +158486,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     // The model/identity still receives the save result. Its older UI callback
     // must not replace an editor opened while that request was in flight.
     if (!ownsInlineEditor()) return true;
+    // 保存待ちの間に候補色などが変更されるため、編集開始時の設定で再描画しない。
+    ptc = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null) || ptc;
     let refreshed = false;
     if (isRelationType) {
       refreshRelationCellNow(affectedProps || []);
@@ -158190,9 +158543,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         || ('option_' + Date.now().toString(36));
     });
     const nextConfig = { ...latest, type, options: merged, option_ids: optionIds };
-    ptc = { ...nextConfig };
     try {
-      await Promise.resolve(setPropertyType(dbPath, propName, nextConfig, ctx));
+      const saved = await Promise.resolve(setPropertyType(dbPath, propName, nextConfig, ctx));
+      if (saved === false) throw new Error('保護されている列のため変更できません');
+      ptc = (getPropertyTypes(dbPath, ctx) || {})[propName] || nextConfig;
       return true;
     } catch (e) {
       showStatus('選択肢の保存に失敗: ' + (e?.message || e), true);
@@ -158649,6 +159003,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       refreshCellDisplayNow([], oldValue);
       cancel();
+      if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       reportCommonTagPartialSave(saveOptions.createdTagNames);
     }
   };
@@ -158750,7 +159105,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
           if (dot) item.appendChild(dot);
         }
-        item.appendChild(document.createTextNode(opt));
+        const label = document.createElement('span');
+        label.className = 'db-select-option-label'; label.textContent = opt;
+        item.appendChild(label);
+        if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+          { dbPath, propName, option: opt, ctx, beforeConfirm: () => closeMultiSelectDropdown(true) });
         item._ddActivate = () => toggleValue(opt);
         item.addEventListener('click', () => toggleValue(opt));
         listDiv.appendChild(item);
@@ -159092,12 +159451,15 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (shouldCancel) cancel();
     };
     dd.addEventListener('db-dropdown-cancel', () => closeSelectDropdown(true));
-    // 解除（入力キャンセル）
+    // 解除は候補値を削除する。マルチセレクトと同じ保存・復旧・Undo経路を通す。
     const clearItem = document.createElement('div');
     clearItem.className = 'status-dropdown-item status-dropdown-clear';
     clearItem.style.cssText = 'color:var(--fg2);font-style:italic;';
     clearItem.textContent = '解除';
-    clearItem.addEventListener('click', () => { closeSelectDropdown(true); });
+    clearItem.addEventListener('click', () => {
+      closeSelectDropdown(false);
+      saveMultiSelectAndRestore('', null);
+    });
     dd.appendChild(clearItem);
     // 候補 = スキーマ登録済み選択肢 + 列内で実際に使われている値（スキーマ未登録分）。
     // 行ごとに候補が変わる動的選択肢列（optionSource）では他行の値を混ぜない。
@@ -159117,7 +159479,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
         if (dot) item.appendChild(dot);
       }
-      item.appendChild(document.createTextNode(opt));
+      const label = document.createElement('span');
+      label.className = 'db-select-option-label'; label.textContent = opt;
+      item.appendChild(label);
+      if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+        { dbPath, propName, option: opt, ctx, beforeConfirm: () => closeSelectDropdown(true) });
       item.addEventListener('click', () => { closeSelectDropdown(false); saveSelectAndRestore(opt, null); });
       dd.appendChild(item);
     });
@@ -160591,6 +160957,8 @@ function _dbCancelNativeEditorForSheetShortcut(e) {
 
 function _dbShortcutShouldCloseTransientUi(e) {
   if (!e) return false;
+  // 選択肢のDeleteはポップアップ側へ渡し、背後のセル削除へ流さない。
+  if (e.key === 'Delete' && document.querySelector('.status-dropdown .db-option-delete:not(:disabled)')) return false;
   // ドロップダウンの検索・新規値入力欄やメニュー内のリネーム入力にフォーカスがある間は、
   // Delete/Backspace/Ctrl+C/V をネイティブのテキスト編集として扱い、ポップアップを閉じない。
   const _ae = document.activeElement;
@@ -162440,9 +162808,8 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
 function createValueElement(val, entityPath, propName, thumbSize, options = {}) {
   const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
   if (val && entityPath) val.entry_path = _cellUiNormalizePath(entityPath);
-  const filterMode = options.filter ?? options.ctx?.filter ?? (dbPath === state.currentDbPath ? state.filter : 'disabled');
   const row = document.createElement('div');
-  row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
+  row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   row.style.position = 'relative';
   _setupCellValueDrag(row, val, entityPath, propName);
 
@@ -162468,9 +162835,8 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
   row.addEventListener('mouseleave', () => { moreBtn.style.display = 'none'; });
 
-  // Status dot（採用状況フィルタ無効時 or DB側でステータス機能 OFF の場合は非表示）。
-  // ただし候補値が2つ以上あるセル（forceStatusDot）は、区別のためステータス機能OFFでも表示する。
-  if ((filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
+  // 候補数や絞り込みモードにかかわらず、シートのON/OFFに従う。
+  if (getStatusEnabled(dbPath)) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     const _stColor = _getStatusColor(val.status, dbPath);
@@ -163455,11 +163821,15 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     }
     if (_cellUiIsComposing(e)) return;
     if (_cellUiConsumeImeBoundaryKey(e)) return;
-    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Tab'].includes(e.key)) return;
+    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Tab', 'Delete'].includes(e.key)) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) return;
+    if (e.key === 'Delete' && (e.ctrlKey || e.metaKey || e.altKey)) return;
     // 検索・新規値入力欄では左右キーを候補移動に奪わず、通常のキャレット移動に任せる。
     // 上下キーと Enter/Tab は候補ナビゲーションとして引き続き扱う。
     const targetTag = String(e.target?.tagName || '').toUpperCase();
+    if (e.key === 'Delete' && (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || e.target?.isContentEditable)) return;
+    // 行内の削除・色設定ボタンでは、Enter/Tabを候補の選択へ置き換えない。
+    if (targetTag === 'BUTTON' && dd.contains(e.target) && e.key !== 'Escape') return;
     if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
         && (targetTag === 'INPUT' || targetTag === 'TEXTAREA')) return;
     bindItems();
@@ -163498,6 +163868,9 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       const activeItem = items[activeIdx];
       if (activeItem && typeof activeItem._ddActivate === 'function') activeItem._ddActivate();
       else if (activeItem) activeItem.click();
+    } else if (e.key === 'Delete') {
+      const deleteButton = items[activeIdx]?.querySelector('.db-option-delete');
+      if (deleteButton && !deleteButton.disabled) deleteButton.click();
     } else if (e.key === 'Escape') {
       try { dd.dispatchEvent(new CustomEvent('db-dropdown-cancel')); } catch {}
       closeAllDropdowns(dd);
@@ -163918,17 +164291,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   const row = document.createElement('div');
-  row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
+  row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
 
-  // リレーションはロールアップの参照可否にも使うため、常にステータスを変更できるようにする。
-  // その他の型は、採用状況フィルタ使用時または候補値が複数ある場合だけ表示する。
-  // ただし1セル1値で運用するシート（制作管理）ではリレーション特例を適用しない。適用すると
-  // リレーション列だらけのシートで「ステータス機能」の設定に関係なくマークが出続ける。
-  // そのシートで「ステータス機能」をオンにした場合は従来どおり出す（hidesCandidateStatusUi）。
-  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-  const relationStatusEditable = !hideStatusUi && (type === 'relation' || type === 'multi-relation');
-  if (relationStatusEditable || (filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
+  // 列型・候補数による例外を設けず、シートのON/OFFに従う。
+  if (getStatusEnabled(dbPath)) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     dot.style.background = _getStatusColor(val.status, dbPath);
@@ -164079,25 +164446,23 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (typeof openColorPalette !== 'function') return;
-      let saveTimer = null;
-      openColorPalette(swatch, v || '', (color) => {
+      openColorPalette(swatch, val.value || '', (color) => {
         applyColor(color); // ライブでスウォッチへ反映
-        clearTimeout(saveTimer);
         const persistColor = async () => {
-          if (!swatch.isConnected) return;
-          const drawer = swatch.closest?.('#cloud-mobile-side-drawer');
-          if (drawer && !drawer.classList.contains('open')) return;
           if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(swatch)) {
-            saveTimer = setTimeout(persistColor, 120);
+            applyColor(val.value || '');
             return;
           }
+          const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
+          if (lockMsg) { applyColor(val.value || ''); showStatus(lockMsg, true); return; }
           const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
-          if (nv === (v || '')) return;
+          const oldColor = val.value || '';
+          if (nv === oldColor) return;
           try {
             const hasExisting = val?.file && val.candidate_index != null;
             if (hasExisting) {
               await _apiPutValue(val, { new_value: nv });
-              _dbUndoValue(propName + ': ' + (v || '') + ' → ' + nv, val, v, nv);
+              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv);
             } else {
               const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
               val.file = result?.path || entityPath;
@@ -164114,9 +164479,12 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
             }
             val.value = nv;
             if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(swatch, entityPath, propName);
-          } catch (err) { showStatus('保存に失敗: ' + (err?.message || err), true); }
+          } catch (err) {
+            applyColor(val.value || '');
+            showStatus('保存に失敗: ' + (err?.message || err), true);
+          }
         };
-        saveTimer = setTimeout(persistColor, 250);
+        scheduleDbColorSave(swatch, dbPath, persistColor);
       });
     });
     row.appendChild(swatch);
@@ -165087,7 +165455,6 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       msg.style.cssText = 'padding:8px;color:var(--fg2);font-size:12px;text-align:center;';
       msg.textContent = 'ユーザーが登録されていません。設定 → ユーザーで登録してください';
       dd.appendChild(msg);
-      return;
     }
 
     const filtered = filter
@@ -165134,7 +165501,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       dd.appendChild(confirmBtn);
     }
 
-    if (!isMulti && currentValue) {
+    if (currentValue) {
       const clearBtn = document.createElement('div');
       clearBtn.className = 'user-clear-btn';
       clearBtn.style.cssText = 'padding:4px 8px;text-align:center;cursor:pointer;font-size:11px;color:var(--fg2);border-top:1px solid var(--border);margin-top:4px;';
@@ -165480,8 +165847,10 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
             const oldPairOp = await _syncPairRelation(relDb, oldVal, ptc.pairWith, selfId, false);
             if (oldPairOp?.undo) syncRollbackOps.push(oldPairOp.undo);
           }
-          const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
-          if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
+          if (entry.id) {
+            const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
+            if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
+          }
         }
         if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
           const bidirectionalOp = await _applyBidirectionalRelationSync({
@@ -165514,7 +165883,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         await _valueEditorReload(sourceDbPath, sourceCtx);
         return;
       }
-      if (isSelfRef) {
+      if (isSelfRef && entry.id) {
         const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
         const selfMap = _relationCache[relDb];
         const selfIdForCycle = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
@@ -165549,6 +165918,15 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
   renderList('');
   search.oninput = () => renderList(search.value);
   dd.appendChild(listDiv);
+
+  if (!isMulti && val?.value) {
+    const clearItem = document.createElement('div');
+    clearItem.className = 'dd-nav-item status-dropdown-clear';
+    clearItem.textContent = '選択を解除';
+    clearItem._ddActivate = () => selectRelationEntry({ id: '', name: '' });
+    clearItem.addEventListener('click', clearItem._ddActivate);
+    dd.appendChild(clearItem);
+  }
 
   // 複数選択の確定ボタン
   if (isMulti) {
@@ -165746,7 +166124,12 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
       const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(latestConfig, opt) : '');
       if (dot) item.appendChild(dot);
     }
-    item.appendChild(document.createTextNode(opt));
+    const label = document.createElement('span');
+    label.className = 'db-select-option-label'; label.textContent = opt;
+    item.appendChild(label);
+    if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+      { dbPath: sourceDbPath, propName, option: opt, ctx: sourceCtx,
+        beforeConfirm: () => closeAllDropdowns(sourceCtx || el) });
     if (val.value === opt) item.classList.add('selected');
     item.addEventListener('click', async () => {
       closeAllDropdowns(sourceCtx || el);
@@ -167868,7 +168251,7 @@ if (typeof window !== 'undefined') {
       const row = document.createElement('label'); row.textContent = label; input.className = 'gb-input'; input.setAttribute('aria-label', label); row.appendChild(input); popup.appendChild(row);
     }
     if (typeof _attachDbPicker === 'function') _attachDbPicker(path, ctx.dbPath);
-    const relation = document.createElement('select'); relation.className = 'gb-select'; relation.setAttribute('aria-label', '親トピックを参照する列');
+    const relation = document.createElement('select'); relation.className = 'gb-select gb-select-column'; relation.setAttribute('aria-label', '親トピックを参照する列');
     const fields = document.createElement('div'); fields.className = 'gb-form-subform-columns';
     fields.setAttribute('role', 'group'); fields.setAttribute('aria-label', '表示する列');
     const relationRow = document.createElement('label'); relationRow.append(document.createTextNode('親トピックを参照する列'), relation);
@@ -172102,7 +172485,7 @@ function _dbRollupLineElement(text, className) {
   return line;
 }
 
-function _dbRenderAlignedRollupCell(record, slotCounts) {
+function _dbRenderAlignedRollupCell(record, slotCounts, ctx) {
   const { host, result, visible } = record;
   host.innerHTML = '';
   host.className = 'db-cell-display-text db-rollup-lines';
@@ -172115,7 +172498,9 @@ function _dbRenderAlignedRollupCell(record, slotCounts) {
     const count = slotCounts[groupIndex] || 1;
     for (let lineIndex = 0; lineIndex < count; lineIndex++) {
       const line = _dbRollupLineElement(group.values[lineIndex] || '', 'db-rollup-line');
-      line.dataset.relationStatus = group.relationStatus || '採用';
+      if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
+        line.dataset.relationStatus = group.relationStatus || '採用';
+      }
       host.appendChild(line);
     }
   });
@@ -172137,6 +172522,7 @@ function _dbRelationAlignmentLinkTarget(relationCell, groupIndex) {
 }
 
 function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
+  if (!getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) return false;
   const relationCell = statusDot?.closest('td[data-prop-name]');
   if (!relationCell) return false;
   const candidateIndex = Number.parseInt(statusDot.dataset.relationCandidateIndex || '0', 10);
@@ -172224,17 +172610,19 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
         line.dataset.dbPath = firstRollup.result.targetDbPath || '';
         line.dataset.entityId = group.relationId || '';
         line.dataset.entityName = group.relationName || group.relationId || '';
-        line.dataset.relationStatus = group.relationStatus || '採用';
-        const statusDot = document.createElement('span');
-        statusDot.className = 'status-dot db-rollup-relation-status';
-        statusDot.style.background = typeof _getStatusColor === 'function'
-          ? _getStatusColor(group.relationStatus || '採用', ctx?.dbPath || '')
-          : '';
-        statusDot.title = group.relationStatus || '採用';
-        statusDot.dataset.relationCandidateIndex = String(
-          Number.isInteger(group.relationCandidateIndex) ? group.relationCandidateIndex : 0
-        );
-        line.prepend(statusDot);
+        if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
+          line.dataset.relationStatus = group.relationStatus || '採用';
+          const statusDot = document.createElement('span');
+          statusDot.className = 'status-dot db-rollup-relation-status';
+          statusDot.style.background = typeof _getStatusColor === 'function'
+            ? _getStatusColor(group.relationStatus || '採用', ctx?.dbPath || '')
+            : '';
+          statusDot.title = group.relationStatus || '採用';
+          statusDot.dataset.relationCandidateIndex = String(
+            Number.isInteger(group.relationCandidateIndex) ? group.relationCandidateIndex : 0
+          );
+          line.prepend(statusDot);
+        }
         line.addEventListener('click', (event) => {
           if (event.target.closest('.db-rollup-relation-status')) return;
           event.stopPropagation();
@@ -172277,7 +172665,7 @@ function _dbUpdateRollupAlignment(ctx, entityName, relationProp) {
       ...results.map(result => result.groups[groupIndex]?.values?.length || 1)
     );
   });
-  rowRecord.rollups.forEach(record => _dbRenderAlignedRollupCell(record, slotCounts));
+  rowRecord.rollups.forEach(record => _dbRenderAlignedRollupCell(record, slotCounts, ctx));
   _dbRenderAlignedRelationCell(rowRecord, relationProp, reference?.groups || [], slotCounts, ctx);
 }
 
@@ -172319,7 +172707,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
   const rawValues = entityData && Object.prototype.hasOwnProperty.call(entityData, propName) && Array.isArray(entityData[propName])
     ? entityData[propName]
     : [];
-  let values = filterValues(rawValues, undefined, ctx?.filter);
+  let values = filterValues(rawValues, undefined, ctx?.filter, dbPath);
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   let colorValues = values;
 
@@ -172516,19 +172904,13 @@ function renderEntityCell(entityName, propName, ctx, options) {
     }
     container.appendChild(span);
   } else {
-    // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。1セル1値で運用する
-    // シート（制作管理）は対象外。ただしそのシートで「ステータス機能」をオンにした場合は
-    // 従来どおり出す（hidesCandidateStatusUi）。
-    const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-    const _forceStatusDot = values.length > 1 && !_hideStatusUi;
     if (ptc?.type === 'multi-link' && typeof sortDbMultiLinkValues === 'function') {
       values = sortDbMultiLinkValues(values);
     }
     values.forEach(val => {
       container.appendChild(
-        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
-            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
+        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter })
+            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter })
       );
     });
 
@@ -174864,6 +175246,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       // 同一シートの再描画（forceReload 等）では、直前にユーザーが選んだフィルタを維持する。
       ctx.filter = ctx.filter || (syncGlobalState ? state.filter : '') || 'disabled';
     }
+    if (typeof _dbStatusFilterMode === 'function') ctx.filter = _dbStatusFilterMode(dbPath, ctx.filter);
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
@@ -175058,21 +175441,22 @@ async function selectEntity(entityPath, opts) {
    フィルタ
    ============================== */
 function setFilter(f, options = {}) {
-  const nextFilter = f || 'disabled';
   const ctx = options.ctx || null;
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
+  const requestedFilter = f || 'disabled';
+  const nextFilter = typeof _dbStatusFilterMode === 'function' ? _dbStatusFilterMode(dbPath, requestedFilter) : requestedFilter;
   if (ctx) ctx.filter = nextFilter;
   if (!ctx || dbPath === state.currentDbPath) state.filter = nextFilter;
   if (dbPath && typeof _saveCurrentDbViewField === 'function') {
     _saveCurrentDbViewField(dbPath, '', '', { skipHistory: true, ctx }, (v) => {
-      v.filter = nextFilter;
+      v.filter = requestedFilter;
     });
   }
   _updateFilterBadge({ dbPath, filter: nextFilter, ctx });
   if (!options.skipReload && dbPath) selectDatabase(dbPath, ctx || undefined);
 }
 
-function filterValues(values, status, filterMode) {
+function filterValues(values, status, filterMode, dbPath) {
   if (!values) return [];
   // 第2引数 status 指定時は、その特定ステータスのみを返す（候補値書き換え時のガードレール用途）
   // status 未指定時は state.filter (adopted/nobotsu/all) に従ってステータスフィルタを適用
@@ -175080,7 +175464,8 @@ function filterValues(values, status, filterMode) {
     return values.filter(v => (v?.status || '採用') === status);
   }
   let result = values;
-  const mode = filterMode == null ? state.filter : filterMode;
+  const requestedMode = filterMode == null ? state.filter : filterMode;
+  const mode = typeof _dbStatusFilterMode === 'function' ? _dbStatusFilterMode(dbPath, requestedMode) : requestedMode;
   // ステータスフィルタのみ適用（高度フィルタはプロパティ名が必要なためapplyAdvancedFiltersで適用）
   if (mode === 'adopted') result = result.filter(v => v.status === '採用' || v.status === '掲載済み');
   else if (mode === 'nobotsu') result = result.filter(v => v.status !== 'ボツ');
@@ -176047,14 +176432,14 @@ function _showBulkEditModal(entityNames, ctx) {
     : null;
   const body = document.createElement('div');
   body.innerHTML = `<div class="db-bulk-edit-selection-summary" style="margin:0 0 8px;color:var(--fg2);font-size:12px;line-height:20px;min-height:20px;max-height:80px;overflow-y:auto;flex:0 0 auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
-    <div class="field"><label>列</label>
-      <select id="bulk-edit-prop" style="width:100%;padding:4px;">
+    <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-prop">列</label>
+      <select id="bulk-edit-prop" class="gb-select gb-select-column">
         ${editableProps.map(p => `<option value="${esc(p)}">${esc(p)} (${esc(propTypes[p]?.type || 'text')})</option>`).join('')}
       </select>
     </div>
-    <div class="field"><label>値</label><div id="bulk-edit-value-container"></div></div>
-    ${statusOn ? `<div class="field"><label>ステータス</label>
-      <select id="bulk-edit-status" style="width:100%;padding:4px;">
+    <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-value">値</label><div id="bulk-edit-value-container"></div></div>
+    ${statusOn ? `<div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-status">ステータス</label>
+      <select id="bulk-edit-status" class="gb-select gb-select-column">
         <option value="案">案</option>
         <option value="採用" selected>採用</option>
         <option value="ボツ">ボツ</option>
@@ -176112,7 +176497,7 @@ function _showBulkEditModal(entityNames, ctx) {
       }
       const select = document.createElement('select');
       select.id = 'bulk-edit-value';
-      select.style.cssText = baseStyle;
+      select.className = 'gb-select gb-select-column';
       select.innerHTML = '<option value="">(未設定)</option>' + [...vals].map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
       container.appendChild(select);
     } else if (ptc.type === 'multi-select') {
@@ -176134,7 +176519,7 @@ function _showBulkEditModal(entityNames, ctx) {
     } else if (ptc.type === 'checkbox') {
       const select = document.createElement('select');
       select.id = 'bulk-edit-value';
-      select.style.cssText = baseStyle;
+      select.className = 'gb-select gb-select-column';
       select.innerHTML = '<option value="true">ON (true)</option><option value="false">OFF (false)</option>';
       container.appendChild(select);
     } else if (ptc.type === 'date') {
@@ -176179,7 +176564,7 @@ function _showBulkEditModal(entityNames, ctx) {
       if (ptc.type === 'relation') {
         const select = document.createElement('select');
         select.id = 'bulk-edit-value';
-        select.style.cssText = baseStyle;
+        select.className = 'gb-select gb-select-column';
         select.innerHTML = '<option value="">(未選択)</option>' + entryList.map(entry => `<option value="${esc(entry.id)}">${esc(entry.name)}</option>`).join('');
         container.appendChild(select);
       } else {
@@ -176209,7 +176594,7 @@ function _showBulkEditModal(entityNames, ctx) {
       if (ptc.type === 'user') {
         const select = document.createElement('select');
         select.id = 'bulk-edit-value';
-        select.style.cssText = baseStyle;
+        select.className = 'gb-select gb-select-column';
         select.innerHTML = '<option value="">(未選択)</option>' + users.map(user => `<option value="${esc(user)}">${esc(user)}</option>`).join('');
         container.appendChild(select);
       } else {
@@ -180671,7 +181056,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverri
   const entityNameLabel = _dbFormEditorLabel('トピック名にするフィールド', 'gb-form-entity-name-prop');
   const entityNameSelect = document.createElement('select');
   entityNameSelect.id = 'gb-form-entity-name-prop';
-  entityNameSelect.className = 'gb-select gb-form-select';
+  entityNameSelect.className = 'gb-select gb-select-column gb-form-select';
   entityNameSelect.dataset.e2eId = _dbFormControlIdentity(cfg, 'entity-name', 'select');
   [''].concat(cfg.fields || []).forEach(prop => {
     const option = document.createElement('option');
@@ -181625,7 +182010,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const thumbnailSize = activeView?.thumbnailSize || 'small';
   const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
-    const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
+  const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
       : (cfg.defaultPanel || 'right-sidebar');
 
@@ -181636,46 +182021,55 @@ async function _showDbConfigModal(dbPath, ctx) {
   content.className = 'db-config-modal-body';
   content.innerHTML = `
       <div class="field">
-        <label>トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
-        <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
+        <label for="dbcfg-name-template">トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
+        <input id="dbcfg-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
       </div>
-      <div class="field" style="margin-top:8px;">
-        <label>ステータス一覧</label>
-        <div id="dbcfg-status-list" style="font-size:12px;"></div>
-        <button id="dbcfg-add-status" style="font-size:11px;margin-top:4px;padding:2px 8px;">+ ステータス追加</button>
+      <div class="field">
+        <div class="gb-check-help-row">
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox" aria-controls="dbcfg-status-editor" aria-expanded="${statusOn}"${statusOn ? ' checked' : ''}> ステータス機能</label>
+          ${fieldHelp('OFFではステータスマークを表示せず、ロールアップもステータスで絞り込みません。保存済みのステータスは保持され、ONに戻すと再び使えます', { e2eId: 'dbcfg-status-help' })}
+        </div>
+        <div id="dbcfg-status-editor" class="dbcfg-section-content"${statusOn ? '' : ' hidden'}>
+          <label>ステータス一覧</label>
+          <div id="dbcfg-status-list"></div>
+          <button type="button" id="dbcfg-add-status" class="gb-btn gb-btn-sm">${lucide('plus', 14)} ステータス追加</button>
+        </div>
       </div>
-      <div class="field dbcfg-display-settings" style="margin-top:8px;">
+      <div class="field dbcfg-display-settings">
         <label>表示設定</label>
+        <div class="dbcfg-section-content">
         <div class="dbcfg-display-grid">
-          <label class="dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
-          <label class="dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
-          <label class="dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox"${statusOn ? ' checked' : ''}> ステータス機能</label>
-          <label class="dbcfg-inline-field">サムネイル
-            <select id="dbcfg-thumbnail-size">
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
+          <div class="dbcfg-inline-field gb-field-select-row">
+            <label for="dbcfg-thumbnail-size">サムネイル</label>
+            <select id="dbcfg-thumbnail-size" class="gb-select">
               <option value="small"${thumbnailSize !== 'large' ? ' selected' : ''}>小</option>
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
-          </label>
-          <div class="dbcfg-inline-field">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
-            <select id="dbcfg-default-panel">
+          </div>
+          <div class="dbcfg-inline-field gb-field-select-row">
+            <label for="dbcfg-default-panel">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}</label>
+            <select id="dbcfg-default-panel" class="gb-select">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>右サイドバー</option>
             </select>
           </div>
         </div>
         <div class="dbcfg-display-actions">
-          <button type="button" id="dbcfg-grid-border">枠線設定...</button>
-          <button type="button" id="dbcfg-conditional-color">条件付きカラー...</button>
+          <button type="button" id="dbcfg-grid-border" class="gb-btn gb-btn-sm">枠線設定...</button>
+          <button type="button" id="dbcfg-conditional-color" class="gb-btn gb-btn-sm">条件付きカラー...</button>
+        </div>
         </div>
       </div>
-      <div class="field" style="margin-top:8px;">
+      <div class="field">
         <label>依存トピック作成時のコピー対象</label>
-        <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
+        <div id="dbcfg-copy-props" class="dbcfg-section-content"></div>
       </div>
-      <div class="field" style="margin-top:8px;">
+      <div class="field">
         <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
-        <div class="dbcfg-display-actions">
-          <button type="button" id="dbcfg-attachments">添付ファイルを整理...</button>
+        <div class="dbcfg-display-actions dbcfg-section-content">
+          <button type="button" id="dbcfg-attachments" class="gb-btn gb-btn-sm">添付ファイルを整理...</button>
         </div>
       </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>`;
@@ -181684,7 +182078,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const footerSpacer = document.createElement('span');
   footerSpacer.style.flex = '1';
   const cancelButton = document.createElement('button');
-  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm gb-btn-quiet'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.id = 'dbcfg-save'; saveButton.textContent = '保存';
   let busy = false;
@@ -181705,7 +182099,11 @@ async function _showDbConfigModal(dbPath, ctx) {
   modalApi.modal.classList.add('db-config-modal');
   modalApi.modal.style.width = 'min(780px, calc(100vw - 24px))';
   modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
-  content.querySelectorAll('.dbcfg-check-row').forEach(row => { row.style.minHeight = '44px'; });
+  const statusToggle = content.querySelector('#dbcfg-status-enabled');
+  statusToggle.addEventListener('change', () => {
+    content.querySelector('#dbcfg-status-editor').hidden = !statusToggle.checked;
+    statusToggle.setAttribute('aria-expanded', String(statusToggle.checked));
+  });
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
 
   function openChildDialog(trigger, launch) {
@@ -181751,7 +182149,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     const row = document.createElement('div');
     row.dataset.originalStatusName = name || '';
     row.dataset.statusId = statusId || globalThis.GbDbSchemaMutation?.newId?.('status') || '';
-    row.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:3px;';
+    row.className = 'dbcfg-status-row';
     // カラースウォッチ（共通カラーパレット）
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -181766,16 +182164,20 @@ async function _showDbConfigModal(dbPath, ctx) {
     const nameInput = document.createElement('input');
     nameInput.type = 'text'; nameInput.value = name || '';
     nameInput.placeholder = 'ステータス名';
-    nameInput.style.cssText = 'flex:1;padding:2px 4px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;';
-    nameInput.className = 'dbcfg-st-name';
+    nameInput.className = 'gb-input dbcfg-st-name';
+    nameInput.setAttribute('aria-label', 'ステータス名 ' + (name || index + 1));
     nameInput.dataset.e2eId = rowKey + '-name';
     row.appendChild(nameInput);
     const delBtn = document.createElement('button');
-    delBtn.innerHTML = lucide('x', 12); delBtn.title = '削除';
+    delBtn.type = 'button';
+    delBtn.className = 'gb-btn gb-btn-icon gb-btn-danger';
+    delBtn.innerHTML = lucide('trash-2', 14); delBtn.title = '削除';
     delBtn.dataset.e2eId = rowKey + '-delete';
     delBtn.setAttribute('aria-label', 'ステータスを削除 ' + (name || index + 1));
-    delBtn.style.cssText = 'padding:1px 6px;font-size:12px;cursor:pointer;color:var(--fg2);';
-    delBtn.addEventListener('click', () => row.remove());
+    delBtn.addEventListener('click', async () => {
+      if (row.dataset.originalStatusName && !await cfConfirm(`ステータス「${nameInput.value || name}」を一覧から削除しますか？`)) return;
+      row.remove();
+    });
     row.appendChild(delBtn);
     return { row, nameInput };
   }
@@ -181805,7 +182207,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     if (!['relation', 'multi-relation', 'select', 'multi-select', 'number'].includes(ptc.type || '')) continue;
     const checked = hasSavedCopyProps ? currentCopy.includes(p) : defaultCopy.includes(p);
     const lbl = document.createElement('label');
-    lbl.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 0;cursor:pointer;';
+    lbl.className = 'gb-check dbcfg-check-row';
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.checked = checked; cb.dataset.prop = p;
     lbl.appendChild(cb);
@@ -185045,7 +185447,6 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null,
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = 'preview';
-  overlay.style.zIndex = '130';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   overlay._dbTemplateSetBusy = (next) => {
@@ -186011,7 +186412,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = 'gallery';
-  overlay.style.zIndex = '120';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   overlay._dbTemplateSetBusy = (next) => {
@@ -186328,7 +186728,6 @@ function _showDbTemplateFormModal(options) {
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = mode;
-  overlay.style.zIndex = '120';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   modal.dataset.e2eId = 'db-template-' + mode + '-dialog';
@@ -190105,7 +190504,7 @@ function _elShowCellInspector(anchor, ctx) {
   const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup el-cell-inspector';
   popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'セル一覧・設定');
   const types = { field: '列', label: '見出し', image: '画像', divider: '罫線', chart: 'チャート', subform: '繰り返し項目' };
-  const select = document.createElement('select'); select.className = 'gb-input'; select.setAttribute('aria-label', '設定するセル');
+  const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', '設定するセル');
   ctx.layout.cells.forEach((cell, index) => select.add(new Option(`${index + 1}. ${types[cell.type] || cell.type}: ${cell.prop || cell.text || cell.subform?.title || ''}`, cell.id)));
   select.value = ctx.session.selectedIds?.[0] || ctx.layout.cells[0]?.id || '';
   popup.appendChild(select);
@@ -190133,7 +190532,7 @@ function _elShowCellInspector(anchor, ctx) {
     }
     let prop, text;
     if (cell.type === 'field') {
-      prop = document.createElement('select');
+      prop = document.createElement('select'); prop.className = 'gb-select gb-select-column';
       const names = [...new Set([cell.prop, ...Object.keys(ctx.propTypes || {})])].filter(Boolean);
       names.forEach(name => prop.add(new Option(name + (ctx.propTypes[name] ? '' : '（シートにない列）'), name)));
       prop.value = cell.prop || ''; row('参照する列', prop);
@@ -190915,6 +191314,8 @@ async function _rollupBuildValuesResult(refs, targetData, targetDbPath, relation
  * 1エントリのロールアップ値を計算する
  */
 async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath, filterMode) {
+  filterMode = typeof _dbStatusFilterMode === 'function'
+    ? _dbStatusFilterMode(sourceDbPath || state.currentDbPath || '', filterMode) : filterMode;
   const { relationProp, targetProp } = rollupConfig;
   const aggregation = _rollupEffectiveAggregation(rollupConfig);
   const { names, refs, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
@@ -190971,6 +191372,8 @@ async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes,
  * @returns {Promise<Map<string, string|number>>} entityName → 集計値
  */
 async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath, filterMode) {
+  filterMode = typeof _dbStatusFilterMode === 'function'
+    ? _dbStatusFilterMode(sourceDbPath || state.currentDbPath || '', filterMode) : filterMode;
   const { relationProp, targetProp } = rollupConfig;
   const aggregation = _rollupEffectiveAggregation(rollupConfig);
   const results = new Map();
@@ -192481,9 +192884,10 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
   // ルール名
   const nameField = document.createElement('div');
   nameField.className = 'field';
-  nameField.innerHTML = '<label>ルール名</label>';
+  nameField.innerHTML = '<label for="vr-rule-name">ルール名</label>';
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
+  nameInput.className = 'gb-input';
   nameInput.id = 'vr-rule-name';
   nameInput.dataset.e2eId = 'validation-editor-name';
   nameInput.value = rule.label;
@@ -192493,9 +192897,10 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
 
   // ルールタイプ
   const typeField = document.createElement('div');
-  typeField.className = 'field';
-  typeField.innerHTML = '<label>タイプ</label>';
+  typeField.className = 'field gb-field-select-row';
+  typeField.innerHTML = '<label class="gb-label" for="vr-rule-type">タイプ</label>';
   const typeSel = document.createElement('select');
+  typeSel.className = 'gb-select gb-select-column';
   typeSel.id = 'vr-rule-type';
   typeSel.dataset.e2eId = 'validation-editor-type';
   typeSel.setAttribute('aria-label', 'バリデーションルールタイプ');
@@ -192623,7 +193028,8 @@ function _validationRuleConfigErrors(type, config, label) {
 }
 
 function _fieldSelect(label, id, options, selected) {
-  let html = '<div class="field"><label>' + esc(label) + '</label><select id="' + id + '">';
+  const sizeClass = id === 'vr-op' ? 'gb-select-short' : 'gb-select-column';
+  let html = '<div class="field gb-field-select-row"><label class="gb-label" for="' + id + '">' + esc(label) + '</label><select class="gb-select ' + sizeClass + '" id="' + id + '">';
   html += '<option value="">選択...</option>';
   options.forEach(o => {
     const val = typeof o === 'string' ? o : (o.key || String(o));
@@ -192895,7 +193301,8 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
       const fieldId = `db-action-field-${seq}-${i}`;
       html += `<div style="margin-bottom:8px;"><label for="${fieldId}" style="font-size:12px;color:var(--fg2);">${esc(field.property)}${field.required ? ' *' : ''}</label>`;
       if (field.type === 'select' && field.options) {
-        html += `<select id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" class="gb-select" style="width:100%;">`;
+        const sizeClass = field.options.every(option => Array.from(String(option)).length <= 8) ? 'gb-select-medium' : 'gb-select-column';
+        html += `<select id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" class="gb-select ${sizeClass}">`;
         html += '<option value="">-- 選択 --</option>';
         field.options.forEach(opt => { html += `<option value="${esc(opt)}">${esc(opt)}</option>`; });
         html += '</select>';
@@ -197560,6 +197967,18 @@ async function _handleEventDrop(dbPath,e,targetDate,opts) {
 
 // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
 // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、§5.8-2）。
+function _styleCalendarDbDialogControls(root) {
+  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => el.classList.add('gb-input'));
+  root.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
+  root.querySelectorAll('select').forEach(el => {
+    el.classList.add('gb-select');
+    if (el.classList.contains('gb-select-sm')) return;
+    const short = el.options.length && Array.from(el.options).every(option => Array.from(option.textContent).length <= 8)
+      && !/creator|team|calendar/.test(el.id);
+    el.classList.add(short ? 'gb-select-medium' : 'gb-select-column');
+  });
+}
+
 async function _calendarLoadUserChoices() {
   if (window.MeldexUserPicker) {
     try {
@@ -197913,6 +198332,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='ep-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-event-edit',title:isNew?'新規イベント':'イベント編集',body:[...content.childNodes],
     footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-event-edit',
@@ -198007,6 +198427,7 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='tk-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-todo',title:isNew?'新規ToDo':'ToDo編集',body:[...content.childNodes],
     footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-todo',
@@ -198339,6 +198760,7 @@ async function _showTemplateModal(dbPath, options = {}) {
   const createButton=document.createElement('button');createButton.type='button';createButton.id='tmpl-create';createButton.className='gb-btn gb-btn-sm';createButton.textContent='新規テンプレート';
   const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='tmpl-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','週間テンプレートを閉じる');
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-list',title:'週間テンプレート',body:[...content.childNodes],footer:[createButton,closeButton],
     variant:'standard',geometryKey:'calendar-db-template-list',minWidth:'0',initialFocus:'#tmpl-create',
@@ -198422,6 +198844,7 @@ async function _editTemplate(dbPath, tid, options = {}) {
   const cancelButton=document.createElement('button');cancelButton.type='button';cancelButton.id='tmpl-cancel';cancelButton.className='gb-btn gb-btn-sm';cancelButton.textContent='キャンセル';
   const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tmpl-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent='保存';
   let busy=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-edit',title:`テンプレート編集: ${t.name}`,body:[...content.childNodes],footer:[cancelButton,saveButton],
     variant:'standard',geometryKey:'calendar-db-template-edit',minWidth:'0',initialFocus:'#tmpl-name',
@@ -198460,10 +198883,10 @@ function _templateEntryRow(entry) {
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">
       ${_dayLabels.map((d,i) => `<option value="${i}" ${(entry?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}
     </select>
-    <input type="time" data-field="startTime" value="${esc(entry?.startTime||'09:00')}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-    <input type="number" data-field="duration" value="${esc(entry?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
+    <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(entry?.startTime||'09:00')}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(entry?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
     <span style="color:var(--fg2);">分</span>
-    <input type="text" data-field="title" value="${esc(entry?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(entry?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
     <button data-action="this.closest('.tmpl-entry').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
@@ -198569,6 +198992,7 @@ function _showSyncModal(dbPath) {
   if(!isAdmin)content.querySelectorAll('.calendar-db-sync-admin-only').forEach(card=>card.remove());
   const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='sync-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','カレンダー同期・ツールを閉じる');
   let syncBusy=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-sync',title:'カレンダー同期・ツール',body:[...content.childNodes],footer:closeButton,
     variant:'standard',geometryKey:'calendar-db-sync',minWidth:'0',initialFocus:isAdmin?'#sync-ical-import':'#sync-templates',
@@ -203010,6 +203434,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-auto-compress',
   'chat-allow-code-execution',
   'chat-reasoning-level',
+  'chat-native-generation-settings',
   'chat-param-preset',
   'chat-temperature',
   'chat-max-tokens',
@@ -203369,6 +203794,7 @@ function _chatApplyRoomModelSettings(roomPath) {
   _chatState.model = model;
   _chatState.pendingModel = model;
   if (saved?.generation) _chatApplyGenerationStorageSnapshot(saved.generation);
+  else localStorage.removeItem('chat-native-generation-settings');
   _safeSetValue('chat-provider', provider);
   if (typeof updateChatModels === 'function') {
     updateChatModels({ preferredModel: model, suppressNotify: true, skipGlobalPersist: true, skipRoomPersist: true });
@@ -203446,8 +203872,8 @@ function chatCustomInstructionSettings() {
   };
 }
 
-// 思考の深さの内部値一覧（オフ/低/中/高/最高/最大 + claude_code限定のUltracode）。
-const CHAT_REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+// 思考の深さの内部値。UltracodeはClaude Code、Ultraは対応Codexモデルで使う。
+const CHAT_REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'ultra'];
 
 // 旧3段階UI（オフ/標準/最大）からの移行。standardはmediumとして扱う。
 // gb-chat-generation-settings.js からも参照する（グローバル関数として定義）。
@@ -203457,7 +203883,7 @@ function _chatNormalizeReasoningLevel(value) {
   return CHAT_REASONING_LEVELS.includes(raw) ? raw : 'off';
 }
 
-function chatGenerationSettings() {
+function chatGenerationSettings(provider = _chatState.provider, model = _chatState.model) {
   const preset = localStorage.getItem('chat-param-preset') || 'standard';
   const presetTemperature = preset === 'creative' ? 1.2 : preset === 'strict' ? 0.2 : 0.7;
   const temperatureRaw = localStorage.getItem('chat-temperature');
@@ -203467,7 +203893,9 @@ function chatGenerationSettings() {
   const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : 8192;
   const topP = topPRaw !== null && topPRaw !== '' ? Number(topPRaw) : null;
   return {
-    reasoning_level: _chatNormalizeReasoningLevel(localStorage.getItem('chat-reasoning-level')),
+    ...(typeof _chatNativeGenerationSettings === 'function'
+      ? _chatNativeGenerationSettings(provider, model)
+      : { reasoning_level: _chatNormalizeReasoningLevel(localStorage.getItem('chat-reasoning-level')), speed_mode: 'default' }),
     temperature: Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : presetTemperature,
     max_tokens: Number.isFinite(maxTokens) ? Math.max(1024, Math.min(32768, Math.floor(maxTokens))) : 8192,
     top_p: Number.isFinite(topP) ? Math.max(0, Math.min(1, topP)) : undefined,
@@ -203828,7 +204256,9 @@ function _renderChatModelOptions(models, options = {}) {
     sel.appendChild(o);
   });
   sel.value = selection.value;
+  const previousModel = _chatState.model;
   _chatState.model = sel.value || selection.model || _chatDefaultModel(provider);
+  if (previousModel !== _chatState.model && typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
   if (!options.skipGlobalPersist) {
     localStorage.setItem('chat-model', _chatState.model || '');
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
@@ -203844,6 +204274,7 @@ function _renderChatModelOptions(models, options = {}) {
   el.addEventListener('focus', refreshAvailability);
   el.addEventListener('pointerdown', refreshAvailability);
   el.onchange = function() {
+    if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
     _chatState.provider = this.value;
     localStorage.setItem('chat-provider', this.value);
     _chatState.model = localStorage.getItem('chat-model:' + _chatProviderKey(this.value)) || _chatDefaultModel(this.value);
@@ -203869,6 +204300,7 @@ function updateChatModels(options = {}) {
   const el = document.getElementById('chat-model');
   if (!el) return;
   el.onchange = function() {
+    if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
     const provider = _chatProviderKey(_chatState.provider);
     _chatState.model = this.value || _chatDefaultModel(provider);
     localStorage.setItem('chat-model', _chatState.model || '');
@@ -206917,6 +207349,7 @@ function _chatRestoreWaitingDraftToComposer(message) {
     if (modelSelect) modelSelect.value = message.model;
   }
   const generation = message.generation || {};
+  if (typeof _chatStoreNativeGenerationSettings === 'function') _chatStoreNativeGenerationSettings(generation);
   const generationKeys = {
     reasoning_level: 'chat-reasoning-level',
     temperature: 'chat-temperature',
@@ -212448,6 +212881,74 @@ _chatInstallTabActivationHook();
 /* Chat-side LLM generation settings */
 
 let _chatGenerationSettingsMenu = null;
+const CHAT_NATIVE_GENERATION_STORAGE_KEY = 'chat-native-generation-settings';
+
+function _chatGenerationModel(provider = _chatGenerationCurrentProvider()) {
+  try { return String(_chatState.provider === provider ? _chatState.model || '' : ''); } catch { return ''; }
+}
+
+function _chatNativeGenerationKey(provider, model) {
+  return JSON.stringify([String(provider || ''), String(model || '_cli_default_')]);
+}
+
+function _chatReadNativeGenerationMap() {
+  try {
+    const value = JSON.parse(localStorage.getItem(CHAT_NATIVE_GENERATION_STORAGE_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider)) {
+  const map = _chatReadNativeGenerationMap();
+  const key = _chatNativeGenerationKey(provider, model);
+  const saved = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+  const levels = _chatReasoningLevelOptions(provider, model).map(item => item[0]);
+  // 共通の旧値は最初に利用するモデルだけへ引き継ぎ、以後は別モデルへ持ち越さない。
+  const legacy = Object.keys(map).length === 0 ? localStorage.getItem('chat-reasoning-level') : 'off';
+  const previous = saved?.reasoning_level ?? legacy ?? 'off';
+  const raw = previous === 'standard' ? 'medium' : previous;
+  const order = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'ultra'];
+  const migratedLevel = order.slice(0, order.indexOf(raw) + 1).reverse().find(value => levels.includes(value)) || 'off';
+  const settings = {
+    reasoning_level: levels.includes(raw) ? raw : !saved ? migratedLevel : 'off',
+    speed_mode: _chatSpeedOptions(provider, model).some(item => item[0] === saved?.speed_mode) ? saved.speed_mode : 'default',
+  };
+  if (legacy != null && Object.keys(map).length === 0) _chatStoreNativeGenerationSettings(settings, provider, model);
+  return settings;
+}
+
+function _chatStoreNativeGenerationSettings(values, provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider)) {
+  const map = _chatReadNativeGenerationMap();
+  map[_chatNativeGenerationKey(provider, model)] = {
+    reasoning_level: String(values.reasoning_level || 'off'),
+    speed_mode: String(values.speed_mode || 'default'),
+  };
+  localStorage.setItem(CHAT_NATIVE_GENERATION_STORAGE_KEY, JSON.stringify(map));
+}
+
+function _chatSpeedOptions(provider, model = _chatGenerationModel(provider)) {
+  const name = String(model || '').toLowerCase();
+  const options = [['default', '既定'], ['standard', '標準']];
+  if (provider === 'codex') {
+    options.push(['fast', '高速']);
+    if (/^gpt-6(?:\.1-sol|-astra)(?:$|-)/.test(name)) options.push(['ultrafast', '超高速']);
+    return options;
+  }
+  if (provider === 'claude_code'
+      && (name === 'opus' || /^claude-opus-(5(?:-5)?|4-8)(?:$|-)/.test(name))) {
+    return [...options, ['fast', '高速']];
+  }
+  return [];
+}
+
+function _chatGenerationSpeedRowHtml() {
+  const provider = _chatGenerationCurrentProvider();
+  const options = _chatSpeedOptions(provider);
+  if (!options.length) return '';
+  const selected = _chatNativeGenerationSettings().speed_mode;
+  return _chatGenerationSettingsRow('応答速度', `<select id="chat-menu-speed-mode" class="gb-input" style="max-width:150px;">${options.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select>`)
+    + `<div data-chat-speed-notice ${['fast', 'ultrafast'].includes(selected) ? '' : 'hidden'} style="font-size:11px;color:var(--fg2);line-height:1.5;">高速・超高速は利用枠の消費や料金が増えます。対応モデル・契約でのみ利用できます。</div>`;
+}
 
 const CHAT_GENERATION_NUMERIC_SETTINGS = {
   'temperature': { key: 'chat-temperature', min: 0, max: 2, integer: false },
@@ -212508,33 +213009,45 @@ function _chatGenerationReasoningSupported(provider) {
   return CHAT_REASONING_SUPPORTED_PROVIDERS.has(String(provider || '').trim().toLowerCase());
 }
 
-// 思考の深さの選択肢。オフ/低/中/高/最高/最大の6段階 + claude_code限定のUltracode。
+// モデルごとの思考段階。CLIの「既定」は思考引数を追加しない。
 // 内部値はgb-right-panel-chat.part01.part01.jsのCHAT_REASONING_LEVELSと対応させること。
-function _chatReasoningLevelOptions(provider) {
+function _chatReasoningLevelOptions(provider, model = _chatGenerationModel(provider)) {
   const base = [
-    ['off', 'オフ'],
+    ['off', '既定'],
     ['low', '低'],
     ['medium', '中'],
     ['high', '高'],
     ['xhigh', '最高'],
     ['max', '最大'],
   ];
-  if (String(provider || '').trim().toLowerCase() === 'claude_code') base.push(['ultracode', 'Ultracode']);
+  const name = String(model || '').toLowerCase();
+  if (provider === 'antigravity_cli') {
+    const variants = name === 'gemini-3.1-pro' ? ['low', 'high'] : name === 'gpt-oss-120b' ? ['medium'] : ['low', 'medium', 'high'];
+    return base.filter(([value]) => value === 'off' || variants.includes(value));
+  }
+  if (provider === 'openai') return base.filter(([value]) => value !== 'max' || /^gpt-6/.test(name));
+  if (provider === 'gemini') return base.filter(([value]) => ['off', 'low', 'medium', 'high'].includes(value));
+  if (['claude_code', 'anthropic'].includes(provider)) {
+    if (provider === 'claude_code' && /^claude-(opus|sonnet|haiku)-4-[0-5](?:$|-)/.test(name)) return [base[0]];
+    if (/claude-(opus|sonnet)-4-6/.test(name)) return base.filter(([value]) => value !== 'xhigh');
+    if (provider === 'claude_code') base.push(['ultracode', 'Ultracode']);
+  }
+  if (provider === 'codex' && /^gpt-(6(?:\.1-sol|-astra|-sol)|5\.6-(?:sol|terra))$/.test(name)) base.push(['ultra', 'Ultra']);
   return base;
 }
 
 function _chatGenerationReasoningRowHtml() {
   const provider = _chatGenerationCurrentProvider();
-  const supported = _chatGenerationReasoningSupported(provider);
   const options = _chatReasoningLevelOptions(provider);
-  const storedRaw = _chatGenerationSettingValue('chat-reasoning-level', 'off');
+  const supported = _chatGenerationReasoningSupported(provider) && options.length > 1;
+  const storedRaw = _chatNativeGenerationSettings().reasoning_level;
   const stored = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(storedRaw) : storedRaw;
   const select = `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;" ${supported ? '' : 'disabled'}>
       ${options.map(([value, label]) => `<option value="${value}" ${stored === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
     </select>`;
   const row = _chatGenerationSettingsRow('思考の深さ', select);
   if (supported) return row;
-  return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このプロバイダでは思考の深さ設定は使われません</div>`;
+  return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このモデルでは思考の深さを指定できません</div>`;
 }
 
 // 現行世代のClaudeモデル（Fable 5 / Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
@@ -212641,6 +213154,10 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
   const reasoning = menu.querySelector('#chat-menu-reasoning-level');
   if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
+  if (reasoning) _chatStoreNativeGenerationSettings({
+    reasoning_level: reasoning.value || 'off',
+    speed_mode: menu.querySelector('#chat-menu-speed-mode')?.value || 'default',
+  }, menu.dataset.generationProvider, menu.dataset.generationModel);
   const preset = menu.querySelector('#chat-menu-param-preset');
   if (preset) localStorage.setItem('chat-param-preset', preset.value || 'standard');
   Object.entries(CHAT_GENERATION_NUMERIC_SETTINGS).forEach(([id, config]) => {
@@ -212665,18 +213182,25 @@ function showChatGenerationSettingsMenu(event) {
   if (_chatGenerationSettingsMenu) { _closeChatGenerationSettingsMenu(); return; }
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu chat-generation-settings-menu';
+  menu.dataset.generationProvider = _chatGenerationCurrentProvider();
+  menu.dataset.generationModel = _chatGenerationModel();
   menu.style.cssText = 'position:fixed;z-index:10090;min-width:280px;max-width:340px;padding:10px;display:flex;flex-direction:column;gap:10px;';
   menu.innerHTML = `
-    <div style="font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">LLM設定</div>
+    <div class="chat-generation-settings-heading" style="display:flex;align-items:center;gap:4px;font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">
+      <span data-chat-generation-title>LLM設定</span>
+      <span data-chat-generation-tuning-hint>${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</span>
+    </div>
     ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
     ${_chatGenerationCodeExecutionControlHtml()}
-    <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
     ${_chatGenerationReasoningRowHtml()}
+    ${_chatGenerationSpeedRowHtml()}
     ${_chatGenerationResponseTuningHtml()}
   `;
   menu.addEventListener('change', () => {
     _persistChatGenerationSettings(menu, { normalizeNumbers: true });
+    const speedNotice = menu.querySelector('[data-chat-speed-notice]');
+    if (speedNotice) speedNotice.hidden = !['fast', 'ultrafast'].includes(menu.querySelector('#chat-menu-speed-mode')?.value);
     _scheduleChatGenerationSettingsReposition(menu, anchor);
   });
   menu.addEventListener('input', (e) => {
@@ -214894,6 +215418,9 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       Object.prototype.hasOwnProperty.call(options, 'model') ? options.model : cliChatSelectedModelValue(provider));
     const streamModelValue = streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection;
     const streamModelLabel = cliChatModelLabel(provider, streamModelSelection);
+    // 送信開始時に固定する。旧形式の待機メッセージへ後から選んだ高速設定を持ち込まない。
+    const streamGenerationSettings = { ...(options.generationSettings
+      || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings(provider, streamModelSelection) : {})) };
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -215091,7 +215618,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         body: JSON.stringify({
           provider,
           model: streamModelValue,
-          reasoning_level: options.generationSettings?.reasoning_level || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off'),
+          reasoning_level: streamGenerationSettings.reasoning_level || 'off',
+          speed_mode: streamGenerationSettings.speed_mode || 'default',
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
           system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath, targets: streamTargets, uiControlAvailable: false }) : '',
           session_id: streamSessionId,
@@ -238428,7 +238956,7 @@ _bindClipSearchResultDelegation();
           ${typeof fieldHelp === 'function' ? fieldHelp('オフにしても手動の「重複を確認」は利用できます。既存ファイルの索引は保持されます。') : ''}
         </div>
         <label class="dup-settings-field"><span>全体を調べ直す間隔</span>
-          <select data-dup-setting="refresh_days" data-e2e-id="duplicate-setting-refresh-days">
+          <select class="gb-select gb-select-column" data-dup-setting="refresh_days" data-e2e-id="duplicate-setting-refresh-days">
             <option value="0" ${Number(settings.refresh_days) === 0 ? 'selected' : ''}>自動では調べ直さない</option>
             <option value="1" ${Number(settings.refresh_days) === 1 ? 'selected' : ''}>毎日</option>
             <option value="7" ${Number(settings.refresh_days ?? 7) === 7 ? 'selected' : ''}>7日ごと</option>

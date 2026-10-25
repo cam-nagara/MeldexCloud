@@ -127,13 +127,7 @@
     z-index: 1;
   }
 
-  /* Safariのcollapsed borderとstickyの別レイヤー間に生じる半pixelの
-     透けを防ぐ。線は各セルの右辺・下辺だけで描き、二重線にしない。 */
-  #pivot-table, .pivot-table { border-collapse: separate; border-spacing: 0; }
-  #pivot-table th, #pivot-table td, .pivot-table th, .pivot-table td {
-    border-top-width: 0;
-    border-left-width: 0;
-  }
+  /* sticky罫線の描画方式はデスクトップと共通のgb-tools.cssで定義する。 */
 
   #pivot-table td.col-entity .entity-name-cell-main {
     gap: 2px;

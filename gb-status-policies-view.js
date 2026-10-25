@@ -839,8 +839,9 @@ ${spEsc(actionText)}</pre>
         btn.textContent = choice.label;
         btn.dataset.spChoice = String(choice.value || '');
         btn.dataset.e2eId = 'status-policy-choice-' + (String(choice.value || 'cancel').replace(/[^a-z0-9_-]+/gi, '-'));
-        if (choice.primary) btn.className = 'primary';
-        if (choice.danger) btn.className = 'danger';
+        btn.className = 'gb-btn gb-btn-sm';
+        if (choice.primary) btn.classList.add('gb-btn-primary', 'primary');
+        if (choice.danger) btn.classList.add('gb-btn-danger', 'danger');
         btn.addEventListener('click', async () => {
           if (busy) return;
           if (typeof choice.action !== 'function') {

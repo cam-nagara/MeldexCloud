@@ -21047,7 +21047,7 @@
         <div class="gb-check-help-row" style="margin-top:8px;">
           <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;flex:1;min-width:0;">
             <span>管理者AIに依頼した時に使うCLI</span>
-            <select id="settings-workspace-cli-provider" class="gb-input" data-e2e-id="settings-workspace-cli-provider">${_relayProviderOptionsHtml(config?.provider)}</select>
+            <select id="settings-workspace-cli-provider" class="gb-select gb-select-medium" data-e2e-id="settings-workspace-cli-provider">${_relayProviderOptionsHtml(config?.provider)}</select>
           </label>
           ${fieldHelp('メンバーの依頼は常にCodex CLIの読み取り専用で実行され、この選択は影響しません。')}
         </div>
@@ -51237,6 +51237,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
@@ -51830,7 +51831,7 @@ document.addEventListener('DOMContentLoaded', () => {
 (function () {
   'use strict';
 
-  const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
+  const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled', 'unknown']);
   const DEFAULT_DELAY_MS = 250;
   const DEFAULT_SUCCESS_DISMISS_MS = 1800;
   const records = new Map();
@@ -52010,7 +52011,8 @@ document.addEventListener('DOMContentLoaded', () => {
       record.state.processed = record.state.total;
       record.state.percent = 100;
     }
-    const needsAttention = status === 'failed' || status === 'partial';
+    const needsAttention = status === 'failed' || status === 'partial' || status === 'unknown';
+    if (status === 'unknown') record.state.retryable = false;
     if (needsAttention && !record.state.visible) record.state.visible = true;
     _emit(record, status);
     const configuredDismiss = next.dismissMs !== undefined ? next.dismissMs : record.dismissMs;
@@ -52033,6 +52035,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setPersistentJobId: function (jobId) { return _patch(record, { persistentJobId: jobId }, 'job-id'); },
       succeed: function (values) { return _finish(record, 'succeeded', values); },
       partial: function (values) { return _finish(record, 'partial', values); },
+      unknown: function (values) { return _finish(record, 'unknown', values); },
       fail: function (values) {
         const payload = values instanceof Error ? { error: values } : values;
         return _finish(record, 'failed', payload);
@@ -52214,6 +52217,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (operation.status === 'cancelling') return '中止しています';
     if (operation.status === 'failed') return '失敗';
     if (operation.status === 'partial') return '一部失敗';
+    if (operation.status === 'unknown') return '結果未確認';
     if (operation.status === 'cancelled') return '中止しました';
     if (operation.status === 'succeeded') return '完了';
     const phase = operation.phase || '処理中';
@@ -52340,7 +52344,7 @@ document.addEventListener('DOMContentLoaded', () => {
       row.appendChild(disclosure);
     }
 
-    if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial') {
+    if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
       if (operation.cancellable && operation.status !== 'cancelling') {
@@ -52359,7 +52363,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retry.addEventListener('click', function () { window.MeldexOperationProgress.retry(operation.id); });
         actions.appendChild(retry);
       }
-      if (operation.status === 'failed' || operation.status === 'partial') {
+      if (operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.dataset.action = 'dismiss-operation-progress';
@@ -52383,7 +52387,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const header = document.createElement('div');
     header.className = 'meldex-operation-tray-header';
     const title = document.createElement('span');
-    const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial'; });
+    const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial' || op.status === 'unknown'; });
     const hasActive = visible.some(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; });
     title.textContent = needsAttention
       ? '確認が必要な処理'
@@ -65509,7 +65513,7 @@ ${reason.message}`
     '.status-dropdown',
     '.cell-inline-dd',
     '.user-dropdown',
-    '.gb-context-menu',
+    '.gb-context-menu:not(.chat-generation-settings-menu)',
     '.db-picker-popup',
     '.gb-selection-float-bar',
     '.value-input',
@@ -66098,12 +66102,16 @@ ${reason.message}`
     // registry に shortcutId が無くても data-shortcut-id があれば後付けする。
     // appendShortcut は末尾に既に括弧表記があれば二重付与を避けるため安全。
     if (fromRegistry) return finalizeTooltipText(fromRegistry, el);
+    // 幅を抑えた列選択でも、選択中の長い名前を全文確認できるようにする。
+    const columnValueHint = el.matches?.('select.gb-select-column')
+      ? compactText(el.selectedOptions?.[0]?.textContent) : '';
     const text = (
       readAttr(el, ATTR_PRIMARY) ||
       readAttr(el, ATTR_LEGACY) ||
       readAttr(el, ATTR_HELP) ||
       readAttr(el, 'title') ||
       readAttr(el, ATTR_NATIVE_TITLE) ||
+      columnValueHint ||
       readAttr(el, 'aria-label') ||
       firstDatasetHint(el) ||
       idHint(el) ||
@@ -67619,6 +67627,28 @@ ${reason.message}`
   let _staleOverlayRecoveryStarted = false;
   let _legacyDialogId = 0;
 
+  // 既存パネルの固定z-indexより低いモーダルを作らない。子の色・入力ポップアップも
+  // 同じ処理を通し、親を上げた結果だけで子が背面へ隠れることを防ぐ。
+  function raiseLayer(element) {
+    if (!element?.isConnected) return;
+    const own = Number.parseInt(getComputedStyle(element).zIndex, 10) || 0;
+    let highest = 0;
+    const candidates = document.querySelectorAll(
+      OVERLAY_SELECTOR + ', body > *, [role="dialog"], [role="alertdialog"], .gb-pane, .gb-panelset, .sidebar-backdrop.open'
+    );
+    for (const node of candidates) {
+      if (node === element || element.contains(node)) continue;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      if (!rect.width || !rect.height || style.display === 'none' || style.visibility === 'hidden') continue;
+      for (let parent = node; parent && parent !== document.body; parent = parent.parentElement) {
+        if (parent === element) break;
+        highest = Math.max(highest, Number.parseInt(getComputedStyle(parent).zIndex, 10) || 0);
+      }
+    }
+    if (highest >= own) element.style.setProperty('z-index', String(highest + 2), 'important');
+  }
+
   function _zoom() {
     if (typeof _getZoom === 'function') return _getZoom();
     const z = parseFloat(document.documentElement.style.zoom || '');
@@ -68328,6 +68358,11 @@ ${reason.message}`
 
   function enhanceOverlay(overlay) {
     if (!overlay) return;
+    if (overlay.isConnected && overlay.dataset.dialogLayerRaised !== '1') {
+      window.GBTooltip?.hide?.({ suppressUntilLeave: true });
+      raiseLayer(overlay);
+      overlay.dataset.dialogLayerRaised = '1';
+    }
     _syncMobileSheet(overlay);
     if (overlay.dataset.modalShellEnhanced === 'skip') return;
     if (overlay.dataset.modalShell === 'off') {
@@ -68411,6 +68446,7 @@ ${reason.message}`
   }
 
   window.GBModalShell = {
+    raiseLayer,
     enhanceOverlay,
     enhanceAll,
     clamp: _clampModal,

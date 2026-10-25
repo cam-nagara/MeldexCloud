@@ -853,6 +853,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const caption = document.createElement('span');
     caption.textContent = isType ? '置換先タイプ' : '参照の処理';
     const select = document.createElement('select');
+    select.className = 'gb-select gb-select-column';
     select.dataset.e2eId = `scriptnote-${kind}-delete-replacement`;
     if (!isType) {
       const clear = document.createElement('option');

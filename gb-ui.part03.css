@@ -444,11 +444,12 @@ input[type="range"]::-moz-range-thumb {
 }
 .gb-modal-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--ui-space-4);
-  height: 52px;
-  padding: 0 var(--ui-space-6);
+  min-height: 52px;
+  padding: var(--ui-space-4) var(--ui-space-6);
   background: var(--ui-bg-panel);
   border-top: 1px solid var(--ui-border);
   flex-shrink: 0;
@@ -456,6 +457,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .gb-modal-footer .gb-btn { min-width: 88px; }
 .gb-modal-footer .gb-btn-icon { min-width: 0; }
+.gb-modal-footer-group { display: flex; gap: var(--ui-space-4); margin-left: auto; }
 .gb-modal-footer .gb-modal-footer-left {
   margin-right: auto;
   display: flex;

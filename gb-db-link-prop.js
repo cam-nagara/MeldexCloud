@@ -442,7 +442,7 @@ function _dbLinkShowEditor(initial, anchorEl) {
     const body = document.createElement('div');
     body.className = 'db-link-editor-body';
     body.innerHTML = `
-      <label>種類<select class="gb-select" data-link-kind>
+      <label>種類<select class="gb-select gb-select-medium" data-link-kind>
         <option value="web">Web</option><option value="meldex">Meldex内</option>
         <option value="local-file">PC内ファイル</option><option value="local-folder">PC内フォルダ</option>
       </select></label>

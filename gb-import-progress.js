@@ -15,6 +15,7 @@
     'external-import': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
     'enex-import': 'ENEX取り込み',
+    'webclip-inbox': 'Web受信箱',
   };
   const restoredJobs = new Map();
   const foregroundStack = [];
@@ -46,6 +47,13 @@
     if (!api || !job?.id) return null;
     const jobId = String(job.id);
     let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
+    // 定期巡回だけでは通知しない。実際の取得開始か、取得結果・失敗を待つ。
+    if (!handle && job.kind === 'webclip-inbox'
+        && ['queued', 'running'].includes(job.status)
+        && !job.progress?.current && !(Number(job.progress?.processed) > 0)) {
+      restoredJobs.set(jobId, { handle: null, misses: 0 });
+      return null;
+    }
     if (!handle) {
       handle = api.begin({
         id: 'job-' + jobId,
@@ -81,35 +89,73 @@
     return handle;
   }
 
+  async function _scheduledJobSnapshot(jobId) {
+    const data = await apiFetch('/import-schedules', { silentError: true });
+    for (const schedule of (Array.isArray(data?.schedules) ? data.schedules : [])) {
+      const run = schedule.last_run;
+      if (String(run?.job_id || '') !== jobId || !['done', 'error', 'cancelled'].includes(run.status)) continue;
+      const legacyXSummary = run.status === 'done' && schedule.category === 'x-bookmarks'
+        && typeof run.summary?.ok !== 'boolean';
+      return {
+        id: jobId, kind: schedule.category, label: schedule.label, status: legacyXSummary ? 'unknown' : run.status,
+        result: { ...(run.summary || {}), summary: legacyXSummary
+          ? '処理終了の記録はありますが、項目別の結果は残っていません。取り込み予定の前回結果を確認してください。'
+          : '定期実行の結果を保存済みの記録から確認しました' },
+        error: run.error,
+      };
+    }
+    return null;
+  }
+
   async function _resolveMissingJob(jobId, entry) {
+    let job;
     try {
-      const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
-      entry.misses = 0;
-      if (job?.status === 'done') {
-        const result = job.result || {};
-        const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
-        if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-        else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
-        else entry.handle.succeed(values);
-        restoredJobs.delete(jobId);
-      } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
-        entry.handle.cancelled({ summary: '取り込みを中止しました' });
-        restoredJobs.delete(jobId);
-      } else if (job?.status === 'error') {
-        entry.handle.fail({
-          error: job.error || '取り込みに失敗しました',
-          details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
-        });
-        restoredJobs.delete(jobId);
-      } else if (job) {
-        _syncJob(job);
-      }
+      job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
     } catch (error) {
-      entry.misses += 1;
-      if (entry.misses < 2 || !/404/.test(String(error?.message || ''))) return;
-      const status = entry.handle.getState()?.status;
-      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.fail({ error: '処理結果を確認できません。ジョブが見つからないため、保存結果を確認してください。' });
+      if (!/404/.test(String(error?.message || ''))) { entry.misses = 0; return; }
+      if (++entry.misses < 2) return;
+      // 完了ジョブは1時間で破棄され、再起動でもメモリから消える。
+      // 予定の永続記録が同じjob_idを示す場合だけ、その確定結果を採用する。
+      try { job = await _scheduledJobSnapshot(jobId); }
+      catch (_) { return; } // 記録の取得失敗も処理そのものの失敗にはしない。
+      if (!job) {
+        const status = entry.handle?.getState()?.status;
+        if (status === 'running' || status === 'queued' || status === 'cancelling') {
+          entry.handle.unknown({ summary: 'ジョブの記録を取得できないため、完了・失敗を判定できません。取り込み予定の前回結果を確認してください。' });
+        }
+        restoredJobs.delete(jobId);
+        return;
+      }
+    }
+    entry.misses = 0;
+    if (job?.status === 'done') {
+      const result = job.result || {};
+      if (!entry.handle && job.kind === 'webclip-inbox'
+          && result.ok !== false && !['saved', 'failed', 'recovered'].some(key => Number(result[key]) > 0)) {
+        restoredJobs.delete(jobId);
+        return;
+      }
+      entry.handle = entry.handle || _syncJob(job);
+      const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
+      if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
+      else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
+      else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
+    } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
+      entry.handle?.cancelled({ summary: '取り込みを中止しました' });
+      restoredJobs.delete(jobId);
+    } else if (job?.status === 'error') {
+      entry.handle = entry.handle || _syncJob(job);
+      entry.handle.fail({
+        error: job.error || '取り込みに失敗しました',
+        details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
+      });
+      restoredJobs.delete(jobId);
+    } else if (job?.status === 'unknown') {
+      entry.handle?.unknown({ summary: job.result?.summary || '取り込み結果の内訳を確認できません。' });
+      restoredJobs.delete(jobId);
+    } else if (job) {
+      _syncJob(job);
     }
   }
 

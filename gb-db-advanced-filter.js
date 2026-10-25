@@ -144,7 +144,7 @@ function closeConditionModal(listSelector) {
 
 function createConditionFieldBlock(labelText, control) {
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:block;margin:0 0 8px;';
+  wrap.className = 'gb-field-select-row';
   const label = document.createElement(control?.id ? 'label' : 'div');
   if (control?.id) {
     label.setAttribute('for', control.id);
@@ -152,6 +152,7 @@ function createConditionFieldBlock(labelText, control) {
   }
   label.textContent = labelText;
   label.style.cssText = 'font-size:11px;color:var(--ui-fg-muted, var(--fg2));margin:0 0 4px;';
+  label.style.flex = '0 0 96px';
   wrap.appendChild(label);
   wrap.appendChild(control);
   return wrap;
@@ -184,7 +185,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(head);
 
   const fieldSel = document.createElement('select');
-  fieldSel.className = 'af-field gb-select';
+  fieldSel.className = 'af-field gb-select gb-select-medium';
   styleConditionControl(fieldSel);
   [['value', '値'], ['status', 'ステータス']].forEach(([value, label]) => {
     const opt = document.createElement('option');
@@ -196,7 +197,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(createConditionFieldBlock('対象', fieldSel));
 
   const propSel = document.createElement('select');
-  propSel.className = 'af-prop gb-select';
+  propSel.className = 'af-prop gb-select gb-select-column';
   styleConditionControl(propSel);
   propOptions.forEach((prop) => {
     const opt = document.createElement('option');
@@ -209,7 +210,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   row.appendChild(createConditionFieldBlock('列', propSel));
 
   const opSel = document.createElement('select');
-  opSel.className = 'af-op gb-select';
+  opSel.className = 'af-op gb-select gb-select-short';
   styleConditionControl(opSel);
   ops.forEach(([value, label]) => {
     const opt = document.createElement('option');
@@ -225,7 +226,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   valInput.type = 'text';
   valInput.placeholder = '値';
   valInput.value = f?.value ?? '';
-  styleConditionControl(valInput, 'font-size:12px;padding:2px 4px;');
+  styleConditionControl(valInput, 'width:auto;flex:1 1 240px;font-size:12px;padding:2px 4px;');
   row.appendChild(createConditionFieldBlock('値', valInput));
 
   const commonTagsDatalist = document.createElement('datalist');

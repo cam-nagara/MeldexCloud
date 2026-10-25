@@ -262,6 +262,8 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${esc(endValue)}"></div></div>
 <div class="field"><label>種別</label><select id="sh-type" class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
 <div class="field"><label>メモ</label><textarea id="sh-note" class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>`;
+  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
+  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.id = 'sh-cancel'; cancelButton.className = 'sh-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -275,9 +277,15 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     historyButton.type = 'button'; historyButton.id = 'sh-history'; historyButton.className = 'sh-history gb-btn gb-btn-sm'; historyButton.textContent = '版を見る';
   }
   let busy = false, deleteConfirmPending = false;
+  const secondaryActions = document.createElement('div');
+  secondaryActions.className = 'gb-modal-footer-left';
+  secondaryActions.append(...[deleteButton, historyButton].filter(Boolean));
+  const primaryActions = document.createElement('div');
+  primaryActions.className = 'gb-modal-footer-group';
+  primaryActions.append(cancelButton, saveButton);
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-shift', title: existing ? 'シフト編集' : '新規シフト', body: [...content.childNodes],
-    footer: [deleteButton, historyButton, cancelButton, saveButton].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
+    footer: [existing ? secondaryActions : null, primaryActions].filter(Boolean), variant: 'standard', geometryKey: 'calendar-tool-shift',
     minWidth: '0', initialFocus: '#sh-user', closeLabel: 'シフト編集を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: () => !busy,
   });
@@ -620,14 +628,14 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
   const dl = ['日','月','火','水','木','金','土'];
   const entryRow = (e) => `<div class="tmpl-entry" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-size:12px;">
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">${dl.map((d,i)=>`<option value="${i}" ${(e?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}</select>
-    <input type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
-    <input type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
-    <input type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
+    <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <button type="button" class="tmpl-entry-del" aria-label="エントリを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
   const content = document.createElement('div');
   content.innerHTML = `<div id="tmpl-edit-status" role="status" aria-live="polite"></div>
-    <div class="field"><label>名前</label><input id="tmpl-name" class="tmpl-name" type="text" value="${esc(t.name)}"></div>
+    <div class="field"><label>名前</label><input id="tmpl-name" class="tmpl-name gb-input" type="text" value="${esc(t.name)}"></div>
     <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:4px;">エントリ（1週間分）</div>
     <div id="tmpl-entries" class="tmpl-entries">${entriesHtml}</div>
     <button id="tmpl-add-entry" type="button" class="tmpl-add-entry gb-btn gb-btn-sm">+ エントリ追加</button>`;

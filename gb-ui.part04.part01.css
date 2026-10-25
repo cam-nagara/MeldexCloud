@@ -1083,6 +1083,16 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   -webkit-overflow-scrolling: touch;
   scroll-padding-bottom: calc(64px + var(--cloud-mobile-safe-bottom, 0px));
 }
+/* 設定フォームの段落はコンテキストメニューの操作項目ではない。 */
+.gb-context-menu.chat-generation-settings-menu > div {
+  padding: 0;
+  cursor: default;
+  font-size: inherit;
+}
+.gb-context-menu.chat-generation-settings-menu > div:hover {
+  background: transparent;
+}
+
 /* すべてのポップアップ外周を共通の明るい境界線へ統一する。
    内部の入力欄・区切り線は対象外とし、面の階層は維持する。 */
 :where(

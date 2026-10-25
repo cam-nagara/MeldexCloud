@@ -152,8 +152,8 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, trigge
   }
   const seq = ++_conditionalColorDialogSeq;
   const body = document.createElement('div');
-  body.innerHTML = `<div class="field gb-field"><label class="gb-label" for="cc-picker-prop">列</label>
-      <select id="cc-picker-prop" class="gb-select" data-e2e-id="cc-picker-prop" style="width:100%;box-sizing:border-box;">
+  body.innerHTML = `<div class="field gb-field-select-row gb-field-select-row--compact-label"><label class="gb-label" for="cc-picker-prop">列</label>
+      <select id="cc-picker-prop" class="gb-select gb-select-column" data-e2e-id="cc-picker-prop">
         ${visibleProps.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
       </select>
     </div>`;
@@ -219,9 +219,9 @@ function addConditionalColorRow(container, rule) {
 
   const opEl = document.createElement('select');
   opEl.id = `cc-op-${seq}`;
-  opEl.className = 'cc-op gb-select';
+  opEl.className = 'cc-op gb-select gb-select-short';
   opEl.dataset.e2eId = 'cc-rule-op';
-  styleConditionControl(opEl);
+  styleConditionControl(opEl, 'width:96px;max-width:100%;');
   ops.forEach(([value, label]) => {
     const opt = document.createElement('option');
     opt.value = value;

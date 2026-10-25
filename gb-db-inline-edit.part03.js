@@ -1090,6 +1090,8 @@ function _dbCancelNativeEditorForSheetShortcut(e) {
 
 function _dbShortcutShouldCloseTransientUi(e) {
   if (!e) return false;
+  // 選択肢のDeleteはポップアップ側へ渡し、背後のセル削除へ流さない。
+  if (e.key === 'Delete' && document.querySelector('.status-dropdown .db-option-delete:not(:disabled)')) return false;
   // ドロップダウンの検索・新規値入力欄やメニュー内のリネーム入力にフォーカスがある間は、
   // Delete/Backspace/Ctrl+C/V をネイティブのテキスト編集として扱い、ポップアップを閉じない。
   const _ae = document.activeElement;

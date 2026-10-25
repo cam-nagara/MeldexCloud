@@ -604,7 +604,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = 'gallery';
-  overlay.style.zIndex = '120';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   overlay._dbTemplateSetBusy = (next) => {

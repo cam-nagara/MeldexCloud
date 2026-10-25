@@ -40,6 +40,7 @@
 .meldex-segmented-ring.is-failed,
 .meldex-segmented-ring.is-partial { background: var(--red, #e05d67); }
 .meldex-segmented-ring.is-cancelled { background: var(--fg2, #9aa0a6); }
+.meldex-segmented-ring.is-unknown { background: var(--yellow, #d4a72c); }
 
 /* 既存の起動/全体読込リングも同じ分割リングへ揃える。 */
 .gb-spinner,
@@ -174,6 +175,7 @@ body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-oper
 .meldex-operation-row:last-child { border-bottom: 0; }
 .meldex-operation-row.is-failed { border-inline-start: 3px solid var(--red, #e05d67); }
 .meldex-operation-row.is-partial { border-inline-start: 3px solid var(--yellow, #d4a72c); }
+.meldex-operation-row.is-unknown { border-inline-start: 3px solid var(--yellow, #d4a72c); }
 .meldex-operation-row.is-succeeded { border-inline-start: 3px solid var(--green, #58a66a); }
 
 .meldex-operation-heading {

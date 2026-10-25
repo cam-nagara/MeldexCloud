@@ -535,6 +535,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       // 同一シートの再描画（forceReload 等）では、直前にユーザーが選んだフィルタを維持する。
       ctx.filter = ctx.filter || (syncGlobalState ? state.filter : '') || 'disabled';
     }
+    if (typeof _dbStatusFilterMode === 'function') ctx.filter = _dbStatusFilterMode(dbPath, ctx.filter);
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
@@ -729,21 +730,22 @@ async function selectEntity(entityPath, opts) {
    フィルタ
    ============================== */
 function setFilter(f, options = {}) {
-  const nextFilter = f || 'disabled';
   const ctx = options.ctx || null;
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
+  const requestedFilter = f || 'disabled';
+  const nextFilter = typeof _dbStatusFilterMode === 'function' ? _dbStatusFilterMode(dbPath, requestedFilter) : requestedFilter;
   if (ctx) ctx.filter = nextFilter;
   if (!ctx || dbPath === state.currentDbPath) state.filter = nextFilter;
   if (dbPath && typeof _saveCurrentDbViewField === 'function') {
     _saveCurrentDbViewField(dbPath, '', '', { skipHistory: true, ctx }, (v) => {
-      v.filter = nextFilter;
+      v.filter = requestedFilter;
     });
   }
   _updateFilterBadge({ dbPath, filter: nextFilter, ctx });
   if (!options.skipReload && dbPath) selectDatabase(dbPath, ctx || undefined);
 }
 
-function filterValues(values, status, filterMode) {
+function filterValues(values, status, filterMode, dbPath) {
   if (!values) return [];
   // 第2引数 status 指定時は、その特定ステータスのみを返す（候補値書き換え時のガードレール用途）
   // status 未指定時は state.filter (adopted/nobotsu/all) に従ってステータスフィルタを適用
@@ -751,7 +753,8 @@ function filterValues(values, status, filterMode) {
     return values.filter(v => (v?.status || '採用') === status);
   }
   let result = values;
-  const mode = filterMode == null ? state.filter : filterMode;
+  const requestedMode = filterMode == null ? state.filter : filterMode;
+  const mode = typeof _dbStatusFilterMode === 'function' ? _dbStatusFilterMode(dbPath, requestedMode) : requestedMode;
   // ステータスフィルタのみ適用（高度フィルタはプロパティ名が必要なためapplyAdvancedFiltersで適用）
   if (mode === 'adopted') result = result.filter(v => v.status === '採用' || v.status === '掲載済み');
   else if (mode === 'nobotsu') result = result.filter(v => v.status !== 'ボツ');

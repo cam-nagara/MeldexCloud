@@ -650,6 +650,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;

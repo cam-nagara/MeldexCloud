@@ -24,6 +24,18 @@
 
 // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
 // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、§5.8-2）。
+function _styleCalendarDbDialogControls(root) {
+  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => el.classList.add('gb-input'));
+  root.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
+  root.querySelectorAll('select').forEach(el => {
+    el.classList.add('gb-select');
+    if (el.classList.contains('gb-select-sm')) return;
+    const short = el.options.length && Array.from(el.options).every(option => Array.from(option.textContent).length <= 8)
+      && !/creator|team|calendar/.test(el.id);
+    el.classList.add(short ? 'gb-select-medium' : 'gb-select-column');
+  });
+}
+
 async function _calendarLoadUserChoices() {
   if (window.MeldexUserPicker) {
     try {
@@ -377,6 +389,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='ep-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-event-edit',title:isNew?'新規イベント':'イベント編集',body:[...content.childNodes],
     footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-event-edit',
@@ -471,6 +484,7 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='tk-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-todo',title:isNew?'新規ToDo':'ToDo編集',body:[...content.childNodes],
     footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-todo',
@@ -803,6 +817,7 @@ async function _showTemplateModal(dbPath, options = {}) {
   const createButton=document.createElement('button');createButton.type='button';createButton.id='tmpl-create';createButton.className='gb-btn gb-btn-sm';createButton.textContent='新規テンプレート';
   const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='tmpl-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','週間テンプレートを閉じる');
   let busy=false,deleteConfirmPending=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-list',title:'週間テンプレート',body:[...content.childNodes],footer:[createButton,closeButton],
     variant:'standard',geometryKey:'calendar-db-template-list',minWidth:'0',initialFocus:'#tmpl-create',
@@ -886,6 +901,7 @@ async function _editTemplate(dbPath, tid, options = {}) {
   const cancelButton=document.createElement('button');cancelButton.type='button';cancelButton.id='tmpl-cancel';cancelButton.className='gb-btn gb-btn-sm';cancelButton.textContent='キャンセル';
   const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tmpl-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent='保存';
   let busy=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-template-edit',title:`テンプレート編集: ${t.name}`,body:[...content.childNodes],footer:[cancelButton,saveButton],
     variant:'standard',geometryKey:'calendar-db-template-edit',minWidth:'0',initialFocus:'#tmpl-name',
@@ -924,10 +940,10 @@ function _templateEntryRow(entry) {
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">
       ${_dayLabels.map((d,i) => `<option value="${i}" ${(entry?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}
     </select>
-    <input type="time" data-field="startTime" value="${esc(entry?.startTime||'09:00')}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-    <input type="number" data-field="duration" value="${esc(entry?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
+    <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(entry?.startTime||'09:00')}" style="padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(entry?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;" title="分">
     <span style="color:var(--fg2);">分</span>
-    <input type="text" data-field="title" value="${esc(entry?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+    <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(entry?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
     <button data-action="this.closest('.tmpl-entry').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
@@ -1033,6 +1049,7 @@ function _showSyncModal(dbPath) {
   if(!isAdmin)content.querySelectorAll('.calendar-db-sync-admin-only').forEach(card=>card.remove());
   const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='sync-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','カレンダー同期・ツールを閉じる');
   let syncBusy=false;
+  _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-sync',title:'カレンダー同期・ツール',body:[...content.childNodes],footer:closeButton,
     variant:'standard',geometryKey:'calendar-db-sync',minWidth:'0',initialFocus:isAdmin?'#sync-ical-import':'#sync-templates',

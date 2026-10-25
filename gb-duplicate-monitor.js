@@ -728,7 +728,7 @@
           ${typeof fieldHelp === 'function' ? fieldHelp('オフにしても手動の「重複を確認」は利用できます。既存ファイルの索引は保持されます。') : ''}
         </div>
         <label class="dup-settings-field"><span>全体を調べ直す間隔</span>
-          <select data-dup-setting="refresh_days" data-e2e-id="duplicate-setting-refresh-days">
+          <select class="gb-select gb-select-column" data-dup-setting="refresh_days" data-e2e-id="duplicate-setting-refresh-days">
             <option value="0" ${Number(settings.refresh_days) === 0 ? 'selected' : ''}>自動では調べ直さない</option>
             <option value="1" ${Number(settings.refresh_days) === 1 ? 'selected' : ''}>毎日</option>
             <option value="7" ${Number(settings.refresh_days ?? 7) === 7 ? 'selected' : ''}>7日ごと</option>

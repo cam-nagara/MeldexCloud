@@ -470,18 +470,12 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
-  let values = filterValues(rawValues, undefined, ctx?.filter);
+  let values = filterValues(rawValues, undefined, ctx?.filter, dbPath);
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
-  // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-  // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25。gb-db-table.part02.js と同期）。
-  // 1セル1値で運用するシート（制作管理）は対象外。ただしそのシートで「ステータス機能」を
-  // オンにした場合は従来どおり出す（hidesCandidateStatusUi）。
-  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-  const forceStatusDot = values.length > 1 && !hideStatusUi;
   values.forEach(cellVal => {
-    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
+    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
   });
   // 単独の「＋」は元データ0件だけ。フィルターで候補値が見えなくなっても生成しない。
   if (typeof _cellUiShouldShowStandaloneAdd === 'function'

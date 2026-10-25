@@ -5,8 +5,10 @@
    ピボットテーブル
    ============================== */
 #pivot-view { flex: 1; overflow: auto; padding: 0; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
-#pivot-table {
-  border-collapse: collapse; width: max-content; table-layout: fixed;
+#pivot-table, table.pivot-table {
+  /* collapsed border はstickyセルと別に描画され、座標が接しても1px透ける。
+     全ホストで罫線をセル自身へ持たせる。 */
+  border-collapse: separate; border-spacing: 0; width: max-content; table-layout: fixed;
 }
 #pivot-table thead {
   position: sticky;
@@ -156,7 +158,7 @@
   box-shadow: inset 0 0 0 1px var(--accent, #569cd6);
 }
 .pivot-table {
-  border-collapse: collapse; width: max-content; table-layout: fixed;
+  border-collapse: separate; border-spacing: 0; width: max-content; table-layout: fixed;
   --db-grid-h: var(--db-show-grid); --db-grid-v: var(--db-show-grid);
   --db-grid-h-color: var(--db-grid-border); --db-grid-v-color: var(--db-grid-border);
 }
@@ -678,6 +680,10 @@ td.active-cell .cell-value > .cell-value-more {
 #pivot-table tfoot td.col-row-controls, .pivot-table tfoot td.col-row-controls {
   position: sticky; left: 0; z-index: 8; background: var(--bg3);
 }
+/* 各セルの右辺・下辺で罫線を描き、separate方式でも二重線にしない。
+   全ホストの旧border指定より優先する。集計行の上罫線と追加行の破線は保持。 */
+table:is(#pivot-table, .pivot-table) :is(th, td) { border-left-width: 0; }
+table:is(#pivot-table, .pivot-table) :is(thead th, tbody td) { border-top-width: 0; }
 .count-type-select {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 36px; height: 20px;

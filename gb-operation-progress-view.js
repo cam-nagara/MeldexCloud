@@ -23,6 +23,7 @@
     if (operation.status === 'cancelling') return '中止しています';
     if (operation.status === 'failed') return '失敗';
     if (operation.status === 'partial') return '一部失敗';
+    if (operation.status === 'unknown') return '結果未確認';
     if (operation.status === 'cancelled') return '中止しました';
     if (operation.status === 'succeeded') return '完了';
     const phase = operation.phase || '処理中';
@@ -149,7 +150,7 @@
       row.appendChild(disclosure);
     }
 
-    if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial') {
+    if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
       if (operation.cancellable && operation.status !== 'cancelling') {
@@ -168,7 +169,7 @@
         retry.addEventListener('click', function () { window.MeldexOperationProgress.retry(operation.id); });
         actions.appendChild(retry);
       }
-      if (operation.status === 'failed' || operation.status === 'partial') {
+      if (operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.dataset.action = 'dismiss-operation-progress';
@@ -192,7 +193,7 @@
     const header = document.createElement('div');
     header.className = 'meldex-operation-tray-header';
     const title = document.createElement('span');
-    const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial'; });
+    const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial' || op.status === 'unknown'; });
     const hasActive = visible.some(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; });
     title.textContent = needsAttention
       ? '確認が必要な処理'

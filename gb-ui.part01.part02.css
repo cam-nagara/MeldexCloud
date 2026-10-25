@@ -109,6 +109,51 @@
   font-size: var(--ui-font-11);
   color: var(--ui-fg-muted);
 }
+/* 列などを選ぶフォーム。本文幅へ引き伸ばさず、狭い容器では下へ折り返す。 */
+.gb-field-select-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-4) var(--ui-space-5);
+  margin-bottom: var(--ui-space-4);
+  min-width: 0;
+}
+.gb-modal .gb-field-select-row > label {
+  flex: 0 0 128px;
+  max-width: 100%;
+  margin: 0;
+  font-size: var(--ui-font-13);
+  color: var(--ui-fg-default);
+  line-height: 1.4;
+}
+.gb-modal .gb-field-select-row--compact-label > label { flex-basis: 64px; }
+.gb-select-column,
+.gb-modal .gb-select.gb-select-column,
+.modal .gb-select.gb-select-column {
+  width: 280px !important;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.gb-select-short,
+.gb-modal .gb-select.gb-select-short,
+.modal .gb-select.gb-select-short {
+  width: 96px !important;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.gb-select-medium {
+  width: 164px !important;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.gb-field-select-row > div {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 280px;
+}
 .gb-label {
   font-size: var(--ui-font-12);
   color: var(--ui-fg-muted);

@@ -11,6 +11,17 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
+  // 値のあるリレーションは、クリックでもキーボードでも同じ置換エディタを使う。
+  // 空セル用の追加経路では既存選択・解除・逆参照の更新を扱えない。
+  if ((type === 'relation' || type === 'multi-relation') && typeof _showRelationDropdown === 'function') {
+    const values = ((ctx && ctx.pivotData) || state.pivotData)?.entities?.[entityName]?.[propName] || [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(values) : null)
+      || values.find(value => value?.file);
+    if (existing) {
+      _showRelationDropdown(td, existing, entityPath, propName, { ...ptc, __sourceDbPath: dbPath }, type === 'multi-relation');
+      return;
+    }
+  }
   const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link'].includes(type);
   const existingInlineEditor = td.querySelector('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor');
   if (existingInlineEditor) {
@@ -93,6 +104,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     // The model/identity still receives the save result. Its older UI callback
     // must not replace an editor opened while that request was in flight.
     if (!ownsInlineEditor()) return true;
+    // 保存待ちの間に候補色などが変更されるため、編集開始時の設定で再描画しない。
+    ptc = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null) || ptc;
     let refreshed = false;
     if (isRelationType) {
       refreshRelationCellNow(affectedProps || []);
@@ -148,9 +161,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         || ('option_' + Date.now().toString(36));
     });
     const nextConfig = { ...latest, type, options: merged, option_ids: optionIds };
-    ptc = { ...nextConfig };
     try {
-      await Promise.resolve(setPropertyType(dbPath, propName, nextConfig, ctx));
+      const saved = await Promise.resolve(setPropertyType(dbPath, propName, nextConfig, ctx));
+      if (saved === false) throw new Error('保護されている列のため変更できません');
+      ptc = (getPropertyTypes(dbPath, ctx) || {})[propName] || nextConfig;
       return true;
     } catch (e) {
       showStatus('選択肢の保存に失敗: ' + (e?.message || e), true);
@@ -607,6 +621,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       refreshCellDisplayNow([], oldValue);
       cancel();
+      if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       reportCommonTagPartialSave(saveOptions.createdTagNames);
     }
   };
@@ -708,7 +723,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
           if (dot) item.appendChild(dot);
         }
-        item.appendChild(document.createTextNode(opt));
+        const label = document.createElement('span');
+        label.className = 'db-select-option-label'; label.textContent = opt;
+        item.appendChild(label);
+        if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+          { dbPath, propName, option: opt, ctx, beforeConfirm: () => closeMultiSelectDropdown(true) });
         item._ddActivate = () => toggleValue(opt);
         item.addEventListener('click', () => toggleValue(opt));
         listDiv.appendChild(item);
@@ -1050,12 +1069,15 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (shouldCancel) cancel();
     };
     dd.addEventListener('db-dropdown-cancel', () => closeSelectDropdown(true));
-    // 解除（入力キャンセル）
+    // 解除は候補値を削除する。マルチセレクトと同じ保存・復旧・Undo経路を通す。
     const clearItem = document.createElement('div');
     clearItem.className = 'status-dropdown-item status-dropdown-clear';
     clearItem.style.cssText = 'color:var(--fg2);font-style:italic;';
     clearItem.textContent = '解除';
-    clearItem.addEventListener('click', () => { closeSelectDropdown(true); });
+    clearItem.addEventListener('click', () => {
+      closeSelectDropdown(false);
+      saveMultiSelectAndRestore('', null);
+    });
     dd.appendChild(clearItem);
     // 候補 = スキーマ登録済み選択肢 + 列内で実際に使われている値（スキーマ未登録分）。
     // 行ごとに候補が変わる動的選択肢列（optionSource）では他行の値を混ぜない。
@@ -1075,7 +1097,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
         if (dot) item.appendChild(dot);
       }
-      item.appendChild(document.createTextNode(opt));
+      const label = document.createElement('span');
+      label.className = 'db-select-option-label'; label.textContent = opt;
+      item.appendChild(label);
+      if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+        { dbPath, propName, option: opt, ctx, beforeConfirm: () => closeSelectDropdown(true) });
       item.addEventListener('click', () => { closeSelectDropdown(false); saveSelectAndRestore(opt, null); });
       dd.appendChild(item);
     });

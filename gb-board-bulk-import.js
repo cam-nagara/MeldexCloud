@@ -74,7 +74,7 @@
       </label>
       <label class="bd-bulk-import-field" for="${viewId}">
         <span class="bd-bulk-import-label">ビュー ${fieldHelp('選択したビューのフィルタを適用します')}</span>
-        <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
+        <select id="${viewId}" class="gb-select gb-select-column bd-bulk-import-select" data-bdbl-view></select>
       </label>
       <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>`;
     const cancelBtn = document.createElement('button');

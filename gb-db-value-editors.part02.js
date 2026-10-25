@@ -239,17 +239,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   const row = document.createElement('div');
-  row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
+  row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
 
-  // リレーションはロールアップの参照可否にも使うため、常にステータスを変更できるようにする。
-  // その他の型は、採用状況フィルタ使用時または候補値が複数ある場合だけ表示する。
-  // ただし1セル1値で運用するシート（制作管理）ではリレーション特例を適用しない。適用すると
-  // リレーション列だらけのシートで「ステータス機能」の設定に関係なくマークが出続ける。
-  // そのシートで「ステータス機能」をオンにした場合は従来どおり出す（hidesCandidateStatusUi）。
-  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-  const relationStatusEditable = !hideStatusUi && (type === 'relation' || type === 'multi-relation');
-  if (relationStatusEditable || (filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
+  // 列型・候補数による例外を設けず、シートのON/OFFに従う。
+  if (getStatusEnabled(dbPath)) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     dot.style.background = _getStatusColor(val.status, dbPath);
@@ -400,25 +394,23 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (typeof openColorPalette !== 'function') return;
-      let saveTimer = null;
-      openColorPalette(swatch, v || '', (color) => {
+      openColorPalette(swatch, val.value || '', (color) => {
         applyColor(color); // ライブでスウォッチへ反映
-        clearTimeout(saveTimer);
         const persistColor = async () => {
-          if (!swatch.isConnected) return;
-          const drawer = swatch.closest?.('#cloud-mobile-side-drawer');
-          if (drawer && !drawer.classList.contains('open')) return;
           if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(swatch)) {
-            saveTimer = setTimeout(persistColor, 120);
+            applyColor(val.value || '');
             return;
           }
+          const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
+          if (lockMsg) { applyColor(val.value || ''); showStatus(lockMsg, true); return; }
           const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
-          if (nv === (v || '')) return;
+          const oldColor = val.value || '';
+          if (nv === oldColor) return;
           try {
             const hasExisting = val?.file && val.candidate_index != null;
             if (hasExisting) {
               await _apiPutValue(val, { new_value: nv });
-              _dbUndoValue(propName + ': ' + (v || '') + ' → ' + nv, val, v, nv);
+              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv);
             } else {
               const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
               val.file = result?.path || entityPath;
@@ -435,9 +427,12 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
             }
             val.value = nv;
             if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(swatch, entityPath, propName);
-          } catch (err) { showStatus('保存に失敗: ' + (err?.message || err), true); }
+          } catch (err) {
+            applyColor(val.value || '');
+            showStatus('保存に失敗: ' + (err?.message || err), true);
+          }
         };
-        saveTimer = setTimeout(persistColor, 250);
+        scheduleDbColorSave(swatch, dbPath, persistColor);
       });
     });
     row.appendChild(swatch);

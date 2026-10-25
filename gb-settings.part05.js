@@ -1114,7 +1114,7 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
     <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-summary="1">
       <div class="gb-section-title">${lucide('palette', 14)} テーマ</div>
       <div class="gb-field-row" style="align-items:center;">
-        <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select" style="flex:1;min-width:180px;">
+        <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select gb-select-column">
           ${themeOptions}
         </select>
         ${_settingsThemeMenuButton()}

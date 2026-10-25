@@ -172,8 +172,10 @@
     const exportKinds = _pmCloudExportKinds();
     const kind = _pmSelect(exportKinds, exportKinds[0]);
     kind.dataset.e2eId = 'production-export-kind';
+    kind.classList.add('gb-select-medium');
     const format = _pmSelect(['csv', 'xlsx'], 'csv');
     format.dataset.e2eId = 'production-export-format';
+    format.classList.add('gb-select-short');
     const from = _pmInput('', '2026-05-01');
     from.dataset.e2eId = 'production-export-from';
     const to = _pmInput('', '2026-05-31');

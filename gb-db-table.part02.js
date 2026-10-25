@@ -677,7 +677,7 @@ function _dbRollupLineElement(text, className) {
   return line;
 }
 
-function _dbRenderAlignedRollupCell(record, slotCounts) {
+function _dbRenderAlignedRollupCell(record, slotCounts, ctx) {
   const { host, result, visible } = record;
   host.innerHTML = '';
   host.className = 'db-cell-display-text db-rollup-lines';
@@ -690,7 +690,9 @@ function _dbRenderAlignedRollupCell(record, slotCounts) {
     const count = slotCounts[groupIndex] || 1;
     for (let lineIndex = 0; lineIndex < count; lineIndex++) {
       const line = _dbRollupLineElement(group.values[lineIndex] || '', 'db-rollup-line');
-      line.dataset.relationStatus = group.relationStatus || '採用';
+      if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
+        line.dataset.relationStatus = group.relationStatus || '採用';
+      }
       host.appendChild(line);
     }
   });
@@ -712,6 +714,7 @@ function _dbRelationAlignmentLinkTarget(relationCell, groupIndex) {
 }
 
 function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
+  if (!getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) return false;
   const relationCell = statusDot?.closest('td[data-prop-name]');
   if (!relationCell) return false;
   const candidateIndex = Number.parseInt(statusDot.dataset.relationCandidateIndex || '0', 10);
@@ -799,17 +802,19 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
         line.dataset.dbPath = firstRollup.result.targetDbPath || '';
         line.dataset.entityId = group.relationId || '';
         line.dataset.entityName = group.relationName || group.relationId || '';
-        line.dataset.relationStatus = group.relationStatus || '採用';
-        const statusDot = document.createElement('span');
-        statusDot.className = 'status-dot db-rollup-relation-status';
-        statusDot.style.background = typeof _getStatusColor === 'function'
-          ? _getStatusColor(group.relationStatus || '採用', ctx?.dbPath || '')
-          : '';
-        statusDot.title = group.relationStatus || '採用';
-        statusDot.dataset.relationCandidateIndex = String(
-          Number.isInteger(group.relationCandidateIndex) ? group.relationCandidateIndex : 0
-        );
-        line.prepend(statusDot);
+        if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
+          line.dataset.relationStatus = group.relationStatus || '採用';
+          const statusDot = document.createElement('span');
+          statusDot.className = 'status-dot db-rollup-relation-status';
+          statusDot.style.background = typeof _getStatusColor === 'function'
+            ? _getStatusColor(group.relationStatus || '採用', ctx?.dbPath || '')
+            : '';
+          statusDot.title = group.relationStatus || '採用';
+          statusDot.dataset.relationCandidateIndex = String(
+            Number.isInteger(group.relationCandidateIndex) ? group.relationCandidateIndex : 0
+          );
+          line.prepend(statusDot);
+        }
         line.addEventListener('click', (event) => {
           if (event.target.closest('.db-rollup-relation-status')) return;
           event.stopPropagation();
@@ -852,7 +857,7 @@ function _dbUpdateRollupAlignment(ctx, entityName, relationProp) {
       ...results.map(result => result.groups[groupIndex]?.values?.length || 1)
     );
   });
-  rowRecord.rollups.forEach(record => _dbRenderAlignedRollupCell(record, slotCounts));
+  rowRecord.rollups.forEach(record => _dbRenderAlignedRollupCell(record, slotCounts, ctx));
   _dbRenderAlignedRelationCell(rowRecord, relationProp, reference?.groups || [], slotCounts, ctx);
 }
 
@@ -894,7 +899,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
   const rawValues = entityData && Object.prototype.hasOwnProperty.call(entityData, propName) && Array.isArray(entityData[propName])
     ? entityData[propName]
     : [];
-  let values = filterValues(rawValues, undefined, ctx?.filter);
+  let values = filterValues(rawValues, undefined, ctx?.filter, dbPath);
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   let colorValues = values;
 
@@ -1091,19 +1096,13 @@ function renderEntityCell(entityName, propName, ctx, options) {
     }
     container.appendChild(span);
   } else {
-    // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。1セル1値で運用する
-    // シート（制作管理）は対象外。ただしそのシートで「ステータス機能」をオンにした場合は
-    // 従来どおり出す（hidesCandidateStatusUi）。
-    const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
-    const _forceStatusDot = values.length > 1 && !_hideStatusUi;
     if (ptc?.type === 'multi-link' && typeof sortDbMultiLinkValues === 'function') {
       values = sortDbMultiLinkValues(values);
     }
     values.forEach(val => {
       container.appendChild(
-        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
-            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
+        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter })
+            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter })
       );
     });
 

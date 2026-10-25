@@ -859,10 +859,10 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .cloud-mobile-right-drawer-handle {
-    /* 左ドロワーの鏡像: 右ドロワーは左に隙間が空くため、ハンドルは左端に置く。 */
+    /* 背景側の隙間へ出し、列名や本文を覆わない。狭い画面でも左4pxを確保する。 */
     position: absolute;
     top: 50%;
-    left: 12px;
+    left: max(-28px, calc(-8vw + 4px));
     right: auto;
     z-index: 2;
     display: inline-flex;
@@ -930,13 +930,13 @@
     min-height: 0;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 10px;
+    padding: 10px 10px 10px 24px;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-body--panel {
     display: flex;
     flex-direction: column;
-    padding: 0;
+    padding: 0 0 0 24px;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-panel-content {
@@ -968,7 +968,7 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-body--preview {
     display: flex;
     flex-direction: column;
-    padding: 8px;
+    padding: 8px 8px 8px 24px;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-body--preview iframe,
@@ -1030,6 +1030,32 @@
     display: grid;
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  /* 詳細列にも値メニューの場所を確保する。絶対配置のまま44pxへ広げると
+     短い値と列名の上へはみ出す。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .entry-prop-card .cell-value {
+    min-height: 44px;
+    padding-right: 0;
+    gap: 4px;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .entry-prop-card .cell-value > .cell-value-more {
+    position: static !important;
+    transform: none !important;
+    order: 10;
+    flex: 0 0 44px;
+    margin-left: auto;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .entry-prop-card .value-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .entry-prop-card .cell-add-btn {
+    min-width: 44px;
+    min-height: 44px;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-editable {

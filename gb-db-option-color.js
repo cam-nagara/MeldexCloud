@@ -6,6 +6,49 @@
    - 候補名の確定保存時に色も同じ変更としてリネーム/削除する
 */
 
+const _dbPendingColorSaves = new Map();
+const _dbColorSaveQueues = new Map();
+
+function _dbColorSavePathKey(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+// ポップアップを閉じた直後の再読込でも、デバウンス中の色を保存してから読む。
+function scheduleDbColorSave(sw, dbPath, save) {
+  clearTimeout(sw._dbOptionColorSaveTimer);
+  let promise = null;
+  let timer = null;
+  const pending = {
+    dbPath,
+    flush() {
+      clearTimeout(timer);
+      if (!promise) {
+        const key = _dbColorSavePathKey(dbPath);
+        // 同じシートの色保存は、設定の読取と履歴登録も含めて順序を保つ。
+        const previous = _dbColorSaveQueues.get(key);
+        promise = Promise.resolve(previous).catch(() => {}).then(save).finally(() => {
+          if (_dbPendingColorSaves.get(sw) === pending) _dbPendingColorSaves.delete(sw);
+          if (_dbColorSaveQueues.get(key) === promise) _dbColorSaveQueues.delete(key);
+        });
+        _dbColorSaveQueues.set(key, promise);
+      }
+      return promise;
+    },
+  };
+  _dbPendingColorSaves.set(sw, pending);
+  timer = setTimeout(() => pending.flush().catch(() => {}), 250);
+  sw._dbOptionColorSaveTimer = timer;
+}
+
+async function flushPendingDbColorSaves(dbPath) {
+  const target = _dbColorSavePathKey(dbPath);
+  while (true) {
+    const pending = [..._dbPendingColorSaves.values()].filter(item => !target || _dbColorSavePathKey(item.dbPath) === target);
+    if (!pending.length) return;
+    await Promise.all(pending.map(item => item.flush()));
+  }
+}
+
 // hex 3桁/6桁のみ有効な色として扱う。'transparent' や不正値は「未設定」として扱う
 function _dbOptionColorIsValidHex(hex) {
   return typeof hex === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex.trim());
@@ -105,10 +148,10 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
     ? _dbPaneContextsForPath(dbPath)
     : [];
   if (ctx && !contexts.includes(ctx)) contexts.push(ctx);
-  const roots = contexts.map(item => item?.containerEl).filter(Boolean);
-  if (!roots.length && typeof document !== 'undefined') roots.push(document);
+  const views = contexts.filter(item => item?.containerEl).map(item => ({ root: item.containerEl, ctx: item }));
+  if (!views.length && typeof document !== 'undefined') views.push({ root: document, ctx });
 
-  roots.forEach(root => {
+  views.forEach(({ root, ctx }) => {
     root.querySelectorAll?.('td[data-prop-name]').forEach(td => {
       if (td.dataset.propName !== propName) return;
       td.querySelectorAll('.cell-select-val, .multi-select-tag').forEach(chip => {
@@ -214,21 +257,208 @@ function appendDbOptionColorSwatch(itemEl, opts) {
     e.stopPropagation();
     openColorPalette(sw, getDbOptionColor(getConfig(), option) || '', (color) => {
       paint(color); // ライブでスウォッチへ反映
-      clearTimeout(sw._dbOptionColorSaveTimer);
+      refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx);
       // ライブ変更のたびに保存せずデバウンスして setPropertyType を呼ぶ
-      sw._dbOptionColorSaveTimer = setTimeout(() => {
+      scheduleDbColorSave(sw, dbPath, () =>
         setDbOptionColorAndSave(dbPath, propName, option, color, ctx).then((ok) => {
           if (ok) {
             if (typeof opts.onChanged === 'function') opts.onChanged();
           } else {
             paint();
+            refreshDbOptionColorInOpenViews(dbPath, propName, option, getDbOptionColor(getConfig(), option), ctx);
           }
-        });
-      }, 250);
+        })
+      );
     });
   });
   itemEl.appendChild(sw);
   return sw;
+}
+
+// 選択肢の削除はセルの「解除」と別操作。画面のフィルタや部分キャッシュではなく、
+// 正本の全候補から削除対象を集め、値と列設定を同じUndo操作として扱う。
+function _dbSelectOptionDeleteWrites(pivot, dbPath, propName, option, type) {
+  const writes = [];
+  Object.entries(pivot?.entities || {}).forEach(([name, entity]) => {
+    (entity[propName] || []).forEach(value => {
+      const oldValue = String(value.value ?? '');
+      const tokens = type === 'multi-select' ? oldValue.split(',').map(v => v.trim()).filter(Boolean) : [oldValue];
+      if (!tokens.includes(option)) return;
+      const nextValue = type === 'multi-select' ? tokens.filter(v => v !== option).join(', ') : '';
+      const entryPath = entity._entry_path || value.entry_path || _entityPath(dbPath, name, pivot);
+      writes.push({ ref: { ...value, entry_path: entryPath, property: propName }, oldValue, nextValue });
+    });
+  });
+  return writes.sort((a, b) => String(a.ref.file).localeCompare(String(b.ref.file))
+    || Number(b.ref.candidate_index ?? -1) - Number(a.ref.candidate_index ?? -1));
+}
+
+function _dbOptionDeleteConfigKey(config) {
+  const ordered = value => Array.isArray(value) ? value.map(ordered)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
+  return JSON.stringify(ordered(config || {}));
+}
+
+async function _dbRestoreDeletedOptionWrites(writes) {
+  const restored = [];
+  const remaining = [];
+  const entities = new Map();
+  // 履歴作成後に別画面で値が変わっていた場合は、その値を上書きしない。
+  for (const write of writes.filter(item => item.nextValue)) {
+    const ref = { ...write.ref };
+    const path = ref.entry_path || ref.file;
+    if (!entities.has(path)) entities.set(path, await apiFetch('/entity?path=' + encodeURIComponent(path),
+      { skipBrowseCache: true, cache: 'reload' }));
+    if (ref.candidate_index != null) {
+      ref.candidate_index -= writes.filter(item => !item.nextValue && item.ref.file === ref.file
+        && item.ref.candidate_index < write.ref.candidate_index).length;
+    }
+    const current = entities.get(path).properties?.[ref.property] || [];
+    const saved = ref.candidate_index != null ? current[ref.candidate_index] : current.find(value => value.file === ref.file);
+    if (!saved || String(saved.value ?? '') !== write.nextValue) throw new Error('対象の値が変更されています。再読み込みして確認してください');
+    ref.entry_revision = entities.get(path).revision ?? saved.entry_revision ?? ref.entry_revision;
+    remaining.push({ ref, write });
+  }
+  try {
+    // 削除後の候補番号に補正してから、残っている複数選択の値を戻す。
+    for (const { ref, write } of remaining) {
+      await _apiPutValue(ref, { new_value: write.oldValue });
+      restored.push({ ref, write, created: false });
+    }
+    for (const write of [...writes].reverse().filter(item => !item.nextValue)) {
+      const old = write.ref;
+      const result = await _apiPostValue(old.entry_path || old.file, old.property, write.oldValue,
+        old.status || '採用', old.note || '', old.rich_html, old);
+      restored.push({ ref: { ...old, file: result.path || old.file,
+        candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
+    }
+  } catch (error) {
+    // Undoの途中で失敗しても、成功した分だけ復元された状態を残さない。
+    const failures = [];
+    for (const item of restored.reverse()) {
+      try { await _apiPutValue(item.ref, item.created ? { _delete: true } : { new_value: item.write.nextValue }); }
+      catch (rollbackError) { failures.push(rollbackError); }
+    }
+    if (failures.length) {
+      const failed = new Error('値の復元に失敗しました。再読み込みして保存状態を確認してください');
+      failed.cause = error;
+      throw failed;
+    }
+    throw error;
+  }
+}
+
+async function _dbApplyDeletedOptionWrites(writes) {
+  const completed = [];
+  try {
+    for (const write of writes) {
+      await _apiPutValue(write.ref, write.nextValue ? { new_value: write.nextValue } : { _delete: true });
+      completed.push(write);
+    }
+  } catch (error) {
+    await _dbRestoreDeletedOptionWrites(completed);
+    throw error;
+  }
+}
+
+async function deleteDbSelectOptionAndSave(dbPath, propName, option, ctx, beforeConfirm) {
+  let committed = false;
+  try {
+    const lockMessage = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName, ctx) : '';
+    if (lockMessage) throw new Error(lockMessage);
+    await flushPendingDbColorSaves(dbPath);
+    let before = JSON.parse(JSON.stringify(getPropertyTypes(dbPath, ctx)?.[propName] || {}));
+    const optionType = String(before.type || '').replace(/_/g, '-');
+    if (!['select', 'multi-select'].includes(optionType) || before.optionSource) throw new Error('この選択肢は参照元で変更してください');
+    const protection = _dbOptionColorProtectionReason(typeof _dbSchemaProtectionLevel === 'function'
+      ? _dbSchemaProtectionLevel(dbPath, propName) : null);
+    if (protection) throw new Error(protection);
+    const readWrites = async () => _dbSelectOptionDeleteWrites(await apiFetch('/pivot?path=' + encodeURIComponent(dbPath),
+      { skipBrowseCache: true, cache: 'reload' }), dbPath, propName, String(option), optionType);
+    let writes = await readWrites();
+    beforeConfirm?.();
+    if (!await cfConfirm(`選択肢「${option}」を削除しますか？\nこの選択肢を含む${writes.length}件の値からも削除します。複数選択の他の値は残ります。`,
+      { danger: true, okLabel: '削除' })) return false;
+    let after = JSON.parse(JSON.stringify(before));
+    after.options = (after.options || []).filter(value => value !== option);
+    if (after.optionColors) delete after.optionColors[option];
+    if (after.option_ids) delete after.option_ids[option];
+    const saveConfig = async config => {
+      const restoring = config === before;
+      if (await setPropertyType(dbPath, propName, JSON.parse(JSON.stringify(config)), ctx) === false) {
+        throw new Error('保護されている列のため変更できません');
+      }
+      // 保存時に付与される安定IDも、以後の競合判定と履歴へ引き継ぐ。
+      const stored = JSON.parse(JSON.stringify(getPropertyTypes(dbPath, ctx)?.[propName] || config));
+      if (restoring) before = stored;
+      else after = stored;
+    };
+    const reload = async () => {
+      if (typeof _ptReloadOtherDbContexts === 'function') await _ptReloadOtherDbContexts(dbPath, ctx);
+      await selectDatabase(dbPath, ctx, { silent: true });
+    };
+    const remove = async () => {
+      // 確認中・Undo後の候補番号や保存済みデータを再取得する。
+      const current = await readWrites();
+      const signature = item => JSON.stringify([item.ref.entry_id || item.ref.entry_path || item.ref.file,
+        item.oldValue, item.ref.status || '', item.ref.note || '']);
+      const expected = new Map();
+      writes.forEach(item => expected.set(signature(item), (expected.get(signature(item)) || 0) + 1));
+      current.forEach(item => expected.set(signature(item), (expected.get(signature(item)) || 0) - 1));
+      if ([...expected.values()].some(count => count < 0)) throw new Error('対象の値が変更されています。もう一度削除してください');
+      if (_dbOptionDeleteConfigKey(getPropertyTypes(dbPath, ctx)?.[propName]) !== _dbOptionDeleteConfigKey(before)) {
+        throw new Error('列設定が変更されています。もう一度削除してください');
+      }
+      await _dbApplyDeletedOptionWrites(current);
+      try { await saveConfig(after); }
+      catch (error) { await _dbRestoreDeletedOptionWrites(current); throw error; }
+      writes = current;
+    };
+    await remove();
+    committed = true;
+    historyPush('選択肢削除: ' + propName + '=' + option,
+      async () => {
+        if (_dbOptionDeleteConfigKey(getPropertyTypes(dbPath, ctx)?.[propName]) !== _dbOptionDeleteConfigKey(after)) {
+          throw new Error('列設定が変更されています。再読み込みして確認してください');
+        }
+        await saveConfig(before);
+        try { await _dbRestoreDeletedOptionWrites(writes); }
+        catch (error) { await saveConfig(after); throw error; }
+        await reload();
+      },
+      async () => { await remove(); await reload(); }, _dbScope(dbPath));
+    await reload();
+    showStatus('選択肢「' + option + '」を削除しました');
+    return true;
+  } catch (error) {
+    showStatus((committed ? '選択肢は削除しましたが、表示更新に失敗: ' : '選択肢の削除に失敗: ') + (error?.message || error), true);
+    return false;
+  }
+}
+
+function appendDbOptionDeleteButton(item, opts) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet db-option-delete';
+  button.dataset.e2eId = 'db-select-option-delete';
+  button.setAttribute('aria-label', opts.option + ' を選択肢から削除');
+  button.title = '選択肢から削除';
+  button.innerHTML = lucide('trash-2', 14);
+  const config = getPropertyTypes(opts.dbPath, opts.ctx)?.[opts.propName] || {};
+  const reason = config.optionSource ? '動的な選択肢は参照元で変更してください'
+    : _dbOptionColorProtectionReason(typeof _dbSchemaProtectionLevel === 'function'
+      ? _dbSchemaProtectionLevel(opts.dbPath, opts.propName) : null);
+  if (reason) { button.disabled = true; button.title = reason; }
+  button.addEventListener('pointerdown', event => event.stopPropagation());
+  button.addEventListener('click', async event => {
+    event.stopPropagation();
+    button.disabled = true;
+    await deleteDbSelectOptionAndSave(opts.dbPath, opts.propName, opts.option, opts.ctx, opts.beforeConfirm);
+    button.disabled = Boolean(reason);
+  });
+  item.classList.add('db-select-option-row');
+  item.appendChild(button);
+  return button;
 }
 
 // プロパティ設定画面: 選択肢の色エディタを描画する。

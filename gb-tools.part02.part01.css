@@ -555,6 +555,9 @@
   min-width: 0;
   max-width: 100%;
 }
+.gb-middle-ellipsis-input-wrap:has(> input[hidden]) {
+  display: none !important;
+}
 .gb-middle-ellipsis-input-wrap > input {
   width: 100%;
   min-width: 0;
@@ -1649,33 +1652,72 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   max-height: calc(100vh - 48px);
 }
 .db-config-modal-body {
-  padding: 12px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-5);
+  padding: 0;
   box-sizing: border-box;
 }
+.db-config-modal-body > .field { margin: 0; }
+.db-config-modal-body [hidden] { display: none !important; }
+.db-config-modal-body .dbcfg-section-content {
+  margin-inline-start: var(--ui-space-6);
+  min-width: 0;
+}
+#dbcfg-status-editor { margin-top: var(--ui-space-4); }
+.dbcfg-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  margin-bottom: var(--ui-space-2);
+}
+.dbcfg-st-name { flex: 1; min-width: 0; }
+#dbcfg-copy-props {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ui-space-2);
+  max-height: 160px;
+  overflow: auto;
+}
+#dbcfg-calendar-mapping-fields {
+  margin-top: var(--ui-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
+}
+#dbcfg-calendar-mapping-fields > .field { margin: 0; }
 .dbcfg-display-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
 }
 .dbcfg-check-row,
 .dbcfg-inline-field {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--ui-space-4);
   min-width: 0;
   color: var(--fg);
   font-size: 12px;
 }
+.db-config-modal-body .dbcfg-check-row { min-height: var(--ui-h-sm); margin: 0; }
+body[data-cloud-mobile="1"] .db-config-modal-body .dbcfg-check-row,
+body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-height: 44px; }
 /* 幅が足りないときはラベルの下へ折り返す（セレクトを潰して選択肢が読めなくなるのを防ぐ） */
 .dbcfg-inline-field {
   flex-wrap: wrap;
 }
 .dbcfg-inline-field select {
-  width: auto;
-  /* 最長の選択肢と右端の▼が切れずに収まる幅 */
-  min-width: 116px;
-  flex-shrink: 0;
+  width: 164px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 164px;
 }
+.dbcfg-display-grid > .gb-field-select-row { margin-bottom: 0; }
+.status-dropdown-item.db-select-option-row { display: flex; align-items: center; gap: 6px; }
+.db-select-option-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.db-option-delete { flex: 0 0 auto; margin-inline-start: auto; }
 .dbcfg-display-actions {
   display: flex;
   flex-wrap: wrap;

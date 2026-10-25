@@ -6,6 +6,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-auto-compress',
   'chat-allow-code-execution',
   'chat-reasoning-level',
+  'chat-native-generation-settings',
   'chat-param-preset',
   'chat-temperature',
   'chat-max-tokens',
@@ -365,6 +366,7 @@ function _chatApplyRoomModelSettings(roomPath) {
   _chatState.model = model;
   _chatState.pendingModel = model;
   if (saved?.generation) _chatApplyGenerationStorageSnapshot(saved.generation);
+  else localStorage.removeItem('chat-native-generation-settings');
   _safeSetValue('chat-provider', provider);
   if (typeof updateChatModels === 'function') {
     updateChatModels({ preferredModel: model, suppressNotify: true, skipGlobalPersist: true, skipRoomPersist: true });
@@ -442,8 +444,8 @@ function chatCustomInstructionSettings() {
   };
 }
 
-// 思考の深さの内部値一覧（オフ/低/中/高/最高/最大 + claude_code限定のUltracode）。
-const CHAT_REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+// 思考の深さの内部値。UltracodeはClaude Code、Ultraは対応Codexモデルで使う。
+const CHAT_REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'ultra'];
 
 // 旧3段階UI（オフ/標準/最大）からの移行。standardはmediumとして扱う。
 // gb-chat-generation-settings.js からも参照する（グローバル関数として定義）。
@@ -453,7 +455,7 @@ function _chatNormalizeReasoningLevel(value) {
   return CHAT_REASONING_LEVELS.includes(raw) ? raw : 'off';
 }
 
-function chatGenerationSettings() {
+function chatGenerationSettings(provider = _chatState.provider, model = _chatState.model) {
   const preset = localStorage.getItem('chat-param-preset') || 'standard';
   const presetTemperature = preset === 'creative' ? 1.2 : preset === 'strict' ? 0.2 : 0.7;
   const temperatureRaw = localStorage.getItem('chat-temperature');
@@ -463,7 +465,9 @@ function chatGenerationSettings() {
   const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : 8192;
   const topP = topPRaw !== null && topPRaw !== '' ? Number(topPRaw) : null;
   return {
-    reasoning_level: _chatNormalizeReasoningLevel(localStorage.getItem('chat-reasoning-level')),
+    ...(typeof _chatNativeGenerationSettings === 'function'
+      ? _chatNativeGenerationSettings(provider, model)
+      : { reasoning_level: _chatNormalizeReasoningLevel(localStorage.getItem('chat-reasoning-level')), speed_mode: 'default' }),
     temperature: Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : presetTemperature,
     max_tokens: Number.isFinite(maxTokens) ? Math.max(1024, Math.min(32768, Math.floor(maxTokens))) : 8192,
     top_p: Number.isFinite(topP) ? Math.max(0, Math.min(1, topP)) : undefined,
@@ -824,7 +828,9 @@ function _renderChatModelOptions(models, options = {}) {
     sel.appendChild(o);
   });
   sel.value = selection.value;
+  const previousModel = _chatState.model;
   _chatState.model = sel.value || selection.model || _chatDefaultModel(provider);
+  if (previousModel !== _chatState.model && typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
   if (!options.skipGlobalPersist) {
     localStorage.setItem('chat-model', _chatState.model || '');
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
@@ -840,6 +846,7 @@ function _renderChatModelOptions(models, options = {}) {
   el.addEventListener('focus', refreshAvailability);
   el.addEventListener('pointerdown', refreshAvailability);
   el.onchange = function() {
+    if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
     _chatState.provider = this.value;
     localStorage.setItem('chat-provider', this.value);
     _chatState.model = localStorage.getItem('chat-model:' + _chatProviderKey(this.value)) || _chatDefaultModel(this.value);
@@ -865,6 +872,7 @@ function updateChatModels(options = {}) {
   const el = document.getElementById('chat-model');
   if (!el) return;
   el.onchange = function() {
+    if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
     const provider = _chatProviderKey(_chatState.provider);
     _chatState.model = this.value || _chatDefaultModel(provider);
     localStorage.setItem('chat-model', _chatState.model || '');

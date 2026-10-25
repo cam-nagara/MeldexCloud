@@ -91,7 +91,7 @@
     '.status-dropdown',
     '.cell-inline-dd',
     '.user-dropdown',
-    '.gb-context-menu',
+    '.gb-context-menu:not(.chat-generation-settings-menu)',
     '.db-picker-popup',
     '.gb-selection-float-bar',
     '.value-input',
@@ -680,12 +680,16 @@
     // registry に shortcutId が無くても data-shortcut-id があれば後付けする。
     // appendShortcut は末尾に既に括弧表記があれば二重付与を避けるため安全。
     if (fromRegistry) return finalizeTooltipText(fromRegistry, el);
+    // 幅を抑えた列選択でも、選択中の長い名前を全文確認できるようにする。
+    const columnValueHint = el.matches?.('select.gb-select-column')
+      ? compactText(el.selectedOptions?.[0]?.textContent) : '';
     const text = (
       readAttr(el, ATTR_PRIMARY) ||
       readAttr(el, ATTR_LEGACY) ||
       readAttr(el, ATTR_HELP) ||
       readAttr(el, 'title') ||
       readAttr(el, ATTR_NATIVE_TITLE) ||
+      columnValueHint ||
       readAttr(el, 'aria-label') ||
       firstDatasetHint(el) ||
       idHint(el) ||

@@ -128,6 +128,13 @@ function hidesCandidateStatusUi(dbPath) {
   return typeof getStatusEnabled !== 'function' || !getStatusEnabled(dbPath);
 }
 
+// OFFにしても保存済みのステータスやビューの絞り込み設定は保持する。
+// 描画・ロールアップへ渡す実効フィルタだけを無効化する。
+function _dbStatusFilterMode(dbPath, filterMode) {
+  return dbPath && typeof getStatusEnabled === 'function' && !getStatusEnabled(dbPath)
+    ? 'disabled' : filterMode;
+}
+
 // スタッフ管理シート（正本）の列保護レベルを判定する。
 // 返り値: 'all'（制作管理シート・従来動作を維持、全列ロック）/
 //         'required'（正本シートの必須列。名前・型変更と削除のみ拒否、

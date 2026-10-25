@@ -198,6 +198,7 @@ function _chatRestoreWaitingDraftToComposer(message) {
     if (modelSelect) modelSelect.value = message.model;
   }
   const generation = message.generation || {};
+  if (typeof _chatStoreNativeGenerationSettings === 'function') _chatStoreNativeGenerationSettings(generation);
   const generationKeys = {
     reasoning_level: 'chat-reasoning-level',
     temperature: 'chat-temperature',

@@ -572,7 +572,7 @@ function _elShowCellInspector(anchor, ctx) {
   const popup = document.createElement('div'); popup.className = 'gb-context-menu el-edit-popup el-cell-inspector';
   popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', 'セル一覧・設定');
   const types = { field: '列', label: '見出し', image: '画像', divider: '罫線', chart: 'チャート', subform: '繰り返し項目' };
-  const select = document.createElement('select'); select.className = 'gb-input'; select.setAttribute('aria-label', '設定するセル');
+  const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', '設定するセル');
   ctx.layout.cells.forEach((cell, index) => select.add(new Option(`${index + 1}. ${types[cell.type] || cell.type}: ${cell.prop || cell.text || cell.subform?.title || ''}`, cell.id)));
   select.value = ctx.session.selectedIds?.[0] || ctx.layout.cells[0]?.id || '';
   popup.appendChild(select);
@@ -600,7 +600,7 @@ function _elShowCellInspector(anchor, ctx) {
     }
     let prop, text;
     if (cell.type === 'field') {
-      prop = document.createElement('select');
+      prop = document.createElement('select'); prop.className = 'gb-select gb-select-column';
       const names = [...new Set([cell.prop, ...Object.keys(ctx.propTypes || {})])].filter(Boolean);
       names.forEach(name => prop.add(new Option(name + (ctx.propTypes[name] ? '' : '（シートにない列）'), name)));
       prop.value = cell.prop || ''; row('参照する列', prop);

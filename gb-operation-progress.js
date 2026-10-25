@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
+  const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled', 'unknown']);
   const DEFAULT_DELAY_MS = 250;
   const DEFAULT_SUCCESS_DISMISS_MS = 1800;
   const records = new Map();
@@ -183,7 +183,8 @@
       record.state.processed = record.state.total;
       record.state.percent = 100;
     }
-    const needsAttention = status === 'failed' || status === 'partial';
+    const needsAttention = status === 'failed' || status === 'partial' || status === 'unknown';
+    if (status === 'unknown') record.state.retryable = false;
     if (needsAttention && !record.state.visible) record.state.visible = true;
     _emit(record, status);
     const configuredDismiss = next.dismissMs !== undefined ? next.dismissMs : record.dismissMs;
@@ -206,6 +207,7 @@
       setPersistentJobId: function (jobId) { return _patch(record, { persistentJobId: jobId }, 'job-id'); },
       succeed: function (values) { return _finish(record, 'succeeded', values); },
       partial: function (values) { return _finish(record, 'partial', values); },
+      unknown: function (values) { return _finish(record, 'unknown', values); },
       fail: function (values) {
         const payload = values instanceof Error ? { error: values } : values;
         return _finish(record, 'failed', payload);

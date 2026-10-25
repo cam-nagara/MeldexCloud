@@ -446,9 +446,9 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'link', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
 
   const rowSelect = (id, label, options, value, placeholder = '(なし)', help = '') => `
-    <div class="field gb-field" style="margin-top:6px;">
+    <div class="field gb-field-select-row">
       <label class="gb-label" for="${id}">${label}${help ? ' ' + fieldHelp(help, { e2eId: `${id}-help` }) : ''}</label>
-      <select id="${id}" class="gb-select" data-e2e-id="${id}" style="width:100%;box-sizing:border-box;">
+      <select id="${id}" class="gb-select gb-select-column" data-e2e-id="${id}">
         <option value="">${placeholder}</option>
         ${options.map(p => `<option value="${esc(p)}" ${value===p?'selected':''}>${esc(p)}</option>`).join('')}
       </select>
@@ -457,16 +457,15 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const wrap = document.createElement('div');
   wrap.id = 'dbcfg-calendar-mapping';
   wrap.className = 'field';
-  wrap.style.marginTop = '10px';
   wrap.innerHTML = `
     <div class="gb-check-help-row">
-      <label class="gb-check" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-height:44px;">
+      <label class="gb-check dbcfg-check-row">
         <input id="dbcfg-calmap-enabled" type="checkbox" data-e2e-id="dbcfg-calmap-enabled" aria-controls="dbcfg-calendar-mapping-fields" aria-expanded="${current?.startProp ? 'true' : 'false'}" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
         <span>任意シートをカレンダー表示に連携する</span>
       </label>
       ${fieldHelp('連携すると、このシートの既存イベントは日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーシート側で行います。', { e2eId: 'db-calendar-mapping-help' })}
     </div>
-    <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
+    <div id="dbcfg-calendar-mapping-fields" class="dbcfg-section-content"${current?.startProp ? '' : ' hidden'}>
       ${rowSelect('dbcfg-calmap-start', '開始列', dateProps, current?.startProp || '', '(必須)')}
       ${rowSelect('dbcfg-calmap-end', '終了列', dateProps, current?.endProp || '', undefined, '開始列が期間付き日時なら、終了列を空にしても終了日時を拾います')}
       ${rowSelect('dbcfg-calmap-title', 'タイトル列', textLikeProps, current?.titleProp || '', '(トピック名)')}
@@ -480,6 +479,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
 
   if (dateProps.length === 0) {
     const note = document.createElement('div');
+    note.className = 'dbcfg-section-content';
     note.style.cssText = 'font-size:11px;color:var(--red);margin-top:6px;';
     note.textContent = '日時列がないため、カレンダー連携は設定できません。';
     wrap.appendChild(note);
@@ -488,7 +488,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const enabled = wrap.querySelector('#dbcfg-calmap-enabled');
   const fields = wrap.querySelector('#dbcfg-calendar-mapping-fields');
   enabled?.addEventListener('change', () => {
-    if (fields) fields.style.display = enabled.checked ? '' : 'none';
+    if (fields) fields.hidden = !enabled.checked;
     enabled.setAttribute('aria-expanded', enabled.checked ? 'true' : 'false');
   });
 

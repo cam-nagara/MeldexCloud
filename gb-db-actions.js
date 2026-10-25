@@ -207,7 +207,8 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
       const fieldId = `db-action-field-${seq}-${i}`;
       html += `<div style="margin-bottom:8px;"><label for="${fieldId}" style="font-size:12px;color:var(--fg2);">${esc(field.property)}${field.required ? ' *' : ''}</label>`;
       if (field.type === 'select' && field.options) {
-        html += `<select id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" class="gb-select" style="width:100%;">`;
+        const sizeClass = field.options.every(option => Array.from(String(option)).length <= 8) ? 'gb-select-medium' : 'gb-select-column';
+        html += `<select id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" class="gb-select ${sizeClass}">`;
         html += '<option value="">-- 選択 --</option>';
         field.options.forEach(opt => { html += `<option value="${esc(opt)}">${esc(opt)}</option>`; });
         html += '</select>';

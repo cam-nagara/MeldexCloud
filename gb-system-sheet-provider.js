@@ -135,6 +135,8 @@
   function createElement(tagName, className, text) {
     const element = document.createElement(tagName);
     if (className) element.className = className;
+    if (tagName === 'button') element.classList.add('gb-btn', 'gb-btn-sm');
+    if (tagName === 'select') element.classList.add('gb-select');
     if (text != null) element.textContent = String(text);
     return element;
   }
@@ -326,14 +328,16 @@
 
     _filterRow(provider, filters, filter, index, render) {
       const row = createElement('div', 'gb-system-sheet-filter-row');
-      row.style.cssText = 'display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) minmax(120px,2fr) auto;gap:6px;';
+      row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;';
       const column = createElement('select');
+      column.classList.add('gb-select-column');
       column.style.minHeight = '44px';
       column.setAttribute('aria-label', `条件${index + 1}の列`);
       provider.columns.forEach(item => { const option = createElement('option', '', item.label || item.id); option.value = item.id; column.appendChild(option); });
       column.value = filter.column || provider.columns[0]?.id || '';
       column.addEventListener('change', () => { filter.column = column.value; });
       const operator = createElement('select');
+      operator.classList.add('gb-select-medium');
       operator.style.minHeight = '44px';
       operator.setAttribute('aria-label', `条件${index + 1}の比較`);
       [['contains', '含む'], ['not_contains', '含まない'], ['equals', '等しい'], ['not_equals', '等しくない'], ['empty', '空欄'], ['not_empty', '空欄でない'], ['greater_than', 'より大きい'], ['less_than', 'より小さい'], ['after', 'より後'], ['before', 'より前']].forEach(([value, label]) => { const option = createElement('option', '', label); option.value = value; operator.appendChild(option); });
@@ -341,6 +345,8 @@
       operator.addEventListener('change', () => { filter.operator = operator.value; value.disabled = ['empty', 'not_empty'].includes(operator.value); });
       const value = createElement('input');
       value.type = 'text';
+      value.className = 'gb-input';
+      value.style.cssText = 'flex:1 1 160px;min-width:0;max-width:100%;';
       value.style.minHeight = '44px';
       value.value = String(filter.value || '');
       value.setAttribute('aria-label', `条件${index + 1}の値`);

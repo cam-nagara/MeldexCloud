@@ -225,6 +225,8 @@ async function _rollupBuildValuesResult(refs, targetData, targetDbPath, relation
  * 1エントリのロールアップ値を計算する
  */
 async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath, filterMode) {
+  filterMode = typeof _dbStatusFilterMode === 'function'
+    ? _dbStatusFilterMode(sourceDbPath || state.currentDbPath || '', filterMode) : filterMode;
   const { relationProp, targetProp } = rollupConfig;
   const aggregation = _rollupEffectiveAggregation(rollupConfig);
   const { names, refs, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
@@ -281,6 +283,8 @@ async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes,
  * @returns {Promise<Map<string, string|number>>} entityName → 集計値
  */
 async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath, filterMode) {
+  filterMode = typeof _dbStatusFilterMode === 'function'
+    ? _dbStatusFilterMode(sourceDbPath || state.currentDbPath || '', filterMode) : filterMode;
   const { relationProp, targetProp } = rollupConfig;
   const aggregation = _rollupEffectiveAggregation(rollupConfig);
   const results = new Map();

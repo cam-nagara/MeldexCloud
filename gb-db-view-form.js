@@ -262,7 +262,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverri
   const entityNameLabel = _dbFormEditorLabel('トピック名にするフィールド', 'gb-form-entity-name-prop');
   const entityNameSelect = document.createElement('select');
   entityNameSelect.id = 'gb-form-entity-name-prop';
-  entityNameSelect.className = 'gb-select gb-form-select';
+  entityNameSelect.className = 'gb-select gb-select-column gb-form-select';
   entityNameSelect.dataset.e2eId = _dbFormControlIdentity(cfg, 'entity-name', 'select');
   [''].concat(cfg.fields || []).forEach(prop => {
     const option = document.createElement('option');

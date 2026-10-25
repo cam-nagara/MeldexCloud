@@ -219,7 +219,6 @@ function _showDbTemplateFormModal(options) {
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = mode;
-  overlay.style.zIndex = '120';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   modal.dataset.e2eId = 'db-template-' + mode + '-dialog';

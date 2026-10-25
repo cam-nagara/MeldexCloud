@@ -476,7 +476,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const thumbnailSize = activeView?.thumbnailSize || 'small';
   const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
-    const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
+  const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
       : (cfg.defaultPanel || 'right-sidebar');
 
@@ -487,46 +487,55 @@ async function _showDbConfigModal(dbPath, ctx) {
   content.className = 'db-config-modal-body';
   content.innerHTML = `
       <div class="field">
-        <label>トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
-        <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
+        <label for="dbcfg-name-template">トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
+        <input id="dbcfg-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
       </div>
-      <div class="field" style="margin-top:8px;">
-        <label>ステータス一覧</label>
-        <div id="dbcfg-status-list" style="font-size:12px;"></div>
-        <button id="dbcfg-add-status" style="font-size:11px;margin-top:4px;padding:2px 8px;">+ ステータス追加</button>
+      <div class="field">
+        <div class="gb-check-help-row">
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox" aria-controls="dbcfg-status-editor" aria-expanded="${statusOn}"${statusOn ? ' checked' : ''}> ステータス機能</label>
+          ${fieldHelp('OFFではステータスマークを表示せず、ロールアップもステータスで絞り込みません。保存済みのステータスは保持され、ONに戻すと再び使えます', { e2eId: 'dbcfg-status-help' })}
+        </div>
+        <div id="dbcfg-status-editor" class="dbcfg-section-content"${statusOn ? '' : ' hidden'}>
+          <label>ステータス一覧</label>
+          <div id="dbcfg-status-list"></div>
+          <button type="button" id="dbcfg-add-status" class="gb-btn gb-btn-sm">${lucide('plus', 14)} ステータス追加</button>
+        </div>
       </div>
-      <div class="field dbcfg-display-settings" style="margin-top:8px;">
+      <div class="field dbcfg-display-settings">
         <label>表示設定</label>
+        <div class="dbcfg-section-content">
         <div class="dbcfg-display-grid">
-          <label class="dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
-          <label class="dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
-          <label class="dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox"${statusOn ? ' checked' : ''}> ステータス機能</label>
-          <label class="dbcfg-inline-field">サムネイル
-            <select id="dbcfg-thumbnail-size">
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
+          <label class="gb-check dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
+          <div class="dbcfg-inline-field gb-field-select-row">
+            <label for="dbcfg-thumbnail-size">サムネイル</label>
+            <select id="dbcfg-thumbnail-size" class="gb-select">
               <option value="small"${thumbnailSize !== 'large' ? ' selected' : ''}>小</option>
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
-          </label>
-          <div class="dbcfg-inline-field">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
-            <select id="dbcfg-default-panel">
+          </div>
+          <div class="dbcfg-inline-field gb-field-select-row">
+            <label for="dbcfg-default-panel">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}</label>
+            <select id="dbcfg-default-panel" class="gb-select">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>右サイドバー</option>
             </select>
           </div>
         </div>
         <div class="dbcfg-display-actions">
-          <button type="button" id="dbcfg-grid-border">枠線設定...</button>
-          <button type="button" id="dbcfg-conditional-color">条件付きカラー...</button>
+          <button type="button" id="dbcfg-grid-border" class="gb-btn gb-btn-sm">枠線設定...</button>
+          <button type="button" id="dbcfg-conditional-color" class="gb-btn gb-btn-sm">条件付きカラー...</button>
+        </div>
         </div>
       </div>
-      <div class="field" style="margin-top:8px;">
+      <div class="field">
         <label>依存トピック作成時のコピー対象</label>
-        <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
+        <div id="dbcfg-copy-props" class="dbcfg-section-content"></div>
       </div>
-      <div class="field" style="margin-top:8px;">
+      <div class="field">
         <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
-        <div class="dbcfg-display-actions">
-          <button type="button" id="dbcfg-attachments">添付ファイルを整理...</button>
+        <div class="dbcfg-display-actions dbcfg-section-content">
+          <button type="button" id="dbcfg-attachments" class="gb-btn gb-btn-sm">添付ファイルを整理...</button>
         </div>
       </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>`;
@@ -535,7 +544,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const footerSpacer = document.createElement('span');
   footerSpacer.style.flex = '1';
   const cancelButton = document.createElement('button');
-  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm gb-btn-quiet'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.id = 'dbcfg-save'; saveButton.textContent = '保存';
   let busy = false;
@@ -556,7 +565,11 @@ async function _showDbConfigModal(dbPath, ctx) {
   modalApi.modal.classList.add('db-config-modal');
   modalApi.modal.style.width = 'min(780px, calc(100vw - 24px))';
   modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
-  content.querySelectorAll('.dbcfg-check-row').forEach(row => { row.style.minHeight = '44px'; });
+  const statusToggle = content.querySelector('#dbcfg-status-enabled');
+  statusToggle.addEventListener('change', () => {
+    content.querySelector('#dbcfg-status-editor').hidden = !statusToggle.checked;
+    statusToggle.setAttribute('aria-expanded', String(statusToggle.checked));
+  });
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
 
   function openChildDialog(trigger, launch) {
@@ -602,7 +615,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     const row = document.createElement('div');
     row.dataset.originalStatusName = name || '';
     row.dataset.statusId = statusId || globalThis.GbDbSchemaMutation?.newId?.('status') || '';
-    row.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:3px;';
+    row.className = 'dbcfg-status-row';
     // カラースウォッチ（共通カラーパレット）
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -617,16 +630,20 @@ async function _showDbConfigModal(dbPath, ctx) {
     const nameInput = document.createElement('input');
     nameInput.type = 'text'; nameInput.value = name || '';
     nameInput.placeholder = 'ステータス名';
-    nameInput.style.cssText = 'flex:1;padding:2px 4px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;';
-    nameInput.className = 'dbcfg-st-name';
+    nameInput.className = 'gb-input dbcfg-st-name';
+    nameInput.setAttribute('aria-label', 'ステータス名 ' + (name || index + 1));
     nameInput.dataset.e2eId = rowKey + '-name';
     row.appendChild(nameInput);
     const delBtn = document.createElement('button');
-    delBtn.innerHTML = lucide('x', 12); delBtn.title = '削除';
+    delBtn.type = 'button';
+    delBtn.className = 'gb-btn gb-btn-icon gb-btn-danger';
+    delBtn.innerHTML = lucide('trash-2', 14); delBtn.title = '削除';
     delBtn.dataset.e2eId = rowKey + '-delete';
     delBtn.setAttribute('aria-label', 'ステータスを削除 ' + (name || index + 1));
-    delBtn.style.cssText = 'padding:1px 6px;font-size:12px;cursor:pointer;color:var(--fg2);';
-    delBtn.addEventListener('click', () => row.remove());
+    delBtn.addEventListener('click', async () => {
+      if (row.dataset.originalStatusName && !await cfConfirm(`ステータス「${nameInput.value || name}」を一覧から削除しますか？`)) return;
+      row.remove();
+    });
     row.appendChild(delBtn);
     return { row, nameInput };
   }
@@ -656,7 +673,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     if (!['relation', 'multi-relation', 'select', 'multi-select', 'number'].includes(ptc.type || '')) continue;
     const checked = hasSavedCopyProps ? currentCopy.includes(p) : defaultCopy.includes(p);
     const lbl = document.createElement('label');
-    lbl.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 0;cursor:pointer;';
+    lbl.className = 'gb-check dbcfg-check-row';
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.checked = checked; cb.dataset.prop = p;
     lbl.appendChild(cb);

@@ -62,8 +62,8 @@ function showUnifiedFilterModal() {
     <div style="margin-bottom:12px;">
       <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">列の値フィルター</div>
       <div id="uf-col-filters"></div>
-      <div class="uf-column-filter-add" style="display:flex;gap:4px;margin-top:6px;">
-        <select id="uf-col-filter-add-select" class="gb-select gb-select-sm" style="flex:1;"></select>
+      <div class="uf-column-filter-add">
+        <select id="uf-col-filter-add-select" class="gb-select gb-select-column" aria-label="値で絞り込む列"></select>
         <button type="button" class="gb-btn gb-btn-sm uf-open-column-filter" data-action="_ufOpenColumnValueFilterFromDialog()" style="font-size:11px;">値を選択...</button>
       </div>
     </div>`;
@@ -155,10 +155,10 @@ function _ufConditionRow(f, dbPath, ctx) {
   const resolvedDbPath = dbPath || state.currentDbPath;
   const isCommonTags = selectedProp !== '*' && getPropertyTypes(resolvedDbPath)?.[selectedProp]?.type === 'common-tags';
   const valueListAttr = isCommonTags ? ` list="${datalistId}" placeholder="タグ名の一部を入力"` : '';
-  return `<div class="uf-cond" data-uf-common-tags-datalist-id="${datalistId}" style="display:flex;gap:4px;margin-bottom:4px;align-items:center;font-size:12px;">
-    <select data-field="field" class="gb-select gb-select-sm"><option value="value" ${f?.field==='value'?'selected':''}>値</option><option value="status" ${f?.field==='status'?'selected':''}>ステータス</option></select>
-    <select data-field="property" class="gb-select gb-select-sm" style="flex:1;"><option value="*" ${selectedProp==='*'?'selected':''}>すべての列</option>${propOpts}</select>
-    <select data-field="operator" class="gb-select gb-select-sm">
+  return `<div class="uf-cond" data-uf-common-tags-datalist-id="${datalistId}">
+    <select data-field="field" class="gb-select gb-select-short" aria-label="条件の対象"><option value="value" ${f?.field==='value'?'selected':''}>値</option><option value="status" ${f?.field==='status'?'selected':''}>ステータス</option></select>
+    <select data-field="property" class="gb-select gb-select-column" aria-label="対象の列"><option value="*" ${selectedProp==='*'?'selected':''}>すべての列</option>${propOpts}</select>
+    <select data-field="operator" class="gb-select gb-select-short" aria-label="条件の比較">
       <option value="contains" ${f?.operator==='contains'?'selected':''}>含む</option>
       <option value="not_contains" ${f?.operator==='not_contains'?'selected':''}>含まない</option>
       <option value="equals" ${f?.operator==='equals'?'selected':''}>一致</option>
@@ -166,7 +166,7 @@ function _ufConditionRow(f, dbPath, ctx) {
       <option value="empty" ${f?.operator==='empty'?'selected':''}>空</option>
       <option value="not_empty" ${f?.operator==='not_empty'?'selected':''}>空でない</option>
     </select>
-    <input type="text" data-field="value" class="gb-input gb-input-sm" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;"${valueListAttr}>
+    <input type="text" data-field="value" class="gb-input" aria-label="条件の値" value="${esc(f?.value ?? '')}"${valueListAttr}>
     <datalist id="${datalistId}"></datalist>
     <button type="button" class="gb-btn gb-btn-sm gb-btn-icon uf-remove-condition" aria-label="条件を削除" data-action="this.parentElement.remove()" style="color:var(--red);background:none;border:none;cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;

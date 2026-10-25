@@ -237,7 +237,7 @@
     const estimate = input('number', '', 'scheduler-common-estimate');
     estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '既存値を使用';
     const deadlinePolicy = document.createElement('select');
-    deadlinePolicy.className = 'gb-select gb-select-sm';
+    deadlinePolicy.className = 'gb-select gb-select-sm gb-select-medium';
     deadlinePolicy.dataset.e2eId = 'scheduler-deadline-policy';
     [['preserve', '個別の期限を維持'], ['replace', '共通の期限で上書き']].forEach(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; deadlinePolicy.appendChild(option);
@@ -248,7 +248,7 @@
     const summary = document.createElement('summary');
     summary.textContent = '割り当ての精度を上げる';
     const strategy = document.createElement('select');
-    strategy.className = 'gb-select gb-select-sm'; strategy.dataset.e2eId = 'scheduler-strategy';
+    strategy.className = 'gb-select gb-select-sm gb-select-medium'; strategy.dataset.e2eId = 'scheduler-strategy';
     [['recommended', '推奨'], ['earliest_completion', '最短完了'], ['load_balance', '負荷均等'], ['minimize_overtime', '残業最小'], ['minimize_fragmentation', '分断最小'], ['deadline_margin', '締切余裕'], ['minimize_assignee_changes', '担当変更最小']]
       .forEach(([value, label]) => { const option = document.createElement('option'); option.value = value; option.textContent = label; strategy.appendChild(option); });
     const overtimeLabel = document.createElement('label');

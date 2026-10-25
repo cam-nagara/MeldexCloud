@@ -37,7 +37,6 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       msg.style.cssText = 'padding:8px;color:var(--fg2);font-size:12px;text-align:center;';
       msg.textContent = 'ユーザーが登録されていません。設定 → ユーザーで登録してください';
       dd.appendChild(msg);
-      return;
     }
 
     const filtered = filter
@@ -84,7 +83,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       dd.appendChild(confirmBtn);
     }
 
-    if (!isMulti && currentValue) {
+    if (currentValue) {
       const clearBtn = document.createElement('div');
       clearBtn.className = 'user-clear-btn';
       clearBtn.style.cssText = 'padding:4px 8px;text-align:center;cursor:pointer;font-size:11px;color:var(--fg2);border-top:1px solid var(--border);margin-top:4px;';
@@ -430,8 +429,10 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
             const oldPairOp = await _syncPairRelation(relDb, oldVal, ptc.pairWith, selfId, false);
             if (oldPairOp?.undo) syncRollbackOps.push(oldPairOp.undo);
           }
-          const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
-          if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
+          if (entry.id) {
+            const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
+            if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
+          }
         }
         if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
           const bidirectionalOp = await _applyBidirectionalRelationSync({
@@ -464,7 +465,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         await _valueEditorReload(sourceDbPath, sourceCtx);
         return;
       }
-      if (isSelfRef) {
+      if (isSelfRef && entry.id) {
         const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
         const selfMap = _relationCache[relDb];
         const selfIdForCycle = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
@@ -499,6 +500,15 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
   renderList('');
   search.oninput = () => renderList(search.value);
   dd.appendChild(listDiv);
+
+  if (!isMulti && val?.value) {
+    const clearItem = document.createElement('div');
+    clearItem.className = 'dd-nav-item status-dropdown-clear';
+    clearItem.textContent = '選択を解除';
+    clearItem._ddActivate = () => selectRelationEntry({ id: '', name: '' });
+    clearItem.addEventListener('click', clearItem._ddActivate);
+    dd.appendChild(clearItem);
+  }
 
   // 複数選択の確定ボタン
   if (isMulti) {
@@ -696,7 +706,12 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
       const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(latestConfig, opt) : '');
       if (dot) item.appendChild(dot);
     }
-    item.appendChild(document.createTextNode(opt));
+    const label = document.createElement('span');
+    label.className = 'db-select-option-label'; label.textContent = opt;
+    item.appendChild(label);
+    if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
+      { dbPath: sourceDbPath, propName, option: opt, ctx: sourceCtx,
+        beforeConfirm: () => closeAllDropdowns(sourceCtx || el) });
     if (val.value === opt) item.classList.add('selected');
     item.addEventListener('click', async () => {
       closeAllDropdowns(sourceCtx || el);

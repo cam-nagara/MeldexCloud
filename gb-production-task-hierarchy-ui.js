@@ -27,7 +27,7 @@
     const parentLabel = document.createElement('label');
     parentLabel.textContent = '親タスク';
     const parent = document.createElement('select');
-    parent.className = 'gb-input';
+    parent.className = 'gb-select gb-select-column';
     parent.dataset.e2eId = 'gb-production-parent-task';
     parent.dataset.loading = '1';
     parent.appendChild(new Option('親タスクなし', ''));

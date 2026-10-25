@@ -45,7 +45,7 @@
       const row = document.createElement('label'); row.textContent = label; input.className = 'gb-input'; input.setAttribute('aria-label', label); row.appendChild(input); popup.appendChild(row);
     }
     if (typeof _attachDbPicker === 'function') _attachDbPicker(path, ctx.dbPath);
-    const relation = document.createElement('select'); relation.className = 'gb-select'; relation.setAttribute('aria-label', '親トピックを参照する列');
+    const relation = document.createElement('select'); relation.className = 'gb-select gb-select-column'; relation.setAttribute('aria-label', '親トピックを参照する列');
     const fields = document.createElement('div'); fields.className = 'gb-form-subform-columns';
     fields.setAttribute('role', 'group'); fields.setAttribute('aria-label', '表示する列');
     const relationRow = document.createElement('label'); relationRow.append(document.createTextNode('親トピックを参照する列'), relation);

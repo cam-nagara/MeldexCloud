@@ -1068,6 +1068,7 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
 
 async function flushPendingDbPropertySettings(dbPath) {
   const target = _ptNormalizeDbPath(dbPath || '');
+  if (typeof flushPendingDbColorSaves === 'function') await flushPendingDbColorSaves(target);
   const roots = Array.from(document.querySelectorAll('[data-pt-root]')).filter(root => {
     const rootPath = _ptNormalizeDbPath(_ptState(root)?.dbPath || '');
     return typeof root._ptFlushAutosave === 'function' && (!target || rootPath === target);

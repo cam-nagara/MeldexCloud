@@ -1410,6 +1410,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
 <div class="field"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
 <div class="field gb-cal-task-form-wide"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
 </div>`;
+  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
+  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'tk-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');

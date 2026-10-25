@@ -426,6 +426,7 @@
   function render() {
     if (!_layoutEl) return;
     _root = window.GBChatSidebar?.ensure?.(_root) || _root;
+    _ensureReadableMainPane();
     // Phase 5 安全策: ポップアップ表示中に再レンダリングすると、ポップアップ内に
     // 移動した pane DOM が innerHTML = '' で消える一方、_state.originalParent が
     // 新しい DOM に差し替わってしまい孤立する。事前にポップアップを閉じて pane DOM

@@ -36,7 +36,9 @@
 
   function refreshControl(control, def, presentation) {
     const value = presentation?.[def.key];
-    control.value = value == null ? '' : String(value);
+    // 旧形式のem→%換算で生じる浮動小数点の端数は表示だけ整える。
+    // 保存済みの互換設定は書き換えない。
+    control.value = value == null ? '' : String(def.type === 'number' && Number.isFinite(value) ? Number(value.toFixed(6)) : value);
   }
 
   function syncWritingModeButtons(editor, presentation) {

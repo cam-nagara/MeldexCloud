@@ -296,6 +296,7 @@
         if (name === '対象数') control.min = '1';
       }
     }
+    if (control.tagName === 'SELECT') control.className = 'gb-select ' + (type === 'status' || type === 'priority' ? 'gb-select-medium' : 'gb-select-column');
     control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
     label.appendChild(control);

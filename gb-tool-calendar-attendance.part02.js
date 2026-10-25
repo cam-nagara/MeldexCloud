@@ -333,6 +333,8 @@
         <button type="button" class="att-csv-format" data-format="smaregi">スマレジ向け勤務実績</button>
         <button type="button" class="att-csv-format" data-format="moneyforward">マネーフォワード日次打刻</button>
       </div></div>`;
+    content.querySelectorAll('input').forEach(el => el.classList.add('gb-input'));
+    content.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'att-csv-close gb-btn gb-btn-sm';

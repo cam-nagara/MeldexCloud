@@ -76,7 +76,7 @@
     const library = await load({ deviceOnly: options.deviceOnly });
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
     const body = document.createElement('div'); body.className = 'note-template-dialog';
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', 'ノートテンプレート');
+    const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', 'ノートテンプレート');
     const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
     const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
     content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');

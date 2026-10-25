@@ -24,7 +24,7 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '93645a219a02', parts: { 'meldex-core.bundle.part01.js': '349265e4eff1', 'meldex-core.bundle.part02.js': 'c4cf13ee80c9', 'meldex-core.bundle.part03.js': '24747c68acd9', 'meldex-core.bundle.part04.js': 'fcde1f11999a', 'meldex-core.bundle.part05.js': '090e6a57906a' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '98fd9261d86f', parts: { 'meldex-core.bundle.part01.js': '349265e4eff1', 'meldex-core.bundle.part02.js': 'c4cf13ee80c9', 'meldex-core.bundle.part03.js': '24747c68acd9', 'meldex-core.bundle.part04.js': 'fcde1f11999a', 'meldex-core.bundle.part05.js': '19c2897436ea' } },
     'gb-app.js': { file: 'gb-app.bundle.js', hash: '66fcb3ced8bc', parts: { 'gb-app.bundle.part01.js': '9304d746b240', 'gb-app.bundle.part02.js': '2f2cae90ce39', 'gb-app.bundle.part03.js': 'beb4949bcb39', 'gb-app.bundle.part04.js': '78be5f1ec387', 'gb-app.bundle.part05.js': 'fdfb1488cdb0', 'gb-app.bundle.part06.js': '18bed1fb0cb5', 'gb-app.bundle.part07.js': '4c06b5806dea' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '50def04d8e72', parts: { 'gb-theme-manager.bundle.part01.js': 'b77adf787e59', 'gb-theme-manager.bundle.part02.js': '16531854e71e', 'gb-theme-manager.bundle.part03.js': 'ea1451ca03b1', 'gb-theme-manager.bundle.part04.js': '1096bf57eafa' } },
     'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '7ddbd923f3ea', parts: { 'gb-outliner.bundle.part01.js': '5600fe1674a3', 'gb-outliner.bundle.part02.js': '862a2615e552', 'gb-outliner.bundle.part03.js': 'd6295177c0f8', 'gb-outliner.bundle.part04.js': 'ae7193338653', 'gb-outliner.bundle.part05.js': 'fccbc827c495', 'gb-outliner.bundle.part06.js': 'e849f2f0872c' } },
@@ -697,7 +697,7 @@
 /* === gb-cloud-asset-loader.js === */
 ;
 (function(){
-const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=510963d8aa4412a8", "meldex-cloud-scenario.css?v=5d87d0a77313734b"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
+const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=9049917b339ab4ac", "meldex-cloud-scenario.css?v=5d87d0a77313734b"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
 window.MeldexCloudAssets={load(name){
  if(!groups[name])return Promise.resolve();
  if(pending.has(name))return pending.get(name);

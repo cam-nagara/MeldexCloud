@@ -438,14 +438,14 @@ function _showBulkEditModal(entityNames, ctx) {
     : null;
   const body = document.createElement('div');
   body.innerHTML = `<div class="db-bulk-edit-selection-summary" style="margin:0 0 8px;color:var(--fg2);font-size:12px;line-height:20px;min-height:20px;max-height:80px;overflow-y:auto;flex:0 0 auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
-    <div class="field"><label>列</label>
-      <select id="bulk-edit-prop" style="width:100%;padding:4px;">
+    <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-prop">列</label>
+      <select id="bulk-edit-prop" class="gb-select gb-select-column">
         ${editableProps.map(p => `<option value="${esc(p)}">${esc(p)} (${esc(propTypes[p]?.type || 'text')})</option>`).join('')}
       </select>
     </div>
-    <div class="field"><label>値</label><div id="bulk-edit-value-container"></div></div>
-    ${statusOn ? `<div class="field"><label>ステータス</label>
-      <select id="bulk-edit-status" style="width:100%;padding:4px;">
+    <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-value">値</label><div id="bulk-edit-value-container"></div></div>
+    ${statusOn ? `<div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-status">ステータス</label>
+      <select id="bulk-edit-status" class="gb-select gb-select-column">
         <option value="案">案</option>
         <option value="採用" selected>採用</option>
         <option value="ボツ">ボツ</option>
@@ -503,7 +503,7 @@ function _showBulkEditModal(entityNames, ctx) {
       }
       const select = document.createElement('select');
       select.id = 'bulk-edit-value';
-      select.style.cssText = baseStyle;
+      select.className = 'gb-select gb-select-column';
       select.innerHTML = '<option value="">(未設定)</option>' + [...vals].map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
       container.appendChild(select);
     } else if (ptc.type === 'multi-select') {
@@ -525,7 +525,7 @@ function _showBulkEditModal(entityNames, ctx) {
     } else if (ptc.type === 'checkbox') {
       const select = document.createElement('select');
       select.id = 'bulk-edit-value';
-      select.style.cssText = baseStyle;
+      select.className = 'gb-select gb-select-column';
       select.innerHTML = '<option value="true">ON (true)</option><option value="false">OFF (false)</option>';
       container.appendChild(select);
     } else if (ptc.type === 'date') {
@@ -570,7 +570,7 @@ function _showBulkEditModal(entityNames, ctx) {
       if (ptc.type === 'relation') {
         const select = document.createElement('select');
         select.id = 'bulk-edit-value';
-        select.style.cssText = baseStyle;
+        select.className = 'gb-select gb-select-column';
         select.innerHTML = '<option value="">(未選択)</option>' + entryList.map(entry => `<option value="${esc(entry.id)}">${esc(entry.name)}</option>`).join('');
         container.appendChild(select);
       } else {
@@ -600,7 +600,7 @@ function _showBulkEditModal(entityNames, ctx) {
       if (ptc.type === 'user') {
         const select = document.createElement('select');
         select.id = 'bulk-edit-value';
-        select.style.cssText = baseStyle;
+        select.className = 'gb-select gb-select-column';
         select.innerHTML = '<option value="">(未選択)</option>' + users.map(user => `<option value="${esc(user)}">${esc(user)}</option>`).join('');
         container.appendChild(select);
       } else {

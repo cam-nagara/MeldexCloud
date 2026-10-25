@@ -13,6 +13,28 @@
   let _staleOverlayRecoveryStarted = false;
   let _legacyDialogId = 0;
 
+  // 既存パネルの固定z-indexより低いモーダルを作らない。子の色・入力ポップアップも
+  // 同じ処理を通し、親を上げた結果だけで子が背面へ隠れることを防ぐ。
+  function raiseLayer(element) {
+    if (!element?.isConnected) return;
+    const own = Number.parseInt(getComputedStyle(element).zIndex, 10) || 0;
+    let highest = 0;
+    const candidates = document.querySelectorAll(
+      OVERLAY_SELECTOR + ', body > *, [role="dialog"], [role="alertdialog"], .gb-pane, .gb-panelset, .sidebar-backdrop.open'
+    );
+    for (const node of candidates) {
+      if (node === element || element.contains(node)) continue;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      if (!rect.width || !rect.height || style.display === 'none' || style.visibility === 'hidden') continue;
+      for (let parent = node; parent && parent !== document.body; parent = parent.parentElement) {
+        if (parent === element) break;
+        highest = Math.max(highest, Number.parseInt(getComputedStyle(parent).zIndex, 10) || 0);
+      }
+    }
+    if (highest >= own) element.style.setProperty('z-index', String(highest + 2), 'important');
+  }
+
   function _zoom() {
     if (typeof _getZoom === 'function') return _getZoom();
     const z = parseFloat(document.documentElement.style.zoom || '');
@@ -722,6 +744,11 @@
 
   function enhanceOverlay(overlay) {
     if (!overlay) return;
+    if (overlay.isConnected && overlay.dataset.dialogLayerRaised !== '1') {
+      window.GBTooltip?.hide?.({ suppressUntilLeave: true });
+      raiseLayer(overlay);
+      overlay.dataset.dialogLayerRaised = '1';
+    }
     _syncMobileSheet(overlay);
     if (overlay.dataset.modalShellEnhanced === 'skip') return;
     if (overlay.dataset.modalShell === 'off') {
@@ -805,6 +832,7 @@
   }
 
   window.GBModalShell = {
+    raiseLayer,
     enhanceOverlay,
     enhanceAll,
     clamp: _clampModal,

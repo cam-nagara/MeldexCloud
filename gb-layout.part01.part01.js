@@ -20,6 +20,7 @@ const GBLayout = (() => {
   let _maximizedPaneId = null;    // 最大化中のペインID
   let _savedRootForMaximize = null; // 最大化前のルートツリー
   let _loadedLayoutFromStorage = false;
+  let _lastExpandedDockId = '';
   const SAVE_LAYOUT_DEBOUNCE_MS = 80;
   let _saveLayoutTimer = null;
   let _saveLayoutPending = false;
@@ -956,6 +957,38 @@ const GBLayout = (() => {
     return Number(targetNode?.defaultPopupWidth || 0) > 0;
   }
 
+  // 固定サイドバーを同時に開いても、文書を数文字幅まで圧縮しない。
+  // 内容やタブは閉じず、操作中でない補助ドックを既存のレールへ折りたたむ。
+  function _ensureReadableMainPane() {
+    if (_isMobileLayout() || _maximizedPaneId || !_hasFixedRailRoles(_root)) return;
+    const main = _collectFixedRailPanes(_root).find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
+    if (!main) return;
+    const available = _layoutEl?.clientWidth || window.innerWidth;
+    const minimum = Math.min(400, available - 100);
+    const widthOfMain = (node, width) => {
+      if (!node || node.collapsed) return 0;
+      if (node.id === main.id) return width;
+      if (node.type === 'panelset') {
+        const group = node.groups?.find(item => item.id === node.activeGroupId) || node.groups?.[0];
+        return widthOfMain(group?.root, Math.max(0, width - 32));
+      }
+      if (node.type !== 'split') return 0;
+      if (node.direction !== 'horizontal') return Math.max(...node.children.map(child => widthOfMain(child, width)));
+      const space = Math.max(0, width - 4);
+      const [a, b] = node.children;
+      const first = a.collapsed ? 32 : b.collapsed ? space - 32 : space * node.ratio;
+      return Math.max(widthOfMain(a, first), widthOfMain(b, space - first));
+    };
+    const docks = ['left-sidebar', 'right-sidebar', 'chat-sidebar']
+      .map(role => _findFixedRailPanelset(_root, role)).filter(Boolean)
+      .filter(dock => !dock.collapsed && dock.id !== _lastExpandedDockId);
+    for (const dock of docks) {
+      if (widthOfMain(_root, available) >= minimum) break;
+      dock.collapsed = true;
+      _adjustSplitForCollapse(dock, { skipRender: true });
+    }
+  }
+
   // 左右レール導入後、内側の水平split（作業領域 | 右サイドバー）は panelset で
   // ラップされるため、split そのものでも panelset 越しでも取り出せるようにする。
   function _innerHorizontalSplit(node) {
@@ -996,6 +1029,9 @@ const GBLayout = (() => {
   }
 
   function _adjustSplitForCollapse(targetNode, options) {
+    if (!targetNode.collapsed && ['left-sidebar', 'right-sidebar', 'chat-sidebar'].includes(targetNode.meldexRole)) {
+      _lastExpandedDockId = targetNode.id;
+    }
     // targetNodeはペインまたはsplitノード
     const parentInfo = findParent(_root, targetNode.id);
     if (!parentInfo) return;

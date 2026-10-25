@@ -139,7 +139,6 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null,
   modal.classList.add('modal', 'db-template-modal');
   overlay.classList.add('modal-overlay');
   overlay.dataset.dbTemplateModal = 'preview';
-  overlay.style.zIndex = '130';
   overlay._dbTemplateTrigger = trigger;
   overlay._dbTemplateClose = modalApi.close;
   overlay._dbTemplateSetBusy = (next) => {

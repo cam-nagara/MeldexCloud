@@ -569,7 +569,7 @@
         <div class="gb-check-help-row" style="margin-top:8px;">
           <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;flex:1;min-width:0;">
             <span>管理者AIに依頼した時に使うCLI</span>
-            <select id="settings-workspace-cli-provider" class="gb-input" data-e2e-id="settings-workspace-cli-provider">${_relayProviderOptionsHtml(config?.provider)}</select>
+            <select id="settings-workspace-cli-provider" class="gb-select gb-select-medium" data-e2e-id="settings-workspace-cli-provider">${_relayProviderOptionsHtml(config?.provider)}</select>
           </label>
           ${fieldHelp('メンバーの依頼は常にCodex CLIの読み取り専用で実行され、この選択は影響しません。')}
         </div>

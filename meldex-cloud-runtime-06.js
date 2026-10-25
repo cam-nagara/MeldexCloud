@@ -5044,7 +5044,7 @@
     const parentLabel = document.createElement('label');
     parentLabel.textContent = '親タスク';
     const parent = document.createElement('select');
-    parent.className = 'gb-input';
+    parent.className = 'gb-select gb-select-column';
     parent.dataset.e2eId = 'gb-production-parent-task';
     parent.dataset.loading = '1';
     parent.appendChild(new Option('親タスクなし', ''));
@@ -5520,6 +5520,7 @@
         if (name === '対象数') control.min = '1';
       }
     }
+    if (control.tagName === 'SELECT') control.className = 'gb-select ' + (type === 'status' || type === 'priority' ? 'gb-select-medium' : 'gb-select-column');
     control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
     label.appendChild(control);
@@ -9780,7 +9781,8 @@
 
   function select(options, value, e2eId) {
     const element = document.createElement('select');
-    element.className = 'gb-select gb-select-sm';
+    const sizeClass = options.length && options.every(([, label]) => Array.from(String(label)).length <= 8) ? 'gb-select-medium' : 'gb-select-column';
+    element.className = 'gb-select gb-select-sm ' + sizeClass;
     options.forEach(([key, label]) => {
       const option = document.createElement('option'); option.value = key; option.textContent = label; element.appendChild(option);
     });
@@ -10407,7 +10409,7 @@
     const estimate = input('number', '', 'scheduler-common-estimate');
     estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '既存値を使用';
     const deadlinePolicy = document.createElement('select');
-    deadlinePolicy.className = 'gb-select gb-select-sm';
+    deadlinePolicy.className = 'gb-select gb-select-sm gb-select-medium';
     deadlinePolicy.dataset.e2eId = 'scheduler-deadline-policy';
     [['preserve', '個別の期限を維持'], ['replace', '共通の期限で上書き']].forEach(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; deadlinePolicy.appendChild(option);
@@ -10418,7 +10420,7 @@
     const summary = document.createElement('summary');
     summary.textContent = '割り当ての精度を上げる';
     const strategy = document.createElement('select');
-    strategy.className = 'gb-select gb-select-sm'; strategy.dataset.e2eId = 'scheduler-strategy';
+    strategy.className = 'gb-select gb-select-sm gb-select-medium'; strategy.dataset.e2eId = 'scheduler-strategy';
     [['recommended', '推奨'], ['earliest_completion', '最短完了'], ['load_balance', '負荷均等'], ['minimize_overtime', '残業最小'], ['minimize_fragmentation', '分断最小'], ['deadline_margin', '締切余裕'], ['minimize_assignee_changes', '担当変更最小']]
       .forEach(([value, label]) => { const option = document.createElement('option'); option.value = value; option.textContent = label; strategy.appendChild(option); });
     const overtimeLabel = document.createElement('label');
@@ -13633,18 +13635,18 @@
         });
         label.append(checkbox, document.createTextNode(_columnLabel(instance, column) || column.key));
         const up = document.createElement('button');
-        up.type = 'button'; up.textContent = '上へ'; up.disabled = index === 0;
+        up.type = 'button'; up.className = 'gb-btn gb-btn-sm'; up.textContent = '上へ'; up.disabled = index === 0;
         up.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index - 1]?.key, true); render(); });
         const down = document.createElement('button');
-        down.type = 'button'; down.textContent = '下へ'; down.disabled = index === columns.length - 1;
+        down.type = 'button'; down.className = 'gb-btn gb-btn-sm'; down.textContent = '下へ'; down.disabled = index === columns.length - 1;
         down.addEventListener('click', () => { _moveColumn(instance, column.key, columns[index + 1]?.key, false); render(); });
         row.append(label, up, down);
         panel.appendChild(row);
       });
     };
     render();
-    const close = document.createElement('button'); close.type = 'button'; close.textContent = '閉じる';
-    const autoFit = document.createElement('button'); autoFit.type = 'button'; autoFit.textContent = '列幅を自動調整';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'gb-btn gb-btn-sm'; close.textContent = '閉じる';
+    const autoFit = document.createElement('button'); autoFit.type = 'button'; autoFit.className = 'gb-btn gb-btn-sm'; autoFit.textContent = '列幅を自動調整';
     const modal = window.GBUI.createModal({ title: '列の表示と順序', body: panel, footer: [autoFit, close], closeLabel: '列設定を閉じる' });
     close.addEventListener('click', () => modal.close('close'));
     autoFit.addEventListener('click', () => { _autoFitColumns(instance); render(); });
@@ -14349,6 +14351,8 @@
   function createElement(tagName, className, text) {
     const element = document.createElement(tagName);
     if (className) element.className = className;
+    if (tagName === 'button') element.classList.add('gb-btn', 'gb-btn-sm');
+    if (tagName === 'select') element.classList.add('gb-select');
     if (text != null) element.textContent = String(text);
     return element;
   }
@@ -14540,14 +14544,16 @@
 
     _filterRow(provider, filters, filter, index, render) {
       const row = createElement('div', 'gb-system-sheet-filter-row');
-      row.style.cssText = 'display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) minmax(120px,2fr) auto;gap:6px;';
+      row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;';
       const column = createElement('select');
+      column.classList.add('gb-select-column');
       column.style.minHeight = '44px';
       column.setAttribute('aria-label', `条件${index + 1}の列`);
       provider.columns.forEach(item => { const option = createElement('option', '', item.label || item.id); option.value = item.id; column.appendChild(option); });
       column.value = filter.column || provider.columns[0]?.id || '';
       column.addEventListener('change', () => { filter.column = column.value; });
       const operator = createElement('select');
+      operator.classList.add('gb-select-medium');
       operator.style.minHeight = '44px';
       operator.setAttribute('aria-label', `条件${index + 1}の比較`);
       [['contains', '含む'], ['not_contains', '含まない'], ['equals', '等しい'], ['not_equals', '等しくない'], ['empty', '空欄'], ['not_empty', '空欄でない'], ['greater_than', 'より大きい'], ['less_than', 'より小さい'], ['after', 'より後'], ['before', 'より前']].forEach(([value, label]) => { const option = createElement('option', '', label); option.value = value; operator.appendChild(option); });
@@ -14555,6 +14561,8 @@
       operator.addEventListener('change', () => { filter.operator = operator.value; value.disabled = ['empty', 'not_empty'].includes(operator.value); });
       const value = createElement('input');
       value.type = 'text';
+      value.className = 'gb-input';
+      value.style.cssText = 'flex:1 1 160px;min-width:0;max-width:100%;';
       value.style.minHeight = '44px';
       value.value = String(filter.value || '');
       value.setAttribute('aria-label', `条件${index + 1}の値`);

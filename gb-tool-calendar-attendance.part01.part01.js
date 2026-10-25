@@ -1074,7 +1074,7 @@
     const label = document.createElement('label');
     label.textContent = 'ワークスペース';
     const select = document.createElement('select');
-    select.className = 'gb-cal-calendar-team-folder';
+    select.className = 'gb-cal-calendar-team-folder gb-select gb-select-column';
     select.innerHTML = '<option value="">読み込み中...</option>';
     select.setAttribute('aria-label', 'ワークスペース');
     const canEdit = this._calUserCanEditCalendar(cal);

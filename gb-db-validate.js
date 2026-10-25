@@ -533,9 +533,10 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
   // ルール名
   const nameField = document.createElement('div');
   nameField.className = 'field';
-  nameField.innerHTML = '<label>ルール名</label>';
+  nameField.innerHTML = '<label for="vr-rule-name">ルール名</label>';
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
+  nameInput.className = 'gb-input';
   nameInput.id = 'vr-rule-name';
   nameInput.dataset.e2eId = 'validation-editor-name';
   nameInput.value = rule.label;
@@ -545,9 +546,10 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
 
   // ルールタイプ
   const typeField = document.createElement('div');
-  typeField.className = 'field';
-  typeField.innerHTML = '<label>タイプ</label>';
+  typeField.className = 'field gb-field-select-row';
+  typeField.innerHTML = '<label class="gb-label" for="vr-rule-type">タイプ</label>';
   const typeSel = document.createElement('select');
+  typeSel.className = 'gb-select gb-select-column';
   typeSel.id = 'vr-rule-type';
   typeSel.dataset.e2eId = 'validation-editor-type';
   typeSel.setAttribute('aria-label', 'バリデーションルールタイプ');
@@ -675,7 +677,8 @@ function _validationRuleConfigErrors(type, config, label) {
 }
 
 function _fieldSelect(label, id, options, selected) {
-  let html = '<div class="field"><label>' + esc(label) + '</label><select id="' + id + '">';
+  const sizeClass = id === 'vr-op' ? 'gb-select-short' : 'gb-select-column';
+  let html = '<div class="field gb-field-select-row"><label class="gb-label" for="' + id + '">' + esc(label) + '</label><select class="gb-select ' + sizeClass + '" id="' + id + '">';
   html += '<option value="">選択...</option>';
   options.forEach(o => {
     const val = typeof o === 'string' ? o : (o.key || String(o));

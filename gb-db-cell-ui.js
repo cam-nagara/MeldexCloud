@@ -472,9 +472,8 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
 function createValueElement(val, entityPath, propName, thumbSize, options = {}) {
   const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
   if (val && entityPath) val.entry_path = _cellUiNormalizePath(entityPath);
-  const filterMode = options.filter ?? options.ctx?.filter ?? (dbPath === state.currentDbPath ? state.filter : 'disabled');
   const row = document.createElement('div');
-  row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
+  row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   row.style.position = 'relative';
   _setupCellValueDrag(row, val, entityPath, propName);
 
@@ -500,9 +499,8 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
   row.addEventListener('mouseleave', () => { moreBtn.style.display = 'none'; });
 
-  // Status dot（採用状況フィルタ無効時 or DB側でステータス機能 OFF の場合は非表示）。
-  // ただし候補値が2つ以上あるセル（forceStatusDot）は、区別のためステータス機能OFFでも表示する。
-  if ((filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
+  // 候補数や絞り込みモードにかかわらず、シートのON/OFFに従う。
+  if (getStatusEnabled(dbPath)) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     const _stColor = _getStatusColor(val.status, dbPath);
@@ -1487,11 +1485,15 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     }
     if (_cellUiIsComposing(e)) return;
     if (_cellUiConsumeImeBoundaryKey(e)) return;
-    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Tab'].includes(e.key)) return;
+    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Tab', 'Delete'].includes(e.key)) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) return;
+    if (e.key === 'Delete' && (e.ctrlKey || e.metaKey || e.altKey)) return;
     // 検索・新規値入力欄では左右キーを候補移動に奪わず、通常のキャレット移動に任せる。
     // 上下キーと Enter/Tab は候補ナビゲーションとして引き続き扱う。
     const targetTag = String(e.target?.tagName || '').toUpperCase();
+    if (e.key === 'Delete' && (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || e.target?.isContentEditable)) return;
+    // 行内の削除・色設定ボタンでは、Enter/Tabを候補の選択へ置き換えない。
+    if (targetTag === 'BUTTON' && dd.contains(e.target) && e.key !== 'Escape') return;
     if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
         && (targetTag === 'INPUT' || targetTag === 'TEXTAREA')) return;
     bindItems();
@@ -1530,6 +1532,9 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       const activeItem = items[activeIdx];
       if (activeItem && typeof activeItem._ddActivate === 'function') activeItem._ddActivate();
       else if (activeItem) activeItem.click();
+    } else if (e.key === 'Delete') {
+      const deleteButton = items[activeIdx]?.querySelector('.db-option-delete');
+      if (deleteButton && !deleteButton.disabled) deleteButton.click();
     } else if (e.key === 'Escape') {
       try { dd.dispatchEvent(new CustomEvent('db-dropdown-cancel')); } catch {}
       closeAllDropdowns(dd);
