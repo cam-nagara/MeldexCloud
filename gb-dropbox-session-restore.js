@@ -28,6 +28,7 @@
       const code = element('p', '', 'gb-session-restore-code');
       const link = element('a', 'Chromeの接続を引き継ぐ', 'gb-btn gb-btn-primary gb-session-restore-button');
       link.rel = 'noreferrer';
+      link.dataset.meldexBrowserNavigation = '1';
       const retry = element('button', 'もう一度確認', 'gb-btn gb-session-restore-button');
       retry.type = 'button';
       const finish = element('button', '引継ぎを完了', 'gb-btn gb-btn-primary gb-session-restore-button');

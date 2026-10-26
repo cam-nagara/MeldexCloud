@@ -107135,7 +107135,8 @@ function _resolveContextLinkTarget(rawTarget) {
 
   const anchor = target.closest('a[href]');
   if (anchor && !anchor.closest('.gb-context-menu')) {
-    if (anchor.hasAttribute('download') || anchor.dataset.meldexHelpLink === '1') return null;
+    if (anchor.hasAttribute('download') || anchor.dataset.meldexHelpLink === '1'
+      || anchor.dataset.meldexBrowserNavigation === '1') return null;
     const path = anchor.getAttribute('href') || '';
     if (!path || path === '#' || /^javascript:/i.test(path)) return null;
     const editableHost = anchor.closest('[contenteditable="true"]');
