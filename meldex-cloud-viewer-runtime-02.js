@@ -130,6 +130,7 @@
   let _apiSessionGeneration = 0;
   let _brokerSettingsApplying = false;
   let _brokerSettingsAccount = '';
+  let _homeHandoffSettingsPromise = null;
   // Leave capacity for sheet reads and writes while thumbnails are loading.
   const _apiQueue = [];
   let _apiActive = 0;
@@ -743,8 +744,92 @@
     return next;
   }
 
+  function _homeHandoffProblem(code) {
+    return Object.assign(new Error(code), { code });
+  }
+
+  function _validateHomeSettings(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some(key => !['vaultPath', 'settingsPath', 'vaultNamespace', 'appMode', 'customAppKey'].includes(key))
+      || !['home', 'team_root'].includes(value.vaultNamespace) || !['developer', 'custom'].includes(value.appMode)
+      || typeof value.customAppKey !== 'string' || value.customAppKey.length > 128 || /[\x00-\x1f]/.test(value.customAppKey)
+      || ['vaultPath', 'settingsPath'].some(key => typeof value[key] !== 'string' || !value[key].startsWith('/')
+        || value[key].length > 512 || value[key].includes('\\') || value[key].split('/').includes('..')
+        || /[\x00-\x1f]/.test(value[key]))) throw _homeHandoffProblem('handoff_settings_invalid');
+    return { vaultPath: value.vaultPath, settingsPath: value.settingsPath, vaultNamespace: value.vaultNamespace,
+      appMode: value.appMode, customAppKey: value.customAppKey };
+  }
+
+  async function _updateHomeHandoffSession(change) {
+    const db = await _openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite'), store = tx.objectStore(STORE_NAME);
+        let next, failure;
+        const read = store.get(SESSION_KEY);
+        read.onsuccess = () => {
+          try { next = change(read.result || null); store.put(next, SESSION_KEY); }
+          catch (error) {
+            failure = typeof error?.code === 'string' ? error : _homeHandoffProblem('handoff_storage_failed');
+            tx.abort();
+          }
+        };
+        tx.oncomplete = () => resolve(next);
+        tx.onabort = tx.onerror = () => reject(failure || _homeHandoffProblem('handoff_storage_failed'));
+      });
+    } finally { db.close(); }
+  }
+
+  async function _completeHomeHandoffSettings(current) {
+    if (!current?.homeHandoffPending) return current;
+    if (!_homeHandoffSettingsPromise) {
+      _homeHandoffSettingsPromise = (async () => {
+        const pending = current.homeHandoffPending;
+        const settings = _validateHomeSettings(pending.settings);
+        _brokerSettingsApplying = true;
+        try {
+          setAppMode(settings.appMode);
+          setCustomAppKey(settings.customAppKey);
+          setVaultPath(settings.vaultPath);
+          setVaultNamespaceKind(settings.vaultNamespace);
+          setSettingsPath(settings.settingsPath);
+          window.MeldexRuntimeAdapter?.setMode?.('dropbox');
+        } catch { throw _homeHandoffProblem('handoff_settings_failed'); }
+        finally { _brokerSettingsApplying = false; }
+        return _updateHomeHandoffSession(latest => {
+          if (!latest || latest.homeHandoffPending?.id !== pending.id || latest.accountId !== current.accountId) {
+            throw _homeHandoffProblem('session_changed');
+          }
+          const next = { ...latest };
+          delete next.homeHandoffPending;
+          return next;
+        });
+      })().finally(() => { _homeHandoffSettingsPromise = null; });
+    }
+    return _homeHandoffSettingsPromise;
+  }
+
+  async function acceptHomeHandoff(payload) {
+    const settings = _validateHomeSettings(payload?.settings);
+    if (payload?.version !== 1 || typeof payload.id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(payload.id)
+      || ['refreshToken', 'appKey', 'accountId'].some(key => typeof payload[key] !== 'string' || !payload[key]
+        || payload[key].length > ({ refreshToken: 4096, appKey: 128, accountId: 256 })[key]
+        || /[\x00-\x1f]/.test(payload[key]))) throw _homeHandoffProblem('handoff_session_invalid');
+    const next = await _updateHomeHandoffSession(current => {
+      const existingAccount = String(current?.accountId || current?.account?.account_id || '');
+      if (hasConnection(current) && existingAccount !== payload.accountId) throw _homeHandoffProblem('account_change_rejected');
+      return { refreshToken: payload.refreshToken, appKey: payload.appKey, accountId: payload.accountId,
+        accessToken: '', expiresAt: 0, tokenType: 'bearer', savedAt: new Date().toISOString(),
+        homeHandoffImported: true, homeHandoffPending: { id: payload.id, settings } };
+    });
+    // If localStorage fails, the atomic IDB record retains the settings for retry.
+    const completed = await _completeHomeHandoffSettings(next);
+    _notifySessionChanged(completed, true);
+    return completed;
+  }
+
   async function getSession() {
-    const current = await _idbGet(SESSION_KEY);
+    const current = await _completeHomeHandoffSettings(await _idbGet(SESSION_KEY));
     const broker = _sessionBroker();
     if (!broker) return current;
     const local = current ? { ...current, appKey: current.appKey || getAppKey() } : null;
@@ -793,6 +878,9 @@
       grant_type: 'refresh_token',
       client_id: appKey,
     });
+    if (session.homeHandoffImported && payload.account_id && payload.account_id !== session.accountId) {
+      throw _homeHandoffProblem('account_change_rejected');
+    }
     return _persistSession(payload, {
       appKey,
       redirectUri: session.redirectUri || '',
@@ -851,6 +939,7 @@
   async function getValidSession() {
     let session = await getSession();
     if (session?.authTransport === 'broker') return _sessionBroker().validSession(false);
+    if (session?.homeHandoffImported && !session.accessToken && session.refreshToken) return refreshSession();
     if (!session?.accessToken) return null;
     const expiresAt = Number(session.expiresAt || 0);
     if (!expiresAt || (expiresAt - Date.now()) > EARLY_REFRESH_MS) return session;
@@ -1214,6 +1303,7 @@
     exchangeCode,
     handleRedirectCallback,
     getSession,
+    acceptHomeHandoff,
     hasConnection,
     getValidSession,
     getValidAccessToken,

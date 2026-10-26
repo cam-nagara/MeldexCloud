@@ -1203,6 +1203,7 @@
     if (_completeAuthPopup({ handled: false })) return false;
     const callback = await _auth().handleRedirectCallback();
     if (_completeAuthPopup(callback)) return false;
+    await window.MeldexDropboxHomeHandoff?.prepareLaunch?.({ onOpen: _hideStartupSplashForBlockingCloudUi });
     await window.MeldexDropboxSessionBroker?.prepareLaunch?.({ onOpen: _hideStartupSplashForBlockingCloudUi });
     let migrationMode = null;
     if (callback.handled && !callback.ok) {

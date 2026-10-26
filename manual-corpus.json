@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.423",
+  "manual_version": "0.7.424",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "9c0c872cb47d247316492b7a88419c37cd45cc01a08796669daed46fdb65239e",
+  "source_digest": "352531d9145baaf212ae2817faedcb3bd0b234ef0b30771a1ac24884e466c5e3",
   "document_count": 209,
   "chunk_count": 1931,
   "documents": [
@@ -270,7 +270,7 @@
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
-      "source_sha256": "37218d2182b8036019cc5cac48e41ee7864e1edb154711a597a36ac55987244c",
+      "source_sha256": "49c5dad6feeaec3daffcb4f837d28eaff133a52c3157bfda6c57003ee28cc560",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md"
     },
     {
@@ -10169,7 +10169,7 @@
       "category": "共有・データ管理",
       "heading": "iPhoneのホーム画面から接続を引き継ぐ",
       "anchor": "iphone",
-      "text": "接続引継ぎに対応した配信では、本体・クイックメモとも、接続済みChromeのDropbox接続と保存先をホーム画面のアイコンへ引き継げます。以前追加したアイコンも、そのまま使用します。\n初回に接続の復元画面が表示されたら、Chromeで引継ぎページを開き、両方の画面に表示された番号と移行先を確認して引き継ぎます。その後はホーム画面のMeldexへ戻って使えます。既にChromeが接続済みであれば、Dropboxへの再ログイン・再認可や認可コードの貼付けは必要ありません。\n入力や下書きは保持されます。通信できない場合は、その画面で再試行できます。端末の保存領域を削除した場合や接続が失効した場合は、接続済みChromeからもう一度引き継ぎます。Chrome側の接続情報も失われている場合は、元の認可を復元できません。\n引継ぎを有効にした配信では、更新資格情報を認証サービスで暗号化保管します。詳しくは配信ページのプライバシーポリシーを確認してください。",
+      "text": "本体・クイックメモとも、接続済みChromeのDropbox接続と保存先をホーム画面のアイコンへ引き継げます。以前追加したアイコンも、そのまま使用します。追加の契約や課金はありません。\nホーム画面の本体またはメモを開き、Chromeの接続を引き継ぐ を押す\nChromeと元の画面に同じ番号が表示されていることを確認し、このMeldexへ引き継ぐ を押す\n元のホーム画面のMeldexへ戻り、引継ぎを完了 を押す\niPhoneに貼り付けの確認が表示された場合は、許可する\nDropboxへの再ログイン・再認可、認可コードの貼付け、アイコンの作り直しは不要です。コピーされるのは、このアイコンだけで復号できる暗号化情報です。復元後は、閉じて開き直してもそのアイコンの接続を使います。\n貼り付けを許可しなかった時や通信できない時は、元の接続・入力・下書きを保持して、その画面で再試行できます。有効時間が過ぎた時は もう一度確認 で新しい引継ぎを開始します。\nこの端末内だけで使う場合は この端末内で使う を選べます。Chrome側の接続情報も削除されている場合は、再認可なしに元の接続を復元することはできません。資格情報の扱いは配布ページのプライバシーポリシーを参照してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=iphone"
     },
     {

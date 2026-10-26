@@ -2,11 +2,50 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const broker = window.MeldexDropboxSessionBroker;
+  async function localTransfer() {
+    const handoff = window.MeldexDropboxHomeHandoff;
+    const exported = await handoff.prepareExport(handoff.requestFromUrl());
+    $('session-bridge-account').textContent = '接続先: ' + exported.accountId;
+    $('session-bridge-code').textContent = exported.userCode;
+    $('session-bridge-confirm').hidden = false;
+    $('session-bridge-status').textContent = 'ホーム画面のMeldexにも同じ番号が表示されていることを確認してください。';
+    const button = $('session-bridge-approve');
+    button.disabled = false;
+    button.onclick = event => {
+      if (!event.isTrusted || window.top !== window.self) return;
+      if (Date.now() >= exported.expiresAt) {
+        button.disabled = true;
+        $('session-bridge-status').textContent = '有効時間が過ぎました。ホーム画面のMeldexからもう一度開いてください。';
+        return;
+      }
+      if (!navigator.clipboard?.writeText) {
+        $('session-bridge-status').textContent = 'このChromeでは引継ぎ情報を渡せません。Chromeを更新してお試しください。';
+        return;
+      }
+      // Only ciphertext is copied. No credential is placed in a URL or Cookie.
+      navigator.clipboard.writeText(exported.text).then(() => {
+        button.disabled = true;
+        $('session-bridge-status').textContent = '準備できました。ホーム画面のMeldexへ戻り、「引継ぎを完了」を押してください。';
+      }).catch(() => {
+        $('session-bridge-status').textContent = '引継ぎ情報を渡せませんでした。この画面で、もう一度ボタンを押してください。';
+      });
+    };
+  }
   async function start() {
     $('session-bridge-retry').hidden = true;
     $('session-bridge-confirm').hidden = true;
     if (window.top !== window.self) {
       $('session-bridge-status').textContent = '接続済みChromeの通常の画面で、引継ぎページを開いてください。';
+      return;
+    }
+    if (new URLSearchParams(location.hash.slice(1)).has('handoff') && window.MeldexDropboxHomeHandoff?.isEnabled?.()) {
+      try { await localTransfer(); }
+      catch (error) {
+        $('session-bridge-status').textContent = error.code === 'handoff_source_disconnected'
+          ? 'Meldexに接続済みのChromeで、このページを開いてください。元の接続と下書きは保持しています。'
+          : '引継ぎ情報を確認できませんでした。ホーム画面のMeldexから、もう一度開いてください。';
+        $('session-bridge-retry').hidden = false;
+      }
       return;
     }
     if (!broker?.isEnabled()) {
