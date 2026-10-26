@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.425-e0853fbb9205f71a6adc",
+  "version": "0.7.426-db787799821d7ffb620c",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -45,7 +45,7 @@
     },
     {
       "path": "dropbox-session-bridge.html",
-      "sha256": "a69027e1eeaea531dc7c7b5638ab82421cd7118f0d52554a2e4720d2d7ab71ea"
+      "sha256": "1c64c45a4c2d9577477126b73d621b5a8080369a91d251ed2e8be50121bd47fc"
     },
     {
       "path": "dropbox-session-bridge.js",
@@ -813,7 +813,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "8a518b3eb44aba2d0e42e0a99725bf710f4dd54fc7146decb129f491bf4bd973"
+      "sha256": "fe459608a5212dac61ae39097168ebccb1e3fec4451fedb3aa5393c8f4a55901"
     },
     {
       "path": "gb-color-palette.js",
@@ -1537,7 +1537,7 @@
     },
     {
       "path": "gb-dropbox-auth.js",
-      "sha256": "080acdfd14320d5bdc54e3f863468565e4dc2b5a9f539e628e1474cdabbdeed0"
+      "sha256": "3812ff3e5673f5840944151129732d16f106175b45a7f2995fbadd06848ca6ce"
     },
     {
       "path": "gb-dropbox-external-tag-catalog.js",
@@ -3693,7 +3693,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "a3e83b446a6d43ef13821a20a0be3af99bde6f509febaed3b98992a7316e6687"
+      "sha256": "3c620d1b977f584f289a0274a6ce6f0fd4826dd0d2f73b1a894377709750ea70"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3705,15 +3705,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "4f7e0c4890dba0eda7ad500b7cfa069fadc4f5a4f2785c1d8af59cdc44cb7681"
+      "sha256": "f248367316623e2309b11ff8b72f2bad3a7f3e1c33c1febf4dc3e0efcf17fa4e"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "9c25f9eaff2fb8dc021effb871ac4ea1b2e2835d0d43715278c6b482a1cefb8f"
+      "sha256": "607d6310405264dbfe5ae1b170aca3a2c4b6fbe43f72fcf79b3e8fc90d54a728"
     },
     {
       "path": "manual.html",
-      "sha256": "a64957005b22d99b67b1f62c2e12d7f9b4d0dd736e4973cf72f2786de6563c01"
+      "sha256": "d25b7f67b40cbdb099cdffebe384fd26c4456aa82ef51d0f71db598b3c79bc14"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3749,7 +3749,7 @@
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "9dfb6b8fba50c4155bd20d19076018d05f324c424410941b97408450a2626e9c"
+      "sha256": "d583e9a00374f6f6478e68bcab047012a09b4b51864c4aca9b85224c5f51858e"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
@@ -3769,7 +3769,7 @@
     },
     {
       "path": "meldex-cloud-viewer-runtime-02.js",
-      "sha256": "ab1e1af2cc78dbcbc060214246e420bd100307369cb821630c8d439a15bc656c"
+      "sha256": "3888185c40c66d7a82f480cdc45f96e84d5b97f732f51bfc34925805f2b04b06"
     },
     {
       "path": "meldex-cloud-viewer-runtime-03.js",
@@ -3829,7 +3829,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "eb9f0ccbb7f32aded71a46dd7f3072fa21881684fb0da4176f0e3a2d7ffbd114"
+      "sha256": "e8a8c13bd823d8abd7910f0d9521c6633832432a0cc43b1a91afb9f61d8d05d3"
     },
     {
       "path": "Meldex.ico",
@@ -3997,7 +3997,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "5dabe073fa6866a51cb8c776f39c87aa5e9e67ddda30f9ea7a41ec432703b994"
+      "sha256": "731b28eb4a979dbff02d7525ae74a5f6cfd05fb18b6352daf6abc64700ed1164"
     },
     {
       "path": "public-legal.css",
@@ -4045,7 +4045,7 @@
     },
     {
       "path": "quick-memo.html",
-      "sha256": "8810cfd44cf50eec4b0e873f3ffacb00a61536cb1d004f313c7d4cd802f30af0"
+      "sha256": "9574decbfdc8cdb4c4205898e8ea3d930cd5703b7cf9176fca33a580d0fa3ceb"
     },
     {
       "path": "quick-memo.js",
@@ -4197,7 +4197,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "0d01ddb93d4a5128fe0614d7e02e8df33f8414da0a73a1e3e84d33a3e7c5c35a"
+      "sha256": "740168d47ea4ea732469d8c5325a14e48a4de99e856797692877b3db42f9ffa5"
     },
     {
       "path": "viewer-annotation-legacy.js",
@@ -4269,7 +4269,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "3e9492170ec8616f31bbf3c4d4ce59d09ebfc3e04f82cfa22dbfd47bfde45c4f"
+      "sha256": "e9ce9b10eb11ce5cf4b9dccbcf873633956cb3b1d3950a1b1dba6dfecf8d48ab"
     },
     {
       "path": "webclip-inbox.css",

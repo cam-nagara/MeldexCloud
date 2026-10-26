@@ -1290,12 +1290,25 @@
       return session.account;
     }
     const account = await apiRpc('users/get_current_account', null);
-    _accountRootInfo = account?.root_info || null;
-    const latestSession = (await getSession()) || session;
-    if (latestSession) {
-      if (latestSession.authTransport === 'broker') _sessionBroker().setAccount(account);
-      else await _idbPut(SESSION_KEY, { ...latestSession, account });
+    const expectedAccount = String(session?.accountId || session?.account?.account_id || '');
+    const accountId = _accountIdFromAccount(account);
+    const retainCurrent = latest => {
+      const latestAccount = String(latest?.accountId || latest?.account?.account_id || '');
+      if (!hasConnection(latest) || !accountId || (expectedAccount && expectedAccount !== accountId)
+        || (latestAccount && latestAccount !== accountId)
+        || (session?.authTransport === 'broker' ? latest.authTransport !== 'broker'
+          : !session?.refreshToken || latest.refreshToken !== session.refreshToken)) {
+        throw _homeHandoffProblem('session_changed');
+      }
+      return { ...latest, account };
+    };
+    if (session?.authTransport === 'broker') {
+      retainCurrent(await getSession());
+      _sessionBroker().setAccount(account);
+    } else {
+      await _updateHomeHandoffSession(retainCurrent);
     }
+    _accountRootInfo = account.root_info || null;
     return account;
   }
 
