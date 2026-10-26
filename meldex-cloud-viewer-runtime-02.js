@@ -131,6 +131,7 @@
   let _brokerSettingsApplying = false;
   let _brokerSettingsAccount = '';
   let _homeHandoffSettingsPromise = null;
+  const _sessionRefreshes = new Map();
   // Leave capacity for sheet reads and writes while thumbnails are loading.
   const _apiQueue = [];
   let _apiActive = 0;
@@ -735,7 +736,18 @@
       account: canKeepAccount ? (current.account || null) : null,
       savedAt: new Date(now).toISOString(),
     };
-    await _idbPut(SESSION_KEY, next);
+    if (meta?.expectedSession) {
+      await _updateHomeHandoffSession(latest => {
+        const expected = meta.expectedSession;
+        if (!latest || latest.refreshToken !== expected.refreshToken || latest.savedAt !== expected.savedAt
+          || String(latest.accountId || latest.account?.account_id || '') !== expected.accountId) {
+          throw _homeHandoffProblem('session_changed');
+        }
+        return next;
+      });
+    } else {
+      await _idbPut(SESSION_KEY, next);
+    }
     if (payload.refresh_token) {
       _sessionBroker()?.resetAfterAuthorization?.(nextAccountId);
       _brokerSettingsAccount = '';
@@ -818,6 +830,7 @@
     const next = await _updateHomeHandoffSession(current => {
       const existingAccount = String(current?.accountId || current?.account?.account_id || '');
       if (hasConnection(current) && existingAccount !== payload.accountId) throw _homeHandoffProblem('account_change_rejected');
+      if (hasConnection(current)) return current;
       return { refreshToken: payload.refreshToken, appKey: payload.appKey, accountId: payload.accountId,
         accessToken: '', expiresAt: 0, tokenType: 'bearer', savedAt: new Date().toISOString(),
         homeHandoffImported: true, homeHandoffPending: { id: payload.id, settings } };
@@ -873,17 +886,28 @@
     if (!session?.refreshToken) throw new Error('Dropbox接続情報が見つかりません。もう一度Dropboxに接続してください。');
     const appKey = forceAppKey || session.appKey || getAppKey();
     if (!appKey) throw new Error('Dropbox App key が設定されていません');
+    const key = JSON.stringify([session.accountId || session.account?.account_id || '', session.refreshToken, session.savedAt, appKey]);
+    if (!_sessionRefreshes.has(key)) {
+      const operation = _refreshDirectSession(session, appKey).finally(() => { _sessionRefreshes.delete(key); });
+      _sessionRefreshes.set(key, operation);
+    }
+    return _sessionRefreshes.get(key);
+  }
+
+  async function _refreshDirectSession(session, appKey) {
     const payload = await _tokenRequest({
       refresh_token: session.refreshToken,
       grant_type: 'refresh_token',
       client_id: appKey,
     });
-    if (session.homeHandoffImported && payload.account_id && payload.account_id !== session.accountId) {
+    const expectedAccount = String(session.accountId || session.account?.account_id || '');
+    if (expectedAccount && payload.account_id && payload.account_id !== expectedAccount) {
       throw _homeHandoffProblem('account_change_rejected');
     }
     return _persistSession(payload, {
       appKey,
       redirectUri: session.redirectUri || '',
+      expectedSession: { accountId: expectedAccount, refreshToken: session.refreshToken, savedAt: session.savedAt },
     });
   }
 

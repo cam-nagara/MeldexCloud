@@ -2,9 +2,12 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const broker = window.MeldexDropboxSessionBroker;
+  let exportRevision = 0;
   async function localTransfer() {
+    const revision = exportRevision;
     const handoff = window.MeldexDropboxHomeHandoff;
     const exported = await handoff.prepareExport(handoff.requestFromUrl());
+    if (revision !== exportRevision) return;
     $('session-bridge-account').textContent = '接続先: ' + exported.accountId;
     $('session-bridge-code').textContent = exported.userCode;
     $('session-bridge-confirm').hidden = false;
@@ -12,7 +15,7 @@
     const button = $('session-bridge-approve');
     button.disabled = false;
     button.onclick = event => {
-      if (!event.isTrusted || window.top !== window.self) return;
+      if (!event.isTrusted || window.top !== window.self || revision !== exportRevision) return;
       if (Date.now() >= exported.expiresAt) {
         button.disabled = true;
         $('session-bridge-status').textContent = '有効時間が過ぎました。ホーム画面のMeldexからもう一度開いてください。';
@@ -32,6 +35,7 @@
     };
   }
   async function start() {
+    exportRevision += 1;
     $('session-bridge-retry').hidden = true;
     $('session-bridge-confirm').hidden = true;
     if (window.top !== window.self) {
@@ -89,5 +93,11 @@
     }
   }
   $('session-bridge-retry').addEventListener('click', start);
+  window.addEventListener('meldex:dropbox-auth-session-changed', () => {
+    if (new URLSearchParams(location.hash.slice(1)).has('handoff')) {
+      $('session-bridge-approve').disabled = true;
+      start();
+    }
+  });
   start();
 })();
