@@ -1,6 +1,10 @@
 (function () {
   'use strict';
 
+  // BEGIN GENERATED AI WRITING STYLE (python app/build_ai_writing_style.py)
+  const AI_WRITING_STYLE_PROMPT = "=== 文章表現の標準方針 ===\n依頼に合う自然な文章で、人物、行動、理由、結果を具体的に書いてください。\n通常の説明・提案・評価では「構造」「足場」「刺さる」「効く」「置く」を、抽象的な説明や比喩の便利語として使わないでください。活用形も同様です。\n単なる類語への置換で済ませず、何がどう変わるのかを書いてください。\n例: 「読者に刺さる展開」では、誰がどの出来事に共感するのかを説明する。\n例: 「伏線を置く」では、どの場面で何を示し、後でどう明らかになるかを書く。\nAIが新しく書く通常の文章ではemダッシュ（—、U+2014）を使わず、句点・読点・必要な括弧で文章を組み立ててください。別のダッシュへの一律置換はしないでください。長音符、マイナス、ハイフン、日本語のダッシュ全般の禁止には広げないでください。\n抽象的な評価、根拠のない称賛、決まり文句の導入や締めを避け、依頼への答えから書き始めてください。見出し・箇条書き・文章量は用途に合わせてください。\n引用、保持を求められた原文、固有名詞、必要な専門用語（データ構造、構造式など）、字義どおりの動作（机に本を置くなど）、対象語自体の説明、機械可読値は正確に保持してください。引用内の対象語やemダッシュも変更しないでください。\n例外は該当箇所だけに適用し、周囲の説明には標準方針を使ってください。自分で生成した文章を引用扱いにして回避しないでください。\n利用者が明示した表現指定は必要な箇所で優先し、作品や人物の話し方を尊重してください。標準方針を理由に意味、事実、参照先を変えないでください。\n返答を確定する前に、対象表現と不自然な言い換えを見直してください。\n\n=== 生成文章への適用 ===\n文章表現の標準方針はチャットの返答に加え、ノート、シナリオ、シート、ボード、スケジュール、フォーム（シートのフォームビューと独立フォーム）に新しく書く自然文にも適用します。\n生成計画やツール引数に含まれる新規タイトル・保存名、見出し、本文、台詞、説明、テキスト値、設問、表示ラベル、入力例、送信・完了メッセージも対象です。\n既存データの転記、引用、専門用語、指定された名前、ID、既存パス、リンク先、数式、日時、状態、型、Schemaのキーや列挙値は正確に保持してください。既存ファイルを文体改善のために巡回・改変せず、依頼された範囲の新しい文章だけに適用してください。\n保存ツールを呼ぶ前に生成する文章を見直し、保存後の文章を一括置換しないでください。追加の校正モデル呼び出しや自動再生成は行わないでください。\n文体指示は保存形式、権限、ツールの入力契約を変更しません。利用できるツールや作成可能な形式も追加しません。";
+  // END GENERATED AI WRITING STYLE
+
   function _providerKey(provider) {
     return String(provider || '').trim().toLowerCase() || 'gemini';
   }
@@ -466,7 +470,13 @@
   }
 
   function _prepareClientStreamBody(body, send) {
-    const source = body || {};
+    const system = String(body?.system_prompt || '');
+    const source = {
+      ...(body || {}),
+      system_prompt: system.includes(AI_WRITING_STYLE_PROMPT)
+        ? system
+        : [system, AI_WRITING_STYLE_PROMPT].filter(Boolean).join('\n\n'),
+    };
     const messages = Array.isArray(source.messages) ? source.messages : [];
     if (!_requestFlag(source, 'allow_auto_compress', false) || messages.length <= 50) return source;
     const keepCount = Math.max(4, Math.min(16, messages.length - 1));

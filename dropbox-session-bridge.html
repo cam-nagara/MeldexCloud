@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<title>Meldexの接続を引き継ぐ</title>
+<link rel="stylesheet" href="gb-dropbox-session-restore.css">
+<script defer src="gb-cloud-runtime-config.js?v=ffc062682161e6dd"></script>
+<script defer src="gb-config.js"></script>
+<script defer src="gb-runtime-adapter.js"></script>
+<script defer src="gb-dropbox-session-proof.js"></script>
+<script defer src="gb-dropbox-session-broker.js"></script>
+<script defer src="gb-dropbox-auth.js"></script>
+<script defer src="dropbox-session-bridge.js"></script>
+</head>
+<body class="gb-session-bridge"><main>
+<h1>ホーム画面のMeldexへ接続を引き継ぐ</h1>
+<p id="session-bridge-status" role="status" aria-live="polite">接続済みの情報を確認しています。</p>
+<section id="session-bridge-confirm" hidden>
+<p id="session-bridge-account"></p>
+<p>ホーム画面から開いたMeldexにも、同じ番号が表示されている場合だけ続けてください。</p>
+<p id="session-bridge-code" class="gb-session-restore-code"></p>
+<button type="button" id="session-bridge-approve" class="gb-session-restore-button">このMeldexへ引き継ぐ</button>
+</section>
+<button type="button" id="session-bridge-retry" class="gb-session-restore-button" hidden>もう一度確認</button>
+</main></body></html>

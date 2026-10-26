@@ -107,7 +107,7 @@
     refs.install.hidden = ios || !canPrompt;
   }
 
-  function showInstructions() {
+  async function showInstructions() {
     if (!state.initialized || state.installed) return;
     state.lastFocus = document.activeElement;
     state.dialogOpen = true;
@@ -115,6 +115,19 @@
     _setStatus('', false);
     state.refs.backdrop.hidden = false;
     state.refs.dialog.hidden = false;
+    if (window.MeldexDropboxSessionBroker?.isEnabled?.()) {
+      state.refs.steps.hidden = true;
+      state.refs.install.hidden = true;
+      _setStatus('接続の引継ぎを準備しています。', false);
+      try {
+        await window.MeldexDropboxSessionBroker.prepareInstall();
+        state.refs.steps.hidden = false;
+        _renderInstructions();
+        _setStatus('', false);
+      } catch {
+        _setStatus('接続引継ぎの準備を完了できませんでした。通信状態を確認して、もう一度お試しください。', true);
+      }
+    }
     queueMicrotask(() => (state.refs.install.hidden ? state.refs.close : state.refs.install).focus());
   }
 

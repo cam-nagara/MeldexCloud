@@ -7,7 +7,7 @@
 
   async function sessionSignature() {
     const session = await window.MeldexDropboxAuth?.getSession?.().catch(() => null);
-    return `${session?.accessToken ? 'connected' : 'disconnected'}:${String(session?.accountId || '')}`;
+    return `${(window.MeldexDropboxAuth?.hasConnection?.(session) ?? !!session?.accessToken) ? 'connected' : 'disconnected'}:${String(session?.accountId || '')}`;
   }
 
   async function refreshSharedSession(force) {

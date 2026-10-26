@@ -803,10 +803,10 @@
     const localMode = _localDataModeForPage();
     const isLegacyMode = _runtime().getMode?.() === localMode;
     const canSwitchLegacy = true;
-    const sessionLabel = session?.refreshToken
+    const sessionLabel = _sessionConnected(session)
       ? `Dropbox接続済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}`
       : '未接続';
-    const sessionHelp = session?.refreshToken
+    const sessionHelp = _sessionConnected(session)
       ? '接続できています。使うDropbox内フォルダを確認し、「この設定で開始」を押してください。'
       : 'まず「Dropboxに接続する」を押してください。接続後に共有フォルダや既存のソースフォルダを選べます。';
     return new Promise((resolve) => {
@@ -827,7 +827,7 @@
         </div>
         <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">1. Dropboxに接続する</div>
-          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : 'var(--fg)'};">
+          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${_sessionConnected(session) ? '#9dd6a5' : 'var(--fg)'};">
             ${sessionLabel}
           </div>
           <div id="cloud-session-help" style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:6px;">${sessionHelp}</div>
@@ -982,7 +982,7 @@
 
       async function refreshSessionStatus() {
         const session = await _auth().getSession().catch(() => null);
-        if (!settled) updateSessionStatus(session?.refreshToken ? 'Dropbox接続済み' : '未接続', !!session?.refreshToken);
+        if (!settled) updateSessionStatus(_sessionConnected(session) ? 'Dropbox接続済み' : '未接続', !!_sessionConnected(session));
       }
 
       function acceptAuthResult(raw) {
@@ -1025,7 +1025,7 @@
         await runBusy(async () => {
           saveInputs();
           const currentSession = await _auth().getSession();
-          if (!currentSession?.refreshToken) {
+          if (!_sessionConnected(currentSession)) {
             setError('先にDropboxに接続してください。接続後にDropbox内フォルダを選べます。');
             return;
           }
@@ -1195,10 +1195,15 @@
     return _isHostedCloudPage();
   }
 
+  function _sessionConnected(session) {
+    return _auth()?.hasConnection?.(session) ?? !!session?.refreshToken;
+  }
+
   async function prepareLaunch() {
     if (_completeAuthPopup({ handled: false })) return false;
     const callback = await _auth().handleRedirectCallback();
     if (_completeAuthPopup(callback)) return false;
+    await window.MeldexDropboxSessionBroker?.prepareLaunch?.({ onOpen: _hideStartupSplashForBlockingCloudUi });
     let migrationMode = null;
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
@@ -1247,7 +1252,7 @@
 
     while (true) {
       const session = await _auth().getSession();
-      if (!_auth().getAppKey() || !_auth().getVaultPath() || !session?.refreshToken) {
+      if (!_auth().getAppKey() || !_auth().getVaultPath() || !_sessionConnected(session)) {
         const result = await _showDropboxSetupModal(callback.handled && callback.ok ? 'Dropboxへの接続が完了しました。使うフォルダを確認して「この設定で開始」を押してください。' : '');
         if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;

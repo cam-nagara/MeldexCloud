@@ -217,6 +217,443 @@
 
 ;
 
+/* === gb-dropbox-session-proof.js === */
+;
+/* Cookie-free transport for an explicitly configured HTTPS session service. */
+(function () {
+  'use strict';
+  const DB = 'meldex-pwa-session-device-v1';
+  function fail() { throw new Error('session_device_storage_unavailable'); }
+  function encode(bytes) {
+    return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function database() {
+    return new Promise((resolve, reject) => {
+      const open = indexedDB.open(DB, 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('devices');
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+      open.onblocked = () => reject(new Error('session_device_storage_blocked'));
+    });
+  }
+  async function transaction(base, mode, action) {
+    const db = await database();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction('devices', mode);
+        let result;
+        const request = action(tx.objectStore('devices'), base);
+        request.onsuccess = () => { result = request.result; };
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('session_device_storage_failed'));
+      });
+    } finally { db.close(); }
+  }
+  async function load(base) {
+    let value = await transaction(base, 'readonly', (store, key) => store.get(key));
+    if (!value) {
+      const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+      const candidate = { privateKey: pair.privateKey, publicKey: await crypto.subtle.exportKey('jwk', pair.publicKey), sid: '' };
+      // add() is atomic across tabs. If another tab wins, use its key.
+      try { await transaction(base, 'readwrite', (store, key) => store.add(candidate, key)); }
+      catch (error) { if (error?.name !== 'ConstraintError') throw error; }
+      value = await transaction(base, 'readonly', (store, key) => store.get(key));
+    }
+    if (!value?.privateKey || value.privateKey.extractable !== false || !value.publicKey) fail();
+    return value;
+  }
+  async function device(base) {
+    return load(base);
+  }
+  async function prepare(base, url, options) {
+    const value = await device(base);
+    const response = await fetch(new URL('challenge', base).href, {
+      credentials: 'omit', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer', signal: options.signal,
+      headers: { 'X-Meldex-Client': 'meldex-session-v1' },
+    });
+    const challenge = await response.json();
+    if (!response.ok || !/^[A-Za-z0-9_-]{43}$/.test(challenge.nonce)) throw new Error('session_challenge_failed');
+    const hash = encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(options.body || '')));
+    const csrf = options.headers['X-CSRF-Token'] || '', account = options.headers['X-Meldex-Account'] || '';
+    const message = ['meldex-session-proof-v1', options.method || 'GET', url, location.origin,
+      challenge.nonce, value.sid, csrf, account, hash].join('\n');
+    const signed = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, value.privateKey, new TextEncoder().encode(message));
+    options.credentials = 'omit';
+    options.headers['X-Meldex-Session'] = value.sid;
+    options.headers['X-Meldex-Proof'] = encode(new TextEncoder().encode(JSON.stringify({
+      key: value.publicKey, nonce: challenge.nonce, signature: encode(signed),
+    })));
+    return value.sid;
+  }
+  async function accept(base, value, expectedSid) {
+    if (!Object.prototype.hasOwnProperty.call(value || {}, 'sessionId')) return value;
+    if (typeof value.sessionId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.sessionId)) fail();
+    const db = await database();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('devices', 'readwrite'), store = tx.objectStore('devices');
+        const read = store.get(base);
+        read.onsuccess = () => {
+          const current = read.result;
+          // A delayed response must not overwrite a session rotated in another tab.
+          if (!current || (current.sid !== expectedSid && current.sid !== value.sessionId)) { tx.abort(); return; }
+          store.put({ ...current, sid: value.sessionId }, base);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(new Error('session_device_changed'));
+      });
+    } finally { db.close(); }
+    const result = { ...value };
+    delete result.sessionId;
+    return result;
+  }
+  window.MeldexDropboxSessionProof = Object.freeze({ prepare, accept });
+})();
+
+;
+
+/* === gb-dropbox-session-broker.js === */
+;
+/* Dropbox session transport for iOS Home Screen launches. */
+(function () {
+  'use strict';
+  const PROFILE_KEY = 'meldex-dropbox-session-profile-v1';
+  const PENDING_KEY = 'meldex-dropbox-session-handoff-v1';
+  const DISCONNECTED_KEY = 'meldex-dropbox-session-disconnected-v1';
+  const LOGOUT_KEY = 'meldex-dropbox-session-logout-pending-v1';
+  const REPLACEMENT_KEY = 'meldex-dropbox-session-authorized-account-v1';
+  let meta = null, access = null, account = null, initPromise = null, accessPromise = null;
+  let settingsPromise = Promise.resolve(), settingsTimer = 0, pendingSettings = null;
+  let epoch = 0, settingsError = null;
+
+  function problem(code, status) {
+    return Object.assign(new Error(code), { code, status: status || 0, meldexSessionError: true });
+  }
+  function read(key, fallback) {
+    try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+  }
+  function write(key, value) {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  }
+  function isIos() {
+    return /iPhone|iPad|iPod/i.test(String(navigator.userAgent || ''))
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+  function isInstalled() {
+    return navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)')?.matches === true;
+  }
+  function baseUrl() { return new URL('.', document.baseURI || location.href); }
+  function apiBase() {
+    const config = window.MeldexCloudRuntimeConfig?.dropbox || {};
+    const external = String(config.sessionBrokerUrl || '').trim();
+    const path = String(config.sessionBrokerApiPath || '').trim();
+    if (external) {
+      if (path || !window.MeldexDropboxSessionProof) return null;
+      try {
+        const url = new URL(external);
+        if (url.protocol !== 'https:' || url.origin === location.origin || url.username || url.password || url.search || url.hash
+          || !/^\/(?:[A-Za-z0-9_-]+\/)*api\/pwa-session\/?$/.test(url.pathname)) return null;
+        return new URL(url.href.replace(/\/$/, '') + '/');
+      } catch { return null; }
+    }
+    if (!/^api\/pwa-session\/?$/.test(path)) return null;
+    const url = new URL(path.replace(/\/$/, '') + '/', baseUrl());
+    return url.origin === location.origin && url.protocol === 'https:' ? url : null;
+  }
+  function isEnabled() {
+    if (!isIos() || location.protocol !== 'https:' || !apiBase()) return false;
+    const params = new URLSearchParams(location.search);
+    if (params.get('desktop') === '1' || params.get('safeMode') === '1') return false;
+    if (params.has('dataAccessMode') && params.get('dataAccessMode') !== 'dropbox') return false;
+    const runtime = window.MeldexRuntimeAdapter;
+    if (!meta && !initPromise && kind() !== 'bridge' && read(PROFILE_KEY, '')
+      && runtime?.hasStoredMode?.() && runtime?.getMode?.() === 'browser') return false;
+    return true;
+  }
+  function kind() {
+    if (/dropbox-session-bridge\.html$/i.test(location.pathname)) return 'bridge';
+    if (!isInstalled()) return 'browser';
+    return document.documentElement?.getAttribute('data-standalone-cloud') === 'quick-memo'
+      || /(?:quick-memo)(?:\/|\.html)/i.test(location.pathname) ? 'memo' : 'main';
+  }
+  function validateMeta(value) {
+    if (value?.protocol !== 'meldex-pwa-session' || value?.version !== 1
+      || typeof value.csrf !== 'string' || !/^[a-f0-9]{64}$/.test(value.csrf)
+      || typeof value.connected !== 'boolean') throw problem('session_service_invalid');
+    if (value.connected && (typeof value.accountId !== 'string' || !value.accountId
+      || !value.settings || typeof value.settings !== 'object')) throw problem('session_service_invalid');
+    if (value.connected) {
+      const s = value.settings;
+      if (!Number.isInteger(value.settingsVersion) || value.settingsVersion < 1
+        || !['home', 'team_root'].includes(s.vaultNamespace) || !['developer', 'custom'].includes(s.appMode)
+        || typeof s.customAppKey !== 'string' || ['vaultPath', 'settingsPath'].some(key =>
+          typeof s[key] !== 'string' || !s[key].startsWith('/') || s[key].length > 512
+          || s[key].includes('\\') || s[key].split('/').includes('..') || /[\x00-\x1f]/.test(s[key]))) throw problem('session_service_invalid');
+    }
+    return value;
+  }
+  async function request(path, body, retryCsrf = true, boundAccount = meta?.connected ? meta.accountId : '') {
+    const base = apiBase();
+    if (!base) throw problem('session_service_unconfigured');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const headers = { 'X-Meldex-Client': 'meldex-session-v1' };
+      if (boundAccount) headers['X-Meldex-Account'] = boundAccount;
+      const options = { credentials: 'same-origin', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer', headers, signal: controller.signal };
+      if (body !== undefined) {
+        options.method = 'POST';
+        headers['Content-Type'] = 'application/json';
+        headers['X-CSRF-Token'] = meta?.csrf || '';
+        options.body = JSON.stringify(body);
+      }
+      const url = new URL(path, base).href;
+      const proof = String(window.MeldexCloudRuntimeConfig?.dropbox?.sessionBrokerUrl || '').trim()
+        ? window.MeldexDropboxSessionProof : null;
+      const proofSession = proof ? await proof.prepare(base.href, url, options) : null;
+      const response = await fetch(url, options);
+      let value;
+      try { value = await response.json(); } catch { throw problem('session_service_invalid', response.status); }
+      if (response.status === 403 && value?.error === 'csrf_rejected' && retryCsrf) {
+        meta = validateMeta(await request('bootstrap', undefined, false));
+        return request(path, body, false, boundAccount);
+      }
+      if (!response.ok) throw problem(String(value?.error || 'session_service_failed'), response.status);
+      if (proof) value = await proof.accept(base.href, value, proofSession);
+      return value;
+    } catch (error) {
+      if (error.meldexSessionError) throw error;
+      throw problem('session_service_unavailable');
+    } finally { clearTimeout(timer); }
+  }
+  function signature(settings) {
+    return JSON.stringify(['vaultPath', 'settingsPath', 'vaultNamespace', 'appMode', 'customAppKey']
+      .map(key => String(settings?.[key] || '')));
+  }
+  function profile() {
+    try { return JSON.parse(read(PROFILE_KEY, 'null')); } catch { return null; }
+  }
+  function remember() {
+    if (!meta?.connected) return;
+    write(PROFILE_KEY, JSON.stringify({ accountId: meta.accountId, version: meta.settingsVersion,
+      signature: signature(meta.settings) }));
+  }
+  async function saveSettings(settings, expectedVersion) {
+    const currentEpoch = epoch;
+    let value;
+    try { value = validateMeta(await request('settings', { settings, expectedVersion })); }
+    catch (error) {
+      if (error.code !== 'settings_changed') throw error;
+      value = validateMeta(await request('bootstrap'));
+      if (signature(value.settings) !== signature(settings)) throw error;
+    }
+    if (currentEpoch !== epoch) throw problem('session_changed', 409);
+    if (meta?.accountId !== value.accountId) throw problem('account_change_rejected', 409);
+    meta = value;
+    remember();
+    settingsError = null;
+  }
+  async function completePendingLogout() {
+    const target = read(LOGOUT_KEY, '');
+    if (!target) return;
+    meta = validateMeta(await request('bootstrap'));
+    if (meta.connected && meta.accountId === target) await request('logout', { scope: 'this_app' });
+    meta = access = account = null;
+    write(LOGOUT_KEY, null);
+  }
+  async function boot(raw, settings) {
+    await completePendingLogout();
+    if (read(DISCONNECTED_KEY, '') === '1') return null;
+    meta = validateMeta(await request('bootstrap'));
+    const rawAccount = String(raw?.accountId || raw?.account?.account_id || '');
+    const replacement = rawAccount && read(REPLACEMENT_KEY, '') === rawAccount;
+    if (meta.connected && rawAccount && rawAccount !== meta.accountId && !replacement) throw problem('account_change_rejected', 409);
+    if (raw?.refreshToken && (!meta.connected || (replacement && meta.accountId !== rawAccount))) {
+      meta = validateMeta(await request('import', {
+        refreshToken: raw.refreshToken, appKey: raw.appKey,
+        accountId: rawAccount, settings, replace: !!replacement,
+      }));
+      const importedAccount = meta.accountId;
+      meta = validateMeta(await request('bootstrap'));
+      if (!meta.connected || meta.accountId !== importedAccount) throw problem('session_cookie_unavailable');
+    }
+    if (meta.connected && replacement && meta.accountId === rawAccount) write(REPLACEMENT_KEY, null);
+    if (meta.connected) {
+      const appKind = kind() === 'bridge' ? 'browser' : kind();
+      meta = validateMeta(await request('activate', { kind: appKind }));
+      const saved = profile();
+      const localChanged = saved?.accountId === meta.accountId && saved.signature !== signature(settings);
+      if ((raw?.refreshToken || localChanged) && signature(settings) !== signature(meta.settings)) {
+        const expected = localChanged ? saved.version : meta.settingsVersion;
+        await saveSettings(settings, expected);
+      }
+      remember();
+    }
+    return session();
+  }
+  function isTransient(error) {
+    return !error.status || error.status >= 500 || error.status === 404;
+  }
+  async function restore(raw, settings) {
+    if (!isEnabled()) return raw;
+    if (!initPromise) initPromise = boot(raw, settings).catch(error => { initPromise = null; throw error; });
+    try { await initPromise; }
+    catch (error) {
+      if (raw?.refreshToken && isTransient(error) && read(DISCONNECTED_KEY, '') !== '1') return raw;
+      throw error;
+    }
+    return session();
+  }
+  function session() {
+    if (read(DISCONNECTED_KEY, '') === '1' || !meta?.connected) return null;
+    return { connected: true, authTransport: 'broker', accountId: meta.accountId,
+      accessToken: access?.accessToken || '', expiresAt: access?.expiresAt || 0,
+      appKey: meta.appKey || '', account,
+      settings: { ...meta.settings } };
+  }
+  async function validSession(force = false) {
+    if (!session()) throw problem('session_restore_required', 401);
+    if (!force && access?.expiresAt > Date.now() + 120000) return { ...session(), ...access };
+    if (!accessPromise) {
+      const currentEpoch = epoch, expectedAccount = meta.accountId;
+      accessPromise = request('access', { force, generation: access?.generation }).then(value => {
+        if (currentEpoch !== epoch || read(DISCONNECTED_KEY, '') === '1') throw problem('session_changed', 409);
+        if (value.accountId !== expectedAccount || typeof value.accessToken !== 'string' || !value.accessToken
+          || !Number.isFinite(value.expiresAt)) throw problem('account_change_rejected', 409);
+        access = value;
+        return { ...session(), ...access };
+      }).catch(error => { access = null; throw error; }).finally(() => { accessPromise = null; });
+    }
+    return accessPromise;
+  }
+  function setAccount(value) {
+    if (String(value?.account_id || '') !== meta?.accountId) throw problem('account_change_rejected', 409);
+    account = value;
+  }
+  function queueSettings(settings) {
+    if (!isEnabled() || !meta?.connected || read(DISCONNECTED_KEY, '') === '1') return;
+    pendingSettings = { ...settings };
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(() => flushSettings().catch(() => {}), 100);
+  }
+  async function flushSettings() {
+    clearTimeout(settingsTimer);
+    if (pendingSettings) {
+      const value = pendingSettings;
+      pendingSettings = null;
+      settingsPromise = settingsPromise.catch(() => {}).then(async () => {
+        if (!session()) throw problem('session_changed', 409);
+        if (signature(value) !== signature(meta.settings)) await saveSettings(value, meta.settingsVersion);
+      }).catch(error => {
+        settingsError = error;
+        pendingSettings = pendingSettings || value;
+        try { window.dispatchEvent(new CustomEvent('meldex:dropbox-session-settings-error', { detail: { code: error.code } })); } catch {}
+        throw error;
+      });
+    }
+    await settingsPromise;
+    if (settingsError) throw settingsError;
+  }
+  function resetAfterAuthorization(authorizedAccount) {
+    epoch += 1;
+    initPromise = accessPromise = meta = access = account = null;
+    write(DISCONNECTED_KEY, null);
+    write(LOGOUT_KEY, null);
+    if (authorizedAccount) write(REPLACEMENT_KEY, authorizedAccount);
+  }
+  async function logout(expectedAccount) {
+    epoch += 1;
+    access = account = null;
+    write(DISCONNECTED_KEY, '1');
+    const target = expectedAccount || meta?.accountId || read(LOGOUT_KEY, '') || profile()?.accountId;
+    if (target) write(LOGOUT_KEY, target);
+    clearTimeout(settingsTimer);
+    pendingSettings = null;
+    await settingsPromise.catch(() => {});
+    await completePendingLogout();
+    initPromise = accessPromise = null;
+    write(PROFILE_KEY, null);
+    write(REPLACEMENT_KEY, null);
+    try { sessionStorage.removeItem(PENDING_KEY); } catch {}
+  }
+  function pending() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null');
+      return value?.expiresAt > Date.now() && value.kind === kind() ? value : null;
+    } catch { return null; }
+  }
+  async function createHandoff() {
+    const saved = pending();
+    if (saved) return saved;
+    if (!meta) meta = validateMeta(await request('bootstrap'));
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    const receiverProof = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const value = await request('handoff/create', { kind: kind() === 'memo' ? 'memo' : 'main', receiverProof });
+    if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{20,64}$/.test(value.id)
+      || !/^\d{6}$/.test(value.userCode) || !Number.isFinite(value.expiresAt)) throw problem('session_service_invalid');
+    const bridge = new URL('dropbox-session-bridge.html', baseUrl());
+    bridge.hash = new URLSearchParams({ request: value.id }).toString();
+    const result = { ...value, kind: kind(), receiverProof, bridgeUrl: bridge.href };
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify(result));
+    return result;
+  }
+  async function redeemHandoff() {
+    const value = pending();
+    if (!value) throw problem('handoff_expired', 410);
+    const body = { id: value.id, receiverProof: value.receiverProof };
+    const result = await request('handoff/redeem', body);
+    if (result.state === 'pending') return false;
+    meta = validateMeta(result);
+    const expected = meta.accountId;
+    meta = validateMeta(await request('bootstrap'));
+    if (!meta.connected || meta.accountId !== expected) throw problem('session_cookie_unavailable');
+    await request('handoff/ack', body);
+    sessionStorage.removeItem(PENDING_KEY);
+    write(DISCONNECTED_KEY, null);
+    remember();
+    initPromise = Promise.resolve(session());
+    try { window.dispatchEvent(new CustomEvent('meldex:dropbox-auth-session-changed', {
+      detail: { connected: true, accountId: meta.accountId, remote: false },
+    })); } catch {}
+    return true;
+  }
+  async function prepareLaunch(options) {
+    if (!isEnabled()) return;
+    let raw;
+    try { raw = await window.MeldexDropboxAuth.getSession(); }
+    catch (error) {
+      if (!isInstalled() || !window.MeldexDropboxSessionRestore?.wait) throw error;
+      await window.MeldexDropboxSessionRestore.wait({ ...options, initialError: error });
+      await window.MeldexDropboxAuth.getSession();
+      return;
+    }
+    if (raw && !isManaged(raw)) return; // Existing direct connection remains usable during a service outage.
+    if (raw) return;
+    if (kind() === 'browser' || kind() === 'bridge') return;
+    if (!window.MeldexDropboxSessionRestore?.wait) throw problem('session_restore_ui_missing');
+    await window.MeldexDropboxSessionRestore.wait(options);
+    await window.MeldexDropboxAuth.getSession();
+  }
+  async function prepareInstall() {
+    if (!isEnabled()) return;
+    const current = await window.MeldexDropboxAuth.getSession();
+    if (current && !isManaged(current)) throw problem('session_service_unavailable');
+    if (current) await flushSettings();
+  }
+  function isManaged(value) { return value?.authTransport === 'broker' && value?.connected === true; }
+  window.MeldexDropboxSessionBroker = {
+    isEnabled, isInstalled, kind, restore, session, validSession, setAccount,
+    queueSettings, flushSettings, resetAfterAuthorization, logout, createHandoff, redeemHandoff,
+    prepareLaunch, prepareInstall, isManaged,
+    resetHandoff: () => sessionStorage.removeItem(PENDING_KEY),
+    inspectHandoff: id => request('handoff/inspect', { id }),
+    approveHandoff: (id, userCode) => request('handoff/approve', { id, userCode, confirmed: true }),
+  };
+})();
+
+;
+
 /* === gb-dropbox-auth.js === */
 ;
 (function () {
@@ -249,6 +686,8 @@
   let _readFolderGeneration = 0;
   let _rateLimitUntil = 0;
   let _apiSessionGeneration = 0;
+  let _brokerSettingsApplying = false;
+  let _brokerSettingsAccount = '';
   // Leave capacity for sheet reads and writes while thumbnails are loading.
   const _apiQueue = [];
   let _apiActive = 0;
@@ -431,9 +870,39 @@
   function _writeStorage(key, value) {
     if (value == null || value === '') {
       localStorage.removeItem(key);
-      return;
+    } else {
+      localStorage.setItem(key, String(value));
     }
-    localStorage.setItem(key, String(value));
+    if (!_brokerSettingsApplying && [APP_MODE_KEY, CUSTOM_APP_KEY, VAULT_PATH_KEY,
+      VAULT_NAMESPACE_KEY, SETTINGS_PATH_KEY].includes(key)) {
+      _sessionBroker()?.queueSettings?.(_brokerSettings());
+    }
+  }
+
+  function _sessionBroker() {
+    const broker = window.MeldexDropboxSessionBroker;
+    return broker?.isEnabled?.() ? broker : null;
+  }
+  function hasConnection(session) {
+    return !!session?.refreshToken || (session?.authTransport === 'broker' && session?.connected === true);
+  }
+  function _brokerSettings() {
+    return { vaultPath: getVaultPath(), settingsPath: getSettingsPath(),
+      vaultNamespace: getVaultNamespaceKind(), appMode: getAppMode(), customAppKey: getCustomAppKey() };
+  }
+  function _applyBrokerSettings(session) {
+    if (session?.authTransport !== 'broker' || _brokerSettingsAccount === session.accountId) return;
+    const settings = session.settings || {};
+    _brokerSettingsApplying = true;
+    try {
+      setAppMode(settings.appMode);
+      setCustomAppKey(settings.customAppKey);
+      setVaultPath(settings.vaultPath);
+      setVaultNamespaceKind(settings.vaultNamespace);
+      setSettingsPath(settings.settingsPath);
+      if (window.MeldexDropboxSessionBroker?.kind?.() !== 'bridge') window.MeldexRuntimeAdapter?.setMode?.('dropbox');
+      _brokerSettingsAccount = session.accountId;
+    } finally { _brokerSettingsApplying = false; }
   }
 
   function _accountIdFromAccount(account) {
@@ -824,18 +1293,30 @@
       savedAt: new Date(now).toISOString(),
     };
     await _idbPut(SESSION_KEY, next);
+    if (payload.refresh_token) {
+      _sessionBroker()?.resetAfterAuthorization?.(nextAccountId);
+      _brokerSettingsAccount = '';
+    }
     _notifySessionChanged(next, true);
     return next;
   }
 
   async function getSession() {
-    return _idbGet(SESSION_KEY);
+    const current = await _idbGet(SESSION_KEY);
+    const broker = _sessionBroker();
+    if (!broker) return current;
+    const local = current ? { ...current, appKey: current.appKey || getAppKey() } : null;
+    const restored = await broker.restore(local, _brokerSettings());
+    _applyBrokerSettings(restored);
+    return restored;
   }
 
   async function clearSession() {
     _accountRootInfo = null;
     const current = await getSession().catch(() => null);
+    await _sessionBroker()?.logout?.(current?.accountId || current?.account?.account_id);
     await _idbDelete(SESSION_KEY);
+    _brokerSettingsAccount = '';
     _notifySessionChanged(current, false);
   }
 
@@ -861,6 +1342,7 @@
 
   async function refreshSession(forceAppKey) {
     const session = await getSession();
+    if (session?.authTransport === 'broker') return _sessionBroker().validSession(true);
     if (!session?.refreshToken) throw new Error('Dropbox接続情報が見つかりません。もう一度Dropboxに接続してください。');
     const appKey = forceAppKey || session.appKey || getAppKey();
     if (!appKey) throw new Error('Dropbox App key が設定されていません');
@@ -926,6 +1408,7 @@
 
   async function getValidSession() {
     let session = await getSession();
+    if (session?.authTransport === 'broker') return _sessionBroker().validSession(false);
     if (!session?.accessToken) return null;
     const expiresAt = Number(session.expiresAt || 0);
     if (!expiresAt || (expiresAt - Date.now()) > EARLY_REFRESH_MS) return session;
@@ -1087,7 +1570,7 @@
 
   async function _refreshAfterUnauthorized() {
     const session = await getSession();
-    if (!session?.refreshToken) return false;
+    if (!hasConnection(session)) return false;
     try {
       await refreshSession(session.appKey);
       return true;
@@ -1184,7 +1667,7 @@
         continue;
       }
       const detail = await _readDropboxError(response);
-      if (response.status === 401) await clearSession();
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(body?.path, options);
       throw new Error(String(detail));
     }
@@ -1238,7 +1721,7 @@
         continue;
       }
       const detail = await _readDropboxError(response);
-      if (response.status === 401) await clearSession();
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(arg?.path, options);
       throw new Error(String(detail));
     }
@@ -1255,7 +1738,8 @@
     _accountRootInfo = account?.root_info || null;
     const latestSession = (await getSession()) || session;
     if (latestSession) {
-      await _idbPut(SESSION_KEY, { ...latestSession, account });
+      if (latestSession.authTransport === 'broker') _sessionBroker().setAccount(account);
+      else await _idbPut(SESSION_KEY, { ...latestSession, account });
     }
     return account;
   }
@@ -1288,6 +1772,7 @@
     exchangeCode,
     handleRedirectCallback,
     getSession,
+    hasConnection,
     getValidSession,
     getValidAccessToken,
     clearSession,
@@ -1303,6 +1788,130 @@
     getSpaceUsage,
   };
   _initializeAuthChannel();
+})();
+
+;
+
+/* === gb-dropbox-session-restore.js === */
+;
+/* Shared blocking restoration UI. Never opens Dropbox authorization. */
+(function () {
+  'use strict';
+  let waiting = null;
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  function message(error) {
+    if (error?.code === 'settings_changed') return '保存先の設定が別の画面で変更されています。この端末の設定は保持しています。';
+    if (error?.code === 'account_change_rejected') return '接続先のアカウントが一致しません。元の接続情報は保持しています。';
+    if (error?.status === 410) return '引継ぎの有効時間が過ぎました。もう一度、接続済みChromeから引き継げます。';
+    return '接続の復元を待っています。通信状態を確認して、もう一度お試しください。入力や下書きは保持しています。';
+  }
+  async function wait(options) {
+    if (waiting) return waiting;
+    waiting = new Promise(resolve => {
+      const broker = window.MeldexDropboxSessionBroker;
+      const body = element('div', '', 'gb-session-restore-body');
+      const status = element('p', 'Dropbox接続を復元しています。');
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      const instructions = element('p', '接続済みChromeで、下の番号と移行先を確認してください。');
+      const code = element('p', '', 'gb-session-restore-code');
+      const link = element('a', 'Chromeの接続を引き継ぐ', 'gb-btn gb-btn-primary gb-session-restore-button');
+      link.rel = 'noreferrer';
+      const retry = element('button', 'もう一度確認', 'gb-btn gb-session-restore-button');
+      retry.type = 'button';
+      link.hidden = code.hidden = instructions.hidden = retry.hidden = true;
+      body.append(status, instructions, code, link, retry);
+      let modal, nativeDialog, timer = 0, busy = false;
+      function close() {
+        clearTimeout(timer);
+        document.removeEventListener('visibilitychange', onVisible);
+        window.removeEventListener('online', refresh);
+        if (modal) { closing = true; modal.close('restored'); }
+        if (nativeDialog) { nativeDialog.close(); nativeDialog.remove(); }
+        waiting = null;
+        resolve();
+      }
+      let closing = false;
+      if (window.GBUI?.createModal) {
+        modal = window.GBUI.createModal({
+          id: 'dropbox-session-restore', title: 'Dropbox接続を復元', body,
+          variant: 'standard', extraClass: 'gb-session-restore-modal',
+          initialFocus: 'button', onBeforeClose: () => closing,
+        });
+        const closeButton = modal.header?.querySelector('.gb-modal-close');
+        if (closeButton) closeButton.hidden = true;
+        modal.overlay.dataset.e2eId = 'dropbox-session-restore';
+        modal.open();
+      } else {
+        nativeDialog = element('dialog', '', 'gb-session-restore-native');
+        const title = element('h2', 'Dropbox接続を復元');
+        title.id = 'dropbox-session-restore-title';
+        nativeDialog.setAttribute('aria-labelledby', title.id);
+        nativeDialog.dataset.e2eId = 'dropbox-session-restore';
+        nativeDialog.append(title, body);
+        nativeDialog.addEventListener('cancel', event => event.preventDefault());
+        document.body.appendChild(nativeDialog);
+        nativeDialog.showModal();
+      }
+      options?.onOpen?.();
+      function failed(error) {
+        status.textContent = message(error);
+        retry.hidden = false;
+        if (error?.status === 410) {
+          broker.resetHandoff();
+          code.hidden = link.hidden = instructions.hidden = true;
+        }
+        retry.focus();
+      }
+      function schedule() {
+        clearTimeout(timer);
+        if (document.visibilityState !== 'hidden') timer = setTimeout(poll, 2000);
+      }
+      async function poll() {
+        if (busy) return;
+        busy = true;
+        try {
+          if (await broker.redeemHandoff()) { close(); return; }
+          schedule();
+        } catch (error) { failed(error); }
+        finally { busy = false; }
+      }
+      async function refresh() {
+        if (busy) return;
+        busy = true;
+        retry.hidden = true;
+        try {
+          const session = await window.MeldexDropboxAuth.getSession();
+          if (window.MeldexDropboxAuth.hasConnection(session)) { close(); return; }
+          const pending = await broker.createHandoff();
+          const url = new URL(pending.bridgeUrl);
+          link.href = 'googlechromes://' + url.host + url.pathname + url.search + url.hash;
+          code.textContent = pending.userCode;
+          link.hidden = code.hidden = instructions.hidden = false;
+          status.textContent = '接続済みChromeから、このMeldexへ接続を引き継げます。';
+          link.focus();
+          schedule();
+        } catch (error) { failed(error); }
+        finally { busy = false; }
+      }
+      function onVisible() {
+        if (document.visibilityState === 'visible') { clearTimeout(timer); if (link.hidden) refresh(); else poll(); }
+        else clearTimeout(timer);
+      }
+      retry.addEventListener('click', refresh);
+      document.addEventListener('visibilitychange', onVisible);
+      window.addEventListener('online', refresh);
+      if (options?.initialError) failed(options.initialError);
+      else refresh();
+    });
+    return waiting;
+  }
+  window.MeldexDropboxSessionRestore = { wait };
 })();
 
 ;
@@ -6505,6 +7114,10 @@
 (function () {
   'use strict';
 
+  // BEGIN GENERATED AI WRITING STYLE (python app/build_ai_writing_style.py)
+  const AI_WRITING_STYLE_PROMPT = "=== 文章表現の標準方針 ===\n依頼に合う自然な文章で、人物、行動、理由、結果を具体的に書いてください。\n通常の説明・提案・評価では「構造」「足場」「刺さる」「効く」「置く」を、抽象的な説明や比喩の便利語として使わないでください。活用形も同様です。\n単なる類語への置換で済ませず、何がどう変わるのかを書いてください。\n例: 「読者に刺さる展開」では、誰がどの出来事に共感するのかを説明する。\n例: 「伏線を置く」では、どの場面で何を示し、後でどう明らかになるかを書く。\nAIが新しく書く通常の文章ではemダッシュ（—、U+2014）を使わず、句点・読点・必要な括弧で文章を組み立ててください。別のダッシュへの一律置換はしないでください。長音符、マイナス、ハイフン、日本語のダッシュ全般の禁止には広げないでください。\n抽象的な評価、根拠のない称賛、決まり文句の導入や締めを避け、依頼への答えから書き始めてください。見出し・箇条書き・文章量は用途に合わせてください。\n引用、保持を求められた原文、固有名詞、必要な専門用語（データ構造、構造式など）、字義どおりの動作（机に本を置くなど）、対象語自体の説明、機械可読値は正確に保持してください。引用内の対象語やemダッシュも変更しないでください。\n例外は該当箇所だけに適用し、周囲の説明には標準方針を使ってください。自分で生成した文章を引用扱いにして回避しないでください。\n利用者が明示した表現指定は必要な箇所で優先し、作品や人物の話し方を尊重してください。標準方針を理由に意味、事実、参照先を変えないでください。\n返答を確定する前に、対象表現と不自然な言い換えを見直してください。\n\n=== 生成文章への適用 ===\n文章表現の標準方針はチャットの返答に加え、ノート、シナリオ、シート、ボード、スケジュール、フォーム（シートのフォームビューと独立フォーム）に新しく書く自然文にも適用します。\n生成計画やツール引数に含まれる新規タイトル・保存名、見出し、本文、台詞、説明、テキスト値、設問、表示ラベル、入力例、送信・完了メッセージも対象です。\n既存データの転記、引用、専門用語、指定された名前、ID、既存パス、リンク先、数式、日時、状態、型、Schemaのキーや列挙値は正確に保持してください。既存ファイルを文体改善のために巡回・改変せず、依頼された範囲の新しい文章だけに適用してください。\n保存ツールを呼ぶ前に生成する文章を見直し、保存後の文章を一括置換しないでください。追加の校正モデル呼び出しや自動再生成は行わないでください。\n文体指示は保存形式、権限、ツールの入力契約を変更しません。利用できるツールや作成可能な形式も追加しません。";
+  // END GENERATED AI WRITING STYLE
+
   function _providerKey(provider) {
     return String(provider || '').trim().toLowerCase() || 'gemini';
   }
@@ -6970,7 +7583,13 @@
   }
 
   function _prepareClientStreamBody(body, send) {
-    const source = body || {};
+    const system = String(body?.system_prompt || '');
+    const source = {
+      ...(body || {}),
+      system_prompt: system.includes(AI_WRITING_STYLE_PROMPT)
+        ? system
+        : [system, AI_WRITING_STYLE_PROMPT].filter(Boolean).join('\n\n'),
+    };
     const messages = Array.isArray(source.messages) ? source.messages : [];
     if (!_requestFlag(source, 'allow_auto_compress', false) || messages.length <= 50) return source;
     const keepCount = Math.max(4, Math.min(16, messages.length - 1));
@@ -45162,10 +45781,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const localMode = _localDataModeForPage();
     const isLegacyMode = _runtime().getMode?.() === localMode;
     const canSwitchLegacy = true;
-    const sessionLabel = session?.refreshToken
+    const sessionLabel = _sessionConnected(session)
       ? `Dropbox接続済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}`
       : '未接続';
-    const sessionHelp = session?.refreshToken
+    const sessionHelp = _sessionConnected(session)
       ? '接続できています。使うDropbox内フォルダを確認し、「この設定で開始」を押してください。'
       : 'まず「Dropboxに接続する」を押してください。接続後に共有フォルダや既存のソースフォルダを選べます。';
     return new Promise((resolve) => {
@@ -45186,7 +45805,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         </div>
         <section class="meldex-cloud-setup-section" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">1. Dropboxに接続する</div>
-          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : 'var(--fg)'};">
+          <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${_sessionConnected(session) ? '#9dd6a5' : 'var(--fg)'};">
             ${sessionLabel}
           </div>
           <div id="cloud-session-help" style="font-size:12px;color:var(--fg2);line-height:1.6;margin-top:6px;">${sessionHelp}</div>
@@ -45341,7 +45960,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
       async function refreshSessionStatus() {
         const session = await _auth().getSession().catch(() => null);
-        if (!settled) updateSessionStatus(session?.refreshToken ? 'Dropbox接続済み' : '未接続', !!session?.refreshToken);
+        if (!settled) updateSessionStatus(_sessionConnected(session) ? 'Dropbox接続済み' : '未接続', !!_sessionConnected(session));
       }
 
       function acceptAuthResult(raw) {
@@ -45384,7 +46003,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         await runBusy(async () => {
           saveInputs();
           const currentSession = await _auth().getSession();
-          if (!currentSession?.refreshToken) {
+          if (!_sessionConnected(currentSession)) {
             setError('先にDropboxに接続してください。接続後にDropbox内フォルダを選べます。');
             return;
           }
@@ -45554,10 +46173,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return _isHostedCloudPage();
   }
 
+  function _sessionConnected(session) {
+    return _auth()?.hasConnection?.(session) ?? !!session?.refreshToken;
+  }
+
   async function prepareLaunch() {
     if (_completeAuthPopup({ handled: false })) return false;
     const callback = await _auth().handleRedirectCallback();
     if (_completeAuthPopup(callback)) return false;
+    await window.MeldexDropboxSessionBroker?.prepareLaunch?.({ onOpen: _hideStartupSplashForBlockingCloudUi });
     let migrationMode = null;
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
@@ -45606,7 +46230,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     while (true) {
       const session = await _auth().getSession();
-      if (!_auth().getAppKey() || !_auth().getVaultPath() || !session?.refreshToken) {
+      if (!_auth().getAppKey() || !_auth().getVaultPath() || !_sessionConnected(session)) {
         const result = await _showDropboxSetupModal(callback.handled && callback.ok ? 'Dropboxへの接続が完了しました。使うフォルダを確認して「この設定で開始」を押してください。' : '');
         if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
@@ -45747,7 +46371,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   async function _isConnected() {
     try {
       const session = await _auth()?.getSession?.();
-      return !!session?.refreshToken;
+      return _auth()?.hasConnection?.(session) ?? !!session?.refreshToken;
     } catch {
       return false;
     }
@@ -61182,6 +61806,13 @@ if (typeof window !== 'undefined') {
 
   async function installMeldexApp() {
     const options = arguments[0] || {};
+    if (window.MeldexDropboxSessionBroker?.isEnabled?.()) {
+      try { await window.MeldexDropboxSessionBroker.prepareInstall(); }
+      catch {
+        _showInstallStatus('接続引継ぎの準備を完了できませんでした。通信状態を確認して、もう一度お試しください。');
+        return { ok: false, preparationPending: true };
+      }
+    }
     if (_isDesktopInstallHost()) {
       showMeldexInstallHelpDialog({ onManualDone: options.onManualDone });
       return { ok: false, manual: true };

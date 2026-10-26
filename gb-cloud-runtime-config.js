@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.422",
+    "semver": "0.7.423",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -139,7 +139,9 @@
     }
   },
   "dropbox": {
-    "developerAppKey": "ovxy3vacegzu7nu"
+    "developerAppKey": "ovxy3vacegzu7nu",
+    "sessionBrokerApiPath": "",
+    "sessionBrokerUrl": ""
   }
 };
   window.MeldexCloudRuntimeConfig = Object.freeze({
@@ -176,6 +178,8 @@
     )),
     dropbox: Object.freeze({
       developerAppKey: String(config.dropbox?.developerAppKey || ''),
+      sessionBrokerApiPath: String(config.dropbox?.sessionBrokerApiPath || ''),
+      sessionBrokerUrl: String(config.dropbox?.sessionBrokerUrl || ''),
     }),
   });
 })();

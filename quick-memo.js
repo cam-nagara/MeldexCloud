@@ -1489,6 +1489,15 @@
 
     if (connectBtn) {
       connectBtn.addEventListener('click', async () => {
+        const broker = window.MeldexDropboxSessionBroker;
+        if (broker?.isEnabled?.() && broker?.isInstalled?.()) {
+          try {
+            await broker.prepareLaunch();
+            await window.MeldexStandaloneCloud.init();
+            refreshConnectBanner();
+          } catch { setStatus('接続の復元を待っています。入力と下書きは保持しています。', true); }
+          return;
+        }
         let popup = null;
         try { popup = window.open('about:blank', '_blank'); } catch {}
         try {

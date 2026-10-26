@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.422",
+  "manual_version": "0.7.423",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "3c47f204f2b820eb22e2b8ed4a0c20a78312030be6d7fec0d4087f2a38d8a58c",
+  "source_digest": "9c0c872cb47d247316492b7a88419c37cd45cc01a08796669daed46fdb65239e",
   "document_count": 209,
-  "chunk_count": 1929,
+  "chunk_count": 1931,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -270,7 +270,7 @@
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
-      "source_sha256": "4ad4b49300f546255be6e439b2b19fc4f5a4dc4341d7f7555c28e9f120f7da1d",
+      "source_sha256": "37218d2182b8036019cc5cac48e41ee7864e1edb154711a597a36ac55987244c",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md"
     },
     {
@@ -340,7 +340,7 @@
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
-      "source_sha256": "4167a99b3b4cd3754a8dfc1993baa6256f7f057b4ef2e99186cb0f6f9ce89a01",
+      "source_sha256": "6c31be4e88721ffb005eb895a3e7a07fe8c56746fba665d504d04aec091fba8e",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md"
     },
     {
@@ -10163,7 +10163,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_3"
     },
     {
-      "id": "manual-chunk-d47db222486a2193",
+      "id": "manual-chunk-fdf778cd1bfe9764",
+      "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
+      "title": "Dropbox共有モード かんたん開始",
+      "category": "共有・データ管理",
+      "heading": "iPhoneのホーム画面から接続を引き継ぐ",
+      "anchor": "iphone",
+      "text": "接続引継ぎに対応した配信では、本体・クイックメモとも、接続済みChromeのDropbox接続と保存先をホーム画面のアイコンへ引き継げます。以前追加したアイコンも、そのまま使用します。\n初回に接続の復元画面が表示されたら、Chromeで引継ぎページを開き、両方の画面に表示された番号と移行先を確認して引き継ぎます。その後はホーム画面のMeldexへ戻って使えます。既にChromeが接続済みであれば、Dropboxへの再ログイン・再認可や認可コードの貼付けは必要ありません。\n入力や下書きは保持されます。通信できない場合は、その画面で再試行できます。端末の保存領域を削除した場合や接続が失効した場合は、接続済みChromeからもう一度引き継ぎます。Chrome側の接続情報も失われている場合は、元の認可を復元できません。\n引継ぎを有効にした配信では、更新資格情報を認証サービスで暗号化保管します。詳しくは配信ページのプライバシーポリシーを確認してください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=iphone"
+    },
+    {
+      "id": "manual-chunk-f8513648c07c060d",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10173,7 +10183,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_4"
     },
     {
-      "id": "manual-chunk-65c39f6a671c829e",
+      "id": "manual-chunk-126d2a764bb88f92",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10183,7 +10193,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=a"
     },
     {
-      "id": "manual-chunk-5187d4c7b0d72a64",
+      "id": "manual-chunk-ab28f9b60ea6a893",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10193,7 +10203,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=1-dropbox"
     },
     {
-      "id": "manual-chunk-25ab2f64ac1edbc0",
+      "id": "manual-chunk-ce89a419655d2df2",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10203,7 +10213,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=2-meldex"
     },
     {
-      "id": "manual-chunk-b1829348777ff66a",
+      "id": "manual-chunk-9f62b80a54bf46ef",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10213,7 +10223,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=3-dropbox"
     },
     {
-      "id": "manual-chunk-661a8782b770a256",
+      "id": "manual-chunk-887340d96287fa48",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10223,7 +10233,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=4-dropbox"
     },
     {
-      "id": "manual-chunk-f367cc0997803a9a",
+      "id": "manual-chunk-ef8072cd1b07be30",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10233,7 +10243,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=b"
     },
     {
-      "id": "manual-chunk-de1060fefffe0331",
+      "id": "manual-chunk-7089cb5908d2974c",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10243,7 +10253,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=1-dropbox_1"
     },
     {
-      "id": "manual-chunk-b8a6871cad9a1d0f",
+      "id": "manual-chunk-a0c27bd7535b74d1",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10253,7 +10263,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=2-meldex_1"
     },
     {
-      "id": "manual-chunk-83dd861d9938abcc",
+      "id": "manual-chunk-28989e8e58a414d9",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10263,7 +10273,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=3-dropbox_1"
     },
     {
-      "id": "manual-chunk-6e4b85f50da2be98",
+      "id": "manual-chunk-853a8f6189860c9b",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10273,7 +10283,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=4-dropbox_1"
     },
     {
-      "id": "manual-chunk-1e5763bd138e24c7",
+      "id": "manual-chunk-90dd87649859985c",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10283,7 +10293,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_5"
     },
     {
-      "id": "manual-chunk-e8dfa9e8acac8d5a",
+      "id": "manual-chunk-474c30b6936d9aa2",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10293,7 +10303,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_6"
     },
     {
-      "id": "manual-chunk-a68e6e8b4445d2dd",
+      "id": "manual-chunk-15e0505423d52430",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10303,7 +10313,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=dropbox-app-key"
     },
     {
-      "id": "manual-chunk-459758fcc2204b12",
+      "id": "manual-chunk-7805fa1ef9b8bb62",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10313,7 +10323,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_7"
     },
     {
-      "id": "manual-chunk-72f3d78497252a5f",
+      "id": "manual-chunk-7d8ec2a15f73489b",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10323,7 +10333,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=dropboxmeldex"
     },
     {
-      "id": "manual-chunk-a1f802716bd53437",
+      "id": "manual-chunk-3222cd6005e12314",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10333,7 +10343,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_8"
     },
     {
-      "id": "manual-chunk-e15889dc2a6a522b",
+      "id": "manual-chunk-9cbfa2abeeb85cf4",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -10343,7 +10353,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Dropbox%E5%85%B1%E6%9C%89%E3%83%A2%E3%83%BC%E3%83%89%20%E3%81%8B%E3%82%93%E3%81%9F%E3%82%93%E9%96%8B%E5%A7%8B.md&section=_9"
     },
     {
-      "id": "manual-chunk-b3c34472a7fa671b",
+      "id": "manual-chunk-457487b0297dd344",
       "path": "03_設定と連携/Dropbox共有モード かんたん開始.md",
       "title": "Dropbox共有モード かんたん開始",
       "category": "共有・データ管理",
@@ -12123,7 +12133,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_2"
     },
     {
-      "id": "manual-chunk-881df606968adeef",
+      "id": "manual-chunk-731fa3db1c37596f",
+      "path": "03_設定と連携/チャットLLM ツールガイド.md",
+      "title": "チャットLLM ツールガイド",
+      "category": "チャット・AI",
+      "heading": "AIが書く文章の標準方針",
+      "anchor": "ai",
+      "text": "チャットの返答と、ノート・シナリオ・シート・ボード・スケジュール・フォームへAIが新しく書く文章では、抽象的な比喩や決まり文句を避け、誰が何をするのか、何がどう変わるのかを具体的に説明するよう指示しています。カスタムインストラクションの登録は不要です。\n通常の説明では「構造」「足場」「刺さる」「効く」「置く」の比喩的な使用とemダッシュ（—）を避けます。引用や指定された原文、必要な専門用語、人物の話し方、既存データの値は保持します。保存済みの文章を自動で書き換える機能ではなく、表現の抑制にはモデルによる違いがあります。\nフォームはシートのフォームビューと独立フォームの文言を含みます。ただし、この文章方針によってAIが使える操作は増えません。独立フォームのファイル生成は、現在のAI操作では未対応です。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=ai"
+    },
+    {
+      "id": "manual-chunk-6694d6b00c69e196",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12133,7 +12153,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_3"
     },
     {
-      "id": "manual-chunk-fec192a21e5c4d1a",
+      "id": "manual-chunk-b57e8b30c2210628",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12143,7 +12163,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=cli"
     },
     {
-      "id": "manual-chunk-dc111855f7a00b98",
+      "id": "manual-chunk-fe4f75ab8a3ccab0",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12153,7 +12173,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_4"
     },
     {
-      "id": "manual-chunk-1571341a7f3b054c",
+      "id": "manual-chunk-73dd4f7b36fcd928",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12163,7 +12183,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_5"
     },
     {
-      "id": "manual-chunk-de7a0f24b36939f8",
+      "id": "manual-chunk-51740d29966e8388",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12173,7 +12193,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=cli_1"
     },
     {
-      "id": "manual-chunk-f859a67820c1b9f4",
+      "id": "manual-chunk-0d2d4911e8b86b49",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12183,7 +12203,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_6"
     },
     {
-      "id": "manual-chunk-ce94d05b2415393d",
+      "id": "manual-chunk-4e92780640f7f293",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12193,7 +12213,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_7"
     },
     {
-      "id": "manual-chunk-e55727dfb27378a9",
+      "id": "manual-chunk-0633386a9c57380b",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12203,7 +12223,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=cli-mcp"
     },
     {
-      "id": "manual-chunk-b402ef991675f0f9",
+      "id": "manual-chunk-5650fe9524bc727a",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12213,7 +12233,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_8"
     },
     {
-      "id": "manual-chunk-d24dba5d091786a0",
+      "id": "manual-chunk-471b64503332757e",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12223,7 +12243,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_9"
     },
     {
-      "id": "manual-chunk-d8e8cf2f51a8d580",
+      "id": "manual-chunk-46427869242b68c1",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12233,7 +12253,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=meldex"
     },
     {
-      "id": "manual-chunk-0738aa999bcc2494",
+      "id": "manual-chunk-d88135e6dc80b2ed",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12243,7 +12263,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_10"
     },
     {
-      "id": "manual-chunk-48e3279e91c21275",
+      "id": "manual-chunk-a252323058b42e7e",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12253,7 +12273,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_11"
     },
     {
-      "id": "manual-chunk-b825c9482f807648",
+      "id": "manual-chunk-8c77c5e17846cf8b",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12263,7 +12283,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_12"
     },
     {
-      "id": "manual-chunk-0cb00095139414be",
+      "id": "manual-chunk-dc0e7af11c79c51d",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12273,7 +12293,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_13"
     },
     {
-      "id": "manual-chunk-40e08eec47c6682d",
+      "id": "manual-chunk-93864acc7d54ee3c",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12283,7 +12303,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_14"
     },
     {
-      "id": "manual-chunk-67e99b253d44e095",
+      "id": "manual-chunk-7f9bcd4b05671278",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12293,7 +12313,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=cli_2"
     },
     {
-      "id": "manual-chunk-d3b5a1c50f46e1a8",
+      "id": "manual-chunk-e8807a55ab26b270",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12303,7 +12323,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=_15"
     },
     {
-      "id": "manual-chunk-060521955979a21a",
+      "id": "manual-chunk-093619a19d1bd60c",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",
@@ -12313,7 +12333,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%83%81%E3%83%A3%E3%83%83%E3%83%88LLM%20%E3%83%84%E3%83%BC%E3%83%AB%E3%82%AC%E3%82%A4%E3%83%89.md&section=geminichatgpt"
     },
     {
-      "id": "manual-chunk-21f254375129e434",
+      "id": "manual-chunk-444f7a13d584c75e",
       "path": "03_設定と連携/チャットLLM ツールガイド.md",
       "title": "チャットLLM ツールガイド",
       "category": "チャット・AI",

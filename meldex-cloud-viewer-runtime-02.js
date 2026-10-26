@@ -128,6 +128,8 @@
   let _readFolderGeneration = 0;
   let _rateLimitUntil = 0;
   let _apiSessionGeneration = 0;
+  let _brokerSettingsApplying = false;
+  let _brokerSettingsAccount = '';
   // Leave capacity for sheet reads and writes while thumbnails are loading.
   const _apiQueue = [];
   let _apiActive = 0;
@@ -310,9 +312,39 @@
   function _writeStorage(key, value) {
     if (value == null || value === '') {
       localStorage.removeItem(key);
-      return;
+    } else {
+      localStorage.setItem(key, String(value));
     }
-    localStorage.setItem(key, String(value));
+    if (!_brokerSettingsApplying && [APP_MODE_KEY, CUSTOM_APP_KEY, VAULT_PATH_KEY,
+      VAULT_NAMESPACE_KEY, SETTINGS_PATH_KEY].includes(key)) {
+      _sessionBroker()?.queueSettings?.(_brokerSettings());
+    }
+  }
+
+  function _sessionBroker() {
+    const broker = window.MeldexDropboxSessionBroker;
+    return broker?.isEnabled?.() ? broker : null;
+  }
+  function hasConnection(session) {
+    return !!session?.refreshToken || (session?.authTransport === 'broker' && session?.connected === true);
+  }
+  function _brokerSettings() {
+    return { vaultPath: getVaultPath(), settingsPath: getSettingsPath(),
+      vaultNamespace: getVaultNamespaceKind(), appMode: getAppMode(), customAppKey: getCustomAppKey() };
+  }
+  function _applyBrokerSettings(session) {
+    if (session?.authTransport !== 'broker' || _brokerSettingsAccount === session.accountId) return;
+    const settings = session.settings || {};
+    _brokerSettingsApplying = true;
+    try {
+      setAppMode(settings.appMode);
+      setCustomAppKey(settings.customAppKey);
+      setVaultPath(settings.vaultPath);
+      setVaultNamespaceKind(settings.vaultNamespace);
+      setSettingsPath(settings.settingsPath);
+      if (window.MeldexDropboxSessionBroker?.kind?.() !== 'bridge') window.MeldexRuntimeAdapter?.setMode?.('dropbox');
+      _brokerSettingsAccount = session.accountId;
+    } finally { _brokerSettingsApplying = false; }
   }
 
   function _accountIdFromAccount(account) {
@@ -703,18 +735,30 @@
       savedAt: new Date(now).toISOString(),
     };
     await _idbPut(SESSION_KEY, next);
+    if (payload.refresh_token) {
+      _sessionBroker()?.resetAfterAuthorization?.(nextAccountId);
+      _brokerSettingsAccount = '';
+    }
     _notifySessionChanged(next, true);
     return next;
   }
 
   async function getSession() {
-    return _idbGet(SESSION_KEY);
+    const current = await _idbGet(SESSION_KEY);
+    const broker = _sessionBroker();
+    if (!broker) return current;
+    const local = current ? { ...current, appKey: current.appKey || getAppKey() } : null;
+    const restored = await broker.restore(local, _brokerSettings());
+    _applyBrokerSettings(restored);
+    return restored;
   }
 
   async function clearSession() {
     _accountRootInfo = null;
     const current = await getSession().catch(() => null);
+    await _sessionBroker()?.logout?.(current?.accountId || current?.account?.account_id);
     await _idbDelete(SESSION_KEY);
+    _brokerSettingsAccount = '';
     _notifySessionChanged(current, false);
   }
 
@@ -740,6 +784,7 @@
 
   async function refreshSession(forceAppKey) {
     const session = await getSession();
+    if (session?.authTransport === 'broker') return _sessionBroker().validSession(true);
     if (!session?.refreshToken) throw new Error('Dropbox接続情報が見つかりません。もう一度Dropboxに接続してください。');
     const appKey = forceAppKey || session.appKey || getAppKey();
     if (!appKey) throw new Error('Dropbox App key が設定されていません');
@@ -805,6 +850,7 @@
 
   async function getValidSession() {
     let session = await getSession();
+    if (session?.authTransport === 'broker') return _sessionBroker().validSession(false);
     if (!session?.accessToken) return null;
     const expiresAt = Number(session.expiresAt || 0);
     if (!expiresAt || (expiresAt - Date.now()) > EARLY_REFRESH_MS) return session;
@@ -966,7 +1012,7 @@
 
   async function _refreshAfterUnauthorized() {
     const session = await getSession();
-    if (!session?.refreshToken) return false;
+    if (!hasConnection(session)) return false;
     try {
       await refreshSession(session.appKey);
       return true;
@@ -1063,7 +1109,7 @@
         continue;
       }
       const detail = await _readDropboxError(response);
-      if (response.status === 401) await clearSession();
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(body?.path, options);
       throw new Error(String(detail));
     }
@@ -1117,7 +1163,7 @@
         continue;
       }
       const detail = await _readDropboxError(response);
-      if (response.status === 401) await clearSession();
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(arg?.path, options);
       throw new Error(String(detail));
     }
@@ -1134,7 +1180,8 @@
     _accountRootInfo = account?.root_info || null;
     const latestSession = (await getSession()) || session;
     if (latestSession) {
-      await _idbPut(SESSION_KEY, { ...latestSession, account });
+      if (latestSession.authTransport === 'broker') _sessionBroker().setAccount(account);
+      else await _idbPut(SESSION_KEY, { ...latestSession, account });
     }
     return account;
   }
@@ -1167,6 +1214,7 @@
     exchangeCode,
     handleRedirectCallback,
     getSession,
+    hasConnection,
     getValidSession,
     getValidAccessToken,
     clearSession,

@@ -270,6 +270,7 @@
       window.MeldexRuntimeAdapter?.setMode?.('dropbox');
       const callback = await window.MeldexDropboxAuth.handleRedirectCallback();
       if (callback?.handled && callback.ok === false) throw new Error(callback.error || 'Dropboxへ接続できませんでした');
+      await window.MeldexDropboxSessionBroker?.prepareLaunch?.();
       if (callback?.handled && callback.ok === true) await _setupAfterAuthorization();
       await _prepareWorkspace();
       await _loadRoots();

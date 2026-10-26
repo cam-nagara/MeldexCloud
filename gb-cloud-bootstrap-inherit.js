@@ -24,7 +24,7 @@
   async function _isConnected() {
     try {
       const session = await _auth()?.getSession?.();
-      return !!session?.refreshToken;
+      return _auth()?.hasConnection?.(session) ?? !!session?.refreshToken;
     } catch {
       return false;
     }

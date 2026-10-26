@@ -950,6 +950,13 @@
 
   async function installMeldexApp() {
     const options = arguments[0] || {};
+    if (window.MeldexDropboxSessionBroker?.isEnabled?.()) {
+      try { await window.MeldexDropboxSessionBroker.prepareInstall(); }
+      catch {
+        _showInstallStatus('接続引継ぎの準備を完了できませんでした。通信状態を確認して、もう一度お試しください。');
+        return { ok: false, preparationPending: true };
+      }
+    }
     if (_isDesktopInstallHost()) {
       showMeldexInstallHelpDialog({ onManualDone: options.onManualDone });
       return { ok: false, manual: true };

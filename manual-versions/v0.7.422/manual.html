@@ -12943,7 +12943,11 @@ files.content.read files.content.write sharing.read
 <p>参照対象は任意です。対象がない状態でもAIと会話できます。対象をすべて外すには、対象名の右にある <strong>×</strong> を押します。会話を開始済みの場合は、解除後も画面移動だけでは対象を追加しません。新しいチャットを作ると、最初の送信までの自動追従へ戻ります。参照対象の追加で、保存先や書込権限が自動で拡張されることはありません。</p>
 <p>会話本文をマウスでドラッグ選択すると、選択範囲の近くに <strong>コピー</strong> が表示されます。複数の発言にまたがって選択した場合は、選択した本文に発言者名と発言日時を添えたテキストとしてコピーします。思考表示、ツール実行結果、操作ボタンなど、会話本文ではないUIはコピーへ含めません。</p>
 <p>APIプロバイダでモデルが利用できない場合、Meldexは同じプロバイダ内の安定モデルへ切り替えて応答を続けます。CLIが利用できない場合は、従量課金のAPIへ自動で切り替えません。</p>
-<section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-fc025a226b2b--_3" data-manual-anchor="_3">関連資料の自動参照</h3><div class="manual-outline-content">
+<section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-fc025a226b2b--ai" data-manual-anchor="ai">AIが書く文章の標準方針</h3><div class="manual-outline-content">
+<p>チャットの返答と、ノート・シナリオ・シート・ボード・スケジュール・フォームへAIが新しく書く文章では、抽象的な比喩や決まり文句を避け、誰が何をするのか、何がどう変わるのかを具体的に説明するよう指示しています。カスタムインストラクションの登録は不要です。</p>
+<p>通常の説明では「構造」「足場」「刺さる」「効く」「置く」の比喩的な使用とemダッシュ（—）を避けます。引用や指定された原文、必要な専門用語、人物の話し方、既存データの値は保持します。保存済みの文章を自動で書き換える機能ではなく、表現の抑制にはモデルによる違いがあります。</p>
+<p>フォームはシートのフォームビューと独立フォームの文言を含みます。ただし、この文章方針によってAIが使える操作は増えません。独立フォームのファイル生成は、現在のAI操作では未対応です。</p>
+</div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-fc025a226b2b--_3" data-manual-anchor="_3">関連資料の自動参照</h3><div class="manual-outline-content">
 <p>デスクトップ版のAIチャットとCLIチャットは、挨拶だけの会話を除き、送信前に関連資料を自動検索します。ユーザーが毎回「検索して」「このフォルダも読んで」と書く必要はありません。</p>
 <ul>
 <li>現在開いているノート、シナリオ、シート、ボードは、検索索引の更新を待たずに現在の保存内容を直接参照します。</li>

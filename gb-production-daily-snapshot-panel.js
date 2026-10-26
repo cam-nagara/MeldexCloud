@@ -42,7 +42,7 @@
 
     if (runtime.isDropboxMode?.()) {
       const session = await window.MeldexDropboxAuth?.getSession?.().catch(() => null);
-      if (!session?.refreshToken) return false;
+      if (!(window.MeldexDropboxAuth?.hasConnection?.(session) ?? !!session?.refreshToken)) return false;
     }
     return true;
   }
