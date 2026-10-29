@@ -512,7 +512,7 @@
           createdRef: {
             file: res?.path || ev.linkedEntryPath,
             property: ev.linkedEntrySourceProperty,
-            candidate_index: res?.candidate_index,
+            candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index,
           },
           newValue: newDateVal,
           status: writeStatus,

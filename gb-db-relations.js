@@ -183,19 +183,21 @@ function _splitRelationIdsForSync(value) {
 
 async function _getRelationEntityId(dbPath, entityPath) {
   if (!dbPath || !entityPath) return '';
-  const entityName = typeof _getPivotEntityName === 'function'
-    ? _getPivotEntityName(entityPath)
-    : (entityPath.split('/').pop() || '').replace(/\.md$/, '');
   const ctx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
   const pivot = ctx?.pivotData || (typeof state !== 'undefined' && state.currentDbPath === dbPath ? state.pivotData : null);
+  const entityName = typeof _dbPivotEntityNameForPath === 'function'
+    ? _dbPivotEntityNameForPath(entityPath, pivot)
+    : (entityPath.split('/').pop() || '').replace(/\.md$/, '');
   const liveId = pivot?.entities?.[entityName]?._id;
   if (liveId) return liveId;
   let map = await _getRelationMap(dbPath);
-  if (!map.nameToId[entityName] && map.new_format) {
+  const mapName = () => typeof _dbPivotEntityNameForPath === 'function'
+    ? (_dbPivotEntityNameForPath(entityPath, map) || entityName) : entityName;
+  if (!map.nameToId[mapName()] && map.new_format) {
     _invalidateRelationTargetCaches(dbPath);
     map = await _getRelationMap(dbPath);
   }
-  return map.nameToId[entityName] || entityName;
+  return map.nameToId[mapName()] || entityName;
 }
 
 function _prepareBidirectionalRemoteState(sourceDbPath, propName, ptc, createdTargets) {
@@ -259,7 +261,7 @@ async function _createBidirectionalRelationValue({sourceDbPath, entityPath, prop
       const file = result.path || result.file || '';
       if (result.candidate_index != null) {
         await _apiPutValue({file, entry_path:entityPath,
-          property:result.property || propName, candidate_index:result.candidate_index}, {_delete:true});
+          property:result.property || propName, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index:result.candidate_index}, {_delete:true});
       } else if (file) {
         await apiPost('/outliner/delete', {path:file});
       }
@@ -282,7 +284,7 @@ function _bidirectionalValueSnapshot(val) {
     file: val.file || '',
     entry_path: val.entry_path || '',
     property: val.property || '',
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
     value: val.value || '',
     status: val.status || '採用',
     note: val.note || '',
@@ -295,7 +297,7 @@ function _bidirectionalValueObjFromSnapshot(snapshot, propName, entityPath) {
     file: snapshot.file,
     entry_path: snapshot.entry_path || entityPath,
     property: snapshot.property || propName,
-    candidate_index: snapshot.candidate_index,
+    candidate_id: snapshot?.candidate_id, entry_id: snapshot?.entry_id, candidate_index: snapshot.candidate_index,
     value: snapshot.value,
     status: snapshot.status,
     note: snapshot.note,
@@ -322,7 +324,7 @@ async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot
       file: createdResult.path || createdResult.file || entityPath,
       entry_path: entityPath,
       property: createdResult.property || propName,
-      candidate_index: createdResult.candidate_index,
+      candidate_id: createdResult?.candidate_id, entry_id: createdResult?.entry_id, candidate_index: createdResult.candidate_index,
     }, { _delete: true });
   }
 }

@@ -136,6 +136,7 @@
       const lower = normalized.toLowerCase();
       if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
       if (lower.endsWith('.mel-form')) return 'form-app';
+      if (lower.endsWith('.mel-map')) return 'map';
       if (lower.endsWith('.mel-sheet')) return 'database';
       if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';

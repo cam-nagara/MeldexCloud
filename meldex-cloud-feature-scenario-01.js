@@ -5847,6 +5847,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _guardRowBulkAction() {
+    if (this._readOnly) return false;
     if (this._isRowSelectionOwnerActive()) return true;
     if (this._rowSelection) this._rowSelection.clear();
     if (this._gridCellSelection) this._gridCellSelection.clear();
@@ -5977,7 +5978,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       newRows.push(row);
       if (selectedIds.has(row.id)) {
         const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
-        newRows.push({ ...row, id: nextId, columns: { ...(row.columns || {}) } });
+        newRows.push({ ...JSON.parse(JSON.stringify(row)), id: nextId });
       }
     });
     this.doc.rows = newRows;
@@ -6067,6 +6068,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkChangeRole() {
+    const ownerDocument = this.doc;
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
@@ -6106,7 +6108,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       item.dataset.sn2BulkRoleOption = name;
       item.textContent = name;
       item.addEventListener('click', () => {
-        if (!this._guardRowBulkAction()) { close(); return; }
+        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) { close(); return; }
         close();
         this._pushUndo('一括タイプ変更');
         this.doc.rows.forEach((row) => {
@@ -6134,6 +6136,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkDeleteRows() {
+    const ownerDocument = this.doc;
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
@@ -6148,6 +6151,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(`${selectedIds.size}行を削除しますか？`, () => {
+        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) return;
+        if (!this.doc.rows.some(row => !selectedIds.has(row.id))) {
+          if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
+          return;
+        }
         this._pushUndo('一括行削除');
         this.doc.rows = this.doc.rows.filter((row) => !selectedIds.has(row.id));
         this._clearRowSelection();
@@ -10737,7 +10745,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           // 新旧シート共通のpivotから名前を読み、説明ファイルを候補に含めない。
           const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(path) + '&tree_only=true');
           if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) {
-            throw new Error('シートのエントリを取得できませんでした');
+            throw new Error('シートのトピックを取得できませんでした');
           }
           const pages = Object.keys(pivot.entities).filter(name => name.trim()).map(name => ({ name }));
           if (pages.length) addPageGroup(folder, pages);
@@ -13725,6 +13733,8 @@ Object.assign(ScriptNoteEditor.prototype, {
 Object.assign(ScriptNoteEditor.prototype, {
 
   _startColResize(e, colId, resizerEl) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     e.preventDefault();
     this._pushUndo('列幅変更');
     const isVertical = this.doc.editor?.viewMode === 'vertical';
@@ -13744,6 +13754,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const vcolVar = `--sn2-vcol-${colId}`;
     const colVar = `--sn2-col-${colId}`;
     const onMove = (ev) => {
+      if (this.doc !== ownerDocument || this._readOnly) { onUp(); return; }
       const delta = (isVertical ? ev.clientY : ev.clientX) - startPos;
       const newSize = Math.max(30, currentSize + delta);
       this.doc.editor.columnWidths[colId] = newSize;
@@ -13764,6 +13775,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
+      if (this.doc !== ownerDocument || this._readOnly) return;
       // 縦書き: ヘッダーの高さ変更に合わせて全行の高さを再同期
       if (isVertical) {
         const header = scrollEl?.querySelector('.sn2-header');
@@ -13840,6 +13852,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === ヘッダーダブルクリックで列名編集 ===
 
   _startHeaderLabelEdit(cell, colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     const isStandard = colId.startsWith('_');
     const customCols = this._getCustomColumns();
     const colDef = isStandard ? null : customCols.find(c => c.id === colId);
@@ -13858,6 +13872,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const commit = () => {
       if (finished) return;
       finished = true;
+      if (this._readOnly || this.doc !== ownerDocument || (!isStandard && this._getCustomColumns().find(c => c.id === colId) !== colDef)) return;
       const newLabel = input.value.trim() || currentLabel;
       if (newLabel === currentLabel) {
         this._render();
@@ -13923,6 +13938,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _showHeaderMenu(cell, colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     // 既存メニュー・サブメニューを閉じる
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup').forEach(el => el.remove());
     document.querySelectorAll('.sn2-header-cell[aria-expanded="true"]').forEach(el => {
@@ -13956,7 +13973,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.type = 'button';
       btn.textContent = text;
       btn.setAttribute('role', 'menuitem');
-      btn.addEventListener('click', onClick);
+      btn.addEventListener('click', () => {
+        if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
+        onClick();
+      });
       return btn;
     };
     // サブメニュー付きアイテム
@@ -14144,6 +14164,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列スタイル設定ポップアップ ===
 
   _showColumnStylePopup(anchorEl, colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     document.querySelectorAll('.gb-fmt-popup--col-style').forEach(el => el.remove());
     if (!this.doc.editor.columnStyles) this.doc.editor.columnStyles = {};
     if (!this.doc.editor.columnStyles[colId]) this.doc.editor.columnStyles[colId] = {};
@@ -14192,6 +14214,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.addEventListener('click', () => {
         if (typeof openColorPalette === 'function') {
           openColorPalette(btn, cs[btn.dataset.csp] || '#888', (color) => {
+            if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
             this._pushUndo('列スタイル変更');
             if (color === 'transparent') { delete cs[btn.dataset.csp]; } else { cs[btn.dataset.csp] = color; }
             if (btn.dataset.csp === 'bgColor') btn.style.background = cs.bgColor || 'transparent';
@@ -14204,6 +14227,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     // B / I トグル
     popup.querySelectorAll('[data-csp-toggle-fmt]').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
         this._pushUndo('列スタイル変更');
         const prop = btn.dataset.cspToggleFmt;
         const activeVal = prop === 'fontWeight' ? 'bold' : 'italic';
@@ -14214,10 +14238,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     // サイズ
     popup.querySelectorAll('[data-csp-num]').forEach(inp => {
-      inp.addEventListener('change', () => { this._pushUndo('列スタイル変更'); cs[inp.dataset.cspNum] = inp.value ? Number(inp.value) : ''; refresh(); });
+      inp.addEventListener('change', () => { if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; } this._pushUndo('列スタイル変更'); cs[inp.dataset.cspNum] = inp.value ? Number(inp.value) : ''; refresh(); });
     });
     // リセット
     popup.querySelector('[data-csp-reset]')?.addEventListener('click', () => {
+      if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
       this._pushUndo('列スタイル変更');
       Object.keys(cs).forEach(k => delete cs[k]);
       popup.querySelector('[data-csp="bgColor"]').style.background = 'transparent';
@@ -14263,7 +14288,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _showAddScriptNoteColumnModal(afterColId = null) {
-    if (!this.doc || !globalThis.GBUI?.createModal) return;
+    if (!this.doc || this._readOnly || !globalThis.GBUI?.createModal) return;
+    const ownerDocument = this.doc;
     const owner = document.activeElement;
     this.doc.editor.customColumns ||= [];
     const body = document.createElement('div');
@@ -14369,7 +14395,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     type.addEventListener('change', () => { optionsWrap.hidden = type.value !== 'select'; });
     cancel.addEventListener('click', () => modal.close('cancel'));
     add.addEventListener('click', async () => {
-      if (busy) return;
+      if (busy || this._readOnly || this.doc !== ownerDocument) return;
       const label = name.value.trim();
       if (!label) {
         name.setCustomValidity('列名を入力してください');
@@ -14378,7 +14404,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         return;
       }
       name.setCustomValidity('');
-      const id = `col-${Date.now()}`;
+      const id = 'col-' + (globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
       const rawWidth = Number(width.value);
       const column = {
         id, label, type: type.value,
@@ -14391,6 +14417,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       setBusy(true);
       try {
         await Promise.resolve();
+        if (this._readOnly || this.doc !== ownerDocument) { modal.close('superseded'); return; }
         this._pushUndo('列追加');
         this.doc.editor.customColumns.push(column);
         const order = this._getVisibleColumnIds({ includeHandle: false }).filter(columnId => columnId !== id);
@@ -14415,13 +14442,14 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列を複製 ===
 
   _duplicateColumn(colId) {
+    if (this._readOnly) return;
     const customCols = this._getCustomColumns();
     const idx = customCols.findIndex(c => c.id === colId);
     if (idx < 0) return;
     const src = customCols[idx];
-    const newId = 'col-' + Date.now();
+    const newId = 'col-' + (globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
     this._pushUndo('列複製');
-    const dup = { ...src, id: newId, label: src.label + '（コピー）', options: src.options ? [...src.options] : undefined };
+    const dup = { ...JSON.parse(JSON.stringify(src)), id: newId, label: src.label + '（コピー）' };
     customCols.splice(idx + 1, 0, dup);
     if (Array.isArray(this.doc.editor?.columnOrder)) {
       const order = this.doc.editor.columnOrder.filter(id => id !== newId && id !== '_handle');
@@ -14432,7 +14460,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     // データも複製
     this.doc.rows.forEach(r => {
       if (r.columns && r.columns[colId] !== undefined) {
-        r.columns[newId] = r.columns[colId];
+        r.columns[newId] = JSON.parse(JSON.stringify(r.columns[colId]));
       }
     });
     this._render();
@@ -14442,13 +14470,18 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列を削除 ===
 
   _deleteColumn(colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     if (colId.startsWith('_')) {
       this._setScriptNoteColumnVisible(colId, false);
       return;
     }
+    const ownerColumn = this._getCustomColumns().find(column => column.id === colId);
+    if (!ownerColumn) return;
     const colLabel = colId === '_gutter' ? '大区切り' : colId === '_gutter2' ? '小区切り' : colId === '_role' ? 'タイプ' : colId === '_status' ? '採用状況' : colId === '_text' ? 'テキスト'
       : (this._getCustomColumns().find(c => c.id === colId)?.label || colId);
     showConfirmDialog(`「${colLabel}」列を削除しますか？`, () => {
+    if (this._readOnly || this.doc !== ownerDocument || this._getCustomColumns().find(column => column.id === colId) !== ownerColumn) return;
     this._pushUndo('列削除');
     const customCols = this._getCustomColumns();
     const idx = customCols.findIndex(c => c.id === colId);
@@ -14462,6 +14495,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === ドロップダウン列の選択肢編集 ===
 
   _editDropdownOptions(colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     const customCols = this._getCustomColumns();
     const colDef = customCols.find(c => c.id === colId);
     if (!colDef || colDef.type !== 'select') return;
@@ -14503,6 +14538,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     textarea.value = (colDef.options || []).join('\n');
     cancel.addEventListener('click', () => modalApi.close('cancel'));
     save.addEventListener('click', () => {
+      if (this._readOnly || this.doc !== ownerDocument || this._getCustomColumns().find(c => c.id === colId) !== colDef) {
+        modalApi.close('superseded'); return;
+      }
       this._pushUndo('選択肢編集');
       const nextOptions = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
       const allowed = new Set(nextOptions);
@@ -14527,6 +14565,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 数値列の単位設定 ===
 
   _showUnitPopup(anchorEl, colId) {
+    if (this._readOnly) return;
+    const ownerDocument = this.doc;
     const customCols = this._getCustomColumns();
     const colDef = customCols.find(c => c.id === colId);
     if (!colDef || colDef.type !== 'number') return;
@@ -14568,6 +14608,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.focus();
     input.select();
     const save = () => {
+      if (this._readOnly || this.doc !== ownerDocument || this._getCustomColumns().find(c => c.id === colId) !== colDef) { close(); return; }
       this._pushUndo('単位設定');
       colDef.unit = input.value.trim();
       this._render();

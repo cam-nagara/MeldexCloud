@@ -653,10 +653,17 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
     // 制作管理シートのエントリ名列は固定名（変更不可）
     const labelLocked = typeof isProductionManagementSheetPath === 'function'
       && isProductionManagementSheetPath(dbPath);
+    let nameTemplate = getDbViewConfig(dbPath).entryNameTemplate || '';
+    const propHints = (pivotData?.properties || []).map(p => `{${p}}`).join(', ');
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
       <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="トピック名"'}></div>
       ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
+      ${labelLocked ? '' : `<div class="field">
+        <label for="entity-column-name-template">トピック名生成 ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
+        <input id="entity-column-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}" data-e2e-id="entity-column-name-template">
+        <div class="pt-autosave-status" aria-live="polite" data-e2e-id="entity-column-name-template-status"></div>
+      </div>`}
       <div class="field"><label class="pt-check-label">
         <input id="entity-column-pinned" type="checkbox" ${pinned ? 'checked' : ''}>
         列を固定
@@ -680,6 +687,50 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
       });
       if (labelInput && typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(labelInput, commitLabel);
       else labelInput?.addEventListener('blur', commitLabel);
+      const entitySettingsRoot = target.querySelector('[data-db-property-settings-root]');
+      entitySettingsRoot._ptDbPath = dbPath;
+      const templateInput = target.querySelector('#entity-column-name-template');
+      const templateStatus = target.querySelector('[data-e2e-id="entity-column-name-template-status"]');
+      let templateSave = null;
+      const commitTemplate = () => {
+        if (templateSave) return templateSave;
+        const nextTemplate = templateInput.value.trim();
+        if (nextTemplate === nameTemplate) return Promise.resolve(true);
+        templateInput.disabled = true;
+        templateStatus.textContent = '保存中...';
+        templateSave = (async () => {
+          try {
+            const config = _cloneDbViewObject(getDbViewConfig(dbPath));
+            config.entryNameTemplate = nextTemplate;
+            const saved = await saveDbViewConfigImmediate(dbPath, config, {
+              ctx, historyLabel: 'シート設定: トピック名生成',
+            });
+            if (!saved) throw new Error('表示設定の保存に失敗しました');
+            nameTemplate = nextTemplate;
+            templateInput.value = nextTemplate;
+            templateStatus.textContent = '保存しました';
+            return true;
+          } catch (error) {
+            templateStatus.textContent = '保存できませんでした。Enterで再保存できます';
+            showStatus('トピック名生成の設定を保存できませんでした: ' + (error?.message || error), true);
+            return false;
+          } finally {
+            templateInput.disabled = false;
+          }
+        })().finally(() => { templateSave = null; });
+        return templateSave;
+      };
+      entitySettingsRoot._ptFlushAutosave = async () => {
+        if (!await commitTemplate()) throw new Error('トピック名生成の設定を保存できませんでした');
+      };
+      templateInput.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Enter') { event.preventDefault(); templateInput.blur(); }
+        else if (event.key === 'Escape') {
+          event.preventDefault(); templateInput.value = nameTemplate; templateStatus.textContent = ''; templateInput.blur();
+        }
+      });
+      templateInput.addEventListener('blur', commitTemplate);
     }
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
       if (pinnedRange && typeof setPinnedColumnRange === 'function') {
@@ -1074,6 +1125,10 @@ async function flushPendingDbPropertySettings(dbPath) {
     return typeof root._ptFlushAutosave === 'function' && (!target || rootPath === target);
   });
   await Promise.allSettled(roots.map(root => Promise.resolve(root._ptFlushAutosave())));
+  const entityRoots = Array.from(document.querySelectorAll('[data-db-property-settings-root]')).filter(root =>
+    typeof root._ptFlushAutosave === 'function' && (!target || _ptNormalizeDbPath(root._ptDbPath) === target));
+  // トピック名生成も再読込前に確定し、失敗時は入力欄を残して呼出元へ伝える。
+  await Promise.all(entityRoots.map(root => root._ptFlushAutosave()));
   if (typeof waitForPendingDbPropertyTypeSaves === 'function') {
     await waitForPendingDbPropertyTypeSaves(target);
   }

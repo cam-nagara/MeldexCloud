@@ -990,7 +990,7 @@ function renderTimeline(ctx) {
         const valueRef = (val) => val ? {
           file: val.file,
           property: val.property,
-          candidate_index: val.candidate_index,
+          candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
           value: val.value || '',
         } : null;
         const appliedWrites = [];
@@ -1006,7 +1006,7 @@ function renderTimeline(ctx) {
           const ref = {
             file: res?.path,
             property: res?.property || propName,
-            candidate_index: res?.candidate_index,
+            candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index,
             value,
           };
           if (ref.file) appliedWrites.push({ kind: 'create', ref });

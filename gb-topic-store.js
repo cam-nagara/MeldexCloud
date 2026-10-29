@@ -363,6 +363,7 @@
     for (const [field, localValue] of Object.entries(changes || {})) {
       const baseValue = base ? base[field] : undefined;
       const remoteValue = remote[field];
+      if (same(localValue, baseValue)) continue;
       if (same(remoteValue, baseValue) || same(remoteValue, localValue)) result[field] = clone(localValue);
       else {
         conflicts.push({ field, baseValue: clone(baseValue), localValue: clone(localValue), remoteValue: clone(remoteValue) });

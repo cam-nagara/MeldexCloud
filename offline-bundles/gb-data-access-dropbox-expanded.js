@@ -2699,7 +2699,7 @@
       path += '.md';
       entry = await _resolveEntryHandle(provider, path);
     }
-    if (!entry || entry.kind !== 'file') throw new Error(`エントリが見つかりません: ${rawPath}`);
+    if (!entry || entry.kind !== 'file') throw new Error(`トピックが見つかりません: ${rawPath}`);
     const parsed = await _readFrontmatterFile(provider, path);
     if (parsed.frontmatter.type !== 'settings-entry') throw new Error('settings-entry ではありません');
     return _entityPayloadFromParsed(path, parsed);
@@ -2834,7 +2834,7 @@
     }
     if (!stored) {
       if (body?.skip_if_missing || body?.skipIfMissing) return { ok: true, skipped: true, missing: true };
-      throw new Error(`エントリが見つかりません: ${path}`);
+      throw new Error(`トピックが見つかりません: ${path}`);
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
@@ -3249,7 +3249,7 @@
           operation_id: operationId,
         };
       }
-      throw new Error(`エントリが見つかりません: ${path}`);
+      throw new Error(`トピックが見つかりません: ${path}`);
     }
     const sourceFm = entry.kind === 'file'
       ? (await _readFrontmatterFile(provider, path)).frontmatter

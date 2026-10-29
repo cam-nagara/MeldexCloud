@@ -329,6 +329,7 @@ function _openOutlinerCreatedNode(nd, name) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
   else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);

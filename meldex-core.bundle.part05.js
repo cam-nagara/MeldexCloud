@@ -1,3 +1,36 @@
+  colorBtn.appendChild(colorSwatch);
+  colorBtn.onclick = () => {
+    if (palette) { closePalette(); return; }
+    palette = document.createElement('div');
+    palette.className = 'sa-palette sa-markup-palette';
+    palette.setAttribute('role', 'dialog');
+    palette.setAttribute('aria-label', 'アノテート色');
+    PALETTE_COLORS.forEach(c => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'sa-markup-color-dot';
+      dot.title = c;
+      dot.setAttribute('aria-label', `アノテート色 ${c}`);
+      dot.style.background = c;
+      dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
+      palette.appendChild(dot);
+    });
+    document.body.appendChild(palette);
+    colorBtn.setAttribute('aria-expanded', 'true');
+    positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
+    paletteKeyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      closePalette();
+      const target = colorBtn.classList.contains('gb-tbo-hidden')
+        ? tb.querySelector('.gb-toolbar-overflow-button') : colorBtn;
+      target?.focus();
+    };
+    paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
+    closePaletteTimer = setTimeout(() => {
+      document.addEventListener('pointerdown', paletteOutsideHandler, true);
+      document.addEventListener('keydown', paletteKeyHandler, true);
+    }, 0);
   };
   tb.appendChild(colorBtn);
   const closeBtn = document.createElement('button');

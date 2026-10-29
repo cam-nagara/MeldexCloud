@@ -1,3 +1,33 @@
+  openViewer(url);
+}
+
+async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe = null) {
+  await _viewerFolderNavRevealCurrentFolder(currentFolderPath, { skipHighlight: !!targetIframe });
+  let cursorPath = currentFolderPath;
+  for (let guard = 0; guard < 400; guard++) {
+    const nodes = _viewerFolderNavFolderNodes();
+    if (!nodes.length) break;
+    let cursorIndex = _viewerFolderNavFindIndex(nodes, cursorPath);
+    if (cursorIndex < 0) cursorIndex = direction > 0 ? -1 : nodes.length;
+    const candidate = nodes[cursorIndex + direction];
+    if (!candidate) break;
+    await _viewerFolderNavEnsureAncestorsExpanded(candidate);
+    const candidatePath = _viewerFolderNavNodePath(candidate);
+    if (!candidatePath) {
+      cursorPath = '';
+      continue;
+    }
+    const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
+    if (result.has) {
+      _viewerFolderNavOpenTarget(candidatePath, result, targetIframe);
+      return true;
+    }
+    const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
+    if (expanded && direction < 0) continue;
+    cursorPath = candidatePath;
+  }
+  return false;
+}
 
 function _handleViewerFolderNavRequest(msg, targetIframe = null) {
   const direction = Number(msg?.direction) < 0 ? -1 : 1;
@@ -23,6 +53,9 @@ window.addEventListener('message', (e) => {
   // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
   const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
   if (msg.type === 'viewer-current-file-changed') {
+    // A hidden Viewer can finish loading after navigation back to a Sheet.
+    // Its late notification must not replace the current option/file target.
+    if (!sourceIframe.getClientRects().length) return;
     if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
     return;
   }
@@ -865,36 +898,3 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;
   const size = typeof sizeOrText === 'number'
     ? sizeOrText
-    : String(sizeOrText || '').length;
-  if (size < threshold) return;
-  if (_commonLoadingProgress()) {
-    const current = Object.prototype.hasOwnProperty.call(options, 'loading')
-      ? options.loading : options.key != null
-        ? _loadingOperations.find(lease => lease.group.key === options.key)
-        : _loadingOperations[_loadingOperations.length - 1];
-    if (!current?.active) return;
-    _loadingMessage = _loadingText(msg);
-    current.update({ label: _loadingMessage });
-    current.showNow();
-    await _loadingPaintDelay();
-    return;
-  }
-  if (_loadingCount <= 0 && !_loadingVisible) return;
-  _loadingMessage = _loadingText(msg);
-  if (_loadingTimer) {
-    clearTimeout(_loadingTimer);
-    _loadingTimer = null;
-  }
-  _renderLoadingUi(_loadingMessage);
-  await _loadingPaintDelay();
-}
-
-// A lease belongs to one invocation; a keyed group is the one visible task.
-// Repeated starts for the same target share its bar until every lease ends.
-function showLoading(msg, opts) {
-  const options = opts || {};
-  const key = options.key ?? Symbol('loading');
-  let group = _loadingGroups.get(key);
-  if (!group) {
-    const label = _loadingText(msg);
-    const common = _commonLoadingProgress();

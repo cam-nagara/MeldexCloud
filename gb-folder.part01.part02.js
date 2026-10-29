@@ -889,7 +889,9 @@ let _lassoJustCompleted = false;
   let _lassoMoved = false;
   grid.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest('.fv-item')) return;
+    // Empty-state/retry controls are actions, not blank-space lasso starts.
+    // Pointer capture on the grid would retarget their click to the grid.
+    if (e.target.closest('.fv-item, button, a, input, textarea, select, [role="button"], [contenteditable="true"]')) return;
     _lassoActive = true;
     _lassoMoved = false;
     // Ctrl+ドラッグ: 既存選択を保持
@@ -1016,6 +1018,7 @@ async function openFolderItem(item) {
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
   else if (item.type === 'form-app') { openFormApp(item.path, item.name, _expOpts); }
+  else if (item.type === 'map') { openMapApp(item.path, item.name, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
   else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }

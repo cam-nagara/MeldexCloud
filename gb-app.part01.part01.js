@@ -466,7 +466,7 @@ const RECENT_KEY = 'meldex-recent';
 function _railAppType(type) {
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'database'].includes(type)) return 'database';
   if (type === 'scenario') return 'scriptnote';
-  return ['page', 'scriptnote', 'board', 'form-app'].includes(type) ? type : '';
+  return ['page', 'scriptnote', 'board', 'form-app', 'map'].includes(type) ? type : '';
 }
 
 function rememberRailAppFile(entry) {
@@ -873,7 +873,9 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
-      component.onPathRename?.(oldPath, newPath, options);
+      // A detached view must not interrupt rebinding the other open editors.
+      try { component.onPathRename?.(oldPath, newPath, options); }
+      catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
     });
   }
 
@@ -881,6 +883,8 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     state[key] = _mapRenamedPath(state[key], oldPath, newPath);
   });
   _renameRuntimePathReferences(oldPath, newPath, exactLabel);
+  try { window.GBSubPanel?.onPathRename?.(oldPath, newPath, options); }
+  catch (error) { console.warn('[Meldex] 移動後のサブパネル更新に失敗しました', error); }
 
   if (options.titleOnly && options.etag && exactLabel != null) {
     const coordinator = window.MeldexDocumentSaveCoordinator;
@@ -947,7 +951,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     } else if (typeof GBLayout.render === 'function') GBLayout.render();
     if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
   }
-  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
+  if (!options.skipDbReload) _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
 }
 
 function purgeAppPathReferences(paths) {

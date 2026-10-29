@@ -140,34 +140,78 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
 }
 
 function _restoreDbNavigationViewSnapshot(dbPath, snapshot) {
-  if (!snapshot?.savedView || !Number.isInteger(snapshot.viewIdx)) return false;
+  if (!snapshot?.savedView) return false;
   const cfg = getDbViewConfig(dbPath);
-  if (!Array.isArray(cfg.savedViews) || snapshot.viewIdx < 0 || snapshot.viewIdx >= cfg.savedViews.length) return false;
+  if (!Array.isArray(cfg.savedViews)) return false;
+  const id = String(snapshot.savedView.id || '');
+  const idx = id ? cfg.savedViews.findIndex(view => String(view?.id || '') === id)
+    : (Number.isInteger(snapshot.viewIdx) ? snapshot.viewIdx : -1);
+  const current = cfg.savedViews[idx];
+  if (!current || (!id && (current.name !== snapshot.savedView.name || current.viewMode !== snapshot.savedView.viewMode))) return false;
   try {
-    cfg.savedViews[snapshot.viewIdx] = JSON.parse(JSON.stringify(snapshot.savedView));
+    cfg.savedViews[idx] = {
+      ...JSON.parse(JSON.stringify(snapshot.savedView)),
+      id: current.id,
+      name: current.name,
+      viewMode: current.viewMode,
+    };
   } catch {
     return false;
   }
-  cfg.currentViewIdx = snapshot.viewIdx;
+  cfg.currentViewIdx = idx;
   saveDbViewConfig(dbPath, cfg, { skipHistory: true, skipBackend: true });
   return true;
+}
+
+function _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode) {
+  if (requestedViewMode) {
+    const cfg = getDbViewConfig(dbPath);
+    const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
+    const modeOf = view => view?.viewMode === 'calendar' ? 'timeline' : (view?.viewMode || 'pivot');
+    const currentIdx = typeof _getCurrentDbViewIndexFromConfig === 'function'
+      ? _getCurrentDbViewIndexFromConfig(cfg, { ctx }) : cfg.currentViewIdx;
+    const idx = views[currentIdx] && modeOf(views[currentIdx]) === requestedViewMode
+      ? currentIdx : views.findIndex(view => modeOf(view) === requestedViewMode);
+    if (idx >= 0 && ctx) {
+      ctx.currentViewIdx = idx;
+      ctx.currentViewId = String(views[idx].id || '');
+    }
+    return requestedViewMode;
+  }
+  return getCurrentViewMode(dbPath, { ctx });
 }
 
 function _renderDbLoadError(ctx, error) {
   ctx = _normalizeDbRenderContext(ctx);
   if (!ctx) return;
   clearPivot(ctx);
-  const message = 'シートを読み込めませんでした: ' + (error?.message || error || '不明なエラー');
+  const detail = /timeout|タイムアウト/i.test(error?.message || '')
+    ? '読み込みに時間がかかっています。再読み込みしてください。'
+    : (error?.userMessage || error?.message || error || '不明なエラー');
+  const message = 'シートを読み込めませんでした: ' + detail;
   const safeMessage = MeldexEscape.html(message);
+  const targetPath = ctx.dbPath;
+  const width = Math.max(160, Math.min(480, (ctx.containerEl?.clientWidth || 528) - 48));
+  const errorHtml = `<div class="db-load-error" role="alert" style="max-width:${width}px;padding:24px;white-space:normal;overflow-wrap:anywhere;color:var(--fg2);">${safeMessage}<div style="margin-top:12px;"><button type="button" class="db-load-retry gb-btn" aria-label="シートの読み込みを再試行">再読み込み</button></div></div>`;
+  const bindRetry = container => {
+    const button = container?.querySelector('.db-load-retry');
+    button?.addEventListener('click', async () => {
+      if (ctx.destroyed || ctx.dbPath !== targetPath) return;
+      button.disabled = true;
+      try { await selectDatabase(targetPath, ctx, { forceReload: true }); }
+      catch (retryError) { _renderDbLoadError(ctx, retryError); }
+      finally { if (button.isConnected) button.disabled = false; }
+    });
+  };
   const tblId = ctx?.tableId || 'pivot-table';
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
   if (tbody) {
-    tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${safeMessage}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="999">${errorHtml}</td></tr>`;
+    bindRetry(tbody);
   }
-  const errorHtml = `<div class="db-load-error" role="alert" style="padding:40px;text-align:center;color:var(--fg2);">${safeMessage}</div>`;
   ['.tree-view', '.gallery-view', '.kanban-view', '.timeline-view', '.chart-view', '.graph-view', '.form-view'].forEach(selector => {
     const container = _paneEl(ctx, selector);
-    if (container) container.innerHTML = errorHtml;
+    if (container) { container.innerHTML = errorHtml; bindRetry(container); }
   });
 }
 
@@ -346,12 +390,12 @@ async function selectDatabase(dbPath, ctx, opts) {
     const _navEntry = {type:'pivot', path: dbPath};
     navPush(_navEntry);
   }
-  if (!openOpts.skipRecent) addRecent(dbPath.split('/').pop() || '', dbPath, 'database');
+  if (!openOpts.skipRecent) addRecent(dbPerfTargetLabel, dbPath, 'database');
   if (!openOpts.skipAutoVersion) startAutoVersion(dbPath, 'db');
   if (!openOpts.skipHistoryScope) {
     const historyScope = typeof _dbViewConfigHistoryScope === 'function'
       ? _dbViewConfigHistoryScope(dbPath)
-      : 'db:' + (dbPath.split('/').pop() || dbPath);
+      : 'db:' + dbPerfTargetLabel;
     historySetScope(historyScope);
   }
 
@@ -359,7 +403,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (!openOpts.skipHighlight) highlightOutlinerNode(dbPath);
 
   // DBフォルダ名をカテゴリ名として表示
-  const dbName = dbPath.split('/').pop() || dbPath;
+  const dbName = dbPerfTargetLabel;
   if (!openOpts.skipGlobalUi) {
     const toolbarCategoryEl = document.getElementById('toolbar-category');
     if (toolbarCategoryEl) {
@@ -418,10 +462,11 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (Number.isInteger(openOpts.restoreViewIdx)) {
     const cfgForRestore = getDbViewConfig(dbPath);
     if (Array.isArray(cfgForRestore.savedViews) && openOpts.restoreViewIdx >= 0 && openOpts.restoreViewIdx < cfgForRestore.savedViews.length) {
-      setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true });
+      // Restoration only primes the cache; metadata has not been read yet.
+      setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true, skipBackend: true });
     }
   }
-  let dbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
+  let dbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
 
@@ -448,7 +493,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
     const viewConfigReadState = _captureDbViewConfigReadState(dbPath);
-    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
+    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal, foreground: true, silentError: true });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
     if (dbMetadata.display_title) {
@@ -479,7 +524,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     if (backendViewConfigApplied) {
       if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
-      const latestMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
+      const latestMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
       if (latestMode && latestMode !== dbViewMode) {
         dbViewMode = latestMode;
         ctx.viewMode = dbViewMode;
@@ -497,14 +542,42 @@ async function selectDatabase(dbPath, ctx, opts) {
         hasBackendViewConfig: !!_hasBackendDbViewConfigData(backendViewConfig),
       });
     }
-  } catch {
+  } catch (error) {
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
-    const emptyMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
-    ctx.dbMetadata = emptyMetadata;
-    if (syncGlobalState) state.dbMetadata = emptyMetadata;
     if (typeof _logPerfEvent === 'function') {
       _logPerfEvent('sheet.metadata.error', metadataPerfStartedAt, { targetLabel: dbPerfTargetLabel });
     }
+    // Never render a schema-less sheet as text after a failed metadata read.
+    // Image arrays otherwise become [object Object], and edits use wrong types.
+    // If only view/style application failed, keep the schema already received.
+    if (!ctx.dbMetadata) {
+      // A completed move can outlive its UI response (or a restored tab). Resolve
+      // the same stable identity, never create/migrate a sheet at the old path.
+      if (error?.status === 404 && !openOpts.recoveredMovedPath && typeof _pathToFileId === 'function') {
+        const fileId = _pathToFileId(dbPath);
+        if (fileId) {
+          let resolved = null;
+          try {
+            resolved = await apiFetch('/file-path?id=' + encodeURIComponent(fileId), {
+              signal: dbLoadController.signal, foreground: true, silentError: true,
+            });
+          } catch {}
+          if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+          if (resolved?.path && resolved.path !== dbPath) {
+            renameAppPathReferences(dbPath, resolved.path, { fileId, type: 'database', preserveMountedViews: true, skipDbReload: true });
+            return completeLoad(await selectDatabase(resolved.path, ctx, {
+              ...openOpts, forceReload: true, recoveredMovedPath: true,
+            }));
+          }
+        }
+      }
+      _renderDbLoadError(ctx, error);
+      if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
+        showStatus('シート設定の読み込みエラー: ' + (error?.message || error), true);
+      }
+      return completeLoad({ ok: false, error });
+    }
+    console.warn('[Meldex] シート表示設定の適用に失敗しました', error);
   }
 
   // localStorage → バックエンドへの自動マイグレーション（property_types）
@@ -539,7 +612,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
-    const pivotData = await apiFetch(url, { signal: dbLoadController.signal });
+    const pivotData = await apiFetch(url, { signal: dbLoadController.signal, foreground: true });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
@@ -564,7 +637,7 @@ async function selectDatabase(dbPath, ctx, opts) {
         .catch(() => {});
     }
     const latestDbViewMode = getCurrentViewMode(dbPath);
-    const effectiveLatestDbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
+    const effectiveLatestDbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode) || latestDbViewMode;
     // 互換テスト用: if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
     if (effectiveLatestDbViewMode && effectiveLatestDbViewMode !== dbViewMode) {
       // 互換テスト用: dbViewMode = latestDbViewMode;

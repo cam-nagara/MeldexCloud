@@ -39,6 +39,14 @@ function bdRestoreSnapshotNodeTextWrites(previousNodes, restoredNodes) {
 }
 function bdPersistEditedNodeText(node, beforeText, onFailure) {
   if (!node?._topicCanonicalOnly || !node?.topicRef) {
+    if (node?.topicRef && Array.isArray(bd?.nodes)) {
+      bd.nodes.forEach(visual => {
+        if (visual === node || visual.topicRef?.sourceId !== node.topicRef.sourceId
+            || visual.topicRef?.topicId !== node.topicRef.topicId) return;
+        visual.text = node.text;
+        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(visual.id, 'shared-topic-text');
+      });
+    }
     bdDirty();
     return;
   }

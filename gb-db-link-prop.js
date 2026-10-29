@@ -316,7 +316,7 @@ async function _dbLinkCommitValue(args) {
         _upsertLocalPivotValue(entityPath, propName, existing, newPath, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -342,7 +342,7 @@ async function _dbLinkCommitValue(args) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -382,7 +382,7 @@ async function _dbLinkCommitValue(args) {
         file: filePath,
         entry_path: entityPath,
         property: result?.property || propName,
-        candidate_index: result?.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
       const dbScope = typeof _dbScopeForPath === 'function'
         ? _dbScopeForPath(dbPath)
@@ -398,7 +398,7 @@ async function _dbLinkCommitValue(args) {
             file: redo?.path || redo?.file || currentRef.file,
             entry_path: entityPath,
             property: redo?.property || propName,
-            candidate_index: redo?.candidate_index,
+            candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
           };
           if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
         },

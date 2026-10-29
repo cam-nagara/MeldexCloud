@@ -323,7 +323,9 @@
     childrenDiv._virtualState = state;
     childrenDiv.dataset.virtual = 'true';
     childrenDiv.style.position = 'relative';
-    childrenDiv.style.display = 'block';
+    // Inline display overrides .tree-children.collapsed and leaves the entire
+    // virtual spacer visible after folding a large source folder.
+    childrenDiv.style.display = '';
 
     items.forEach(function (item) {
       if (item && item.path) _pathToContainer.set(item.path, { childrenDiv: childrenDiv, state: state });

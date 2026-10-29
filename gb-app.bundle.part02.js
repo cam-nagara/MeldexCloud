@@ -1,3 +1,7 @@
+      const fm = savedMd.match(/^(---\n[\s\S]*?\n---\n?)/);
+      if (fm) host.dataset.frontmatter = fm[1];
+      window.MeldexNoteSaveAdapter?.syncResolvedBaseline?.(newPath,host,savedMd,options.etag);
+    });
     if (typeof bd !== 'undefined' && bd.path === newPath) {
       bd.lastSavedEtag = options.etag;
       bd.lastSavedTransportRevision = coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName(),options.etag) || options.etag;
@@ -51,7 +55,7 @@
     } else if (typeof GBLayout.render === 'function') GBLayout.render();
     if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
   }
-  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
+  if (!options.skipDbReload) _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
 }
 
 function purgeAppPathReferences(paths) {
@@ -422,6 +426,7 @@ function navOpen(entry, opts) {
   if (entry.type === 'page') return openPage(entry.label, entry.path, o);
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
   if (entry.type === 'form-app') return openFormApp(entry.path, entry.label, o);
+  if (entry.type === 'map') return openMapApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
   if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
@@ -866,7 +871,7 @@ function _applyNavEntryToBoundTab(navState, entry) {
     }
     return true;
   };
-  const formFileChanged = nextType === 'form-app' && tab.path !== (entry.path || entry.dbPath || '');
+  const formFileChanged = ['form-app', 'map'].includes(nextType) && tab.path !== (entry.path || entry.dbPath || '');
   if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
     const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
     if (component && typeof removeComponentInstanceSafely === 'function') {
@@ -893,8 +898,3 @@ function _finishPaneHistoryNavigation(navState, nextIndex, entry) {
 
 function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
   if (!applied || typeof applied.then !== 'function') {
-    return applied === false ? false : _finishPaneHistoryNavigation(navState, nextIndex, entry);
-  }
-  navNavigating = true;
-  applied.then((ok) => {
-    if (!ok) {

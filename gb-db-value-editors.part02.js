@@ -144,7 +144,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       e.preventDefault();
       e.stopPropagation();
       const ctx = valueCtx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
-      const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+      const entityName = typeof _dbPivotEntityNameForPath === 'function'
+        ? _dbPivotEntityNameForPath(entityPath, ctx?.pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
       const livePtc = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null;
       const renderedActions = Array.isArray(btn._dbButtonActions) ? btn._dbButtonActions : [];
       const actions = Array.isArray(livePtc?.actions) && livePtc.actions.length > 0
@@ -201,7 +202,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       return row;
     }
 
-    const entityName = options.entityName || entityPath.replace(/\.md$/, '').split('/').pop();
+    const entityName = options.entityName || (typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(entityPath, valueCtx?.pivotData) : entityPath.replace(/\.md$/, '').split('/').pop());
 
     if (type === 'formula') {
       const result = formulaEvalForEntity(propTypeConfig.formula, entityData, { propTypes: resolvedPropTypes, dbPath });
@@ -329,7 +331,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           val.candidate_index = result?.candidate_index;
           val.status = '採用';
           const pivotData = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || state.pivotData;
-          const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+          const entityName = typeof _dbPivotEntityNameForPath === 'function'
+            ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
           const entityData = pivotData?.entities?.[entityName];
           if (entityData) {
             if (!Array.isArray(entityData[propName])) entityData[propName] = [];
@@ -338,7 +341,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           if (val.file && typeof historyPush === 'function') {
             let currentRef = {
               file: val.file, entry_path: entityPath, property: propName,
-              candidate_index: val.candidate_index,
+              candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
             };
             const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
             historyPush('チェック: false → true',
@@ -352,7 +355,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
                   file: redo?.path || redo?.file || currentRef.file,
                   entry_path: entityPath,
                   property: redo?.property || propName,
-                  candidate_index: redo?.candidate_index,
+                  candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
                 };
                 if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
               },
@@ -418,7 +421,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
               val.candidate_index = result?.candidate_index;
               val.status = '採用';
               const pivotData = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || state.pivotData;
-              const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+              const entityName = typeof _dbPivotEntityNameForPath === 'function'
+                ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
               const entityData = pivotData?.entities?.[entityName];
               if (entityData) {
                 if (!Array.isArray(entityData[propName])) entityData[propName] = [];
@@ -447,8 +451,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (span.querySelector('.cell-date-editor')) return;
+      const oldDate = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');
       const editor = typeof _dbDateCreateEditor === 'function'
-        ? _dbDateCreateEditor(v, propTypeConfig, {
+        ? _dbDateCreateEditor(oldDate, propTypeConfig, {
           layout: 'inline',
           className: 'cell-date-editor',
           rootStyle: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap;width:calc(100% - 28px);',
@@ -463,6 +468,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const moreBtn = row.querySelector('.cell-value-more');
       if (moreBtn) moreBtn.style.display = 'none';
       const td = row.closest('td');
+      const editorSession = {};
+      if (td) td._dbInlineEditorSession = editorSession;
+      const ownsEditor = () => span.isConnected !== false && (!td || td._dbInlineEditorSession === editorSession);
       const addBtn = td ? td.querySelector('.cell-add-btn') : null;
       if (addBtn) { addBtn.dataset.editingHidden = '1'; addBtn.style.display = 'none'; }
       const restoreBtns = () => {
@@ -479,18 +487,21 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         const nv = editor.getValue();
         span.textContent = nv ? _formatDateDisplay(nv, propTypeConfig) : '';
         const oldNormalized = typeof _dbDateNormalizeForCompare === 'function'
-          ? _dbDateNormalizeForCompare(v, propTypeConfig)
-          : _toInputDateValue(v, editor.mode?.withTime);
+          ? _dbDateNormalizeForCompare(oldDate, propTypeConfig)
+          : _toInputDateValue(oldDate, editor.mode?.withTime);
         if (nv !== oldNormalized) {
+          val.value = nv;
           try {
             await _apiPutValue(val, { new_value: nv });
-            _dbUndoValue(propName + ': ' + v + ' → ' + nv, val, v, nv);
-            val.value = nv;
+            _dbUndoValue(propName + ': ' + oldDate + ' → ' + nv, val, oldDate, nv);
             // Step 3: 部分更新化 (ソート対象列等のフォールバックは _tryRefreshPivotCellLocal 内で判定)
-            _refreshAfterCellEdit(span, entityPath, propName);
+            if (ownsEditor()) _refreshAfterCellEdit(span, entityPath, propName);
           } catch (e) {
+            if (val.value === nv) val.value = oldDate;
+            window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+              candidateIndex: val.candidate_index, before: oldDate, value: nv });
             showStatus('保存に失敗: ' + (e?.message || e), true);
-            span.textContent = _formatDateDisplay(v, propTypeConfig);
+            if (ownsEditor()) span.textContent = _formatDateDisplay(oldDate, propTypeConfig);
           }
         }
       };
@@ -507,10 +518,15 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       }
       editor.root.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restoreBtns(); span.textContent = _formatDateDisplay(v, propTypeConfig); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restoreBtns(); span.textContent = _formatDateDisplay(oldDate, propTypeConfig); }
       });
     });
     row.appendChild(span);
+    return row;
+  }
+
+  if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    row.appendChild(MeldexSheetLocation.valueElement(val, entityPath, propName, { ...options, dbPath, ctx: valueCtx }));
     return row;
   }
 
@@ -907,7 +923,7 @@ function _msrRelationValueReferences(values, currentId, currentName) {
 
 function _msrCurrentEntityIdentity(entityPath, dbPath, ctx) {
   const name = typeof _getPivotEntityName === 'function'
-    ? _getPivotEntityName(entityPath)
+    ? _getPivotEntityName(entityPath, ctx)
     : String(entityPath || '').split('/').pop().replace(/\.md$/i, '');
   const data = ctx?.pivotData || state.pivotData;
   const entityData = data?.entities?.[name] || {};
@@ -1251,7 +1267,7 @@ async function _autoCollectAllMsrProps(dbPath, ctx) {
             status: '採用',
             note: '',
             file: result?.path,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           });
         } else {
           continue;

@@ -17,6 +17,7 @@
     'scenario',
     'board',
     'sheet',
+    'map',
     'quick_memo',
     'viewer',
   ]);
@@ -68,6 +69,10 @@
   const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
   const STANDALONE_VERSION_HISTORY_APPS = new Set(['quick_memo', 'viewer']);
   const APP_OUT_OF_SCOPE = Object.freeze({
+    map: Object.freeze(Object.fromEntries(CAPABILITIES.filter(capability => ![
+      'load', 'edit', 'save', 'export', 'file_info', 'backlinks', 'main',
+      'conflict_detection', 'edit_lock', 'move_tracking', 'offline_save',
+    ].includes(capability)).map(capability => [capability, 'マップ初期版の対応範囲外です']))),
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
     }),
@@ -337,6 +342,11 @@
   }
 
   function _classificationFor(app, environment, capability) {
+    if (app === 'map' && environment !== 'desktop_main') {
+      return _record(STATUS.out_of_scope, 'route:desktop_main',
+        _route(environment, app, 'マップ初期版はデスクトップ版本体で開きます'),
+        'Cloud・モバイル・単独版への対応は後続段階です', 'デスクトップ版本体で開く');
+    }
     if (INTEGRATED_ONLY_APPS.has(app)
         && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
       const isCloud = environment === 'cloud_standalone';

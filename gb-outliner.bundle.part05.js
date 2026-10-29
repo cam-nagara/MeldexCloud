@@ -1,3 +1,146 @@
+      addSep();
+    }
+  }
+
+  // --- 新規作成サブメニュー ---
+  if (!(addParent && isItemLocked(addParent))) {
+    const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
+    _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
+      _outlinerAppendMenuItem(createPanel, {
+        label,
+        icon,
+        action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+      });
+    });
+  }
+  addSep();
+
+  // --- 開く系は利用頻度が高いため、上部の1つのサブメニューへ集約する ---
+  if (!isMulti && nodeData.path && !nodeData._isRoot) {
+    const openType = typeof _normalizeOpenTypeForNav === 'function'
+      ? _normalizeOpenTypeForNav(nodeData.type)
+      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
+    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
+    const canUseRightSidebar = typeof GBPaneBridge === 'undefined'
+      || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+      || typeof GBPaneBridge.surfaceOf !== 'function'
+      || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(nodeEl));
+    const openPanel = _outlinerCreateSubmenu('開く');
+    _outlinerAppendSubmenu(menu, '開く', 'folderOpen', openPanel);
+    _outlinerAppendMenuItem(openPanel, {
+      label: 'メインパネルで開く', icon: 'panelTop', action: () => {
+        closeTreeContextMenu();
+        window.GBOutlinerActivation?.activateNode(nodeEl);
+      },
+    });
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいタブで開く', icon: 'externalLink', action: () => {
+        closeTreeContextMenu();
+        _openInNewTab(nodeData.name || '', nodeData.path, openType);
+      },
+    });
+    if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+        },
+      });
+    }
+    if (typeof openLinkedPathStandalone === 'function'
+        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nodeData.path, nodeData.type))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '単独アプリで開く', icon: 'appWindow', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathStandalone(nodeData.path, nodeData.name, { linkType: nodeData.type });
+        },
+      });
+    }
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいウィンドウで開く', icon: 'monitor', action: () => {
+        closeTreeContextMenu();
+        if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
+        else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+      },
+    });
+    if (!isFolder && typeof openNative === 'function') {
+      const needsExternalApp = !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type));
+      addMenuItem('アプリで開く', () => {
+          closeTreeContextMenu();
+          openNative(nodeData.path);
+        }, null, needsExternalApp ? 'externalLink' : 'appWindow', openPanel);
+    }
+    if (nodeData.type === 'image') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'ビューワーで開く', icon: 'image', action: () => {
+          closeTreeContextMenu();
+          if (typeof openViewer === 'function') openViewer('/viewer?file=' + encodeURIComponent(nodeData.path));
+        },
+      });
+      if (typeof openImageInCanvas === 'function') {
+        _outlinerAppendMenuItem(openPanel, {
+          label: 'ボードで開く', icon: 'presentation', action: () => {
+            closeTreeContextMenu();
+            openImageInCanvas(nodeData);
+          },
+        });
+      }
+    }
+    if ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    } else if (nodeData.type === 'scenario') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオへ取り込んで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    }
+    addSep();
+  }
+
+  // --- 編集ロック ---
+  if (!isMulti && nodeData.path && !isEntity) {
+    const locked = isItemLocked(nodeData.path);
+    const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(nodeData.path);
+    const canEditLock = typeof isFileLockOwner === 'function' && isFileLockOwner();
+    if (systemLocked) {
+      const lockedItem = addMenuItem('システム保護', () => {}, null, 'lock');
+      lockedItem.style.opacity = '0.65';
+      lockedItem.style.cursor = 'default';
+      lockedItem.title = 'システム保護中です';
+      lockedItem.dataset.gbTooltip = lockedItem.title;
+    } else if (!canEditLock) {
+      const lockedItem = addMenuItem(locked ? '編集ロック中' : '編集ロック（管理者のみ）', () => {}, null, 'lock');
+      lockedItem.style.opacity = '0.65';
+      lockedItem.style.cursor = 'default';
+      lockedItem.title = '編集ロックの設定は管理者のみ可能です';
+      lockedItem.dataset.gbTooltip = lockedItem.title;
+    } else {
+      const lockPanel = _outlinerCreateSubmenu('編集ロック');
+      _outlinerAppendSubmenu(menu, '編集ロック', 'lock', lockPanel);
+      [['編集ロックする', true, 'lock'], ['編集ロック解除', false, 'unlock']].forEach(([label, val, icon]) => {
+        _outlinerAppendMenuItem(lockPanel, {
+          html: radioMark(locked === val) + _outlinerMenuIconHtml(icon, 12) + '<span>' + _outlinerEscHtml(label) + '</span>',
+          checked: locked === val,
+          action: async () => {
+          closeTreeContextMenu();
+          const changed = locked !== val ? await toggleItemLock(nodeData.path) : true;
+          if (!changed) return;
+          const lbl = nodeEl.querySelector('.tree-label');
+          if (lbl) lbl.style.fontStyle = isItemLocked(nodeData.path) ? 'italic' : '';
+          showStatus(val ? '編集ロックしました' : '編集ロックを解除しました');
+          },
+        });
+      });
     }
   }
 
@@ -646,6 +789,7 @@ function _openOutlinerCreatedNode(nd, name) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
   else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
@@ -754,147 +898,3 @@ async function addItemAt(parentPath, type, options = {}) {
   const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
   const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
   const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
-  let pendingNode = null;
-  let existingNames = null;
-  let siblingNames = null;
-  if (!target.deferTreeInsert && target.container && !needsReload) {
-    existingNames = _outlinerSnapshotChildNames(target.container);
-    siblingNames = [...target.container.querySelectorAll(':scope > .tree-node')]
-      .map(node => node._nodeData?.path).filter(Boolean);
-    pendingNode = _createOutlinerPendingCreateNode(type, label);
-    _insertOutlinerCreateNode(target.container, pendingNode, anchorNode);
-  }
-  const saveCreateOrder = async (node) => {
-    if (!anchorNode || !siblingNames) return;
-    const names = siblingNames.slice();
-    const anchorIndex = anchorNode._nodeData?.path === parentPath
-      ? -1 : names.indexOf(anchorNode._nodeData?.path);
-    names.splice(anchorIndex + 1, 0, node.path);
-    setManualOrder(parentPath || '_root', names);
-    setSortSetting(parentPath || '_root', 'manual', 'asc');
-    if (needsReload) {
-      if (virtualTarget) {
-        const vr = window.GBOutlinerVirtualRender;
-        const inside = anchorNode._nodeData?.path === parentPath;
-        const referencePath = inside ? siblingNames[0] : anchorNode._nodeData?.path;
-        vr.dropInto(target.container, [node]);
-        if (referencePath) vr.reorderAround(target.container, [node.path], referencePath, inside ? 'above' : 'below');
-      }
-      _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
-    }
-  };
-  try {
-    if (needsReload) {
-      const sortCfg = getSortForFolder(parentPath);
-      const virtualItems = window.GBOutlinerVirtualRender?.stateChildItemsFor(target.container, parentPath);
-      const items = virtualItems || await _outlinerFetchFolderListingForConfirm(parentPath, anchorNode, {
-        detail: !['manual', 'name'].includes(sortCfg.sort),
-      });
-      if (!Array.isArray(items)) throw new Error('追加先の並び順を取得できませんでした。もう一度お試しください');
-      existingNames = new Set(items.map(item => _outlinerCreateItemIdentity(item.type, item.name)).filter(Boolean));
-      const ordered = virtualItems || (sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, parentPath)
-        : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order)));
-      siblingNames = ordered.map(item => item.path).filter(Boolean);
-    }
-    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
-    // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
-    if (!res.node.name) res.node.name = res.node.label;
-    await saveCreateOrder(res.node);
-    if (needsReload) {
-      // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
-      const createdNode = _findTreeNodeByPath(res.node.path);
-      _selectOutlinerCreateNode(createdNode);
-      _openOutlinerCreatedNode(res.node, res.node.name);
-      return;
-    }
-
-    let insertTarget = target.deferTreeInsert
-      ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true })
-      : target;
-    // API待機中にワークスペースセクション等が再描画され、挿入先コンテナが
-    // DOMから切断されていた場合は挿入先を再解決する
-    if (!insertTarget.deferTreeInsert && !insertTarget.container?.isConnected) {
-      insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
-    }
-    const nd = res.node;
-    const name = nd.name || nd.label || label;
-    // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
-    if (!insertTarget.deferTreeInsert && !insertTarget.container) {
-      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
-      return;
-    }
-    const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
-
-    if (!insertTarget.deferTreeInsert && newNode) {
-      if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
-      else _insertOutlinerCreateNode(insertTarget.container, newNode, anchorNode);
-      // 挿入直後に切断されている場合の軽い保険
-      if (!newNode.isConnected) loadOutliner();
-    }
-
-    // 選択状態にする
-    if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
-    // コンテンツを開く
-    _openOutlinerCreatedNode(nd, name);
-  } catch (e) {
-    if (e && e.isTimeout) {
-      await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, saveCreateOrder);
-    } else {
-      if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-      showStatus((e && e.message) || '追加に失敗しました', true);
-    }
-  }
-}
-
-// シートの中へエントリを追加する（シートに作れるのはエントリだけ）
-async function addSheetEntryAt(sheetPath) {
-  const path = String(sheetPath || '').trim();
-  if (!path) return;
-  try {
-    await apiPost('/entity/create', { parent_path: path, name: '無題' });
-    showStatus('トピックを追加しました');
-    if (typeof loadOutliner === 'function') await loadOutliner();
-    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
-  } catch (e) {
-    showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
-  }
-}
-
-// ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
-async function showAddOutlinerItem(type) {
-  // 選択中のアイテムから追加先を決定
-  let parentPath = '';
-  if (treeSelection.lastClicked && treeSelection.lastClicked._nodeData) {
-    // ホーム内のノードが選択されている場合
-    if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
-      const nd = treeSelection.lastClicked._nodeData;
-      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
-        const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
-        parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
-      } else {
-        const pn = treeSelection.lastClicked.parentElement?.closest('.tree-node');
-        parentPath = pn?._nodeData?.path || _homeFolderPath;
-      }
-    } else {
-      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
-    }
-  }
-  // 何も選択されていない場合、ホームフォルダにフォールバック
-  if (!parentPath && _homeFolderPath) {
-    parentPath = _homeFolderPath;
-  }
-  await addItemAt(parentPath, type);
-}
-
-// フォルダツリーのラベルをインライン編集
-function startTreeLabelEdit(labelEl, nodeData, onFinish) {
-  const old = labelEl.textContent;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = old === '無題' ? '' : old;
-  input.placeholder = '名前を入力';
-
-/* === gb-outliner.part03.js === */
-  input.style.cssText = 'width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:2px;padding:1px 4px;font-size:13px;outline:none;';
-  labelEl.textContent = '';
-  labelEl.appendChild(input);

@@ -99,7 +99,9 @@ async function _syncDetailPanel(label, path, type, opts) {
   }
   if (type !== 'calendar' && typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
-  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
+  document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = type !== 'map'; });
+  if (type !== 'map' && ['map-settings', 'map-selection'].includes(_currentDetailTab)) switchDetailTab(null);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
@@ -134,11 +136,6 @@ async function _syncDetailPanel(label, path, type, opts) {
 
 // DB選択時：プロパティ設定タブにシート設定を表示
 async function _showDatabaseInfoInDetailPanel(label, path) {
-  const el = _resolveDetailEl();
-  if (!el) return;
-  _ensureDetailTabShell(el);
-  const propSettings = el.querySelector('#detail-tab-db-property-settings');
-  if (!propSettings) return;
   const seq = _detailSyncSeq;
   if (!await _dpSavePending()) return;
   if (seq !== _detailSyncSeq) return;
@@ -148,6 +145,13 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
   const dbNotePath = window.GbBacklinks?.dbFolderNotePath?.(path) || path;
   window.GBOptionTargetContext?.set({ path: dbNotePath, contextPath: path, kind: 'database' }, 'database-select');
+  // A restored pane can temporarily lack its settings slot. Selection still
+  // has to follow the sheet instead of retaining the previously opened image.
+  const el = _resolveDetailEl();
+  if (!el) return;
+  _ensureDetailTabShell(el);
+  const propSettings = el.querySelector('#detail-tab-db-property-settings');
+  if (!propSettings) return;
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'

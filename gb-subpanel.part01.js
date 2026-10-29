@@ -705,7 +705,7 @@ const GBSubPanel = (() => {
       window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
       return true;
     }
-    root.textContent = 'エントリを表示できません';
+    root.textContent = 'トピックを表示できません';
     return false;
   }
 

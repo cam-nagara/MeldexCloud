@@ -271,8 +271,11 @@
     } else if (safeUrl) {
       item.url = safeUrl;
       item.rawUrl = item.url;
-      item.previewUrl = item.url;
-      item.urlCandidates = [item.url];
+      // Sheet cells provide an explicit raw URL as well as a workspace path.
+      // Retain the safe PNG fallback used by ordinary Viewer opens; otherwise
+      // dot-prefixed raster images fail here after their thumbnails succeeded.
+      item.previewUrl = path && item.type === 'image' ? Utils.imagePreviewUrlForPath(path) : item.url;
+      item.urlCandidates = [...new Set([item.url, item.previewUrl])];
     }
     item.w = Number(source?.width || 0);
     item.h = Number(source?.height || 0);
@@ -351,10 +354,17 @@
     const ok = await Utils.waitForImageElement(img);
     if (ok) return true;
     const item = img?._viewerItem;
-    if (!switchItemToPreviewUrl(item)) return false;
-    const nextSrc = displayItemUrl(item);
+    // Metadata probes can advance the shared item while this element still
+    // waits for its old URL. Use that candidate before advancing it again.
+    let nextSrc = displayItemUrl(item);
+    if (!nextSrc || nextSrc === img.getAttribute('src')) {
+      if (!switchItemToPreviewUrl(item)) return false;
+      nextSrc = displayItemUrl(item);
+    }
     if (!nextSrc) return false;
+    const imageHost = window.MeldexImageLoading?.get?.(img)?.state?.host;
     img.src = nextSrc;
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像を読み込んでいます' });
     return Utils.waitForImageElement(img);
   }
 
@@ -549,9 +559,10 @@
   function displayItemUrl(item) { return item?.displayUrl || window.MeldexPwaFileUrl?.displayUrl?.(rawItemUrl(item)) || item?.url || ''; }
   async function ensureItemUrl(item) {
     if (!item || item.type !== 'image') return displayItemUrl(item);
+    const requestedUrl = rawItemUrl(item);
     try {
-      const info = await window.MeldexPwaFileUrl?.ensureDisplayUrl?.(rawItemUrl(item), { allowLargeBlob: true });
-      if (info?.url) item.displayUrl = info.url;
+      const info = await window.MeldexPwaFileUrl?.ensureDisplayUrl?.(requestedUrl, { allowLargeBlob: true });
+      if (info?.url && rawItemUrl(item) === requestedUrl) item.displayUrl = info.url;
     } catch {}
     return displayItemUrl(item);
   }

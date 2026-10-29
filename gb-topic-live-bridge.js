@@ -157,7 +157,7 @@
       if (!previewOnly && [403, 409].includes(statusOf(error))) {
         try {
           const response = await requestMigration(target, true);
-          return { ok: true, mode: 'preview', response, target };
+          return { ok: true, mode: 'preview', response, target, error };
         } catch (previewError) {
           return { ok: false, status: 'fallback', error: previewError, target };
         }
@@ -197,6 +197,7 @@
       relativePath: result.target.relativePath,
       dbPath: result.target.dbPath,
       mode: result.mode,
+      readOnly: result.mode === 'preview' || result?.archive?.readOnly === true,
       reason: reason || 'open',
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
@@ -215,6 +216,8 @@
 
   async function migrateOpenedSheet(dbPath, options) {
     const owner = options?.owner;
+    const mutationVersion = Number(owner?._topicMutationVersion || 0);
+    const openVersion = Number(owner?._openSeq || 0);
     const startedGeneration = generation;
     if (!ownerActive(owner, dbPath)) return { ok: false, status: 'destroyed' };
     const target = await resolveRegisteredPath(dbPath, options);
@@ -223,8 +226,26 @@
     if (startedGeneration !== generation || !ownerActive(owner, dbPath)) {
       return { ok: false, status: 'destroyed', target };
     }
+    if (mutationVersion !== Number(owner?._topicMutationVersion || 0)
+        || openVersion !== Number(owner?._openSeq || 0)) {
+      return { ok: false, status: 'superseded', target };
+    }
     if (result.ok) result.detail = publish(result, options?.reason);
     return result;
+  }
+
+  async function flushOpenedSheet(dbPath, options) {
+    const target = await resolveRegisteredPath(dbPath, options);
+    if (!target) return { ok: false, status: 'unregistered' };
+    for (const [path, pending] of saveTimers.entries()) {
+      const queued = await resolveRegisteredPath(path, { refreshRoots: false });
+      if (queued?.sourceId !== target.sourceId || queued?.relativePath !== target.relativePath) continue;
+      clearTimeout(pending.timer);
+      saveTimers.delete(path);
+    }
+    const pending = inflight.get(`${target.sourceId}\n${target.relativePath}\ncommit`);
+    if (pending) await pending.catch(() => {});
+    return migrateOpenedSheet(dbPath, { ...options, reason: 'before-transfer', refreshRoots: false });
   }
 
   function scheduleAfterSave(dbPath, options) {
@@ -265,6 +286,7 @@
   global.GbTopicLiveBridge = Object.freeze({
     resolveRegisteredPath,
     migrateOpenedSheet,
+    flushOpenedSheet,
     scheduleAfterSave,
     destroyOwner,
     clearRootsCache() { rootsCache = null; rootsLoadedAt = 0; },

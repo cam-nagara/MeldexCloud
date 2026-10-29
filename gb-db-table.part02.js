@@ -295,7 +295,7 @@ function _dbTableCandidateSnapshot(val) {
   return {
     file: val.file || '',
     property: val.property || '',
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
     value: val.value || '',
     status: val.status || '採用',
     note: val.note || '',
@@ -307,7 +307,7 @@ function _dbTableValueObjFromSnapshot(snapshot, propName) {
   return {
     file: snapshot.file,
     property: snapshot.property || propName,
-    candidate_index: snapshot.candidate_index,
+    candidate_id: snapshot?.candidate_id, entry_id: snapshot?.entry_id, candidate_index: snapshot.candidate_index,
     value: snapshot.value,
     status: snapshot.status,
     note: snapshot.note,
@@ -336,7 +336,7 @@ async function _dbTablePostCandidateSnapshot(dbPath, entityName, propName, snaps
     ...snapshot,
     file: result?.path || snapshot.file,
     property: result?.property || propName,
-    candidate_index: result?.candidate_index,
+    candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
   };
 }
 
@@ -446,7 +446,7 @@ async function _handleGroupDrop(ctx, draggedNames, newGroupKey) {
         const after = {
           file: result?.path || ep,
           property: result?.property || groupByProp,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           value: newGroupKey,
           status: '採用',
           note: '',

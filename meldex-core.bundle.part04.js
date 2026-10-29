@@ -1,3 +1,36 @@
+    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
+    _scheduleAnchoredAnnotationRefresh();
+  }
+
+  function _boardStillHasNode(nodeId) {
+    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
+      ? bd.nodes.some(node => node?.id === nodeId)
+      : !!document.getElementById('bdn-' + nodeId);
+  }
+
+  function _detachAnchoredAnnotation(entry) {
+    if (entry.detaching || !entry.data?.anchor) return;
+    entry.detaching = true;
+    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+    const worldPoints = entry.lastWorldPoints || [];
+    if (entry.type === 'rect') {
+      entry.type = 'lasso';
+      delete entry.data.x;
+      delete entry.data.y;
+      delete entry.data.height;
+      entry.data.points = worldPoints;
+    } else {
+      entry.data.points = worldPoints;
+      if (entry.type === 'stroke' || entry.type === 'marker') {
+        entry.data.width = entry.lastWorldWidth;
+      }
+    }
+    delete entry.data.anchor;
+    const annId = entry.el?.dataset?.annId || '';
+    const payload = { data: entry.data };
+    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
+    const finish = () => { entry.detaching = false; };
+    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
     finish();
   }
 
@@ -865,36 +898,3 @@ function createMarkupToolbar(markup, parentEl) {
   const colorSwatch = document.createElement('span');
   colorSwatch.className = 'sa-markup-color-swatch';
   colorSwatch.style.background = markup.ann.color || PALETTE_COLORS[0];
-  colorBtn.appendChild(colorSwatch);
-  colorBtn.onclick = () => {
-    if (palette) { closePalette(); return; }
-    palette = document.createElement('div');
-    palette.className = 'sa-palette sa-markup-palette';
-    palette.setAttribute('role', 'dialog');
-    palette.setAttribute('aria-label', 'アノテート色');
-    PALETTE_COLORS.forEach(c => {
-      const dot = document.createElement('button');
-      dot.type = 'button';
-      dot.className = 'sa-markup-color-dot';
-      dot.title = c;
-      dot.setAttribute('aria-label', `アノテート色 ${c}`);
-      dot.style.background = c;
-      dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
-      palette.appendChild(dot);
-    });
-    document.body.appendChild(palette);
-    colorBtn.setAttribute('aria-expanded', 'true');
-    positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
-    paletteKeyHandler = (ev) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      closePalette();
-      const target = colorBtn.classList.contains('gb-tbo-hidden')
-        ? tb.querySelector('.gb-toolbar-overflow-button') : colorBtn;
-      target?.focus();
-    };
-    paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
-    closePaletteTimer = setTimeout(() => {
-      document.addEventListener('pointerdown', paletteOutsideHandler, true);
-      document.addEventListener('keydown', paletteKeyHandler, true);
-    }, 0);

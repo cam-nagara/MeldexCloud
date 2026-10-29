@@ -1,3 +1,31 @@
+}
+
+function _apiLockWriteCandidatePaths(path, opts) {
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
+  let url;
+  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
+  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
+  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
+  const body = _apiLockJsonBody(opts);
+  const query = url.searchParams;
+  const paths = [];
+  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
+  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
+  const addBoth = (key) => { addQuery(key); addBody(key); };
+
+  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
+    addBoth('path');
+    addBody('entry_path');
+    addBody('folder_path');
+  } else if (route === '/replace-batch') {
+    (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
+  } else if (route === '/upload-file') {
+    addBoth('path');
+    addBody('dir');
+  } else if (route === '/outliner/add') {
+    addBody('parent');
+  } else if (route === '/outliner/delete') {
     addBody('path');
   } else if (route === '/outliner/duplicate') {
     const srcPath = String(body?.path || '').trim();
@@ -498,6 +526,7 @@ async function init() {
         if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
         else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
+        else if (openType === 'map') { restored = (await openMapApp(openPath, openLabel, _urlOpenOpts)) !== false; }
         else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
         else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
@@ -562,6 +591,7 @@ async function init() {
           else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
           else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
+          else if (last.type === 'map' && last.path) { restored = (await openMapApp(last.path, last.label || '', _expOpts)) !== false; }
           else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
           else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
@@ -868,33 +898,3 @@ async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
 async function _hideMeldexWindowForScreenshot() {
   const state = await _setMeldexWindowVisibilityForScreenshot('hide');
   if (!state?.hidden) window.blur();
-  await new Promise(r => setTimeout(r, 500));
-  return state;
-}
-
-async function _restoreMeldexWindowForScreenshot(state) {
-  if (state?.hidden) await _setMeldexWindowVisibilityForScreenshot('restore', state.hwnds || []);
-  else window.focus();
-}
-
-function _cropScreenshotCanvas(canvas, region) {
-  const cropped = document.createElement('canvas');
-  cropped.width = Math.max(1, Math.round(region.width));
-  cropped.height = Math.max(1, Math.round(region.height));
-  cropped.getContext('2d').drawImage(
-    canvas,
-    Math.round(region.x),
-    Math.round(region.y),
-    cropped.width,
-    cropped.height,
-    0,
-    0,
-    cropped.width,
-    cropped.height
-  );
-  return cropped;
-}
-
-function _selectScreenshotRegionFromCanvas(canvas) {
-  return new Promise(resolve => {
-    if (typeof window.GBUI?.createModal !== 'function') {

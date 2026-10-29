@@ -455,6 +455,7 @@
     };
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
+    if (tabType === 'map') return tabPath('mapPath');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');

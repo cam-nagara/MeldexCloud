@@ -549,6 +549,51 @@
     return _current ? { ..._current } : null;
   }
 
+  function onPathRename(oldPath, newPath, options = {}) {
+    if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
+    const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
+    const viewerState = frame ? _captureViewerFrameState(frame) : null;
+    const updateViewerUrl = value => {
+      if (!value) return value;
+      try {
+        const url = new URL(value, location.href);
+        let changed = false;
+        ['file', 'pdf', 'path'].forEach(key => {
+          if (!url.searchParams.has(key)) return;
+          const path = url.searchParams.get(key);
+          const next = _mapRenamedPath(path, oldPath, newPath);
+          if (next !== path) { url.searchParams.set(key, next); changed = true; }
+        });
+        return changed ? url.href : value;
+      } catch { return value; }
+    };
+    const update = entry => {
+      if (!entry) return;
+      const exact = entry.path === oldPath;
+      _updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (entry.state) _updatePathRefs(entry.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (entry.state?.viewerUrl) entry.state.viewerUrl = updateViewerUrl(entry.state.viewerUrl);
+      if (exact && options.label != null) entry.label = options.label;
+    };
+    [_current, ..._navHistory, ...(_pane?.tabs || [])].forEach(update);
+    _sheetEmbed?.onPathRename?.(oldPath, newPath)?.catch?.(error => {
+      if (typeof showStatus === 'function') showStatus('移動後のシートを確認できませんでした: ' + error.message, true);
+    });
+    _contentEl?.querySelectorAll('[data-path],[data-db-path],[data-entity-path]').forEach(el => {
+      ['path', 'dbPath', 'entityPath'].forEach(key => {
+        if (el.dataset[key]) el.dataset[key] = _mapRenamedPath(el.dataset[key], oldPath, newPath);
+      });
+    });
+    if (frame) {
+      const url = updateViewerUrl(frame.src);
+      if (url !== frame.src) {
+        frame.addEventListener('load', () => _restoreViewerFrameState(frame, viewerState), { once: true });
+        frame.src = url;
+      }
+    }
+    if (_current) _updateHeader(_current);
+  }
+
   return {
     open,
     close: closeContent,
@@ -558,6 +603,7 @@
     createRootElement,
     isOpen,
     getCurrentTarget,
+    onPathRename,
   };
 })();
 

@@ -197,7 +197,6 @@
 
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
-    const toggle = row.querySelector('.tree-toggle');
     const _expOpts = fileOpenOptions({ skipHighlight: true });
 
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
@@ -215,6 +214,8 @@
       if (typeof openPage === 'function') openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
       if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name, _expOpts);
+    } else if (item.type === 'map') {
+      if (typeof openMapApp === 'function') openMapApp(item.path, item.name, _expOpts);
     } else if (item.type === 'form-app') {
       if (typeof openFormApp === 'function') openFormApp(item.path, item.name, _expOpts);
     } else if (item.type === 'board') {
@@ -242,7 +243,7 @@
         if (!handledByMobileExplorer && typeof openFolder === 'function') {
           folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
         }
-        if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+        // フォルダを開く操作ではツリーの展開状態を変えない。展開は矢印・左右キーで行う。
         const nodeSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
           ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
           : null;

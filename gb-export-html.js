@@ -697,7 +697,7 @@ ${bodyHtml}
       }
       case 'entity': {
         const title = document.getElementById('entity-title')?.textContent?.trim();
-        return title || state?.currentEntityPath?.split(/[\\/]/).pop()?.replace(/\.\w+$/, '') || 'エントリ';
+        return title || state?.currentEntityPath?.split(/[\\/]/).pop()?.replace(/\.\w+$/, '') || 'トピック';
       }
       case 'database':
         return state?.currentDbPath?.split('/').pop() || 'シート';
@@ -712,9 +712,9 @@ ${bodyHtml}
       case 'entity-layout': {
         const canvasEl = _findVisibleEntityLayoutCanvas();
         const grid = canvasEl?.closest('.entity-props-grid-container');
-        const layoutName = grid?.querySelector('.el-tab.active .el-tab-label')?.textContent?.trim() || 'エントリレイアウト';
+        const layoutName = grid?.querySelector('.el-tab.active .el-tab-label')?.textContent?.trim() || 'トピックレイアウト';
         const entityName = _entityLayoutEntityName(canvasEl);
-        return entityName && entityName !== 'エントリ' ? entityName + ' - ' + layoutName : layoutName;
+        return entityName && entityName !== 'トピック' ? entityName + ' - ' + layoutName : layoutName;
       }
       default:
         return '無題';
@@ -789,7 +789,7 @@ ${bodyHtml}
   async function _exportEntityLayout() {
     const opts = entityLayoutExportOptions();
     if (!opts) {
-      showStatus('エントリレイアウトが表示されていません', true);
+      showStatus('トピックレイアウトが表示されていません', true);
       return null;
     }
     return exportToHtml(opts.canvasEl, opts.htmlOptions);

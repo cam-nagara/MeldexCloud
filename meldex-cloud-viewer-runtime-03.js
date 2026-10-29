@@ -2183,7 +2183,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   regId('cal-detail-rec-opts',     { label: '繰り返しオプション', desc: '繰り返しの詳細オプションを設定します' });
   regId('cal-detail-save',         { label: '保存',     desc: 'イベントの内容を保存します' });
   regId('cal-detail-delete',       { label: '削除',     desc: 'このイベントを削除します' });
-  regId('cal-detail-open-entry',   { label: 'エントリを開く', desc: 'リンクされているシートのエントリを開きます' });
+  regId('cal-detail-open-entry',   { label: 'トピックを開く', desc: 'リンクされているシートのトピックを開きます' });
 
   // シナリオ フィルタ保存ダイアログ
   regId('sn-filter-preset',         { label: 'プリセット選択', desc: '保存済みのフィルタプリセットを選びます' });
@@ -5721,8 +5721,11 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     } else if (safeUrl) {
       item.url = safeUrl;
       item.rawUrl = item.url;
-      item.previewUrl = item.url;
-      item.urlCandidates = [item.url];
+      // Sheet cells provide an explicit raw URL as well as a workspace path.
+      // Retain the safe PNG fallback used by ordinary Viewer opens; otherwise
+      // dot-prefixed raster images fail here after their thumbnails succeeded.
+      item.previewUrl = path && item.type === 'image' ? Utils.imagePreviewUrlForPath(path) : item.url;
+      item.urlCandidates = [...new Set([item.url, item.previewUrl])];
     }
     item.w = Number(source?.width || 0);
     item.h = Number(source?.height || 0);
@@ -5801,10 +5804,17 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const ok = await Utils.waitForImageElement(img);
     if (ok) return true;
     const item = img?._viewerItem;
-    if (!switchItemToPreviewUrl(item)) return false;
-    const nextSrc = displayItemUrl(item);
+    // Metadata probes can advance the shared item while this element still
+    // waits for its old URL. Use that candidate before advancing it again.
+    let nextSrc = displayItemUrl(item);
+    if (!nextSrc || nextSrc === img.getAttribute('src')) {
+      if (!switchItemToPreviewUrl(item)) return false;
+      nextSrc = displayItemUrl(item);
+    }
     if (!nextSrc) return false;
+    const imageHost = window.MeldexImageLoading?.get?.(img)?.state?.host;
     img.src = nextSrc;
+    window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像を読み込んでいます' });
     return Utils.waitForImageElement(img);
   }
 
@@ -5999,9 +6009,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function displayItemUrl(item) { return item?.displayUrl || window.MeldexPwaFileUrl?.displayUrl?.(rawItemUrl(item)) || item?.url || ''; }
   async function ensureItemUrl(item) {
     if (!item || item.type !== 'image') return displayItemUrl(item);
+    const requestedUrl = rawItemUrl(item);
     try {
-      const info = await window.MeldexPwaFileUrl?.ensureDisplayUrl?.(rawItemUrl(item), { allowLargeBlob: true });
-      if (info?.url) item.displayUrl = info.url;
+      const info = await window.MeldexPwaFileUrl?.ensureDisplayUrl?.(requestedUrl, { allowLargeBlob: true });
+      if (info?.url && rawItemUrl(item) === requestedUrl) item.displayUrl = info.url;
     } catch {}
     return displayItemUrl(item);
   }

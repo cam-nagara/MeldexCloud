@@ -1,3 +1,8 @@
+    return applied === false ? false : _finishPaneHistoryNavigation(navState, nextIndex, entry);
+  }
+  navNavigating = true;
+  applied.then((ok) => {
+    if (!ok) {
       navNavigating = false;
       return;
     }
@@ -358,10 +363,29 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 // 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
-function _gbAppApiFetchDefaultTimeout(path) {
+const GB_APP_API_FETCH_FILE_OPERATIONS = new Set([
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/trash/restore', '/trash/delete', '/trash/empty',
+  '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
+  '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
+  '/version/save-folder', '/version/restore-folder', '/version/save-sqlite-db', '/version/restore-sqlite-db',
+  '/sheet-archive/archive', '/sheet-archive/restore', '/data-protection/db-backup', '/data-protection/export-backup',
+]);
+const GB_APP_API_FETCH_STORAGE_WRITES = [
+  '/value', '/db-metadata', '/entity', '/annotations', '/cal', '/calendar-db',
+  '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
+  '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
+];
+function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
+  // ファイル操作は実体の変更後にもDB・参照・タグを更新する。通常の15秒で応答を捨てない。
+  if (GB_APP_API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 監査したSQLite・共有設定の書込経路は、30秒のロック待ちと付随更新を待つ。
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+      && GB_APP_API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
   if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
@@ -474,7 +498,7 @@ function _gbAppApiFetchIsAbortError(e) {
 
 // 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
 // タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
-async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
+async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs, consumeResponse) {
   const controller = new AbortController();
   const externalSignal = requestOpts?.signal || null;
   const fetchOpts = { ...(requestOpts || {}) };
@@ -493,7 +517,8 @@ async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
   }
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    return await fetch(url, { ...fetchOpts, signal: controller.signal });
+    const response = await fetch(url, { ...fetchOpts, signal: controller.signal });
+    return consumeResponse ? await consumeResponse(response) : response;
   } catch (e) {
     if (_gbAppApiFetchIsAbortError(e) && timedOut) {
       const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
@@ -578,42 +603,45 @@ async function apiFetch(path, opts) {
         const requestedTimeout = Number(requestOpts?.timeoutMs);
         const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
           ? Math.min(requestedTimeout, GB_APP_API_FETCH_MAX_TIMEOUT_MS)
-          : _gbAppApiFetchDefaultTimeout(path);
-        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
-            ...perfInfo,
-            status: res.status,
-            contentLength: res.headers?.get?.('content-length') || '',
-            retriedAfterMutation,
-          });
-        }
-        const backendPerf = _apiFetchBackendPerf(res);
-        if (!res.ok) {
-          let detail = res.statusText || '';
-          let payload = null;
-          try {
-            payload = await res.clone().json();
-            const rawDetail = payload?.error || payload?.detail || detail;
-            detail = rawDetail && typeof rawDetail === 'object'
-              ? (rawDetail.message || rawDetail.code || detail)
-              : rawDetail;
-          } catch {}
-          const error = new Error(`HTTP ${res.status}: ${detail}`);
-          error.status = res.status;
-          error.payload = payload;
-          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-        }
-        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-        const data = await res.json();
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
-            ...perfInfo,
-            backendPerf,
-            retriedAfterMutation,
-          });
-        }
+          : _gbAppApiFetchDefaultTimeout(path, requestOpts);
+        // 本文の読込が止まった場合も、ヘッダー待ちと同じタイムアウト・キャンセルを適用する。
+        const { data, backendPerf } = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs, async res => {
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+              ...perfInfo,
+              status: res.status,
+              contentLength: res.headers?.get?.('content-length') || '',
+              retriedAfterMutation,
+            });
+          }
+          const backendPerf = _apiFetchBackendPerf(res);
+          if (!res.ok) {
+            let detail = res.statusText || '';
+            let payload = null;
+            try {
+              payload = await res.clone().json();
+              const rawDetail = payload?.error || payload?.detail || detail;
+              detail = rawDetail && typeof rawDetail === 'object'
+                ? (rawDetail.message || rawDetail.code || detail)
+                : rawDetail;
+            } catch (error) { if (_gbAppApiFetchIsAbortError(error)) throw error; }
+            const error = new Error(`HTTP ${res.status}: ${detail}`);
+            error.status = res.status;
+            error.payload = payload;
+            error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+            throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+          }
+          const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+          const data = await res.json();
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+              ...perfInfo,
+              backendPerf,
+              retriedAfterMutation,
+            });
+          }
+          return { data, backendPerf };
+        });
         // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
         // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
         if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
@@ -629,7 +657,7 @@ async function apiFetch(path, opts) {
             });
           } catch {}
         }
-        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts);
+        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts, data);
         if (method !== 'GET') {
           _gbAppApiFetchInvalidateReadCaches();
         } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
@@ -870,31 +898,3 @@ function _apiLockRenameExtension(path) {
 function _apiLockAddPath(paths, value) {
   const text = String(value || '').trim();
   if (text) paths.push(text);
-}
-
-function _apiLockWriteCandidatePaths(path, opts) {
-  const method = String(opts?.method || 'GET').toUpperCase();
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
-  let url;
-  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
-  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
-  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
-  const body = _apiLockJsonBody(opts);
-  const query = url.searchParams;
-  const paths = [];
-  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
-  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
-  const addBoth = (key) => { addQuery(key); addBody(key); };
-
-  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
-    addBoth('path');
-    addBody('entry_path');
-    addBody('folder_path');
-  } else if (route === '/replace-batch') {
-    (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/upload-file') {
-    addBoth('path');
-    addBody('dir');
-  } else if (route === '/outliner/add') {
-    addBody('parent');
-  } else if (route === '/outliner/delete') {

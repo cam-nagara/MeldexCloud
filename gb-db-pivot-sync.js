@@ -59,7 +59,7 @@ async function _relationEntryFromCreate(relationDbPath, name, created) {
     const map = await _getRelationMap(relationDbPath);
     return {name, id:map?.nameToId?.[name] || name};
   }
-  name = String(created.path || '').replace(/\\/g,'/').split('/').pop().replace(/\.md$/i,'') || name;
+  name = created.name || String(created.path || '').replace(/\\/g,'/').split('/').pop().replace(/\.md$/i,'') || name;
   // The response already identifies the committed row. Resolve its label
   // locally instead of rereading the whole target sheet before saving a value.
   // Keep the map stale so rollups/defaults are fetched from the durable sheet.
@@ -168,7 +168,8 @@ async function _preloadRelationMapsForDb(dbPath, pivotData, ctx) {
   }));
 }
 
-function _getPivotEntityName(entityPath) {
+function _getPivotEntityName(entityPath, ctx) {
+  if (typeof _dbPivotEntityNameForPath === 'function') return _dbPivotEntityNameForPath(entityPath, _dbPivotDataForContext(ctx));
   return (entityPath || '').split('/').pop().replace(/\.md$/, '');
 }
 
@@ -204,7 +205,7 @@ function _dbScopeForPath(dbPath) {
 }
 
 function _getPivotEntityData(entityPath, ctx) {
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const data = _dbPivotDataForContext(ctx);
   return data?.entities?.[entityName] || null;
 }
@@ -217,10 +218,10 @@ function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra, ctx)
   const values = entData[propName];
   let target = values.find(v => v === val);
   if (!target && val) {
-    target = values.find(v => v.file === val.file && v.property === val.property
+    target = values.find(v => val.candidate_id ? v.candidate_id === val.candidate_id : v.file === val.file && v.property === val.property
       && (val.candidate_index == null || v.candidate_index === val.candidate_index));
   }
-  if (!target && val && values.length === 1) target = values[0];
+  if (!target && val && !val.candidate_id && values.length === 1) target = values[0];
   if (!target && newValue) {
     target = {
       property: propName,
@@ -236,6 +237,8 @@ function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra, ctx)
   if (extra && extra.property !== undefined) target.property = extra.property;
   else if (target.property == null) target.property = propName;
   if (extra && extra.candidate_index !== undefined) target.candidate_index = extra.candidate_index;
+  if (extra?.candidate_id) target.candidate_id = extra.candidate_id;
+  if (extra?.entry_id || entData._id) target.entry_id = extra?.entry_id || entData._id;
   if (extra && extra.status !== undefined) target.status = extra.status;
   else if (target.status == null) target.status = val?.status || '採用';
   if (extra && extra.note !== undefined) target.note = extra.note;
@@ -279,7 +282,7 @@ function _snapshotPivotValues(values) {
     note: v?.note || '',
     file: v?.file || '',
     property: v?.property || '',
-    candidate_index: v?.candidate_index,
+    candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v?.candidate_index,
   }));
 }
 function _sortCascadeDeleteValues(values) {
@@ -425,7 +428,7 @@ async function _restoreCascadeDependentValues(entityPath, clears, options = {}) 
             file: result?.path || result?.file || value.file || '',
             entry_path: entityPath,
             property: result?.property || clear.propName,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           };
           const duplicate = entData[clear.propName].some(current =>
             _dbValueToString(current?.value) === _dbValueToString(restored.value)
@@ -466,7 +469,7 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
   const container = td?.querySelector('.cell-values');
   if (!td || !container || !dbPath) return false;
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
@@ -539,7 +542,12 @@ async function _finalizeRelationCellUpdate(targetEl, entityPath, propName, ptc, 
     });
     const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
     if (td) _refreshDerivedCellsInRow(td, entityPath, { dbPath, ctx });
-    if (td && typeof setActiveCell === 'function') setActiveCell(td);
+    const focused = document.activeElement;
+    if (td && typeof setActiveCell === 'function' && (!focused || focused === document.body || td.contains(focused))) setActiveCell(td);
+    return;
+  }
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    if (typeof _dbReloadAfterEntityCreate === 'function') void _dbReloadAfterEntityCreate(ctx, dbPath);
     return;
   }
   if (dbPath) await selectDatabase(dbPath, ctx);
@@ -569,7 +577,7 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
   const tr = editedTd.closest('tr');
   if (!tr) return;
   const propTypes = getPropertyTypes(dbPath, ctx) || {};
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const entityData = pivotData.entities[entityName];
   if (!entityData) return;
 
@@ -698,15 +706,46 @@ function _removeLocalPivotValue(val, entityPath, propName, options = {}) {
   if (!val) return;
   const dbPath = options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : '');
   const ctx = options.ctx || (dbPath && typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
-  const entName = entityPath.replace(/\.md$/, '').split('/').pop();
   const targets = [];
   if (ctx?.pivotData?.entities) targets.push(ctx.pivotData);
+  if (dbPath && typeof _dbPaneContextsForPath === 'function') {
+    _dbPaneContextsForPath(dbPath).forEach(pane => {
+      if (pane?.pivotData?.entities) targets.push(pane.pivotData);
+    });
+  }
   if (state.pivotData?.entities && (!dbPath || state.currentDbPath === dbPath)) targets.push(state.pivotData);
+  const removedIndex = val.candidate_index;
+  const visitedValues = new Set();
+  const removals = [];
   targets.forEach(pivotData => {
+    const entName = typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
     const entData = pivotData.entities?.[entName];
-    if (!entData || !Array.isArray(entData[propName])) return;
-    const idx = entData[propName].indexOf(val);
-    if (idx >= 0) entData[propName].splice(idx, 1);
+    const values = entData?.[propName];
+    if (!Array.isArray(values) || visitedValues.has(values)) return;
+    visitedValues.add(values);
+    let idx = values.indexOf(val);
+    if (idx < 0) idx = values.findIndex(candidate => {
+      if (val.candidate_id) return candidate.candidate_id === val.candidate_id;
+      if (Number.isInteger(removedIndex)) return candidate.candidate_index === removedIndex;
+      if (val._pendingCreate) return candidate._pendingCreate === val._pendingCreate;
+      return !!val.file && candidate.file === val.file && candidate.candidate_index == null;
+    });
+    if (idx < 0) return;
+    removals.push({ values, idx });
+  });
+  // 配列だけを複製したペインもあるため、番号を変える前に全削除対象を確定する。
+  removals.forEach(({ values, idx }) => values.splice(idx, 1));
+  const adjustedCandidates = new Set();
+  removals.forEach(({ values }) => {
+    // SQLiteの候補配列は削除で詰められる。表示順とは独立して保存先番号を追従する。
+    if (Number.isInteger(removedIndex)) values.forEach(candidate => {
+      if (adjustedCandidates.has(candidate)) return;
+      adjustedCandidates.add(candidate);
+      if (Number.isInteger(candidate.candidate_index) && candidate.candidate_index > removedIndex) {
+        candidate.candidate_index--;
+      }
+    });
   });
 }
 
@@ -726,8 +765,17 @@ function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
     return;
   }
   if (currentMode !== 'pivot' || !dbPath) return;
-  const td = anchorEl?.closest?.('td');
+  let td = anchorEl?.closest?.('td');
+  if (td?.isConnected === false && typeof _currentPivotTable === 'function') {
+    const name = _getPivotEntityName(entityPath, ctx);
+    td = _currentPivotTable(ctx)?.querySelector?.(`tr[data-entity-name="${_cssEscapeAttr(name)}"] td[data-prop-name="${_cssEscapeAttr(propName)}"]`) || td;
+  }
+  if (td?.querySelector?.('.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) return;
   if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx })) return;
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    if (typeof _dbReloadAfterEntityCreate === 'function') void _dbReloadAfterEntityCreate(ctx, dbPath);
+    return;
+  }
   selectDatabase(dbPath, ctx, { silent: true });
 }
 

@@ -1,3 +1,36 @@
+
+  function _deleteBoardAnnotation(annId, onDeleted, onError) {
+    if (!boardMode || !annId || typeof apiDelete !== 'function') return false;
+    (async () => {
+      const before = typeof _fetchAnnotationHistoryRow === 'function'
+        ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
+        : null;
+      await apiDelete('/annotations/' + encodeURIComponent(annId));
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
+      onDeleted?.();
+    })().catch((error) => {
+      _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
+      onError?.(error);
+    });
+    return true;
+  }
+
+  function _noteText(editor) {
+    return (editor?.innerText || '').replace(/\u00a0/g, ' ').trimEnd();
+  }
+
+  function _notePayload(data, editor, note) {
+    return {
+      ...data,
+      text: _noteText(editor),
+      html: _safeAnnotationHtml(editor?.innerHTML || ''),
+      width: Math.max(120, Math.round(note.offsetWidth || data.width || 180)),
+      height: Math.max(60, Math.round(note.offsetHeight || data.height || 100)),
+    };
+  }
+
+  function _applyNoteColor(note, color) {
+    const next = color || '#c48080';
     note.style.background = next;
     note.style.setProperty('--ann-note-color', next);
     note.style.setProperty('--ann-note-scroll-thumb', `color-mix(in srgb, ${next} 72%, var(--bg) 28%)`);
@@ -865,36 +898,3 @@
       observedNode: nodeEl,
     });
     _ensureAnchoredMutationObserver();
-    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
-    _scheduleAnchoredAnnotationRefresh();
-  }
-
-  function _boardStillHasNode(nodeId) {
-    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
-      ? bd.nodes.some(node => node?.id === nodeId)
-      : !!document.getElementById('bdn-' + nodeId);
-  }
-
-  function _detachAnchoredAnnotation(entry) {
-    if (entry.detaching || !entry.data?.anchor) return;
-    entry.detaching = true;
-    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
-    const worldPoints = entry.lastWorldPoints || [];
-    if (entry.type === 'rect') {
-      entry.type = 'lasso';
-      delete entry.data.x;
-      delete entry.data.y;
-      delete entry.data.height;
-      entry.data.points = worldPoints;
-    } else {
-      entry.data.points = worldPoints;
-      if (entry.type === 'stroke' || entry.type === 'marker') {
-        entry.data.width = entry.lastWorldWidth;
-      }
-    }
-    delete entry.data.anchor;
-    const annId = entry.el?.dataset?.annId || '';
-    const payload = { data: entry.data };
-    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
-    const finish = () => { entry.detaching = false; };
-    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;

@@ -631,7 +631,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
     <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
     <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
-    <button type="button" class="tmpl-entry-del" aria-label="エントリを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
+    <button type="button" class="tmpl-entry-del" aria-label="トピックを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
   const content = document.createElement('div');
   content.innerHTML = `<div id="tmpl-edit-status" role="status" aria-live="polite"></div>
@@ -689,7 +689,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
 CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay) {
   const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
   const t = templates.find(x => x.id === tid);
-  if (!t || !t.entries?.length) { this._showStatus('エントリがありません', true); return false; }
+  if (!t || !t.entries?.length) { this._showStatus('トピックがありません', true); return false; }
   // cfPromptで週数を取得
   const weeksStr = await cfPrompt('何週間分生成しますか？', '4');
   const weeks = parseInt(weeksStr) || 0;

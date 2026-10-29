@@ -827,7 +827,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           // 新旧シート共通のpivotから名前を読み、説明ファイルを候補に含めない。
           const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(path) + '&tree_only=true');
           if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) {
-            throw new Error('シートのエントリを取得できませんでした');
+            throw new Error('シートのトピックを取得できませんでした');
           }
           const pages = Object.keys(pivot.entities).filter(name => name.trim()).map(name => ({ name }));
           if (pages.length) addPageGroup(folder, pages);

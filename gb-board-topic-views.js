@@ -314,6 +314,12 @@
   function captureViewState(boardView, runtimeState) {
     const result = clone(boardView || newView('board-view-1', '既定ビュー'));
     result.positionsByTopicRef = clone(result.positionsByTopicRef || {});
+    result.positionsByNodeId = {};
+    result.canonicalTopicNodeIds = (runtimeState?.nodes || []).filter(node => node?._topicCanonicalOnly).map(node => node.id);
+    const counts = new Map();
+    (runtimeState?.nodes || []).forEach(node => {
+      if (node?.topicRef) counts.set(topicRefKey(node.topicRef), (counts.get(topicRefKey(node.topicRef)) || 0) + 1);
+    });
     (Array.isArray(runtimeState?.nodes) ? runtimeState.nodes : []).forEach((node) => {
       if (!node?.topicRef) return;
       const key = topicRefKey(node.topicRef);
@@ -324,6 +330,11 @@
         w: Number.isFinite(+node.w) ? +node.w : 160,
         h: Number.isFinite(+node.h) ? +node.h : 0,
       };
+      if (node.id && counts.get(key) > 1) {
+        result.positionsByNodeId[node.id] = {
+          ...clone(result.positionsByTopicRef[key]), collapsed: !!node.collapsed,
+        };
+      }
     });
     ['groups', 'lines', 'hiddenTopicRefs', 'collapsedTopicRefs', 'styleOverrides', 'camera']
       .forEach((key) => {
@@ -338,8 +349,14 @@
     const view = clone(boardView || {});
     const result = clone(runtimeState || {});
     const positions = view.positionsByTopicRef || {};
+    const counts = new Map();
+    (result.nodes || []).forEach(node => {
+      if (node?.topicRef) counts.set(topicRefKey(node.topicRef), (counts.get(topicRefKey(node.topicRef)) || 0) + 1);
+    });
     result.nodes = (Array.isArray(result.nodes) ? result.nodes : []).map((node) => {
-      const position = node?.topicRef ? positions[topicRefKey(node.topicRef)] : null;
+      const own = view.positionsByNodeId?.[node.id];
+      const position = own && topicRefKey(own.topicRef) === topicRefKey(node.topicRef)
+        ? own : node?.topicRef && counts.get(topicRefKey(node.topicRef)) === 1 ? positions[topicRefKey(node.topicRef)] : null;
       if (!position) return node;
       const next = { ...node, x: position.x, y: position.y };
       if (Number.isFinite(+position.w)) next.w = +position.w;

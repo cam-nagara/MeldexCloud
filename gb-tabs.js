@@ -9,7 +9,7 @@ const GBTabs = (() => {
     pivot: 'db', tree: 'listTree', gallery: 'db', kanban: 'db', timeline: 'db',
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
-    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', version: 'gitBranch',
+    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', map: 'map', version: 'gitBranch',
   };
   const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
@@ -355,7 +355,7 @@ const GBTabs = (() => {
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
     // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
-    if (['scriptnote', 'form-app'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
+    if (['scriptnote', 'form-app', 'map'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;

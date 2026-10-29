@@ -19,15 +19,20 @@ function _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps) {
 function _dbDisposeVirtualRows(ctx) {
   const v = ctx?._dbVirtualRows;
   if (!v) return;
+  v.disposed = true;
   if (v.scroller && v.onScroll) v.scroller.removeEventListener('scroll', v.onScroll);
   if (v.onResize) window.removeEventListener('resize', v.onResize);
   if (v.resizeObserver) v.resizeObserver.disconnect();
+  if (v.rowResizeObserver) v.rowResizeObserver.disconnect();
   if (v.raf) cancelAnimationFrame(v.raf);
   if (ctx?._dbVirtualBacklinkTimer) {
     clearTimeout(ctx._dbVirtualBacklinkTimer);
     ctx._dbVirtualBacklinkTimer = null;
   }
-  if (v.table && v.table._dbVirtualRows === v) v.table._dbVirtualRows = null;
+  if (v.table && v.table._dbVirtualRows === v) {
+    v.table.style.overflowAnchor = v.previousOverflowAnchor;
+    v.table._dbVirtualRows = null;
+  }
   if (ctx) ctx._dbVirtualRows = null;
 }
 
@@ -138,6 +143,10 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   // Falling back to the globally active/legacy sheet loses image cell context.
   config = { ...config, ctx };
   const table = tbody.closest('table');
+  // Spacer updates preserve the logical anchor below. Browser scroll anchoring
+  // would apply a second correction and move the visible rows out of view.
+  const previousOverflowAnchor = table?.style.overflowAnchor || '';
+  if (table) table.style.overflowAnchor = 'none';
 
   const colSpan = (config.visibleProps?.length || 0) + 3;
   const topSpacer = _dbCreateVirtualSpacerRow('db-virtual-spacer-row db-virtual-spacer-top', colSpan);
@@ -147,10 +156,39 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   tbody.insertBefore(bottomSpacer, anchor);
 
   const rowHeight = _dbVirtualEstimateRowHeight(config);
+  // Store measured height deltas in a Fenwick tree: prefix offsets and updates
+  // stay logarithmic even when a sheet has many rows and wrapped image cells.
+  const measuredHeights = new Map();
+  const heightDeltas = new Float64Array(rowTasks.length + 1);
+  const offsetFor = index => {
+    let offset = index * rowHeight;
+    for (let i = index; i > 0; i -= i & -i) offset += heightDeltas[i];
+    return offset;
+  };
+  const indexAtOffset = offset => {
+    let low = 0, high = Math.max(0, rowTasks.length - 1);
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (offsetFor(mid + 1) <= offset) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
+  const measureRow = (index, row) => {
+    const height = row?.offsetHeight;
+    if (!height || height === (measuredHeights.get(index) || rowHeight)) return false;
+    const delta = height - (measuredHeights.get(index) || rowHeight);
+    measuredHeights.set(index, height);
+    for (let i = index + 1; i < heightDeltas.length; i += i & -i) heightDeltas[i] += delta;
+    return true;
+  };
   const renderToken = config.renderToken;
   const vState = {
     rowTasks,
     rowHeight,
+    offsetFor,
+    heightFor: index => measuredHeights.get(index) || rowHeight,
+    previousOverflowAnchor,
     scroller,
     topSpacer,
     bottomSpacer,
@@ -164,52 +202,67 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     onScroll: null,
     onResize: null,
     resizeObserver: null,
+    rowResizeObserver: null,
+    rowIndexes: new Map(),
     forceNextRender: false,
+    measureNextRender: false,
     renderNow: null,
     renderToken,
   };
   ctx._dbVirtualRows = vState;
   if (table) table._dbVirtualRows = vState;
 
-  const renderVisible = (force = false) => {
+  const renderVisible = (force = false, remeasure = false) => {
+    if (vState.disposed) return;
     if (renderToken && ctx._renderToken !== renderToken) return;
     if (ctx.destroyed || bottomSpacer.parentNode !== tbody) return;
     const viewportHeight = Math.max(240, scroller.clientHeight || window.innerHeight || 600);
-    const first = Math.max(0, Math.floor((scroller.scrollTop || 0) / rowHeight) - DB_VIRTUAL_ROW_OVERSCAN);
+    const scrollTop = scroller.scrollTop || 0;
+    const anchorIndex = indexAtOffset(scrollTop);
+    const anchorOffset = scrollTop - offsetFor(anchorIndex);
+    const first = Math.max(0, anchorIndex - DB_VIRTUAL_ROW_OVERSCAN);
     const visibleCount = Math.min(
       DB_VIRTUAL_MAX_RENDERED_TASKS,
-      Math.ceil(viewportHeight / rowHeight) + DB_VIRTUAL_ROW_OVERSCAN * 2,
+      Math.max(Math.ceil(viewportHeight / rowHeight),
+        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + DB_VIRTUAL_ROW_OVERSCAN * 2,
     );
     const last = Math.min(rowTasks.length, first + visibleCount);
-    if (!force && first === vState.start && last === vState.end) return;
+    if (!force && !remeasure && first === vState.start && last === vState.end) return;
 
     const previousRows = new Map();
     vState.renderedRows.forEach((row, offset) => {
       const index = vState.start + offset;
       if (!force && index >= first && index < last) previousRows.set(index, row);
-      else row.remove();
+      else {
+        vState.rowResizeObserver?.unobserve(row);
+        vState.rowIndexes.delete(row);
+        row.remove();
+      }
     });
     vState.renderedRows = [];
-    _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight);
-    _dbSetVirtualSpacerHeight(bottomSpacer, (rowTasks.length - last) * rowHeight);
+    _dbSetVirtualSpacerHeight(topSpacer, offsetFor(first));
+    _dbSetVirtualSpacerHeight(bottomSpacer, offsetFor(rowTasks.length) - offsetFor(last));
 
-    const frag = document.createDocumentFragment();
+    // Keep retained rows attached. Moving a focused editor through a fragment
+    // blurs it even when the same row DOM is inserted again immediately.
+    let cursor = topSpacer.nextSibling || bottomSpacer;
     for (let i = first; i < last; i++) {
       const row = previousRows.get(i) || _dbRenderVirtualTask(rowTasks[i], config);
       vState.renderedRows.push(row);
-      frag.appendChild(row);
+      if (row !== cursor) tbody.insertBefore(row, cursor);
+      cursor = row.nextSibling || bottomSpacer;
+      vState.rowIndexes.set(row, i);
+      vState.rowResizeObserver?.observe(row);
     }
-    tbody.insertBefore(frag, bottomSpacer);
-    // Empty image cells can be much shorter than the estimated image row.
-    // Keep the logical viewport anchor at its actual rendered position; otherwise
-    // revealing a row can leave every thumbnail outside IntersectionObserver.
-    const anchorIndex = Math.min(last, Math.max(first, Math.floor((scroller.scrollTop || 0) / rowHeight)));
-    let heightCorrection = 0;
-    for (let index = first; index < anchorIndex; index++) {
-      heightCorrection += rowHeight - (vState.renderedRows[index - first]?.offsetHeight || rowHeight);
+    let heightsChanged = false;
+    vState.renderedRows.forEach((row, offset) => {
+      if (measureRow(first + offset, row)) heightsChanged = true;
+    });
+    if (heightsChanged) {
+      _dbSetVirtualSpacerHeight(topSpacer, offsetFor(first));
+      _dbSetVirtualSpacerHeight(bottomSpacer, offsetFor(rowTasks.length) - offsetFor(last));
+      scroller.scrollTop = Math.max(0, offsetFor(anchorIndex) + anchorOffset);
     }
-    _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight + heightCorrection);
-    _dbSetVirtualSpacerHeight(bottomSpacer, Math.max(0, (rowTasks.length - last) * rowHeight - heightCorrection));
     vState.start = first;
     vState.end = last;
     ctx._renderDoneRows = Math.max(0, last - first);
@@ -231,22 +284,33 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     }
   };
 
-  const requestRender = (force = false) => {
+  const requestRender = (force = false, remeasure = false) => {
+    if (vState.disposed) return;
     vState.forceNextRender = vState.forceNextRender || force;
+    vState.measureNextRender = vState.measureNextRender || remeasure;
     if (vState.raf) return;
     vState.raf = requestAnimationFrame(() => {
       vState.raf = 0;
       const shouldForce = vState.forceNextRender;
+      const shouldMeasure = vState.measureNextRender;
       vState.forceNextRender = false;
-      renderVisible(shouldForce);
+      vState.measureNextRender = false;
+      renderVisible(shouldForce, shouldMeasure);
     });
   };
   vState.renderNow = renderVisible;
   vState.onScroll = () => requestRender(false);
-  vState.onResize = () => requestRender(true);
+  vState.onResize = () => requestRender(false, true);
   scroller.addEventListener('scroll', vState.onScroll, { passive: true });
   window.addEventListener('resize', vState.onResize);
   if (typeof ResizeObserver === 'function') {
+    vState.rowResizeObserver = new ResizeObserver(entries => {
+      if (entries.some(entry => {
+        const index = vState.rowIndexes.get(entry.target);
+        return index != null && entry.target.offsetHeight > 0
+          && entry.target.offsetHeight !== vState.heightFor(index);
+      })) requestRender(false, true);
+    });
     let lastWidth = scroller.clientWidth;
     let lastHeight = scroller.clientHeight;
     vState.resizeObserver = new ResizeObserver(() => {
@@ -255,7 +319,7 @@ function _dbRunVirtualRowRenderer(ctx, config) {
       if (nextWidth === lastWidth && nextHeight === lastHeight) return;
       lastWidth = nextWidth;
       lastHeight = nextHeight;
-      requestRender(true);
+      requestRender(false, true);
     });
     vState.resizeObserver.observe(scroller);
   }
@@ -269,7 +333,11 @@ function _dbRevealVirtualEntityRow(ctx, entityName) {
   const index = v.rowTasks.findIndex(task => task.kind === 'entity' && task.entityName === entityName);
   if (index < 0) return false;
   const viewportHeight = Math.max(240, v.scroller?.clientHeight || window.innerHeight || 600);
-  v.scroller.scrollTop = Math.max(0, Math.round(index * v.rowHeight - viewportHeight / 2));
+  v.scroller.scrollTop = Math.max(0, Math.round(v.offsetFor(index) - viewportHeight / 2));
   v.renderNow?.(true);
+  // The target's height becomes known on its first mount. Center using that
+  // measurement as well, so wrapped thumbnails are actually in the viewport.
+  v.scroller.scrollTop = Math.max(0, Math.round(v.offsetFor(index) - Math.max(0, viewportHeight - v.heightFor(index)) / 2));
+  v.renderNow?.();
   return true;
 }

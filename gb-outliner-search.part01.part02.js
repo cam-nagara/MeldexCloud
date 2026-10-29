@@ -129,14 +129,28 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
   if (!homeBody) return;
   homeBody.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (!draggedNode) return;
-    e.dataTransfer.dropEffect = 'move';
+    const external = !draggedNode && (_outlinerExternalDragItems(e).length
+      || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')));
+    if (!draggedNode && !external) return;
+    e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
     homeBody.style.outline = '2px solid var(--accent)';
   });
   homeBody.addEventListener('dragleave', () => { homeBody.style.outline = ''; });
   homeBody.addEventListener('drop', async (e) => {
     e.preventDefault();
     homeBody.style.outline = '';
+    if (!draggedNode && _homeFolderPath) {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const items = _outlinerExternalDragItems(e, resolved?.payload).filter(source =>
+        source.type !== 'entity' && !source.linked && source.path !== _homeFolderPath
+        && !_treeNodeIsAncestor({ _nodeData: source }, { _nodeData: { path: _homeFolderPath } }));
+      const target = { path: _homeFolderPath, name: 'ホームフォルダ', position: 'inside' };
+      const completed = e.altKey ? await _linkExternalItemsIntoOutlinerFolder(items, target)
+        : await _moveExternalItemsIntoOutlinerFolder(items, target);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     if (!draggedNode || !_homeFolderPath) return;
     const nodes = (draggedNodes || [draggedNode]).filter(Boolean);
     let movedCount = 0;
@@ -149,11 +163,12 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
       try {
         const oldPath = dragData.path;
         const _res = await apiPost('/outliner/move', { path: oldPath, dest_folder: _homeFolderPath });
-        if (_res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
-        }
-        if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res);
         movedCount++;
+        try {
+          if (_res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
+        } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+        try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res); }
+        catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
       } catch { skippedCount++; showStatus('移動に失敗', true); }
     }
     await renderHomeFolderTree({ force: true, reason: 'home-drop' });

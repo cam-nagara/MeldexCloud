@@ -1,5 +1,5 @@
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
+      board: 'ボード', map: 'マップ', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
@@ -497,6 +497,7 @@
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
       ['フォーム', 'clipboardList', () => openToolTab('form-app')],
+      ['マップ', 'map', () => openToolTab('map')],
       ['スケジュール', 'calendar', () => openToolTab('calendar')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],

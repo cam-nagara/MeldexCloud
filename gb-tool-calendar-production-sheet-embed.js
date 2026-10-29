@@ -655,6 +655,17 @@
 
     instance.isMounted = function () { return instance._mounted && !instance._destroyed; };
     instance.getCurrentPath = function () { return instance._currentPath; };
+    instance.onPathRename = async function (oldPath, newPath) {
+      const next = _mapRenamedPath(instance._currentPath || instance.ctx?.dbPath, oldPath, newPath);
+      if (!next || next === instance._currentPath) return false;
+      ++instance._generation;
+      instance._currentPath = next;
+      if (instance.ctx) {
+        instance.ctx.generation = instance._generation;
+        _updatePathRefs(instance.ctx, APP_PATH_REF_KEYS, oldPath, newPath);
+      }
+      return _refreshWriteGuard(instance, next);
+    };
     instance.mount = function (hostEl) { return _mount(instance, hostEl); };
     instance.open = function (dbPath, openOpts) { return _open(instance, dbPath, openOpts); };
     instance.refresh = function () { return _refresh(instance); };

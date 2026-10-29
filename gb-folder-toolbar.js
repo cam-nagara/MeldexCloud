@@ -8,6 +8,7 @@
     ['シート', 'database', 'db'],
     ['ボード', 'board', 'presentation'],
     ['フォーム', 'form-app', 'clipboardList'],
+    ['マップ', 'map', 'map'],
     ['カレンダー', 'calendar', 'calendar'],
   ]);
 
@@ -139,6 +140,7 @@
   async function _folderToolbarRefresh(preservePaths = [], options = {}) {
     const folderPath = _folderToolbarCurrentPath();
     const refreshTrees = () => {
+      if (typeof refreshOutliner === 'function') return refreshOutliner({ force: true, reason: 'folder-toolbar' });
       const refreshJobs = [];
       if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
       if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
@@ -146,21 +148,29 @@
     };
     // Creation is already durable. Display its folder contents immediately;
     // refreshing other roots must not hold the new item behind a full scan.
-    if (!options.backgroundTrees) await refreshTrees();
-    if (folderPath && typeof openFolder === 'function') {
-      await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
+    const treeResults = !options.backgroundTrees ? await refreshTrees() : [];
+    if (options.isCurrent && !options.isCurrent()) return false;
+    let folderOk = true;
+    if (options.refreshFolder !== false && folderPath && typeof openFolder === 'function') {
+      const scroller = options.preserveScroll && typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+      const scroll = scroller ? [scroller.scrollLeft, scroller.scrollTop] : null;
+      folderOk = await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
         skipShowView: true,
         skipSaveLastView: true,
         skipNavPush: true,
         skipHighlight: true,
         skipGlobalUi: true,
-      });
-      if (preservePaths.length && typeof renderFolderGrid === 'function') {
+        ...(options.isCurrent ? { isLegacyLoadCurrent: options.isCurrent } : {}),
+      }) !== false;
+      if (options.isCurrent && !options.isCurrent()) return false;
+      if (folderOk && preservePaths.length && typeof renderFolderGrid === 'function') {
         renderFolderGrid({ preserveSelectedPaths: preservePaths });
       }
+      if (scroll) { scroller.scrollLeft = scroll[0]; scroller.scrollTop = scroll[1]; }
     }
     if (options.backgroundTrees) void refreshTrees();
     _folderToolbarScheduleUpdate();
+    return folderOk && !(treeResults || []).some(result => result?.status === 'rejected');
   }
 
   function _folderToolbarCloseMenus(options = {}) {
@@ -338,6 +348,13 @@
     if (typeof executeFolderPasteWithChoice === 'function') {
       await executeFolderPasteWithChoice(clip, destFolder, {
         ...options,
+        onCutResult: failedItems => {
+          // The clipboard belongs to this closure. Do not overwrite a newer
+          // copy/cut made while the asynchronous paste was in progress.
+          if (_folderToolbarClipboard === clip) {
+            _folderToolbarClipboard = failedItems.length ? { mode: 'cut', items: failedItems } : null;
+          }
+        },
         refresh: typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh,
       });
       return;
@@ -366,10 +383,11 @@
           }
           const oldPath = item.path;
           const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
-          if (res?.new_path && typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+          try {
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
           pastedPaths.push(res?.new_path || item.path);
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
@@ -661,6 +679,18 @@
 
   global.initFolderToolbarActions = initFolderToolbarActions;
   global.updateFolderToolbarActions = updateFolderToolbarActions;
+  global.refreshFolderAfterExternalChange = (options = {}) => {
+    const path = _folderToolbarCurrentPath();
+    const scroller = typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+    const visible = !!path && !!scroller?.getClientRects().length;
+    return _folderToolbarRefresh(_folderToolbarSelectionItems().map(item => item.path), {
+      preserveScroll: true,
+      refreshFolder: visible,
+      isCurrent: () => _folderToolbarCurrentPath() === path
+        && (!visible || _folderGridEl() === scroller && !!scroller.getClientRects().length)
+        && (!options.isCurrent || options.isCurrent()),
+    });
+  };
   global.showFolderToolbarAddMenu = showFolderToolbarAddMenu;
   global.folderToolbarCopySelection = folderToolbarCopySelection;
   global.folderToolbarCutSelection = folderToolbarCutSelection;

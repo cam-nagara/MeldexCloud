@@ -24,6 +24,7 @@ const MeldexLinkModal = (() => {
     if (/\.(mp4|webm|mov|mkv)$/.test(lower)) return 'video';
     if (/\.(mp3|wav|ogg|m4a|flac)$/.test(lower)) return 'audio';
     if (/\.pdf$/.test(lower)) return 'pdf';
+    if (/\.mel-map$/.test(lower)) return 'map';
     if (/\.html?$/.test(lower)) return 'html';
     if (/\.csv$/.test(lower)) return 'csv';
     return 'page';

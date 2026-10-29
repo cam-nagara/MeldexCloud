@@ -551,7 +551,7 @@
         && identity.record.frontmatter.production_identity_rename?.source_entry_name === requested.name
       ));
       if (expected) return { records, identitiesBySheet, aliasMaps, moves: [], now, alreadyDone: true };
-      throw new Error(`制作管理エントリが見つかりません: ${explicit.path}`);
+      throw new Error(`制作管理トピックが見つかりません: ${explicit.path}`);
     }
 
     _validateFinalNames(context, identitiesBySheet);
@@ -689,7 +689,7 @@
 
   async function _prepareTwoPhaseMoves(context, moves) {
     if (!moves.length) return [];
-    if (typeof context.moveEntry !== 'function') throw new Error('制作管理エントリの名前変更機能を利用できません');
+    if (typeof context.moveEntry !== 'function') throw new Error('制作管理トピックの名前変更機能を利用できません');
     const reserved = new Set(moves.flatMap(move => [move.source, move.target]).map(_fold));
     const token = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
     const prepared = [];

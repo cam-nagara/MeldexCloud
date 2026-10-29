@@ -32,7 +32,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet', '.mel-form',
+    '.mel-sheet', '.mel-form', '.mel-map',
     '.mel-timer', '.timer.json',
   ];
 
@@ -87,6 +87,7 @@ const GBLinkRouter = (() => {
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
     if (lower.endsWith('.mel-form')) return 'form-app';
+    if (lower.endsWith('.mel-map')) return 'map';
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
@@ -125,6 +126,8 @@ const GBLinkRouter = (() => {
       state.label = entry.label || '';
     } else if (entry.type === 'form-app') {
       state.formPath = entry.path || ''; state.label = entry.label || '';
+    } else if (entry.type === 'map') {
+      state.mapPath = entry.path || ''; state.label = entry.label || '';
     } else if (entry.type === 'board') {
       state.boardPath = entry.path || '';
       state.label = entry.label || '';
@@ -146,6 +149,7 @@ const GBLinkRouter = (() => {
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
     else if (explicitType === 'form-app') entry = { type: 'form-app', label: nextLabel, path: nextPath };
+    else if (explicitType === 'map') entry = { type: 'map', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -166,6 +170,7 @@ const GBLinkRouter = (() => {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-form')) entry = { type: 'form-app', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-map')) entry = { type: 'map', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };

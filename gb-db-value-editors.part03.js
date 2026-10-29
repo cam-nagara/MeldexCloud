@@ -127,24 +127,50 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
   const saveOptions = options || {};
   const dbPath = saveOptions.dbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, anchorEl) : state.currentDbPath);
   const ctx = saveOptions.ctx || (typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, anchorEl, dbPath) : null);
+  // 同じ空セルの保存待ち中に再選択した場合も、その候補を更新する。
+  if (!val && typeof _getPivotEntityData === 'function') {
+    const values = _getPivotEntityData(entityPath, ctx)?.[propName] || [];
+    val = values.find(value => value?._pendingCreate) || null;
+  }
   const oldValue = val?.value == null ? '' : String(val.value);
   const nextValue = newValue == null ? '' : String(newValue);
   if (nextValue === oldValue) return true;
-  try {
+  const isNew = !val;
+  const previousCreate = val?._pendingCreate;
+  const status = saveOptions.status || '採用';
+  let resolveCreated, rejectCreated;
+  let pendingCreate = null;
+  if (isNew && typeof _upsertLocalPivotValue === 'function') {
+    val = _upsertLocalPivotValue(entityPath, propName, null, nextValue, {
+      file: '', entry_path: entityPath, property: propName, status, note: '',
+    }, ctx);
     if (val) {
+      pendingCreate = new Promise((resolve, reject) => { resolveCreated = resolve; rejectCreated = reject; });
+      pendingCreate.catch(() => {});
+      val._pendingCreate = pendingCreate;
+    }
+  } else if (val) {
+    val.value = nextValue;
+  }
+  try {
+    if (!isNew) {
       await _apiPutValue(val, { new_value: nextValue });
       if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue);
-      val.value = nextValue;
     } else {
-      const status = saveOptions.status || '採用';
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
       const filePath = result?.path || '';
+      if (val) {
+        val.file = filePath;
+        val.candidate_index = result?.candidate_index;
+        val.property = result?.property || propName;
+      }
+      resolveCreated?.(result);
       if (filePath && typeof historyPush === 'function') {
         let currentRef = {
           file: filePath,
           entry_path: entityPath,
           property: result?.property || propName,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
         };
         historyPush('値追加: ' + propName + '=' + nextValue,
           currentRef.candidate_index != null
@@ -156,7 +182,7 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
               file: redo?.path || redo?.file || currentRef.file,
               entry_path: entityPath,
               property: redo?.property || propName,
-              candidate_index: redo?.candidate_index,
+              candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
             };
             await _valueEditorReload(dbPath, ctx);
           },
@@ -164,17 +190,21 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         );
       }
     }
-    // Step 3: 部分更新化 (user/multi-user)
-    // val が null (新規追加) の場合は新しいエントリ行が必要なのでフルリロード
-    if (!val) {
-      await _valueEditorReload(dbPath, ctx);
-    } else {
-      _refreshAfterCellEdit(anchorEl, entityPath, propName);
-    }
+    _refreshAfterCellEdit(anchorEl, entityPath, propName);
     return true;
   } catch (e) {
+    if (pendingCreate) pendingCreate._dbCreateFailed = true;
+    rejectCreated?.(e);
+    if (val?.value === nextValue) {
+      if ((isNew || previousCreate?._dbCreateFailed) && typeof _removeLocalPivotValue === 'function') {
+        _removeLocalPivotValue(val, entityPath, propName, { dbPath, ctx });
+      } else val.value = oldValue;
+    }
+    _refreshAfterCellEdit(anchorEl, entityPath, propName);
     if (!saveOptions.silent) showStatus('保存に失敗: ' + (e?.message || e), true);
     return false;
+  } finally {
+    if (pendingCreate && val?._pendingCreate === pendingCreate) delete val._pendingCreate;
   }
 }
 
@@ -202,7 +232,7 @@ async function _syncPairRelation(dbPath, targetId, pairPropName, sourceId, addin
               file: createdFile,
               entry_path: targetPath,
               property: created?.property || pairPropName,
-              candidate_index: created?.candidate_index,
+              candidate_id: created?.candidate_id, entry_id: created?.entry_id, candidate_index: created?.candidate_index,
             }, { _delete: true });
           },
         };
@@ -676,7 +706,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
                 file: result.path || currentVal.file,
                 entry_path: entityPath,
                 property: propName,
-                candidate_index: result.candidate_index,
+                candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                 value: oldVal,
                 status: savedStatus,
                 note: savedNote,

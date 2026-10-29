@@ -18,6 +18,8 @@ function _normalizeDetailTab(tab) {
     'calendar-today',
     'calendar-settings',
     'calendar-production',
+    'map-settings',
+    'map-selection',
     'board-card',
     'board-line',
     'board-note',
@@ -50,6 +52,7 @@ function _resolveDetailTabForType(type, defaultTab) {
     database: ['db-property-settings', 'db-tree', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
+    map: ['map-settings', 'map-selection'],
     csv: ['publish'],
     scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
@@ -82,7 +85,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -156,6 +159,8 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
       ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
+      ${_detailTabButtonHtml('map-settings', 'detail-tab-map', '地図')}
+      ${_detailTabButtonHtml('map-selection', 'detail-tab-map', '地点・図形')}
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
@@ -173,6 +178,8 @@ function _detailTabShellHtml() {
     <div id="detail-tab-calendar-today" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-calendar-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-calendar-production" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-map-settings" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-map-selection" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>
@@ -693,11 +700,11 @@ const _FS_FIELDS = {
       { key: '--db-th-italic', label: 'ヘッダー 斜体', type: 'toggle', on: 'italic', off: 'normal' },
       { key: '--db-th-font',   label: 'ヘッダー フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
       // エントリ列
-      { key: '--db-entity-fg',     label: 'エントリ列 色',   type: 'color' },
-      { key: '--db-entity-bg',     label: 'エントリ列 背景', type: 'color' },
-      { key: '--db-entity-bold',   label: 'エントリ列 太字', type: 'toggle', on: 'bold',   off: 'normal' },
-      { key: '--db-entity-italic', label: 'エントリ列 斜体', type: 'toggle', on: 'italic', off: 'normal' },
-      { key: '--db-entity-font',   label: 'エントリ列 フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
+      { key: '--db-entity-fg',     label: 'トピック列 色',   type: 'color' },
+      { key: '--db-entity-bg',     label: 'トピック列 背景', type: 'color' },
+      { key: '--db-entity-bold',   label: 'トピック列 太字', type: 'toggle', on: 'bold',   off: 'normal' },
+      { key: '--db-entity-italic', label: 'トピック列 斜体', type: 'toggle', on: 'italic', off: 'normal' },
+      { key: '--db-entity-font',   label: 'トピック列 フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
       // セル
       { key: '--db-cell-fg',     label: 'セル 色',   type: 'color' },
       { key: '--db-cell-bg',     label: 'セル 背景', type: 'color', bgType: 'rgba' },

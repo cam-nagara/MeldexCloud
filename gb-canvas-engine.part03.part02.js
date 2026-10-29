@@ -474,6 +474,7 @@ function bdAutoSave() {
   return bdSave();
 }
 function bdDirty() {
+  bd._topicMutationVersion = Number(bd._topicMutationVersion || 0) + 1;
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
   bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdAutoSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);

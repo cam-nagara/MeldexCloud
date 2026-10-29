@@ -1,5 +1,9 @@
 // ツール別メニュー項目
 function buildToolMenuItems(toolType, component) {
+  const registrationItems = _toolMenuFileRegistrationItems(toolType, component);
+  if (toolType === 'map' && component && window.MeldexMapChrome) {
+    return [...MeldexMapChrome.menuItems(component), { separator: true }, ...registrationItems];
+  }
   const currentPath = getCurrentFilePath();
   const hasFile = !!currentPath;
   const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
@@ -205,6 +209,7 @@ function buildToolMenuItems(toolType, component) {
     { label: 'シート', icon: 'db', action: () => _createFolderViewItem('database') },
     { label: 'ボード', icon: 'presentation', action: () => _createFolderViewItem('board') },
     { label: 'フォーム', icon: 'clipboardList', action: () => _createFolderViewItem('form-app') },
+    { label: 'マップ', icon: 'map', action: () => _createFolderViewItem('map') },
     { label: 'カレンダー', icon: 'calendar', action: () => _createFolderViewItem('calendar') },
   ];
   const common = isFolderTool
@@ -246,12 +251,32 @@ function buildToolMenuItems(toolType, component) {
   return [
     ...common,
     ...(specific[toolType] || []),
+    { separator: true },
+    ...registrationItems,
     ...fileActions,
     ...tailPre,
     { separator: true },
     recentItem,
     ...importExportBlock,
     ...tailClose,
+  ];
+}
+
+function _toolMenuFileRegistrationItems(toolType, component) {
+  const target = _toolMenuFileTarget(toolType, component);
+  const registered = !!target.path && typeof getFavorites === 'function' && typeof _favExists === 'function'
+    && _favExists(getFavorites(), target.path);
+  const run = async (label, action) => {
+    try { await action(); }
+    catch (error) { if (typeof showStatus === 'function') showStatus(`${label}に失敗しました: ${error?.userMessage || error?.message || error}`, true); }
+  };
+  return [
+    { label: registered ? 'お気に入りに登録済み' : 'お気に入りに登録', icon: 'star',
+      disabled: !target.path || registered || typeof addToFavorites !== 'function',
+      action: () => run('お気に入りへの登録', () => addToFavorites(target.label, target.path, target.type)) },
+    { label: '指定フォルダにリンクファイルを追加...', icon: 'link2',
+      disabled: !target.path || typeof showAddFolderLinkModal !== 'function',
+      action: () => run('リンクファイルの追加', () => showAddFolderLinkModal(target.path, null)) },
   ];
 }
 
@@ -874,7 +899,7 @@ async function _exportDictFile(options = {}) {
     const entries = Array.isArray(data?.entries) ? data.entries : [];
     const prepared = _prepareDictExport(entries, new Set());
     if (prepared.statuses.length === 0) {
-      showStatus('ルビ付きエントリがありません', true);
+      showStatus('ルビ付きトピックがありません', true);
       return;
     }
     const STATUS_ORDER = ['採用', '掲載済み', '連載中', '確定', '案', '草稿', '保留', 'ボツ', '(未設定)'];
@@ -895,7 +920,7 @@ async function _exportDictFile(options = {}) {
       return;
     }
     if (output.lines.length === 0) {
-      showStatus('選択したステータスの辞書エントリがありません', true);
+      showStatus('選択したステータスの辞書項目がありません', true);
       return;
     }
     if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
@@ -911,7 +936,7 @@ async function _exportDictFile(options = {}) {
         dialogTitle: '辞書ファイルを書き出し',
         filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
         bom: true,
-        okMessage: `${output.lines.length}件の辞書エントリを出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
+        okMessage: `${output.lines.length}件の辞書項目を出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
         cancelMessage: '辞書ファイルの保存をキャンセルしました',
         errorMessage: '辞書ファイルの保存に失敗しました',
     });

@@ -4,6 +4,7 @@
 
   let consecutiveSaveFailures = 0;
   let modalOpen = false;
+  const trackedAftercare = new Set();
   const CONFLICT_PATHS_KEY = 'meldex-save-conflict-paths';
   const SAVE_MUTATION_ENDPOINTS = [
     '/annotations',
@@ -235,6 +236,15 @@
     if (error?.isTimeout && ['/outliner/rename', '/outliner/add'].includes(_apiPathname(path))) {
       return true;
     }
+    // 応答の欠落だけでは、サーバー側の保存失敗は確定しない。
+    // 未確認の要求を再送せず、連続保存失敗の件数にも加えない。
+    if (error?.isTimeout || error?.name === 'AbortError') {
+      if (typeof showStatus === 'function') {
+        const message = error?.isTimeout ? '操作結果を確認できませんでした。' : '操作を中断しました。';
+        showStatus(message + '反映済みの可能性があります。再実行する前に保存先の状態を確認してください。', true);
+      }
+      return true;
+    }
     if (_isConflict(error)) {
       consecutiveSaveFailures = 0;
       markConflict(_extractMutationPath(path, opts), _message(error));
@@ -251,10 +261,57 @@
     return true;
   }
 
-  function reportApiSuccess(path, opts) {
+  function _trackAftercare(jobId) {
+    if (trackedAftercare.has(jobId) || !window.runBackgroundJob || !window.MeldexOperationProgress) return;
+    trackedAftercare.add(jobId);
+    const operation = window.MeldexOperationProgress.begin({
+      kind: 'file-aftercare', label: '関連情報を更新中', persistentJobId: jobId, background: true,
+    });
+    // 開始APIを再送せず、返されたジョブの状態だけを既存ヘルパーで確認する。
+    window.runBackgroundJob('', null, { resumeJobId: jobId, operationProgress: false, maxPolls: 250 })
+      .then(result => {
+        const relocate = result?.relocate || {};
+        const details = ['backlink_error', 'cascade_error', 'sheet_attachment_error']
+          .filter(key => relocate[key]).map(key => ({ stage: key, message: String(relocate[key]) }));
+        if (relocate.clip_index?.ok === false) details.push({ stage: 'clip-index', message: relocate.clip_index.error || '画像索引を確認してください' });
+        if (Number(relocate.failed_count) > 0 || relocate.failed_sources?.length) details.push({ stage: 'references', message: '更新できない参照があります' });
+        if (result?.tag_tracking?.ok === false) {
+          details.push({ stage: 'tags', message: result.tag_tracking.warning || 'タグ索引を確認してください' });
+        }
+        if (details.length) {
+          operation.partial({ summary: '操作は完了しましたが、関連情報の更新に確認が必要です。', details });
+        } else {
+          operation.succeed({ summary: result?.skipped ? '対象の場所が変わったため、古い関連更新を中止しました' : '関連情報の更新が完了しました' });
+        }
+      }).catch(error => {
+        if (error?.jobError || error?.jobStatus?.status === 'error') {
+          operation.partial({ summary: '操作は完了しましたが、関連情報を更新できませんでした。',
+            details: [{ message: error.message }] });
+        } else {
+          operation.unknown({ summary: '操作は完了しました。関連情報の更新結果を確認できませんでした。' });
+        }
+      }).finally(() => trackedAftercare.delete(jobId));
+  }
+
+  function reportApiSuccess(path, opts, result) {
     if (isSaveMutation(path, opts)) {
       consecutiveSaveFailures = 0;
       clearConflict(_extractMutationPath(path, opts));
+    }
+    if (_method(opts) === 'GET' || opts?.silentError || result?.ok !== true || !Array.isArray(result.warnings) || !result.warnings.length) return;
+    const details = result.warnings.map(warning => typeof warning === 'string'
+      ? { message: warning } : { stage: warning?.stage || '', message: warning?.message || warning?.warning || String(warning || '') });
+    try {
+      if (result.aftercare_job_id) _trackAftercare(String(result.aftercare_job_id));
+      if (!result.aftercare_job_id && window.MeldexOperationProgress?.begin) {
+        const operation = window.MeldexOperationProgress.begin({
+          kind: 'mutation-warning', label: '関連情報の更新を確認', showImmediately: true,
+        });
+        operation.partial({ summary: '操作は完了しましたが、関連情報の更新に確認が必要です。', details });
+      }
+      if (typeof showStatus === 'function') showStatus(details.map(item => item.message).join(' / '), !result.aftercare_job_id);
+    } catch (error) {
+      console.warn('操作後の警告を表示できませんでした', error);
     }
   }
 

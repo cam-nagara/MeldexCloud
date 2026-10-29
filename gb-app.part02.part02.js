@@ -351,6 +351,7 @@ async function init() {
         if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
         else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
+        else if (openType === 'map') { restored = (await openMapApp(openPath, openLabel, _urlOpenOpts)) !== false; }
         else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
         else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
@@ -415,6 +416,7 @@ async function init() {
           else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
           else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
+          else if (last.type === 'map' && last.path) { restored = (await openMapApp(last.path, last.label || '', _expOpts)) !== false; }
           else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
           else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }

@@ -6461,6 +6461,7 @@
       const lower = normalized.toLowerCase();
       if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
       if (lower.endsWith('.mel-form')) return 'form-app';
+      if (lower.endsWith('.mel-map')) return 'map';
       if (lower.endsWith('.mel-sheet')) return 'database';
       if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
@@ -10078,7 +10079,7 @@
       ? checker({ path: sourcePath, type: isDirectory ? 'folder' : '' })
       : true;
     if (fits) return;
-    throw new Error(`シートの中にはエントリだけを置けます。「${_basename(sourcePath)}」はシートの外へ移動してください`);
+    throw new Error(`シートの中にはトピックだけを置けます。「${_basename(sourcePath)}」はシートの外へ移動してください`);
   }
 
   const PRODUCTION_RESERVED_ENTRY_PROPERTIES = Object.freeze({
@@ -14535,21 +14536,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             _relocateCsvSidecars(provider, oldPath, newPath, true, false)
           ));
         }
-        const oldNotePath = _joinPath(newPath, sourceName + '.md');
-        const newNotePath = _joinPath(newPath, newName + '.md');
-        if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
-          await _moveEntry(provider, oldNotePath, newNotePath);
-          await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
-        }
+        await _runPostMutationStep(warnings, 'folder-note', async () => {
+          const oldNotePath = _joinPath(newPath, sourceName + '.md');
+          const newNotePath = _joinPath(newPath, newName + '.md');
+          if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
+            await _moveEntry(provider, oldNotePath, newNotePath);
+            await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
+          }
+        });
         await _runPostMutationStep(warnings, 'stored-paths', () => (
           typeof _rewriteStoredPathsForProvider === 'function'
             ? _rewriteStoredPathsForProvider(provider, oldPath, newPath, true)
             : Promise.resolve(_rewriteStoredPaths(oldPath, newPath, true))
         ));
         await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: true }, warnings);
-        await _updateAnnotationsForPathMutation(provider, {
+        await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath, isFolder: true, annotationPlan,
-        });
+        }));
         let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
         await _runPostMutationStep(warnings, 'references', async () => {
           relocate = await _relocateReferences(provider, oldPath, newPath, true);
@@ -14581,9 +14584,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           : Promise.resolve(_rewriteStoredPaths(oldPath, nextPath, false))
       ));
       await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath: nextPath, isFolder: false }, warnings);
-      await _updateAnnotationsForPathMutation(provider, {
+      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
         action: 'rename', oldPath, newPath: nextPath, isFolder: false, annotationPlan,
-      });
+      }));
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
@@ -14597,7 +14600,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const destFolder = _normalizeFolderPath(body?.dest_folder || '');
       _rejectProductionStructureMutation(sourcePath, '移動');
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
-        throw new Error('制作管理の管理リストエントリの配置は変更できません');
+        throw new Error('制作管理の管理リストトピックの配置は変更できません');
       }
       const source = await _resolveEntryHandle(provider, sourcePath);
       const destEntry = await _resolveEntryHandle(provider, destFolder);
@@ -14632,10 +14635,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
       ));
       await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _updateAnnotationsForPathMutation(provider, {
+      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
         action: 'move', oldPath: sourcePath, newPath: conflict.path,
         isFolder: source.kind === 'directory', annotationPlan,
-      });
+      }));
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
@@ -16757,6 +16760,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const raw = element.getAttribute(attrName);
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
+    if (!_runtime()?.isBrowserDataMode?.() && _looksLikeFileRawUrl(raw)) {
+      try {
+        // This query selects the script-free HTML response policy. Rebuilding
+        // its URL from just "path" would restore the opaque, image-blocking view.
+        if (new URL(raw, document.baseURI || window.location.href).searchParams.get('static_preview') === '1') return;
+      } catch {}
+    }
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
       if (isThumbnail && !_runtime()?.isBrowserDataMode?.()) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
@@ -16909,8 +16919,28 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/open-file-dialog', 315000],
   ['/settings-transfer/export', 315000],
 ]);
-function _apiFetchDefaultTimeout(path) {
-  const pathname = String(path || '').split('?')[0];
+const API_FETCH_FILE_OPERATIONS = new Set([
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/trash/restore', '/trash/delete', '/trash/empty',
+  '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
+  '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
+  '/version/save-folder', '/version/restore-folder', '/version/save-sqlite-db', '/version/restore-sqlite-db',
+  '/sheet-archive/archive', '/sheet-archive/restore', '/data-protection/db-backup', '/data-protection/export-backup',
+]);
+const API_FETCH_STORAGE_WRITES = [
+  '/value', '/db-metadata', '/entity', '/annotations', '/cal', '/calendar-db',
+  '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
+  '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
+];
+function _apiFetchDefaultTimeout(path, options = {}) {
+  const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
+  const nativeDialogTimeout = API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
+  if (nativeDialogTimeout) return nativeDialogTimeout;
+  // 本体と同じく、フォルダ移動後のDB・参照・タグ更新を待つ。
+  if (API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+      && API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
 }
 const _apiFetchBrowseCache = new Map();
@@ -16973,33 +17003,42 @@ async function apiFetch(path, opts) {
   }
   let requestPromise = null;
   const controller = new AbortController();
+  const externalSignal = opts?.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const requestedTimeout = Number(opts?.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
     ? Math.min(requestedTimeout, API_FETCH_MAX_TIMEOUT_MS)
-    : _apiFetchDefaultTimeout(path);
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    : _apiFetchDefaultTimeout(path, opts);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
     requestPromise = (async () => {
+      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
       delete fetchOpts.timeoutMs;
       const fullUrl = API_BASE.replace(/\/+$/, '') + path;
       const res = await fetch(fullUrl, fetchOpts);
       if (!res.ok) {
         let detail = '';
+        let payload = null;
         try {
           const raw = await res.text();
           if (raw) {
             try {
-              const payload = JSON.parse(raw);
-              detail = payload?.detail || payload?.error || payload?.message || raw;
+              payload = JSON.parse(raw);
+              const value = payload?.detail || payload?.error || payload?.message || raw;
+              detail = value && typeof value === 'object' ? (value.message || value.code || raw) : value;
             } catch {
               detail = raw;
             }
           }
-        } catch {}
+        } catch (error) { if (error?.name === 'AbortError') throw error; }
         detail = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 500);
         const error = new Error(`HTTP ${res.status}: ${res.statusText}${detail ? ` — ${detail}` : ''}`);
         error.status = res.status;
+        error.payload = payload;
         throw error;
       }
       const json = await res.json();
@@ -17016,9 +17055,10 @@ async function apiFetch(path, opts) {
         _apiFetchBrowseCache.delete(firstKey);
       }
     }
+    window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
-    if (e.name === 'AbortError') {
+    if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
       const err = new Error(`リクエストがタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）`);
@@ -17026,10 +17066,11 @@ async function apiFetch(path, opts) {
       err.isTimeout = true;
       throw err;
     }
-    if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
+    if (e.name !== 'AbortError' && !opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
     if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
@@ -17074,12 +17115,13 @@ async function _meldexCorePrepareFileWrite(path, body) {
   }
 }
 
-async function apiPut(path, body) {
+async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
+    ...(options || {}),
   });
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
@@ -17115,8 +17157,8 @@ async function apiPost(path, body, options = {}) {
   return result;
 }
 
-async function apiDelete(path) {
-  return apiFetch(path, { method: 'DELETE' });
+async function apiDelete(path, options = {}) {
+  return apiFetch(path, { method: 'DELETE', ...(options || {}) });
 }
 
 // OSネイティブの「ファイルを開く」ダイアログを表示し、選択されたパスを返す（キャンセル時は空文字列）
@@ -17939,6 +17981,7 @@ const UI_TYPE_ICONS = {
   tags: 'tag',
   annotation: 'squarePen',
   sticky: 'clipboardList', 'form-app': 'clipboardList',
+  map: 'map',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',
@@ -22038,6 +22081,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'scenario',
     'board',
     'sheet',
+    'map',
     'quick_memo',
     'viewer',
   ]);
@@ -22089,6 +22133,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
   const STANDALONE_VERSION_HISTORY_APPS = new Set(['quick_memo', 'viewer']);
   const APP_OUT_OF_SCOPE = Object.freeze({
+    map: Object.freeze(Object.fromEntries(CAPABILITIES.filter(capability => ![
+      'load', 'edit', 'save', 'export', 'file_info', 'backlinks', 'main',
+      'conflict_detection', 'edit_lock', 'move_tracking', 'offline_save',
+    ].includes(capability)).map(capability => [capability, 'マップ初期版の対応範囲外です']))),
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
     }),
@@ -22358,6 +22406,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function _classificationFor(app, environment, capability) {
+    if (app === 'map' && environment !== 'desktop_main') {
+      return _record(STATUS.out_of_scope, 'route:desktop_main',
+        _route(environment, app, 'マップ初期版はデスクトップ版本体で開きます'),
+        'Cloud・モバイル・単独版への対応は後続段階です', 'デスクトップ版本体で開く');
+    }
     if (INTEGRATED_ONLY_APPS.has(app)
         && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
       const isCloud = environment === 'cloud_standalone';

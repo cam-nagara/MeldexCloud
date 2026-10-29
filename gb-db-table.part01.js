@@ -25,8 +25,39 @@ function _dbResolveEntityCreateRenderContext(ctx, dbPath) {
 
 function _dbRenderEntityCreateContext(renderCtx, dbPath) {
   if (!renderCtx) return;
+  const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
+  const selectedCell = table?.querySelector?.('td.active-cell');
+  const selectedName = selectedCell?.closest?.('tr')?.dataset?.entityName;
+  const selectedProp = selectedCell?.dataset?.propName || '';
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
   else if (typeof renderPivot === 'function') renderPivot(renderCtx);
+  if (!selectedName || typeof setActiveCell !== 'function') return;
+  const restore = row => {
+    if (renderCtx.destroyed || (renderCtx.dbPath && renderCtx.dbPath !== dbPath)) return;
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : null;
+    if (current?.isConnected) return;
+    if (typeof activeCell !== 'undefined' && activeCell !== selectedCell) return;
+    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(renderCtx)) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused !== selectedCell && !selectedCell.contains?.(focused)) return;
+    const cell = selectedProp
+      ? row.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(selectedProp)}"]`)
+      : row.querySelector('td.col-entity');
+    if (cell) setActiveCell(cell, { scroll: false });
+  };
+  const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(renderCtx, selectedName) : null;
+  if (row) restore(row);
+  else if (typeof _waitForEntityRow === 'function') _waitForEntityRow(renderCtx, selectedName, restore);
+}
+
+const _dbEntityEditVersions = new Map();
+
+function _dbEntityEditVersion(dbPath) {
+  return _dbEntityEditVersions.get(_dbNormalizePath(dbPath)) || 0;
+}
+
+function _dbNoteEntityEdit(dbPath) {
+  _dbEntityEditVersions.set(_dbNormalizePath(dbPath), _dbEntityEditVersion(dbPath) + 1);
 }
 
 function _dbEnsureCreatedEntitiesVisibleLocally(ctx, dbPath, createdNames, options) {
@@ -40,12 +71,16 @@ function _dbEnsureCreatedEntitiesVisibleLocally(ctx, dbPath, createdNames, optio
     : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   if (typeof state !== 'undefined' && normalize(state.currentDbPath || '') === normalize(dbPath || '')) targets.push(state);
   let changed = false;
+  const shared = new Map(createdNames.map(name => [name,
+    targets.map(target => target?.pivotData?.entities?.[name]).find(entity => entity?._id)
+      || targets.map(target => target?.pivotData?.entities?.[name]).find(Boolean) || {},
+  ]));
   targets.forEach(target => {
     const data = target?.pivotData;
     if (!data?.entities) return;
     createdNames.forEach(name => {
       if (!Object.prototype.hasOwnProperty.call(data.entities, name)) {
-        data.entities[name] = {};
+        data.entities[name] = shared.get(name);
         changed = true;
       }
     });
@@ -169,10 +204,22 @@ function _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap) {
     : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   const target = normalize(dbPath || '');
   const names = new Set(Object.keys(entitiesMap || {}));
+  const displayNamesOnly = ctx?.pivotData?.separate_storage_names === true;
+  if (!displayNamesOnly) names.add(target.split('/').pop());
+  const collectEntries = entities => {
+    Object.entries(entities || {}).forEach(([name, entity]) => {
+      names.add(name);
+      // 新形式では表示名と保存名を独立させ、改名前の保存名で番号を飛ばさない。
+      const path = normalize(entity?._entry_path || '');
+      const slashAt = path.lastIndexOf('/');
+      if (!displayNamesOnly && path && (slashAt < 0 || path.slice(0, slashAt) === target)) names.add(path.slice(slashAt + 1).replace(/\.md$/i, ''));
+    });
+  };
+  collectEntries(entitiesMap);
   const collectFrom = (source) => {
-    if (!source || (target && normalize(source.dbPath || '') !== target)) return;
-    Object.keys(source.pivotData?.entities || {}).forEach(name => names.add(name));
-    (Array.isArray(source._lastEntityNames) ? source._lastEntityNames : []).forEach(name => names.add(name));
+    if (!source || (target && normalize(source.dbPath || source.currentDbPath || '') !== target)) return;
+    collectEntries(source.pivotData?.entities);
+    if (!displayNamesOnly) (Array.isArray(source._lastEntityNames) ? source._lastEntityNames : []).forEach(name => names.add(name));
   };
   collectFrom(ctx);
   if (typeof state !== 'undefined') collectFrom(state);
@@ -181,7 +228,16 @@ function _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap) {
   return [...names].filter(Boolean);
 }
 
+function _dbApplyCreatedEntityData(dbPath, entity, saved) {
+  if (!entity || !saved) return;
+  Object.entries(saved).forEach(([key, value]) => {
+    if (key.startsWith('_') || !Object.prototype.hasOwnProperty.call(entity, key)) entity[key] = value;
+  });
+  window.GbDbEntryIdentity?.registerEntry?.(dbPath, saved._id, saved._entry_path);
+}
+
 function _dbCreateEntityOptimistic(ctx, dbPath, options) {
+  _dbNoteEntityEdit(dbPath);
   const createOpts = options || {};
   const entitiesMap = ctx?.pivotData?.entities || {};
   const existing = _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap);
@@ -196,12 +252,18 @@ function _dbCreateEntityOptimistic(ctx, dbPath, options) {
   const renderCtx = shouldPlaceInManualOrder && typeof _dbPlaceCreatedEntitiesInManualOrder === 'function'
     ? (_dbPlaceCreatedEntitiesInManualOrder(visibleCtx, dbPath, [localName], createOpts) || visibleCtx)
     : visibleCtx;
+  const optimisticEntity = renderCtx?.pivotData?.entities?.[localName];
   const createPromise = (async () => {
     const created = typeof _apiCreateEntityWithUniqueName === 'function'
       ? await _apiCreateEntityWithUniqueName(dbPath, existing, { name: localName, baseName })
       : null;
     const response = created?.response || await apiPost('/entity/create', { parent_path: dbPath, name: localName });
     const name = created?.name || localName;
+    // API応答でこの行だけを確定する。改名でキーが変わっていても同じ行へ反映する。
+    // 先に入力されたセル値は、作成時点の値で上書きしない。
+    if (optimisticEntity && response?.entity_data) {
+      _dbApplyCreatedEntityData(dbPath, optimisticEntity, response.entity_data);
+    }
     return {
       name,
       requestedName: localName,
@@ -212,7 +274,7 @@ function _dbCreateEntityOptimistic(ctx, dbPath, options) {
   const trackedPromise = typeof _dbRegisterPendingEntityCreate === 'function'
     ? _dbRegisterPendingEntityCreate(dbPath, localName, createPromise)
     : createPromise;
-  return { name: localName, renderCtx, promise: trackedPromise, baseName, baseline: existing };
+  return { name: localName, entity: optimisticEntity, renderCtx, promise: trackedPromise, baseName, baseline: existing };
 }
 
 // サーバーが実際に付けた名前が楽観行の仮名と異なる場合、ローカル表示（エンティティ
@@ -272,13 +334,15 @@ async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
     if (!confirmed) return null;
     if (confirmed !== created.name) _dbRenameOptimisticEntityLocally(ctx, dbPath, created.name, confirmed);
     const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
-    if (renderCtx) renderCtx.pivotData = pivotData;
-    if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
+    // 結果不明の作成を確認する場合も、その1行だけを反映する。
+    // 照合中に別の名前入力・追加が進んだシート全体を差し替えない。
+    const localEntity = created?.entity || renderCtx?.pivotData?.entities?.[confirmed];
+    _dbApplyCreatedEntityData(dbPath, localEntity, pivotData.entities[confirmed]);
     if (!_dbEntityCreateIsEditing(renderCtx)) {
       if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
       else if (typeof renderPivot === 'function') renderPivot(renderCtx);
     }
-    return { name: confirmed, path: created?.path || (typeof _entityPath === 'function' ? _entityPath(dbPath, confirmed) : `${dbPath}/${confirmed}.md`) };
+    return { name: confirmed, path: pivotData.entities[confirmed]?._entry_path || created?.path || (typeof _entityPath === 'function' ? _entityPath(dbPath, confirmed) : `${dbPath}/${confirmed}.md`) };
   } catch {
     return null;
   }
@@ -286,7 +350,7 @@ async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
 
 function _dbEntityCreateIsEditing(renderCtx) {
   const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
-  if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
+  if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,.value-input,[contenteditable="true"]')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
   if (renderCtx?.paneId) {
     const paneId = MeldexEscape.cssIdent(renderCtx.paneId);
@@ -370,9 +434,21 @@ function _dbKeepNewEntryRowVisible(ctx) {
   }
 }
 
-async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
+async function _dbReloadAfterEntityCreate(ctx, dbPath) {
   const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
-  setTimeout(async () => {
+  if (!renderCtx) return null;
+  clearTimeout(renderCtx._dbEntityReloadTimer);
+  const reloadSeq = (renderCtx._dbEntityReloadSeq || 0) + 1;
+  renderCtx._dbEntityReloadSeq = reloadSeq;
+  const isCurrent = () => !renderCtx.destroyed
+    && (!renderCtx.dbPath || _dbNormalizePath(renderCtx.dbPath) === _dbNormalizePath(dbPath))
+    && renderCtx._dbEntityReloadSeq === reloadSeq;
+  const retry = () => {
+    if (isCurrent()) renderCtx._dbEntityReloadTimer = setTimeout(refresh, 120);
+  };
+  const refresh = async () => {
+    if (!isCurrent()) return;
+    if (_dbEntityCreateIsEditing(renderCtx)) { retry(); return; }
     try {
       let pivotData;
       // A value can start saving while the background read is in flight.
@@ -383,22 +459,26 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         return known != null && Number(entity?._revision || 0) < known;
       });
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(dbPath);
         if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        if (!isCurrent()) return;
+        if (_dbEntityCreateIsEditing(renderCtx)) { retry(); return; }
+        const editVersion = _dbEntityEditVersion(dbPath);
         pivotData = await apiFetch(_dbPivotFetchUrl(dbPath), {skipBrowseCache:true,cache:'no-store'});
         if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        if (!isCurrent()) return;
+        // 読込中に追加・改名が完了していても、その前の snapshot を適用しない。
+        // 編集中は描画だけでなく pivotData の置換も延期する。
+        if (_dbEntityCreateIsEditing(renderCtx) || editVersion !== _dbEntityEditVersion(dbPath)) { retry(); return; }
         if (!staleAfterWrite()) break;
         if (attempt === 2) return;
       }
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
       // サーバー作成が未確定の楽観的エントリは取得データに含まれないため、行が消えないよう再マージする
       if (typeof _dbMergePendingEntityCreates === 'function') _dbMergePendingEntityCreates(dbPath, pivotData);
-      // 直前に作成が確定した名前も、SQLite の可視化タイミング等でこの取得にまだ
-      // 現れていない場合があるため、行が一瞬消えないよう空スタブで保持する（次回取得で実体化）。
-      if (pivotData && pivotData.entities && typeof pivotData.entities === 'object') {
-        (createdNames || []).forEach(name => {
-          if (name && !(name in pivotData.entities)) pivotData.entities[name] = {};
-        });
-      }
+      // 作成時の名前は既に改名済みの場合があるため、空の旧名行を補わない。
+      window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
+      window.GbDbEntryIdentity?.registerPivot?.(dbPath, pivotData);
       if (renderCtx) renderCtx.pivotData = pivotData;
       if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
       if (!_dbEntityCreateIsEditing(renderCtx)) {
@@ -435,13 +515,19 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         MeldexAutoLink.scheduleIdle();
       }
     } catch {}
-  }, 0);
+  };
+  renderCtx._dbEntityReloadTimer = setTimeout(refresh, 0);
   return renderCtx;
 }
 
 function _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx) {
   const items = (createdItems || []).filter(item => item?.name && item?.path);
   if (!items.length) return;
+  // 現行のSQLiteシートは保存応答に確定済みの行を含む。全体の再取得は不要。
+  if (items.every(item => item.response?.entity_data)) {
+    if (!_dbEntityCreateIsEditing(renderCtx)) _dbRenderEntityCreateContext(renderCtx, dbPath);
+    return;
+  }
   Promise.resolve().then(async () => {
     for (const item of items) {
       if (typeof _shouldRunFrontendAutoFillOnCreate === 'function' && !_shouldRunFrontendAutoFillOnCreate(item.response)) continue;

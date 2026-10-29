@@ -39,7 +39,7 @@
 
   function fileRawUrl(path) {
     if (/^(?:https?:|data:|blob:|\/api\/)/i.test(path)) return path;
-    return window.MeldexResourceUrl?.fileRaw?.(path) || '/api/file-raw?path=' + encodeURIComponent(path);
+    return window.MeldexResourceUrl?.fileRaw?.(path, {static_preview: 1}) || '/api/file-raw?path=' + encodeURIComponent(path) + '&static_preview=1';
   }
 
   function icon(name, size = 14) {
@@ -307,7 +307,7 @@
       root.replaceChildren();
       const loading = document.createElement('div');
       loading.className = 'meldex-entity-detail-loading';
-      loading.textContent = 'エントリを読み込み中...';
+      loading.textContent = 'トピックを読み込み中...';
       root.appendChild(loading);
 
       const parent = parentDir(state.path);
@@ -464,12 +464,13 @@
         openSnapshot.href = fileRawUrl(snapshotPath);
         openSnapshot.target = '_blank';
         openSnapshot.rel = 'noopener noreferrer';
+        openSnapshot.dataset.meldexBrowserNavigation = '1';
         openSnapshot.textContent = '別画面で開く';
         const frame = document.createElement('iframe');
         frame.className = 'meldex-entity-detail-webclip-frame';
         frame.title = '保存したHTML';
         frame.src = fileRawUrl(snapshotPath);
-        frame.setAttribute('sandbox', 'allow-same-origin allow-forms allow-popups');
+        frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
         root.appendChild(preview);
@@ -529,15 +530,15 @@
         clearTimeout(state.timer);
         state.timer = setTimeout(() => {
           save().catch(() => {
-            if (typeof showStatus === 'function') showStatus('エントリ本文の自動保存に失敗しました', true);
+            if (typeof showStatus === 'function') showStatus('トピック本文の自動保存に失敗しました', true);
           });
         }, 2000);
       });
       editor.addEventListener('blur', () => {
         flush().then(saved => {
-          if (saved && typeof showStatus === 'function') showStatus('エントリ本文を保存しました', false, { passiveSave: true });
+          if (saved && typeof showStatus === 'function') showStatus('トピック本文を保存しました', false, { passiveSave: true });
         }).catch(() => {
-          if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
+          if (typeof showStatus === 'function') showStatus('トピック本文の保存に失敗しました', true);
         });
       });
 
@@ -571,7 +572,7 @@
         root.dataset.loadFailed = '1';
         const message = document.createElement('div');
         message.className = 'meldex-entity-detail-loading';
-        message.textContent = 'エントリを読み込めませんでした';
+        message.textContent = 'トピックを読み込めませんでした';
         root.appendChild(message);
       }
       console.error('[entity-detail] render failed', error);

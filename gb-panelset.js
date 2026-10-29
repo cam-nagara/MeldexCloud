@@ -917,6 +917,7 @@
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
     { type: 'form-app', label: 'フォーム', icon: 'clipboardList' },
+    { type: 'map', label: 'マップ', icon: 'map' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
     { type: 'preview', label: 'ビューワー', icon: 'panelTop', standalone: 'viewer.html' },
   ]);
@@ -1099,6 +1100,7 @@
   function _appendLeftRailApps(dockBar) {
     _appendRailSeparator(dockBar);
     _LEFT_APP_ITEMS.forEach((item) => {
+      if (item.type === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) return;
       const btn = _railButton('gb-dock-icon gb-dock-rail-app', item.icon, `${item.label}をメインパネルで開く`, () => {
         _openRailAppInMain(item.type);
       });

@@ -385,7 +385,7 @@
       if (!previewOnly && [403, 409].includes(statusOf(error))) {
         try {
           const response = await requestMigration(target, true);
-          return { ok: true, mode: 'preview', response, target };
+          return { ok: true, mode: 'preview', response, target, error };
         } catch (previewError) {
           return { ok: false, status: 'fallback', error: previewError, target };
         }
@@ -425,6 +425,7 @@
       relativePath: result.target.relativePath,
       dbPath: result.target.dbPath,
       mode: result.mode,
+      readOnly: result.mode === 'preview' || result?.archive?.readOnly === true,
       reason: reason || 'open',
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
@@ -443,6 +444,8 @@
 
   async function migrateOpenedSheet(dbPath, options) {
     const owner = options?.owner;
+    const mutationVersion = Number(owner?._topicMutationVersion || 0);
+    const openVersion = Number(owner?._openSeq || 0);
     const startedGeneration = generation;
     if (!ownerActive(owner, dbPath)) return { ok: false, status: 'destroyed' };
     const target = await resolveRegisteredPath(dbPath, options);
@@ -451,8 +454,26 @@
     if (startedGeneration !== generation || !ownerActive(owner, dbPath)) {
       return { ok: false, status: 'destroyed', target };
     }
+    if (mutationVersion !== Number(owner?._topicMutationVersion || 0)
+        || openVersion !== Number(owner?._openSeq || 0)) {
+      return { ok: false, status: 'superseded', target };
+    }
     if (result.ok) result.detail = publish(result, options?.reason);
     return result;
+  }
+
+  async function flushOpenedSheet(dbPath, options) {
+    const target = await resolveRegisteredPath(dbPath, options);
+    if (!target) return { ok: false, status: 'unregistered' };
+    for (const [path, pending] of saveTimers.entries()) {
+      const queued = await resolveRegisteredPath(path, { refreshRoots: false });
+      if (queued?.sourceId !== target.sourceId || queued?.relativePath !== target.relativePath) continue;
+      clearTimeout(pending.timer);
+      saveTimers.delete(path);
+    }
+    const pending = inflight.get(`${target.sourceId}\n${target.relativePath}\ncommit`);
+    if (pending) await pending.catch(() => {});
+    return migrateOpenedSheet(dbPath, { ...options, reason: 'before-transfer', refreshRoots: false });
   }
 
   function scheduleAfterSave(dbPath, options) {
@@ -493,6 +514,7 @@
   global.GbTopicLiveBridge = Object.freeze({
     resolveRegisteredPath,
     migrateOpenedSheet,
+    flushOpenedSheet,
     scheduleAfterSave,
     destroyOwner,
     clearRootsCache() { rootsCache = null; rootsLoadedAt = 0; },
@@ -1688,6 +1710,7 @@
     for (const [field, localValue] of Object.entries(changes || {})) {
       const baseValue = base ? base[field] : undefined;
       const remoteValue = remote[field];
+      if (same(localValue, baseValue)) continue;
       if (same(remoteValue, baseValue) || same(remoteValue, localValue)) result[field] = clone(localValue);
       else {
         conflicts.push({ field, baseValue: clone(baseValue), localValue: clone(localValue), remoteValue: clone(remoteValue) });
@@ -4708,23 +4731,25 @@
     return String(value?.checkpointId || value?.revision || value || '');
   }
 
-  function rememberView(detail) {
+  function rememberView(detail, options = {}) {
     const path = normalizePath(detail?.dbPath || detail?.legacyPath);
     if (!path || !detail?.viewDocument) return;
-    const previous = viewsByPath.get(path);
-    const legacyRefsByName = new Map(previous?.legacyRefsByName || []);
+    const previous = options.cache === false ? null : viewsByPath.get(path);
+    const sameSource = previous?.sourceId === String(detail.sourceId || '');
+    const legacyRefsByName = new Map(sameSource ? previous?.legacyRefsByName || [] : []);
     (detail.topicRecords || []).forEach((record) => {
       const legacyName = String(record?.legacyPath || '').replace(/\\/g, '/').split('/').pop();
       const ref = record?.topicRef || (record?.topicId && detail.sourceId
         ? { sourceId: detail.sourceId, topicId: record.topicId } : null);
-      if (legacyName && ref?.sourceId && ref?.topicId
+      if (legacyName && !record.createdByPlacementMutationId && ref?.sourceId && ref?.topicId
         && (!record.originDocumentId || record.originDocumentId === detail.viewDocument.documentId)) {
         legacyRefsByName.set(legacyName.replace(/\.[^.]+$/, ''), clone(ref));
       }
     });
-    viewsByPath.set(path, {
+    const view = {
       sourceId: String(detail.sourceId || ''),
       path,
+      relativePath: normalizePath(detail.relativePath || (sameSource ? previous?.relativePath : '') || ''),
       archiveRelativePath: String(detail.archiveRelativePath || ''),
       document: clone(detail.viewDocument),
       checkpoint: clone(detail.checkpoint || {}),
@@ -4732,7 +4757,9 @@
       legacyRefsByName,
       readOnly: detail.readOnly === true,
       updatedAt: Date.now(),
-    });
+    };
+    if (options.cache !== false) viewsByPath.set(path, view);
+    return view;
   }
 
   function recordKey(record, fallbackSourceId) {
@@ -4806,8 +4833,22 @@
     return candidate;
   }
 
-  function projectSheetPivot(dbPath, pivotData, preferredViewId) {
-    const view = viewsByPath.get(normalizePath(dbPath));
+  function legacyEntryPath(dbPath, record) {
+    const path = normalizePath(record?.legacyPath);
+    if (!path) return '';
+    return path.startsWith(normalizePath(dbPath) + '/') || /^(?:[a-z]:\/|\/|source:)/i.test(path)
+      ? path : normalizePath(dbPath + '/' + path);
+  }
+
+  function matchesLegacyEntry(view, record, entity) {
+    if (!entity?._entry_path || (entity._id && String(entity._id) !== String(record?.topicId))) return false;
+    const path = normalizePath(entity._entry_path);
+    return path === legacyEntryPath(view.path, record)
+      || (!!view.relativePath && path === legacyEntryPath(view.relativePath, record));
+  }
+
+  function projectSheetPivot(dbPath, pivotData, preferredViewId, snapshotView) {
+    const view = snapshotView || viewsByPath.get(normalizePath(dbPath));
     if (!view || !pivotData?.entities) return pivotData;
     const previousProjection = pivotData._topicPlacementProjection || {};
     const baseProperties = Array.isArray(previousProjection.baseProperties)
@@ -4820,11 +4861,22 @@
       || view.document?.activeView || '');
     const placements = (view.document?.placements || []).filter(item => item?.surface === 'sheet'
       && (!requestedViewId || String(item.viewId || '') === requestedViewId));
-    const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
-    for (const [name, ref] of view.legacyRefsByName || []) {
-      if (!placementKeys.has(topicKey(ref))) delete pivotData.entities[name];
-    }
     const records = new Map((view.records || []).map(record => [recordKey(record, view.sourceId), record]));
+    // 保存名と表示名は異なる。移行キャッシュの旧名で行を作らず、現在の保存先へ結び付ける。
+    const legacyNames = new Map();
+    for (const [oldName, ref] of view.legacyRefsByName || []) {
+      const key = topicKey(ref);
+      const record = records.get(key);
+      const matched = Object.entries(pivotData.entities).find(([, entity]) =>
+        matchesLegacyEntry(view, record, entity))?.[0];
+      const fallback = pivotData.new_format !== true && pivotData.entities[oldName]
+        && !pivotData.entities[oldName]._entry_path ? oldName : null;
+      legacyNames.set(key, matched || fallback);
+    }
+    const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
+    for (const [key, name] of legacyNames) {
+      if (name && !placementKeys.has(key)) delete pivotData.entities[name];
+    }
     const columns = columnsForDocument(view.document, requestedViewId);
     const propertyNames = columns.map(column => String(column?.name || column?.columnId || '')).filter(Boolean);
     pivotData.properties = [...new Set([...baseProperties, ...propertyNames])];
@@ -4832,10 +4884,12 @@
       const ref = placement.topicRef;
       const record = records.get(topicKey(ref));
       if (!record) return;
-      const legacyName = [...(view.legacyRefsByName || [])].find(([, knownRef]) =>
-        topicKey(knownRef) === topicKey(ref))?.[0];
+      const legacyName = legacyNames.get(topicKey(ref));
+      // SQLiteから消えた行を古い配置スナップショットで再生成しない。
+      if (pivotData.new_format === true && legacyNames.has(topicKey(ref)) && !legacyName) return;
       const name = legacyName || uniqueEntityName(record.title || ref.topicId, ref, pivotData.entities);
-      const entity = { topicRef: clone(ref), _topicPlacementId: placement.placementId,
+      const savedEntity = legacyName ? pivotData.entities[legacyName] : null;
+      const entity = { ...savedEntity, topicRef: clone(ref), _topicPlacementId: placement.placementId,
         _topicViewId: placement.viewId,
         _topicCanonicalOnly: !legacyName, _topicDbPath: normalizePath(dbPath),
         _topicReadOnly: view.readOnly === true };
@@ -4843,6 +4897,18 @@
         const columnName = String(column?.name || column?.columnId || '');
         const value = propertyForColumn(record, placement, column);
         if (!columnName) return;
+        if (legacyName && baseProperties.includes(columnName)) {
+          // 元シートの値が正本。配置キャッシュで候補ID・保存先・新しい値を落とさない。
+          const native = savedEntity?.[columnName];
+          entity[columnName] = Array.isArray(native) ? native.map(candidate => ({ ...candidate,
+            topicRef: clone(ref), _topicCanonicalOnly: false, _topicDbPath: normalizePath(dbPath),
+            _topicReadOnly: view.readOnly === true,
+            _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
+            _topicColumnId: column.columnId || column.id || columnName, _topicColumnName: columnName,
+            _topicColumnType: column.columnType || column.type || 'text',
+          })) : [];
+          return;
+        }
         // Legacy sheet values are candidate records, not a single cell value.
         const candidates = Array.isArray(value) && value.every(candidate =>
           candidate && typeof candidate === 'object' && !Array.isArray(candidate)
@@ -4853,6 +4919,7 @@
           ...(candidates === value ? { candidate_index: candidateIndex, _topicCandidateList: true,
             _topicCandidateOriginal: clone(candidate) } : {}),
           topicRef: clone(ref), _topicCanonicalOnly: !legacyName,
+          _topicValueMissing: value === undefined,
           _topicDbPath: normalizePath(dbPath),
           _topicReadOnly: view.readOnly === true,
           _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
@@ -4871,12 +4938,18 @@
   }
 
   function rerenderProjectedSheets(path) {
+    const visible = data => JSON.stringify({ properties: data.properties, entities: data.entities }, (key, value) =>
+      ['_topicReadOnly', 'entry_revision', '_revision'].includes(key) ? undefined : value);
     const contexts = Object.values(global.getAllPanes?.() || {});
     const current = global._currentPaneState?.();
     if (current && !contexts.includes(current)) contexts.push(current);
     contexts.forEach((ctx) => {
       if (!ctx?.pivotData || normalizePath(ctx.dbPath) !== normalizePath(path)) return;
+      const visibleBefore = visible(ctx.pivotData);
       projectSheetPivot(path, ctx.pivotData, ctx.currentViewId);
+      const visibleAfter = visible(ctx.pivotData);
+      // 保存の反映だけでセル・範囲選択や編集中のDOMを破棄しない。
+      if (visibleBefore === visibleAfter) return;
       const mode = ctx.viewMode || 'pivot';
       if (mode === 'gallery') global.renderGallery?.(ctx);
       else if (mode === 'kanban') global.renderKanban?.(ctx);
@@ -4897,6 +4970,10 @@
     if (entityData?.topicRef?.sourceId && entityData?.topicRef?.topicId) return clone(entityData.topicRef);
     const name = String(entityName || '');
     const record = (view?.records || []).find(item => {
+      if (item.originDocumentId && item.originDocumentId !== view.document?.documentId) return false;
+      if (entityData?._entry_path) {
+        return matchesLegacyEntry(view, item, entityData);
+      }
       const legacy = String(item?.legacyPath || '').replace(/\\/g, '/').split('/').pop() || '';
       const stem = legacy.replace(/\.[^.]+$/, '');
       return legacy === name || stem === name;
@@ -4981,6 +5058,7 @@
       ) || null,
       path, document: clone(document), revision: checkpointId(view?.checkpoint),
       label: String(node?.text || '').split('\n')[0] || 'トピック', surface: 'board',
+      pendingSave: !!(state?.dirty || state?.editing || (state?.nodes || []).some(item => global.bdHasPendingNodeTextWrite?.(item))),
       readOnly: view?.readOnly === true,
     };
   }
@@ -5330,6 +5408,33 @@
 
   async function updateProjectedValue(valueRef, updates) {
     const ref = valueRef?.topicRef;
+    const task = () => updateProjectedValueNow(valueRef, updates);
+    if (ref?.sourceId && ref?.topicId && typeof global._dbQueueEntryMutation === 'function') {
+      return global._dbQueueEntryMutation(`topic:${ref.sourceId}/${ref.topicId}`, valueRef._topicDbPath, task);
+    }
+    return task();
+  }
+
+  function projectSheetSnapshot(dbPath, pivotData, detail) {
+    const view = rememberView({ ...detail, dbPath }, { cache: false });
+    return view ? projectSheetPivot(dbPath, pivotData, null, view) : pivotData;
+  }
+
+  function emptyProjectedValue(dbPath, entity, columnName) {
+    const view = viewsByPath.get(normalizePath(dbPath));
+    if (!view || !entity?._topicCanonicalOnly || !entity.topicRef) return null;
+    const column = columnsForDocument(view.document, entity._topicViewId).find(item => String(item.name || item.columnId || '') === columnName);
+    const placement = (view.document.placements || []).find(item => item.placementId === entity._topicPlacementId);
+    const record = (view.records || []).find(item => recordKey(item, view.sourceId) === topicKey(entity.topicRef));
+    if (!column || !placement || !record) throw new Error('この列の共有列IDを確認できません');
+    return { topicRef: clone(entity.topicRef), _topicCanonicalOnly: true, _topicDbPath: normalizePath(dbPath),
+      _topicReadOnly: entity._topicReadOnly, _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
+      _topicColumnId: column.columnId, _topicColumnName: columnName, property: columnName,
+      _topicColumnType: column.columnType || column.type || 'text' };
+  }
+
+  async function updateProjectedValueNow(valueRef, updates) {
+    const ref = valueRef?.topicRef;
     const dbPath = normalizePath(valueRef?._topicDbPath);
     const view = viewsByPath.get(dbPath);
     if (!ref?.sourceId || !ref?.topicId || !view) {
@@ -5346,14 +5451,26 @@
     const familyId = String(valueRef._topicPropertyFamilyId || '');
     if (!familyId) throw new Error('この列の共有列IDを確認できません');
     const typed = clone(record.propertyValuesByFamilyId || {});
+    if (Object.prototype.hasOwnProperty.call(updates || {}, '_expected_value')
+      && JSON.stringify(typed[familyId]?.value) !== JSON.stringify(updates._expected_value)) {
+      throw new Error('場所の値が変更されています。シートを再読込してから編集してください');
+    }
     const order = [...(record.propertyValueOrder || [])];
     const properties = clone(record.properties || {});
     const columnName = String(valueRef.property || valueRef._topicColumnName || valueRef._topicColumnId || '');
     let nextValue = updates?.new_value !== undefined ? updates.new_value : valueRef.value;
     const candidateList = valueRef._topicCandidateList === true;
+    if (updates?._append_candidate) {
+      const stored = typed[familyId]?.value;
+      if (stored !== undefined && !Array.isArray(stored)) throw new Error('列の保存形式が変わりました。シートを再読込してください');
+      nextValue = [...clone(stored || []), clone(updates._append_candidate)];
+    }
     if (candidateList) {
       const stored = typed[familyId]?.value;
-      const index = valueRef.candidate_index;
+      const identity = valueRef.candidate_id || valueRef._topicCandidateOriginal?.candidate_id;
+      const matched = Array.isArray(stored) && identity
+        ? stored.map((candidate, index) => candidate?.candidate_id === identity ? index : -1).filter(index => index >= 0) : [];
+      const index = identity ? matched.length === 1 ? matched[0] : -1 : valueRef.candidate_index;
       if (!Array.isArray(stored) || !Number.isInteger(index) || !stored[index]
           || JSON.stringify(stored[index]) !== JSON.stringify(valueRef._topicCandidateOriginal)) {
         throw new Error('候補値が更新されています。シートを再読込してから編集してください');
@@ -5408,6 +5525,8 @@
       },
     );
     if (candidateList && !updates?._delete) {
+      const identity = valueRef.candidate_id || valueRef._topicCandidateOriginal?.candidate_id;
+      if (identity) valueRef.candidate_index = nextValue.findIndex(candidate => candidate?.candidate_id === identity);
       valueRef._topicCandidateOriginal = clone(nextValue[valueRef.candidate_index]);
     }
     const affected = [];
@@ -5452,6 +5571,15 @@
 
   async function updateProjectedBoardText(node, text) {
     const ref = node?.topicRef;
+    const task = () => updateProjectedBoardTextNow(node, text);
+    if (ref?.sourceId && ref?.topicId && typeof global._dbQueueEntryMutation === 'function') {
+      return global._dbQueueEntryMutation(`topic:${ref.sourceId}/${ref.topicId}`, liveBoardState()?.path || '', task);
+    }
+    return task();
+  }
+
+  async function updateProjectedBoardTextNow(node, text) {
+    const ref = node?.topicRef;
     if (!ref?.sourceId || !ref?.topicId) throw new Error('トピックIDを確認できません');
     if (node?._topicReadOnly === true) throw new Error('このトピック表示は読み取り専用です');
     const loaded = await global.apiFetch(
@@ -5492,6 +5620,55 @@
         || (['move', 'detach'].includes(operation) && !source?.placement)) {
       throw new Error('このトピックの配置情報を確認できません');
     }
+    if (source.surface === 'board' && global.GbTopicLiveBridge?.flushOpenedSheet
+        && !(source._savedSnapshotVerified && normalizePath(liveBoardState()?.path) !== normalizePath(source.path))) {
+      const board = liveBoardState();
+      if (!board || normalizePath(board.path) !== normalizePath(source.path)) {
+        throw new Error('元のボードを表示してから操作してください');
+      }
+      global.MeldexBoardTopicIntegration?.commitPendingEdits?.(board);
+      const pending = global.bdWaitPendingNodeTextWrites?.(board.nodes);
+      if (pending && await pending === false) throw new Error('トピックの保存を完了できません');
+      if (board.dirty && await global.bdSave?.() !== true) throw new Error('ボードの保存を完了できません');
+      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path, { owner: board });
+      if (!flushed.ok || flushed.mode !== 'commit') {
+        throw new Error('最新のボードを確認できないため操作を中止しました: ' + (flushed.error?.message || flushed.status || flushed.mode));
+      }
+      const current = viewsByPath.get(normalizePath(source.path));
+      const record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
+      const placement = current?.document?.placements?.find(item =>
+        item.placementId === source.placement?.placementId && topicKey(item.topicRef) === topicKey(source.topicRef));
+      if (!record || !placement) throw new Error('トピックの配置が変更されています');
+      source = { ...source, record, placement, document: current.document,
+        revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
+    }
+    if (source.placement?.surface === 'sheet' && source.record?.legacyPath
+        && !source.record.createdByPlacementMutationId && global.GbTopicLiveBridge?.flushOpenedSheet) {
+      const previousView = viewsByPath.get(normalizePath(source.path));
+      if (await global.waitForPendingDbValueMutations?.(source.path) === false) {
+        throw new Error('保存が続いているため、トピックの操作を中止しました');
+      }
+      if (previousView?.relativePath && previousView.relativePath !== normalizePath(source.path)) {
+        if (await global.waitForPendingDbValueMutations?.(previousView.relativePath) === false) {
+          throw new Error('保存が続いているため、トピックの操作を中止しました');
+        }
+      }
+      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path);
+      if (!flushed.ok || flushed.mode !== 'commit') {
+        throw new Error('最新の保存内容を確認できないため、トピックの操作を中止しました: ' + (flushed.error?.message || flushed.status || flushed.mode));
+      }
+      const current = viewsByPath.get(normalizePath(source.path));
+      const record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
+      const placement = current?.document?.placements?.find(item =>
+        item.placementId === source.placement.placementId && topicKey(item.topicRef) === topicKey(source.topicRef));
+      if (!record || !placement) throw new Error('トピックの配置が変更されています');
+      const pivot = await global.apiFetch(`/pivot?path=${encodeURIComponent(source.path)}`, { silentError: true });
+      if (pivot?.new_format === true && !Object.values(pivot.entities || {}).some(entity => matchesLegacyEntry(current, record, entity))) {
+        throw new Error('元のトピックが変更されています');
+      }
+      source = { ...source, record, placement, document: current.document,
+        revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
+    }
     if (source.readOnly === true) throw new Error('このトピック表示は読み取り専用です');
     let target = explicitTarget || null;
     if (operation === 'duplicate' && !target) {
@@ -5503,6 +5680,9 @@
     } else if (!target && operation !== 'detach') {
       target = await pickTarget();
       if (!target) return { ok: false, state: 'cancelled' };
+    }
+    if (target?.documentId === source.document?.documentId) {
+      target = { ...target, revision: source.revision, document: source.document };
     }
     const bindings = operation === 'detach' ? []
       : Array.isArray(executeOptions.columnBindings) ? clone(executeOptions.columnBindings)
@@ -5659,10 +5839,14 @@
       baseRevision: String(source.revision || ''),
       path: normalizePath(source.path),
       label: String(source.label || 'トピック').slice(0, 256),
+      ...(source.pendingSave ? { pendingSave: true } : {}),
     };
   }
 
   async function resolveTransferredSource(value) {
+    if (value?.surface === 'board' && value?.pendingSave) {
+      throw new Error('元のボードの保存中です。保存が完了してからドラッグしてください');
+    }
     const ref = value?.topicRef;
     const documentId = String(value?.documentId || '');
     if (!ref?.sourceId || !ref?.topicId || !documentId) {
@@ -5693,6 +5877,7 @@
       path: normalizePath(value.path), document: clone(snapshot.viewDocument), revision,
       label: String(value.label || loaded?.topic?.title || 'トピック'),
       surface: String(placement.surface || value.surface || ''), readOnly: false,
+      _savedSnapshotVerified: true,
     };
   }
 
@@ -5830,7 +6015,7 @@
   if (typeof document !== 'undefined') installDragAndDrop();
   global.MeldexTopicPlacementUI = Object.freeze({
     MIME, rememberView, sheetSource, treeSource, boardSource, menuItems, execute, showDetail, pickTarget,
-    renameColumn, projectSheetPivot, refreshView, updateProjectedValue, renameProjectedTopic,
+    renameColumn, projectSheetPivot, projectSheetSnapshot, emptyProjectedValue, refreshView, updateProjectedValue, renameProjectedTopic,
     updateProjectedBoardText, usageTarget, usageCanOpen, openUsage, retryRefresh,
     sourcesFromElement, transferSource, resolveTransferredSource,
   });
@@ -6388,6 +6573,12 @@
   function captureViewState(boardView, runtimeState) {
     const result = clone(boardView || newView('board-view-1', '既定ビュー'));
     result.positionsByTopicRef = clone(result.positionsByTopicRef || {});
+    result.positionsByNodeId = {};
+    result.canonicalTopicNodeIds = (runtimeState?.nodes || []).filter(node => node?._topicCanonicalOnly).map(node => node.id);
+    const counts = new Map();
+    (runtimeState?.nodes || []).forEach(node => {
+      if (node?.topicRef) counts.set(topicRefKey(node.topicRef), (counts.get(topicRefKey(node.topicRef)) || 0) + 1);
+    });
     (Array.isArray(runtimeState?.nodes) ? runtimeState.nodes : []).forEach((node) => {
       if (!node?.topicRef) return;
       const key = topicRefKey(node.topicRef);
@@ -6398,6 +6589,11 @@
         w: Number.isFinite(+node.w) ? +node.w : 160,
         h: Number.isFinite(+node.h) ? +node.h : 0,
       };
+      if (node.id && counts.get(key) > 1) {
+        result.positionsByNodeId[node.id] = {
+          ...clone(result.positionsByTopicRef[key]), collapsed: !!node.collapsed,
+        };
+      }
     });
     ['groups', 'lines', 'hiddenTopicRefs', 'collapsedTopicRefs', 'styleOverrides', 'camera']
       .forEach((key) => {
@@ -6412,8 +6608,14 @@
     const view = clone(boardView || {});
     const result = clone(runtimeState || {});
     const positions = view.positionsByTopicRef || {};
+    const counts = new Map();
+    (result.nodes || []).forEach(node => {
+      if (node?.topicRef) counts.set(topicRefKey(node.topicRef), (counts.get(topicRefKey(node.topicRef)) || 0) + 1);
+    });
     result.nodes = (Array.isArray(result.nodes) ? result.nodes : []).map((node) => {
-      const position = node?.topicRef ? positions[topicRefKey(node.topicRef)] : null;
+      const own = view.positionsByNodeId?.[node.id];
+      const position = own && topicRefKey(own.topicRef) === topicRefKey(node.topicRef)
+        ? own : node?.topicRef && counts.get(topicRefKey(node.topicRef)) === 1 ? positions[topicRefKey(node.topicRef)] : null;
       if (!position) return node;
       const next = { ...node, x: position.x, y: position.y };
       if (Number.isFinite(+position.w)) next.w = +position.w;
@@ -7612,7 +7814,14 @@
   }
 
   function keepTopicRefs(values) {
-    return (Array.isArray(values) ? values : []).map(resolveTopicRef).filter(Boolean);
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).map(resolveTopicRef).filter((ref) => {
+      if (!ref) return false;
+      const key = JSON.stringify([ref.sourceId, ref.topicId]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   function keepEdges(values) {
@@ -7716,7 +7925,7 @@
       defaultSurface: 'board',
       membership: {
         mode: 'manual',
-        manualTopicRefs: (board.nodes || []).map((node) => clone(node.topicRef)),
+        manualTopicRefs: keepTopicRefs((board.nodes || []).map((node) => node.topicRef)),
         queryDefinition: null,
       },
       sources: [{ sourceId: 'local-vault' }],
@@ -7761,7 +7970,7 @@
     const document = normalizeTopicDocument(board.topicViewDocument, board, board.path);
     if (!document.boardViews.length) {
       document.membership = document.membership || { mode: 'manual' };
-      document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+      document.membership.manualTopicRefs = keepTopicRefs((board.nodes || []).map((node) => node.topicRef));
       board.topicViewDocument = document;
       board.activeBoardViewId = null;
       return null;
@@ -7776,7 +7985,7 @@
       document.boardViews[targetIndex], runtimeForCapture(board),
     );
     document.membership = document.membership || { mode: 'manual' };
-    document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+    document.membership.manualTopicRefs = keepTopicRefs((board.nodes || []).map((node) => node.topicRef));
     board.topicViewDocument = document;
     board.activeBoardViewId = document.boardViews[targetIndex].boardViewId;
     return document.boardViews[targetIndex];
@@ -7818,6 +8027,9 @@
         positions[key] = { ...clone(position), topicRef };
       });
       view.positionsByTopicRef = positions;
+      Object.values(view.positionsByNodeId || {}).forEach(position => {
+        if (position?.topicRef) position.topicRef = replaceTopicRef(position.topicRef, replacements);
+      });
       (view.groups || []).forEach((group) => {
         group.topicRefs = (group.topicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       });
@@ -7882,34 +8094,40 @@
     const records = new Map((detail.topicRecords || []).map(record => [
       topicKey(record?.topicRef || canonicalRef(detail.sourceId, record?.topicId)), record,
     ]));
-    const existing = new Map((board.nodes || []).filter(node => node?.topicRef)
-      .map(node => [topicKey(node.topicRef), node]));
+    const existing = new Map();
+    (board.nodes || []).filter(node => node?.topicRef).forEach(node => {
+      const key = topicKey(node.topicRef);
+      if (!existing.has(key)) existing.set(key, []);
+      existing.get(key).push(node);
+    });
     const unbound = (board.nodes || []).filter(node => !node?.topicRef);
     const nodes = [];
     placements.forEach((placement, index) => {
       const key = topicKey(placement.topicRef);
       const record = records.get(key);
       const position = placement.position || placement.boardPosition || {};
-      let node = existing.get(key);
-      if (!node) {
+      const visuals = existing.get(key) || [];
+      if (!visuals.length) {
         const id = `topic-${hashText(key)}`;
         const x = Number.isFinite(+position.x) ? +position.x : 40 + (index % 5) * 180;
         const y = Number.isFinite(+position.y) ? +position.y : 40 + Math.floor(index / 5) * 100;
-        node = typeof global.bdNode === 'function'
+        const node = typeof global.bdNode === 'function'
           ? global.bdNode(recordText(record), x, y, position.w, position.h, { id, topicRef: clone(placement.topicRef) })
           : { id, text: recordText(record), x, y, w: position.w || 160, h: position.h || 0,
             topicRef: clone(placement.topicRef) };
-      } else {
+        visuals.push(node);
+      }
+      visuals.forEach(node => {
         node.topicRef = clone(placement.topicRef);
         if (record && !global.bdHasPendingNodeTextWrite?.(node)) node.text = recordText(record);
-        if (Number.isFinite(+position.x)) node.x = +position.x;
-        if (Number.isFinite(+position.y)) node.y = +position.y;
-      }
-      node._topicCanonicalOnly = (record?.originDocumentId
-        && record.originDocumentId !== document.documentId)
-        || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
-      node._topicReadOnly = detail.readOnly === true;
-      nodes.push(node);
+        if (visuals.length === 1 && Number.isFinite(+position.x)) node.x = +position.x;
+        if (visuals.length === 1 && Number.isFinite(+position.y)) node.y = +position.y;
+        node._topicCanonicalOnly = !record?.legacyNodeId || (record?.originDocumentId
+          && record.originDocumentId !== document.documentId)
+          || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
+        node._topicReadOnly = detail.readOnly === true;
+        if (!nodes.some(item => item.id === node.id)) nodes.push(node);
+      });
     });
     board.nodes = [...unbound, ...nodes];
     board.topicViewDocument = document;
@@ -7919,7 +8137,7 @@
   }
 
   function canonicalizeBoard(board, detail) {
-    commitPendingEdits(board);
+    if (board.editing || board.dirty) return { replacementCount: 0, placementsChanged: false, displayChanged: false, deferred: true };
     const sourceId = String(detail?.sourceId || '');
     const mapping = detail?.legacyNodeTopicIds || {};
     const replacements = new Map();
@@ -7930,6 +8148,9 @@
       node.topicRef = canonicalRef(sourceId, topicId);
     });
     if (replacements.size) {
+      board.nodes.forEach(node => {
+        if (node.topicRef) node.topicRef = replaceTopicRef(node.topicRef, replacements);
+      });
       board.topicViewDocument = replaceDocumentTopicRefs(board.topicViewDocument, replacements);
       board.hiddenTopicRefs = (board.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       applyView(board, activeView(board));
@@ -7979,7 +8200,7 @@
       const result = await original.apply(this, arguments);
       if (result === true && savedPath && !current?._topicBridgeDestroyed
           && !current?.readOnly && !current?.readonly && !current?.isReadOnly) {
-        global.GbTopicLiveBridge?.scheduleAfterSave?.(savedPath, { reason: 'board-save' });
+        global.GbTopicLiveBridge?.scheduleAfterSave?.(savedPath, { reason: 'board-save', owner: current });
       }
       return result;
     };
@@ -7991,9 +8212,11 @@
 
   function viewGroupsToLegacy(board, groups) {
     const nodeByRef = new Map((board.nodes || []).map((node) => [topicKey(node.topicRef), node.id]));
+    const liveIds = new Set((board.nodes || []).map(node => node.id));
     return (groups || []).map((group) => ({
       ...clone(group), id: group.groupId, groupId: group.groupId,
-      nodeIds: (group.topicRefs || []).map((ref) => nodeByRef.get(topicKey(ref))).filter(Boolean),
+      nodeIds: Array.isArray(group.nodeIds) ? group.nodeIds.filter(id => liveIds.has(id))
+        : (group.topicRefs || []).map((ref) => nodeByRef.get(topicKey(ref))).filter(Boolean),
     }));
   }
 
@@ -8007,7 +8230,9 @@
         delete result[side]; delete result[`${side}Point`]; delete result[`${side}Anchor`];
         if (endpoint.targetKind === 'point') result[`${side}Point`] = clone(endpoint.targetRef);
         else if (endpoint.targetKind === 'topic') {
-          result[side] = nodeByRef.get(topicKey(endpoint.targetRef)) || '';
+          const visual = (board.nodes || []).find(node => node.id === line[side]);
+          result[side] = visual && topicKey(visual.topicRef) === topicKey(endpoint.targetRef)
+            ? visual.id : nodeByRef.get(topicKey(endpoint.targetRef)) || '';
         } else if (endpoint.targetKind === 'group') {
           result[side] = typeof endpoint.targetRef === 'string'
             ? endpoint.targetRef : endpoint.targetRef?.groupId || '';
@@ -8025,11 +8250,20 @@
     if (!view || !global.MeldexBoardTopicViews) return;
     const next = global.MeldexBoardTopicViews.applyViewState(view, { nodes: board.nodes || [] });
     board.nodes = next.nodes;
+    const canonicalIds = new Set(view.canonicalTopicNodeIds || []);
+    board.nodes.forEach(node => { if (canonicalIds.has(node.id)) node._topicCanonicalOnly = true; });
     board.groups = viewGroupsToLegacy(board, view.groups);
     board.connections = viewLinesToLegacy(board, view.lines);
     board.hiddenTopicRefs = clone(view.hiddenTopicRefs || []);
     const collapsed = new Set((view.collapsedTopicRefs || []).map(topicKey));
-    board.nodes.forEach(node => { node.collapsed = !!node.topicRef && collapsed.has(topicKey(node.topicRef)); });
+    const counts = new Map();
+    board.nodes.forEach(node => counts.set(topicKey(node.topicRef), (counts.get(topicKey(node.topicRef)) || 0) + 1));
+    board.nodes.forEach(node => {
+      const own = view.positionsByNodeId?.[node.id];
+      node.collapsed = own && topicKey(own.topicRef) === topicKey(node.topicRef)
+        ? !!own.collapsed : counts.get(topicKey(node.topicRef)) > 1 ? !!node.collapsed
+          : !!node.topicRef && collapsed.has(topicKey(node.topicRef));
+    });
     board.topicStyleOverrides = clone(view.styleOverrides || {});
     board.panX = Number(view.camera?.pan?.x) || 0;
     board.panY = Number(view.camera?.pan?.y) || 0;
@@ -16952,6 +17186,7 @@ const GBLayout = (() => {
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
     { type: 'form-app', label: 'フォーム', icon: 'clipboardList' },
+    { type: 'map', label: 'マップ', icon: 'map' },
     { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
     { type: 'preview', label: 'ビューワー', icon: 'panelTop', standalone: 'viewer.html' },
   ]);
@@ -17134,6 +17369,7 @@ const GBLayout = (() => {
   function _appendLeftRailApps(dockBar) {
     _appendRailSeparator(dockBar);
     _LEFT_APP_ITEMS.forEach((item) => {
+      if (item.type === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) return;
       const btn = _railButton('gb-dock-icon gb-dock-rail-app', item.icon, `${item.label}をメインパネルで開く`, () => {
         _openRailAppInMain(item.type);
       });
@@ -17593,7 +17829,7 @@ const GBTabs = (() => {
     pivot: 'db', tree: 'listTree', gallery: 'db', kanban: 'db', timeline: 'db',
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
-    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', version: 'gitBranch',
+    search: 'search', scriptnote: 'bookOpenText', 'form-app': 'clipboardList', map: 'map', version: 'gitBranch',
   };
   const SINGLETON_TOOL_TYPES = new Set(['chat', 'annotation', 'history', 'detail', 'outliner', 'search']);
 
@@ -17939,7 +18175,7 @@ const GBTabs = (() => {
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
     // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
-    if (['scriptnote', 'form-app'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
+    if (['scriptnote', 'form-app', 'map'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;
@@ -24513,7 +24749,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
     <input class="gb-input gb-input-sm" type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <input class="gb-input gb-input-sm" type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
     <input class="gb-input gb-input-sm" type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
-    <button type="button" class="tmpl-entry-del" aria-label="エントリを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
+    <button type="button" class="tmpl-entry-del" aria-label="トピックを削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
   const content = document.createElement('div');
   content.innerHTML = `<div id="tmpl-edit-status" role="status" aria-live="polite"></div>
@@ -24571,7 +24807,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
 CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay) {
   const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
   const t = templates.find(x => x.id === tid);
-  if (!t || !t.entries?.length) { this._showStatus('エントリがありません', true); return false; }
+  if (!t || !t.entries?.length) { this._showStatus('トピックがありません', true); return false; }
   // cfPromptで週数を取得
   const weeksStr = await cfPrompt('何週間分生成しますか？', '4');
   const weeks = parseInt(weeksStr) || 0;
@@ -32213,6 +32449,14 @@ function bdRestoreSnapshotNodeTextWrites(previousNodes, restoredNodes) {
 }
 function bdPersistEditedNodeText(node, beforeText, onFailure) {
   if (!node?._topicCanonicalOnly || !node?.topicRef) {
+    if (node?.topicRef && Array.isArray(bd?.nodes)) {
+      bd.nodes.forEach(visual => {
+        if (visual === node || visual.topicRef?.sourceId !== node.topicRef.sourceId
+            || visual.topicRef?.topicId !== node.topicRef.topicId) return;
+        visual.text = node.text;
+        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(visual.id, 'shared-topic-text');
+      });
+    }
     bdDirty();
     return;
   }
@@ -32835,6 +33079,7 @@ function bdAutoSave() {
   return bdSave();
 }
 function bdDirty() {
+  bd._topicMutationVersion = Number(bd._topicMutationVersion || 0) + 1;
   const _bdDirtyPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdDirty') : 0;
   bd.dirty=true; markAutoVersionDirty(bd.path, 'file'); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdAutoSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
@@ -43035,7 +43280,7 @@ const GBLinkRouter = (() => {
   const KNOWN_COMPOUND_SUFFIXES = [
     '.mel-scenario', '.scriptnote.json', '.scenario.json',
     '.mel-board', '.board.json', '.canvas.json',
-    '.mel-sheet', '.mel-form',
+    '.mel-sheet', '.mel-form', '.mel-map',
     '.mel-timer', '.timer.json',
   ];
 
@@ -43090,6 +43335,7 @@ const GBLinkRouter = (() => {
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || extension === 'board') return 'board';
     if (lower.endsWith('.mel-form')) return 'form-app';
+    if (lower.endsWith('.mel-map')) return 'map';
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
@@ -43128,6 +43374,8 @@ const GBLinkRouter = (() => {
       state.label = entry.label || '';
     } else if (entry.type === 'form-app') {
       state.formPath = entry.path || ''; state.label = entry.label || '';
+    } else if (entry.type === 'map') {
+      state.mapPath = entry.path || ''; state.label = entry.label || '';
     } else if (entry.type === 'board') {
       state.boardPath = entry.path || '';
       state.label = entry.label || '';
@@ -43149,6 +43397,7 @@ const GBLinkRouter = (() => {
     let entry;
     if (explicitType === 'scriptnote') entry = { type: 'scriptnote', label: nextLabel, path: nextPath };
     else if (explicitType === 'form-app') entry = { type: 'form-app', label: nextLabel, path: nextPath };
+    else if (explicitType === 'map') entry = { type: 'map', label: nextLabel, path: nextPath };
     else if (explicitType === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (explicitType === 'timer') entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (explicitType === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -43169,6 +43418,7 @@ const GBLinkRouter = (() => {
       entry = { type: 'board', label: nextLabel, path: nextPath };
     } else if (extension === 'board') entry = { type: 'board', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-form')) entry = { type: 'form-app', label: nextLabel, path: nextPath };
+    else if (lower.endsWith('.mel-map')) entry = { type: 'map', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-sheet')) entry = { type: 'database', label: nextLabel, path: nextPath };
     else if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) entry = { type: 'unsupported', retired: true, retiredType: 'timer', label: nextLabel, path: nextPath };
     else if (extension === 'csv') entry = { type: 'csv', label: nextLabel, path: nextPath };
@@ -57371,7 +57621,7 @@ function _sn2StopSep() {
 
   function fileRawUrl(path) {
     if (/^(?:https?:|data:|blob:|\/api\/)/i.test(path)) return path;
-    return window.MeldexResourceUrl?.fileRaw?.(path) || '/api/file-raw?path=' + encodeURIComponent(path);
+    return window.MeldexResourceUrl?.fileRaw?.(path, {static_preview: 1}) || '/api/file-raw?path=' + encodeURIComponent(path) + '&static_preview=1';
   }
 
   function icon(name, size = 14) {
@@ -57639,7 +57889,7 @@ function _sn2StopSep() {
       root.replaceChildren();
       const loading = document.createElement('div');
       loading.className = 'meldex-entity-detail-loading';
-      loading.textContent = 'エントリを読み込み中...';
+      loading.textContent = 'トピックを読み込み中...';
       root.appendChild(loading);
 
       const parent = parentDir(state.path);
@@ -57796,12 +58046,13 @@ function _sn2StopSep() {
         openSnapshot.href = fileRawUrl(snapshotPath);
         openSnapshot.target = '_blank';
         openSnapshot.rel = 'noopener noreferrer';
+        openSnapshot.dataset.meldexBrowserNavigation = '1';
         openSnapshot.textContent = '別画面で開く';
         const frame = document.createElement('iframe');
         frame.className = 'meldex-entity-detail-webclip-frame';
         frame.title = '保存したHTML';
         frame.src = fileRawUrl(snapshotPath);
-        frame.setAttribute('sandbox', 'allow-same-origin allow-forms allow-popups');
+        frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
         root.appendChild(preview);
@@ -57861,15 +58112,15 @@ function _sn2StopSep() {
         clearTimeout(state.timer);
         state.timer = setTimeout(() => {
           save().catch(() => {
-            if (typeof showStatus === 'function') showStatus('エントリ本文の自動保存に失敗しました', true);
+            if (typeof showStatus === 'function') showStatus('トピック本文の自動保存に失敗しました', true);
           });
         }, 2000);
       });
       editor.addEventListener('blur', () => {
         flush().then(saved => {
-          if (saved && typeof showStatus === 'function') showStatus('エントリ本文を保存しました', false, { passiveSave: true });
+          if (saved && typeof showStatus === 'function') showStatus('トピック本文を保存しました', false, { passiveSave: true });
         }).catch(() => {
-          if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
+          if (typeof showStatus === 'function') showStatus('トピック本文の保存に失敗しました', true);
         });
       });
 
@@ -57903,7 +58154,7 @@ function _sn2StopSep() {
         root.dataset.loadFailed = '1';
         const message = document.createElement('div');
         message.className = 'meldex-entity-detail-loading';
-        message.textContent = 'エントリを読み込めませんでした';
+        message.textContent = 'トピックを読み込めませんでした';
         root.appendChild(message);
       }
       console.error('[entity-detail] render failed', error);
@@ -70226,13 +70477,15 @@ function withLocalStorageSettingsHistory(label, keys, mutator, detail, onRestore
      ようにするための登録テーブル。scriptnote 特例（_captureScriptnoteState/
      _restoreScriptnoteState）はそのままプロバイダとして登録し、挙動を変えない。
    - board（フェーズ3-3）は 'board:<パス>' スコープ全体を対象に同じ仕組みへ乗せる。
-   - db:（シート）スコープは通常のプロパティ編集が既に正しい undo/redo クロージャを
-     push時点で用意しているため、ここには登録しない（登録すると個々の編集が持つ
-     正しいredoが毎回スナップショット差し替えで上書きされ、退行してしまうため）。
+   - db:（シート）は保存完了待ちだけを登録する。各編集のundo/redoは保持し、
+     全体スナップショットへの差し替えは行わない。
    ============================== */
 const _historySnapshotProviders = {};
 function historyRegisterSnapshotProvider(scopePrefix, provider) {
-  if (!scopePrefix || !provider || typeof provider.capture !== 'function' || typeof provider.restore !== 'function') return;
+  if (!scopePrefix || !provider) return;
+  const snapshots = typeof provider.capture === 'function' && typeof provider.restore === 'function';
+  const prepareOnly = typeof provider.prepare === 'function' && provider.capture == null && provider.restore == null;
+  if (!snapshots && !prepareOnly) return;
   _historySnapshotProviders[scopePrefix] = provider;
 }
 function _findHistorySnapshotProvider(scope) {
@@ -70248,7 +70501,20 @@ function _findHistorySnapshotProvider(scope) {
   return bestProvider;
 }
 
-// scriptnote: 既存の capture/restore をそのまま登録する（挙動不変のリファクタ）。
+// シートは複数セルの保存と履歴登録が完了してからUndo/Redoを選ぶ。
+historyRegisterSnapshotProvider('db:', {
+  prepare: scope => {
+    if (typeof waitForPendingDbValueMutations !== 'function') return true;
+    const paths = [typeof state !== 'undefined' ? state.currentDbPath : ''];
+    if (typeof getAllPanes === 'function') {
+      for (const pane of Object.values(getAllPanes() || {})) paths.push(pane?.dbPath || pane?.currentDbPath || '');
+    }
+    const path = paths.find(value => value && typeof _dbScopeForPath === 'function' && _dbScopeForPath(value) === scope);
+    return waitForPendingDbValueMutations(path || '');
+  },
+});
+
+// scriptnote: 既存の capture/restore をそのまま登録する。
 historyRegisterSnapshotProvider('scriptnote:', {
   prepare: (scope) => typeof _sn2PrepareHistoryNavigation !== 'function' || _sn2PrepareHistoryNavigation(scope),
   capture: (scope) => (typeof _captureScriptnoteState === 'function' ? _captureScriptnoteState(scope) : null),
@@ -70361,7 +70627,7 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
     }
     let inverse = entry[opposite];
     const provider = _findHistorySnapshotProvider(actualScope);
-    if (provider && typeof inverse !== 'function') {
+    if (typeof provider?.capture === 'function' && typeof inverse !== 'function') {
       const snapshot = await provider.capture(actualScope);
       if (snapshot == null) throw new Error('復元対象の現在の状態を取得できません');
       inverse = () => provider.restore(snapshot, actualScope);
@@ -81531,7 +81797,7 @@ const UI_STYLE_SECTIONS = {
   ],
   'シート': [
     { label: 'ヘッダー', fg:'--db-th-fg', bold:'--db-th-bold', italic:'--db-th-italic', bg:'--db-th-bg', text:'列名', font:'--db-th-font' },
-    { label: 'エントリ列', fg:'--db-entity-fg', bold:'--db-entity-bold', italic:'--db-entity-italic', bg:'--db-entity-bg', text:'キャラ名', font:'--db-entity-font' },
+    { label: 'トピック列', fg:'--db-entity-fg', bold:'--db-entity-bold', italic:'--db-entity-italic', bg:'--db-entity-bg', text:'キャラ名', font:'--db-entity-font' },
     { label: 'セル', fg:'--db-cell-fg', bold:'--db-cell-bold', italic:'--db-cell-italic', bg:'--db-cell-bg', text:'候補値テキスト', bgType:'rgba', font:'--db-cell-font' },
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },
@@ -87975,7 +88241,7 @@ function _settingsThemePreviewActualSurface(appId) {
   if (appId === 'sheet') return `<section class="settings-theme-preview-sheet-view" aria-label="シート">
     <div class="db-view-tabs"><button type="button" class="db-view-tab active"${_settingsThemePreviewInteractiveAttributes('chrome/sheet/view/table', '共通', 'パネル内タブ 選択')} title="テーブル／クリックで書式設定">テーブル</button><button type="button" class="db-view-tab"${_settingsThemePreviewInteractiveAttributes('chrome/sheet/view/tree', '共通', 'パネル内タブ 通常')} title="ツリー／クリックで書式設定">ツリー</button></div>
     <table class="pivot-table"><thead><tr>${_settingsThemePreviewElement(appId, 'header-name', 'シート', 'ヘッダー', 'th', 'トピック名')}${_settingsThemePreviewElement(appId, 'header-status', 'シート', 'ヘッダー', 'th', '状態')}</tr></thead><tbody>
-      <tr>${_settingsThemePreviewElement(appId, 'entity', 'シート', 'エントリ列', 'td', '第1話', 'entity-name-label')}${_settingsThemePreviewElement(appId, 'cell', 'シート', 'セル', 'td', '初稿', 'db-cell')}</tr>
+      <tr>${_settingsThemePreviewElement(appId, 'entity', 'シート', 'トピック列', 'td', '第1話', 'entity-name-label')}${_settingsThemePreviewElement(appId, 'cell', 'シート', 'セル', 'td', '初稿', 'db-cell')}</tr>
       <tr class="selected">${_settingsThemePreviewElement(appId, 'selected', 'シート', '選択', 'td', '第2話', 'entity-name-label selected')}${_settingsThemePreviewElement(appId, 'active', 'シート', 'アクティブセル枠', 'td', '編集中', 'db-cell active-cell')}</tr>
       <tr><td>${_settingsThemePreviewElement(appId, 'status', 'シート', '採用ステータス', 'span', '採用', 'db-status-badge')}</td><td><span class="settings-theme-sheet-badges">${_settingsThemePreviewElement(appId, 'badge-1', 'シート', 'ソースバッジ 1', 'span', '1', 'source-badge')}${_settingsThemePreviewElement(appId, 'badge-2', 'シート', 'ソースバッジ 2', 'span', '2', 'source-badge')}</span></td></tr>
     </tbody></table>
@@ -88227,7 +88493,7 @@ function _settingsThemePreviewTree() {
   </div></div>`;
   const sectionHeader = (id, label, expanded = false) => `<div class="sidebar-section-header settings-theme-preview-hotspot" role="button" tabindex="0"${_settingsThemePreviewInteractiveAttributes(`chrome/tree/heading/${id}`, 'フォルダツリー', '見出し')} title="${esc(`${label}／クリックで書式設定`)}"><span class="sidebar-section-toggle${expanded ? ' expanded' : ''}">${lucide('chevronRight', 13)}</span><span class="sidebar-section-label">${esc(label)}</span></div>`;
   return `<div class="gb-tool-outliner settings-theme-preview-outliner settings-theme-preview-panel-surface" data-settings-theme-outliner data-settings-theme-preview-tree-content="folder"${_settingsThemePreviewSurfaceAttributes('surface/tree', 'フォルダツリーパネルの背景', '--outliner-bg', 'surface-outliner')}>
-    <div class="settings-theme-outliner-search"><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/search', '共通', 'ボタン')} tabindex="-1" aria-label="検索の書式設定" title="検索／クリックで書式設定">${lucide('search', 15)}</button><span>エントリも検索</span><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/filter', '共通', 'ボタン')} tabindex="-1" aria-label="絞り込みの書式設定" title="絞り込み／クリックで書式設定">${lucide('filter', 15)}</button></div>
+    <div class="settings-theme-outliner-search"><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/search', '共通', 'ボタン')} tabindex="-1" aria-label="検索の書式設定" title="検索／クリックで書式設定">${lucide('search', 15)}</button><span>トピックも検索</span><button type="button" class="tb-icon-btn"${_settingsThemePreviewInteractiveAttributes('chrome/tree/filter', '共通', 'ボタン')} tabindex="-1" aria-label="絞り込みの書式設定" title="絞り込み／クリックで書式設定">${lucide('filter', 15)}</button></div>
     ${sectionHeader('recent', '最近使った項目')}
     ${sectionHeader('favorites', 'お気に入り')}
     ${sectionHeader('source', 'ソースフォルダ', true)}
@@ -90669,7 +90935,7 @@ function getCurrentPublishContext() {
     return { kind: 'database', label: state.currentDbPath.split('/').pop() || 'シート', path: state.currentDbPath };
   }
   if (state?.view === 'entity' && state.currentEntityPath) {
-    return { kind: 'entity', label: state.currentEntityPath.split('/').pop()?.replace(/\.md$/, '') || 'エントリ', path: state.currentEntityPath };
+    return { kind: 'entity', label: state.currentEntityPath.split('/').pop()?.replace(/\.md$/, '') || 'トピック', path: state.currentEntityPath };
   }
   // 単一パネル対応種別 (page / csv / calendar)
   if (state?.view === 'page') {
@@ -91959,6 +92225,7 @@ async function resetLayoutToDefault() {
 
   async function _handled(call) {
     const result = await call();
+    if (result?.ok === false && result.error) throw result.error;
     return result !== false;
   }
 
@@ -101795,6 +102062,7 @@ const MeldexAutoLink = (() => {
     if (type === 'board') return 'layoutDashboard';
     if (type === 'database') return 'db';
     if (type === 'scriptnote') return 'bookOpenText';
+    if (type === 'map' || ext === 'mel-map') return 'map';
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'clapperboard';
     if (AUDIO_EXTS.has(ext)) return 'audio';
@@ -101827,6 +102095,8 @@ const MeldexAutoLink = (() => {
     const lowerName = fileName.toLowerCase();
     const inferredTypeLabel = kind === 'folder'
       ? 'フォルダ'
+      : type === 'map' || lowerName.endsWith('.mel-map')
+        ? 'マップ'
       : type === 'database' || lowerName.endsWith('.mel-sheet') || /(?:\.sheet|\.database)\.json$/.test(lowerName)
         ? 'シート'
         : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.mel-scenario')
@@ -101853,6 +102123,33 @@ const MeldexAutoLink = (() => {
     };
   }
 
+  function storageFormatLabel(filePath, meta, options) {
+    const name = String(filePath || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop().toLowerCase();
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
+    const type = String(options?.type || meta?.type || options?.kind || '').toLowerCase();
+    const nativeFormats = {
+      'mel-sheet': 'シート', 'mel-board': 'ボード', 'mel-scenario': 'シナリオ',
+      'mel-form': 'フォーム', 'mel-map': 'マップ',
+    };
+    if (Object.hasOwn(nativeFormats, ext)) return `Meldex${nativeFormats[ext]}（.${ext}）`;
+    if (ext === 'csv' || ext === 'tsv') return `${ext.toUpperCase()}ファイル（.${ext}）`;
+    if (name.endsWith('.scriptnote.json')) return 'Meldexシナリオ（JSON / .scriptnote.json）';
+    if (/\.board\.(?:json|md)$/.test(name) || ext === 'board') return `Meldexボード（.${name.endsWith('.board.json') ? 'board.json' : name.endsWith('.board.md') ? 'board.md' : 'board'}）`;
+    if (/(?:\.sheet|\.database)\.json$/.test(name)) return 'Meldexシート（JSON形式）';
+    if (name.endsWith('.calendar.json')) return 'Meldexスケジュール（.calendar.json）';
+    const appName = {database: 'シート', sheet: 'シート', board: 'ボード', scriptnote: 'シナリオ',
+      calendar: 'スケジュール', 'form-app': 'フォーム', form: 'フォーム', map: 'マップ'}[type];
+    const isFolder = meta?.kind === 'folder' || (!meta?.kind && options?.kind === 'folder');
+    if (appName) {
+      if (isFolder) return `Meldex${appName}（フォルダ形式）`;
+      if (ext === 'md') return `Meldex${appName}（Markdown / .md）`;
+      if (ext === 'json') return `Meldex${appName}（JSON形式）`;
+      return `Meldex${appName}`;
+    }
+    if (ext === 'md' && !isFolder) return 'Meldexノート（Markdown / .md）';
+    return '';
+  }
+
   function metadataRowsHtml(meta, options) {
     if (!meta) return '';
     const rows = [];
@@ -101866,6 +102163,9 @@ const MeldexAutoLink = (() => {
     } else if (linkedFolders.length > 0 || Number(meta?.links_count) > 0) {
       storageMethod = 'リンク元ファイル';
     }
+    const formatPath = isLinked ? meta?.source_path || options?.sourcePath || options?.filePath : options?.filePath;
+    const format = storageFormatLabel(formatPath, meta, options);
+    if (format) storageMethod = storageMethod === '通常のファイル' ? format : `${storageMethod} / ${format}`;
     rows.push(['保存方式', storageMethod]);
 
     if (isLinked) {
@@ -101932,7 +102232,7 @@ const MeldexAutoLink = (() => {
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
-      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, filePath, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
       + '</table>'
       + linkActionsHtml
       // タグはメモ入力欄の下（埋め込み情報の主要項目と埋め込み情報グループの間）に配置する。
@@ -101976,7 +102276,7 @@ const MeldexAutoLink = (() => {
     const isLinked = !!(options?.linked || meta?.linked || (options?.link_folder_path && options.link_folder_path !== options?.folderPath));
     const linkFolderPath = String(options?.link_folder_path || meta?.link_folder_path || options?.folderPath || '').trim();
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
-    if (rows) rows.innerHTML = metadataRowsHtml(meta, { ...options, isLinked, linkFolderPath });
+    if (rows) rows.innerHTML = metadataRowsHtml(meta, { ...options, filePath, isLinked, linkFolderPath });
     rows?.querySelector('[data-file-info-relocate]')?.addEventListener('click', () => {
       if (options?.isCurrent?.() === false) return;
       options?.onRelocate?.();
@@ -104865,7 +105165,7 @@ function _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey) {
     e2eId: 'entity-freetext-conflict-pending-banner',
     onConfirm: () => {
       _entityFreeTextReviewConflict(hostEl, entityPath, documentKey)
-        .catch(() => showStatus('エントリ本文の競合確認に失敗しました', true));
+        .catch(() => showStatus('トピック本文の競合確認に失敗しました', true));
     },
   });
 }
@@ -104891,7 +105191,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     : String(record?.localMd || '');
   window.MeldexConflictPendingBanner?.hide?.(documentKey);
   const keepLocal = typeof cfConfirm === 'function'
-    ? await cfConfirm('このエントリ本文は他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は下書きに残ります）')
+    ? await cfConfirm('このトピック本文は他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は下書きに残ります）')
     : false;
   try {
     if (!hostEl || hostEl.dataset.entityPath !== entityPath) {
@@ -104910,7 +105210,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
           });
       const resolved = coordinator?.resolveConflict?.(documentKey, generation);
       if (coordinator && !resolved) {
-        throw new Error('エントリ本文の競合状態が更新されたため、上書き結果を確定できません');
+        throw new Error('トピック本文の競合状態が更新されたため、上書き結果を確定できません');
       }
       hostEl.dataset.lastSavedMd = localMd;
       if (target.mode === 'value') {
@@ -104929,7 +105229,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
       coordinator?.bindDocumentIdentity?.(target.path, result || {});
       if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
       await window.MeldexDraftRecovery?.markSynced?.(target.path);
-      showStatus('自分の編集でエントリ本文を上書き保存しました');
+      showStatus('自分の編集でトピック本文を上書き保存しました');
       return;
     }
 
@@ -104956,11 +105256,11 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     hostEl.dataset.lastSavedTransportRevision = '';
     const resolved = coordinator?.resolveConflict?.(documentKey, generation);
     if (coordinator && !resolved) {
-      throw new Error('エントリ本文の競合状態が更新されたため、再読込結果を確定できません');
+      throw new Error('トピック本文の競合状態が更新されたため、再読込結果を確定できません');
     }
     if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
     _bindEntityFreeTextParticipant(hostEl, entityPath);
-    showStatus('最新版のエントリ本文を読み込みました');
+    showStatus('最新版のトピック本文を読み込みました');
   } catch (error) {
     _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record);
     throw error;
@@ -120259,6 +120559,8 @@ function _normalizeDetailTab(tab) {
     'calendar-today',
     'calendar-settings',
     'calendar-production',
+    'map-settings',
+    'map-selection',
     'board-card',
     'board-line',
     'board-note',
@@ -120291,6 +120593,7 @@ function _resolveDetailTabForType(type, defaultTab) {
     database: ['db-property-settings', 'db-tree', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
+    map: ['map-settings', 'map-selection'],
     csv: ['publish'],
     scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
@@ -120323,7 +120626,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -120397,6 +120700,8 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
       ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
+      ${_detailTabButtonHtml('map-settings', 'detail-tab-map', '地図')}
+      ${_detailTabButtonHtml('map-selection', 'detail-tab-map', '地点・図形')}
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
@@ -120414,6 +120719,8 @@ function _detailTabShellHtml() {
     <div id="detail-tab-calendar-today" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-calendar-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-calendar-production" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-map-settings" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-map-selection" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>
@@ -120934,11 +121241,11 @@ const _FS_FIELDS = {
       { key: '--db-th-italic', label: 'ヘッダー 斜体', type: 'toggle', on: 'italic', off: 'normal' },
       { key: '--db-th-font',   label: 'ヘッダー フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
       // エントリ列
-      { key: '--db-entity-fg',     label: 'エントリ列 色',   type: 'color' },
-      { key: '--db-entity-bg',     label: 'エントリ列 背景', type: 'color' },
-      { key: '--db-entity-bold',   label: 'エントリ列 太字', type: 'toggle', on: 'bold',   off: 'normal' },
-      { key: '--db-entity-italic', label: 'エントリ列 斜体', type: 'toggle', on: 'italic', off: 'normal' },
-      { key: '--db-entity-font',   label: 'エントリ列 フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
+      { key: '--db-entity-fg',     label: 'トピック列 色',   type: 'color' },
+      { key: '--db-entity-bg',     label: 'トピック列 背景', type: 'color' },
+      { key: '--db-entity-bold',   label: 'トピック列 太字', type: 'toggle', on: 'bold',   off: 'normal' },
+      { key: '--db-entity-italic', label: 'トピック列 斜体', type: 'toggle', on: 'italic', off: 'normal' },
+      { key: '--db-entity-font',   label: 'トピック列 フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
       // セル
       { key: '--db-cell-fg',     label: 'セル 色',   type: 'color' },
       { key: '--db-cell-bg',     label: 'セル 背景', type: 'color', bgType: 'rgba' },
@@ -122045,7 +122352,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '全体',         fields: pick(['--db-header-bg', '--db-border-color']) },
           { label: '選択', fields: pick(['--db-selection-fg', '--db-selection-color']) },
           { label: 'ヘッダー',     fields: pick(['--db-th-fg', '--db-th-bg', '--db-th-bold', '--db-th-italic', '--db-th-font']) },
-          { label: 'エントリ列',   fields: pick(['--db-entity-fg', '--db-entity-bg', '--db-entity-bold', '--db-entity-italic', '--db-entity-font']) },
+          { label: 'トピック列',   fields: pick(['--db-entity-fg', '--db-entity-bg', '--db-entity-bold', '--db-entity-italic', '--db-entity-font']) },
           { label: 'セル',         fields: pick(['--db-cell-fg', '--db-cell-bg', '--db-cell-bold', '--db-cell-italic', '--db-cell-font']) },
           { label: 'アクティブセル枠', fields: pick(['--db-active-color', '--db-active-width']) },
           { label: 'テーブル罫線', fields: pick(['--db-grid-border', '--db-show-grid']) },
@@ -123027,7 +123334,9 @@ async function _syncDetailPanel(label, path, type, opts) {
   }
   if (type !== 'calendar' && typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
-  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
+  document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = type !== 'map'; });
+  if (type !== 'map' && ['map-settings', 'map-selection'].includes(_currentDetailTab)) switchDetailTab(null);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
@@ -123062,11 +123371,6 @@ async function _syncDetailPanel(label, path, type, opts) {
 
 // DB選択時：プロパティ設定タブにシート設定を表示
 async function _showDatabaseInfoInDetailPanel(label, path) {
-  const el = _resolveDetailEl();
-  if (!el) return;
-  _ensureDetailTabShell(el);
-  const propSettings = el.querySelector('#detail-tab-db-property-settings');
-  if (!propSettings) return;
   const seq = _detailSyncSeq;
   if (!await _dpSavePending()) return;
   if (seq !== _detailSyncSeq) return;
@@ -123076,6 +123380,13 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
   const dbNotePath = window.GbBacklinks?.dbFolderNotePath?.(path) || path;
   window.GBOptionTargetContext?.set({ path: dbNotePath, contextPath: path, kind: 'database' }, 'database-select');
+  // A restored pane can temporarily lack its settings slot. Selection still
+  // has to follow the sheet instead of retaining the previously opened image.
+  const el = _resolveDetailEl();
+  if (!el) return;
+  _ensureDetailTabShell(el);
+  const propSettings = el.querySelector('#detail-tab-db-property-settings');
+  if (!propSettings) return;
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'
@@ -125872,16 +126183,18 @@ function hideBoardNoteTab() {
       user: this._getUser(),
     };
     this._savingTaskIds.add(editId);
+    let saved = false;
     try {
       await apiPut('/cal/tasks/' + editId, data);
+      saved = true;
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
       this._showStatus('ToDoを保存しました');
       return true;
     } catch {
-      this._showStatus('保存に失敗', true);
-      return false;
+      this._showStatus(saved ? 'ToDoは保存しましたが、表示を更新できませんでした。再読み込みしてください' : '保存に失敗', true);
+      return saved;
     } finally {
       this._savingTaskIds.delete(editId);
     }
@@ -132048,7 +132361,7 @@ function hideBoardNoteTab() {
         && identity.record.frontmatter.production_identity_rename?.source_entry_name === requested.name
       ));
       if (expected) return { records, identitiesBySheet, aliasMaps, moves: [], now, alreadyDone: true };
-      throw new Error(`制作管理エントリが見つかりません: ${explicit.path}`);
+      throw new Error(`制作管理トピックが見つかりません: ${explicit.path}`);
     }
 
     _validateFinalNames(context, identitiesBySheet);
@@ -132186,7 +132499,7 @@ function hideBoardNoteTab() {
 
   async function _prepareTwoPhaseMoves(context, moves) {
     if (!moves.length) return [];
-    if (typeof context.moveEntry !== 'function') throw new Error('制作管理エントリの名前変更機能を利用できません');
+    if (typeof context.moveEntry !== 'function') throw new Error('制作管理トピックの名前変更機能を利用できません');
     const reserved = new Set(moves.flatMap(move => [move.source, move.target]).map(_fold));
     const token = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
     const prepared = [];
@@ -143467,7 +143780,7 @@ function hideBoardNoteTab() {
             editorState.saveRequested = true;
           }
         } catch {
-          if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
+          if (typeof showStatus === 'function') showStatus('トピック本文の保存に失敗しました', true);
           ok = false;
           break;
         }
@@ -145516,7 +145829,7 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
     : startValue;
 
   const dbPathForHistory = dbPath;
-  const startRef = { file: ctx.startVal.file, entry_path: ctx.entityPath, property: ctx.startVal.property, candidate_index: ctx.startVal.candidate_index };
+  const startRef = { file: ctx.startVal.file, entry_path: ctx.entityPath, property: ctx.startVal.property, candidate_id: ctx.startVal?.candidate_id, entry_id: ctx.startVal?.entry_id, candidate_index: ctx.startVal.candidate_index };
   const oldStartRaw = ctx.startRaw;
   const oldEndRaw = ctx.endRaw;
   let createdEndRef = null;
@@ -145534,10 +145847,10 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
       startWritten = true;
       if (!ctx.inlineRange && ctx.mapping.endProp) {
         if (ctx.endVal) {
-          await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
+          await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_id: ctx.endVal?.candidate_id, entry_id: ctx.endVal?.entry_id, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
         } else if (endRaw && (mode === 'redo' || mode === 'apply')) {
           const res = await _apiPostValue(ctx.entityPath, ctx.mapping.endProp, endRaw, '採用', '');
-          createdEndRef = { file: res?.path, entry_path: ctx.entityPath, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
+          createdEndRef = { file: res?.path, entry_path: ctx.entityPath, property: res?.property || ctx.mapping.endProp, candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index };
           localCreatedEndRef = createdEndRef;
         }
       }
@@ -145561,7 +145874,7 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
         await _apiPutValue(startRef, { new_value: oldStartRaw });
         if (!ctx.inlineRange && ctx.mapping.endProp) {
           if (ctx.endVal) {
-            await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: oldEndRaw });
+            await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_id: ctx.endVal?.candidate_id, entry_id: ctx.endVal?.entry_id, candidate_index: ctx.endVal.candidate_index }, { new_value: oldEndRaw });
           } else if (createdEndRef) {
             await _apiPutValue(createdEndRef, { _delete: true });
           }
@@ -146634,6 +146947,19 @@ function _stampPivotValueEntityPaths(dbPath, pivotData) {
   return pivotData;
 }
 
+function _dbPivotEntityNameForPath(entityPath, pivotData) {
+  const sourcePath = _dbNormalizePath(entityPath);
+  const dbPath = _dbPathFromEntityPath(sourcePath);
+  const path = _dbNormalizePath(window.GbDbEntryIdentity?.resolvePath?.({}, sourcePath, dbPath) || sourcePath);
+  const name = _dbEntityNameFromPath(path);
+  const entities = pivotData?.entities || {};
+  const direct = entities[name];
+  if (direct && (!direct._entry_path || _dbNormalizePath(direct._entry_path) === path)) return name;
+  // 表示名だけの改名では保存先は変わらない。同名の別行より保存先の一致を優先する。
+  const found = Object.entries(entities).find(([, entity]) => entity?._entry_path && _dbNormalizePath(entity._entry_path) === path);
+  return found?.[0] || (direct?._entry_path ? '' : name);
+}
+
 function _resolveEntityPathFromValObj(val) {
   if (!val) return state.currentEntityPath || '';
   if (window.GbDbEntryIdentity) {
@@ -146766,6 +147092,7 @@ function _markDbAutoVersionDirty(dbPath) {
 const _dbPendingValueMutations = new Map();
 const _dbEntryMutationChains = new Map();
 const _dbEntryRevisionCache = new Map();
+const _dbEntryRevisionIdentityCache = new Map();
 
 function _dbTrackValueMutation(dbPath, promise) {
   const tracked = Promise.resolve(promise);
@@ -146795,8 +147122,7 @@ async function waitForPendingDbValueMutations(dbPath) {
 
 function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const normalizedEntityPath = _dbNormalizePath(entityPath);
-  const cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
-  if (Number.isInteger(cached) && cached >= 0) return cached;
+  let cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
   const revisions = [
     fallbackValue?.entry_revision,
     fallbackValue?.revision,
@@ -146805,7 +147131,15 @@ function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const dbPath = _dbPathFromEntityPath(normalizedEntityPath) || '';
   const entityName = _dbEntityNameFromPath(normalizedEntityPath);
   const considerPivot = (pivotData) => {
-    const revision = Number(pivotData?.entities?.[entityName]?._revision);
+    const name = typeof _dbPivotEntityNameForPath === 'function' ? _dbPivotEntityNameForPath(normalizedEntityPath, pivotData) : entityName;
+    const entity = pivotData?.entities?.[name];
+    const id = String(entity?._id || entity?.entry_id || '');
+    const cachedId = _dbEntryRevisionIdentityCache.get(normalizedEntityPath);
+    if (id && cachedId && id !== cachedId) {
+      _dbEntryRevisionCache.delete(normalizedEntityPath);
+      cached = NaN;
+    }
+    const revision = Number(entity?._revision);
     if (Number.isInteger(revision) && revision >= 0) revisions.push(revision);
   };
   if (typeof _dbPaneContextsForPath === 'function') {
@@ -146814,7 +147148,7 @@ function _dbLatestEntryRevision(entityPath, fallbackValue) {
   if (!dbPath || _dbNormalizePath(state.currentDbPath || '') === _dbNormalizePath(dbPath)) {
     considerPivot(state.pivotData);
   }
-  const known = revisions
+  const known = [cached, ...revisions]
     .map(value => Number(value))
     .filter(value => Number.isInteger(value) && value >= 0);
   return known.length ? Math.max(...known) : null;
@@ -146856,8 +147190,11 @@ function _dbPropagateEntryRevision(entityPath, revision) {
     addPivot(state.pivotData);
   }
   pivots.forEach(pivotData => {
-    const entityData = pivotData.entities?.[entityName];
+    const name = typeof _dbPivotEntityNameForPath === 'function' ? _dbPivotEntityNameForPath(normalizedEntityPath, pivotData) : entityName;
+    const entityData = pivotData.entities?.[name];
     if (!entityData) return;
+    const id = String(entityData._id || entityData.entry_id || '');
+    if (id) _dbEntryRevisionIdentityCache.set(normalizedEntityPath, id);
     entityData._revision = nextRevision;
     Object.values(entityData).forEach(values => {
       if (!Array.isArray(values)) return;
@@ -146866,6 +147203,13 @@ function _dbPropagateEntryRevision(entityPath, revision) {
       });
     });
   });
+}
+
+function _dbCandidateIdentityFields(value) {
+  return {
+    ...(value?.candidate_id ? { candidate_id: value.candidate_id } : {}),
+    ...(value?.entry_id ? { entry_id: value.entry_id } : {}),
+  };
 }
 
 async function _apiPutValue(valObj, updates) {
@@ -146878,6 +147222,7 @@ async function _apiPutValue(valObj, updates) {
       valObj.file = created.path || created.file || valObj.file;
       valObj.entry_path = created.new_path || created.path || valObj.entry_path;
     }
+    Object.assign(valObj, _dbCandidateIdentityFields(created));
     delete valObj._pendingCreate;
   }
   if (valObj?._topicCanonicalOnly && valObj?.topicRef) {
@@ -146901,20 +147246,33 @@ async function _apiPutValue(valObj, updates) {
     if (valObj.candidate_index != null) {
       body.property = valObj.property;
       body.candidate_index = valObj.candidate_index;
+      if (valObj.candidate_id) body.candidate_id = valObj.candidate_id;
     }
+    if (valObj.entry_id) body.expected_entry_id = valObj.entry_id;
     const targetPath = (valObj.candidate_index != null || !valObj.file || writeEntityPath?.endsWith('.md'))
       ? (writeEntityPath || valObj.file)
       : (valObj.file || writeEntityPath);
-    const res = await apiPut('/value?path=' + encodeURIComponent(targetPath), body);
+    const url = '/value?path=' + encodeURIComponent(targetPath);
+    let res;
+    try { res = await apiPut(url, body); }
+    catch (error) {
+      const ambiguous = error?.name === 'AbortError' || error?.name === 'TypeError'
+        || /timeout|network|failed to fetch/i.test(String(error?.message || ''));
+      if (!body.operation_id || !ambiguous) throw error;
+      res = await apiPut(url, body);
+    }
     _dbApplyAutoTaskRenameResult(res);
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;
     if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
+    if (res?.candidate_id) valObj.candidate_id = res.candidate_id;
     if (res?.revision != null) valObj.entry_revision = Number(res.revision);
     const entityPath = _resolveEntityPathFromValObj(valObj);
     if (res?.revision != null) _dbPropagateEntryRevision(entityPath, res.revision);
     const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
-    const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
+    const replacement = Array.isArray(res?.candidates) ? res.candidates : null;
+    const nextValue = replacement ? (replacement.find(v => ['採用', '掲載済み'].includes(v.status)) || replacement[0])?.value || ''
+      : updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
     _markDbAutoVersionDirty(dbPath);
     try {
       if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
@@ -146969,6 +147327,8 @@ function _syncValueRefAfterSave(saveRef, target) {
   if (saveRef.folder_path !== undefined) target.folder_path = saveRef.folder_path;
   if (saveRef.property !== undefined) target.property = saveRef.property;
   if (saveRef.candidate_index !== undefined) target.candidate_index = saveRef.candidate_index;
+  if (saveRef.candidate_id !== undefined) target.candidate_id = saveRef.candidate_id;
+  if (saveRef.entry_id !== undefined) target.entry_id = saveRef.entry_id;
   if (saveRef.entry_revision !== undefined) target.entry_revision = saveRef.entry_revision;
   if (saveRef._topicCandidateOriginal !== undefined) {
     target._topicCandidateOriginal = JSON.parse(JSON.stringify(saveRef._topicCandidateOriginal));
@@ -147047,6 +147407,20 @@ function _entityDefaultName(baseName, index) {
   return index <= 1 ? base : base + index;
 }
 
+function _entityNextDefaultIndex(existingNames, baseName) {
+  const base = String(baseName || '無題').trim() || '無題';
+  let next = 1;
+  for (const name of existingNames || []) {
+    if (name === base) next = Math.max(next, 2);
+    else if (String(name).startsWith(base)) {
+      const suffix = String(name).slice(base.length);
+      const number = /^[1-9]\d*$/.test(suffix) ? Number(suffix) : NaN;
+      if (Number.isSafeInteger(number + 1)) next = Math.max(next, number + 1);
+    }
+  }
+  return next;
+}
+
 const _dbPendingEntityCreates = new Map();
 
 async function waitForPendingDbEntityCreates(dbPath) {
@@ -147068,12 +147442,13 @@ function _dbNextLocalEntityName(dbPath, existingNames, baseName) {
   const used = new Set((existingNames || []).map(name => String(name || '')).filter(Boolean));
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
     if (name) used.add(name);
   });
-  let index = 1;
+  let index = _entityNextDefaultIndex(used, baseName);
   let candidate = _entityDefaultName(baseName, index);
   while (used.has(candidate)) {
     index += 1;
@@ -147135,6 +147510,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   // 同じ候補名へ収束し、409 が連鎖して「同名エントリが多数」に至るのを防ぐ。
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
@@ -147142,7 +147518,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   });
   const bodyExtra = options.body && typeof options.body === 'object' ? options.body : {};
   const baseName = String(options.baseName || options.name || '無題').trim() || '無題';
-  let index = 1;
+  let index = _entityNextDefaultIndex(used, baseName);
   let lastError = null;
   for (let attempt = 0; attempt < 50; attempt++) {
     let name = String(options.name || '').trim();
@@ -147163,7 +147539,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
         { silentError: true, timeoutMs: 120000 }
       );
       const path = (response && (response.path || response.entry_path)) || `${dbPath}/${name}.md`;
-      return { response, name, path };
+      return { response, name: response?.name || name, path };
     } catch (error) {
       lastError = error;
       if (_isEntityCreateNameConflict(error)) continue;
@@ -147855,6 +148231,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       const body = {
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
+        expected_entry_name: item.name,
         assetId: item.assetId || undefined,
         operation_id: item.operationId,
         ...(item.confirmationPayload || {}),
@@ -148043,6 +148420,13 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
   function deleteEntries(options) {
     const dbPath = normalize(options?.dbPath);
     if (!dbPath) return Promise.reject(new Error('削除対象のシートが特定できません'));
+    const rawEntries = Array.isArray(options?.entries) ? options.entries : [];
+    const pivot = options?.ctx?.pivotData;
+    if (pivot?.new_format === true && rawEntries.some(entry => !String(
+      entry?.entryId || entry?.entry_id || entryIdFromEntity(pivot.entities?.[entry?.name || entry?.entityName]),
+    ).trim())) {
+      return Promise.reject(new Error('保存済みの行IDを確認できないため削除を中止しました。行を選び直してください'));
+    }
     const queue = getDeleteQueue(dbPath);
     addQueueContext(queue, options?.ctx);
     const requestEntries = [];
@@ -150161,6 +150545,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     },
     // 互換テスト用: showUnifiedFilterModal()
     { label: 'すべての条件フィルター...', action: () => showUnifiedFilterModal({ ctx }) },
+    { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, '__entity__', { switchTab: true, ctx, source: e?.target || e?.currentTarget }) },
     { type: 'sep' },
     ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' トピック名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
@@ -151528,6 +151913,7 @@ function _ufRefreshTarget(ctx, dbPath, options = {}) {
     { type: 'checkbox', label: 'チェックボックス', icon: 'checkSquare' },
     { type: 'color', label: 'カラー', icon: 'palette' },
     { type: 'date', label: '日時', icon: 'calendar' },
+    { type: 'location', label: '場所', icon: 'mapPin' },
     { type: 'link', label: 'リンク', icon: 'externalLink' },
     { type: 'multi-link', label: 'リンク（複数）', icon: 'link2' },
     { type: 'image', label: '画像・ファイル', icon: 'image' },
@@ -153482,7 +153868,7 @@ async function _buttonActionWriteValue(dbPath, entityName, entityPath, propName,
     const result = await _apiPostValue(entityPath, propName, value, '採用', '');
     _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, null, value, {
       file: result?.path || result?.file,
-      candidate_index: result?.candidate_index,
+      candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       status: '採用',
       note: '',
       property: propName,
@@ -153560,7 +153946,7 @@ function _renderCalendarSyncEditor(cs) {
         <input id="pt-calsync-title-tmpl" type="text" value="${esc(safe.titleTemplate || '{entryName}')}" placeholder="{entryName}">
       </div>
       <div class="field"><label>説明テンプレート ${fieldHelp('テンプレ変数に加え、トピックの採用列名も {列名} で参照できます')}</label>
-        <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストエントリ: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
+        <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストトピック: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
       </div>
       <div class="field"><label>色ルール (JSON 配列) ${fieldHelp('上から順に評価し、最初にマッチしたルールの color を使います。default ルールがフォールバックになります')}</label>
         <textarea id="pt-calsync-color-rules" rows="5" placeholder='[
@@ -154505,10 +154891,17 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
     // 制作管理シートのエントリ名列は固定名（変更不可）
     const labelLocked = typeof isProductionManagementSheetPath === 'function'
       && isProductionManagementSheetPath(dbPath);
+    let nameTemplate = getDbViewConfig(dbPath).entryNameTemplate || '';
+    const propHints = (pivotData?.properties || []).map(p => `{${p}}`).join(', ');
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
       <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="トピック名"'}></div>
       ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
+      ${labelLocked ? '' : `<div class="field">
+        <label for="entity-column-name-template">トピック名生成 ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
+        <input id="entity-column-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}" data-e2e-id="entity-column-name-template">
+        <div class="pt-autosave-status" aria-live="polite" data-e2e-id="entity-column-name-template-status"></div>
+      </div>`}
       <div class="field"><label class="pt-check-label">
         <input id="entity-column-pinned" type="checkbox" ${pinned ? 'checked' : ''}>
         列を固定
@@ -154532,6 +154925,50 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
       });
       if (labelInput && typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(labelInput, commitLabel);
       else labelInput?.addEventListener('blur', commitLabel);
+      const entitySettingsRoot = target.querySelector('[data-db-property-settings-root]');
+      entitySettingsRoot._ptDbPath = dbPath;
+      const templateInput = target.querySelector('#entity-column-name-template');
+      const templateStatus = target.querySelector('[data-e2e-id="entity-column-name-template-status"]');
+      let templateSave = null;
+      const commitTemplate = () => {
+        if (templateSave) return templateSave;
+        const nextTemplate = templateInput.value.trim();
+        if (nextTemplate === nameTemplate) return Promise.resolve(true);
+        templateInput.disabled = true;
+        templateStatus.textContent = '保存中...';
+        templateSave = (async () => {
+          try {
+            const config = _cloneDbViewObject(getDbViewConfig(dbPath));
+            config.entryNameTemplate = nextTemplate;
+            const saved = await saveDbViewConfigImmediate(dbPath, config, {
+              ctx, historyLabel: 'シート設定: トピック名生成',
+            });
+            if (!saved) throw new Error('表示設定の保存に失敗しました');
+            nameTemplate = nextTemplate;
+            templateInput.value = nextTemplate;
+            templateStatus.textContent = '保存しました';
+            return true;
+          } catch (error) {
+            templateStatus.textContent = '保存できませんでした。Enterで再保存できます';
+            showStatus('トピック名生成の設定を保存できませんでした: ' + (error?.message || error), true);
+            return false;
+          } finally {
+            templateInput.disabled = false;
+          }
+        })().finally(() => { templateSave = null; });
+        return templateSave;
+      };
+      entitySettingsRoot._ptFlushAutosave = async () => {
+        if (!await commitTemplate()) throw new Error('トピック名生成の設定を保存できませんでした');
+      };
+      templateInput.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Enter') { event.preventDefault(); templateInput.blur(); }
+        else if (event.key === 'Escape') {
+          event.preventDefault(); templateInput.value = nameTemplate; templateStatus.textContent = ''; templateInput.blur();
+        }
+      });
+      templateInput.addEventListener('blur', commitTemplate);
     }
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
       if (pinnedRange && typeof setPinnedColumnRange === 'function') {
@@ -154926,6 +155363,10 @@ async function flushPendingDbPropertySettings(dbPath) {
     return typeof root._ptFlushAutosave === 'function' && (!target || rootPath === target);
   });
   await Promise.allSettled(roots.map(root => Promise.resolve(root._ptFlushAutosave())));
+  const entityRoots = Array.from(document.querySelectorAll('[data-db-property-settings-root]')).filter(root =>
+    typeof root._ptFlushAutosave === 'function' && (!target || _ptNormalizeDbPath(root._ptDbPath) === target));
+  // トピック名生成も再読込前に確定し、失敗時は入力欄を残して呼出元へ伝える。
+  await Promise.all(entityRoots.map(root => root._ptFlushAutosave()));
   if (typeof waitForPendingDbPropertyTypeSaves === 'function') {
     await waitForPendingDbPropertyTypeSaves(target);
   }
@@ -155055,7 +155496,7 @@ async function _relationEntryFromCreate(relationDbPath, name, created) {
     const map = await _getRelationMap(relationDbPath);
     return {name, id:map?.nameToId?.[name] || name};
   }
-  name = String(created.path || '').replace(/\\/g,'/').split('/').pop().replace(/\.md$/i,'') || name;
+  name = created.name || String(created.path || '').replace(/\\/g,'/').split('/').pop().replace(/\.md$/i,'') || name;
   // The response already identifies the committed row. Resolve its label
   // locally instead of rereading the whole target sheet before saving a value.
   // Keep the map stale so rollups/defaults are fetched from the durable sheet.
@@ -155164,7 +155605,8 @@ async function _preloadRelationMapsForDb(dbPath, pivotData, ctx) {
   }));
 }
 
-function _getPivotEntityName(entityPath) {
+function _getPivotEntityName(entityPath, ctx) {
+  if (typeof _dbPivotEntityNameForPath === 'function') return _dbPivotEntityNameForPath(entityPath, _dbPivotDataForContext(ctx));
   return (entityPath || '').split('/').pop().replace(/\.md$/, '');
 }
 
@@ -155200,7 +155642,7 @@ function _dbScopeForPath(dbPath) {
 }
 
 function _getPivotEntityData(entityPath, ctx) {
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const data = _dbPivotDataForContext(ctx);
   return data?.entities?.[entityName] || null;
 }
@@ -155213,10 +155655,10 @@ function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra, ctx)
   const values = entData[propName];
   let target = values.find(v => v === val);
   if (!target && val) {
-    target = values.find(v => v.file === val.file && v.property === val.property
+    target = values.find(v => val.candidate_id ? v.candidate_id === val.candidate_id : v.file === val.file && v.property === val.property
       && (val.candidate_index == null || v.candidate_index === val.candidate_index));
   }
-  if (!target && val && values.length === 1) target = values[0];
+  if (!target && val && !val.candidate_id && values.length === 1) target = values[0];
   if (!target && newValue) {
     target = {
       property: propName,
@@ -155232,6 +155674,8 @@ function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra, ctx)
   if (extra && extra.property !== undefined) target.property = extra.property;
   else if (target.property == null) target.property = propName;
   if (extra && extra.candidate_index !== undefined) target.candidate_index = extra.candidate_index;
+  if (extra?.candidate_id) target.candidate_id = extra.candidate_id;
+  if (extra?.entry_id || entData._id) target.entry_id = extra?.entry_id || entData._id;
   if (extra && extra.status !== undefined) target.status = extra.status;
   else if (target.status == null) target.status = val?.status || '採用';
   if (extra && extra.note !== undefined) target.note = extra.note;
@@ -155275,7 +155719,7 @@ function _snapshotPivotValues(values) {
     note: v?.note || '',
     file: v?.file || '',
     property: v?.property || '',
-    candidate_index: v?.candidate_index,
+    candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v?.candidate_index,
   }));
 }
 function _sortCascadeDeleteValues(values) {
@@ -155421,7 +155865,7 @@ async function _restoreCascadeDependentValues(entityPath, clears, options = {}) 
             file: result?.path || result?.file || value.file || '',
             entry_path: entityPath,
             property: result?.property || clear.propName,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           };
           const duplicate = entData[clear.propName].some(current =>
             _dbValueToString(current?.value) === _dbValueToString(restored.value)
@@ -155462,7 +155906,7 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
   const container = td?.querySelector('.cell-values');
   if (!td || !container || !dbPath) return false;
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
@@ -155535,7 +155979,12 @@ async function _finalizeRelationCellUpdate(targetEl, entityPath, propName, ptc, 
     });
     const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
     if (td) _refreshDerivedCellsInRow(td, entityPath, { dbPath, ctx });
-    if (td && typeof setActiveCell === 'function') setActiveCell(td);
+    const focused = document.activeElement;
+    if (td && typeof setActiveCell === 'function' && (!focused || focused === document.body || td.contains(focused))) setActiveCell(td);
+    return;
+  }
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    if (typeof _dbReloadAfterEntityCreate === 'function') void _dbReloadAfterEntityCreate(ctx, dbPath);
     return;
   }
   if (dbPath) await selectDatabase(dbPath, ctx);
@@ -155565,7 +156014,7 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
   const tr = editedTd.closest('tr');
   if (!tr) return;
   const propTypes = getPropertyTypes(dbPath, ctx) || {};
-  const entityName = _getPivotEntityName(entityPath);
+  const entityName = _getPivotEntityName(entityPath, ctx);
   const entityData = pivotData.entities[entityName];
   if (!entityData) return;
 
@@ -155694,15 +156143,46 @@ function _removeLocalPivotValue(val, entityPath, propName, options = {}) {
   if (!val) return;
   const dbPath = options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : '');
   const ctx = options.ctx || (dbPath && typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
-  const entName = entityPath.replace(/\.md$/, '').split('/').pop();
   const targets = [];
   if (ctx?.pivotData?.entities) targets.push(ctx.pivotData);
+  if (dbPath && typeof _dbPaneContextsForPath === 'function') {
+    _dbPaneContextsForPath(dbPath).forEach(pane => {
+      if (pane?.pivotData?.entities) targets.push(pane.pivotData);
+    });
+  }
   if (state.pivotData?.entities && (!dbPath || state.currentDbPath === dbPath)) targets.push(state.pivotData);
+  const removedIndex = val.candidate_index;
+  const visitedValues = new Set();
+  const removals = [];
   targets.forEach(pivotData => {
+    const entName = typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
     const entData = pivotData.entities?.[entName];
-    if (!entData || !Array.isArray(entData[propName])) return;
-    const idx = entData[propName].indexOf(val);
-    if (idx >= 0) entData[propName].splice(idx, 1);
+    const values = entData?.[propName];
+    if (!Array.isArray(values) || visitedValues.has(values)) return;
+    visitedValues.add(values);
+    let idx = values.indexOf(val);
+    if (idx < 0) idx = values.findIndex(candidate => {
+      if (val.candidate_id) return candidate.candidate_id === val.candidate_id;
+      if (Number.isInteger(removedIndex)) return candidate.candidate_index === removedIndex;
+      if (val._pendingCreate) return candidate._pendingCreate === val._pendingCreate;
+      return !!val.file && candidate.file === val.file && candidate.candidate_index == null;
+    });
+    if (idx < 0) return;
+    removals.push({ values, idx });
+  });
+  // 配列だけを複製したペインもあるため、番号を変える前に全削除対象を確定する。
+  removals.forEach(({ values, idx }) => values.splice(idx, 1));
+  const adjustedCandidates = new Set();
+  removals.forEach(({ values }) => {
+    // SQLiteの候補配列は削除で詰められる。表示順とは独立して保存先番号を追従する。
+    if (Number.isInteger(removedIndex)) values.forEach(candidate => {
+      if (adjustedCandidates.has(candidate)) return;
+      adjustedCandidates.add(candidate);
+      if (Number.isInteger(candidate.candidate_index) && candidate.candidate_index > removedIndex) {
+        candidate.candidate_index--;
+      }
+    });
   });
 }
 
@@ -155722,8 +156202,17 @@ function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
     return;
   }
   if (currentMode !== 'pivot' || !dbPath) return;
-  const td = anchorEl?.closest?.('td');
+  let td = anchorEl?.closest?.('td');
+  if (td?.isConnected === false && typeof _currentPivotTable === 'function') {
+    const name = _getPivotEntityName(entityPath, ctx);
+    td = _currentPivotTable(ctx)?.querySelector?.(`tr[data-entity-name="${_cssEscapeAttr(name)}"] td[data-prop-name="${_cssEscapeAttr(propName)}"]`) || td;
+  }
+  if (td?.querySelector?.('.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) return;
   if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx })) return;
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    if (typeof _dbReloadAfterEntityCreate === 'function') void _dbReloadAfterEntityCreate(ctx, dbPath);
+    return;
+  }
   selectDatabase(dbPath, ctx, { silent: true });
 }
 
@@ -156461,7 +156950,7 @@ async function _dbRestoreDeletedOptionWrites(writes) {
       const result = await _apiPostValue(old.entry_path || old.file, old.property, write.oldValue,
         old.status || '採用', old.note || '', old.rich_html, old);
       restored.push({ ref: { ...old, file: result.path || old.file,
-        candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
     }
   } catch (error) {
     // Undoの途中で失敗しても、成功した分だけ復元された状態を残さない。
@@ -157201,7 +157690,7 @@ async function _dbLinkCommitValue(args) {
         _upsertLocalPivotValue(entityPath, propName, existing, newPath, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -157227,7 +157716,7 @@ async function _dbLinkCommitValue(args) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -157267,7 +157756,7 @@ async function _dbLinkCommitValue(args) {
         file: filePath,
         entry_path: entityPath,
         property: result?.property || propName,
-        candidate_index: result?.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
       const dbScope = typeof _dbScopeForPath === 'function'
         ? _dbScopeForPath(dbPath)
@@ -157283,7 +157772,7 @@ async function _dbLinkCommitValue(args) {
             file: redo?.path || redo?.file || currentRef.file,
             entry_path: entityPath,
             property: redo?.property || propName,
-            candidate_index: redo?.candidate_index,
+            candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
           };
           if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
         },
@@ -158012,28 +158501,13 @@ function _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName) {
 
 function _dbRefreshEntityRenameInBackground(ctx, dbPath, entityName) {
   if (!dbPath) return;
-  setTimeout(() => {
-    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-    const reload = window.GbDbEntryIdentity
-      ? window.GbDbEntryIdentity.reload(ctx, dbPath)
-      : selectDatabase(dbPath, ctx, {
-          silent: true,
-          skipRecent: true,
-          skipNavPush: true,
-          skipSaveLastView: true,
-          skipAutoVersion: true,
-        });
-    Promise.resolve(reload).then(() => {
-      if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-      setTimeout(() => {
-        if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-        restoreActiveCellByEntityName(entityName, ctx);
-      }, 50);
-    }).catch(() => {});
-  }, 0);
+  // selectDatabase は取得開始時に pivotData を空にする。連続追加の途中では
+  // 使用せず、作成後と同じ入力・保存を守る再読込へまとめる。
+  void _dbReloadAfterEntityCreate(ctx, dbPath);
 }
 
 function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, dbPath) {
+  if (typeof _dbNoteEntityEdit === 'function') _dbNoteEntityEdit(dbPath);
   // 楽観再描画より前に manualOrder も同じ名前へ付け替える。
   // 画面だけ先に新名へ変わって manualOrder が旧名のままだと、保存完了まで一度末尾へ落ちる。
   // 保存失敗時は呼び出し側が newName → oldName で本関数を再実行するため、順序も同時に戻る。
@@ -158041,6 +158515,17 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
     _dbRenameLocalRefs(dbPath, oldName, newName);
   }
   const changed = _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName);
+  const ownInput = td?.querySelector?.('.entity-rename-input');
+  if (changed && !ownInput?.isConnected && typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    // 先行保存の失敗で名前を戻す場合も、次の入力欄を全体描画で破棄しない。
+    const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(ctx, oldName) : null;
+    if (row) {
+      row.dataset.entityName = newName;
+      row.querySelectorAll('.entity-name-label').forEach(label => { label.textContent = newName; });
+      row.querySelectorAll('[data-entity-name]').forEach(el => { el.dataset.entityName = newName; });
+    }
+    return true;
+  }
   if (changed && typeof renderPivot === 'function') {
     renderPivot(ctx);
     setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
@@ -158055,6 +158540,28 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
   td?.querySelector?.('.entity-rename-input')?.remove?.();
   setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
   return false;
+}
+
+function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
+  // 作成待ちの間も改名全体を追跡し、再読込がその隙間へ入らないようにする。
+  const saved = (async () => {
+    if (entity?._topicCanonicalOnly && entity?.topicRef) {
+      return window.MeldexTopicPlacementUI.renameProjectedTopic(entity, newName);
+    }
+    const path = entity?._entry_path || (typeof _dbResolveEntityPathForRename === 'function'
+      ? await _dbResolveEntityPathForRename(dbPath, oldName)
+      : _entityPath(dbPath, oldName));
+    const result = await window.GbDbEntryIdentity.rename({
+      dbPath, oldName, newName, path, ctx,
+      entryId: entity?._id || entity?.entry_id || '',
+    });
+    // 更新日時なども確定した1行の応答から反映する。
+    if (result?.entity_data && typeof _dbApplyCreatedEntityData === 'function') {
+      _dbApplyCreatedEntityData(dbPath, entity, result.entity_data);
+    }
+    return result;
+  })();
+  return typeof _dbTrackValueMutation === 'function' ? _dbTrackValueMutation(dbPath, saved) : saved;
 }
 
 function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
@@ -158108,27 +158615,18 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
     }
-    const stableEntryId = _renEntities?.[oldName]?._id || _renEntities?.[oldName]?.entry_id || '';
     const projectedEntity = _renEntities?.[oldName];
-    const originalEntryPath = projectedEntity?._entry_path || null;
     // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
     // 保存に失敗したら catch で旧名へ戻す。
     _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
     try {
       if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
-        await window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName);
+        await _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
         restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
         return;
       }
-      const renamePath = originalEntryPath || (typeof _dbResolveEntityPathForRename === 'function'
-        ? await _dbResolveEntityPathForRename(dbPath, oldName)
-        : _entityPath(dbPath, oldName));
-      await window.GbDbEntryIdentity.rename({
-        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
-        entryId: stableEntryId,
-      });
+      await _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
       _dbUndoRename(dbPath, oldName, newName, _renCtx);
-      _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
     } catch(e) {
       // 通信結果不明では、サーバー側だけ成功した変更を画面から消さない。
       if (!e?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -158157,13 +158655,11 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         if (typeof showStatus === 'function') showStatus('同じ名前のトピックが既にあります: ' + newName, true);
         renderPivot(_renCtx); doAfter(); return;
       }
-      const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';
       const projectedEntity = _renEntitiesTab?.[oldName];
-      const originalEntryPath = projectedEntity?._entry_path || null;
       // 楽観的更新: 先に新名を表示してからサーバ保存
       _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
-        window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName)
+        _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity)
           .then(() => setTimeout(doAfter, 50))
           .catch((error) => {
             _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -158172,15 +158668,8 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           });
         return;
       }
-      const renamePathPromise = originalEntryPath ? Promise.resolve(originalEntryPath) : typeof _dbResolveEntityPathForRename === 'function'
-        ? _dbResolveEntityPathForRename(dbPath, oldName)
-        : Promise.resolve(_entityPath(dbPath, oldName));
-      renamePathPromise.then(renamePath => window.GbDbEntryIdentity.rename({
-        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
-        entryId: stableEntryId,
-      })).then(() => {
+      _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity).then(() => {
         _dbUndoRename(dbPath, oldName, newName, _renCtx);
-        _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         setTimeout(doAfter, 50);
       }).catch((error) => {
         if (!error?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -158213,6 +158702,8 @@ function restoreActiveCellByProp(propName, ctxOverride) {
 
 function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
   setTimeout(() => {
+    // 前の保存の完了で、既に始まっている次の入力からフォーカスを奪わない。
+    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctxOverride)) return;
     const table = _currentPivotTable(ctxOverride);
     if (!table) return;
     const dataRows = _currentPivotRows(ctxOverride);
@@ -158243,6 +158734,7 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
 }
 
 function restoreActiveCellByEntityName(entityName, ctxOverride) {
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctxOverride)) return;
   const table = _currentPivotTable(ctxOverride);
   if (!table) return;
   const dataRows = _currentPivotRows(ctxOverride);
@@ -158394,6 +158886,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
+  if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    MeldexSheetLocation.editCell(td, entityPath, propName, null, { dbPath, ctx }); return;
+  }
   // 値のあるリレーションは、クリックでもキーボードでも同じ置換エディタを使う。
   // 空セル用の追加経路では既存選択・解除・逆参照の更新を扱えない。
   if ((type === 'relation' || type === 'multi-relation') && typeof _showRelationDropdown === 'function') {
@@ -158652,7 +159147,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         entry_path: entityPath,
         entry_id: result?.entry_id || '',
         property: result?.property || propName,
-        candidate_index: result?.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
       const bidirectionalCtx = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional)
         ? { entityPath, propName, ptc }
@@ -158743,7 +159238,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, optimisticValue, value, {
           file: filePath,
           property: propName,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           status: writeStatus,
           note: '',
         }, ctx);
@@ -158773,7 +159268,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             status: writeStatus,
             note: '',
             file: filePath,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           });
         }
         }
@@ -158851,7 +159346,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, value, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -158878,7 +159373,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -158926,7 +159421,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           _upsertLocalPivotValue(entityPath, propName, existing, nextValue, {
             file: existing.file,
             property: existing.property || propName,
-            candidate_index: existing.candidate_index,
+            candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
             status: existing.status || '採用',
             note: existing.note || '',
           }, ctx);
@@ -158958,7 +159453,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
                   file: result.path || currentRef.file,
                   entry_path: entityPath,
                   property: propName,
-                  candidate_index: result.candidate_index,
+                  candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                   value: oldValue,
                   status: savedStatus,
                   note: savedNote,
@@ -158995,7 +159490,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: saveRef.file || existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -161145,15 +161640,16 @@ function _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx) {
 }
 
 function _dbCanPersistCellValueRef(valueRef) {
+  if (valueRef?._pendingCreate) return true;
   const file = String(valueRef?.file || '').trim().replace(/\\/g, '/').toLowerCase();
   return !!file && file.endsWith('.md');
 }
 
 async function _dbDeleteValueRef(valueRef, propName) {
-  if (!valueRef?.file) return;
+  if (!valueRef?.file && !valueRef?._pendingCreate) return;
   const ref = { ...valueRef, property: valueRef.property || propName };
   if (!_dbCanPersistCellValueRef(ref)) return;
-  if (ref.candidate_index != null) {
+  if (ref.candidate_index != null || ref._pendingCreate) {
     await _apiPutValue(ref, { _delete: true });
   } else {
     await apiPost('/outliner/delete', { path: ref.file });
@@ -161234,6 +161730,48 @@ function _dbYieldCellBatchPaint() {
   });
 }
 
+async function _dbPersistAtomicCellCandidates(entityPath, propName, candidates, ctx, entryId, rawSnapshot = false) {
+  const payload = await Promise.all(candidates.map(async value => {
+    let candidate = value;
+    if (value._pendingCreate) candidate = { ...value, ..._dbCandidateIdentityFields(await value._pendingCreate) };
+    if (rawSnapshot) return { ...candidate };
+    if (candidate.candidate_id && !candidate._dbAtomicEdited) return { candidate_id: candidate.candidate_id };
+    const result = { value: candidate.value ?? '', status: candidate.status || '案', note: candidate.note || '', rich_html: candidate.rich_html || '' };
+    for (const key of ['candidate_id', 'link']) {
+      if (candidate[key] !== undefined) result[key] = candidate[key];
+    }
+    return result;
+  }));
+  const operationId = globalThis.crypto?.randomUUID?.() || ('cell-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+  return _apiPutValue({ file: entityPath, entry_path: entityPath, entry_id: entryId, property: propName }, {
+    property: propName, _replace_candidates: payload, operation_id: operationId, _candidate_snapshot: rawSnapshot,
+  });
+}
+
+function _dbPushAtomicCellHistory(ops, ctx) {
+  const records = ops.map(op => op.atomic).filter(value => Array.isArray(value?.before) && Array.isArray(value?.after));
+  if (!records.length || typeof historyPush !== 'function') return;
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const apply = async before => {
+    const applied = [];
+    try {
+      for (const record of (before ? [...records].reverse() : records)) {
+        const result = await _dbPersistAtomicCellCandidates(record.entityPath, record.propName,
+          before ? record.before : record.after, ctx, record.entryId, true);
+        applied.push({ record, previous: result.previous_candidates });
+      }
+    } catch (error) {
+      for (const { record, previous } of applied.reverse()) {
+        await _dbPersistAtomicCellCandidates(record.entityPath, record.propName, previous, ctx, record.entryId, true);
+      }
+      throw error;
+    } finally {
+      if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, forceReload: true });
+    }
+  };
+  historyPush(records[0].label + ': ' + records.length + ' セル', () => apply(true), () => apply(false), _dbScopeForPath(dbPath));
+}
+
 function _dbPrepareClearCellValues(td, ctx) {
   const { entityName, propName } = _dbCellEntityAndProp(td);
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
@@ -161243,20 +161781,40 @@ function _dbPrepareClearCellValues(td, ctx) {
   const entityData = data?.entities?.[entityName];
   if (!entityData || !Array.isArray(entityData[propName]) || entityData[propName].length === 0) return null;
   const snapshot = _dbSnapshotCellValues(entityData, propName);
+  const atomic = ctx?.pivotData?.atomic_candidate_replace && entityData._id
+    ? { entityPath, propName, entryId: entityData._id, label: 'セル消去' } : null;
+  const mutationSession = {};
+  td._dbInlineEditorSession = mutationSession;
   entityData[propName] = [];
   const refreshed = _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
   if (!refreshed && ctx) ctx._clipboardPasteNeedsRefresh = true;
   return {
+    atomic,
     target: td,
     entityPath,
     propName,
     persist: async () => {
-      for (const valueRef of _dbDeleteOrderForCellSnapshot(snapshot)) {
+      if (atomic) {
+        const result = await _dbPersistAtomicCellCandidates(entityPath, propName, [], ctx, atomic.entryId);
+        atomic.before = result.previous_candidates;
+        atomic.after = result.candidates;
+        return;
+      }
+      // 作成待ちの候補番号を確定してから降順にする。未確定の0番から消すと
+      // 後続候補が前へ詰まり、次の削除が別の値を指す。
+      const savedSnapshot = await Promise.all(snapshot.map(async value => {
+        if (!value._pendingCreate) return value;
+        const saved = await value._pendingCreate;
+        return { ...value, file: saved?.path || saved?.file || value.file,
+          candidate_id: saved?.candidate_id, entry_id: saved?.entry_id, candidate_index: saved?.candidate_index ?? value.candidate_index };
+      }));
+      for (const valueRef of _dbDeleteOrderForCellSnapshot(savedSnapshot)) {
         await _dbDeleteValueRef(valueRef, propName);
       }
     },
     rollback: () => {
-      _dbRestoreCellValues(entityData, propName, snapshot);
+      if (td._dbInlineEditorSession !== mutationSession) return;
+      _dbRestoreCellValues(entityData, propName, snapshot.filter(value => !value._pendingCreate?._dbCreateFailed));
       _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
   };
@@ -161289,12 +161847,14 @@ function _dbPrepareWriteClipboardCellValue(td, value, ctx, meta = {}) {
   const existingRef = existing ? { ...existing, property: existing.property || propName } : null;
   const status = meta.status || existing?.status || '採用';
   const note = meta.note || existing?.note || '';
+  const mutationSession = {};
+  td._dbInlineEditorSession = mutationSession;
   let localValue = null;
   if (typeof _upsertLocalPivotValue === 'function') {
     localValue = _upsertLocalPivotValue(entityPath, propName, existing, value, {
       file: existing?.file || '',
       property: propName,
-      candidate_index: existing?.candidate_index,
+      candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing?.candidate_index,
       status,
       note,
     }, ctx);
@@ -161307,37 +161867,82 @@ function _dbPrepareWriteClipboardCellValue(td, value, ctx, meta = {}) {
     localValue = { property: propName, value, status, note, file: '', candidate_index: null };
     entityData[propName].push(localValue);
   }
+  if (localValue) delete localValue.rich_html;
+  let resolveCreated, rejectCreated;
+  const pendingCreate = !existing || !_dbCanPersistCellValueRef(existingRef)
+    ? new Promise((resolve, reject) => { resolveCreated = resolve; rejectCreated = reject; }) : null;
+  if (pendingCreate) {
+    pendingCreate.catch(() => {});
+    if (localValue) localValue._pendingCreate = pendingCreate;
+  }
   const refreshed = _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
   if (!refreshed && ctx) ctx._clipboardPasteNeedsRefresh = true;
+  const atomic = ctx?.pivotData?.atomic_candidate_replace && entityData._id
+    ? { entityPath, propName, entryId: entityData._id, label: 'セル貼り付け' } : null;
+  const atomicDesired = atomic ? entityData[propName].map(candidate => ({ ...candidate, _dbAtomicEdited: candidate === localValue }))
+    .sort((a, b) => (a.candidate_index ?? Number.MAX_SAFE_INTEGER) - (b.candidate_index ?? Number.MAX_SAFE_INTEGER))
+    .map(candidate => {
+      if (candidate._pendingCreate !== pendingCreate) return candidate;
+      const copy = { ...candidate }; delete copy._pendingCreate; return copy;
+    }) : null;
   return {
+    atomic,
     target: td,
     entityPath,
     propName,
     persist: async () => {
+      if (atomic) {
+        try {
+          const result = await _dbPersistAtomicCellCandidates(entityPath, propName, atomicDesired, ctx, atomic.entryId);
+          atomic.before = result.previous_candidates;
+          atomic.after = result.candidates;
+          const index = existing?.candidate_id ? result.candidates.findIndex(c => c.candidate_id === existing.candidate_id) : 0;
+          const reference = { path: result.new_path || entityPath, file: result.new_path || entityPath,
+            property: propName, entry_id: result.entry_id, candidate_id: result.candidates[index]?.candidate_id,
+            candidate_index: index, entry_revision: result.revision, revision: result.revision };
+          if (localValue) _syncValueRefAfterSave(reference, localValue);
+          resolveCreated?.(reference);
+          return;
+        } catch (error) {
+          if (pendingCreate) pendingCreate._dbCreateFailed = true;
+          rejectCreated?.(error);
+          throw error;
+        } finally {
+          if (pendingCreate && localValue?._pendingCreate === pendingCreate) delete localValue._pendingCreate;
+        }
+      }
       if (existing && _dbCanPersistCellValueRef(existingRef)) {
         await _apiPutValue(existingRef, { new_value: value });
-        existing.value = value;
         existing.property = propName;
         if (existingRef?.file) existing.file = existingRef.file;
         if (existingRef?.candidate_index !== undefined) existing.candidate_index = existingRef.candidate_index;
-        delete existing.rich_html;
         if (localValue && localValue !== existing) {
           localValue.file = existing.file;
           localValue.candidate_index = existing.candidate_index;
         }
-        _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
+        if (td._dbInlineEditorSession === mutationSession) _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
         return;
       }
-      const result = await _apiPostValue(entityPath, propName, value, status, note);
-      if (localValue) {
-        localValue.file = result?.path || entityPath;
-        localValue.candidate_index = result?.candidate_index;
-        localValue.property = propName;
+      try {
+        const result = await _apiPostValue(entityPath, propName, value, status, note);
+        if (localValue) {
+          localValue.file = result?.path || entityPath;
+          localValue.candidate_index = result?.candidate_index;
+          localValue.property = propName;
+        }
+        resolveCreated?.(result);
+        if (td._dbInlineEditorSession === mutationSession) _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
+      } catch (error) {
+        if (pendingCreate) pendingCreate._dbCreateFailed = true;
+        rejectCreated?.(error);
+        throw error;
+      } finally {
+        if (pendingCreate && localValue?._pendingCreate === pendingCreate) delete localValue._pendingCreate;
       }
-      _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
     rollback: () => {
-      _dbRestoreCellValues(entityData, propName, snapshot);
+      if (td._dbInlineEditorSession !== mutationSession) return;
+      _dbRestoreCellValues(entityData, propName, snapshot.filter(value => !value._pendingCreate?._dbCreateFailed));
       _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
   };
@@ -161356,21 +161961,26 @@ async function _dbWriteClipboardCellValue(td, value, ctx, meta = {}) {
 }
 
 async function _dbPersistPreparedCellMutations(ops, ctx, debug) {
-  return _dbRunCellMutationsByEntity(ops, ctx, async op => {
-    try {
-      await op.persist();
-      return 1;
-    } catch (err) {
-      try { op.rollback(); } catch {}
-      if (debug?.errors) {
-        debug.errors.push({
-          target: _dbCellPasteDebugRef(op.target),
-          message: err?.message || String(err || ''),
-        });
+  const work = (async () => {
+    const results = await _dbRunCellMutationsByEntity(ops, ctx, async op => {
+      try {
+        await op.persist();
+        return 1;
+      } catch (err) {
+        try { op.rollback(); } catch {}
+        if (debug?.errors) {
+          debug.errors.push({
+            target: _dbCellPasteDebugRef(op.target),
+            message: err?.message || String(err || ''),
+          });
+        }
+        return -1;
       }
-      return -1;
-    }
-  });
+    });
+    _dbPushAtomicCellHistory(ops, ctx);
+    return results;
+  })();
+  return _dbTrackValueMutation(ctx?.dbPath || state.currentDbPath || '', work);
 }
 
 function _dbPasteTargetsFromClipboard(table, startCell, clipboard) {
@@ -162443,6 +163053,7 @@ async function _cellUiRecoverMutationFailure(dbPath, ctx, error, actionLabel) {
   const detail = error?.message || String(error || '不明なエラー');
   if (typeof showStatus === 'function') showStatus(`${actionLabel || '保存'}に失敗: ${detail}`, true);
   if (!dbPath || typeof selectDatabase !== 'function') return;
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
   try {
     await selectDatabase(dbPath, ctx || undefined, { silent: true });
   } catch {}
@@ -162514,11 +163125,12 @@ function _cellUiRelationIds(value) {
 
 async function _cellUiSelfPairRelationContext(dbPath, entityPath, ptc) {
   if (!dbPath || !ptc || ptc.relationDb !== '' || !ptc.pairWith) return null;
-  const entityName = _cellUiEntityNameFromPath(entityPath);
   let pivotData = (typeof state !== 'undefined' && state.currentDbPath === dbPath) ? state.pivotData : null;
   if (!pivotData && typeof apiFetch === 'function') {
     try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch {}
   }
+  const entityName = typeof _dbPivotEntityNameForPath === 'function'
+    ? _dbPivotEntityNameForPath(entityPath, pivotData) : _cellUiEntityNameFromPath(entityPath);
   const sourceId = pivotData?.entities?.[entityName]?._id || entityName;
   return { relDb: dbPath, pairPropName: ptc.pairWith, sourceId };
 }
@@ -163272,7 +163884,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
               file: result.path || currentVal.file,
               entry_path: entityPath,
               property: propName,
-              candidate_index: result.candidate_index,
+              candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
               value: relationValue,
               status: savedStatus,
               note: savedNote,
@@ -163392,6 +164004,10 @@ function startInlineEdit(span, val, entityPath, propName) {
   const old = _cellUiValueToString(val.value);
   const oldRichHtml = _dbRichHtmlForValue(val);
   const editedTd = span.closest('td');
+  const editorSession = {};
+  if (editedTd) editedTd._dbInlineEditorSession = editorSession;
+  const ownsEditor = () => span.isConnected !== false
+    && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
   const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
@@ -163436,6 +164052,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   let focusMovedOutside = false;
   const restoreEditedCellSelection = (afterRender = false, moveTo = null) => {
     const restore = () => {
+      if (!ownsEditor()) return;
       // 別パネルへのクリック後や保存中のフォーカス移動を、古いセルの復元で奪わない。
       const focused = document.activeElement;
       if (focusMovedOutside) return;
@@ -163506,7 +164123,7 @@ function startInlineEdit(span, val, entityPath, propName) {
                   file: result.path || currentVal.file,
                   entry_path: entityPath,
                   property: propName,
-                  candidate_index: result.candidate_index,
+                  candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                   value: old,
                   status: savedStatus,
                   note: savedNote,
@@ -163524,11 +164141,13 @@ function startInlineEdit(span, val, entityPath, propName) {
         }
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
-        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-        else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+        if (ownsEditor()) {
+          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+          else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+        }
         restoreEditedCellSelection(true, moveTo);
       } catch (e) {
-        span.textContent = old;
+        if (ownsEditor()) span.textContent = old;
         window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
         restoreEditedCellSelection(true);
@@ -163553,16 +164172,20 @@ function startInlineEdit(span, val, entityPath, propName) {
           showStatus('保存しました', false, { passiveSave: true });
           window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
             candidateIndex: val.candidate_index, value: nv });
-          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-          else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+          if (ownsEditor()) {
+            if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+            else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+          }
           restoreEditedCellSelection(true, moveTo);
         } catch (e) {
           window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
             candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
-          val.value = old;
-          if (oldRichHtml) val.rich_html = oldRichHtml;
-          else delete val.rich_html;
-          restoreOldDisplay();
+          if (val.value === nv) {
+            val.value = old;
+            if (oldRichHtml) val.rich_html = oldRichHtml;
+            else delete val.rich_html;
+          }
+          if (ownsEditor()) restoreOldDisplay();
           restoreEditedCellSelection(true);
           await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
         }
@@ -163966,6 +164589,9 @@ function _valueEditorLockMessage(dbPath, propName, ctx) {
 function _valueEditorReload(dbPath, ctx) {
   if (!dbPath || typeof selectDatabase !== 'function') return undefined;
   const reloadCtx = ctx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(reloadCtx)) {
+    return typeof _dbReloadAfterEntityCreate === 'function' ? _dbReloadAfterEntityCreate(reloadCtx, dbPath) : undefined;
+  }
   return selectDatabase(dbPath, reloadCtx || undefined, { silent: true });
 }
 
@@ -163977,8 +164603,15 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
   const old = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');
   const editedTd = span.closest('td');
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
+  const editorSession = {};
+  if (editedTd) editedTd._dbInlineEditorSession = editorSession;
+  const ownsEditor = () => span.isConnected !== false
+    && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
   const restoreEditedCellSelection = (afterRender = false) => {
     const restore = () => {
+      if (!ownsEditor()) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && focused !== input && !editedTd?.contains?.(focused)) return;
       const target = typeof _cellUiResolveRenderedCell === 'function'
         ? _cellUiResolveRenderedCell(editedTd, entityPath, propName, editedRoot)
         : editedTd;
@@ -164023,15 +164656,17 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
         else if (saveRef.file) val.file = saveRef.file;
         if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
-        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-        restoreEditedCellSelection(true);
+        if (ownsEditor()) {
+          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+          restoreEditedCellSelection(true);
+        }
       } catch (e) {
         window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: saveRef.candidate_index, before: old, value: nv });
         if (editedTd) window.MeldexSheetCellRecovery?.render(editedTd, entityPath, propName, valueCtx);
-        val.value = old;
+        if (val.value === nv) val.value = old;
         showStatus('保存に失敗: ' + (e?.message || e), true);
-        restore();
+        if (ownsEditor()) restore();
       }
     };
     if (typeof _cellUiScheduleAfterPaint === 'function') {
@@ -164197,7 +164832,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       e.preventDefault();
       e.stopPropagation();
       const ctx = valueCtx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
-      const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+      const entityName = typeof _dbPivotEntityNameForPath === 'function'
+        ? _dbPivotEntityNameForPath(entityPath, ctx?.pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
       const livePtc = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null;
       const renderedActions = Array.isArray(btn._dbButtonActions) ? btn._dbButtonActions : [];
       const actions = Array.isArray(livePtc?.actions) && livePtc.actions.length > 0
@@ -164254,7 +164890,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       return row;
     }
 
-    const entityName = options.entityName || entityPath.replace(/\.md$/, '').split('/').pop();
+    const entityName = options.entityName || (typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(entityPath, valueCtx?.pivotData) : entityPath.replace(/\.md$/, '').split('/').pop());
 
     if (type === 'formula') {
       const result = formulaEvalForEntity(propTypeConfig.formula, entityData, { propTypes: resolvedPropTypes, dbPath });
@@ -164382,7 +165019,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           val.candidate_index = result?.candidate_index;
           val.status = '採用';
           const pivotData = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || state.pivotData;
-          const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+          const entityName = typeof _dbPivotEntityNameForPath === 'function'
+            ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
           const entityData = pivotData?.entities?.[entityName];
           if (entityData) {
             if (!Array.isArray(entityData[propName])) entityData[propName] = [];
@@ -164391,7 +165029,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           if (val.file && typeof historyPush === 'function') {
             let currentRef = {
               file: val.file, entry_path: entityPath, property: propName,
-              candidate_index: val.candidate_index,
+              candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
             };
             const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
             historyPush('チェック: false → true',
@@ -164405,7 +165043,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
                   file: redo?.path || redo?.file || currentRef.file,
                   entry_path: entityPath,
                   property: redo?.property || propName,
-                  candidate_index: redo?.candidate_index,
+                  candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
                 };
                 if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
               },
@@ -164471,7 +165109,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
               val.candidate_index = result?.candidate_index;
               val.status = '採用';
               const pivotData = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || state.pivotData;
-              const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+              const entityName = typeof _dbPivotEntityNameForPath === 'function'
+                ? _dbPivotEntityNameForPath(entityPath, pivotData) : entityPath.replace(/\.md$/, '').split('/').pop();
               const entityData = pivotData?.entities?.[entityName];
               if (entityData) {
                 if (!Array.isArray(entityData[propName])) entityData[propName] = [];
@@ -164500,8 +165139,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (span.querySelector('.cell-date-editor')) return;
+      const oldDate = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');
       const editor = typeof _dbDateCreateEditor === 'function'
-        ? _dbDateCreateEditor(v, propTypeConfig, {
+        ? _dbDateCreateEditor(oldDate, propTypeConfig, {
           layout: 'inline',
           className: 'cell-date-editor',
           rootStyle: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap;width:calc(100% - 28px);',
@@ -164516,6 +165156,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const moreBtn = row.querySelector('.cell-value-more');
       if (moreBtn) moreBtn.style.display = 'none';
       const td = row.closest('td');
+      const editorSession = {};
+      if (td) td._dbInlineEditorSession = editorSession;
+      const ownsEditor = () => span.isConnected !== false && (!td || td._dbInlineEditorSession === editorSession);
       const addBtn = td ? td.querySelector('.cell-add-btn') : null;
       if (addBtn) { addBtn.dataset.editingHidden = '1'; addBtn.style.display = 'none'; }
       const restoreBtns = () => {
@@ -164532,18 +165175,21 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         const nv = editor.getValue();
         span.textContent = nv ? _formatDateDisplay(nv, propTypeConfig) : '';
         const oldNormalized = typeof _dbDateNormalizeForCompare === 'function'
-          ? _dbDateNormalizeForCompare(v, propTypeConfig)
-          : _toInputDateValue(v, editor.mode?.withTime);
+          ? _dbDateNormalizeForCompare(oldDate, propTypeConfig)
+          : _toInputDateValue(oldDate, editor.mode?.withTime);
         if (nv !== oldNormalized) {
+          val.value = nv;
           try {
             await _apiPutValue(val, { new_value: nv });
-            _dbUndoValue(propName + ': ' + v + ' → ' + nv, val, v, nv);
-            val.value = nv;
+            _dbUndoValue(propName + ': ' + oldDate + ' → ' + nv, val, oldDate, nv);
             // Step 3: 部分更新化 (ソート対象列等のフォールバックは _tryRefreshPivotCellLocal 内で判定)
-            _refreshAfterCellEdit(span, entityPath, propName);
+            if (ownsEditor()) _refreshAfterCellEdit(span, entityPath, propName);
           } catch (e) {
+            if (val.value === nv) val.value = oldDate;
+            window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+              candidateIndex: val.candidate_index, before: oldDate, value: nv });
             showStatus('保存に失敗: ' + (e?.message || e), true);
-            span.textContent = _formatDateDisplay(v, propTypeConfig);
+            if (ownsEditor()) span.textContent = _formatDateDisplay(oldDate, propTypeConfig);
           }
         }
       };
@@ -164560,10 +165206,15 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       }
       editor.root.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restoreBtns(); span.textContent = _formatDateDisplay(v, propTypeConfig); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restoreBtns(); span.textContent = _formatDateDisplay(oldDate, propTypeConfig); }
       });
     });
     row.appendChild(span);
+    return row;
+  }
+
+  if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    row.appendChild(MeldexSheetLocation.valueElement(val, entityPath, propName, { ...options, dbPath, ctx: valueCtx }));
     return row;
   }
 
@@ -164960,7 +165611,7 @@ function _msrRelationValueReferences(values, currentId, currentName) {
 
 function _msrCurrentEntityIdentity(entityPath, dbPath, ctx) {
   const name = typeof _getPivotEntityName === 'function'
-    ? _getPivotEntityName(entityPath)
+    ? _getPivotEntityName(entityPath, ctx)
     : String(entityPath || '').split('/').pop().replace(/\.md$/i, '');
   const data = ctx?.pivotData || state.pivotData;
   const entityData = data?.entities?.[name] || {};
@@ -165304,7 +165955,7 @@ async function _autoCollectAllMsrProps(dbPath, ctx) {
             status: '採用',
             note: '',
             file: result?.path,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           });
         } else {
           continue;
@@ -165546,24 +166197,50 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
   const saveOptions = options || {};
   const dbPath = saveOptions.dbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, anchorEl) : state.currentDbPath);
   const ctx = saveOptions.ctx || (typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, anchorEl, dbPath) : null);
+  // 同じ空セルの保存待ち中に再選択した場合も、その候補を更新する。
+  if (!val && typeof _getPivotEntityData === 'function') {
+    const values = _getPivotEntityData(entityPath, ctx)?.[propName] || [];
+    val = values.find(value => value?._pendingCreate) || null;
+  }
   const oldValue = val?.value == null ? '' : String(val.value);
   const nextValue = newValue == null ? '' : String(newValue);
   if (nextValue === oldValue) return true;
-  try {
+  const isNew = !val;
+  const previousCreate = val?._pendingCreate;
+  const status = saveOptions.status || '採用';
+  let resolveCreated, rejectCreated;
+  let pendingCreate = null;
+  if (isNew && typeof _upsertLocalPivotValue === 'function') {
+    val = _upsertLocalPivotValue(entityPath, propName, null, nextValue, {
+      file: '', entry_path: entityPath, property: propName, status, note: '',
+    }, ctx);
     if (val) {
+      pendingCreate = new Promise((resolve, reject) => { resolveCreated = resolve; rejectCreated = reject; });
+      pendingCreate.catch(() => {});
+      val._pendingCreate = pendingCreate;
+    }
+  } else if (val) {
+    val.value = nextValue;
+  }
+  try {
+    if (!isNew) {
       await _apiPutValue(val, { new_value: nextValue });
       if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue);
-      val.value = nextValue;
     } else {
-      const status = saveOptions.status || '採用';
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
       const filePath = result?.path || '';
+      if (val) {
+        val.file = filePath;
+        val.candidate_index = result?.candidate_index;
+        val.property = result?.property || propName;
+      }
+      resolveCreated?.(result);
       if (filePath && typeof historyPush === 'function') {
         let currentRef = {
           file: filePath,
           entry_path: entityPath,
           property: result?.property || propName,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
         };
         historyPush('値追加: ' + propName + '=' + nextValue,
           currentRef.candidate_index != null
@@ -165575,7 +166252,7 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
               file: redo?.path || redo?.file || currentRef.file,
               entry_path: entityPath,
               property: redo?.property || propName,
-              candidate_index: redo?.candidate_index,
+              candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
             };
             await _valueEditorReload(dbPath, ctx);
           },
@@ -165583,17 +166260,21 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         );
       }
     }
-    // Step 3: 部分更新化 (user/multi-user)
-    // val が null (新規追加) の場合は新しいエントリ行が必要なのでフルリロード
-    if (!val) {
-      await _valueEditorReload(dbPath, ctx);
-    } else {
-      _refreshAfterCellEdit(anchorEl, entityPath, propName);
-    }
+    _refreshAfterCellEdit(anchorEl, entityPath, propName);
     return true;
   } catch (e) {
+    if (pendingCreate) pendingCreate._dbCreateFailed = true;
+    rejectCreated?.(e);
+    if (val?.value === nextValue) {
+      if ((isNew || previousCreate?._dbCreateFailed) && typeof _removeLocalPivotValue === 'function') {
+        _removeLocalPivotValue(val, entityPath, propName, { dbPath, ctx });
+      } else val.value = oldValue;
+    }
+    _refreshAfterCellEdit(anchorEl, entityPath, propName);
     if (!saveOptions.silent) showStatus('保存に失敗: ' + (e?.message || e), true);
     return false;
+  } finally {
+    if (pendingCreate && val?._pendingCreate === pendingCreate) delete val._pendingCreate;
   }
 }
 
@@ -165621,7 +166302,7 @@ async function _syncPairRelation(dbPath, targetId, pairPropName, sourceId, addin
               file: createdFile,
               entry_path: targetPath,
               property: created?.property || pairPropName,
-              candidate_index: created?.candidate_index,
+              candidate_id: created?.candidate_id, entry_id: created?.entry_id, candidate_index: created?.candidate_index,
             }, { _delete: true });
           },
         };
@@ -166095,7 +166776,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
                 file: result.path || currentVal.file,
                 entry_path: entityPath,
                 property: propName,
-                candidate_index: result.candidate_index,
+                candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                 value: oldVal,
                 status: savedStatus,
                 note: savedNote,
@@ -166301,7 +166982,10 @@ function _imageSrc(item, preferThumb, thumbSize) {
     const preview = item.thumb_url || item.preview_url || item.preview_src || item.thumb;
     if (preview) {
       if (/^(https?:|data:|blob:|\/)/i.test(preview)) return preview;
-      return '/api/media/file?path=' + encodeURIComponent(preview);
+      const path = String(preview).replace(/\\/g, '/');
+      return path.startsWith('_media/')
+        ? '/api/media/file?path=' + encodeURIComponent(path)
+        : _attachmentUrlFromPath(path, true, thumbSize);
     }
   }
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
@@ -166313,11 +166997,16 @@ function _imageSrc(item, preferThumb, thumbSize) {
     return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
   }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
-    || item.thumb_url || item.url || item.src || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
+    || item.url || item.src || item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
   if (!rel) return '';
   if (/^(https?:|data:|blob:)/.test(rel)) return rel;
   if (rel.startsWith('/')) return rel;
-  return '/api/media/file?path=' + encodeURIComponent(rel);
+  // Only legacy uploads live in _media. Imported src/url references can point
+  // to ordinary files in any registered source root (including hidden files).
+  const path = rel.replace(/\\/g, '/');
+  if (path.startsWith('_media/')) return '/api/media/file?path=' + encodeURIComponent(path);
+  const kind = _attachmentKind(item);
+  return _attachmentUrlFromPath(path, !!preferThumb && (kind === 'image' || kind === 'video'), thumbSize);
 }
 
 // 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
@@ -166616,7 +167305,7 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
         file: result.path || result.file || entityPath,
         entry_path: entityPath,
         property: propName,
-        candidate_index: result.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
         value: newValue,
         status,
         note: '',
@@ -167740,7 +168429,7 @@ if (typeof window !== 'undefined') {
     const result = await _apiPostValue(path, prop, value, '採用', '', undefined, { baseRevision: ctx.data.revision });
     noteRevision(ctx, result);
     const created = { property: prop, value, status: '採用', note: '', file: result.path || path,
-      entry_path: result.new_path || path, candidate_index: result.candidate_index, entry_revision: result.revision };
+      entry_path: result.new_path || path, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index, entry_revision: result.revision };
     if (!ctx.data.properties) ctx.data.properties = {};
     if (!Array.isArray(ctx.data.properties[prop])) ctx.data.properties[prop] = [];
     ctx.data.properties[prop].push(created);
@@ -167751,7 +168440,7 @@ if (typeof window !== 'undefined') {
       }, async () => {
         const next = await _apiPostValue(path, prop, value, '採用', '');
         noteRevision(ctx, next);
-        Object.assign(created, { candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
+        Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
         ctx.data.properties[prop].push(created); ctx.rerender();
       }, '');
     }
@@ -168408,6 +169097,444 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === gb-location-data.js === */
+;
+/* A location remains a string candidate; map paths use the existing link metadata. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexLocationData = api;
+})(globalThis, function () {
+  'use strict';
+  const safePath = path => typeof path === 'string' && !!path && !path.includes('\0')
+    && (!/^[a-z][a-z\d+.-]*:/i.test(path) || /^[a-z]:[\\/]/i.test(path));
+  const pathKey = path => String(path || '').replace(/\\/g, '/').replace(/\/$/, '');
+  function canonicalPath(path, vaultPath) {
+    const value = pathKey(path), root = pathKey(vaultPath);
+    if (root && value.toLocaleLowerCase().startsWith(root.toLocaleLowerCase() + '/')) return value.slice(root.length + 1);
+    return value;
+  }
+  function parse(value, link = null) {
+    if (typeof value !== 'string' || value.length > 65536) throw new Error('場所の値は64KB以下の文字列で指定してください');
+    const loc = JSON.parse(value);
+    if (!loc || loc.fileType !== 'meldex-location' || loc.schema_version !== 1) throw new Error('未対応の場所形式です');
+    const world = loc.coordinate_system === 'world';
+    if (!['world', 'local'].includes(loc.coordinate_system) || typeof loc.label !== 'string'
+      || !Array.isArray(loc.point) || loc.point.length !== 2 || !loc.point.every(Number.isFinite)
+      || (world ? Math.abs(loc.point[0]) > 180 || Math.abs(loc.point[1]) > 85.051129 : loc.point.some(n => Math.abs(n) > 1e7))
+      || loc.map_id != null && (typeof loc.map_id !== 'string' || !loc.map_id)
+      || loc.feature_id != null && (typeof loc.feature_id !== 'string' || !loc.feature_id)) throw new Error('場所の座標または地図の指定が不正です');
+    if (loc.map_id) {
+      if (!safePath(link?.path) || !link.path.toLowerCase().endsWith('.mel-map')) throw new Error('場所の参照先マップが必要です');
+    } else if (!world || loc.feature_id || link?.path) throw new Error('創作座標には参照先マップを指定してください');
+    return loc;
+  }
+  function encode(loc, link) { const value = JSON.stringify(loc); parse(value, link); return value; }
+  function resolve(loc, link, doc, path) {
+    if (loc.coordinate_system !== doc.coordinate_system) return null;
+    if (loc.map_id && loc.map_id !== doc.meldex?.document_id) return null;
+    if (loc.feature_id) {
+      const feature = doc.features.find(f => f.id === loc.feature_id);
+      if (!feature || !['pin', 'label'].includes(feature.kind)) return null;
+      return feature.points[0].slice();
+    }
+    return loc.point.slice();
+  }
+  return Object.freeze({ parse, encode, resolve, safePath, pathKey, canonicalPath });
+});
+
+;
+
+/* === gb-sheet-location.js === */
+;
+/* Shared location editor for table cells and topic property layouts. */
+const MeldexSheetLocation = (() => {
+  const D = () => MeldexLocationData;
+  function button(label, action) {
+    const el = document.createElement('button'); el.type = 'button'; el.className = 'gb-btn'; el.textContent = label;
+    el.onclick = action; return el;
+  }
+  function editable(anchor, dbPath, propName, ctx) {
+    if (!anchor?.isConnected || ctx && ctx.dbPath !== dbPath) throw new Error('元のシートを開いてから編集し直してください');
+    const reason = _cellUiWriteBlockedMessage(ctx) || _cellUiColumnLockMessage(dbPath, propName, ctx);
+    if (reason || _cellUiRuntimeReadOnly(anchor)) throw new Error(reason || '閲覧専用のため変更できません');
+    if (getPropertyTypes(dbPath, ctx)?.[propName]?.type !== 'location') throw new Error('列の種類が変わりました。編集し直してください');
+  }
+  async function open(value, link) {
+    const originPane = typeof GBLayout !== 'undefined' ? GBLayout.activePane : null;
+    const activeTab = () => {
+      const pane = originPane && GBLayout.findNode(GBLayout.root, originPane)?.node;
+      return pane?.tabs?.[pane.activeTabIndex]?.id;
+    };
+    const originTab = activeTab();
+    const loc = D().parse(value, link);
+    if (!link?.path) {
+      const [lng, lat] = loc.point;
+      window.open('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(lat + ',' + lng), '_blank', 'noopener'); return;
+    }
+    const loaded = await apiFetch('/file?path=' + encodeURIComponent(link.path));
+    const doc = MeldexMapDocument.parse(loaded.content), point = D().resolve(loc, link, doc, link.path);
+    if (!point) throw new Error('参照先の地図または地点が変わりました。場所を設定し直してください');
+    if (originPane && (GBLayout.activePane !== originPane || activeTab() !== originTab)) return false;
+    if (!await openMapApp(link.path, link.label || doc.title)) return;
+    forEachComponent(component => {
+      if (component instanceof MapAppComponent && component._active && component.path === D().canonicalPath(link.path, state.vaultPath)) {
+        const live = component.store.doc, currentPoint = D().resolve(loc, link, live, component.path);
+        if (!currentPoint) throw new Error('参照先の地図または地点が変わりました。場所を設定し直してください');
+        const feature = live.features.find(f => f.id === loc.feature_id);
+        if (feature) { component._select(feature.id); component.view.focus(feature); }
+        else component.view.map.panTo(component.view.latlng(currentPoint));
+      }
+    });
+  }
+  function editCell(anchor, entityPath, propName, val, options = {}) {
+    const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath), ctx = options.ctx || _valueEditorContext(entityPath, anchor, dbPath);
+    try { editable(anchor, dbPath, propName, ctx); } catch (error) { showStatus(error.message, true); return; }
+    if (anchor._locationDialog) { anchor._locationDialog.modal.focus(); return; }
+    const entityName = anchor.closest?.('tr[data-entity-name]')?.dataset.entityName;
+    const entity = ctx?.pivotData?.entities?.[entityName];
+    let projected = null;
+    try {
+      if (val?._topicCanonicalOnly && val._topicValueMissing) projected = { ...val, _topicCandidateList: false };
+      else if (!val && entity?._topicCanonicalOnly) projected = window.MeldexTopicPlacementUI.emptyProjectedValue(dbPath, entity, propName);
+    }
+    catch (error) { showStatus(error.message, true); return; }
+    let old = null;
+    try { if (val) old = D().parse(val.value, val.link); } catch (_) {
+      try { if (JSON.parse(val.value)?.fileType === 'meldex-location') { showStatus('この場所は未対応の形式です。対応するMeldexで開いてください', true); return; } } catch (_) {}
+    }
+    let active = true, saving = false, request = 0, mapDoc = null;
+    let link = val?.link ? { ...val.link } : null, mapId = old?.map_id || null, featureId = old?.feature_id || null;
+    const save = button('場所を保存', async () => {
+      if (saving) return;
+      saving = true; save.disabled = true; dialog.body.inert = true; request++;
+      try {
+        editable(anchor, dbPath, propName, ctx);
+        if (![x, y].every(input => input.value.trim() && input.reportValidity())) throw new Error('2つの座標を入力してください');
+        let loc = { ...(old || {}), fileType: 'meldex-location', schema_version: 1, coordinate_system: system.value,
+          label: label.value, point: [Number(x.value), Number(y.value)], map_id: mapId, feature_id: featureId };
+        if (link?.path) {
+          const loaded = await apiFetch('/file?path=' + encodeURIComponent(link.path));
+          if (!active) return;
+          const doc = MeldexMapDocument.parse(loaded.content), point = D().resolve(loc, link, doc, link.path);
+          if (!point) throw new Error('参照先の地図または地点が変わりました。選び直してください');
+          loc.point = point;
+        }
+        const value = D().encode(loc, link);
+        editable(anchor, dbPath, propName, ctx);
+        saving = true; save.disabled = true;
+        const metadata = link ? { ...link, type: 'file', fileType: 'map' } : null;
+        const refresh = () => selectDatabase(dbPath, ctx || undefined, { silent: true });
+        if (projected) {
+          const candidate = { value, status: getStatusEnabled(dbPath) ? '案' : '採用', note: '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
+          await _apiPutValue(projected, { _append_candidate: candidate });
+          let ref = { ...projected, _topicCandidateList: true, _topicCandidateOriginal: candidate, candidate_id: candidate.candidate_id, value };
+          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
+            const next = { ...candidate, candidate_id: MeldexMapDocument.id() };
+            await _apiPutValue(projected, { _append_candidate: next });
+            ref = { ...ref, candidate_id: next.candidate_id, _topicCandidateOriginal: next }; await refresh();
+          }, _dbScopeForPath(dbPath));
+        } else if (val?._topicCanonicalOnly && !val._topicCandidateList) {
+          const previous = val.value;
+          const candidate = { value, status: val.status || '採用', note: val.note || '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
+          const next = [candidate];
+          await _apiPutValue(val, { new_value: next, _expected_value: previous });
+          historyPush('場所を設定: ' + propName,
+            async () => { await _apiPutValue(val, { new_value: previous, _expected_value: next }); await refresh(); },
+            async () => { await _apiPutValue(val, { new_value: next, _expected_value: previous }); await refresh(); }, _dbScopeForPath(dbPath));
+        } else if (val) {
+          const previous = val.value, previousLink = val.link ? { ...val.link } : null;
+          await _apiPutValue(val, { new_value: value, new_link: metadata });
+          val.value = value; if (metadata) val.link = metadata; else delete val.link;
+          _dbUndoValue('場所を変更: ' + propName, val, previous, value, undefined, undefined,
+            { dbPath, ctx, oldUpdates: { new_link: previousLink }, newUpdates: { new_link: metadata } });
+        } else {
+          const status = getStatusEnabled(dbPath) ? '案' : '採用';
+          const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
+          let ref = { file: result.path || result.file, entry_path: entityPath, property: propName,
+            candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id };
+          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
+            const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
+            ref = { ...ref, file: result.path || result.file, candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id }; await refresh();
+          }, typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : 'db:' + dbPath);
+        }
+        saving = false; dialog.close('saved'); await refresh(); showStatus('場所を保存しました');
+      } catch (error) { message.textContent = error.userMessage || error.message; }
+      finally { saving = false; save.disabled = false; dialog.body.inert = false; }
+    });
+    const cancel = button('キャンセル', () => dialog.close('cancel'));
+    const dialog = GBUI.createModal({ title: '場所を編集 — ' + propName, footer: [cancel, save], returnFocus: () => anchor,
+      onBeforeClose: () => !saving, onClose: () => { active = false; request++; delete anchor._locationDialog; } });
+    anchor._locationDialog = dialog;
+    const field = (caption, value = '', type = 'text') => {
+      const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
+      const title = document.createElement('span'); title.textContent = caption;
+      const input = document.createElement('input'); input.type = type; input.value = value; input.setAttribute('aria-label', caption);
+      wrap.append(title, input); dialog.body.appendChild(wrap); return { input, title };
+    };
+    const label = field('場所の名前', old?.label || (val?.value || '')).input;
+    const systemLabel = document.createElement('label'); systemLabel.textContent = '座標の種類';
+    const system = document.createElement('select'); system.setAttribute('aria-label', '座標の種類');
+    system.add(new Option('緯度経度', 'world')); system.add(new Option('創作座標', 'local')); system.value = old?.coordinate_system || 'world';
+    systemLabel.appendChild(system); dialog.body.appendChild(systemLabel);
+    const mapPath = field('参照先マップ', link?.path || '').input; mapPath.readOnly = true;
+    const feature = document.createElement('select'); feature.setAttribute('aria-label', 'マップの地点'); dialog.body.appendChild(feature);
+    const xf = field('経度 / X', old?.point[0] ?? '', 'number'), yf = field('緯度 / Y', old?.point[1] ?? '', 'number'), x = xf.input, y = yf.input;
+    x.step = y.step = 'any'; x.required = y.required = true;
+    const sync = () => {
+      const world = system.value === 'world'; x.min = world ? -180 : -1e7; x.max = world ? 180 : 1e7; y.min = world ? -85.051129 : -1e7; y.max = world ? 85.051129 : 1e7;
+      xf.title.textContent = world ? '経度' : 'X'; yf.title.textContent = world ? '緯度' : 'Y';
+    };
+    const fillFeatures = () => {
+      feature.replaceChildren(new Option('座標を直接指定', ''));
+      for (const f of mapDoc?.features || []) if (['pin', 'label'].includes(f.kind)) feature.add(new Option(f.label || '名前なし', f.id));
+      feature.value = featureId || ''; feature.disabled = !mapDoc;
+    };
+    const chooseMap = async path => {
+      path = D().canonicalPath(path, state.vaultPath);
+      const token = ++request, loaded = await apiFetch('/file?path=' + encodeURIComponent(path));
+      if (!active || token !== request) return;
+      const doc = MeldexMapDocument.parse(loaded.content);
+      if (!doc.meldex?.document_id) throw new Error('文書IDを持つマップを選んでください');
+      mapDoc = doc; link = { path, label: doc.display_title || doc.title, type: 'file', fileType: 'map' }; mapId = doc.meldex.document_id;
+      system.value = doc.coordinate_system; mapPath.value = path; featureId = null; feature.value = ''; x.value = y.value = '';
+      sync(); fillFeatures();
+    };
+    dialog.body.append(button('マップを選択', () => MeldexLinkModal.show(null, async chosen => {
+      if (chosen.type !== 'file' || !chosen.path?.toLowerCase().endsWith('.mel-map')) { message.textContent = 'マップファイルを選んでください'; return; }
+      try { await chooseMap(chosen.path); } catch (error) { if (active) message.textContent = error.message; }
+    })), button('マップの参照を解除', () => { request++; link = null; mapId = featureId = null; mapDoc = null; mapPath.value = ''; fillFeatures(); }));
+    feature.onchange = () => {
+      featureId = feature.value || null; const f = mapDoc?.features.find(f => f.id === featureId);
+      if (f) { [x.value, y.value] = f.points[0]; if (!label.value) label.value = f.label; }
+    };
+    x.oninput = y.oninput = () => { featureId = null; feature.value = ''; };
+    system.onchange = () => { request++; link = null; mapId = featureId = null; mapDoc = null; mapPath.value = ''; x.value = y.value = ''; fillFeatures(); sync(); };
+    const message = document.createElement('p'); message.setAttribute('role', 'status'); message.textContent = '創作座標には参照先マップが必要です。マップの地点を選ぶと、その地点の移動に追従します。'; dialog.body.appendChild(message);
+    sync(); fillFeatures(); dialog.open(); label.focus();
+    if (link?.path) {
+      const token = ++request;
+      apiFetch('/file?path=' + encodeURIComponent(link.path)).then(loaded => {
+        if (!active || request !== token) return;
+        mapDoc = MeldexMapDocument.parse(loaded.content); fillFeatures();
+      }).catch(error => { if (active && request === token) message.textContent = error.message; });
+    }
+  }
+  function valueElement(val, entityPath, propName, options) {
+    const wrap = document.createElement('span'); wrap.className = 'db-location-controls';
+    let loc = null; try { loc = D().parse(val.value, val.link); } catch (_) {}
+    const edit = button(loc ? loc.label || loc.point.join(', ') : '場所を設定: ' + String(val.value || ''), () => editCell(edit, entityPath, propName, val, options));
+    edit.classList.add('value-text', 'db-location-value'); wrap.appendChild(edit);
+    if (loc) {
+      const map = button(val.link?.path ? 'マップで開く' : 'Googleマップで開く', async event => {
+        event.stopPropagation(); try { await open(val.value, val.link); } catch (error) { showStatus(error.message, true); }
+      }); map.classList.add('db-location-open'); wrap.appendChild(map);
+    }
+    return wrap;
+  }
+  return Object.freeze({ editCell, valueElement, open });
+})();
+
+;
+
+/* === gb-map-relations.js === */
+;
+/* Map hierarchy and sheet overlays reference existing documents and topics. */
+const MeldexMapRelations = (() => {
+  const D = () => MeldexMapDocument, LData = () => MeldexLocationData;
+  const key = path => LData().canonicalPath(path, typeof state === 'undefined' ? '' : state.vaultPath).toLocaleLowerCase();
+  function navigationGuard(app) {
+    const store = app.store, generation = app._generation, path = app.path;
+    return () => app.store === store && app._generation === generation && app.path === path && app._active !== false;
+  }
+  async function openChild(app, feature, link) {
+    const current = navigationGuard(app);
+    const trail = [...(app.state.mapTrail || []), { path: app.path, label: app.state.label, feature_id: feature.id }];
+    if (trail.length > 32 || trail.some(item => key(item.path) === key(link.path))) throw new Error('循環した親子地図のため移動できません');
+    if (!await app.flush()) throw new Error('親地図を保存してから開いてください');
+    if (!current()) return false;
+    if (!app.store.doc.features.some(item => item.id === feature.id && item.links.some(child => child.role === 'child-map' && key(child.path) === key(link.path)))) return false;
+    await openMapApp(link.path, link.label, { paneId: app.paneId, mapTrail: trail });
+  }
+  function breadcrumbs(app, root) {
+    const trail = Array.isArray(app.state.mapTrail) ? app.state.mapTrail : [];
+    const parents = trail.length ? trail : app._directParents || [];
+    for (const [index, parent] of parents.entries()) {
+      root.appendChild(app._button('↩ ' + (parent.label || '親地図'), async () => {
+        const current = navigationGuard(app);
+        if (!await app.flush()) throw new Error('現在の地図を保存してから戻ってください');
+        if (!current()) return false;
+        if (!await openMapApp(parent.path, parent.label, { paneId: app.paneId, mapTrail: trail.length ? trail.slice(0, index) : [] })) return;
+        forEachComponent(component => {
+          if (component instanceof MapAppComponent && component._active && key(component.path) === key(parent.path)) {
+            const feature = component.store?.doc.features.find(f => f.id === parent.feature_id);
+            if (feature) { component._select(feature.id); component.view.focus(feature); }
+          }
+        });
+      }));
+    }
+  }
+  async function findParents(app) {
+    if (app.state.mapTrail?.length) return;
+    const store = app.store, generation = app._generation, path = app.path;
+    const data = await apiFetch('/backlinks?target=' + encodeURIComponent(path));
+    const paths = [...new Set((data.items || []).map(item => item.source_path).filter(source => source?.toLowerCase().endsWith('.mel-map')))].slice(0, 20);
+    const results = await Promise.allSettled(paths.map(async parent => {
+      const loaded = await apiFetch('/file?path=' + encodeURIComponent(parent)), doc = D().parse(loaded.content);
+      const feature = doc.features.find(f => f.links.some(link => link.role === 'child-map' && key(link.path) === key(path)));
+      return feature ? { path: parent, label: doc.display_title || doc.title, feature_id: feature.id } : null;
+    }));
+    if (app.store !== store || app._generation !== generation || app.state.mapTrail?.length) return;
+    app._directParents = results.filter(result => result.status === 'fulfilled' && result.value).map(result => result.value);
+    app.breadcrumbs.replaceChildren(); breadcrumbs(app, app.breadcrumbs);
+  }
+  async function wouldCycle(app, target) {
+    const pending = [target], seen = new Set();
+    while (pending.length) {
+      const path = pending.pop(), normalized = key(path);
+      if (normalized === key(app.path)) return true;
+      if (seen.has(normalized)) continue;
+      if (seen.size >= 64) throw new Error('親子関係が大きすぎるため確認できません。別の地図を選んでください');
+      seen.add(normalized);
+      const loaded = await apiFetch('/file?path=' + encodeURIComponent(path)), doc = D().parse(loaded.content);
+      for (const feature of doc.features) for (const link of feature.links) if (link.role === 'child-map') pending.push(link.path);
+    }
+    return false;
+  }
+  function inspector(app, feature, root, locked) {
+    const heading = document.createElement('h4'); heading.textContent = '子地図'; root.appendChild(heading);
+    for (const link of feature.links.filter(link => link.role === 'child-map')) {
+      const row = document.createElement('div'); row.className = 'gb-map-link-row';
+      row.append(app._button(link.label || '子地図を開く', () => openChild(app, feature, link)),
+        app._button('親子関係を解除', () => app._editFeature(next => { next.links = next.links.filter(item => item !== link && !(item.role === 'child-map' && item.path === link.path)); }), { disabled: locked })); root.appendChild(row);
+    }
+    const attach = async path => {
+      path = LData().canonicalPath(path, state.vaultPath);
+      const canEdit = app._editGuard(feature.id);
+      if (await wouldCycle(app, path)) throw new Error('自分自身や親地図を子地図にはできません');
+      const loaded = await apiFetch('/file?path=' + encodeURIComponent(path)), child = D().parse(loaded.content);
+      if (!canEdit() || app._selected !== feature.id) return false;
+      app._editFeature(next => {
+        if (!next.links.some(link => link.role === 'child-map' && key(link.path) === key(path))) next.links.push({ path, label: child.display_title || child.title, type: 'map', role: 'child-map' });
+      }); return true;
+    };
+    root.appendChild(app._button('既存マップを子地図にする', () => {
+      const canEdit = app._editGuard(feature.id);
+      MeldexLinkModal.show(null, async link => {
+        if (!canEdit() || app._selected !== feature.id) return;
+        try {
+          if (link.type !== 'file' || !link.path?.toLowerCase().endsWith('.mel-map')) throw new Error('マップファイルを選んでください');
+          await attach(link.path);
+        } catch (error) { app._message(error.message); }
+      });
+    }, { disabled: locked }));
+    root.appendChild(app._button('子地図を新規作成', async () => {
+      const canEdit = app._editGuard(feature.id), parentPath = app.path;
+      const name = await cfPrompt('子地図の名前', (feature.label || '地点') + 'の詳細地図');
+      if (!name?.trim() || !canEdit() || app._selected !== feature.id) return;
+      const normalized = parentPath.replace(/\\/g, '/'), parent = normalized.slice(0, normalized.lastIndexOf('/') + 1);
+      const result = await apiPost('/outliner/add', { type: 'map', label: name.trim(), parent });
+      const path = result.node?.path;
+      if (!path) throw new Error('子地図の作成結果を確認できません');
+      if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'map-child-created' });
+      if (!canEdit() || app._selected !== feature.id) { app._message('地図を作成しました: ' + path + '。元の地点から子地図として選択してください。'); return; }
+      if (await attach(path)) {
+        if (!await app.flush()) { app._message('子地図を作成しましたが親地図を保存できません。関連付けは下書きに残っています: ' + path); return; }
+        await openChild(app, feature, { path, label: result.node.label });
+      }
+    }, { disabled: locked }));
+  }
+  function sources(app, root) {
+    const heading = document.createElement('h3'); heading.textContent = 'シートの場所'; root.appendChild(heading);
+    root.append(app._button('シートの場所を表示', () => sourceDialog(app), { disabled: app.editingDisabled }), app._button('場所を更新', () => refresh(app, true)));
+    for (const source of app.store.doc.sheet_sources || []) {
+      const row = document.createElement('div'); row.className = 'gb-map-link-row';
+      const label = document.createElement('span'); label.textContent = source.path + ' / ' + source.property;
+      row.append(label, app._button('参照を解除', () => { app.update(doc => { doc.sheet_sources = doc.sheet_sources.filter(item => item.id !== source.id); }); app._render(); }, { disabled: app.editingDisabled })); root.appendChild(row);
+    }
+    const note = document.createElement('small'); note.textContent = '採用・掲載済みの場所を参照表示します。元のシートは変更しません。PNGには含めません。'; root.appendChild(note);
+  }
+  function sourceDialog(app) {
+    const canEdit = app._editGuard(); let active = true, loadedPath = '', reading = 0;
+    const choose = document.createElement('select'); choose.setAttribute('aria-label', '場所の列'); choose.disabled = true;
+    const path = document.createElement('input'); path.setAttribute('aria-label', '参照するシート');
+    const message = document.createElement('p'); message.setAttribute('role', 'status'); message.textContent = 'シートを選び、場所型の列を取得してください。';
+    const save = app._button('この列を表示', () => {
+      if (!canEdit() || !active) return;
+      if (!choose.value || path.value.trim() !== loadedPath) throw new Error('列を取得し直してください');
+      if ((app.store.doc.sheet_sources || []).some(source => source.path === loadedPath && source.property === choose.value)) throw new Error('この列は表示済みです');
+      if (app.update(doc => { (doc.sheet_sources ||= []).push({ id: D().id(), path: loadedPath, property: choose.value }); })) { dialog.close('saved'); app._render(); }
+    }); save.disabled = true;
+    const dialog = GBUI.createModal({ title: 'シートの場所を表示', footer: [app._button('キャンセル', () => dialog.close()), save], onClose: () => { active = false; reading++; } });
+    dialog.body.append(path, app._button('場所の列を取得', async () => {
+      const requested = LData().canonicalPath(path.value.trim(), state.vaultPath), token = ++reading; path.value = requested; save.disabled = choose.disabled = true; choose.replaceChildren();
+      if (!LData().safePath(requested)) throw new Error('シートを指定してください');
+      try {
+        const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(requested));
+        if (!active || !canEdit() || reading !== token) return;
+        loadedPath = requested;
+        for (const [name, spec] of Object.entries(metadata.property_types || {})) if (spec.type === 'location') choose.add(new Option(name, name));
+        save.disabled = choose.disabled = !choose.options.length;
+        message.textContent = choose.options.length ? '表示する場所の列を選んでください。' : '場所型の列がありません。シートで列を追加してください。';
+      } catch (error) { if (active && token === reading) message.textContent = error.message; }
+    }), choose, message);
+    if (typeof _attachDbPicker === 'function') _attachDbPicker(path, ''); dialog.open(); path.focus();
+  }
+  function renderPlaces(app) {
+    const places = []; let skipped = 0;
+    sourcesLoop: for (const source of app.store.doc.sheet_sources || []) {
+      const data = app._sheetCache?.get(source.id);
+      if (!data) continue;
+      for (const [name, entity] of Object.entries(data.entities || {})) for (const candidate of entity[source.property] || []) {
+        if (!['採用', '掲載済み'].includes(candidate.status)) continue;
+        try {
+          const loc = LData().parse(candidate.value, candidate.link), point = LData().resolve(loc, candidate.link, app.store.doc, app.path);
+          if (!point) { skipped++; continue; }
+          places.push({ point, label: loc.label || name, name, path: candidate._topicCanonicalOnly || entity._topicCanonicalOnly ? null : candidate.entry_path || entity._entry_path || candidate.file,
+            sheetPath: source.path, topicRef: candidate.topicRef || entity.topicRef });
+        } catch (_) { skipped++; }
+        if (places.length >= 10000) break sourcesLoop;
+      }
+    }
+    app.view.setSheetPlaces(places);
+    if (app.sheetStatus) app.sheetStatus.textContent = `${places.length}件を参照表示` + (skipped ? `（別の地図・未対応の場所など${skipped}件を除外）` : '');
+  }
+  async function refresh(app, force = false) {
+    const store = app.store, generation = app._generation, sources = store.doc.sheet_sources || [];
+    const signature = JSON.stringify(sources);
+    if (!force && app._sheetSignature === signature) { renderPlaces(app); return; }
+    app._sheetSignature = signature; const token = app._sheetRequest = (app._sheetRequest || 0) + 1;
+    app._sheetCache = new Map(); app.view.setSheetPlaces([]);
+    if (!sources.length) { renderPlaces(app); return; }
+    const results = await Promise.allSettled(sources.map(async source => {
+      const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(source.path));
+      if (metadata.property_types?.[source.property]?.type !== 'location') throw new Error('参照先に場所型の列がありません');
+      const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(source.path), { cache: 'no-store' });
+      const target = await window.GbTopicLiveBridge?.resolveRegisteredPath?.(source.path, { refreshRoots: false });
+      if (!target || !window.MeldexTopicPlacementUI?.projectSheetSnapshot) return pivot;
+      const response = await apiPost('/topic-migrations/open', { sourceId: target.sourceId, relativePath: target.relativePath, migrationPreview: true });
+      const preview = response.preview;
+      if (!preview?.ok || !preview.viewDocument) return pivot;
+      let snapshot = null;
+      try { snapshot = await apiFetch('/topic-views/' + encodeURIComponent(preview.viewDocument.documentId) + '/snapshot', { silentError: true }); }
+      catch (error) { if (Number(error.status || error.statusCode) !== 404) throw error; }
+      return window.MeldexTopicPlacementUI.projectSheetSnapshot(source.path, pivot, {
+        sourceId: target.sourceId, relativePath: target.relativePath, readOnly: true,
+        viewDocument: snapshot?.viewDocument || preview.viewDocument,
+        topicRecords: snapshot?.topics ? snapshot.topics.map(item => ({ ...item.record, topicRef: item.topicRef })) : preview.topicRecords,
+      });
+    }));
+    if (app.store !== store || app._generation !== generation || app._sheetRequest !== token) return;
+    for (const [i, result] of results.entries()) if (result.status === 'fulfilled') app._sheetCache.set(sources[i].id, result.value);
+    renderPlaces(app);
+    const failed = results.filter(result => result.status === 'rejected').length;
+    if (failed) app.sheetStatus.textContent += ` ・ ${failed}列を取得できません。「場所を更新」で再試行してください`;
+  }
+  return Object.freeze({ breadcrumbs, inspector, sources, refresh, wouldCycle, openChild, findParents });
+})();
+
+;
+
 /* === gb-db-topic-layout-style.js === */
 ;
 (function (root, factory) {
@@ -168954,6 +170081,3506 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === vendor/leaflet/leaflet.js === */
+;
+/* @preserve
+ * Leaflet 1.9.4, a JS library for interactive maps. https://leafletjs.com
+ * (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade
+ */
+!function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"function"==typeof define&&define.amd?define(["exports"],e):e((t="undefined"!=typeof globalThis?globalThis:t||self).leaflet={})}(this,function(t){"use strict";function l(t){for(var e,i,n=1,o=arguments.length;n<o;n++)for(e in i=arguments[n])t[e]=i[e];return t}var R=Object.create||function(t){return N.prototype=t,new N};function N(){}function a(t,e){var i,n=Array.prototype.slice;return t.bind?t.bind.apply(t,n.call(arguments,1)):(i=n.call(arguments,2),function(){return t.apply(e,i.length?i.concat(n.call(arguments)):arguments)})}var D=0;function h(t){return"_leaflet_id"in t||(t._leaflet_id=++D),t._leaflet_id}function j(t,e,i){var n,o,s=function(){n=!1,o&&(r.apply(i,o),o=!1)},r=function(){n?o=arguments:(t.apply(i,arguments),setTimeout(s,e),n=!0)};return r}function H(t,e,i){var n=e[1],e=e[0],o=n-e;return t===n&&i?t:((t-e)%o+o)%o+e}function u(){return!1}function i(t,e){return!1===e?t:(e=Math.pow(10,void 0===e?6:e),Math.round(t*e)/e)}function W(t){return t.trim?t.trim():t.replace(/^\s+|\s+$/g,"")}function F(t){return W(t).split(/\s+/)}function c(t,e){for(var i in Object.prototype.hasOwnProperty.call(t,"options")||(t.options=t.options?R(t.options):{}),e)t.options[i]=e[i];return t.options}function U(t,e,i){var n,o=[];for(n in t)o.push(encodeURIComponent(i?n.toUpperCase():n)+"="+encodeURIComponent(t[n]));return(e&&-1!==e.indexOf("?")?"&":"?")+o.join("&")}var V=/\{ *([\w_ -]+) *\}/g;function q(t,i){return t.replace(V,function(t,e){e=i[e];if(void 0===e)throw new Error("No value provided for variable "+t);return e="function"==typeof e?e(i):e})}var d=Array.isArray||function(t){return"[object Array]"===Object.prototype.toString.call(t)};function G(t,e){for(var i=0;i<t.length;i++)if(t[i]===e)return i;return-1}var K="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";function Y(t){return window["webkit"+t]||window["moz"+t]||window["ms"+t]}var X=0;function J(t){var e=+new Date,i=Math.max(0,16-(e-X));return X=e+i,window.setTimeout(t,i)}var $=window.requestAnimationFrame||Y("RequestAnimationFrame")||J,Q=window.cancelAnimationFrame||Y("CancelAnimationFrame")||Y("CancelRequestAnimationFrame")||function(t){window.clearTimeout(t)};function x(t,e,i){if(!i||$!==J)return $.call(window,a(t,e));t.call(e)}function r(t){t&&Q.call(window,t)}var tt={__proto__:null,extend:l,create:R,bind:a,get lastId(){return D},stamp:h,throttle:j,wrapNum:H,falseFn:u,formatNum:i,trim:W,splitWords:F,setOptions:c,getParamString:U,template:q,isArray:d,indexOf:G,emptyImageUrl:K,requestFn:$,cancelFn:Q,requestAnimFrame:x,cancelAnimFrame:r};function et(){}et.extend=function(t){function e(){c(this),this.initialize&&this.initialize.apply(this,arguments),this.callInitHooks()}var i,n=e.__super__=this.prototype,o=R(n);for(i in(o.constructor=e).prototype=o,this)Object.prototype.hasOwnProperty.call(this,i)&&"prototype"!==i&&"__super__"!==i&&(e[i]=this[i]);if(t.statics&&l(e,t.statics),t.includes){var s=t.includes;if("undefined"!=typeof L&&L&&L.Mixin){s=d(s)?s:[s];for(var r=0;r<s.length;r++)s[r]===L.Mixin.Events&&console.warn("Deprecated include of L.Mixin.Events: this property will be removed in future releases, please inherit from L.Evented instead.",(new Error).stack)}l.apply(null,[o].concat(t.includes))}return l(o,t),delete o.statics,delete o.includes,o.options&&(o.options=n.options?R(n.options):{},l(o.options,t.options)),o._initHooks=[],o.callInitHooks=function(){if(!this._initHooksCalled){n.callInitHooks&&n.callInitHooks.call(this),this._initHooksCalled=!0;for(var t=0,e=o._initHooks.length;t<e;t++)o._initHooks[t].call(this)}},e},et.include=function(t){var e=this.prototype.options;return l(this.prototype,t),t.options&&(this.prototype.options=e,this.mergeOptions(t.options)),this},et.mergeOptions=function(t){return l(this.prototype.options,t),this},et.addInitHook=function(t){var e=Array.prototype.slice.call(arguments,1),i="function"==typeof t?t:function(){this[t].apply(this,e)};return this.prototype._initHooks=this.prototype._initHooks||[],this.prototype._initHooks.push(i),this};var e={on:function(t,e,i){if("object"==typeof t)for(var n in t)this._on(n,t[n],e);else for(var o=0,s=(t=F(t)).length;o<s;o++)this._on(t[o],e,i);return this},off:function(t,e,i){if(arguments.length)if("object"==typeof t)for(var n in t)this._off(n,t[n],e);else{t=F(t);for(var o=1===arguments.length,s=0,r=t.length;s<r;s++)o?this._off(t[s]):this._off(t[s],e,i)}else delete this._events;return this},_on:function(t,e,i,n){"function"!=typeof e?console.warn("wrong listener type: "+typeof e):!1===this._listens(t,e,i)&&(e={fn:e,ctx:i=i===this?void 0:i},n&&(e.once=!0),this._events=this._events||{},this._events[t]=this._events[t]||[],this._events[t].push(e))},_off:function(t,e,i){var n,o,s;if(this._events&&(n=this._events[t]))if(1===arguments.length){if(this._firingCount)for(o=0,s=n.length;o<s;o++)n[o].fn=u;delete this._events[t]}else"function"!=typeof e?console.warn("wrong listener type: "+typeof e):!1!==(e=this._listens(t,e,i))&&(i=n[e],this._firingCount&&(i.fn=u,this._events[t]=n=n.slice()),n.splice(e,1))},fire:function(t,e,i){if(this.listens(t,i)){var n=l({},e,{type:t,target:this,sourceTarget:e&&e.sourceTarget||this});if(this._events){var o=this._events[t];if(o){this._firingCount=this._firingCount+1||1;for(var s=0,r=o.length;s<r;s++){var a=o[s],h=a.fn;a.once&&this.off(t,h,a.ctx),h.call(a.ctx||this,n)}this._firingCount--}}i&&this._propagateEvent(n)}return this},listens:function(t,e,i,n){"string"!=typeof t&&console.warn('"string" type argument expected');var o=e,s=("function"!=typeof e&&(n=!!e,i=o=void 0),this._events&&this._events[t]);if(s&&s.length&&!1!==this._listens(t,o,i))return!0;if(n)for(var r in this._eventParents)if(this._eventParents[r].listens(t,e,i,n))return!0;return!1},_listens:function(t,e,i){if(this._events){var n=this._events[t]||[];if(!e)return!!n.length;i===this&&(i=void 0);for(var o=0,s=n.length;o<s;o++)if(n[o].fn===e&&n[o].ctx===i)return o}return!1},once:function(t,e,i){if("object"==typeof t)for(var n in t)this._on(n,t[n],e,!0);else for(var o=0,s=(t=F(t)).length;o<s;o++)this._on(t[o],e,i,!0);return this},addEventParent:function(t){return this._eventParents=this._eventParents||{},this._eventParents[h(t)]=t,this},removeEventParent:function(t){return this._eventParents&&delete this._eventParents[h(t)],this},_propagateEvent:function(t){for(var e in this._eventParents)this._eventParents[e].fire(t.type,l({layer:t.target,propagatedFrom:t.target},t),!0)}},it=(e.addEventListener=e.on,e.removeEventListener=e.clearAllEventListeners=e.off,e.addOneTimeEventListener=e.once,e.fireEvent=e.fire,e.hasEventListeners=e.listens,et.extend(e));function p(t,e,i){this.x=i?Math.round(t):t,this.y=i?Math.round(e):e}var nt=Math.trunc||function(t){return 0<t?Math.floor(t):Math.ceil(t)};function m(t,e,i){return t instanceof p?t:d(t)?new p(t[0],t[1]):null==t?t:"object"==typeof t&&"x"in t&&"y"in t?new p(t.x,t.y):new p(t,e,i)}function f(t,e){if(t)for(var i=e?[t,e]:t,n=0,o=i.length;n<o;n++)this.extend(i[n])}function _(t,e){return!t||t instanceof f?t:new f(t,e)}function s(t,e){if(t)for(var i=e?[t,e]:t,n=0,o=i.length;n<o;n++)this.extend(i[n])}function g(t,e){return t instanceof s?t:new s(t,e)}function v(t,e,i){if(isNaN(t)||isNaN(e))throw new Error("Invalid LatLng object: ("+t+", "+e+")");this.lat=+t,this.lng=+e,void 0!==i&&(this.alt=+i)}function w(t,e,i){return t instanceof v?t:d(t)&&"object"!=typeof t[0]?3===t.length?new v(t[0],t[1],t[2]):2===t.length?new v(t[0],t[1]):null:null==t?t:"object"==typeof t&&"lat"in t?new v(t.lat,"lng"in t?t.lng:t.lon,t.alt):void 0===e?null:new v(t,e,i)}p.prototype={clone:function(){return new p(this.x,this.y)},add:function(t){return this.clone()._add(m(t))},_add:function(t){return this.x+=t.x,this.y+=t.y,this},subtract:function(t){return this.clone()._subtract(m(t))},_subtract:function(t){return this.x-=t.x,this.y-=t.y,this},divideBy:function(t){return this.clone()._divideBy(t)},_divideBy:function(t){return this.x/=t,this.y/=t,this},multiplyBy:function(t){return this.clone()._multiplyBy(t)},_multiplyBy:function(t){return this.x*=t,this.y*=t,this},scaleBy:function(t){return new p(this.x*t.x,this.y*t.y)},unscaleBy:function(t){return new p(this.x/t.x,this.y/t.y)},round:function(){return this.clone()._round()},_round:function(){return this.x=Math.round(this.x),this.y=Math.round(this.y),this},floor:function(){return this.clone()._floor()},_floor:function(){return this.x=Math.floor(this.x),this.y=Math.floor(this.y),this},ceil:function(){return this.clone()._ceil()},_ceil:function(){return this.x=Math.ceil(this.x),this.y=Math.ceil(this.y),this},trunc:function(){return this.clone()._trunc()},_trunc:function(){return this.x=nt(this.x),this.y=nt(this.y),this},distanceTo:function(t){var e=(t=m(t)).x-this.x,t=t.y-this.y;return Math.sqrt(e*e+t*t)},equals:function(t){return(t=m(t)).x===this.x&&t.y===this.y},contains:function(t){return t=m(t),Math.abs(t.x)<=Math.abs(this.x)&&Math.abs(t.y)<=Math.abs(this.y)},toString:function(){return"Point("+i(this.x)+", "+i(this.y)+")"}},f.prototype={extend:function(t){var e,i;if(t){if(t instanceof p||"number"==typeof t[0]||"x"in t)e=i=m(t);else if(e=(t=_(t)).min,i=t.max,!e||!i)return this;this.min||this.max?(this.min.x=Math.min(e.x,this.min.x),this.max.x=Math.max(i.x,this.max.x),this.min.y=Math.min(e.y,this.min.y),this.max.y=Math.max(i.y,this.max.y)):(this.min=e.clone(),this.max=i.clone())}return this},getCenter:function(t){return m((this.min.x+this.max.x)/2,(this.min.y+this.max.y)/2,t)},getBottomLeft:function(){return m(this.min.x,this.max.y)},getTopRight:function(){return m(this.max.x,this.min.y)},getTopLeft:function(){return this.min},getBottomRight:function(){return this.max},getSize:function(){return this.max.subtract(this.min)},contains:function(t){var e,i;return(t=("number"==typeof t[0]||t instanceof p?m:_)(t))instanceof f?(e=t.min,i=t.max):e=i=t,e.x>=this.min.x&&i.x<=this.max.x&&e.y>=this.min.y&&i.y<=this.max.y},intersects:function(t){t=_(t);var e=this.min,i=this.max,n=t.min,t=t.max,o=t.x>=e.x&&n.x<=i.x,t=t.y>=e.y&&n.y<=i.y;return o&&t},overlaps:function(t){t=_(t);var e=this.min,i=this.max,n=t.min,t=t.max,o=t.x>e.x&&n.x<i.x,t=t.y>e.y&&n.y<i.y;return o&&t},isValid:function(){return!(!this.min||!this.max)},pad:function(t){var e=this.min,i=this.max,n=Math.abs(e.x-i.x)*t,t=Math.abs(e.y-i.y)*t;return _(m(e.x-n,e.y-t),m(i.x+n,i.y+t))},equals:function(t){return!!t&&(t=_(t),this.min.equals(t.getTopLeft())&&this.max.equals(t.getBottomRight()))}},s.prototype={extend:function(t){var e,i,n=this._southWest,o=this._northEast;if(t instanceof v)i=e=t;else{if(!(t instanceof s))return t?this.extend(w(t)||g(t)):this;if(e=t._southWest,i=t._northEast,!e||!i)return this}return n||o?(n.lat=Math.min(e.lat,n.lat),n.lng=Math.min(e.lng,n.lng),o.lat=Math.max(i.lat,o.lat),o.lng=Math.max(i.lng,o.lng)):(this._southWest=new v(e.lat,e.lng),this._northEast=new v(i.lat,i.lng)),this},pad:function(t){var e=this._southWest,i=this._northEast,n=Math.abs(e.lat-i.lat)*t,t=Math.abs(e.lng-i.lng)*t;return new s(new v(e.lat-n,e.lng-t),new v(i.lat+n,i.lng+t))},getCenter:function(){return new v((this._southWest.lat+this._northEast.lat)/2,(this._southWest.lng+this._northEast.lng)/2)},getSouthWest:function(){return this._southWest},getNorthEast:function(){return this._northEast},getNorthWest:function(){return new v(this.getNorth(),this.getWest())},getSouthEast:function(){return new v(this.getSouth(),this.getEast())},getWest:function(){return this._southWest.lng},getSouth:function(){return this._southWest.lat},getEast:function(){return this._northEast.lng},getNorth:function(){return this._northEast.lat},contains:function(t){t=("number"==typeof t[0]||t instanceof v||"lat"in t?w:g)(t);var e,i,n=this._southWest,o=this._northEast;return t instanceof s?(e=t.getSouthWest(),i=t.getNorthEast()):e=i=t,e.lat>=n.lat&&i.lat<=o.lat&&e.lng>=n.lng&&i.lng<=o.lng},intersects:function(t){t=g(t);var e=this._southWest,i=this._northEast,n=t.getSouthWest(),t=t.getNorthEast(),o=t.lat>=e.lat&&n.lat<=i.lat,t=t.lng>=e.lng&&n.lng<=i.lng;return o&&t},overlaps:function(t){t=g(t);var e=this._southWest,i=this._northEast,n=t.getSouthWest(),t=t.getNorthEast(),o=t.lat>e.lat&&n.lat<i.lat,t=t.lng>e.lng&&n.lng<i.lng;return o&&t},toBBoxString:function(){return[this.getWest(),this.getSouth(),this.getEast(),this.getNorth()].join(",")},equals:function(t,e){return!!t&&(t=g(t),this._southWest.equals(t.getSouthWest(),e)&&this._northEast.equals(t.getNorthEast(),e))},isValid:function(){return!(!this._southWest||!this._northEast)}};var ot={latLngToPoint:function(t,e){t=this.projection.project(t),e=this.scale(e);return this.transformation._transform(t,e)},pointToLatLng:function(t,e){e=this.scale(e),t=this.transformation.untransform(t,e);return this.projection.unproject(t)},project:function(t){return this.projection.project(t)},unproject:function(t){return this.projection.unproject(t)},scale:function(t){return 256*Math.pow(2,t)},zoom:function(t){return Math.log(t/256)/Math.LN2},getProjectedBounds:function(t){var e;return this.infinite?null:(e=this.projection.bounds,t=this.scale(t),new f(this.transformation.transform(e.min,t),this.transformation.transform(e.max,t)))},infinite:!(v.prototype={equals:function(t,e){return!!t&&(t=w(t),Math.max(Math.abs(this.lat-t.lat),Math.abs(this.lng-t.lng))<=(void 0===e?1e-9:e))},toString:function(t){return"LatLng("+i(this.lat,t)+", "+i(this.lng,t)+")"},distanceTo:function(t){return st.distance(this,w(t))},wrap:function(){return st.wrapLatLng(this)},toBounds:function(t){var t=180*t/40075017,e=t/Math.cos(Math.PI/180*this.lat);return g([this.lat-t,this.lng-e],[this.lat+t,this.lng+e])},clone:function(){return new v(this.lat,this.lng,this.alt)}}),wrapLatLng:function(t){var e=this.wrapLng?H(t.lng,this.wrapLng,!0):t.lng;return new v(this.wrapLat?H(t.lat,this.wrapLat,!0):t.lat,e,t.alt)},wrapLatLngBounds:function(t){var e=t.getCenter(),i=this.wrapLatLng(e),n=e.lat-i.lat,e=e.lng-i.lng;return 0==n&&0==e?t:(i=t.getSouthWest(),t=t.getNorthEast(),new s(new v(i.lat-n,i.lng-e),new v(t.lat-n,t.lng-e)))}},st=l({},ot,{wrapLng:[-180,180],R:6371e3,distance:function(t,e){var i=Math.PI/180,n=t.lat*i,o=e.lat*i,s=Math.sin((e.lat-t.lat)*i/2),e=Math.sin((e.lng-t.lng)*i/2),t=s*s+Math.cos(n)*Math.cos(o)*e*e,i=2*Math.atan2(Math.sqrt(t),Math.sqrt(1-t));return this.R*i}}),rt=6378137,rt={R:rt,MAX_LATITUDE:85.0511287798,project:function(t){var e=Math.PI/180,i=this.MAX_LATITUDE,i=Math.max(Math.min(i,t.lat),-i),i=Math.sin(i*e);return new p(this.R*t.lng*e,this.R*Math.log((1+i)/(1-i))/2)},unproject:function(t){var e=180/Math.PI;return new v((2*Math.atan(Math.exp(t.y/this.R))-Math.PI/2)*e,t.x*e/this.R)},bounds:new f([-(rt=rt*Math.PI),-rt],[rt,rt])};function at(t,e,i,n){d(t)?(this._a=t[0],this._b=t[1],this._c=t[2],this._d=t[3]):(this._a=t,this._b=e,this._c=i,this._d=n)}function ht(t,e,i,n){return new at(t,e,i,n)}at.prototype={transform:function(t,e){return this._transform(t.clone(),e)},_transform:function(t,e){return t.x=(e=e||1)*(this._a*t.x+this._b),t.y=e*(this._c*t.y+this._d),t},untransform:function(t,e){return new p((t.x/(e=e||1)-this._b)/this._a,(t.y/e-this._d)/this._c)}};var lt=l({},st,{code:"EPSG:3857",projection:rt,transformation:ht(lt=.5/(Math.PI*rt.R),.5,-lt,.5)}),ut=l({},lt,{code:"EPSG:900913"});function ct(t){return document.createElementNS("http://www.w3.org/2000/svg",t)}function dt(t,e){for(var i,n,o,s,r="",a=0,h=t.length;a<h;a++){for(i=0,n=(o=t[a]).length;i<n;i++)r+=(i?"L":"M")+(s=o[i]).x+" "+s.y;r+=e?b.svg?"z":"x":""}return r||"M0 0"}var _t=document.documentElement.style,pt="ActiveXObject"in window,mt=pt&&!document.addEventListener,n="msLaunchUri"in navigator&&!("documentMode"in document),ft=y("webkit"),gt=y("android"),vt=y("android 2")||y("android 3"),yt=parseInt(/WebKit\/([0-9]+)|$/.exec(navigator.userAgent)[1],10),yt=gt&&y("Google")&&yt<537&&!("AudioNode"in window),xt=!!window.opera,wt=!n&&y("chrome"),bt=y("gecko")&&!ft&&!xt&&!pt,Pt=!wt&&y("safari"),Lt=y("phantom"),o="OTransition"in _t,Tt=0===navigator.platform.indexOf("Win"),Mt=pt&&"transition"in _t,zt="WebKitCSSMatrix"in window&&"m11"in new window.WebKitCSSMatrix&&!vt,_t="MozPerspective"in _t,Ct=!window.L_DISABLE_3D&&(Mt||zt||_t)&&!o&&!Lt,Zt="undefined"!=typeof orientation||y("mobile"),St=Zt&&ft,Et=Zt&&zt,kt=!window.PointerEvent&&window.MSPointerEvent,Ot=!(!window.PointerEvent&&!kt),At="ontouchstart"in window||!!window.TouchEvent,Bt=!window.L_NO_TOUCH&&(At||Ot),It=Zt&&xt,Rt=Zt&&bt,Nt=1<(window.devicePixelRatio||window.screen.deviceXDPI/window.screen.logicalXDPI),Dt=function(){var t=!1;try{var e=Object.defineProperty({},"passive",{get:function(){t=!0}});window.addEventListener("testPassiveEventSupport",u,e),window.removeEventListener("testPassiveEventSupport",u,e)}catch(t){}return t}(),jt=!!document.createElement("canvas").getContext,Ht=!(!document.createElementNS||!ct("svg").createSVGRect),Wt=!!Ht&&((Wt=document.createElement("div")).innerHTML="<svg/>","http://www.w3.org/2000/svg"===(Wt.firstChild&&Wt.firstChild.namespaceURI));function y(t){return 0<=navigator.userAgent.toLowerCase().indexOf(t)}var b={ie:pt,ielt9:mt,edge:n,webkit:ft,android:gt,android23:vt,androidStock:yt,opera:xt,chrome:wt,gecko:bt,safari:Pt,phantom:Lt,opera12:o,win:Tt,ie3d:Mt,webkit3d:zt,gecko3d:_t,any3d:Ct,mobile:Zt,mobileWebkit:St,mobileWebkit3d:Et,msPointer:kt,pointer:Ot,touch:Bt,touchNative:At,mobileOpera:It,mobileGecko:Rt,retina:Nt,passiveEvents:Dt,canvas:jt,svg:Ht,vml:!Ht&&function(){try{var t=document.createElement("div"),e=(t.innerHTML='<v:shape adj="1"/>',t.firstChild);return e.style.behavior="url(#default#VML)",e&&"object"==typeof e.adj}catch(t){return!1}}(),inlineSvg:Wt,mac:0===navigator.platform.indexOf("Mac"),linux:0===navigator.platform.indexOf("Linux")},Ft=b.msPointer?"MSPointerDown":"pointerdown",Ut=b.msPointer?"MSPointerMove":"pointermove",Vt=b.msPointer?"MSPointerUp":"pointerup",qt=b.msPointer?"MSPointerCancel":"pointercancel",Gt={touchstart:Ft,touchmove:Ut,touchend:Vt,touchcancel:qt},Kt={touchstart:function(t,e){e.MSPOINTER_TYPE_TOUCH&&e.pointerType===e.MSPOINTER_TYPE_TOUCH&&O(e);ee(t,e)},touchmove:ee,touchend:ee,touchcancel:ee},Yt={},Xt=!1;function Jt(t,e,i){return"touchstart"!==e||Xt||(document.addEventListener(Ft,$t,!0),document.addEventListener(Ut,Qt,!0),document.addEventListener(Vt,te,!0),document.addEventListener(qt,te,!0),Xt=!0),Kt[e]?(i=Kt[e].bind(this,i),t.addEventListener(Gt[e],i,!1),i):(console.warn("wrong event specified:",e),u)}function $t(t){Yt[t.pointerId]=t}function Qt(t){Yt[t.pointerId]&&(Yt[t.pointerId]=t)}function te(t){delete Yt[t.pointerId]}function ee(t,e){if(e.pointerType!==(e.MSPOINTER_TYPE_MOUSE||"mouse")){for(var i in e.touches=[],Yt)e.touches.push(Yt[i]);e.changedTouches=[e],t(e)}}var ie=200;function ne(t,i){t.addEventListener("dblclick",i);var n,o=0;function e(t){var e;1!==t.detail?n=t.detail:"mouse"===t.pointerType||t.sourceCapabilities&&!t.sourceCapabilities.firesTouchEvents||((e=Ne(t)).some(function(t){return t instanceof HTMLLabelElement&&t.attributes.for})&&!e.some(function(t){return t instanceof HTMLInputElement||t instanceof HTMLSelectElement})||((e=Date.now())-o<=ie?2===++n&&i(function(t){var e,i,n={};for(i in t)e=t[i],n[i]=e&&e.bind?e.bind(t):e;return(t=n).type="dblclick",n.detail=2,n.isTrusted=!1,n._simulated=!0,n}(t)):n=1,o=e))}return t.addEventListener("click",e),{dblclick:i,simDblclick:e}}var oe,se,re,ae,he,le,ue=we(["transform","webkitTransform","OTransform","MozTransform","msTransform"]),ce=we(["webkitTransition","transition","OTransition","MozTransition","msTransition"]),de="webkitTransition"===ce||"OTransition"===ce?ce+"End":"transitionend";function _e(t){return"string"==typeof t?document.getElementById(t):t}function pe(t,e){var i=t.style[e]||t.currentStyle&&t.currentStyle[e];return"auto"===(i=i&&"auto"!==i||!document.defaultView?i:(t=document.defaultView.getComputedStyle(t,null))?t[e]:null)?null:i}function P(t,e,i){t=document.createElement(t);return t.className=e||"",i&&i.appendChild(t),t}function T(t){var e=t.parentNode;e&&e.removeChild(t)}function me(t){for(;t.firstChild;)t.removeChild(t.firstChild)}function fe(t){var e=t.parentNode;e&&e.lastChild!==t&&e.appendChild(t)}function ge(t){var e=t.parentNode;e&&e.firstChild!==t&&e.insertBefore(t,e.firstChild)}function ve(t,e){return void 0!==t.classList?t.classList.contains(e):0<(t=xe(t)).length&&new RegExp("(^|\\s)"+e+"(\\s|$)").test(t)}function M(t,e){var i;if(void 0!==t.classList)for(var n=F(e),o=0,s=n.length;o<s;o++)t.classList.add(n[o]);else ve(t,e)||ye(t,((i=xe(t))?i+" ":"")+e)}function z(t,e){void 0!==t.classList?t.classList.remove(e):ye(t,W((" "+xe(t)+" ").replace(" "+e+" "," ")))}function ye(t,e){void 0===t.className.baseVal?t.className=e:t.className.baseVal=e}function xe(t){return void 0===(t=t.correspondingElement?t.correspondingElement:t).className.baseVal?t.className:t.className.baseVal}function C(t,e){if("opacity"in t.style)t.style.opacity=e;else if("filter"in t.style){var i=!1,n="DXImageTransform.Microsoft.Alpha";try{i=t.filters.item(n)}catch(t){if(1===e)return}e=Math.round(100*e),i?(i.Enabled=100!==e,i.Opacity=e):t.style.filter+=" progid:"+n+"(opacity="+e+")"}}function we(t){for(var e=document.documentElement.style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return!1}function be(t,e,i){e=e||new p(0,0);t.style[ue]=(b.ie3d?"translate("+e.x+"px,"+e.y+"px)":"translate3d("+e.x+"px,"+e.y+"px,0)")+(i?" scale("+i+")":"")}function Z(t,e){t._leaflet_pos=e,b.any3d?be(t,e):(t.style.left=e.x+"px",t.style.top=e.y+"px")}function Pe(t){return t._leaflet_pos||new p(0,0)}function Le(){S(window,"dragstart",O)}function Te(){k(window,"dragstart",O)}function Me(t){for(;-1===t.tabIndex;)t=t.parentNode;t.style&&(ze(),le=(he=t).style.outlineStyle,t.style.outlineStyle="none",S(window,"keydown",ze))}function ze(){he&&(he.style.outlineStyle=le,le=he=void 0,k(window,"keydown",ze))}function Ce(t){for(;!((t=t.parentNode).offsetWidth&&t.offsetHeight||t===document.body););return t}function Ze(t){var e=t.getBoundingClientRect();return{x:e.width/t.offsetWidth||1,y:e.height/t.offsetHeight||1,boundingClientRect:e}}ae="onselectstart"in document?(re=function(){S(window,"selectstart",O)},function(){k(window,"selectstart",O)}):(se=we(["userSelect","WebkitUserSelect","OUserSelect","MozUserSelect","msUserSelect"]),re=function(){var t;se&&(t=document.documentElement.style,oe=t[se],t[se]="none")},function(){se&&(document.documentElement.style[se]=oe,oe=void 0)});pt={__proto__:null,TRANSFORM:ue,TRANSITION:ce,TRANSITION_END:de,get:_e,getStyle:pe,create:P,remove:T,empty:me,toFront:fe,toBack:ge,hasClass:ve,addClass:M,removeClass:z,setClass:ye,getClass:xe,setOpacity:C,testProp:we,setTransform:be,setPosition:Z,getPosition:Pe,get disableTextSelection(){return re},get enableTextSelection(){return ae},disableImageDrag:Le,enableImageDrag:Te,preventOutline:Me,restoreOutline:ze,getSizedParentNode:Ce,getScale:Ze};function S(t,e,i,n){if(e&&"object"==typeof e)for(var o in e)ke(t,o,e[o],i);else for(var s=0,r=(e=F(e)).length;s<r;s++)ke(t,e[s],i,n);return this}var E="_leaflet_events";function k(t,e,i,n){if(1===arguments.length)Se(t),delete t[E];else if(e&&"object"==typeof e)for(var o in e)Oe(t,o,e[o],i);else if(e=F(e),2===arguments.length)Se(t,function(t){return-1!==G(e,t)});else for(var s=0,r=e.length;s<r;s++)Oe(t,e[s],i,n);return this}function Se(t,e){for(var i in t[E]){var n=i.split(/\d/)[0];e&&!e(n)||Oe(t,n,null,null,i)}}var Ee={mouseenter:"mouseover",mouseleave:"mouseout",wheel:!("onwheel"in window)&&"mousewheel"};function ke(e,t,i,n){var o,s,r=t+h(i)+(n?"_"+h(n):"");e[E]&&e[E][r]||(s=o=function(t){return i.call(n||e,t||window.event)},!b.touchNative&&b.pointer&&0===t.indexOf("touch")?o=Jt(e,t,o):b.touch&&"dblclick"===t?o=ne(e,o):"addEventListener"in e?"touchstart"===t||"touchmove"===t||"wheel"===t||"mousewheel"===t?e.addEventListener(Ee[t]||t,o,!!b.passiveEvents&&{passive:!1}):"mouseenter"===t||"mouseleave"===t?e.addEventListener(Ee[t],o=function(t){t=t||window.event,We(e,t)&&s(t)},!1):e.addEventListener(t,s,!1):e.attachEvent("on"+t,o),e[E]=e[E]||{},e[E][r]=o)}function Oe(t,e,i,n,o){o=o||e+h(i)+(n?"_"+h(n):"");var s,r,i=t[E]&&t[E][o];i&&(!b.touchNative&&b.pointer&&0===e.indexOf("touch")?(n=t,r=i,Gt[s=e]?n.removeEventListener(Gt[s],r,!1):console.warn("wrong event specified:",s)):b.touch&&"dblclick"===e?(n=i,(r=t).removeEventListener("dblclick",n.dblclick),r.removeEventListener("click",n.simDblclick)):"removeEventListener"in t?t.removeEventListener(Ee[e]||e,i,!1):t.detachEvent("on"+e,i),t[E][o]=null)}function Ae(t){return t.stopPropagation?t.stopPropagation():t.originalEvent?t.originalEvent._stopped=!0:t.cancelBubble=!0,this}function Be(t){return ke(t,"wheel",Ae),this}function Ie(t){return S(t,"mousedown touchstart dblclick contextmenu",Ae),t._leaflet_disable_click=!0,this}function O(t){return t.preventDefault?t.preventDefault():t.returnValue=!1,this}function Re(t){return O(t),Ae(t),this}function Ne(t){if(t.composedPath)return t.composedPath();for(var e=[],i=t.target;i;)e.push(i),i=i.parentNode;return e}function De(t,e){var i,n;return e?(n=(i=Ze(e)).boundingClientRect,new p((t.clientX-n.left)/i.x-e.clientLeft,(t.clientY-n.top)/i.y-e.clientTop)):new p(t.clientX,t.clientY)}var je=b.linux&&b.chrome?window.devicePixelRatio:b.mac?3*window.devicePixelRatio:0<window.devicePixelRatio?2*window.devicePixelRatio:1;function He(t){return b.edge?t.wheelDeltaY/2:t.deltaY&&0===t.deltaMode?-t.deltaY/je:t.deltaY&&1===t.deltaMode?20*-t.deltaY:t.deltaY&&2===t.deltaMode?60*-t.deltaY:t.deltaX||t.deltaZ?0:t.wheelDelta?(t.wheelDeltaY||t.wheelDelta)/2:t.detail&&Math.abs(t.detail)<32765?20*-t.detail:t.detail?t.detail/-32765*60:0}function We(t,e){var i=e.relatedTarget;if(!i)return!0;try{for(;i&&i!==t;)i=i.parentNode}catch(t){return!1}return i!==t}var mt={__proto__:null,on:S,off:k,stopPropagation:Ae,disableScrollPropagation:Be,disableClickPropagation:Ie,preventDefault:O,stop:Re,getPropagationPath:Ne,getMousePosition:De,getWheelDelta:He,isExternalTarget:We,addListener:S,removeListener:k},Fe=it.extend({run:function(t,e,i,n){this.stop(),this._el=t,this._inProgress=!0,this._duration=i||.25,this._easeOutPower=1/Math.max(n||.5,.2),this._startPos=Pe(t),this._offset=e.subtract(this._startPos),this._startTime=+new Date,this.fire("start"),this._animate()},stop:function(){this._inProgress&&(this._step(!0),this._complete())},_animate:function(){this._animId=x(this._animate,this),this._step()},_step:function(t){var e=+new Date-this._startTime,i=1e3*this._duration;e<i?this._runFrame(this._easeOut(e/i),t):(this._runFrame(1),this._complete())},_runFrame:function(t,e){t=this._startPos.add(this._offset.multiplyBy(t));e&&t._round(),Z(this._el,t),this.fire("step")},_complete:function(){r(this._animId),this._inProgress=!1,this.fire("end")},_easeOut:function(t){return 1-Math.pow(1-t,this._easeOutPower)}}),A=it.extend({options:{crs:lt,center:void 0,zoom:void 0,minZoom:void 0,maxZoom:void 0,layers:[],maxBounds:void 0,renderer:void 0,zoomAnimation:!0,zoomAnimationThreshold:4,fadeAnimation:!0,markerZoomAnimation:!0,transform3DLimit:8388608,zoomSnap:1,zoomDelta:1,trackResize:!0},initialize:function(t,e){e=c(this,e),this._handlers=[],this._layers={},this._zoomBoundLayers={},this._sizeChanged=!0,this._initContainer(t),this._initLayout(),this._onResize=a(this._onResize,this),this._initEvents(),e.maxBounds&&this.setMaxBounds(e.maxBounds),void 0!==e.zoom&&(this._zoom=this._limitZoom(e.zoom)),e.center&&void 0!==e.zoom&&this.setView(w(e.center),e.zoom,{reset:!0}),this.callInitHooks(),this._zoomAnimated=ce&&b.any3d&&!b.mobileOpera&&this.options.zoomAnimation,this._zoomAnimated&&(this._createAnimProxy(),S(this._proxy,de,this._catchTransitionEnd,this)),this._addLayers(this.options.layers)},setView:function(t,e,i){if((e=void 0===e?this._zoom:this._limitZoom(e),t=this._limitCenter(w(t),e,this.options.maxBounds),i=i||{},this._stop(),this._loaded&&!i.reset&&!0!==i)&&(void 0!==i.animate&&(i.zoom=l({animate:i.animate},i.zoom),i.pan=l({animate:i.animate,duration:i.duration},i.pan)),this._zoom!==e?this._tryAnimatedZoom&&this._tryAnimatedZoom(t,e,i.zoom):this._tryAnimatedPan(t,i.pan)))return clearTimeout(this._sizeTimer),this;return this._resetView(t,e,i.pan&&i.pan.noMoveStart),this},setZoom:function(t,e){return this._loaded?this.setView(this.getCenter(),t,{zoom:e}):(this._zoom=t,this)},zoomIn:function(t,e){return t=t||(b.any3d?this.options.zoomDelta:1),this.setZoom(this._zoom+t,e)},zoomOut:function(t,e){return t=t||(b.any3d?this.options.zoomDelta:1),this.setZoom(this._zoom-t,e)},setZoomAround:function(t,e,i){var n=this.getZoomScale(e),o=this.getSize().divideBy(2),t=(t instanceof p?t:this.latLngToContainerPoint(t)).subtract(o).multiplyBy(1-1/n),n=this.containerPointToLatLng(o.add(t));return this.setView(n,e,{zoom:i})},_getBoundsCenterZoom:function(t,e){e=e||{},t=t.getBounds?t.getBounds():g(t);var i=m(e.paddingTopLeft||e.padding||[0,0]),n=m(e.paddingBottomRight||e.padding||[0,0]),o=this.getBoundsZoom(t,!1,i.add(n));return(o="number"==typeof e.maxZoom?Math.min(e.maxZoom,o):o)===1/0?{center:t.getCenter(),zoom:o}:(e=n.subtract(i).divideBy(2),n=this.project(t.getSouthWest(),o),i=this.project(t.getNorthEast(),o),{center:this.unproject(n.add(i).divideBy(2).add(e),o),zoom:o})},fitBounds:function(t,e){if((t=g(t)).isValid())return t=this._getBoundsCenterZoom(t,e),this.setView(t.center,t.zoom,e);throw new Error("Bounds are not valid.")},fitWorld:function(t){return this.fitBounds([[-90,-180],[90,180]],t)},panTo:function(t,e){return this.setView(t,this._zoom,{pan:e})},panBy:function(t,e){var i;return e=e||{},(t=m(t).round()).x||t.y?(!0===e.animate||this.getSize().contains(t)?(this._panAnim||(this._panAnim=new Fe,this._panAnim.on({step:this._onPanTransitionStep,end:this._onPanTransitionEnd},this)),e.noMoveStart||this.fire("movestart"),!1!==e.animate?(M(this._mapPane,"leaflet-pan-anim"),i=this._getMapPanePos().subtract(t).round(),this._panAnim.run(this._mapPane,i,e.duration||.25,e.easeLinearity)):(this._rawPanBy(t),this.fire("move").fire("moveend"))):this._resetView(this.unproject(this.project(this.getCenter()).add(t)),this.getZoom()),this):this.fire("moveend")},flyTo:function(n,o,t){if(!1===(t=t||{}).animate||!b.any3d)return this.setView(n,o,t);this._stop();var s=this.project(this.getCenter()),r=this.project(n),e=this.getSize(),a=this._zoom,h=(n=w(n),o=void 0===o?a:o,Math.max(e.x,e.y)),i=h*this.getZoomScale(a,o),l=r.distanceTo(s)||1,u=1.42,c=u*u;function d(t){t=(i*i-h*h+(t?-1:1)*c*c*l*l)/(2*(t?i:h)*c*l),t=Math.sqrt(t*t+1)-t;return t<1e-9?-18:Math.log(t)}function _(t){return(Math.exp(t)-Math.exp(-t))/2}function p(t){return(Math.exp(t)+Math.exp(-t))/2}var m=d(0);function f(t){return h*(p(m)*(_(t=m+u*t)/p(t))-_(m))/c}var g=Date.now(),v=(d(1)-m)/u,y=t.duration?1e3*t.duration:1e3*v*.8;return this._moveStart(!0,t.noMoveStart),function t(){var e=(Date.now()-g)/y,i=(1-Math.pow(1-e,1.5))*v;e<=1?(this._flyToFrame=x(t,this),this._move(this.unproject(s.add(r.subtract(s).multiplyBy(f(i)/l)),a),this.getScaleZoom(h/(e=i,h*(p(m)/p(m+u*e))),a),{flyTo:!0})):this._move(n,o)._moveEnd(!0)}.call(this),this},flyToBounds:function(t,e){t=this._getBoundsCenterZoom(t,e);return this.flyTo(t.center,t.zoom,e)},setMaxBounds:function(t){return t=g(t),this.listens("moveend",this._panInsideMaxBounds)&&this.off("moveend",this._panInsideMaxBounds),t.isValid()?(this.options.maxBounds=t,this._loaded&&this._panInsideMaxBounds(),this.on("moveend",this._panInsideMaxBounds)):(this.options.maxBounds=null,this)},setMinZoom:function(t){var e=this.options.minZoom;return this.options.minZoom=t,this._loaded&&e!==t&&(this.fire("zoomlevelschange"),this.getZoom()<this.options.minZoom)?this.setZoom(t):this},setMaxZoom:function(t){var e=this.options.maxZoom;return this.options.maxZoom=t,this._loaded&&e!==t&&(this.fire("zoomlevelschange"),this.getZoom()>this.options.maxZoom)?this.setZoom(t):this},panInsideBounds:function(t,e){this._enforcingBounds=!0;var i=this.getCenter(),t=this._limitCenter(i,this._zoom,g(t));return i.equals(t)||this.panTo(t,e),this._enforcingBounds=!1,this},panInside:function(t,e){var i=m((e=e||{}).paddingTopLeft||e.padding||[0,0]),n=m(e.paddingBottomRight||e.padding||[0,0]),o=this.project(this.getCenter()),t=this.project(t),s=this.getPixelBounds(),i=_([s.min.add(i),s.max.subtract(n)]),s=i.getSize();return i.contains(t)||(this._enforcingBounds=!0,n=t.subtract(i.getCenter()),i=i.extend(t).getSize().subtract(s),o.x+=n.x<0?-i.x:i.x,o.y+=n.y<0?-i.y:i.y,this.panTo(this.unproject(o),e),this._enforcingBounds=!1),this},invalidateSize:function(t){if(!this._loaded)return this;t=l({animate:!1,pan:!0},!0===t?{animate:!0}:t);var e=this.getSize(),i=(this._sizeChanged=!0,this._lastCenter=null,this.getSize()),n=e.divideBy(2).round(),o=i.divideBy(2).round(),n=n.subtract(o);return n.x||n.y?(t.animate&&t.pan?this.panBy(n):(t.pan&&this._rawPanBy(n),this.fire("move"),t.debounceMoveend?(clearTimeout(this._sizeTimer),this._sizeTimer=setTimeout(a(this.fire,this,"moveend"),200)):this.fire("moveend")),this.fire("resize",{oldSize:e,newSize:i})):this},stop:function(){return this.setZoom(this._limitZoom(this._zoom)),this.options.zoomSnap||this.fire("viewreset"),this._stop()},locate:function(t){var e,i;return t=this._locateOptions=l({timeout:1e4,watch:!1},t),"geolocation"in navigator?(e=a(this._handleGeolocationResponse,this),i=a(this._handleGeolocationError,this),t.watch?this._locationWatchId=navigator.geolocation.watchPosition(e,i,t):navigator.geolocation.getCurrentPosition(e,i,t)):this._handleGeolocationError({code:0,message:"Geolocation not supported."}),this},stopLocate:function(){return navigator.geolocation&&navigator.geolocation.clearWatch&&navigator.geolocation.clearWatch(this._locationWatchId),this._locateOptions&&(this._locateOptions.setView=!1),this},_handleGeolocationError:function(t){var e;this._container._leaflet_id&&(e=t.code,t=t.message||(1===e?"permission denied":2===e?"position unavailable":"timeout"),this._locateOptions.setView&&!this._loaded&&this.fitWorld(),this.fire("locationerror",{code:e,message:"Geolocation error: "+t+"."}))},_handleGeolocationResponse:function(t){if(this._container._leaflet_id){var e,i,n=new v(t.coords.latitude,t.coords.longitude),o=n.toBounds(2*t.coords.accuracy),s=this._locateOptions,r=(s.setView&&(e=this.getBoundsZoom(o),this.setView(n,s.maxZoom?Math.min(e,s.maxZoom):e)),{latlng:n,bounds:o,timestamp:t.timestamp});for(i in t.coords)"number"==typeof t.coords[i]&&(r[i]=t.coords[i]);this.fire("locationfound",r)}},addHandler:function(t,e){return e&&(e=this[t]=new e(this),this._handlers.push(e),this.options[t]&&e.enable()),this},remove:function(){if(this._initEvents(!0),this.options.maxBounds&&this.off("moveend",this._panInsideMaxBounds),this._containerId!==this._container._leaflet_id)throw new Error("Map container is being reused by another instance");try{delete this._container._leaflet_id,delete this._containerId}catch(t){this._container._leaflet_id=void 0,this._containerId=void 0}for(var t in void 0!==this._locationWatchId&&this.stopLocate(),this._stop(),T(this._mapPane),this._clearControlPos&&this._clearControlPos(),this._resizeRequest&&(r(this._resizeRequest),this._resizeRequest=null),this._clearHandlers(),this._loaded&&this.fire("unload"),this._layers)this._layers[t].remove();for(t in this._panes)T(this._panes[t]);return this._layers=[],this._panes=[],delete this._mapPane,delete this._renderer,this},createPane:function(t,e){e=P("div","leaflet-pane"+(t?" leaflet-"+t.replace("Pane","")+"-pane":""),e||this._mapPane);return t&&(this._panes[t]=e),e},getCenter:function(){return this._checkIfLoaded(),this._lastCenter&&!this._moved()?this._lastCenter.clone():this.layerPointToLatLng(this._getCenterLayerPoint())},getZoom:function(){return this._zoom},getBounds:function(){var t=this.getPixelBounds();return new s(this.unproject(t.getBottomLeft()),this.unproject(t.getTopRight()))},getMinZoom:function(){return void 0===this.options.minZoom?this._layersMinZoom||0:this.options.minZoom},getMaxZoom:function(){return void 0===this.options.maxZoom?void 0===this._layersMaxZoom?1/0:this._layersMaxZoom:this.options.maxZoom},getBoundsZoom:function(t,e,i){t=g(t),i=m(i||[0,0]);var n=this.getZoom()||0,o=this.getMinZoom(),s=this.getMaxZoom(),r=t.getNorthWest(),t=t.getSouthEast(),i=this.getSize().subtract(i),t=_(this.project(t,n),this.project(r,n)).getSize(),r=b.any3d?this.options.zoomSnap:1,a=i.x/t.x,i=i.y/t.y,t=e?Math.max(a,i):Math.min(a,i),n=this.getScaleZoom(t,n);return r&&(n=Math.round(n/(r/100))*(r/100),n=e?Math.ceil(n/r)*r:Math.floor(n/r)*r),Math.max(o,Math.min(s,n))},getSize:function(){return this._size&&!this._sizeChanged||(this._size=new p(this._container.clientWidth||0,this._container.clientHeight||0),this._sizeChanged=!1),this._size.clone()},getPixelBounds:function(t,e){t=this._getTopLeftPoint(t,e);return new f(t,t.add(this.getSize()))},getPixelOrigin:function(){return this._checkIfLoaded(),this._pixelOrigin},getPixelWorldBounds:function(t){return this.options.crs.getProjectedBounds(void 0===t?this.getZoom():t)},getPane:function(t){return"string"==typeof t?this._panes[t]:t},getPanes:function(){return this._panes},getContainer:function(){return this._container},getZoomScale:function(t,e){var i=this.options.crs;return e=void 0===e?this._zoom:e,i.scale(t)/i.scale(e)},getScaleZoom:function(t,e){var i=this.options.crs,t=(e=void 0===e?this._zoom:e,i.zoom(t*i.scale(e)));return isNaN(t)?1/0:t},project:function(t,e){return e=void 0===e?this._zoom:e,this.options.crs.latLngToPoint(w(t),e)},unproject:function(t,e){return e=void 0===e?this._zoom:e,this.options.crs.pointToLatLng(m(t),e)},layerPointToLatLng:function(t){t=m(t).add(this.getPixelOrigin());return this.unproject(t)},latLngToLayerPoint:function(t){return this.project(w(t))._round()._subtract(this.getPixelOrigin())},wrapLatLng:function(t){return this.options.crs.wrapLatLng(w(t))},wrapLatLngBounds:function(t){return this.options.crs.wrapLatLngBounds(g(t))},distance:function(t,e){return this.options.crs.distance(w(t),w(e))},containerPointToLayerPoint:function(t){return m(t).subtract(this._getMapPanePos())},layerPointToContainerPoint:function(t){return m(t).add(this._getMapPanePos())},containerPointToLatLng:function(t){t=this.containerPointToLayerPoint(m(t));return this.layerPointToLatLng(t)},latLngToContainerPoint:function(t){return this.layerPointToContainerPoint(this.latLngToLayerPoint(w(t)))},mouseEventToContainerPoint:function(t){return De(t,this._container)},mouseEventToLayerPoint:function(t){return this.containerPointToLayerPoint(this.mouseEventToContainerPoint(t))},mouseEventToLatLng:function(t){return this.layerPointToLatLng(this.mouseEventToLayerPoint(t))},_initContainer:function(t){t=this._container=_e(t);if(!t)throw new Error("Map container not found.");if(t._leaflet_id)throw new Error("Map container is already initialized.");S(t,"scroll",this._onScroll,this),this._containerId=h(t)},_initLayout:function(){var t=this._container,e=(this._fadeAnimated=this.options.fadeAnimation&&b.any3d,M(t,"leaflet-container"+(b.touch?" leaflet-touch":"")+(b.retina?" leaflet-retina":"")+(b.ielt9?" leaflet-oldie":"")+(b.safari?" leaflet-safari":"")+(this._fadeAnimated?" leaflet-fade-anim":"")),pe(t,"position"));"absolute"!==e&&"relative"!==e&&"fixed"!==e&&"sticky"!==e&&(t.style.position="relative"),this._initPanes(),this._initControlPos&&this._initControlPos()},_initPanes:function(){var t=this._panes={};this._paneRenderers={},this._mapPane=this.createPane("mapPane",this._container),Z(this._mapPane,new p(0,0)),this.createPane("tilePane"),this.createPane("overlayPane"),this.createPane("shadowPane"),this.createPane("markerPane"),this.createPane("tooltipPane"),this.createPane("popupPane"),this.options.markerZoomAnimation||(M(t.markerPane,"leaflet-zoom-hide"),M(t.shadowPane,"leaflet-zoom-hide"))},_resetView:function(t,e,i){Z(this._mapPane,new p(0,0));var n=!this._loaded,o=(this._loaded=!0,e=this._limitZoom(e),this.fire("viewprereset"),this._zoom!==e);this._moveStart(o,i)._move(t,e)._moveEnd(o),this.fire("viewreset"),n&&this.fire("load")},_moveStart:function(t,e){return t&&this.fire("zoomstart"),e||this.fire("movestart"),this},_move:function(t,e,i,n){void 0===e&&(e=this._zoom);var o=this._zoom!==e;return this._zoom=e,this._lastCenter=t,this._pixelOrigin=this._getNewPixelOrigin(t),n?i&&i.pinch&&this.fire("zoom",i):((o||i&&i.pinch)&&this.fire("zoom",i),this.fire("move",i)),this},_moveEnd:function(t){return t&&this.fire("zoomend"),this.fire("moveend")},_stop:function(){return r(this._flyToFrame),this._panAnim&&this._panAnim.stop(),this},_rawPanBy:function(t){Z(this._mapPane,this._getMapPanePos().subtract(t))},_getZoomSpan:function(){return this.getMaxZoom()-this.getMinZoom()},_panInsideMaxBounds:function(){this._enforcingBounds||this.panInsideBounds(this.options.maxBounds)},_checkIfLoaded:function(){if(!this._loaded)throw new Error("Set map center and zoom first.")},_initEvents:function(t){this._targets={};var e=t?k:S;e((this._targets[h(this._container)]=this)._container,"click dblclick mousedown mouseup mouseover mouseout mousemove contextmenu keypress keydown keyup",this._handleDOMEvent,this),this.options.trackResize&&e(window,"resize",this._onResize,this),b.any3d&&this.options.transform3DLimit&&(t?this.off:this.on).call(this,"moveend",this._onMoveEnd)},_onResize:function(){r(this._resizeRequest),this._resizeRequest=x(function(){this.invalidateSize({debounceMoveend:!0})},this)},_onScroll:function(){this._container.scrollTop=0,this._container.scrollLeft=0},_onMoveEnd:function(){var t=this._getMapPanePos();Math.max(Math.abs(t.x),Math.abs(t.y))>=this.options.transform3DLimit&&this._resetView(this.getCenter(),this.getZoom())},_findEventTargets:function(t,e){for(var i,n=[],o="mouseout"===e||"mouseover"===e,s=t.target||t.srcElement,r=!1;s;){if((i=this._targets[h(s)])&&("click"===e||"preclick"===e)&&this._draggableMoved(i)){r=!0;break}if(i&&i.listens(e,!0)){if(o&&!We(s,t))break;if(n.push(i),o)break}if(s===this._container)break;s=s.parentNode}return n=n.length||r||o||!this.listens(e,!0)?n:[this]},_isClickDisabled:function(t){for(;t&&t!==this._container;){if(t._leaflet_disable_click)return!0;t=t.parentNode}},_handleDOMEvent:function(t){var e,i=t.target||t.srcElement;!this._loaded||i._leaflet_disable_events||"click"===t.type&&this._isClickDisabled(i)||("mousedown"===(e=t.type)&&Me(i),this._fireDOMEvent(t,e))},_mouseEvents:["click","dblclick","mouseover","mouseout","contextmenu"],_fireDOMEvent:function(t,e,i){"click"===t.type&&((a=l({},t)).type="preclick",this._fireDOMEvent(a,a.type,i));var n=this._findEventTargets(t,e);if(i){for(var o=[],s=0;s<i.length;s++)i[s].listens(e,!0)&&o.push(i[s]);n=o.concat(n)}if(n.length){"contextmenu"===e&&O(t);var r,a=n[0],h={originalEvent:t};for("keypress"!==t.type&&"keydown"!==t.type&&"keyup"!==t.type&&(r=a.getLatLng&&(!a._radius||a._radius<=10),h.containerPoint=r?this.latLngToContainerPoint(a.getLatLng()):this.mouseEventToContainerPoint(t),h.layerPoint=this.containerPointToLayerPoint(h.containerPoint),h.latlng=r?a.getLatLng():this.layerPointToLatLng(h.layerPoint)),s=0;s<n.length;s++)if(n[s].fire(e,h,!0),h.originalEvent._stopped||!1===n[s].options.bubblingMouseEvents&&-1!==G(this._mouseEvents,e))return}},_draggableMoved:function(t){return(t=t.dragging&&t.dragging.enabled()?t:this).dragging&&t.dragging.moved()||this.boxZoom&&this.boxZoom.moved()},_clearHandlers:function(){for(var t=0,e=this._handlers.length;t<e;t++)this._handlers[t].disable()},whenReady:function(t,e){return this._loaded?t.call(e||this,{target:this}):this.on("load",t,e),this},_getMapPanePos:function(){return Pe(this._mapPane)||new p(0,0)},_moved:function(){var t=this._getMapPanePos();return t&&!t.equals([0,0])},_getTopLeftPoint:function(t,e){return(t&&void 0!==e?this._getNewPixelOrigin(t,e):this.getPixelOrigin()).subtract(this._getMapPanePos())},_getNewPixelOrigin:function(t,e){var i=this.getSize()._divideBy(2);return this.project(t,e)._subtract(i)._add(this._getMapPanePos())._round()},_latLngToNewLayerPoint:function(t,e,i){i=this._getNewPixelOrigin(i,e);return this.project(t,e)._subtract(i)},_latLngBoundsToNewLayerBounds:function(t,e,i){i=this._getNewPixelOrigin(i,e);return _([this.project(t.getSouthWest(),e)._subtract(i),this.project(t.getNorthWest(),e)._subtract(i),this.project(t.getSouthEast(),e)._subtract(i),this.project(t.getNorthEast(),e)._subtract(i)])},_getCenterLayerPoint:function(){return this.containerPointToLayerPoint(this.getSize()._divideBy(2))},_getCenterOffset:function(t){return this.latLngToLayerPoint(t).subtract(this._getCenterLayerPoint())},_limitCenter:function(t,e,i){var n,o;return!i||(n=this.project(t,e),o=this.getSize().divideBy(2),o=new f(n.subtract(o),n.add(o)),o=this._getBoundsOffset(o,i,e),Math.abs(o.x)<=1&&Math.abs(o.y)<=1)?t:this.unproject(n.add(o),e)},_limitOffset:function(t,e){var i;return e?(i=new f((i=this.getPixelBounds()).min.add(t),i.max.add(t)),t.add(this._getBoundsOffset(i,e))):t},_getBoundsOffset:function(t,e,i){e=_(this.project(e.getNorthEast(),i),this.project(e.getSouthWest(),i)),i=e.min.subtract(t.min),e=e.max.subtract(t.max);return new p(this._rebound(i.x,-e.x),this._rebound(i.y,-e.y))},_rebound:function(t,e){return 0<t+e?Math.round(t-e)/2:Math.max(0,Math.ceil(t))-Math.max(0,Math.floor(e))},_limitZoom:function(t){var e=this.getMinZoom(),i=this.getMaxZoom(),n=b.any3d?this.options.zoomSnap:1;return n&&(t=Math.round(t/n)*n),Math.max(e,Math.min(i,t))},_onPanTransitionStep:function(){this.fire("move")},_onPanTransitionEnd:function(){z(this._mapPane,"leaflet-pan-anim"),this.fire("moveend")},_tryAnimatedPan:function(t,e){t=this._getCenterOffset(t)._trunc();return!(!0!==(e&&e.animate)&&!this.getSize().contains(t))&&(this.panBy(t,e),!0)},_createAnimProxy:function(){var t=this._proxy=P("div","leaflet-proxy leaflet-zoom-animated");this._panes.mapPane.appendChild(t),this.on("zoomanim",function(t){var e=ue,i=this._proxy.style[e];be(this._proxy,this.project(t.center,t.zoom),this.getZoomScale(t.zoom,1)),i===this._proxy.style[e]&&this._animatingZoom&&this._onZoomTransitionEnd()},this),this.on("load moveend",this._animMoveEnd,this),this._on("unload",this._destroyAnimProxy,this)},_destroyAnimProxy:function(){T(this._proxy),this.off("load moveend",this._animMoveEnd,this),delete this._proxy},_animMoveEnd:function(){var t=this.getCenter(),e=this.getZoom();be(this._proxy,this.project(t,e),this.getZoomScale(e,1))},_catchTransitionEnd:function(t){this._animatingZoom&&0<=t.propertyName.indexOf("transform")&&this._onZoomTransitionEnd()},_nothingToAnimate:function(){return!this._container.getElementsByClassName("leaflet-zoom-animated").length},_tryAnimatedZoom:function(t,e,i){if(!this._animatingZoom){if(i=i||{},!this._zoomAnimated||!1===i.animate||this._nothingToAnimate()||Math.abs(e-this._zoom)>this.options.zoomAnimationThreshold)return!1;var n=this.getZoomScale(e),n=this._getCenterOffset(t)._divideBy(1-1/n);if(!0!==i.animate&&!this.getSize().contains(n))return!1;x(function(){this._moveStart(!0,i.noMoveStart||!1)._animateZoom(t,e,!0)},this)}return!0},_animateZoom:function(t,e,i,n){this._mapPane&&(i&&(this._animatingZoom=!0,this._animateToCenter=t,this._animateToZoom=e,M(this._mapPane,"leaflet-zoom-anim")),this.fire("zoomanim",{center:t,zoom:e,noUpdate:n}),this._tempFireZoomEvent||(this._tempFireZoomEvent=this._zoom!==this._animateToZoom),this._move(this._animateToCenter,this._animateToZoom,void 0,!0),setTimeout(a(this._onZoomTransitionEnd,this),250))},_onZoomTransitionEnd:function(){this._animatingZoom&&(this._mapPane&&z(this._mapPane,"leaflet-zoom-anim"),this._animatingZoom=!1,this._move(this._animateToCenter,this._animateToZoom,void 0,!0),this._tempFireZoomEvent&&this.fire("zoom"),delete this._tempFireZoomEvent,this.fire("move"),this._moveEnd(!0))}});function Ue(t){return new B(t)}var B=et.extend({options:{position:"topright"},initialize:function(t){c(this,t)},getPosition:function(){return this.options.position},setPosition:function(t){var e=this._map;return e&&e.removeControl(this),this.options.position=t,e&&e.addControl(this),this},getContainer:function(){return this._container},addTo:function(t){this.remove(),this._map=t;var e=this._container=this.onAdd(t),i=this.getPosition(),t=t._controlCorners[i];return M(e,"leaflet-control"),-1!==i.indexOf("bottom")?t.insertBefore(e,t.firstChild):t.appendChild(e),this._map.on("unload",this.remove,this),this},remove:function(){return this._map&&(T(this._container),this.onRemove&&this.onRemove(this._map),this._map.off("unload",this.remove,this),this._map=null),this},_refocusOnMap:function(t){this._map&&t&&0<t.screenX&&0<t.screenY&&this._map.getContainer().focus()}}),Ve=(A.include({addControl:function(t){return t.addTo(this),this},removeControl:function(t){return t.remove(),this},_initControlPos:function(){var i=this._controlCorners={},n="leaflet-",o=this._controlContainer=P("div",n+"control-container",this._container);function t(t,e){i[t+e]=P("div",n+t+" "+n+e,o)}t("top","left"),t("top","right"),t("bottom","left"),t("bottom","right")},_clearControlPos:function(){for(var t in this._controlCorners)T(this._controlCorners[t]);T(this._controlContainer),delete this._controlCorners,delete this._controlContainer}}),B.extend({options:{collapsed:!0,position:"topright",autoZIndex:!0,hideSingleBase:!1,sortLayers:!1,sortFunction:function(t,e,i,n){return i<n?-1:n<i?1:0}},initialize:function(t,e,i){for(var n in c(this,i),this._layerControlInputs=[],this._layers=[],this._lastZIndex=0,this._handlingClick=!1,this._preventClick=!1,t)this._addLayer(t[n],n);for(n in e)this._addLayer(e[n],n,!0)},onAdd:function(t){this._initLayout(),this._update(),(this._map=t).on("zoomend",this._checkDisabledLayers,this);for(var e=0;e<this._layers.length;e++)this._layers[e].layer.on("add remove",this._onLayerChange,this);return this._container},addTo:function(t){return B.prototype.addTo.call(this,t),this._expandIfNotCollapsed()},onRemove:function(){this._map.off("zoomend",this._checkDisabledLayers,this);for(var t=0;t<this._layers.length;t++)this._layers[t].layer.off("add remove",this._onLayerChange,this)},addBaseLayer:function(t,e){return this._addLayer(t,e),this._map?this._update():this},addOverlay:function(t,e){return this._addLayer(t,e,!0),this._map?this._update():this},removeLayer:function(t){t.off("add remove",this._onLayerChange,this);t=this._getLayer(h(t));return t&&this._layers.splice(this._layers.indexOf(t),1),this._map?this._update():this},expand:function(){M(this._container,"leaflet-control-layers-expanded"),this._section.style.height=null;var t=this._map.getSize().y-(this._container.offsetTop+50);return t<this._section.clientHeight?(M(this._section,"leaflet-control-layers-scrollbar"),this._section.style.height=t+"px"):z(this._section,"leaflet-control-layers-scrollbar"),this._checkDisabledLayers(),this},collapse:function(){return z(this._container,"leaflet-control-layers-expanded"),this},_initLayout:function(){var t="leaflet-control-layers",e=this._container=P("div",t),i=this.options.collapsed,n=(e.setAttribute("aria-haspopup",!0),Ie(e),Be(e),this._section=P("section",t+"-list")),o=(i&&(this._map.on("click",this.collapse,this),S(e,{mouseenter:this._expandSafely,mouseleave:this.collapse},this)),this._layersLink=P("a",t+"-toggle",e));o.href="#",o.title="Layers",o.setAttribute("role","button"),S(o,{keydown:function(t){13===t.keyCode&&this._expandSafely()},click:function(t){O(t),this._expandSafely()}},this),i||this.expand(),this._baseLayersList=P("div",t+"-base",n),this._separator=P("div",t+"-separator",n),this._overlaysList=P("div",t+"-overlays",n),e.appendChild(n)},_getLayer:function(t){for(var e=0;e<this._layers.length;e++)if(this._layers[e]&&h(this._layers[e].layer)===t)return this._layers[e]},_addLayer:function(t,e,i){this._map&&t.on("add remove",this._onLayerChange,this),this._layers.push({layer:t,name:e,overlay:i}),this.options.sortLayers&&this._layers.sort(a(function(t,e){return this.options.sortFunction(t.layer,e.layer,t.name,e.name)},this)),this.options.autoZIndex&&t.setZIndex&&(this._lastZIndex++,t.setZIndex(this._lastZIndex)),this._expandIfNotCollapsed()},_update:function(){if(this._container){me(this._baseLayersList),me(this._overlaysList),this._layerControlInputs=[];for(var t,e,i,n=0,o=0;o<this._layers.length;o++)i=this._layers[o],this._addItem(i),e=e||i.overlay,t=t||!i.overlay,n+=i.overlay?0:1;this.options.hideSingleBase&&(this._baseLayersList.style.display=(t=t&&1<n)?"":"none"),this._separator.style.display=e&&t?"":"none"}return this},_onLayerChange:function(t){this._handlingClick||this._update();var e=this._getLayer(h(t.target)),t=e.overlay?"add"===t.type?"overlayadd":"overlayremove":"add"===t.type?"baselayerchange":null;t&&this._map.fire(t,e)},_createRadioElement:function(t,e){t='<input type="radio" class="leaflet-control-layers-selector" name="'+t+'"'+(e?' checked="checked"':"")+"/>",e=document.createElement("div");return e.innerHTML=t,e.firstChild},_addItem:function(t){var e,i=document.createElement("label"),n=this._map.hasLayer(t.layer),n=(t.overlay?((e=document.createElement("input")).type="checkbox",e.className="leaflet-control-layers-selector",e.defaultChecked=n):e=this._createRadioElement("leaflet-base-layers_"+h(this),n),this._layerControlInputs.push(e),e.layerId=h(t.layer),S(e,"click",this._onInputClick,this),document.createElement("span")),o=(n.innerHTML=" "+t.name,document.createElement("span"));return i.appendChild(o),o.appendChild(e),o.appendChild(n),(t.overlay?this._overlaysList:this._baseLayersList).appendChild(i),this._checkDisabledLayers(),i},_onInputClick:function(){if(!this._preventClick){var t,e,i=this._layerControlInputs,n=[],o=[];this._handlingClick=!0;for(var s=i.length-1;0<=s;s--)t=i[s],e=this._getLayer(t.layerId).layer,t.checked?n.push(e):t.checked||o.push(e);for(s=0;s<o.length;s++)this._map.hasLayer(o[s])&&this._map.removeLayer(o[s]);for(s=0;s<n.length;s++)this._map.hasLayer(n[s])||this._map.addLayer(n[s]);this._handlingClick=!1,this._refocusOnMap()}},_checkDisabledLayers:function(){for(var t,e,i=this._layerControlInputs,n=this._map.getZoom(),o=i.length-1;0<=o;o--)t=i[o],e=this._getLayer(t.layerId).layer,t.disabled=void 0!==e.options.minZoom&&n<e.options.minZoom||void 0!==e.options.maxZoom&&n>e.options.maxZoom},_expandIfNotCollapsed:function(){return this._map&&!this.options.collapsed&&this.expand(),this},_expandSafely:function(){var t=this._section,e=(this._preventClick=!0,S(t,"click",O),this.expand(),this);setTimeout(function(){k(t,"click",O),e._preventClick=!1})}})),qe=B.extend({options:{position:"topleft",zoomInText:'<span aria-hidden="true">+</span>',zoomInTitle:"Zoom in",zoomOutText:'<span aria-hidden="true">&#x2212;</span>',zoomOutTitle:"Zoom out"},onAdd:function(t){var e="leaflet-control-zoom",i=P("div",e+" leaflet-bar"),n=this.options;return this._zoomInButton=this._createButton(n.zoomInText,n.zoomInTitle,e+"-in",i,this._zoomIn),this._zoomOutButton=this._createButton(n.zoomOutText,n.zoomOutTitle,e+"-out",i,this._zoomOut),this._updateDisabled(),t.on("zoomend zoomlevelschange",this._updateDisabled,this),i},onRemove:function(t){t.off("zoomend zoomlevelschange",this._updateDisabled,this)},disable:function(){return this._disabled=!0,this._updateDisabled(),this},enable:function(){return this._disabled=!1,this._updateDisabled(),this},_zoomIn:function(t){!this._disabled&&this._map._zoom<this._map.getMaxZoom()&&this._map.zoomIn(this._map.options.zoomDelta*(t.shiftKey?3:1))},_zoomOut:function(t){!this._disabled&&this._map._zoom>this._map.getMinZoom()&&this._map.zoomOut(this._map.options.zoomDelta*(t.shiftKey?3:1))},_createButton:function(t,e,i,n,o){i=P("a",i,n);return i.innerHTML=t,i.href="#",i.title=e,i.setAttribute("role","button"),i.setAttribute("aria-label",e),Ie(i),S(i,"click",Re),S(i,"click",o,this),S(i,"click",this._refocusOnMap,this),i},_updateDisabled:function(){var t=this._map,e="leaflet-disabled";z(this._zoomInButton,e),z(this._zoomOutButton,e),this._zoomInButton.setAttribute("aria-disabled","false"),this._zoomOutButton.setAttribute("aria-disabled","false"),!this._disabled&&t._zoom!==t.getMinZoom()||(M(this._zoomOutButton,e),this._zoomOutButton.setAttribute("aria-disabled","true")),!this._disabled&&t._zoom!==t.getMaxZoom()||(M(this._zoomInButton,e),this._zoomInButton.setAttribute("aria-disabled","true"))}}),Ge=(A.mergeOptions({zoomControl:!0}),A.addInitHook(function(){this.options.zoomControl&&(this.zoomControl=new qe,this.addControl(this.zoomControl))}),B.extend({options:{position:"bottomleft",maxWidth:100,metric:!0,imperial:!0},onAdd:function(t){var e="leaflet-control-scale",i=P("div",e),n=this.options;return this._addScales(n,e+"-line",i),t.on(n.updateWhenIdle?"moveend":"move",this._update,this),t.whenReady(this._update,this),i},onRemove:function(t){t.off(this.options.updateWhenIdle?"moveend":"move",this._update,this)},_addScales:function(t,e,i){t.metric&&(this._mScale=P("div",e,i)),t.imperial&&(this._iScale=P("div",e,i))},_update:function(){var t=this._map,e=t.getSize().y/2,t=t.distance(t.containerPointToLatLng([0,e]),t.containerPointToLatLng([this.options.maxWidth,e]));this._updateScales(t)},_updateScales:function(t){this.options.metric&&t&&this._updateMetric(t),this.options.imperial&&t&&this._updateImperial(t)},_updateMetric:function(t){var e=this._getRoundNum(t);this._updateScale(this._mScale,e<1e3?e+" m":e/1e3+" km",e/t)},_updateImperial:function(t){var e,i,t=3.2808399*t;5280<t?(i=this._getRoundNum(e=t/5280),this._updateScale(this._iScale,i+" mi",i/e)):(i=this._getRoundNum(t),this._updateScale(this._iScale,i+" ft",i/t))},_updateScale:function(t,e,i){t.style.width=Math.round(this.options.maxWidth*i)+"px",t.innerHTML=e},_getRoundNum:function(t){var e=Math.pow(10,(Math.floor(t)+"").length-1),t=t/e;return e*(t=10<=t?10:5<=t?5:3<=t?3:2<=t?2:1)}})),Ke=B.extend({options:{position:"bottomright",prefix:'<a href="https://leafletjs.com" title="A JavaScript library for interactive maps">'+(b.inlineSvg?'<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8" class="leaflet-attribution-flag"><path fill="#4C7BE1" d="M0 0h12v4H0z"/><path fill="#FFD500" d="M0 4h12v3H0z"/><path fill="#E0BC00" d="M0 7h12v1H0z"/></svg> ':"")+"Leaflet</a>"},initialize:function(t){c(this,t),this._attributions={}},onAdd:function(t){for(var e in(t.attributionControl=this)._container=P("div","leaflet-control-attribution"),Ie(this._container),t._layers)t._layers[e].getAttribution&&this.addAttribution(t._layers[e].getAttribution());return this._update(),t.on("layeradd",this._addAttribution,this),this._container},onRemove:function(t){t.off("layeradd",this._addAttribution,this)},_addAttribution:function(t){t.layer.getAttribution&&(this.addAttribution(t.layer.getAttribution()),t.layer.once("remove",function(){this.removeAttribution(t.layer.getAttribution())},this))},setPrefix:function(t){return this.options.prefix=t,this._update(),this},addAttribution:function(t){return t&&(this._attributions[t]||(this._attributions[t]=0),this._attributions[t]++,this._update()),this},removeAttribution:function(t){return t&&this._attributions[t]&&(this._attributions[t]--,this._update()),this},_update:function(){if(this._map){var t,e=[];for(t in this._attributions)this._attributions[t]&&e.push(t);var i=[];this.options.prefix&&i.push(this.options.prefix),e.length&&i.push(e.join(", ")),this._container.innerHTML=i.join(' <span aria-hidden="true">|</span> ')}}}),n=(A.mergeOptions({attributionControl:!0}),A.addInitHook(function(){this.options.attributionControl&&(new Ke).addTo(this)}),B.Layers=Ve,B.Zoom=qe,B.Scale=Ge,B.Attribution=Ke,Ue.layers=function(t,e,i){return new Ve(t,e,i)},Ue.zoom=function(t){return new qe(t)},Ue.scale=function(t){return new Ge(t)},Ue.attribution=function(t){return new Ke(t)},et.extend({initialize:function(t){this._map=t},enable:function(){return this._enabled||(this._enabled=!0,this.addHooks()),this},disable:function(){return this._enabled&&(this._enabled=!1,this.removeHooks()),this},enabled:function(){return!!this._enabled}})),ft=(n.addTo=function(t,e){return t.addHandler(e,this),this},{Events:e}),Ye=b.touch?"touchstart mousedown":"mousedown",Xe=it.extend({options:{clickTolerance:3},initialize:function(t,e,i,n){c(this,n),this._element=t,this._dragStartTarget=e||t,this._preventOutline=i},enable:function(){this._enabled||(S(this._dragStartTarget,Ye,this._onDown,this),this._enabled=!0)},disable:function(){this._enabled&&(Xe._dragging===this&&this.finishDrag(!0),k(this._dragStartTarget,Ye,this._onDown,this),this._enabled=!1,this._moved=!1)},_onDown:function(t){var e,i;this._enabled&&(this._moved=!1,ve(this._element,"leaflet-zoom-anim")||(t.touches&&1!==t.touches.length?Xe._dragging===this&&this.finishDrag():Xe._dragging||t.shiftKey||1!==t.which&&1!==t.button&&!t.touches||((Xe._dragging=this)._preventOutline&&Me(this._element),Le(),re(),this._moving||(this.fire("down"),i=t.touches?t.touches[0]:t,e=Ce(this._element),this._startPoint=new p(i.clientX,i.clientY),this._startPos=Pe(this._element),this._parentScale=Ze(e),i="mousedown"===t.type,S(document,i?"mousemove":"touchmove",this._onMove,this),S(document,i?"mouseup":"touchend touchcancel",this._onUp,this)))))},_onMove:function(t){var e;this._enabled&&(t.touches&&1<t.touches.length?this._moved=!0:!(e=new p((e=t.touches&&1===t.touches.length?t.touches[0]:t).clientX,e.clientY)._subtract(this._startPoint)).x&&!e.y||Math.abs(e.x)+Math.abs(e.y)<this.options.clickTolerance||(e.x/=this._parentScale.x,e.y/=this._parentScale.y,O(t),this._moved||(this.fire("dragstart"),this._moved=!0,M(document.body,"leaflet-dragging"),this._lastTarget=t.target||t.srcElement,window.SVGElementInstance&&this._lastTarget instanceof window.SVGElementInstance&&(this._lastTarget=this._lastTarget.correspondingUseElement),M(this._lastTarget,"leaflet-drag-target")),this._newPos=this._startPos.add(e),this._moving=!0,this._lastEvent=t,this._updatePosition()))},_updatePosition:function(){var t={originalEvent:this._lastEvent};this.fire("predrag",t),Z(this._element,this._newPos),this.fire("drag",t)},_onUp:function(){this._enabled&&this.finishDrag()},finishDrag:function(t){z(document.body,"leaflet-dragging"),this._lastTarget&&(z(this._lastTarget,"leaflet-drag-target"),this._lastTarget=null),k(document,"mousemove touchmove",this._onMove,this),k(document,"mouseup touchend touchcancel",this._onUp,this),Te(),ae();var e=this._moved&&this._moving;this._moving=!1,Xe._dragging=!1,e&&this.fire("dragend",{noInertia:t,distance:this._newPos.distanceTo(this._startPos)})}});function Je(t,e,i){for(var n,o,s,r,a,h,l,u=[1,4,2,8],c=0,d=t.length;c<d;c++)t[c]._code=si(t[c],e);for(s=0;s<4;s++){for(h=u[s],n=[],c=0,o=(d=t.length)-1;c<d;o=c++)r=t[c],a=t[o],r._code&h?a._code&h||((l=oi(a,r,h,e,i))._code=si(l,e),n.push(l)):(a._code&h&&((l=oi(a,r,h,e,i))._code=si(l,e),n.push(l)),n.push(r));t=n}return t}function $e(t,e){var i,n,o,s,r,a,h;if(!t||0===t.length)throw new Error("latlngs not passed");I(t)||(console.warn("latlngs are not flat! Only the first ring will be used"),t=t[0]);for(var l=w([0,0]),u=g(t),c=(u.getNorthWest().distanceTo(u.getSouthWest())*u.getNorthEast().distanceTo(u.getNorthWest())<1700&&(l=Qe(t)),t.length),d=[],_=0;_<c;_++){var p=w(t[_]);d.push(e.project(w([p.lat-l.lat,p.lng-l.lng])))}for(_=r=a=h=0,i=c-1;_<c;i=_++)n=d[_],o=d[i],s=n.y*o.x-o.y*n.x,a+=(n.x+o.x)*s,h+=(n.y+o.y)*s,r+=3*s;u=0===r?d[0]:[a/r,h/r],u=e.unproject(m(u));return w([u.lat+l.lat,u.lng+l.lng])}function Qe(t){for(var e=0,i=0,n=0,o=0;o<t.length;o++){var s=w(t[o]);e+=s.lat,i+=s.lng,n++}return w([e/n,i/n])}var ti,gt={__proto__:null,clipPolygon:Je,polygonCenter:$e,centroid:Qe};function ei(t,e){if(e&&t.length){var i=t=function(t,e){for(var i=[t[0]],n=1,o=0,s=t.length;n<s;n++)(function(t,e){var i=e.x-t.x,e=e.y-t.y;return i*i+e*e})(t[n],t[o])>e&&(i.push(t[n]),o=n);o<s-1&&i.push(t[s-1]);return i}(t,e=e*e),n=i.length,o=new(typeof Uint8Array!=void 0+""?Uint8Array:Array)(n);o[0]=o[n-1]=1,function t(e,i,n,o,s){var r,a,h,l=0;for(a=o+1;a<=s-1;a++)h=ri(e[a],e[o],e[s],!0),l<h&&(r=a,l=h);n<l&&(i[r]=1,t(e,i,n,o,r),t(e,i,n,r,s))}(i,o,e,0,n-1);var s,r=[];for(s=0;s<n;s++)o[s]&&r.push(i[s]);return r}return t.slice()}function ii(t,e,i){return Math.sqrt(ri(t,e,i,!0))}function ni(t,e,i,n,o){var s,r,a,h=n?ti:si(t,i),l=si(e,i);for(ti=l;;){if(!(h|l))return[t,e];if(h&l)return!1;a=si(r=oi(t,e,s=h||l,i,o),i),s===h?(t=r,h=a):(e=r,l=a)}}function oi(t,e,i,n,o){var s,r,a=e.x-t.x,e=e.y-t.y,h=n.min,n=n.max;return 8&i?(s=t.x+a*(n.y-t.y)/e,r=n.y):4&i?(s=t.x+a*(h.y-t.y)/e,r=h.y):2&i?(s=n.x,r=t.y+e*(n.x-t.x)/a):1&i&&(s=h.x,r=t.y+e*(h.x-t.x)/a),new p(s,r,o)}function si(t,e){var i=0;return t.x<e.min.x?i|=1:t.x>e.max.x&&(i|=2),t.y<e.min.y?i|=4:t.y>e.max.y&&(i|=8),i}function ri(t,e,i,n){var o=e.x,e=e.y,s=i.x-o,r=i.y-e,a=s*s+r*r;return 0<a&&(1<(a=((t.x-o)*s+(t.y-e)*r)/a)?(o=i.x,e=i.y):0<a&&(o+=s*a,e+=r*a)),s=t.x-o,r=t.y-e,n?s*s+r*r:new p(o,e)}function I(t){return!d(t[0])||"object"!=typeof t[0][0]&&void 0!==t[0][0]}function ai(t){return console.warn("Deprecated use of _flat, please use L.LineUtil.isFlat instead."),I(t)}function hi(t,e){var i,n,o,s,r,a;if(!t||0===t.length)throw new Error("latlngs not passed");I(t)||(console.warn("latlngs are not flat! Only the first ring will be used"),t=t[0]);for(var h=w([0,0]),l=g(t),u=(l.getNorthWest().distanceTo(l.getSouthWest())*l.getNorthEast().distanceTo(l.getNorthWest())<1700&&(h=Qe(t)),t.length),c=[],d=0;d<u;d++){var _=w(t[d]);c.push(e.project(w([_.lat-h.lat,_.lng-h.lng])))}for(i=d=0;d<u-1;d++)i+=c[d].distanceTo(c[d+1])/2;if(0===i)a=c[0];else for(n=d=0;d<u-1;d++)if(o=c[d],s=c[d+1],i<(n+=r=o.distanceTo(s))){a=[s.x-(r=(n-i)/r)*(s.x-o.x),s.y-r*(s.y-o.y)];break}l=e.unproject(m(a));return w([l.lat+h.lat,l.lng+h.lng])}var vt={__proto__:null,simplify:ei,pointToSegmentDistance:ii,closestPointOnSegment:function(t,e,i){return ri(t,e,i)},clipSegment:ni,_getEdgeIntersection:oi,_getBitCode:si,_sqClosestPointOnSegment:ri,isFlat:I,_flat:ai,polylineCenter:hi},yt={project:function(t){return new p(t.lng,t.lat)},unproject:function(t){return new v(t.y,t.x)},bounds:new f([-180,-90],[180,90])},xt={R:6378137,R_MINOR:6356752.314245179,bounds:new f([-20037508.34279,-15496570.73972],[20037508.34279,18764656.23138]),project:function(t){var e=Math.PI/180,i=this.R,n=t.lat*e,o=this.R_MINOR/i,o=Math.sqrt(1-o*o),s=o*Math.sin(n),s=Math.tan(Math.PI/4-n/2)/Math.pow((1-s)/(1+s),o/2),n=-i*Math.log(Math.max(s,1e-10));return new p(t.lng*e*i,n)},unproject:function(t){for(var e,i=180/Math.PI,n=this.R,o=this.R_MINOR/n,s=Math.sqrt(1-o*o),r=Math.exp(-t.y/n),a=Math.PI/2-2*Math.atan(r),h=0,l=.1;h<15&&1e-7<Math.abs(l);h++)e=s*Math.sin(a),e=Math.pow((1-e)/(1+e),s/2),a+=l=Math.PI/2-2*Math.atan(r*e)-a;return new v(a*i,t.x*i/n)}},wt={__proto__:null,LonLat:yt,Mercator:xt,SphericalMercator:rt},Pt=l({},st,{code:"EPSG:3395",projection:xt,transformation:ht(bt=.5/(Math.PI*xt.R),.5,-bt,.5)}),li=l({},st,{code:"EPSG:4326",projection:yt,transformation:ht(1/180,1,-1/180,.5)}),Lt=l({},ot,{projection:yt,transformation:ht(1,0,-1,0),scale:function(t){return Math.pow(2,t)},zoom:function(t){return Math.log(t)/Math.LN2},distance:function(t,e){var i=e.lng-t.lng,e=e.lat-t.lat;return Math.sqrt(i*i+e*e)},infinite:!0}),o=(ot.Earth=st,ot.EPSG3395=Pt,ot.EPSG3857=lt,ot.EPSG900913=ut,ot.EPSG4326=li,ot.Simple=Lt,it.extend({options:{pane:"overlayPane",attribution:null,bubblingMouseEvents:!0},addTo:function(t){return t.addLayer(this),this},remove:function(){return this.removeFrom(this._map||this._mapToAdd)},removeFrom:function(t){return t&&t.removeLayer(this),this},getPane:function(t){return this._map.getPane(t?this.options[t]||t:this.options.pane)},addInteractiveTarget:function(t){return this._map._targets[h(t)]=this},removeInteractiveTarget:function(t){return delete this._map._targets[h(t)],this},getAttribution:function(){return this.options.attribution},_layerAdd:function(t){var e,i=t.target;i.hasLayer(this)&&(this._map=i,this._zoomAnimated=i._zoomAnimated,this.getEvents&&(e=this.getEvents(),i.on(e,this),this.once("remove",function(){i.off(e,this)},this)),this.onAdd(i),this.fire("add"),i.fire("layeradd",{layer:this}))}})),ui=(A.include({addLayer:function(t){var e;if(t._layerAdd)return e=h(t),this._layers[e]||((this._layers[e]=t)._mapToAdd=this,t.beforeAdd&&t.beforeAdd(this),this.whenReady(t._layerAdd,t)),this;throw new Error("The provided object is not a Layer.")},removeLayer:function(t){var e=h(t);return this._layers[e]&&(this._loaded&&t.onRemove(this),delete this._layers[e],this._loaded&&(this.fire("layerremove",{layer:t}),t.fire("remove")),t._map=t._mapToAdd=null),this},hasLayer:function(t){return h(t)in this._layers},eachLayer:function(t,e){for(var i in this._layers)t.call(e,this._layers[i]);return this},_addLayers:function(t){for(var e=0,i=(t=t?d(t)?t:[t]:[]).length;e<i;e++)this.addLayer(t[e])},_addZoomLimit:function(t){isNaN(t.options.maxZoom)&&isNaN(t.options.minZoom)||(this._zoomBoundLayers[h(t)]=t,this._updateZoomLevels())},_removeZoomLimit:function(t){t=h(t);this._zoomBoundLayers[t]&&(delete this._zoomBoundLayers[t],this._updateZoomLevels())},_updateZoomLevels:function(){var t,e=1/0,i=-1/0,n=this._getZoomSpan();for(t in this._zoomBoundLayers)var o=this._zoomBoundLayers[t].options,e=void 0===o.minZoom?e:Math.min(e,o.minZoom),i=void 0===o.maxZoom?i:Math.max(i,o.maxZoom);this._layersMaxZoom=i===-1/0?void 0:i,this._layersMinZoom=e===1/0?void 0:e,n!==this._getZoomSpan()&&this.fire("zoomlevelschange"),void 0===this.options.maxZoom&&this._layersMaxZoom&&this.getZoom()>this._layersMaxZoom&&this.setZoom(this._layersMaxZoom),void 0===this.options.minZoom&&this._layersMinZoom&&this.getZoom()<this._layersMinZoom&&this.setZoom(this._layersMinZoom)}}),o.extend({initialize:function(t,e){var i,n;if(c(this,e),this._layers={},t)for(i=0,n=t.length;i<n;i++)this.addLayer(t[i])},addLayer:function(t){var e=this.getLayerId(t);return this._layers[e]=t,this._map&&this._map.addLayer(t),this},removeLayer:function(t){t=t in this._layers?t:this.getLayerId(t);return this._map&&this._layers[t]&&this._map.removeLayer(this._layers[t]),delete this._layers[t],this},hasLayer:function(t){return("number"==typeof t?t:this.getLayerId(t))in this._layers},clearLayers:function(){return this.eachLayer(this.removeLayer,this)},invoke:function(t){var e,i,n=Array.prototype.slice.call(arguments,1);for(e in this._layers)(i=this._layers[e])[t]&&i[t].apply(i,n);return this},onAdd:function(t){this.eachLayer(t.addLayer,t)},onRemove:function(t){this.eachLayer(t.removeLayer,t)},eachLayer:function(t,e){for(var i in this._layers)t.call(e,this._layers[i]);return this},getLayer:function(t){return this._layers[t]},getLayers:function(){var t=[];return this.eachLayer(t.push,t),t},setZIndex:function(t){return this.invoke("setZIndex",t)},getLayerId:h})),ci=ui.extend({addLayer:function(t){return this.hasLayer(t)?this:(t.addEventParent(this),ui.prototype.addLayer.call(this,t),this.fire("layeradd",{layer:t}))},removeLayer:function(t){return this.hasLayer(t)?((t=t in this._layers?this._layers[t]:t).removeEventParent(this),ui.prototype.removeLayer.call(this,t),this.fire("layerremove",{layer:t})):this},setStyle:function(t){return this.invoke("setStyle",t)},bringToFront:function(){return this.invoke("bringToFront")},bringToBack:function(){return this.invoke("bringToBack")},getBounds:function(){var t,e=new s;for(t in this._layers){var i=this._layers[t];e.extend(i.getBounds?i.getBounds():i.getLatLng())}return e}}),di=et.extend({options:{popupAnchor:[0,0],tooltipAnchor:[0,0],crossOrigin:!1},initialize:function(t){c(this,t)},createIcon:function(t){return this._createIcon("icon",t)},createShadow:function(t){return this._createIcon("shadow",t)},_createIcon:function(t,e){var i=this._getIconUrl(t);if(i)return i=this._createImg(i,e&&"IMG"===e.tagName?e:null),this._setIconStyles(i,t),!this.options.crossOrigin&&""!==this.options.crossOrigin||(i.crossOrigin=!0===this.options.crossOrigin?"":this.options.crossOrigin),i;if("icon"===t)throw new Error("iconUrl not set in Icon options (see the docs).");return null},_setIconStyles:function(t,e){var i=this.options,n=i[e+"Size"],n=m(n="number"==typeof n?[n,n]:n),o=m("shadow"===e&&i.shadowAnchor||i.iconAnchor||n&&n.divideBy(2,!0));t.className="leaflet-marker-"+e+" "+(i.className||""),o&&(t.style.marginLeft=-o.x+"px",t.style.marginTop=-o.y+"px"),n&&(t.style.width=n.x+"px",t.style.height=n.y+"px")},_createImg:function(t,e){return(e=e||document.createElement("img")).src=t,e},_getIconUrl:function(t){return b.retina&&this.options[t+"RetinaUrl"]||this.options[t+"Url"]}});var _i=di.extend({options:{iconUrl:"marker-icon.png",iconRetinaUrl:"marker-icon-2x.png",shadowUrl:"marker-shadow.png",iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],tooltipAnchor:[16,-28],shadowSize:[41,41]},_getIconUrl:function(t){return"string"!=typeof _i.imagePath&&(_i.imagePath=this._detectIconPath()),(this.options.imagePath||_i.imagePath)+di.prototype._getIconUrl.call(this,t)},_stripUrl:function(t){function e(t,e,i){return(e=e.exec(t))&&e[i]}return(t=e(t,/^url\((['"])?(.+)\1\)$/,2))&&e(t,/^(.*)marker-icon\.png$/,1)},_detectIconPath:function(){var t=P("div","leaflet-default-icon-path",document.body),e=pe(t,"background-image")||pe(t,"backgroundImage");return document.body.removeChild(t),(e=this._stripUrl(e))?e:(t=document.querySelector('link[href$="leaflet.css"]'))?t.href.substring(0,t.href.length-"leaflet.css".length-1):""}}),pi=n.extend({initialize:function(t){this._marker=t},addHooks:function(){var t=this._marker._icon;this._draggable||(this._draggable=new Xe(t,t,!0)),this._draggable.on({dragstart:this._onDragStart,predrag:this._onPreDrag,drag:this._onDrag,dragend:this._onDragEnd},this).enable(),M(t,"leaflet-marker-draggable")},removeHooks:function(){this._draggable.off({dragstart:this._onDragStart,predrag:this._onPreDrag,drag:this._onDrag,dragend:this._onDragEnd},this).disable(),this._marker._icon&&z(this._marker._icon,"leaflet-marker-draggable")},moved:function(){return this._draggable&&this._draggable._moved},_adjustPan:function(t){var e=this._marker,i=e._map,n=this._marker.options.autoPanSpeed,o=this._marker.options.autoPanPadding,s=Pe(e._icon),r=i.getPixelBounds(),a=i.getPixelOrigin(),a=_(r.min._subtract(a).add(o),r.max._subtract(a).subtract(o));a.contains(s)||(o=m((Math.max(a.max.x,s.x)-a.max.x)/(r.max.x-a.max.x)-(Math.min(a.min.x,s.x)-a.min.x)/(r.min.x-a.min.x),(Math.max(a.max.y,s.y)-a.max.y)/(r.max.y-a.max.y)-(Math.min(a.min.y,s.y)-a.min.y)/(r.min.y-a.min.y)).multiplyBy(n),i.panBy(o,{animate:!1}),this._draggable._newPos._add(o),this._draggable._startPos._add(o),Z(e._icon,this._draggable._newPos),this._onDrag(t),this._panRequest=x(this._adjustPan.bind(this,t)))},_onDragStart:function(){this._oldLatLng=this._marker.getLatLng(),this._marker.closePopup&&this._marker.closePopup(),this._marker.fire("movestart").fire("dragstart")},_onPreDrag:function(t){this._marker.options.autoPan&&(r(this._panRequest),this._panRequest=x(this._adjustPan.bind(this,t)))},_onDrag:function(t){var e=this._marker,i=e._shadow,n=Pe(e._icon),o=e._map.layerPointToLatLng(n);i&&Z(i,n),e._latlng=o,t.latlng=o,t.oldLatLng=this._oldLatLng,e.fire("move",t).fire("drag",t)},_onDragEnd:function(t){r(this._panRequest),delete this._oldLatLng,this._marker.fire("moveend").fire("dragend",t)}}),mi=o.extend({options:{icon:new _i,interactive:!0,keyboard:!0,title:"",alt:"Marker",zIndexOffset:0,opacity:1,riseOnHover:!1,riseOffset:250,pane:"markerPane",shadowPane:"shadowPane",bubblingMouseEvents:!1,autoPanOnFocus:!0,draggable:!1,autoPan:!1,autoPanPadding:[50,50],autoPanSpeed:10},initialize:function(t,e){c(this,e),this._latlng=w(t)},onAdd:function(t){this._zoomAnimated=this._zoomAnimated&&t.options.markerZoomAnimation,this._zoomAnimated&&t.on("zoomanim",this._animateZoom,this),this._initIcon(),this.update()},onRemove:function(t){this.dragging&&this.dragging.enabled()&&(this.options.draggable=!0,this.dragging.removeHooks()),delete this.dragging,this._zoomAnimated&&t.off("zoomanim",this._animateZoom,this),this._removeIcon(),this._removeShadow()},getEvents:function(){return{zoom:this.update,viewreset:this.update}},getLatLng:function(){return this._latlng},setLatLng:function(t){var e=this._latlng;return this._latlng=w(t),this.update(),this.fire("move",{oldLatLng:e,latlng:this._latlng})},setZIndexOffset:function(t){return this.options.zIndexOffset=t,this.update()},getIcon:function(){return this.options.icon},setIcon:function(t){return this.options.icon=t,this._map&&(this._initIcon(),this.update()),this._popup&&this.bindPopup(this._popup,this._popup.options),this},getElement:function(){return this._icon},update:function(){var t;return this._icon&&this._map&&(t=this._map.latLngToLayerPoint(this._latlng).round(),this._setPos(t)),this},_initIcon:function(){var t=this.options,e="leaflet-zoom-"+(this._zoomAnimated?"animated":"hide"),i=t.icon.createIcon(this._icon),n=!1,i=(i!==this._icon&&(this._icon&&this._removeIcon(),n=!0,t.title&&(i.title=t.title),"IMG"===i.tagName&&(i.alt=t.alt||"")),M(i,e),t.keyboard&&(i.tabIndex="0",i.setAttribute("role","button")),this._icon=i,t.riseOnHover&&this.on({mouseover:this._bringToFront,mouseout:this._resetZIndex}),this.options.autoPanOnFocus&&S(i,"focus",this._panOnFocus,this),t.icon.createShadow(this._shadow)),o=!1;i!==this._shadow&&(this._removeShadow(),o=!0),i&&(M(i,e),i.alt=""),this._shadow=i,t.opacity<1&&this._updateOpacity(),n&&this.getPane().appendChild(this._icon),this._initInteraction(),i&&o&&this.getPane(t.shadowPane).appendChild(this._shadow)},_removeIcon:function(){this.options.riseOnHover&&this.off({mouseover:this._bringToFront,mouseout:this._resetZIndex}),this.options.autoPanOnFocus&&k(this._icon,"focus",this._panOnFocus,this),T(this._icon),this.removeInteractiveTarget(this._icon),this._icon=null},_removeShadow:function(){this._shadow&&T(this._shadow),this._shadow=null},_setPos:function(t){this._icon&&Z(this._icon,t),this._shadow&&Z(this._shadow,t),this._zIndex=t.y+this.options.zIndexOffset,this._resetZIndex()},_updateZIndex:function(t){this._icon&&(this._icon.style.zIndex=this._zIndex+t)},_animateZoom:function(t){t=this._map._latLngToNewLayerPoint(this._latlng,t.zoom,t.center).round();this._setPos(t)},_initInteraction:function(){var t;this.options.interactive&&(M(this._icon,"leaflet-interactive"),this.addInteractiveTarget(this._icon),pi&&(t=this.options.draggable,this.dragging&&(t=this.dragging.enabled(),this.dragging.disable()),this.dragging=new pi(this),t&&this.dragging.enable()))},setOpacity:function(t){return this.options.opacity=t,this._map&&this._updateOpacity(),this},_updateOpacity:function(){var t=this.options.opacity;this._icon&&C(this._icon,t),this._shadow&&C(this._shadow,t)},_bringToFront:function(){this._updateZIndex(this.options.riseOffset)},_resetZIndex:function(){this._updateZIndex(0)},_panOnFocus:function(){var t,e,i=this._map;i&&(t=(e=this.options.icon.options).iconSize?m(e.iconSize):m(0,0),e=e.iconAnchor?m(e.iconAnchor):m(0,0),i.panInside(this._latlng,{paddingTopLeft:e,paddingBottomRight:t.subtract(e)}))},_getPopupAnchor:function(){return this.options.icon.options.popupAnchor},_getTooltipAnchor:function(){return this.options.icon.options.tooltipAnchor}});var fi=o.extend({options:{stroke:!0,color:"#3388ff",weight:3,opacity:1,lineCap:"round",lineJoin:"round",dashArray:null,dashOffset:null,fill:!1,fillColor:null,fillOpacity:.2,fillRule:"evenodd",interactive:!0,bubblingMouseEvents:!0},beforeAdd:function(t){this._renderer=t.getRenderer(this)},onAdd:function(){this._renderer._initPath(this),this._reset(),this._renderer._addPath(this)},onRemove:function(){this._renderer._removePath(this)},redraw:function(){return this._map&&this._renderer._updatePath(this),this},setStyle:function(t){return c(this,t),this._renderer&&(this._renderer._updateStyle(this),this.options.stroke&&t&&Object.prototype.hasOwnProperty.call(t,"weight")&&this._updateBounds()),this},bringToFront:function(){return this._renderer&&this._renderer._bringToFront(this),this},bringToBack:function(){return this._renderer&&this._renderer._bringToBack(this),this},getElement:function(){return this._path},_reset:function(){this._project(),this._update()},_clickTolerance:function(){return(this.options.stroke?this.options.weight/2:0)+(this._renderer.options.tolerance||0)}}),gi=fi.extend({options:{fill:!0,radius:10},initialize:function(t,e){c(this,e),this._latlng=w(t),this._radius=this.options.radius},setLatLng:function(t){var e=this._latlng;return this._latlng=w(t),this.redraw(),this.fire("move",{oldLatLng:e,latlng:this._latlng})},getLatLng:function(){return this._latlng},setRadius:function(t){return this.options.radius=this._radius=t,this.redraw()},getRadius:function(){return this._radius},setStyle:function(t){var e=t&&t.radius||this._radius;return fi.prototype.setStyle.call(this,t),this.setRadius(e),this},_project:function(){this._point=this._map.latLngToLayerPoint(this._latlng),this._updateBounds()},_updateBounds:function(){var t=this._radius,e=this._radiusY||t,i=this._clickTolerance(),t=[t+i,e+i];this._pxBounds=new f(this._point.subtract(t),this._point.add(t))},_update:function(){this._map&&this._updatePath()},_updatePath:function(){this._renderer._updateCircle(this)},_empty:function(){return this._radius&&!this._renderer._bounds.intersects(this._pxBounds)},_containsPoint:function(t){return t.distanceTo(this._point)<=this._radius+this._clickTolerance()}});var vi=gi.extend({initialize:function(t,e,i){if(c(this,e="number"==typeof e?l({},i,{radius:e}):e),this._latlng=w(t),isNaN(this.options.radius))throw new Error("Circle radius cannot be NaN");this._mRadius=this.options.radius},setRadius:function(t){return this._mRadius=t,this.redraw()},getRadius:function(){return this._mRadius},getBounds:function(){var t=[this._radius,this._radiusY||this._radius];return new s(this._map.layerPointToLatLng(this._point.subtract(t)),this._map.layerPointToLatLng(this._point.add(t)))},setStyle:fi.prototype.setStyle,_project:function(){var t,e,i,n,o,s=this._latlng.lng,r=this._latlng.lat,a=this._map,h=a.options.crs;h.distance===st.distance?(n=Math.PI/180,o=this._mRadius/st.R/n,t=a.project([r+o,s]),e=a.project([r-o,s]),e=t.add(e).divideBy(2),i=a.unproject(e).lat,n=Math.acos((Math.cos(o*n)-Math.sin(r*n)*Math.sin(i*n))/(Math.cos(r*n)*Math.cos(i*n)))/n,!isNaN(n)&&0!==n||(n=o/Math.cos(Math.PI/180*r)),this._point=e.subtract(a.getPixelOrigin()),this._radius=isNaN(n)?0:e.x-a.project([i,s-n]).x,this._radiusY=e.y-t.y):(o=h.unproject(h.project(this._latlng).subtract([this._mRadius,0])),this._point=a.latLngToLayerPoint(this._latlng),this._radius=this._point.x-a.latLngToLayerPoint(o).x),this._updateBounds()}});var yi=fi.extend({options:{smoothFactor:1,noClip:!1},initialize:function(t,e){c(this,e),this._setLatLngs(t)},getLatLngs:function(){return this._latlngs},setLatLngs:function(t){return this._setLatLngs(t),this.redraw()},isEmpty:function(){return!this._latlngs.length},closestLayerPoint:function(t){for(var e=1/0,i=null,n=ri,o=0,s=this._parts.length;o<s;o++)for(var r=this._parts[o],a=1,h=r.length;a<h;a++){var l,u,c=n(t,l=r[a-1],u=r[a],!0);c<e&&(e=c,i=n(t,l,u))}return i&&(i.distance=Math.sqrt(e)),i},getCenter:function(){if(this._map)return hi(this._defaultShape(),this._map.options.crs);throw new Error("Must add layer to map before using getCenter()")},getBounds:function(){return this._bounds},addLatLng:function(t,e){return e=e||this._defaultShape(),t=w(t),e.push(t),this._bounds.extend(t),this.redraw()},_setLatLngs:function(t){this._bounds=new s,this._latlngs=this._convertLatLngs(t)},_defaultShape:function(){return I(this._latlngs)?this._latlngs:this._latlngs[0]},_convertLatLngs:function(t){for(var e=[],i=I(t),n=0,o=t.length;n<o;n++)i?(e[n]=w(t[n]),this._bounds.extend(e[n])):e[n]=this._convertLatLngs(t[n]);return e},_project:function(){var t=new f;this._rings=[],this._projectLatlngs(this._latlngs,this._rings,t),this._bounds.isValid()&&t.isValid()&&(this._rawPxBounds=t,this._updateBounds())},_updateBounds:function(){var t=this._clickTolerance(),t=new p(t,t);this._rawPxBounds&&(this._pxBounds=new f([this._rawPxBounds.min.subtract(t),this._rawPxBounds.max.add(t)]))},_projectLatlngs:function(t,e,i){var n,o,s=t[0]instanceof v,r=t.length;if(s){for(o=[],n=0;n<r;n++)o[n]=this._map.latLngToLayerPoint(t[n]),i.extend(o[n]);e.push(o)}else for(n=0;n<r;n++)this._projectLatlngs(t[n],e,i)},_clipPoints:function(){var t=this._renderer._bounds;if(this._parts=[],this._pxBounds&&this._pxBounds.intersects(t))if(this.options.noClip)this._parts=this._rings;else for(var e,i,n,o,s=this._parts,r=0,a=0,h=this._rings.length;r<h;r++)for(e=0,i=(o=this._rings[r]).length;e<i-1;e++)(n=ni(o[e],o[e+1],t,e,!0))&&(s[a]=s[a]||[],s[a].push(n[0]),n[1]===o[e+1]&&e!==i-2||(s[a].push(n[1]),a++))},_simplifyPoints:function(){for(var t=this._parts,e=this.options.smoothFactor,i=0,n=t.length;i<n;i++)t[i]=ei(t[i],e)},_update:function(){this._map&&(this._clipPoints(),this._simplifyPoints(),this._updatePath())},_updatePath:function(){this._renderer._updatePoly(this)},_containsPoint:function(t,e){var i,n,o,s,r,a,h=this._clickTolerance();if(this._pxBounds&&this._pxBounds.contains(t))for(i=0,s=this._parts.length;i<s;i++)for(n=0,o=(r=(a=this._parts[i]).length)-1;n<r;o=n++)if((e||0!==n)&&ii(t,a[o],a[n])<=h)return!0;return!1}});yi._flat=ai;var xi=yi.extend({options:{fill:!0},isEmpty:function(){return!this._latlngs.length||!this._latlngs[0].length},getCenter:function(){if(this._map)return $e(this._defaultShape(),this._map.options.crs);throw new Error("Must add layer to map before using getCenter()")},_convertLatLngs:function(t){var t=yi.prototype._convertLatLngs.call(this,t),e=t.length;return 2<=e&&t[0]instanceof v&&t[0].equals(t[e-1])&&t.pop(),t},_setLatLngs:function(t){yi.prototype._setLatLngs.call(this,t),I(this._latlngs)&&(this._latlngs=[this._latlngs])},_defaultShape:function(){return(I(this._latlngs[0])?this._latlngs:this._latlngs[0])[0]},_clipPoints:function(){var t=this._renderer._bounds,e=this.options.weight,e=new p(e,e),t=new f(t.min.subtract(e),t.max.add(e));if(this._parts=[],this._pxBounds&&this._pxBounds.intersects(t))if(this.options.noClip)this._parts=this._rings;else for(var i,n=0,o=this._rings.length;n<o;n++)(i=Je(this._rings[n],t,!0)).length&&this._parts.push(i)},_updatePath:function(){this._renderer._updatePoly(this,!0)},_containsPoint:function(t){var e,i,n,o,s,r,a,h,l=!1;if(!this._pxBounds||!this._pxBounds.contains(t))return!1;for(o=0,a=this._parts.length;o<a;o++)for(s=0,r=(h=(e=this._parts[o]).length)-1;s<h;r=s++)i=e[s],n=e[r],i.y>t.y!=n.y>t.y&&t.x<(n.x-i.x)*(t.y-i.y)/(n.y-i.y)+i.x&&(l=!l);return l||yi.prototype._containsPoint.call(this,t,!0)}});var wi=ci.extend({initialize:function(t,e){c(this,e),this._layers={},t&&this.addData(t)},addData:function(t){var e,i,n,o=d(t)?t:t.features;if(o){for(e=0,i=o.length;e<i;e++)((n=o[e]).geometries||n.geometry||n.features||n.coordinates)&&this.addData(n);return this}var s,r=this.options;return(!r.filter||r.filter(t))&&(s=bi(t,r))?(s.feature=Zi(t),s.defaultOptions=s.options,this.resetStyle(s),r.onEachFeature&&r.onEachFeature(t,s),this.addLayer(s)):this},resetStyle:function(t){return void 0===t?this.eachLayer(this.resetStyle,this):(t.options=l({},t.defaultOptions),this._setLayerStyle(t,this.options.style),this)},setStyle:function(e){return this.eachLayer(function(t){this._setLayerStyle(t,e)},this)},_setLayerStyle:function(t,e){t.setStyle&&("function"==typeof e&&(e=e(t.feature)),t.setStyle(e))}});function bi(t,e){var i,n,o,s,r="Feature"===t.type?t.geometry:t,a=r?r.coordinates:null,h=[],l=e&&e.pointToLayer,u=e&&e.coordsToLatLng||Li;if(!a&&!r)return null;switch(r.type){case"Point":return Pi(l,t,i=u(a),e);case"MultiPoint":for(o=0,s=a.length;o<s;o++)i=u(a[o]),h.push(Pi(l,t,i,e));return new ci(h);case"LineString":case"MultiLineString":return n=Ti(a,"LineString"===r.type?0:1,u),new yi(n,e);case"Polygon":case"MultiPolygon":return n=Ti(a,"Polygon"===r.type?1:2,u),new xi(n,e);case"GeometryCollection":for(o=0,s=r.geometries.length;o<s;o++){var c=bi({geometry:r.geometries[o],type:"Feature",properties:t.properties},e);c&&h.push(c)}return new ci(h);case"FeatureCollection":for(o=0,s=r.features.length;o<s;o++){var d=bi(r.features[o],e);d&&h.push(d)}return new ci(h);default:throw new Error("Invalid GeoJSON object.")}}function Pi(t,e,i,n){return t?t(e,i):new mi(i,n&&n.markersInheritOptions&&n)}function Li(t){return new v(t[1],t[0],t[2])}function Ti(t,e,i){for(var n,o=[],s=0,r=t.length;s<r;s++)n=e?Ti(t[s],e-1,i):(i||Li)(t[s]),o.push(n);return o}function Mi(t,e){return void 0!==(t=w(t)).alt?[i(t.lng,e),i(t.lat,e),i(t.alt,e)]:[i(t.lng,e),i(t.lat,e)]}function zi(t,e,i,n){for(var o=[],s=0,r=t.length;s<r;s++)o.push(e?zi(t[s],I(t[s])?0:e-1,i,n):Mi(t[s],n));return!e&&i&&0<o.length&&o.push(o[0].slice()),o}function Ci(t,e){return t.feature?l({},t.feature,{geometry:e}):Zi(e)}function Zi(t){return"Feature"===t.type||"FeatureCollection"===t.type?t:{type:"Feature",properties:{},geometry:t}}Tt={toGeoJSON:function(t){return Ci(this,{type:"Point",coordinates:Mi(this.getLatLng(),t)})}};function Si(t,e){return new wi(t,e)}mi.include(Tt),vi.include(Tt),gi.include(Tt),yi.include({toGeoJSON:function(t){var e=!I(this._latlngs);return Ci(this,{type:(e?"Multi":"")+"LineString",coordinates:zi(this._latlngs,e?1:0,!1,t)})}}),xi.include({toGeoJSON:function(t){var e=!I(this._latlngs),i=e&&!I(this._latlngs[0]),t=zi(this._latlngs,i?2:e?1:0,!0,t);return Ci(this,{type:(i?"Multi":"")+"Polygon",coordinates:t=e?t:[t]})}}),ui.include({toMultiPoint:function(e){var i=[];return this.eachLayer(function(t){i.push(t.toGeoJSON(e).geometry.coordinates)}),Ci(this,{type:"MultiPoint",coordinates:i})},toGeoJSON:function(e){var i,n,t=this.feature&&this.feature.geometry&&this.feature.geometry.type;return"MultiPoint"===t?this.toMultiPoint(e):(i="GeometryCollection"===t,n=[],this.eachLayer(function(t){t.toGeoJSON&&(t=t.toGeoJSON(e),i?n.push(t.geometry):"FeatureCollection"===(t=Zi(t)).type?n.push.apply(n,t.features):n.push(t))}),i?Ci(this,{geometries:n,type:"GeometryCollection"}):{type:"FeatureCollection",features:n})}});var Mt=Si,Ei=o.extend({options:{opacity:1,alt:"",interactive:!1,crossOrigin:!1,errorOverlayUrl:"",zIndex:1,className:""},initialize:function(t,e,i){this._url=t,this._bounds=g(e),c(this,i)},onAdd:function(){this._image||(this._initImage(),this.options.opacity<1&&this._updateOpacity()),this.options.interactive&&(M(this._image,"leaflet-interactive"),this.addInteractiveTarget(this._image)),this.getPane().appendChild(this._image),this._reset()},onRemove:function(){T(this._image),this.options.interactive&&this.removeInteractiveTarget(this._image)},setOpacity:function(t){return this.options.opacity=t,this._image&&this._updateOpacity(),this},setStyle:function(t){return t.opacity&&this.setOpacity(t.opacity),this},bringToFront:function(){return this._map&&fe(this._image),this},bringToBack:function(){return this._map&&ge(this._image),this},setUrl:function(t){return this._url=t,this._image&&(this._image.src=t),this},setBounds:function(t){return this._bounds=g(t),this._map&&this._reset(),this},getEvents:function(){var t={zoom:this._reset,viewreset:this._reset};return this._zoomAnimated&&(t.zoomanim=this._animateZoom),t},setZIndex:function(t){return this.options.zIndex=t,this._updateZIndex(),this},getBounds:function(){return this._bounds},getElement:function(){return this._image},_initImage:function(){var t="IMG"===this._url.tagName,e=this._image=t?this._url:P("img");M(e,"leaflet-image-layer"),this._zoomAnimated&&M(e,"leaflet-zoom-animated"),this.options.className&&M(e,this.options.className),e.onselectstart=u,e.onmousemove=u,e.onload=a(this.fire,this,"load"),e.onerror=a(this._overlayOnError,this,"error"),!this.options.crossOrigin&&""!==this.options.crossOrigin||(e.crossOrigin=!0===this.options.crossOrigin?"":this.options.crossOrigin),this.options.zIndex&&this._updateZIndex(),t?this._url=e.src:(e.src=this._url,e.alt=this.options.alt)},_animateZoom:function(t){var e=this._map.getZoomScale(t.zoom),t=this._map._latLngBoundsToNewLayerBounds(this._bounds,t.zoom,t.center).min;be(this._image,t,e)},_reset:function(){var t=this._image,e=new f(this._map.latLngToLayerPoint(this._bounds.getNorthWest()),this._map.latLngToLayerPoint(this._bounds.getSouthEast())),i=e.getSize();Z(t,e.min),t.style.width=i.x+"px",t.style.height=i.y+"px"},_updateOpacity:function(){C(this._image,this.options.opacity)},_updateZIndex:function(){this._image&&void 0!==this.options.zIndex&&null!==this.options.zIndex&&(this._image.style.zIndex=this.options.zIndex)},_overlayOnError:function(){this.fire("error");var t=this.options.errorOverlayUrl;t&&this._url!==t&&(this._url=t,this._image.src=t)},getCenter:function(){return this._bounds.getCenter()}}),ki=Ei.extend({options:{autoplay:!0,loop:!0,keepAspectRatio:!0,muted:!1,playsInline:!0},_initImage:function(){var t="VIDEO"===this._url.tagName,e=this._image=t?this._url:P("video");if(M(e,"leaflet-image-layer"),this._zoomAnimated&&M(e,"leaflet-zoom-animated"),this.options.className&&M(e,this.options.className),e.onselectstart=u,e.onmousemove=u,e.onloadeddata=a(this.fire,this,"load"),t){for(var i=e.getElementsByTagName("source"),n=[],o=0;o<i.length;o++)n.push(i[o].src);this._url=0<i.length?n:[e.src]}else{d(this._url)||(this._url=[this._url]),!this.options.keepAspectRatio&&Object.prototype.hasOwnProperty.call(e.style,"objectFit")&&(e.style.objectFit="fill"),e.autoplay=!!this.options.autoplay,e.loop=!!this.options.loop,e.muted=!!this.options.muted,e.playsInline=!!this.options.playsInline;for(var s=0;s<this._url.length;s++){var r=P("source");r.src=this._url[s],e.appendChild(r)}}}});var Oi=Ei.extend({_initImage:function(){var t=this._image=this._url;M(t,"leaflet-image-layer"),this._zoomAnimated&&M(t,"leaflet-zoom-animated"),this.options.className&&M(t,this.options.className),t.onselectstart=u,t.onmousemove=u}});var Ai=o.extend({options:{interactive:!1,offset:[0,0],className:"",pane:void 0,content:""},initialize:function(t,e){t&&(t instanceof v||d(t))?(this._latlng=w(t),c(this,e)):(c(this,t),this._source=e),this.options.content&&(this._content=this.options.content)},openOn:function(t){return(t=arguments.length?t:this._source._map).hasLayer(this)||t.addLayer(this),this},close:function(){return this._map&&this._map.removeLayer(this),this},toggle:function(t){return this._map?this.close():(arguments.length?this._source=t:t=this._source,this._prepareOpen(),this.openOn(t._map)),this},onAdd:function(t){this._zoomAnimated=t._zoomAnimated,this._container||this._initLayout(),t._fadeAnimated&&C(this._container,0),clearTimeout(this._removeTimeout),this.getPane().appendChild(this._container),this.update(),t._fadeAnimated&&C(this._container,1),this.bringToFront(),this.options.interactive&&(M(this._container,"leaflet-interactive"),this.addInteractiveTarget(this._container))},onRemove:function(t){t._fadeAnimated?(C(this._container,0),this._removeTimeout=setTimeout(a(T,void 0,this._container),200)):T(this._container),this.options.interactive&&(z(this._container,"leaflet-interactive"),this.removeInteractiveTarget(this._container))},getLatLng:function(){return this._latlng},setLatLng:function(t){return this._latlng=w(t),this._map&&(this._updatePosition(),this._adjustPan()),this},getContent:function(){return this._content},setContent:function(t){return this._content=t,this.update(),this},getElement:function(){return this._container},update:function(){this._map&&(this._container.style.visibility="hidden",this._updateContent(),this._updateLayout(),this._updatePosition(),this._container.style.visibility="",this._adjustPan())},getEvents:function(){var t={zoom:this._updatePosition,viewreset:this._updatePosition};return this._zoomAnimated&&(t.zoomanim=this._animateZoom),t},isOpen:function(){return!!this._map&&this._map.hasLayer(this)},bringToFront:function(){return this._map&&fe(this._container),this},bringToBack:function(){return this._map&&ge(this._container),this},_prepareOpen:function(t){if(!(i=this._source)._map)return!1;if(i instanceof ci){var e,i=null,n=this._source._layers;for(e in n)if(n[e]._map){i=n[e];break}if(!i)return!1;this._source=i}if(!t)if(i.getCenter)t=i.getCenter();else if(i.getLatLng)t=i.getLatLng();else{if(!i.getBounds)throw new Error("Unable to get source layer LatLng.");t=i.getBounds().getCenter()}return this.setLatLng(t),this._map&&this.update(),!0},_updateContent:function(){if(this._content){var t=this._contentNode,e="function"==typeof this._content?this._content(this._source||this):this._content;if("string"==typeof e)t.innerHTML=e;else{for(;t.hasChildNodes();)t.removeChild(t.firstChild);t.appendChild(e)}this.fire("contentupdate")}},_updatePosition:function(){var t,e,i;this._map&&(e=this._map.latLngToLayerPoint(this._latlng),t=m(this.options.offset),i=this._getAnchor(),this._zoomAnimated?Z(this._container,e.add(i)):t=t.add(e).add(i),e=this._containerBottom=-t.y,i=this._containerLeft=-Math.round(this._containerWidth/2)+t.x,this._container.style.bottom=e+"px",this._container.style.left=i+"px")},_getAnchor:function(){return[0,0]}}),Bi=(A.include({_initOverlay:function(t,e,i,n){var o=e;return o instanceof t||(o=new t(n).setContent(e)),i&&o.setLatLng(i),o}}),o.include({_initOverlay:function(t,e,i,n){var o=i;return o instanceof t?(c(o,n),o._source=this):(o=e&&!n?e:new t(n,this)).setContent(i),o}}),Ai.extend({options:{pane:"popupPane",offset:[0,7],maxWidth:300,minWidth:50,maxHeight:null,autoPan:!0,autoPanPaddingTopLeft:null,autoPanPaddingBottomRight:null,autoPanPadding:[5,5],keepInView:!1,closeButton:!0,autoClose:!0,closeOnEscapeKey:!0,className:""},openOn:function(t){return!(t=arguments.length?t:this._source._map).hasLayer(this)&&t._popup&&t._popup.options.autoClose&&t.removeLayer(t._popup),t._popup=this,Ai.prototype.openOn.call(this,t)},onAdd:function(t){Ai.prototype.onAdd.call(this,t),t.fire("popupopen",{popup:this}),this._source&&(this._source.fire("popupopen",{popup:this},!0),this._source instanceof fi||this._source.on("preclick",Ae))},onRemove:function(t){Ai.prototype.onRemove.call(this,t),t.fire("popupclose",{popup:this}),this._source&&(this._source.fire("popupclose",{popup:this},!0),this._source instanceof fi||this._source.off("preclick",Ae))},getEvents:function(){var t=Ai.prototype.getEvents.call(this);return(void 0!==this.options.closeOnClick?this.options.closeOnClick:this._map.options.closePopupOnClick)&&(t.preclick=this.close),this.options.keepInView&&(t.moveend=this._adjustPan),t},_initLayout:function(){var t="leaflet-popup",e=this._container=P("div",t+" "+(this.options.className||"")+" leaflet-zoom-animated"),i=this._wrapper=P("div",t+"-content-wrapper",e);this._contentNode=P("div",t+"-content",i),Ie(e),Be(this._contentNode),S(e,"contextmenu",Ae),this._tipContainer=P("div",t+"-tip-container",e),this._tip=P("div",t+"-tip",this._tipContainer),this.options.closeButton&&((i=this._closeButton=P("a",t+"-close-button",e)).setAttribute("role","button"),i.setAttribute("aria-label","Close popup"),i.href="#close",i.innerHTML='<span aria-hidden="true">&#215;</span>',S(i,"click",function(t){O(t),this.close()},this))},_updateLayout:function(){var t=this._contentNode,e=t.style,i=(e.width="",e.whiteSpace="nowrap",t.offsetWidth),i=Math.min(i,this.options.maxWidth),i=(i=Math.max(i,this.options.minWidth),e.width=i+1+"px",e.whiteSpace="",e.height="",t.offsetHeight),n=this.options.maxHeight,o="leaflet-popup-scrolled";(n&&n<i?(e.height=n+"px",M):z)(t,o),this._containerWidth=this._container.offsetWidth},_animateZoom:function(t){var t=this._map._latLngToNewLayerPoint(this._latlng,t.zoom,t.center),e=this._getAnchor();Z(this._container,t.add(e))},_adjustPan:function(){var t,e,i,n,o,s,r,a;this.options.autoPan&&(this._map._panAnim&&this._map._panAnim.stop(),this._autopanning?this._autopanning=!1:(t=this._map,e=parseInt(pe(this._container,"marginBottom"),10)||0,e=this._container.offsetHeight+e,a=this._containerWidth,(i=new p(this._containerLeft,-e-this._containerBottom))._add(Pe(this._container)),i=t.layerPointToContainerPoint(i),o=m(this.options.autoPanPadding),n=m(this.options.autoPanPaddingTopLeft||o),o=m(this.options.autoPanPaddingBottomRight||o),s=t.getSize(),r=0,i.x+a+o.x>s.x&&(r=i.x+a-s.x+o.x),i.x-r-n.x<(a=0)&&(r=i.x-n.x),i.y+e+o.y>s.y&&(a=i.y+e-s.y+o.y),i.y-a-n.y<0&&(a=i.y-n.y),(r||a)&&(this.options.keepInView&&(this._autopanning=!0),t.fire("autopanstart").panBy([r,a]))))},_getAnchor:function(){return m(this._source&&this._source._getPopupAnchor?this._source._getPopupAnchor():[0,0])}})),Ii=(A.mergeOptions({closePopupOnClick:!0}),A.include({openPopup:function(t,e,i){return this._initOverlay(Bi,t,e,i).openOn(this),this},closePopup:function(t){return(t=arguments.length?t:this._popup)&&t.close(),this}}),o.include({bindPopup:function(t,e){return this._popup=this._initOverlay(Bi,this._popup,t,e),this._popupHandlersAdded||(this.on({click:this._openPopup,keypress:this._onKeyPress,remove:this.closePopup,move:this._movePopup}),this._popupHandlersAdded=!0),this},unbindPopup:function(){return this._popup&&(this.off({click:this._openPopup,keypress:this._onKeyPress,remove:this.closePopup,move:this._movePopup}),this._popupHandlersAdded=!1,this._popup=null),this},openPopup:function(t){return this._popup&&(this instanceof ci||(this._popup._source=this),this._popup._prepareOpen(t||this._latlng)&&this._popup.openOn(this._map)),this},closePopup:function(){return this._popup&&this._popup.close(),this},togglePopup:function(){return this._popup&&this._popup.toggle(this),this},isPopupOpen:function(){return!!this._popup&&this._popup.isOpen()},setPopupContent:function(t){return this._popup&&this._popup.setContent(t),this},getPopup:function(){return this._popup},_openPopup:function(t){var e;this._popup&&this._map&&(Re(t),e=t.layer||t.target,this._popup._source!==e||e instanceof fi?(this._popup._source=e,this.openPopup(t.latlng)):this._map.hasLayer(this._popup)?this.closePopup():this.openPopup(t.latlng))},_movePopup:function(t){this._popup.setLatLng(t.latlng)},_onKeyPress:function(t){13===t.originalEvent.keyCode&&this._openPopup(t)}}),Ai.extend({options:{pane:"tooltipPane",offset:[0,0],direction:"auto",permanent:!1,sticky:!1,opacity:.9},onAdd:function(t){Ai.prototype.onAdd.call(this,t),this.setOpacity(this.options.opacity),t.fire("tooltipopen",{tooltip:this}),this._source&&(this.addEventParent(this._source),this._source.fire("tooltipopen",{tooltip:this},!0))},onRemove:function(t){Ai.prototype.onRemove.call(this,t),t.fire("tooltipclose",{tooltip:this}),this._source&&(this.removeEventParent(this._source),this._source.fire("tooltipclose",{tooltip:this},!0))},getEvents:function(){var t=Ai.prototype.getEvents.call(this);return this.options.permanent||(t.preclick=this.close),t},_initLayout:function(){var t="leaflet-tooltip "+(this.options.className||"")+" leaflet-zoom-"+(this._zoomAnimated?"animated":"hide");this._contentNode=this._container=P("div",t),this._container.setAttribute("role","tooltip"),this._container.setAttribute("id","leaflet-tooltip-"+h(this))},_updateLayout:function(){},_adjustPan:function(){},_setPosition:function(t){var e,i=this._map,n=this._container,o=i.latLngToContainerPoint(i.getCenter()),i=i.layerPointToContainerPoint(t),s=this.options.direction,r=n.offsetWidth,a=n.offsetHeight,h=m(this.options.offset),l=this._getAnchor(),i="top"===s?(e=r/2,a):"bottom"===s?(e=r/2,0):(e="center"===s?r/2:"right"===s?0:"left"===s?r:i.x<o.x?(s="right",0):(s="left",r+2*(h.x+l.x)),a/2);t=t.subtract(m(e,i,!0)).add(h).add(l),z(n,"leaflet-tooltip-right"),z(n,"leaflet-tooltip-left"),z(n,"leaflet-tooltip-top"),z(n,"leaflet-tooltip-bottom"),M(n,"leaflet-tooltip-"+s),Z(n,t)},_updatePosition:function(){var t=this._map.latLngToLayerPoint(this._latlng);this._setPosition(t)},setOpacity:function(t){this.options.opacity=t,this._container&&C(this._container,t)},_animateZoom:function(t){t=this._map._latLngToNewLayerPoint(this._latlng,t.zoom,t.center);this._setPosition(t)},_getAnchor:function(){return m(this._source&&this._source._getTooltipAnchor&&!this.options.sticky?this._source._getTooltipAnchor():[0,0])}})),Ri=(A.include({openTooltip:function(t,e,i){return this._initOverlay(Ii,t,e,i).openOn(this),this},closeTooltip:function(t){return t.close(),this}}),o.include({bindTooltip:function(t,e){return this._tooltip&&this.isTooltipOpen()&&this.unbindTooltip(),this._tooltip=this._initOverlay(Ii,this._tooltip,t,e),this._initTooltipInteractions(),this._tooltip.options.permanent&&this._map&&this._map.hasLayer(this)&&this.openTooltip(),this},unbindTooltip:function(){return this._tooltip&&(this._initTooltipInteractions(!0),this.closeTooltip(),this._tooltip=null),this},_initTooltipInteractions:function(t){var e,i;!t&&this._tooltipHandlersAdded||(e=t?"off":"on",i={remove:this.closeTooltip,move:this._moveTooltip},this._tooltip.options.permanent?i.add=this._openTooltip:(i.mouseover=this._openTooltip,i.mouseout=this.closeTooltip,i.click=this._openTooltip,this._map?this._addFocusListeners():i.add=this._addFocusListeners),this._tooltip.options.sticky&&(i.mousemove=this._moveTooltip),this[e](i),this._tooltipHandlersAdded=!t)},openTooltip:function(t){return this._tooltip&&(this instanceof ci||(this._tooltip._source=this),this._tooltip._prepareOpen(t)&&(this._tooltip.openOn(this._map),this.getElement?this._setAriaDescribedByOnLayer(this):this.eachLayer&&this.eachLayer(this._setAriaDescribedByOnLayer,this))),this},closeTooltip:function(){if(this._tooltip)return this._tooltip.close()},toggleTooltip:function(){return this._tooltip&&this._tooltip.toggle(this),this},isTooltipOpen:function(){return this._tooltip.isOpen()},setTooltipContent:function(t){return this._tooltip&&this._tooltip.setContent(t),this},getTooltip:function(){return this._tooltip},_addFocusListeners:function(){this.getElement?this._addFocusListenersOnLayer(this):this.eachLayer&&this.eachLayer(this._addFocusListenersOnLayer,this)},_addFocusListenersOnLayer:function(t){var e="function"==typeof t.getElement&&t.getElement();e&&(S(e,"focus",function(){this._tooltip._source=t,this.openTooltip()},this),S(e,"blur",this.closeTooltip,this))},_setAriaDescribedByOnLayer:function(t){t="function"==typeof t.getElement&&t.getElement();t&&t.setAttribute("aria-describedby",this._tooltip._container.id)},_openTooltip:function(t){var e;this._tooltip&&this._map&&(this._map.dragging&&this._map.dragging.moving()&&!this._openOnceFlag?(this._openOnceFlag=!0,(e=this)._map.once("moveend",function(){e._openOnceFlag=!1,e._openTooltip(t)})):(this._tooltip._source=t.layer||t.target,this.openTooltip(this._tooltip.options.sticky?t.latlng:void 0)))},_moveTooltip:function(t){var e=t.latlng;this._tooltip.options.sticky&&t.originalEvent&&(t=this._map.mouseEventToContainerPoint(t.originalEvent),t=this._map.containerPointToLayerPoint(t),e=this._map.layerPointToLatLng(t)),this._tooltip.setLatLng(e)}}),di.extend({options:{iconSize:[12,12],html:!1,bgPos:null,className:"leaflet-div-icon"},createIcon:function(t){var t=t&&"DIV"===t.tagName?t:document.createElement("div"),e=this.options;return e.html instanceof Element?(me(t),t.appendChild(e.html)):t.innerHTML=!1!==e.html?e.html:"",e.bgPos&&(e=m(e.bgPos),t.style.backgroundPosition=-e.x+"px "+-e.y+"px"),this._setIconStyles(t,"icon"),t},createShadow:function(){return null}}));di.Default=_i;var Ni=o.extend({options:{tileSize:256,opacity:1,updateWhenIdle:b.mobile,updateWhenZooming:!0,updateInterval:200,zIndex:1,bounds:null,minZoom:0,maxZoom:void 0,maxNativeZoom:void 0,minNativeZoom:void 0,noWrap:!1,pane:"tilePane",className:"",keepBuffer:2},initialize:function(t){c(this,t)},onAdd:function(){this._initContainer(),this._levels={},this._tiles={},this._resetView()},beforeAdd:function(t){t._addZoomLimit(this)},onRemove:function(t){this._removeAllTiles(),T(this._container),t._removeZoomLimit(this),this._container=null,this._tileZoom=void 0},bringToFront:function(){return this._map&&(fe(this._container),this._setAutoZIndex(Math.max)),this},bringToBack:function(){return this._map&&(ge(this._container),this._setAutoZIndex(Math.min)),this},getContainer:function(){return this._container},setOpacity:function(t){return this.options.opacity=t,this._updateOpacity(),this},setZIndex:function(t){return this.options.zIndex=t,this._updateZIndex(),this},isLoading:function(){return this._loading},redraw:function(){var t;return this._map&&(this._removeAllTiles(),(t=this._clampZoom(this._map.getZoom()))!==this._tileZoom&&(this._tileZoom=t,this._updateLevels()),this._update()),this},getEvents:function(){var t={viewprereset:this._invalidateAll,viewreset:this._resetView,zoom:this._resetView,moveend:this._onMoveEnd};return this.options.updateWhenIdle||(this._onMove||(this._onMove=j(this._onMoveEnd,this.options.updateInterval,this)),t.move=this._onMove),this._zoomAnimated&&(t.zoomanim=this._animateZoom),t},createTile:function(){return document.createElement("div")},getTileSize:function(){var t=this.options.tileSize;return t instanceof p?t:new p(t,t)},_updateZIndex:function(){this._container&&void 0!==this.options.zIndex&&null!==this.options.zIndex&&(this._container.style.zIndex=this.options.zIndex)},_setAutoZIndex:function(t){for(var e,i=this.getPane().children,n=-t(-1/0,1/0),o=0,s=i.length;o<s;o++)e=i[o].style.zIndex,i[o]!==this._container&&e&&(n=t(n,+e));isFinite(n)&&(this.options.zIndex=n+t(-1,1),this._updateZIndex())},_updateOpacity:function(){if(this._map&&!b.ielt9){C(this._container,this.options.opacity);var t,e=+new Date,i=!1,n=!1;for(t in this._tiles){var o,s=this._tiles[t];s.current&&s.loaded&&(o=Math.min(1,(e-s.loaded)/200),C(s.el,o),o<1?i=!0:(s.active?n=!0:this._onOpaqueTile(s),s.active=!0))}n&&!this._noPrune&&this._pruneTiles(),i&&(r(this._fadeFrame),this._fadeFrame=x(this._updateOpacity,this))}},_onOpaqueTile:u,_initContainer:function(){this._container||(this._container=P("div","leaflet-layer "+(this.options.className||"")),this._updateZIndex(),this.options.opacity<1&&this._updateOpacity(),this.getPane().appendChild(this._container))},_updateLevels:function(){var t=this._tileZoom,e=this.options.maxZoom;if(void 0!==t){for(var i in this._levels)i=Number(i),this._levels[i].el.children.length||i===t?(this._levels[i].el.style.zIndex=e-Math.abs(t-i),this._onUpdateLevel(i)):(T(this._levels[i].el),this._removeTilesAtZoom(i),this._onRemoveLevel(i),delete this._levels[i]);var n=this._levels[t],o=this._map;return n||((n=this._levels[t]={}).el=P("div","leaflet-tile-container leaflet-zoom-animated",this._container),n.el.style.zIndex=e,n.origin=o.project(o.unproject(o.getPixelOrigin()),t).round(),n.zoom=t,this._setZoomTransform(n,o.getCenter(),o.getZoom()),u(n.el.offsetWidth),this._onCreateLevel(n)),this._level=n}},_onUpdateLevel:u,_onRemoveLevel:u,_onCreateLevel:u,_pruneTiles:function(){if(this._map){var t,e,i,n=this._map.getZoom();if(n>this.options.maxZoom||n<this.options.minZoom)this._removeAllTiles();else{for(t in this._tiles)(i=this._tiles[t]).retain=i.current;for(t in this._tiles)(i=this._tiles[t]).current&&!i.active&&(e=i.coords,this._retainParent(e.x,e.y,e.z,e.z-5)||this._retainChildren(e.x,e.y,e.z,e.z+2));for(t in this._tiles)this._tiles[t].retain||this._removeTile(t)}}},_removeTilesAtZoom:function(t){for(var e in this._tiles)this._tiles[e].coords.z===t&&this._removeTile(e)},_removeAllTiles:function(){for(var t in this._tiles)this._removeTile(t)},_invalidateAll:function(){for(var t in this._levels)T(this._levels[t].el),this._onRemoveLevel(Number(t)),delete this._levels[t];this._removeAllTiles(),this._tileZoom=void 0},_retainParent:function(t,e,i,n){var t=Math.floor(t/2),e=Math.floor(e/2),i=i-1,o=new p(+t,+e),o=(o.z=i,this._tileCoordsToKey(o)),o=this._tiles[o];return o&&o.active?o.retain=!0:(o&&o.loaded&&(o.retain=!0),n<i&&this._retainParent(t,e,i,n))},_retainChildren:function(t,e,i,n){for(var o=2*t;o<2*t+2;o++)for(var s=2*e;s<2*e+2;s++){var r=new p(o,s),r=(r.z=i+1,this._tileCoordsToKey(r)),r=this._tiles[r];r&&r.active?r.retain=!0:(r&&r.loaded&&(r.retain=!0),i+1<n&&this._retainChildren(o,s,i+1,n))}},_resetView:function(t){t=t&&(t.pinch||t.flyTo);this._setView(this._map.getCenter(),this._map.getZoom(),t,t)},_animateZoom:function(t){this._setView(t.center,t.zoom,!0,t.noUpdate)},_clampZoom:function(t){var e=this.options;return void 0!==e.minNativeZoom&&t<e.minNativeZoom?e.minNativeZoom:void 0!==e.maxNativeZoom&&e.maxNativeZoom<t?e.maxNativeZoom:t},_setView:function(t,e,i,n){var o=Math.round(e),o=void 0!==this.options.maxZoom&&o>this.options.maxZoom||void 0!==this.options.minZoom&&o<this.options.minZoom?void 0:this._clampZoom(o),s=this.options.updateWhenZooming&&o!==this._tileZoom;n&&!s||(this._tileZoom=o,this._abortLoading&&this._abortLoading(),this._updateLevels(),this._resetGrid(),void 0!==o&&this._update(t),i||this._pruneTiles(),this._noPrune=!!i),this._setZoomTransforms(t,e)},_setZoomTransforms:function(t,e){for(var i in this._levels)this._setZoomTransform(this._levels[i],t,e)},_setZoomTransform:function(t,e,i){var n=this._map.getZoomScale(i,t.zoom),e=t.origin.multiplyBy(n).subtract(this._map._getNewPixelOrigin(e,i)).round();b.any3d?be(t.el,e,n):Z(t.el,e)},_resetGrid:function(){var t=this._map,e=t.options.crs,i=this._tileSize=this.getTileSize(),n=this._tileZoom,o=this._map.getPixelWorldBounds(this._tileZoom);o&&(this._globalTileRange=this._pxBoundsToTileRange(o)),this._wrapX=e.wrapLng&&!this.options.noWrap&&[Math.floor(t.project([0,e.wrapLng[0]],n).x/i.x),Math.ceil(t.project([0,e.wrapLng[1]],n).x/i.y)],this._wrapY=e.wrapLat&&!this.options.noWrap&&[Math.floor(t.project([e.wrapLat[0],0],n).y/i.x),Math.ceil(t.project([e.wrapLat[1],0],n).y/i.y)]},_onMoveEnd:function(){this._map&&!this._map._animatingZoom&&this._update()},_getTiledPixelBounds:function(t){var e=this._map,i=e._animatingZoom?Math.max(e._animateToZoom,e.getZoom()):e.getZoom(),i=e.getZoomScale(i,this._tileZoom),t=e.project(t,this._tileZoom).floor(),e=e.getSize().divideBy(2*i);return new f(t.subtract(e),t.add(e))},_update:function(t){var e=this._map;if(e){var i=this._clampZoom(e.getZoom());if(void 0===t&&(t=e.getCenter()),void 0!==this._tileZoom){var n,e=this._getTiledPixelBounds(t),o=this._pxBoundsToTileRange(e),s=o.getCenter(),r=[],e=this.options.keepBuffer,a=new f(o.getBottomLeft().subtract([e,-e]),o.getTopRight().add([e,-e]));if(!(isFinite(o.min.x)&&isFinite(o.min.y)&&isFinite(o.max.x)&&isFinite(o.max.y)))throw new Error("Attempted to load an infinite number of tiles");for(n in this._tiles){var h=this._tiles[n].coords;h.z===this._tileZoom&&a.contains(new p(h.x,h.y))||(this._tiles[n].current=!1)}if(1<Math.abs(i-this._tileZoom))this._setView(t,i);else{for(var l=o.min.y;l<=o.max.y;l++)for(var u=o.min.x;u<=o.max.x;u++){var c,d=new p(u,l);d.z=this._tileZoom,this._isValidTile(d)&&((c=this._tiles[this._tileCoordsToKey(d)])?c.current=!0:r.push(d))}if(r.sort(function(t,e){return t.distanceTo(s)-e.distanceTo(s)}),0!==r.length){this._loading||(this._loading=!0,this.fire("loading"));for(var _=document.createDocumentFragment(),u=0;u<r.length;u++)this._addTile(r[u],_);this._level.el.appendChild(_)}}}}},_isValidTile:function(t){var e=this._map.options.crs;if(!e.infinite){var i=this._globalTileRange;if(!e.wrapLng&&(t.x<i.min.x||t.x>i.max.x)||!e.wrapLat&&(t.y<i.min.y||t.y>i.max.y))return!1}return!this.options.bounds||(e=this._tileCoordsToBounds(t),g(this.options.bounds).overlaps(e))},_keyToBounds:function(t){return this._tileCoordsToBounds(this._keyToTileCoords(t))},_tileCoordsToNwSe:function(t){var e=this._map,i=this.getTileSize(),n=t.scaleBy(i),i=n.add(i);return[e.unproject(n,t.z),e.unproject(i,t.z)]},_tileCoordsToBounds:function(t){t=this._tileCoordsToNwSe(t),t=new s(t[0],t[1]);return t=this.options.noWrap?t:this._map.wrapLatLngBounds(t)},_tileCoordsToKey:function(t){return t.x+":"+t.y+":"+t.z},_keyToTileCoords:function(t){var t=t.split(":"),e=new p(+t[0],+t[1]);return e.z=+t[2],e},_removeTile:function(t){var e=this._tiles[t];e&&(T(e.el),delete this._tiles[t],this.fire("tileunload",{tile:e.el,coords:this._keyToTileCoords(t)}))},_initTile:function(t){M(t,"leaflet-tile");var e=this.getTileSize();t.style.width=e.x+"px",t.style.height=e.y+"px",t.onselectstart=u,t.onmousemove=u,b.ielt9&&this.options.opacity<1&&C(t,this.options.opacity)},_addTile:function(t,e){var i=this._getTilePos(t),n=this._tileCoordsToKey(t),o=this.createTile(this._wrapCoords(t),a(this._tileReady,this,t));this._initTile(o),this.createTile.length<2&&x(a(this._tileReady,this,t,null,o)),Z(o,i),this._tiles[n]={el:o,coords:t,current:!0},e.appendChild(o),this.fire("tileloadstart",{tile:o,coords:t})},_tileReady:function(t,e,i){e&&this.fire("tileerror",{error:e,tile:i,coords:t});var n=this._tileCoordsToKey(t);(i=this._tiles[n])&&(i.loaded=+new Date,this._map._fadeAnimated?(C(i.el,0),r(this._fadeFrame),this._fadeFrame=x(this._updateOpacity,this)):(i.active=!0,this._pruneTiles()),e||(M(i.el,"leaflet-tile-loaded"),this.fire("tileload",{tile:i.el,coords:t})),this._noTilesToLoad()&&(this._loading=!1,this.fire("load"),b.ielt9||!this._map._fadeAnimated?x(this._pruneTiles,this):setTimeout(a(this._pruneTiles,this),250)))},_getTilePos:function(t){return t.scaleBy(this.getTileSize()).subtract(this._level.origin)},_wrapCoords:function(t){var e=new p(this._wrapX?H(t.x,this._wrapX):t.x,this._wrapY?H(t.y,this._wrapY):t.y);return e.z=t.z,e},_pxBoundsToTileRange:function(t){var e=this.getTileSize();return new f(t.min.unscaleBy(e).floor(),t.max.unscaleBy(e).ceil().subtract([1,1]))},_noTilesToLoad:function(){for(var t in this._tiles)if(!this._tiles[t].loaded)return!1;return!0}});var Di=Ni.extend({options:{minZoom:0,maxZoom:18,subdomains:"abc",errorTileUrl:"",zoomOffset:0,tms:!1,zoomReverse:!1,detectRetina:!1,crossOrigin:!1,referrerPolicy:!1},initialize:function(t,e){this._url=t,(e=c(this,e)).detectRetina&&b.retina&&0<e.maxZoom?(e.tileSize=Math.floor(e.tileSize/2),e.zoomReverse?(e.zoomOffset--,e.minZoom=Math.min(e.maxZoom,e.minZoom+1)):(e.zoomOffset++,e.maxZoom=Math.max(e.minZoom,e.maxZoom-1)),e.minZoom=Math.max(0,e.minZoom)):e.zoomReverse?e.minZoom=Math.min(e.maxZoom,e.minZoom):e.maxZoom=Math.max(e.minZoom,e.maxZoom),"string"==typeof e.subdomains&&(e.subdomains=e.subdomains.split("")),this.on("tileunload",this._onTileRemove)},setUrl:function(t,e){return this._url===t&&void 0===e&&(e=!0),this._url=t,e||this.redraw(),this},createTile:function(t,e){var i=document.createElement("img");return S(i,"load",a(this._tileOnLoad,this,e,i)),S(i,"error",a(this._tileOnError,this,e,i)),!this.options.crossOrigin&&""!==this.options.crossOrigin||(i.crossOrigin=!0===this.options.crossOrigin?"":this.options.crossOrigin),"string"==typeof this.options.referrerPolicy&&(i.referrerPolicy=this.options.referrerPolicy),i.alt="",i.src=this.getTileUrl(t),i},getTileUrl:function(t){var e={r:b.retina?"@2x":"",s:this._getSubdomain(t),x:t.x,y:t.y,z:this._getZoomForUrl()};return this._map&&!this._map.options.crs.infinite&&(t=this._globalTileRange.max.y-t.y,this.options.tms&&(e.y=t),e["-y"]=t),q(this._url,l(e,this.options))},_tileOnLoad:function(t,e){b.ielt9?setTimeout(a(t,this,null,e),0):t(null,e)},_tileOnError:function(t,e,i){var n=this.options.errorTileUrl;n&&e.getAttribute("src")!==n&&(e.src=n),t(i,e)},_onTileRemove:function(t){t.tile.onload=null},_getZoomForUrl:function(){var t=this._tileZoom,e=this.options.maxZoom;return(t=this.options.zoomReverse?e-t:t)+this.options.zoomOffset},_getSubdomain:function(t){t=Math.abs(t.x+t.y)%this.options.subdomains.length;return this.options.subdomains[t]},_abortLoading:function(){var t,e,i;for(t in this._tiles)this._tiles[t].coords.z!==this._tileZoom&&((i=this._tiles[t].el).onload=u,i.onerror=u,i.complete||(i.src=K,e=this._tiles[t].coords,T(i),delete this._tiles[t],this.fire("tileabort",{tile:i,coords:e})))},_removeTile:function(t){var e=this._tiles[t];if(e)return e.el.setAttribute("src",K),Ni.prototype._removeTile.call(this,t)},_tileReady:function(t,e,i){if(this._map&&(!i||i.getAttribute("src")!==K))return Ni.prototype._tileReady.call(this,t,e,i)}});function ji(t,e){return new Di(t,e)}var Hi=Di.extend({defaultWmsParams:{service:"WMS",request:"GetMap",layers:"",styles:"",format:"image/jpeg",transparent:!1,version:"1.1.1"},options:{crs:null,uppercase:!1},initialize:function(t,e){this._url=t;var i,n=l({},this.defaultWmsParams);for(i in e)i in this.options||(n[i]=e[i]);var t=(e=c(this,e)).detectRetina&&b.retina?2:1,o=this.getTileSize();n.width=o.x*t,n.height=o.y*t,this.wmsParams=n},onAdd:function(t){this._crs=this.options.crs||t.options.crs,this._wmsVersion=parseFloat(this.wmsParams.version);var e=1.3<=this._wmsVersion?"crs":"srs";this.wmsParams[e]=this._crs.code,Di.prototype.onAdd.call(this,t)},getTileUrl:function(t){var e=this._tileCoordsToNwSe(t),i=this._crs,i=_(i.project(e[0]),i.project(e[1])),e=i.min,i=i.max,e=(1.3<=this._wmsVersion&&this._crs===li?[e.y,e.x,i.y,i.x]:[e.x,e.y,i.x,i.y]).join(","),i=Di.prototype.getTileUrl.call(this,t);return i+U(this.wmsParams,i,this.options.uppercase)+(this.options.uppercase?"&BBOX=":"&bbox=")+e},setParams:function(t,e){return l(this.wmsParams,t),e||this.redraw(),this}});Di.WMS=Hi,ji.wms=function(t,e){return new Hi(t,e)};var Wi=o.extend({options:{padding:.1},initialize:function(t){c(this,t),h(this),this._layers=this._layers||{}},onAdd:function(){this._container||(this._initContainer(),M(this._container,"leaflet-zoom-animated")),this.getPane().appendChild(this._container),this._update(),this.on("update",this._updatePaths,this)},onRemove:function(){this.off("update",this._updatePaths,this),this._destroyContainer()},getEvents:function(){var t={viewreset:this._reset,zoom:this._onZoom,moveend:this._update,zoomend:this._onZoomEnd};return this._zoomAnimated&&(t.zoomanim=this._onAnimZoom),t},_onAnimZoom:function(t){this._updateTransform(t.center,t.zoom)},_onZoom:function(){this._updateTransform(this._map.getCenter(),this._map.getZoom())},_updateTransform:function(t,e){var i=this._map.getZoomScale(e,this._zoom),n=this._map.getSize().multiplyBy(.5+this.options.padding),o=this._map.project(this._center,e),n=n.multiplyBy(-i).add(o).subtract(this._map._getNewPixelOrigin(t,e));b.any3d?be(this._container,n,i):Z(this._container,n)},_reset:function(){for(var t in this._update(),this._updateTransform(this._center,this._zoom),this._layers)this._layers[t]._reset()},_onZoomEnd:function(){for(var t in this._layers)this._layers[t]._project()},_updatePaths:function(){for(var t in this._layers)this._layers[t]._update()},_update:function(){var t=this.options.padding,e=this._map.getSize(),i=this._map.containerPointToLayerPoint(e.multiplyBy(-t)).round();this._bounds=new f(i,i.add(e.multiplyBy(1+2*t)).round()),this._center=this._map.getCenter(),this._zoom=this._map.getZoom()}}),Fi=Wi.extend({options:{tolerance:0},getEvents:function(){var t=Wi.prototype.getEvents.call(this);return t.viewprereset=this._onViewPreReset,t},_onViewPreReset:function(){this._postponeUpdatePaths=!0},onAdd:function(){Wi.prototype.onAdd.call(this),this._draw()},_initContainer:function(){var t=this._container=document.createElement("canvas");S(t,"mousemove",this._onMouseMove,this),S(t,"click dblclick mousedown mouseup contextmenu",this._onClick,this),S(t,"mouseout",this._handleMouseOut,this),t._leaflet_disable_events=!0,this._ctx=t.getContext("2d")},_destroyContainer:function(){r(this._redrawRequest),delete this._ctx,T(this._container),k(this._container),delete this._container},_updatePaths:function(){if(!this._postponeUpdatePaths){for(var t in this._redrawBounds=null,this._layers)this._layers[t]._update();this._redraw()}},_update:function(){var t,e,i,n;this._map._animatingZoom&&this._bounds||(Wi.prototype._update.call(this),t=this._bounds,e=this._container,i=t.getSize(),n=b.retina?2:1,Z(e,t.min),e.width=n*i.x,e.height=n*i.y,e.style.width=i.x+"px",e.style.height=i.y+"px",b.retina&&this._ctx.scale(2,2),this._ctx.translate(-t.min.x,-t.min.y),this.fire("update"))},_reset:function(){Wi.prototype._reset.call(this),this._postponeUpdatePaths&&(this._postponeUpdatePaths=!1,this._updatePaths())},_initPath:function(t){this._updateDashArray(t);t=(this._layers[h(t)]=t)._order={layer:t,prev:this._drawLast,next:null};this._drawLast&&(this._drawLast.next=t),this._drawLast=t,this._drawFirst=this._drawFirst||this._drawLast},_addPath:function(t){this._requestRedraw(t)},_removePath:function(t){var e=t._order,i=e.next,e=e.prev;i?i.prev=e:this._drawLast=e,e?e.next=i:this._drawFirst=i,delete t._order,delete this._layers[h(t)],this._requestRedraw(t)},_updatePath:function(t){this._extendRedrawBounds(t),t._project(),t._update(),this._requestRedraw(t)},_updateStyle:function(t){this._updateDashArray(t),this._requestRedraw(t)},_updateDashArray:function(t){if("string"==typeof t.options.dashArray){for(var e,i=t.options.dashArray.split(/[, ]+/),n=[],o=0;o<i.length;o++){if(e=Number(i[o]),isNaN(e))return;n.push(e)}t.options._dashArray=n}else t.options._dashArray=t.options.dashArray},_requestRedraw:function(t){this._map&&(this._extendRedrawBounds(t),this._redrawRequest=this._redrawRequest||x(this._redraw,this))},_extendRedrawBounds:function(t){var e;t._pxBounds&&(e=(t.options.weight||0)+1,this._redrawBounds=this._redrawBounds||new f,this._redrawBounds.extend(t._pxBounds.min.subtract([e,e])),this._redrawBounds.extend(t._pxBounds.max.add([e,e])))},_redraw:function(){this._redrawRequest=null,this._redrawBounds&&(this._redrawBounds.min._floor(),this._redrawBounds.max._ceil()),this._clear(),this._draw(),this._redrawBounds=null},_clear:function(){var t,e=this._redrawBounds;e?(t=e.getSize(),this._ctx.clearRect(e.min.x,e.min.y,t.x,t.y)):(this._ctx.save(),this._ctx.setTransform(1,0,0,1,0,0),this._ctx.clearRect(0,0,this._container.width,this._container.height),this._ctx.restore())},_draw:function(){var t,e,i=this._redrawBounds;this._ctx.save(),i&&(e=i.getSize(),this._ctx.beginPath(),this._ctx.rect(i.min.x,i.min.y,e.x,e.y),this._ctx.clip()),this._drawing=!0;for(var n=this._drawFirst;n;n=n.next)t=n.layer,(!i||t._pxBounds&&t._pxBounds.intersects(i))&&t._updatePath();this._drawing=!1,this._ctx.restore()},_updatePoly:function(t,e){if(this._drawing){var i,n,o,s,r=t._parts,a=r.length,h=this._ctx;if(a){for(h.beginPath(),i=0;i<a;i++){for(n=0,o=r[i].length;n<o;n++)s=r[i][n],h[n?"lineTo":"moveTo"](s.x,s.y);e&&h.closePath()}this._fillStroke(h,t)}}},_updateCircle:function(t){var e,i,n,o;this._drawing&&!t._empty()&&(e=t._point,i=this._ctx,n=Math.max(Math.round(t._radius),1),1!=(o=(Math.max(Math.round(t._radiusY),1)||n)/n)&&(i.save(),i.scale(1,o)),i.beginPath(),i.arc(e.x,e.y/o,n,0,2*Math.PI,!1),1!=o&&i.restore(),this._fillStroke(i,t))},_fillStroke:function(t,e){var i=e.options;i.fill&&(t.globalAlpha=i.fillOpacity,t.fillStyle=i.fillColor||i.color,t.fill(i.fillRule||"evenodd")),i.stroke&&0!==i.weight&&(t.setLineDash&&t.setLineDash(e.options&&e.options._dashArray||[]),t.globalAlpha=i.opacity,t.lineWidth=i.weight,t.strokeStyle=i.color,t.lineCap=i.lineCap,t.lineJoin=i.lineJoin,t.stroke())},_onClick:function(t){for(var e,i,n=this._map.mouseEventToLayerPoint(t),o=this._drawFirst;o;o=o.next)(e=o.layer).options.interactive&&e._containsPoint(n)&&(("click"===t.type||"preclick"===t.type)&&this._map._draggableMoved(e)||(i=e));this._fireEvent(!!i&&[i],t)},_onMouseMove:function(t){var e;!this._map||this._map.dragging.moving()||this._map._animatingZoom||(e=this._map.mouseEventToLayerPoint(t),this._handleMouseHover(t,e))},_handleMouseOut:function(t){var e=this._hoveredLayer;e&&(z(this._container,"leaflet-interactive"),this._fireEvent([e],t,"mouseout"),this._hoveredLayer=null,this._mouseHoverThrottled=!1)},_handleMouseHover:function(t,e){if(!this._mouseHoverThrottled){for(var i,n,o=this._drawFirst;o;o=o.next)(i=o.layer).options.interactive&&i._containsPoint(e)&&(n=i);n!==this._hoveredLayer&&(this._handleMouseOut(t),n&&(M(this._container,"leaflet-interactive"),this._fireEvent([n],t,"mouseover"),this._hoveredLayer=n)),this._fireEvent(!!this._hoveredLayer&&[this._hoveredLayer],t),this._mouseHoverThrottled=!0,setTimeout(a(function(){this._mouseHoverThrottled=!1},this),32)}},_fireEvent:function(t,e,i){this._map._fireDOMEvent(e,i||e.type,t)},_bringToFront:function(t){var e,i,n=t._order;n&&(e=n.next,i=n.prev,e&&((e.prev=i)?i.next=e:e&&(this._drawFirst=e),n.prev=this._drawLast,(this._drawLast.next=n).next=null,this._drawLast=n,this._requestRedraw(t)))},_bringToBack:function(t){var e,i,n=t._order;n&&(e=n.next,(i=n.prev)&&((i.next=e)?e.prev=i:i&&(this._drawLast=i),n.prev=null,n.next=this._drawFirst,this._drawFirst.prev=n,this._drawFirst=n,this._requestRedraw(t)))}});function Ui(t){return b.canvas?new Fi(t):null}var Vi=function(){try{return document.namespaces.add("lvml","urn:schemas-microsoft-com:vml"),function(t){return document.createElement("<lvml:"+t+' class="lvml">')}}catch(t){}return function(t){return document.createElement("<"+t+' xmlns="urn:schemas-microsoft.com:vml" class="lvml">')}}(),zt={_initContainer:function(){this._container=P("div","leaflet-vml-container")},_update:function(){this._map._animatingZoom||(Wi.prototype._update.call(this),this.fire("update"))},_initPath:function(t){var e=t._container=Vi("shape");M(e,"leaflet-vml-shape "+(this.options.className||"")),e.coordsize="1 1",t._path=Vi("path"),e.appendChild(t._path),this._updateStyle(t),this._layers[h(t)]=t},_addPath:function(t){var e=t._container;this._container.appendChild(e),t.options.interactive&&t.addInteractiveTarget(e)},_removePath:function(t){var e=t._container;T(e),t.removeInteractiveTarget(e),delete this._layers[h(t)]},_updateStyle:function(t){var e=t._stroke,i=t._fill,n=t.options,o=t._container;o.stroked=!!n.stroke,o.filled=!!n.fill,n.stroke?(e=e||(t._stroke=Vi("stroke")),o.appendChild(e),e.weight=n.weight+"px",e.color=n.color,e.opacity=n.opacity,n.dashArray?e.dashStyle=d(n.dashArray)?n.dashArray.join(" "):n.dashArray.replace(/( *, *)/g," "):e.dashStyle="",e.endcap=n.lineCap.replace("butt","flat"),e.joinstyle=n.lineJoin):e&&(o.removeChild(e),t._stroke=null),n.fill?(i=i||(t._fill=Vi("fill")),o.appendChild(i),i.color=n.fillColor||n.color,i.opacity=n.fillOpacity):i&&(o.removeChild(i),t._fill=null)},_updateCircle:function(t){var e=t._point.round(),i=Math.round(t._radius),n=Math.round(t._radiusY||i);this._setPath(t,t._empty()?"M0 0":"AL "+e.x+","+e.y+" "+i+","+n+" 0,23592600")},_setPath:function(t,e){t._path.v=e},_bringToFront:function(t){fe(t._container)},_bringToBack:function(t){ge(t._container)}},qi=b.vml?Vi:ct,Gi=Wi.extend({_initContainer:function(){this._container=qi("svg"),this._container.setAttribute("pointer-events","none"),this._rootGroup=qi("g"),this._container.appendChild(this._rootGroup)},_destroyContainer:function(){T(this._container),k(this._container),delete this._container,delete this._rootGroup,delete this._svgSize},_update:function(){var t,e,i;this._map._animatingZoom&&this._bounds||(Wi.prototype._update.call(this),e=(t=this._bounds).getSize(),i=this._container,this._svgSize&&this._svgSize.equals(e)||(this._svgSize=e,i.setAttribute("width",e.x),i.setAttribute("height",e.y)),Z(i,t.min),i.setAttribute("viewBox",[t.min.x,t.min.y,e.x,e.y].join(" ")),this.fire("update"))},_initPath:function(t){var e=t._path=qi("path");t.options.className&&M(e,t.options.className),t.options.interactive&&M(e,"leaflet-interactive"),this._updateStyle(t),this._layers[h(t)]=t},_addPath:function(t){this._rootGroup||this._initContainer(),this._rootGroup.appendChild(t._path),t.addInteractiveTarget(t._path)},_removePath:function(t){T(t._path),t.removeInteractiveTarget(t._path),delete this._layers[h(t)]},_updatePath:function(t){t._project(),t._update()},_updateStyle:function(t){var e=t._path,t=t.options;e&&(t.stroke?(e.setAttribute("stroke",t.color),e.setAttribute("stroke-opacity",t.opacity),e.setAttribute("stroke-width",t.weight),e.setAttribute("stroke-linecap",t.lineCap),e.setAttribute("stroke-linejoin",t.lineJoin),t.dashArray?e.setAttribute("stroke-dasharray",t.dashArray):e.removeAttribute("stroke-dasharray"),t.dashOffset?e.setAttribute("stroke-dashoffset",t.dashOffset):e.removeAttribute("stroke-dashoffset")):e.setAttribute("stroke","none"),t.fill?(e.setAttribute("fill",t.fillColor||t.color),e.setAttribute("fill-opacity",t.fillOpacity),e.setAttribute("fill-rule",t.fillRule||"evenodd")):e.setAttribute("fill","none"))},_updatePoly:function(t,e){this._setPath(t,dt(t._parts,e))},_updateCircle:function(t){var e=t._point,i=Math.max(Math.round(t._radius),1),n="a"+i+","+(Math.max(Math.round(t._radiusY),1)||i)+" 0 1,0 ",e=t._empty()?"M0 0":"M"+(e.x-i)+","+e.y+n+2*i+",0 "+n+2*-i+",0 ";this._setPath(t,e)},_setPath:function(t,e){t._path.setAttribute("d",e)},_bringToFront:function(t){fe(t._path)},_bringToBack:function(t){ge(t._path)}});function Ki(t){return b.svg||b.vml?new Gi(t):null}b.vml&&Gi.include(zt),A.include({getRenderer:function(t){t=(t=t.options.renderer||this._getPaneRenderer(t.options.pane)||this.options.renderer||this._renderer)||(this._renderer=this._createRenderer());return this.hasLayer(t)||this.addLayer(t),t},_getPaneRenderer:function(t){var e;return"overlayPane"!==t&&void 0!==t&&(void 0===(e=this._paneRenderers[t])&&(e=this._createRenderer({pane:t}),this._paneRenderers[t]=e),e)},_createRenderer:function(t){return this.options.preferCanvas&&Ui(t)||Ki(t)}});var Yi=xi.extend({initialize:function(t,e){xi.prototype.initialize.call(this,this._boundsToLatLngs(t),e)},setBounds:function(t){return this.setLatLngs(this._boundsToLatLngs(t))},_boundsToLatLngs:function(t){return[(t=g(t)).getSouthWest(),t.getNorthWest(),t.getNorthEast(),t.getSouthEast()]}});Gi.create=qi,Gi.pointsToPath=dt,wi.geometryToLayer=bi,wi.coordsToLatLng=Li,wi.coordsToLatLngs=Ti,wi.latLngToCoords=Mi,wi.latLngsToCoords=zi,wi.getFeature=Ci,wi.asFeature=Zi,A.mergeOptions({boxZoom:!0});var _t=n.extend({initialize:function(t){this._map=t,this._container=t._container,this._pane=t._panes.overlayPane,this._resetStateTimeout=0,t.on("unload",this._destroy,this)},addHooks:function(){S(this._container,"mousedown",this._onMouseDown,this)},removeHooks:function(){k(this._container,"mousedown",this._onMouseDown,this)},moved:function(){return this._moved},_destroy:function(){T(this._pane),delete this._pane},_resetState:function(){this._resetStateTimeout=0,this._moved=!1},_clearDeferredResetState:function(){0!==this._resetStateTimeout&&(clearTimeout(this._resetStateTimeout),this._resetStateTimeout=0)},_onMouseDown:function(t){if(!t.shiftKey||1!==t.which&&1!==t.button)return!1;this._clearDeferredResetState(),this._resetState(),re(),Le(),this._startPoint=this._map.mouseEventToContainerPoint(t),S(document,{contextmenu:Re,mousemove:this._onMouseMove,mouseup:this._onMouseUp,keydown:this._onKeyDown},this)},_onMouseMove:function(t){this._moved||(this._moved=!0,this._box=P("div","leaflet-zoom-box",this._container),M(this._container,"leaflet-crosshair"),this._map.fire("boxzoomstart")),this._point=this._map.mouseEventToContainerPoint(t);var t=new f(this._point,this._startPoint),e=t.getSize();Z(this._box,t.min),this._box.style.width=e.x+"px",this._box.style.height=e.y+"px"},_finish:function(){this._moved&&(T(this._box),z(this._container,"leaflet-crosshair")),ae(),Te(),k(document,{contextmenu:Re,mousemove:this._onMouseMove,mouseup:this._onMouseUp,keydown:this._onKeyDown},this)},_onMouseUp:function(t){1!==t.which&&1!==t.button||(this._finish(),this._moved&&(this._clearDeferredResetState(),this._resetStateTimeout=setTimeout(a(this._resetState,this),0),t=new s(this._map.containerPointToLatLng(this._startPoint),this._map.containerPointToLatLng(this._point)),this._map.fitBounds(t).fire("boxzoomend",{boxZoomBounds:t})))},_onKeyDown:function(t){27===t.keyCode&&(this._finish(),this._clearDeferredResetState(),this._resetState())}}),Ct=(A.addInitHook("addHandler","boxZoom",_t),A.mergeOptions({doubleClickZoom:!0}),n.extend({addHooks:function(){this._map.on("dblclick",this._onDoubleClick,this)},removeHooks:function(){this._map.off("dblclick",this._onDoubleClick,this)},_onDoubleClick:function(t){var e=this._map,i=e.getZoom(),n=e.options.zoomDelta,i=t.originalEvent.shiftKey?i-n:i+n;"center"===e.options.doubleClickZoom?e.setZoom(i):e.setZoomAround(t.containerPoint,i)}})),Zt=(A.addInitHook("addHandler","doubleClickZoom",Ct),A.mergeOptions({dragging:!0,inertia:!0,inertiaDeceleration:3400,inertiaMaxSpeed:1/0,easeLinearity:.2,worldCopyJump:!1,maxBoundsViscosity:0}),n.extend({addHooks:function(){var t;this._draggable||(t=this._map,this._draggable=new Xe(t._mapPane,t._container),this._draggable.on({dragstart:this._onDragStart,drag:this._onDrag,dragend:this._onDragEnd},this),this._draggable.on("predrag",this._onPreDragLimit,this),t.options.worldCopyJump&&(this._draggable.on("predrag",this._onPreDragWrap,this),t.on("zoomend",this._onZoomEnd,this),t.whenReady(this._onZoomEnd,this))),M(this._map._container,"leaflet-grab leaflet-touch-drag"),this._draggable.enable(),this._positions=[],this._times=[]},removeHooks:function(){z(this._map._container,"leaflet-grab"),z(this._map._container,"leaflet-touch-drag"),this._draggable.disable()},moved:function(){return this._draggable&&this._draggable._moved},moving:function(){return this._draggable&&this._draggable._moving},_onDragStart:function(){var t,e=this._map;e._stop(),this._map.options.maxBounds&&this._map.options.maxBoundsViscosity?(t=g(this._map.options.maxBounds),this._offsetLimit=_(this._map.latLngToContainerPoint(t.getNorthWest()).multiplyBy(-1),this._map.latLngToContainerPoint(t.getSouthEast()).multiplyBy(-1).add(this._map.getSize())),this._viscosity=Math.min(1,Math.max(0,this._map.options.maxBoundsViscosity))):this._offsetLimit=null,e.fire("movestart").fire("dragstart"),e.options.inertia&&(this._positions=[],this._times=[])},_onDrag:function(t){var e,i;this._map.options.inertia&&(e=this._lastTime=+new Date,i=this._lastPos=this._draggable._absPos||this._draggable._newPos,this._positions.push(i),this._times.push(e),this._prunePositions(e)),this._map.fire("move",t).fire("drag",t)},_prunePositions:function(t){for(;1<this._positions.length&&50<t-this._times[0];)this._positions.shift(),this._times.shift()},_onZoomEnd:function(){var t=this._map.getSize().divideBy(2),e=this._map.latLngToLayerPoint([0,0]);this._initialWorldOffset=e.subtract(t).x,this._worldWidth=this._map.getPixelWorldBounds().getSize().x},_viscousLimit:function(t,e){return t-(t-e)*this._viscosity},_onPreDragLimit:function(){var t,e;this._viscosity&&this._offsetLimit&&(t=this._draggable._newPos.subtract(this._draggable._startPos),e=this._offsetLimit,t.x<e.min.x&&(t.x=this._viscousLimit(t.x,e.min.x)),t.y<e.min.y&&(t.y=this._viscousLimit(t.y,e.min.y)),t.x>e.max.x&&(t.x=this._viscousLimit(t.x,e.max.x)),t.y>e.max.y&&(t.y=this._viscousLimit(t.y,e.max.y)),this._draggable._newPos=this._draggable._startPos.add(t))},_onPreDragWrap:function(){var t=this._worldWidth,e=Math.round(t/2),i=this._initialWorldOffset,n=this._draggable._newPos.x,o=(n-e+i)%t+e-i,n=(n+e+i)%t-e-i,t=Math.abs(o+i)<Math.abs(n+i)?o:n;this._draggable._absPos=this._draggable._newPos.clone(),this._draggable._newPos.x=t},_onDragEnd:function(t){var e,i,n,o,s=this._map,r=s.options,a=!r.inertia||t.noInertia||this._times.length<2;s.fire("dragend",t),!a&&(this._prunePositions(+new Date),t=this._lastPos.subtract(this._positions[0]),a=(this._lastTime-this._times[0])/1e3,e=r.easeLinearity,a=(t=t.multiplyBy(e/a)).distanceTo([0,0]),i=Math.min(r.inertiaMaxSpeed,a),t=t.multiplyBy(i/a),n=i/(r.inertiaDeceleration*e),(o=t.multiplyBy(-n/2).round()).x||o.y)?(o=s._limitOffset(o,s.options.maxBounds),x(function(){s.panBy(o,{duration:n,easeLinearity:e,noMoveStart:!0,animate:!0})})):s.fire("moveend")}})),St=(A.addInitHook("addHandler","dragging",Zt),A.mergeOptions({keyboard:!0,keyboardPanDelta:80}),n.extend({keyCodes:{left:[37],right:[39],down:[40],up:[38],zoomIn:[187,107,61,171],zoomOut:[189,109,54,173]},initialize:function(t){this._map=t,this._setPanDelta(t.options.keyboardPanDelta),this._setZoomDelta(t.options.zoomDelta)},addHooks:function(){var t=this._map._container;t.tabIndex<=0&&(t.tabIndex="0"),S(t,{focus:this._onFocus,blur:this._onBlur,mousedown:this._onMouseDown},this),this._map.on({focus:this._addHooks,blur:this._removeHooks},this)},removeHooks:function(){this._removeHooks(),k(this._map._container,{focus:this._onFocus,blur:this._onBlur,mousedown:this._onMouseDown},this),this._map.off({focus:this._addHooks,blur:this._removeHooks},this)},_onMouseDown:function(){var t,e,i;this._focused||(i=document.body,t=document.documentElement,e=i.scrollTop||t.scrollTop,i=i.scrollLeft||t.scrollLeft,this._map._container.focus(),window.scrollTo(i,e))},_onFocus:function(){this._focused=!0,this._map.fire("focus")},_onBlur:function(){this._focused=!1,this._map.fire("blur")},_setPanDelta:function(t){for(var e=this._panKeys={},i=this.keyCodes,n=0,o=i.left.length;n<o;n++)e[i.left[n]]=[-1*t,0];for(n=0,o=i.right.length;n<o;n++)e[i.right[n]]=[t,0];for(n=0,o=i.down.length;n<o;n++)e[i.down[n]]=[0,t];for(n=0,o=i.up.length;n<o;n++)e[i.up[n]]=[0,-1*t]},_setZoomDelta:function(t){for(var e=this._zoomKeys={},i=this.keyCodes,n=0,o=i.zoomIn.length;n<o;n++)e[i.zoomIn[n]]=t;for(n=0,o=i.zoomOut.length;n<o;n++)e[i.zoomOut[n]]=-t},_addHooks:function(){S(document,"keydown",this._onKeyDown,this)},_removeHooks:function(){k(document,"keydown",this._onKeyDown,this)},_onKeyDown:function(t){if(!(t.altKey||t.ctrlKey||t.metaKey)){var e,i,n=t.keyCode,o=this._map;if(n in this._panKeys)o._panAnim&&o._panAnim._inProgress||(i=this._panKeys[n],t.shiftKey&&(i=m(i).multiplyBy(3)),o.options.maxBounds&&(i=o._limitOffset(m(i),o.options.maxBounds)),o.options.worldCopyJump?(e=o.wrapLatLng(o.unproject(o.project(o.getCenter()).add(i))),o.panTo(e)):o.panBy(i));else if(n in this._zoomKeys)o.setZoom(o.getZoom()+(t.shiftKey?3:1)*this._zoomKeys[n]);else{if(27!==n||!o._popup||!o._popup.options.closeOnEscapeKey)return;o.closePopup()}Re(t)}}})),Et=(A.addInitHook("addHandler","keyboard",St),A.mergeOptions({scrollWheelZoom:!0,wheelDebounceTime:40,wheelPxPerZoomLevel:60}),n.extend({addHooks:function(){S(this._map._container,"wheel",this._onWheelScroll,this),this._delta=0},removeHooks:function(){k(this._map._container,"wheel",this._onWheelScroll,this)},_onWheelScroll:function(t){var e=He(t),i=this._map.options.wheelDebounceTime,e=(this._delta+=e,this._lastMousePos=this._map.mouseEventToContainerPoint(t),this._startTime||(this._startTime=+new Date),Math.max(i-(+new Date-this._startTime),0));clearTimeout(this._timer),this._timer=setTimeout(a(this._performZoom,this),e),Re(t)},_performZoom:function(){var t=this._map,e=t.getZoom(),i=this._map.options.zoomSnap||0,n=(t._stop(),this._delta/(4*this._map.options.wheelPxPerZoomLevel)),n=4*Math.log(2/(1+Math.exp(-Math.abs(n))))/Math.LN2,i=i?Math.ceil(n/i)*i:n,n=t._limitZoom(e+(0<this._delta?i:-i))-e;this._delta=0,this._startTime=null,n&&("center"===t.options.scrollWheelZoom?t.setZoom(e+n):t.setZoomAround(this._lastMousePos,e+n))}})),kt=(A.addInitHook("addHandler","scrollWheelZoom",Et),A.mergeOptions({tapHold:b.touchNative&&b.safari&&b.mobile,tapTolerance:15}),n.extend({addHooks:function(){S(this._map._container,"touchstart",this._onDown,this)},removeHooks:function(){k(this._map._container,"touchstart",this._onDown,this)},_onDown:function(t){var e;clearTimeout(this._holdTimeout),1===t.touches.length&&(e=t.touches[0],this._startPos=this._newPos=new p(e.clientX,e.clientY),this._holdTimeout=setTimeout(a(function(){this._cancel(),this._isTapValid()&&(S(document,"touchend",O),S(document,"touchend touchcancel",this._cancelClickPrevent),this._simulateEvent("contextmenu",e))},this),600),S(document,"touchend touchcancel contextmenu",this._cancel,this),S(document,"touchmove",this._onMove,this))},_cancelClickPrevent:function t(){k(document,"touchend",O),k(document,"touchend touchcancel",t)},_cancel:function(){clearTimeout(this._holdTimeout),k(document,"touchend touchcancel contextmenu",this._cancel,this),k(document,"touchmove",this._onMove,this)},_onMove:function(t){t=t.touches[0];this._newPos=new p(t.clientX,t.clientY)},_isTapValid:function(){return this._newPos.distanceTo(this._startPos)<=this._map.options.tapTolerance},_simulateEvent:function(t,e){t=new MouseEvent(t,{bubbles:!0,cancelable:!0,view:window,screenX:e.screenX,screenY:e.screenY,clientX:e.clientX,clientY:e.clientY});t._simulated=!0,e.target.dispatchEvent(t)}})),Ot=(A.addInitHook("addHandler","tapHold",kt),A.mergeOptions({touchZoom:b.touch,bounceAtZoomLimits:!0}),n.extend({addHooks:function(){M(this._map._container,"leaflet-touch-zoom"),S(this._map._container,"touchstart",this._onTouchStart,this)},removeHooks:function(){z(this._map._container,"leaflet-touch-zoom"),k(this._map._container,"touchstart",this._onTouchStart,this)},_onTouchStart:function(t){var e,i,n=this._map;!t.touches||2!==t.touches.length||n._animatingZoom||this._zooming||(e=n.mouseEventToContainerPoint(t.touches[0]),i=n.mouseEventToContainerPoint(t.touches[1]),this._centerPoint=n.getSize()._divideBy(2),this._startLatLng=n.containerPointToLatLng(this._centerPoint),"center"!==n.options.touchZoom&&(this._pinchStartLatLng=n.containerPointToLatLng(e.add(i)._divideBy(2))),this._startDist=e.distanceTo(i),this._startZoom=n.getZoom(),this._moved=!1,this._zooming=!0,n._stop(),S(document,"touchmove",this._onTouchMove,this),S(document,"touchend touchcancel",this._onTouchEnd,this),O(t))},_onTouchMove:function(t){if(t.touches&&2===t.touches.length&&this._zooming){var e=this._map,i=e.mouseEventToContainerPoint(t.touches[0]),n=e.mouseEventToContainerPoint(t.touches[1]),o=i.distanceTo(n)/this._startDist;if(this._zoom=e.getScaleZoom(o,this._startZoom),!e.options.bounceAtZoomLimits&&(this._zoom<e.getMinZoom()&&o<1||this._zoom>e.getMaxZoom()&&1<o)&&(this._zoom=e._limitZoom(this._zoom)),"center"===e.options.touchZoom){if(this._center=this._startLatLng,1==o)return}else{i=i._add(n)._divideBy(2)._subtract(this._centerPoint);if(1==o&&0===i.x&&0===i.y)return;this._center=e.unproject(e.project(this._pinchStartLatLng,this._zoom).subtract(i),this._zoom)}this._moved||(e._moveStart(!0,!1),this._moved=!0),r(this._animRequest);n=a(e._move,e,this._center,this._zoom,{pinch:!0,round:!1},void 0);this._animRequest=x(n,this,!0),O(t)}},_onTouchEnd:function(){this._moved&&this._zooming?(this._zooming=!1,r(this._animRequest),k(document,"touchmove",this._onTouchMove,this),k(document,"touchend touchcancel",this._onTouchEnd,this),this._map.options.zoomAnimation?this._map._animateZoom(this._center,this._map._limitZoom(this._zoom),!0,this._map.options.zoomSnap):this._map._resetView(this._center,this._map._limitZoom(this._zoom))):this._zooming=!1}})),Xi=(A.addInitHook("addHandler","touchZoom",Ot),A.BoxZoom=_t,A.DoubleClickZoom=Ct,A.Drag=Zt,A.Keyboard=St,A.ScrollWheelZoom=Et,A.TapHold=kt,A.TouchZoom=Ot,t.Bounds=f,t.Browser=b,t.CRS=ot,t.Canvas=Fi,t.Circle=vi,t.CircleMarker=gi,t.Class=et,t.Control=B,t.DivIcon=Ri,t.DivOverlay=Ai,t.DomEvent=mt,t.DomUtil=pt,t.Draggable=Xe,t.Evented=it,t.FeatureGroup=ci,t.GeoJSON=wi,t.GridLayer=Ni,t.Handler=n,t.Icon=di,t.ImageOverlay=Ei,t.LatLng=v,t.LatLngBounds=s,t.Layer=o,t.LayerGroup=ui,t.LineUtil=vt,t.Map=A,t.Marker=mi,t.Mixin=ft,t.Path=fi,t.Point=p,t.PolyUtil=gt,t.Polygon=xi,t.Polyline=yi,t.Popup=Bi,t.PosAnimation=Fe,t.Projection=wt,t.Rectangle=Yi,t.Renderer=Wi,t.SVG=Gi,t.SVGOverlay=Oi,t.TileLayer=Di,t.Tooltip=Ii,t.Transformation=at,t.Util=tt,t.VideoOverlay=ki,t.bind=a,t.bounds=_,t.canvas=Ui,t.circle=function(t,e,i){return new vi(t,e,i)},t.circleMarker=function(t,e){return new gi(t,e)},t.control=Ue,t.divIcon=function(t){return new Ri(t)},t.extend=l,t.featureGroup=function(t,e){return new ci(t,e)},t.geoJSON=Si,t.geoJson=Mt,t.gridLayer=function(t){return new Ni(t)},t.icon=function(t){return new di(t)},t.imageOverlay=function(t,e,i){return new Ei(t,e,i)},t.latLng=w,t.latLngBounds=g,t.layerGroup=function(t,e){return new ui(t,e)},t.map=function(t,e){return new A(t,e)},t.marker=function(t,e){return new mi(t,e)},t.point=m,t.polygon=function(t,e){return new xi(t,e)},t.polyline=function(t,e){return new yi(t,e)},t.popup=function(t,e){return new Bi(t,e)},t.rectangle=function(t,e){return new Yi(t,e)},t.setOptions=c,t.stamp=h,t.svg=Ki,t.svgOverlay=function(t,e,i){return new Oi(t,e,i)},t.tileLayer=ji,t.tooltip=function(t,e){return new Ii(t,e)},t.transformation=ht,t.version="1.9.4",t.videoOverlay=function(t,e,i){return new ki(t,e,i)},window.L);t.noConflict=function(){return window.L=Xi,this},window.L=t});
+
+;
+
+/* === gb-map-world-terrain.js === */
+;
+/* Deterministic terrain primitives. No saved heightfield is regenerated on load. */
+(function(root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapWorldTerrain = api;
+})(globalThis, function() {
+  'use strict';
+  const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  function hash(text) { let n = 2166136261; for (const c of String(text)) n = Math.imul(n ^ c.codePointAt(0), 16777619); return n >>> 0; }
+  function rng(seed) { let n = hash(seed); return () => { n += 0x6D2B79F5; let t = Math.imul(n ^ n >>> 15, 1 | n); t ^= t + Math.imul(t ^ t >>> 7, 61 | t); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  class Heap {
+    constructor() { this.items = []; }
+    push(id, cost) { const a = this.items, item = { id, cost }; let i = a.length; a.push(item); while (i) { const p = (i - 1) >> 1; if (a[p].cost <= cost) break; a[i] = a[p]; i = p; } a[i] = item; }
+    pop() { const a = this.items, first = a[0], last = a.pop(); if (a.length) { let i = 0; while (i * 2 + 1 < a.length) { let j = i * 2 + 1; if (j + 1 < a.length && a[j + 1].cost < a[j].cost) j++; if (a[j].cost >= last.cost) break; a[i] = a[j]; i = j; } a[i] = last; } return first; }
+    get length() { return this.items.length; }
+  }
+  function noise(seed) {
+    const salt = hash(seed), grad = [[1,0],[-1,0],[0,1],[0,-1],[.707,.707],[-.707,.707],[.707,-.707],[-.707,-.707]];
+    const lattice = (x, y, dx, dy) => { let n = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ salt; n = Math.imul(n ^ n >>> 13, 1274126177); const g = grad[(n ^ n >>> 16) & 7]; return g[0] * dx + g[1] * dy; };
+    const fade = x => x * x * x * (x * (x * 6 - 15) + 10);
+    return (x, y) => { const a = Math.floor(x), b = Math.floor(y), u = x - a, v = y - b, sx = fade(u), sy = fade(v);
+      const p = lattice(a,b,u,v)*(1-sx)+lattice(a+1,b,u-1,v)*sx, q = lattice(a,b+1,u,v-1)*(1-sx)+lattice(a+1,b+1,u-1,v-1)*sx;
+      return (p*(1-sy)+q*sy)*1.5; };
+  }
+  function fbm(n, x, y, octaves = 6) { let sum = 0, amp = 1, weight = 0; for (let i = 0; i < octaves; i++) { sum += n(x,y)*amp; weight += amp; x = x * 2.03 + 17.31; y = y * 2.03 - 9.17; amp *= .52; } return sum / weight; }
+  function neighbors(i, cols, rows, visit, diagonal = true) { const x = i % cols, y = Math.floor(i / cols); for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if ((!dx && !dy) || !diagonal && dx && dy) continue; const a = x + dx, b = y + dy; if (a >= 0 && b >= 0 && a < cols && b < rows) visit(b * cols + a, dx && dy ? Math.SQRT2 : 1); } }
+  function distances(mask, cols, rows) { const d = new Int32Array(mask.length).fill(0x3fffffff), q = []; for (let i = 0; i < mask.length; i++) if (mask[i]) { d[i] = 0; q.push(i); } for (let k = 0; k < q.length; k++) neighbors(q[k],cols,rows,j => { if (d[j] > d[q[k]] + 1) { d[j] = d[q[k]] + 1; q.push(j); } },false); return d; }
+  function components(mask, cols, rows, diagonal = false) { const ids = new Int32Array(mask.length).fill(-1), groups = []; for (let i = 0; i < mask.length; i++) if (mask[i] && ids[i] < 0) { const cells = [i], id = groups.length; ids[i] = id; for (let k = 0; k < cells.length; k++) neighbors(cells[k],cols,rows,j => { if (mask[j] && ids[j] < 0) { ids[j] = id; cells.push(j); } },diagonal); groups.push(cells); } return { ids, groups }; }
+  function fingerprint(t) { let n = 2166136261; for (const h of t.heights) n = Math.imul(n ^ Math.round((h + 1) * 1e7), 16777619); return t.cols + ':' + t.rows + ':' + (n >>> 0).toString(16); }
+  function sample(t, nx, ny, field = t.heights) { const x = clamp(nx)*(t.cols-1), y = clamp(ny)*(t.rows-1), a = Math.floor(x), b = Math.floor(y), u = x-a, v = y-b; const at = (i,j)=>field[Math.min(t.rows-1,j)*t.cols+Math.min(t.cols-1,i)]; return (at(a,b)*(1-u)+at(a+1,b)*u)*(1-v)+(at(a,b+1)*(1-u)+at(a+1,b+1)*u)*v; }
+  function generate(seed, template = 'continent', land = .4, roughness = 50, size = {}) {
+    if (!['continent','island','archipelago'].includes(template) || !Number.isFinite(land) || land < .1 || land > .8 || !Number.isFinite(roughness) || roughness < 0 || roughness > 100) throw new Error('地形生成の条件を確認してください');
+    const cols = size.cols ?? 256, rows = size.rows ?? 160;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 32 || rows < 32 || cols > 256 || rows > 256) throw new Error('地形の解像度が不正です');
+    const n = noise(seed), warp = noise(seed + ':warp'), detail = noise(seed + ':detail'), random = rng(seed + ':plates');
+    const plates = Array.from({ length: 18 }, () => { const angle = random() * Math.PI * 2; return { x: random(), y: random(), vx: Math.cos(angle), vy: Math.sin(angle) }; });
+    const raw = [], ridges = [], frequency = template === 'archipelago' ? 5.4 : 3.1;
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const nx = x/(cols-1), ny = y/(rows-1), wx = nx + fbm(warp,nx*3,ny*3,3)*.22, wy = ny + fbm(warp,nx*3+40,ny*3-20,3)*.22;
+      let value = fbm(n,wx*frequency,wy*frequency,7) + .12*fbm(detail,wx*frequency*2,wy*frequency*2,3);
+      const edge = Math.min(nx,ny,1-nx,1-ny);
+      value -= .9 * (1-clamp(edge/.07)) ** 2;
+      if (template === 'island') value -= .65 * (Math.hypot((wx-.5)*1.2,wy-.5));
+      raw.push(value);
+      const ordered = plates.map(p => ({ p, d: (p.x-wx)**2+(p.y-wy)**2 })).sort((a,b) => a.d-b.d), a = ordered[0], b = ordered[1];
+      const dx = b.p.x-a.p.x, dy = b.p.y-a.p.y, distance = Math.hypot(dx,dy);
+      const convergence = clamp(((a.p.vx-b.p.vx)*dx+(a.p.vy-b.p.vy)*dy)/(distance||1)*.7+.2);
+      const gap=Math.sqrt(b.d)-Math.sqrt(a.d),boundary=Math.exp(-((gap/.027)**2)),foothills=Math.exp(-((gap/.065)**2));
+      const peaks=clamp(.5+fbm(detail,wx*35,wy*35,4)*1.05,.12,1),folds=(1-Math.abs(detail(wx*95,wy*95)))**3;
+      ridges.push((boundary*.68+foothills*.32) * (.28+.72*convergence) * (.3+peaks*.7) * (.5+folds*.5));
+    }
+    const sorted = [...raw].sort((a,b)=>a-b), threshold = sorted[Math.floor((1-land)*(raw.length-1))], span = Math.max(.08,sorted[Math.floor(raw.length*.98)]-threshold);
+    const sea = raw.map(v => v <= threshold), coastDistance = distances(sea,cols,rows), strength = roughness/100;
+    let heights = raw.map((v,i) => { const z = (v-threshold)/span; if (z <= 0) return -clamp(-z*.55,.002,1);
+      const coast = clamp(coastDistance[i]/3), nx = i%cols/cols, ny = Math.floor(i/cols)/rows;
+      const lowland = .025+.22*Math.pow(clamp(z),.85), ridge = ridges[i]*(.18+.65*strength), hills = Math.abs(fbm(detail,nx*55,ny*55,4))*.09*strength;
+      return clamp((lowland+ridge+hills)*coast, .001, .98); });
+    // Talus transport softens isolated spikes while retaining long uplift belts.
+    for (let step = 0; step < 3; step++) { const next = heights.slice(); for (let i = 0; i < heights.length; i++) if (heights[i] > .15) { let target = i, drop = .19; neighbors(i,cols,rows,(j,d) => { const slope = (heights[i]-heights[j])/d; if (heights[j] > 0 && slope > drop) { drop = slope; target = j; } }); if (target !== i) { const moved = Math.min(.025,(drop-.19)*.15); next[i] -= moved; next[target] += moved; } } heights = next; }
+    return { generator_version: 3, seed: String(seed), template, land, roughness, cols, rows, heights };
+  }
+  function simplify(points, tolerance = .2) { if (points.length <= 2) return points; const keep = new Set([0,points.length-1]), stack = [[0,points.length-1]], sq = tolerance*tolerance; while (stack.length) { const [a,b] = stack.pop(), p = points[a], q = points[b], dx = q[0]-p[0], dy = q[1]-p[1], len = dx*dx+dy*dy; let far = sq, best = -1; for (let i = a+1; i < b; i++) { const t = len ? clamp(((points[i][0]-p[0])*dx+(points[i][1]-p[1])*dy)/len) : 0; const d = (points[i][0]-p[0]-t*dx)**2+(points[i][1]-p[1]-t*dy)**2; if (d > far) { far = d; best = i; } } if (best >= 0) { keep.add(best); stack.push([a,best],[best,b]); } } return [...keep].sort((a,b)=>a-b).map(i=>points[i]); }
+  return Object.freeze({ clamp, hash, rng, Heap, noise, fbm, neighbors, distances, components, fingerprint, sample, generate, simplify });
+});
+
+;
+
+/* === gb-map-document.js === */
+;
+/* Map documents own geometry; linked Meldex topics keep their own content. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapDocument = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (T) {
+  'use strict';
+  // Immutable image strings are shared by history snapshots instead of copying
+  // multi-megabyte base64 payloads for every small geometry edit.
+  const clone = value => Array.isArray(value) ? value.map(clone)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)])) : value;
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const finite = value => typeof value === 'number' && Number.isFinite(value);
+  const id = () => globalThis.crypto?.randomUUID?.() || 'map-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  const IMAGE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\r\n]+$/;
+  const isAvailable = () => !globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  function create(title = '無題', coordinateSystem = 'local') {
+    return { fileType: 'meldex-map', schema_version: 1, title,
+      coordinate_system: coordinateSystem, canvas: { width: 2000, height: 1200 },
+      basemap: coordinateSystem === 'world' ? 'osm' : 'blank',
+      scale: { distance_per_unit: null, unit: 'km', north_degrees: 0 },
+      layers: [{ id: 'places', name: '地点・経路', visible: true, locked: false, opacity: 1 }],
+      features: [], terrain: null, background: null, view: null };
+  }
+  function parse(text) {
+    if (typeof text === 'string' && text.length > 24 * 1024 * 1024) throw new Error('マップが大きすぎます（最大24MB）');
+    const doc = typeof text === 'string' ? JSON.parse(text.replace(/^\uFEFF/, '')) : clone(text);
+    const fail = message => { throw new Error(message || 'マップの定義が不正です'); };
+    if (!object(doc) || doc.fileType !== 'meldex-map') fail('マップファイルではありません');
+    if (doc.schema_version !== 1) fail('未対応のマップ形式です。対応するMeldexで開いてください');
+    if (!['world', 'local'].includes(doc.coordinate_system) || typeof doc.title !== 'string') fail();
+    if (!object(doc.canvas) || !['width', 'height'].every(key => finite(doc.canvas[key]) && doc.canvas[key] >= 128 && doc.canvas[key] <= 16384)) fail();
+    if (!['osm', 'gsi', 'blank'].includes(doc.basemap) || doc.coordinate_system === 'local' && doc.basemap !== 'blank') fail();
+    if (doc.basemap_style !== undefined && !['standard', 'pale'].includes(doc.basemap_style)) fail();
+    if (!object(doc.scale) || !['km', 'm', 'mi', 'unit'].includes(doc.scale.unit)
+      || !finite(doc.scale.north_degrees) || Math.abs(doc.scale.north_degrees) > 360
+      || doc.scale.distance_per_unit !== null && (!finite(doc.scale.distance_per_unit) || doc.scale.distance_per_unit <= 0 || doc.scale.distance_per_unit > 1e9)) fail();
+    if (!Array.isArray(doc.layers) || !doc.layers.length || doc.layers.length > 100) fail();
+    const layers = new Set();
+    for (const layer of doc.layers) {
+      if (!object(layer) || typeof layer.id !== 'string' || !layer.id || layers.has(layer.id)
+        || typeof layer.name !== 'string' || typeof layer.visible !== 'boolean' || typeof layer.locked !== 'boolean'
+        || !finite(layer.opacity) || layer.opacity < 0 || layer.opacity > 1) fail();
+      layers.add(layer.id);
+    }
+    const periods = doc.periods === undefined ? [] : doc.periods, periodIds = new Set();
+    if (!Array.isArray(periods) || periods.length > 100) fail('章・時代の定義が不正です');
+    for (const period of periods) {
+      if (!object(period) || typeof period.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(period.id) || periodIds.has(period.id)
+        || typeof period.name !== 'string' || !/[^\s\u001c-\u001f\u0085]/.test(period.name) || [...period.name].length > 120) fail('章・時代の定義が不正です');
+      periodIds.add(period.id);
+    }
+    const pointOK = point => Array.isArray(point) && point.length === 2 && point.every(finite)
+      && (doc.coordinate_system === 'world' ? Math.abs(point[0]) <= 180 && Math.abs(point[1]) <= 85.051129 : point.every(n => Math.abs(n) <= 1e7));
+    if (!Array.isArray(doc.features) || doc.features.length > 10000) fail();
+    const ids = new Set(); let points = 0;
+    for (const feature of doc.features) {
+      if (!object(feature) || typeof feature.id !== 'string' || !feature.id || ids.has(feature.id)
+        || !['pin', 'route', 'region', 'label'].includes(feature.kind) || !layers.has(feature.layer_id)
+        || !Array.isArray(feature.points) || !feature.points.every(pointOK)
+        || feature.points.length < (feature.kind === 'region' ? 3 : feature.kind === 'route' ? 2 : 1)
+        || ['pin', 'label'].includes(feature.kind) && feature.points.length !== 1
+        || typeof feature.label !== 'string' || typeof feature.description !== 'string'
+        || typeof feature.color !== 'string' || !/^#[\da-f]{6}$/i.test(feature.color)
+        || !Array.isArray(feature.tags) || !feature.tags.every(tag => typeof tag === 'string')
+        || !Array.isArray(feature.links) || !feature.links.every(link => object(link) && typeof link.path === 'string'
+          && (!/^[a-z][a-z\d+.-]*:/i.test(link.path) || /^[a-z]:[\\/]/i.test(link.path)) && !link.path.includes('\0'))) fail();
+      if (feature.period_ids !== undefined && (!Array.isArray(feature.period_ids) || feature.period_ids.length > 100
+        || new Set(feature.period_ids).size !== feature.period_ids.length || !feature.period_ids.every(key => typeof key === 'string' && periodIds.has(key)))) fail('図形の章・時代の参照が不正です');
+      if (feature.travel_plan !== undefined) {
+        const p = feature.travel_plan;
+        if (feature.kind !== 'route' || !object(p) || p.schema_version !== 1 || !['km', 'm', 'mi', 'unit'].includes(p.unit)
+          || !finite(p.speed) || p.speed <= 0 || p.speed > 1e7 || !finite(p.daily_hours) || p.daily_hours <= 0 || p.daily_hours > 24
+          || !Number.isInteger(p.rest_days) || p.rest_days < 0 || p.rest_days > 36500) fail('経路の移動条件が不正です');
+      }
+      ids.add(feature.id); points += feature.points.length;
+    }
+    if (points > 100000) fail('図形の頂点が多すぎます');
+    if (doc.sheet_sources != null && (!Array.isArray(doc.sheet_sources) || doc.sheet_sources.length > 20
+      || new Set(doc.sheet_sources.map(s => s?.id)).size !== doc.sheet_sources.length || !doc.sheet_sources.every(source => object(source)
+        && typeof source.id === 'string' && !!source.id && typeof source.property === 'string' && !!source.property
+        && typeof source.path === 'string' && !!source.path && !source.path.includes('\0')
+        && (!/^[a-z][a-z\d+.-]*:/i.test(source.path) || /^[a-z]:[\\/]/i.test(source.path))))) fail('シートの場所の参照が不正です');
+    for (const feature of doc.features) for (const link of feature.links) if (link.role === 'child-map' && !link.path.toLowerCase().endsWith('.mel-map')) fail('子地図にはマップを指定してください');
+    if (doc.view !== null && (!object(doc.view) || !pointOK(doc.view.center) || !finite(doc.view.zoom) || doc.view.zoom < -10 || doc.view.zoom > 22)) fail();
+    if (doc.saved_views !== undefined) {
+      if (!Array.isArray(doc.saved_views) || doc.saved_views.length > 50) fail('保存した表示が不正です');
+      const views = new Set();
+      for (const v of doc.saved_views) {
+        if (!object(v) || typeof v.id !== 'string' || !v.id || views.has(v.id) || typeof v.name !== 'string' || !/[^\s\u001c-\u001f\u0085]/.test(v.name) || [...v.name].length > 80
+          || !pointOK(v.center) || !finite(v.zoom) || v.zoom < -10 || v.zoom > 22 || !Array.isArray(v.layer_ids) || v.layer_ids.length > 100
+          || v.layer_ids.some(id => typeof id !== 'string' || !id) || new Set(v.layer_ids).size !== v.layer_ids.length
+          || typeof v.filter !== 'string' || v.filter.length > 1000 || !['', 'pin', 'route', 'region', 'label'].includes(v.feature_kind)
+          || typeof v.period_id !== 'string' || v.period_id.length > 128) fail('保存した表示が不正です');
+        views.add(v.id);
+      }
+    }
+    if (doc.terrain !== null) {
+      const t = doc.terrain;
+      if (doc.coordinate_system !== 'local' || !object(t) || !Number.isInteger(t.cols) || !Number.isInteger(t.rows)
+        || t.cols < 8 || t.cols > 256 || t.rows < 8 || t.rows > 256 || !Array.isArray(t.heights)
+        || t.heights.length !== t.cols * t.rows || !t.heights.every(n => finite(n) && n >= -1 && n <= 1)) fail();
+    }
+    if (doc.background !== null && (doc.coordinate_system !== 'local' || !object(doc.background)
+      || typeof doc.background.data_url !== 'string' || doc.background.data_url.length > 20 * 1024 * 1024 || !IMAGE.test(doc.background.data_url))) fail();
+    return doc;
+  }
+  function visibleInPeriod(feature, periodId) { return !periodId || !feature.period_ids?.length || feature.period_ids.includes(periodId); }
+  function feature(kind, points, layerId, label = '') {
+    return { id: id(), kind, points: clone(points), layer_id: layerId, label,
+      color: '#3b82c4', icon: 'pin', tags: [], description: '', links: [] };
+  }
+  function distance(points, doc) {
+    let result = 0;
+    for (let i = 1; i < points.length; i++) {
+      const [x1, y1] = points[i - 1], [x2, y2] = points[i];
+      if (doc.coordinate_system === 'local') result += Math.hypot(x2 - x1, y2 - y1);
+      else {
+        const rad = Math.PI / 180;
+        const a = Math.sin((y2 - y1) * rad / 2) ** 2 + Math.cos(y1 * rad) * Math.cos(y2 * rad) * Math.sin((x2 - x1) * rad / 2) ** 2;
+        result += 6371.0088 * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+      }
+    }
+    return doc.coordinate_system === 'world' ? result : result * (doc.scale.distance_per_unit || 1);
+  }
+  function distanceLabel(value, doc) {
+    const unit = doc.coordinate_system === 'world' ? 'km' : doc.scale.distance_per_unit ? doc.scale.unit : '地図単位';
+    if (unit === 'km' && value < 1) return (value * 1000).toLocaleString('ja-JP', { maximumFractionDigits: 1 }) + ' m';
+    return value.toLocaleString('ja-JP', { maximumFractionDigits: 2 }) + ' ' + ({ unit: '単位' }[unit] || unit);
+  }
+  function drawPoints(feature, doc) {
+    const points = clone(feature.points);
+    if (doc.coordinate_system === 'world') for (let i = 1; i < points.length; i++) {
+      while (points[i][0] - points[i - 1][0] > 180) points[i][0] -= 360;
+      while (points[i][0] - points[i - 1][0] < -180) points[i][0] += 360;
+    }
+    if (feature.kind !== 'route' || feature.line_style !== 'curve' || points.length < 3) return points;
+    const result = [points[0]];
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[Math.max(0, i - 1)], b = points[i], c = points[i + 1], d = points[Math.min(points.length - 1, i + 2)];
+      for (let step = 1; step <= 12; step++) {
+        const t = step / 12;
+        result.push([0, 1].map(axis => 0.5 * (2 * b[axis] + (-a[axis] + c[axis]) * t
+          + (2 * a[axis] - 5 * b[axis] + 4 * c[axis] - d[axis]) * t * t
+          + (-a[axis] + 3 * b[axis] - 3 * c[axis] + d[axis]) * t * t * t)));
+      }
+    }
+    return result;
+  }
+  function scaleBar(distanceFor100px) {
+    if (!(distanceFor100px > 0)) return { distance: 0, pixels: 0 };
+    const power = 10 ** Math.floor(Math.log10(distanceFor100px));
+    const normalized = distanceFor100px / power;
+    const value = (normalized >= 5 ? 5 : normalized >= 2 ? 2 : 1) * power;
+    return { distance: value, pixels: 100 * value / distanceFor100px };
+  }
+  // Versioned deterministic terrain generation; saved cells preserve later edits.
+  function generate(seed, template = 'continent', land = 0.45, roughness = 50) {
+    return T.generate(seed, template, land, roughness);
+  }
+  class Store {
+    constructor(doc, etag, write, changed = () => {}) {
+      this.doc = parse(doc); this.etag = etag; this.write = write; this.changed = changed;
+      this.revision = 0; this.savedRevision = 0; this.error = null; this.pending = null;
+      this.undoStack = []; this.redoStack = [];
+    }
+    get dirty() { return this.revision !== this.savedRevision; }
+    update(mutator, history = true) {
+      const next = clone(this.doc);
+      if (mutator(next) === false) return false;
+      parse(next);
+      if (JSON.stringify(next) === JSON.stringify(this.doc)) return false;
+      if (history) { this.undoStack.push(clone(this.doc)); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
+      this.doc = next; this.revision++; this.error = null; this.changed(this); return true;
+    }
+    restore(direction) {
+      const source = direction === 'undo' ? this.undoStack : this.redoStack;
+      const target = direction === 'undo' ? this.redoStack : this.undoStack;
+      if (!source.length) return false;
+      target.push(clone(this.doc));
+      const next = source.pop();
+      for (const key of ['title', 'display_title', 'meldex']) { if (this.doc[key] !== undefined) next[key] = clone(this.doc[key]); }
+      this.doc = next; this.revision++; this.error = null; this.changed(this); return true;
+    }
+    async save() {
+      if (this.pending) { await this.pending; return !this.error && (!this.dirty || this.save()); }
+      if (!this.dirty) return true;
+      const revision = this.revision, content = JSON.stringify(this.doc, null, 2), etag = this.etag;
+      this.pending = (async () => {
+        try {
+          const result = await this.write(content, etag);
+          if (!result?.etag) throw new Error('保存結果を確認できませんでした');
+          this.etag = result.etag; this.savedRevision = revision; this.error = null;
+        } catch (error) { this.error = error; }
+      })();
+      this.changed(this); await this.pending; this.pending = null; this.changed(this);
+      return !this.error && (!this.dirty || this.save());
+    }
+  }
+  return Object.freeze({ clone, id, create, parse, visibleInPeriod, feature, distance, distanceLabel, drawPoints, scaleBar, generate, Store, isAvailable });
+});
+
+;
+
+/* === gb-map-interchange.js === */
+;
+/* Offline, bounded interchange. Parsing is pure; adoption is one document edit. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapInterchange = api;
+})(globalThis, function (D) {
+  'use strict';
+  const MAX_TEXT = 8 * 1024 * 1024, MAX_POINTS = 100000;
+  const fail = message => { throw new Error(message); };
+  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const text = value => typeof value === 'string' ? value : '';
+  const normalize = p => [((p[0] + 180) % 360 + 360) % 360 - 180, Math.max(-85.051129, Math.min(85.051129, p[1]))];
+  function checked(plan) {
+    const doc = D.create('取込プレビュー', plan.coordinate_system);
+    doc.features = plan.features;
+    D.parse(doc);
+    if (!plan.features.length) fail('取り込める地点・経路・領域がありません');
+    return plan;
+  }
+  function properties(f, props = {}) {
+    f.label = text(props.name) || text(props.title);
+    f.description = text(props.description) || text(props.desc);
+    if (/^#[\da-f]{6}$/i.test(text(props.color))) f.color = props.color;
+    if (Array.isArray(props.tags) && props.tags.every(tag => typeof tag === 'string')) f.tags = props.tags.slice();
+    return f;
+  }
+  function csvRows(source) {
+    const rows = []; let row = [], cell = '', quoted = false, ended = false;
+    const pushCell = () => { row.push(cell); cell = ''; ended = false; };
+    const pushRow = () => { pushCell(); if (row.some(value => value !== '')) rows.push(row); row = []; if (rows.length > 10001) fail('CSVは1万地点以下にしてください'); };
+    for (let i = 0; i < source.length; i++) {
+      const char = source[i];
+      if (quoted) {
+        if (char === '"') { if (source[i + 1] === '"') { cell += '"'; i++; } else { quoted = false; ended = true; } }
+        else cell += char;
+      } else if (char === ',') pushCell();
+      else if (char === '\r' || char === '\n') { if (char === '\r' && source[i + 1] === '\n') i++; pushRow(); }
+      else if (char === '"' && !cell && !ended) quoted = true;
+      else { if (ended || char === '"') fail('CSVの引用符が不正です'); cell += char; }
+    }
+    if (quoted) fail('CSVの引用符が閉じられていません');
+    if (cell || row.length || ended) pushRow();
+    return rows;
+  }
+  function readCSV(source, system) {
+    const rows = csvRows(source), headers = rows.shift()?.map(value => value.trim().toLowerCase());
+    if (!headers || new Set(headers).size !== headers.length) fail('CSVの見出しがないか、重複しています');
+    const aliases = { name: ['name', '名前', '名称'], longitude: ['longitude', 'lng', 'lon', '経度'], latitude: ['latitude', 'lat', '緯度'],
+      x: ['x'], y: ['y'], description: ['description', '説明'], tags: ['tags', 'タグ'], color: ['color', '色'] };
+    const column = key => {
+      const indices = aliases[key].map(alias => headers.indexOf(alias)).filter(i => i >= 0);
+      if (indices.length > 1) fail('CSVに同じ意味の列が重複しています: ' + key);
+      return indices[0] ?? -1;
+    };
+    const columns = Object.fromEntries(Object.keys(aliases).map(key => [key, column(key)]));
+    const world = columns.longitude >= 0 && columns.latitude >= 0, local = columns.x >= 0 && columns.y >= 0;
+    if (world === local || world !== (system === 'world') || world && (columns.x >= 0 || columns.y >= 0)
+      || local && (columns.longitude >= 0 || columns.latitude >= 0)) fail('座標列が地図と一致しません。現実地図は longitude,latitude、創作地図は x,y を指定してください');
+    const features = rows.map((row, index) => {
+      if (row.length !== headers.length) fail(`CSVの${index + 2}行目の列数が一致しません`);
+      const get = key => columns[key] < 0 ? '' : row[columns[key]];
+      const point = (world ? ['longitude', 'latitude'] : ['x', 'y']).map(key => {
+        const value = get(key).trim(); if (!value || !Number.isFinite(Number(value))) fail(`CSVの${index + 2}行目の座標が不正です`); return Number(value);
+      });
+      let tags = [];
+      if (get('tags').trim().startsWith('[')) {
+        try { tags = JSON.parse(get('tags')); } catch (_) { fail(`CSVの${index + 2}行目のタグが不正です`); }
+        if (!Array.isArray(tags) || !tags.every(tag => typeof tag === 'string')) fail('タグは文字列の配列で指定してください');
+      } else tags = get('tags').split('|').map(tag => tag.trim()).filter(Boolean);
+      return properties(D.feature('pin', [point], 'places'), { name: get('name'), description: get('description'), color: get('color'), tags });
+    });
+    return { coordinate_system: system, features };
+  }
+  function readGeoJSON(source) {
+    const data = JSON.parse(source);
+    if (!data || typeof data !== 'object' || own(data, 'crs')) fail('WGS84のGeoJSONを指定してください');
+    const entries = data.type === 'FeatureCollection' ? data.features : [data];
+    if (!Array.isArray(entries) || entries.length > 10000) fail('GeoJSONの地物数が不正です');
+    const features = []; let points = 0;
+    const add = (kind, coordinates, props) => {
+      if (!Array.isArray(coordinates)) fail('GeoJSONの座標が不正です');
+      const pairs = coordinates.map(p => {
+        if (!Array.isArray(p) || p.length < 2 || p.length > 3 || !p.every(Number.isFinite)) fail('GeoJSONの座標が不正です');
+        return p.slice(0, 2);
+      });
+      points += pairs.length;
+      if (points > MAX_POINTS || features.length >= 10000) fail('地物または頂点が多すぎます');
+      features.push(properties(D.feature(kind, pairs, 'places'), props));
+    };
+    const geometry = (value, props) => {
+      if (!value || typeof value !== 'object') fail('空のGeoJSON地物には対応していません');
+      if (own(value, 'crs')) fail('WGS84以外のcrs指定は取り込めません');
+      const c = value.coordinates;
+      if (value.type === 'Point') add(props?.meldex_kind === 'label' ? 'label' : 'pin', [c], props);
+      else if (value.type === 'LineString') add('route', c, props);
+      else if (value.type === 'Polygon') {
+        if (!Array.isArray(c) || c.length !== 1) fail('穴のある領域は現在取り込めません');
+        const ring = c[0];
+        if (!Array.isArray(ring) || ring.length < 4 || !Array.isArray(ring[0]) || !Array.isArray(ring[ring.length - 1])
+          || ring[0].length !== ring[ring.length - 1].length || !ring[0].every((n, i) => n === ring[ring.length - 1][i])) fail('領域の輪郭が閉じられていません');
+        add('region', ring.slice(0, -1), props);
+      } else if (['MultiPoint', 'MultiLineString', 'MultiPolygon'].includes(value.type)) {
+        if (!Array.isArray(c) || c.length > 10000) fail('GeoJSONの座標が不正です');
+        for (const coordinates of c) geometry({ type: value.type.slice(5), coordinates }, props);
+      } else fail('未対応のGeoJSON図形です: ' + text(value.type));
+    };
+    for (const entry of entries) {
+      if (entry && typeof entry === 'object' && own(entry, 'crs')) fail('WGS84以外のcrs指定は取り込めません');
+      if (entry?.type === 'Feature') geometry(entry.geometry, entry.properties || {});
+      else if (data.type !== 'FeatureCollection') geometry(entry, {});
+      else fail('FeatureCollectionにはFeatureを指定してください');
+    }
+    return { coordinate_system: 'world', features };
+  }
+  function readGPX(source) {
+    if (/<!\s*(DOCTYPE|ENTITY)\b/i.test(source)) fail('DTDや外部実体を含むGPXは取り込めません');
+    const xml = new DOMParser().parseFromString(source, 'application/xml'), root = xml.documentElement;
+    const ns = root?.namespaceURI;
+    if (xml.getElementsByTagName('parsererror').length || root?.localName !== 'gpx' || !['1.0', '1.1'].includes(root.getAttribute('version'))
+      || !['http://www.topografix.com/GPX/1/1', 'http://www.topografix.com/GPX/1/0'].includes(ns)) fail('GPX 1.0または1.1のファイルを指定してください');
+    const children = (node, name) => Array.from(node.children).filter(child => child.localName === name && child.namespaceURI === ns);
+    const value = (node, name) => children(node, name)[0]?.textContent || '';
+    const features = []; let count = 0;
+    const point = node => ['lon', 'lat'].map(key => {
+      const raw = node.getAttribute(key); if (!raw?.trim() || !Number.isFinite(Number(raw))) fail('GPXの座標が不正です'); return Number(raw);
+    });
+    const add = (nodes, owner) => {
+      if (!nodes.length) return;
+      count += nodes.length;
+      if (count > MAX_POINTS || features.length >= 10000) fail('地点または頂点が多すぎます');
+      features.push(properties(D.feature(nodes.length === 1 ? 'pin' : 'route', nodes.map(point), 'places'), { name: value(owner, 'name'), description: value(owner, 'desc') }));
+    };
+    for (const node of children(root, 'wpt')) add([node], node);
+    for (const node of children(root, 'rte')) add(children(node, 'rtept'), node);
+    for (const node of children(root, 'trk')) for (const segment of children(node, 'trkseg')) add(children(segment, 'trkpt'), node);
+    return { coordinate_system: 'world', features };
+  }
+  function read(source, format, system) {
+    if (typeof source !== 'string' || source.length > MAX_TEXT) fail('8MB以下のファイルを指定してください');
+    if (!['local', 'world'].includes(system)) fail('地図の座標系が不正です');
+    source = source.replace(/^\uFEFF/, '');
+    if (format === 'csv') return checked(readCSV(source, system));
+    if (system !== 'world') fail('GeoJSON・GPXは「現実の地図」で取り込んでください');
+    if (format === 'geojson' || format === 'json') return checked(readGeoJSON(source));
+    if (format === 'gpx') return checked(readGPX(source));
+    fail('CSV・GeoJSON・GPXを指定してください');
+  }
+  const escapeXML = value => String(value).replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]);
+  function write(input, format) {
+    const doc = D.parse(input), world = doc.coordinate_system === 'world';
+    if (format !== 'csv' && !world) fail('GeoJSON・GPXは現実地図の座標だけを書き出せます');
+    if (format === 'csv') {
+      const quote = value => '"' + String(value).replace(/"/g, '""') + '"';
+      const safe = value => /^[\s]*[=+\-@\t\r]/.test(value) ? "'" + value : value;
+      const features = doc.features.filter(f => ['pin', 'label'].includes(f.kind));
+      if (!features.length) fail('CSVへ書き出せる地点・文字がありません');
+      const rows = [['name', ...(world ? ['longitude', 'latitude'] : ['x', 'y']), 'description', 'tags', 'color'],
+        ...features.map(f => [safe(f.label), ...f.points[0], safe(f.description), JSON.stringify(f.tags), f.color])];
+      return { text: '\uFEFF' + rows.map(row => row.map(quote).join(',')).join('\r\n') + '\r\n', extension: '.csv', mime: 'text/csv', omitted: doc.features.length - features.length };
+    }
+    let count = 0;
+    const path = f => {
+      count += f.kind === 'route' && f.line_style === 'curve' && f.points.length >= 3 ? 1 + 12 * (f.points.length - 1) : f.points.length;
+      if (count > MAX_POINTS) fail('書き出す頂点が多すぎます。図形を減らしてください');
+      return D.drawPoints(f, doc).map(normalize);
+    };
+    if (format === 'geojson') {
+      const features = doc.features.map(f => {
+        let coordinates = path(f), type = 'LineString';
+        if (['pin', 'label'].includes(f.kind)) { type = 'Point'; coordinates = coordinates[0]; }
+        else if (f.kind === 'region') {
+          type = 'Polygon';
+          const unwrapped = D.drawPoints(f, doc);
+          const area = unwrapped.reduce((sum, p, i) => { const q = unwrapped[(i + 1) % unwrapped.length]; return sum + p[0] * q[1] - q[0] * p[1]; }, 0);
+          if (area < 0) coordinates.reverse();
+          coordinates = [[...coordinates, coordinates[0].slice()]];
+        }
+        return { type: 'Feature', properties: { name: f.label, description: f.description, tags: f.tags, color: f.color, meldex_kind: f.kind }, geometry: { type, coordinates } };
+      });
+      return { text: JSON.stringify({ type: 'FeatureCollection', features }, null, 2), extension: '.geojson', mime: 'application/geo+json', omitted: 0 };
+    }
+    if (format === 'gpx') {
+      const name = f => '<name>' + escapeXML(f.label) + '</name><desc>' + escapeXML(f.description) + '</desc>';
+      const pt = (tag, p, body = '') => `<${tag} lat="${p[1]}" lon="${p[0]}">${body}</${tag}>`;
+      const waypoints = doc.features.filter(f => ['pin', 'label'].includes(f.kind)).map(f => pt('wpt', path(f)[0], name(f)));
+      const tracks = doc.features.filter(f => f.kind === 'route').map(f => '<trk>' + name(f) + '<trkseg>' + path(f).map(p => pt('trkpt', p)).join('') + '</trkseg></trk>');
+      if (!waypoints.length && !tracks.length) fail('GPXへ書き出せる地点・経路がありません');
+      return { text: '<?xml version="1.0" encoding="UTF-8"?>\n<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="Meldex">' + waypoints.join('') + tracks.join('') + '</gpx>', extension: '.gpx', mime: 'application/gpx+xml', omitted: doc.features.filter(f => f.kind === 'region').length };
+    }
+    fail('未対応の書き出し形式です');
+  }
+  return Object.freeze({ read, write });
+});
+
+;
+
+/* === gb-map-interaction.js === */
+;
+/* Board-compatible pointer navigation. Document edits are committed only on release. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapInteraction = api;
+})(globalThis, function () {
+  'use strict';
+  const angle = n => typeof n === 'number' && Number.isFinite(n) ? ((n + 180) % 360 + 360) % 360 - 180 : 0;
+  const rotate = (p, degrees) => { const a = degrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [p[0] * c - p[1] * s, p[0] * s + p[1] * c]; };
+  const editableTarget = el => !!el?.closest?.('input,textarea,select,[contenteditable=true],[role=textbox]');
+  class Controller {
+    constructor(view) {
+      this.view = view; this.el = view.container; this.space = false; this.usedSpace = false; this.touches = new Map(); this.listeners = [];
+      this.listen(this.el, 'pointerdown', e => this.down(e), true);
+      this.listen(document, 'pointermove', e => this.move(e), true);
+      this.listen(document, 'pointerup', e => this.up(e), true);
+      this.listen(document, 'pointercancel', e => this.abortPointer(e), true);
+      this.listen(this.el, 'lostpointercapture', e => this.abortPointer(e), true);
+      this.listen(this.el, 'click', e => { if (!this.control(e) && (!e.target.closest?.('.gb-map-sheet-place') || Date.now() < (this.suppressSheetClick || 0))) e.stopImmediatePropagation(); }, true);
+      this.listen(document, 'pointerdown', e => { if (this.contextMenu && !this.contextMenu.contains(e.target)) this.closeMenu(); }, true);
+      this.listen(this.el, 'dblclick', e => this.doubleClick(e), true);
+      this.listen(this.el, 'contextmenu', e => { if (!this.control(e)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+      this.listen(this.el, 'wheel', e => this.wheel(e), { capture: true, passive: false });
+      this.listen(document, 'keydown', e => {
+        const owner = this.el.closest('.gb-map-app');
+        if (this.el.contains(e.target) || this.el.classList.contains('gb-map-surface') && owner?.contains(e.target) && !e.target.closest('.gb-map-generator,.gb-map-generator-preview')) this.keyDown(e);
+      }, true);
+      this.listen(document, 'keyup', e => this.keyUp(e), true);
+      this.listen(window, 'blur', () => this.reset());
+      this.listen(document, 'visibilitychange', () => { if (document.hidden) this.reset(); });
+      this.el.tabIndex = 0;
+    }
+    listen(el, name, fn, options) { el.addEventListener(name, fn, options); this.listeners.push(() => el.removeEventListener(name, fn, options)); }
+    control(e) { return !!e.target.closest?.('.leaflet-control,.gb-map-context-menu'); }
+    block(e) { e.preventDefault(); e.stopImmediatePropagation(); }
+    local(e) {
+      const r = this.el.getBoundingClientRect();
+      return [(e.clientX - r.left) * this.el.clientWidth / (r.width || 1), (e.clientY - r.top) * this.el.clientHeight / (r.height || 1)];
+    }
+    native(p) {
+      const v = this.view, size = v.map.getSize(), q = rotate([p[0] - this.el.clientWidth / 2, p[1] - this.el.clientHeight / 2], -(v.rotation || 0));
+      return L.point(q[0] + size.x / 2, q[1] + size.y / 2);
+    }
+    point(e) { return this.view.xy(this.view.map.containerPointToLatLng(this.native(this.local(e)))); }
+    navigationEvent(e) { return !!this.gesture || !this.view._painting && (this.space || e.button === 1 || e.button === 2); }
+    keyDown(e) {
+      if (e.isComposing || e.keyCode === 229 || editableTarget(e.target) || this.control(e)) return;
+      if (e.code === 'Space') { if (!e.repeat) { this.space = true; this.usedSpace = false; this.spaceCanvas = this.el.contains(e.target); } this.cursor(e); if (this.spaceCanvas) this.block(e); }
+      else if (this.space && ['Control', 'Shift'].includes(e.key)) this.cursor(e);
+      else if (this.space && e.key.startsWith('Arrow')) {
+        const d = { ArrowLeft: [50, 0], ArrowRight: [-50, 0], ArrowUp: [0, 50], ArrowDown: [0, -50] }[e.key];
+        if (d) { this.view.panScreen(d); this.usedSpace = true; this.block(e); }
+      } else if (e.key === 'Escape' && this.gesture) { this.cancel(); this.block(e); }
+    }
+    keyUp(e) {
+      if (e.code === 'Space') {
+        const focus = this.space && this.spaceCanvas && !this.usedSpace && !this.gesture;
+        if (this.space && this.usedSpace) this.block(e);
+        this.space = false; this.el.style.cursor = '';
+        if (focus) this.view.focusSelection();
+      } else if (this.space) this.cursor(e);
+    }
+    cursor(e) { this.el.style.cursor = this.space ? (e.ctrlKey || e.metaKey ? 'zoom-in' : e.shiftKey ? 'crosshair' : 'grab') : ''; }
+    down(e) {
+      const v = this.view; if (!v.map || this.control(e) || v._painting) return;
+      this.closeMenu(); this.el.focus({ preventScroll: true });
+      const p = this.local(e), hit = v.hit(e), nav = this.space || e.button === 1 || e.button === 2;
+      if (e.pointerType === 'touch') {
+        this.touches.set(e.pointerId, p);
+        if (this.touches.size === 2) {
+          this.cancel(false); const [a, b] = [...this.touches.values()];
+          this.gesture = { mode: 'pinch', start: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], distance: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: v.map.getZoom() };
+          this.gesture.anchor = v.map.containerPointToLatLng(this.native(this.gesture.start)); this.el.setPointerCapture(e.pointerId); this.block(e); return;
+        }
+      }
+      if (this.gesture || ![0, 1, 2].includes(e.button)) return;
+      if (!nav && e.target.closest?.('.gb-map-sheet-place')) return;
+      if (!nav && ['land', 'sea'].includes(v.tool)) return;
+      let mode = nav ? (this.space && (e.ctrlKey || e.metaKey) ? 'zoom' : this.space && e.shiftKey ? 'rotate' : 'pan')
+        : v.tool === 'erase' ? 'erase' : e.altKey && !e.shiftKey && !v.readOnly ? 'route-drag'
+          : v.tool === 'select' ? (hit ? 'feature' : e.pointerType === 'touch' ? 'pan' : 'rectangle') : 'draw';
+      if (mode === 'feature') {
+        const ids = new Set(v.selection());
+        if (e.ctrlKey || e.metaKey) { if (ids.has(hit.id)) ids.delete(hit.id); else ids.add(hit.id); }
+        else if (e.shiftKey) ids.add(hit.id);
+        else if (!ids.has(hit.id)) { ids.clear(); ids.add(hit.id); }
+        v.choose([...ids], hit.id);
+      }
+      const g = { mode, pointerId: e.pointerId, start: p, last: p, hit, button: e.button, moved: false, source: v.doc.features,
+        zoom: v.map.getZoom(), rotation: v.rotation || 0, center: v.map.project(v.map.getCenter()), draft: v.draft.map(p => p.slice()),
+        anchor: v.map.containerPointToLatLng(this.native(p)), baseSelection: [...v.selection()], additive: !!(e.ctrlKey || e.metaKey) };
+      if (mode === 'feature') {
+        g.vertex = e.target.closest?.('[data-map-vertex]');
+        g.original = new Map(v.doc.features.filter(f => v.selection().has(f.id) && !v.readOnly && !v.doc.layers.find(l => l.id === f.layer_id)?.locked).map(f => [f.id, f.points]));
+        if (g.vertex) g.original = new Map([...g.original].filter(([id]) => id === hit.id));
+        else if (e.ctrlKey || e.metaKey || e.shiftKey) g.original.clear();
+      }
+      if (mode === 'erase') g.erased = new Set();
+      if (mode === 'rectangle') {
+        this.rectangle = document.createElement('div'); this.rectangle.className = 'gb-map-selection-rect'; this.el.appendChild(this.rectangle);
+      }
+      this.gesture = g; this.block(e); this.el.setPointerCapture(e.pointerId);
+      if (mode === 'erase') this.erase(e);
+      if (nav) { this.usedSpace = true; this.el.style.cursor = 'grabbing'; }
+    }
+    move(e) {
+      const v = this.view, g = this.gesture; if (!g || !v.map) return;
+      if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) this.touches.set(e.pointerId, this.local(e));
+      if (g.mode === 'pinch') {
+        const [a, b] = [...this.touches.values()]; if (!a || !b) return;
+        const midpoint = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ratio = Math.hypot(a[0] - b[0], a[1] - b[1]) / (g.distance || 1);
+        v.zoomAt(g.zoom + Math.log2(Math.max(.01, ratio)), midpoint, g.anchor); this.block(e); return;
+      }
+      if (g.pointerId !== e.pointerId) return;
+      this.block(e); const p = this.local(e), dx = p[0] - g.start[0], dy = p[1] - g.start[1]; g.last = p;
+      g.moved ||= Math.hypot(dx, dy) >= 4;
+      if (g.mode === 'pan') {
+        const d = rotate([dx, dy], -g.rotation); v.map.setView(v.map.unproject(g.center.subtract(L.point(...d)), g.zoom), g.zoom, { animate: false });
+      } else if (g.mode === 'zoom') {
+        const factor = v.doc.coordinate_system === 'local' ? Math.max(.1, Math.min(5, 2 ** g.zoom + dx * .005)) : 2 ** (g.zoom + dx * .005);
+        v.zoomAt(Math.log2(factor), g.start, g.anchor);
+      } else if (g.mode === 'rotate') {
+        const cx = this.el.clientWidth / 2, cy = this.el.clientHeight / 2;
+        v.setRotation(g.rotation + angle((Math.atan2(p[1] - cy, p[0] - cx) - Math.atan2(g.start[1] - cy, g.start[0] - cx)) * 180 / Math.PI));
+      } else if (g.mode === 'rectangle') {
+        Object.assign(this.rectangle.style, { left: Math.min(p[0], g.start[0]) + 'px', top: Math.min(p[1], g.start[1]) + 'px', width: Math.abs(dx) + 'px', height: Math.abs(dy) + 'px' });
+      } else if (g.mode === 'feature' && g.moved && g.original.size) {
+        const d = rotate([dx, dy], -g.rotation); g.changes = [];
+        for (const [id, points] of g.original) {
+          const next = points.map((pt, i) => g.vertex && Number(g.vertex.dataset.mapVertex) !== i ? pt
+            : v.xy(v.map.unproject(v.map.project(v.latlng(pt), g.zoom).add(L.point(...d)), g.zoom)));
+          g.changes.push({ id, points: next }); v.preview(id, next);
+        }
+      } else if ((g.mode === 'route-drag' || g.mode === 'draw' && v.tool === 'route' && !g.draft.length) && g.moved && !v.readOnly) {
+        v.draft = [v.xy(g.anchor), this.point(e)]; v._draft();
+      } else if (g.mode === 'erase') this.erase(e);
+    }
+    erase(e) {
+      const g = this.gesture, v = this.view; if (v.readOnly) return;
+      const hit = v.hit(e, g.erased);
+      if (hit && !v.doc.layers.find(l => l.id === hit.layer_id)?.locked) { g.erased.add(hit.id); v.previewHidden(g.erased); }
+    }
+    up(e) {
+      const v = this.view, g = this.gesture;
+      this.touches.delete(e.pointerId);
+      if (!g || !v.map) return;
+      if (g.mode === 'pinch') { if (this.touches.size < 2) this.cancel(); return; }
+      if (g.pointerId !== e.pointerId) return;
+      this.block(e); this.gesture = null; this.rectangle?.remove(); this.rectangle = null;
+      if (g.moved) this.suppressSheetClick = Date.now() + 300;
+      if (this.el.hasPointerCapture(e.pointerId)) this.el.releasePointerCapture(e.pointerId);
+      this.el.style.cursor = this.space ? 'grab' : '';
+      if (g.mode === 'feature' && g.changes?.length) v.callbacks.action({ type: 'transform', changes: g.changes, source: g.source });
+      else if (g.mode === 'rectangle') {
+        const ids = g.moved ? v.inRectangle(g.start, g.last) : [], next = new Set(g.additive ? g.baseSelection : []);
+        for (const id of ids) { if (g.additive && next.has(id)) next.delete(id); else next.add(id); } v.choose([...next]);
+      } else if (g.mode === 'erase' && g.erased.size) v.callbacks.action({ type: 'erase', ids: [...g.erased], source: g.source });
+      else if ((g.mode === 'route-drag' || g.mode === 'draw' && v.tool === 'route' && !g.draft.length) && g.moved) {
+        if (!v.readOnly) v.callbacks.action({ type: 'add', kind: 'route', points: [v.xy(g.anchor), this.point(e)] }); v.cancel();
+      } else if (g.mode === 'draw' && !g.moved) v._click({ latlng: v.map.containerPointToLatLng(this.native(this.local(e))) });
+      else if (g.mode === 'pan' && g.button === 2 && !g.moved) this.menu(e, g.hit);
+      v._features();
+    }
+    abortPointer(e) { if (this.gesture?.pointerId === e.pointerId || this.touches.has(e.pointerId)) this.reset(); }
+    cancel(clearTouches = true) {
+      const g = this.gesture; this.gesture = null; this.rectangle?.remove(); this.rectangle = null;
+      if (clearTouches && g?.pointerId != null && this.el.hasPointerCapture(g.pointerId)) this.el.releasePointerCapture(g.pointerId);
+      if (clearTouches) for (const id of this.touches.keys()) if (this.el.hasPointerCapture(id)) this.el.releasePointerCapture(id);
+      if (g && this.view.map) { this.view._features(); if (g.mode === 'route-drag' || g.mode === 'draw' && g.moved) { this.view.draft = g.draft || []; this.view._draft(); } }
+      if (clearTouches) this.touches.clear();
+    }
+    reset() { this.cancel(); this.view.cancel(); this.space = false; this.usedSpace = false; this.el.style.cursor = ''; this.closeMenu(); }
+    wheel(e) {
+      if (!this.view.map || this.control(e) || !e.deltaY) return;
+      this.block(e); if (this.gesture) return;
+      this.view.stepZoom(e.deltaY > 0 ? -1 : 1, this.local(e));
+    }
+    doubleClick(e) {
+      if (!this.view.map || this.control(e) || e.target.closest?.('.gb-map-sheet-place')) return; this.block(e);
+      const v = this.view;
+      if (this.space) { this.usedSpace = true; if (e.shiftKey) v.setRotation(0); else v.resetView(); }
+      else if (['route', 'region', 'measure'].includes(v.tool)) v.finish();
+      else if (v.tool === 'select') {
+        const hit = v.hit(e);
+        if (hit) { v.choose([hit.id], hit.id); v.callbacks.edit?.(hit.id); }
+        else if (!v.readOnly) { v.callbacks.action({ type: 'add', kind: 'pin', points: [this.point(e)], edit: true }); }
+      }
+    }
+    menu(e, hit) {
+      const v = this.view; if (hit && !v.selection().has(hit.id)) v.choose([hit.id], hit.id);
+      this.closeMenu(); const menu = document.createElement('div'); this.contextMenu = menu;
+      menu.className = 'gb-context-menu gb-map-context-menu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'マップ操作');
+      const add = (label, action, disabled = false) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.setAttribute('role', 'menuitem'); b.disabled = disabled; b.onclick = () => { this.closeMenu(); action(); }; menu.appendChild(b); };
+      if (v.draft.length) { add('描画を確定', () => v.finish()); add('描画を取消', () => v.cancel()); }
+      add('地点を追加', () => v.callbacks.action({ type: 'add', kind: 'pin', points: [this.point(e)], edit: true }), v.readOnly);
+      if (v.selection().size) {
+        add('名前を編集', () => v.callbacks.edit?.([...v.selection()][0]), v.readOnly);
+        add('複製', () => v.callbacks.command?.('duplicate'), v.readOnly); add('削除', () => v.callbacks.command?.('delete'), v.readOnly);
+      }
+      add('全選択', () => v.choose(v.doc.features.filter(f => v._visible(f)).map(f => f.id)));
+      add('選択を解除', () => v.choose([])); add('全体表示', () => v.fit()); add('100%表示', () => v.zoom100()); add('回転リセット', () => v.setRotation(0));
+      menu.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { this.closeMenu(); this.el.focus(); }
+        else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+          const buttons = [...menu.querySelectorAll('button:not(:disabled)')], index = buttons.indexOf(document.activeElement);
+          buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+        } else return;
+        event.preventDefault(); event.stopPropagation();
+      });
+      document.body.appendChild(menu);
+      if (typeof positionPopup === 'function') positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+      else { menu.style.left = Math.min(e.clientX, Math.max(0, innerWidth - menu.offsetWidth)) + 'px'; menu.style.top = Math.min(e.clientY, Math.max(0, innerHeight - menu.offsetHeight)) + 'px'; }
+      menu.querySelector('button:not(:disabled)')?.focus();
+    }
+    closeMenu() { const focused = this.contextMenu?.contains(document.activeElement); this.contextMenu?.remove(); this.contextMenu = null; if (focused && this.el.isConnected) this.el.focus({ preventScroll: true }); }
+    destroy() { this.reset(); this.listeners.forEach(fn => fn()); this.listeners = []; }
+  }
+  return Object.freeze({ Controller, angle, rotate, editableTarget });
+});
+
+;
+
+/* === gb-map-world-geography.js === */
+;
+/* Coupled drainage, orographic moisture, temperature and land cover. */
+(function(root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain);
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapWorldGeography = api;
+})(globalThis, function(T) {
+  'use strict';
+  const biomes = Object.freeze([
+    ['ocean','海','#739eaf'], ['ice','氷雪','#e8ecdf'], ['tundra','ツンドラ','#afb6a0'],
+    ['boreal','針葉樹林','#7f9b7a'], ['forest','温帯林','#87a873'], ['grass','草原','#b2bd83'],
+    ['rainforest','熱帯雨林','#5b986e'], ['savanna','サバンナ','#b0b879'], ['desert','砂漠','#d9c491'],
+    ['steppe','乾燥草原','#c6bf8c'], ['alpine','高山','#b1aaa0'], ['lake','湖','#80b5c5'],
+  ].map(([key,name,color])=>Object.freeze({key,name,color})));
+  function drainage(terrain) {
+    const { cols, rows, heights: h } = terrain, n = h.length, filled = new Float64Array(n), receiver = new Int32Array(n).fill(-1), seen = new Uint8Array(n), order = [], heap = new T.Heap();
+    const add = i => { if (!seen[i]) { seen[i] = 1; filled[i] = h[i]; heap.push(i,h[i]); } };
+    for (let i = 0; i < n; i++) if (h[i] <= 0) add(i);
+    if (!heap.length) { for (let x = 0; x < cols; x++) { add(x); add((rows-1)*cols+x); } for (let y = 0; y < rows; y++) { add(y*cols); add(y*cols+cols-1); } }
+    while (heap.length) { const {id:i} = heap.pop(); order.push(i); T.neighbors(i,cols,rows,j => { if (seen[j]) return; seen[j] = 1; filled[j] = Math.max(h[j],filled[i]+1e-7); receiver[j] = i; heap.push(j,filled[j]); }); }
+    // Steepest descending D8 edge; discovery parents resolve all flat ties.
+    for (const i of order) if (h[i] > 0) { let best = 0; T.neighbors(i,cols,rows,(j,d) => { const grade = (filled[i]-filled[j])/d; if (grade > best) { best = grade; receiver[i] = j; } }); }
+    const rank = new Int32Array(n); order.forEach((i,k)=>{rank[i]=k;});
+    return { filled, receiver, order, rank };
+  }
+  function climate(terrain, options = {}) {
+    const { cols, rows, heights: h } = terrain, n = h.length;
+    const warmth = options.warmth ?? 50, wetness = options.wetness ?? 55, equator = (options.equator ?? 50)/100, north = (options.north ?? 0)*Math.PI/180;
+    const sx = Math.sin(north), sy = -Math.cos(north), extent = (Math.abs(sx)*cols+Math.abs(sy)*rows)/2;
+    const temperature = new Float32Array(n), latitude = new Float32Array(n), rain = new Float32Array(n), vapor = new Float32Array(n);
+    const noise = T.noise((options.seed||terrain.seed||'')+':climate');
+    for (let i = 0; i < n; i++) { const x = i%cols+.5, y = Math.floor(i/cols)+.5;
+      const northness = ((x-cols/2)*sx+(y-rows/2)*sy)/(extent||1), lat = ((1-northness)/2-equator)/Math.max(equator,1-equator)*80;
+      latitude[i] = lat; temperature[i] = 30-Math.abs(lat)*.62-Math.max(0,h[i])*36+(warmth-50)*.45 + noise(x/50,y/50)*2;
+      vapor[i] = h[i] <= 0 ? 1 : .2;
+    }
+    // Four directional sweeps let rotated winds carry oceanic moisture inland.
+    // Condensation on windward slopes removes water available downwind.
+    for (let pass = 0; pass < 6; pass++) for (let yy = 0; yy < rows; yy++) {
+      const y = pass%2 ? rows-1-yy : yy, lat = Math.abs(latitude[y*cols+Math.floor(cols/2)]), sign = lat > 28 && lat < 62 ? 1 : -1;
+      const rowDirection = Math.cos(north)*sign;
+      for (let xx = 0; xx < cols; xx++) { const x = rowDirection >= 0 ? xx : cols-1-xx, i = y*cols+x;
+        if (h[i] <= 0) { vapor[i] = 1; continue; }
+        const cellLatitude=Math.abs(latitude[i]),windSign=cellLatitude>28&&cellLatitude<62?1:-1,dx=Math.cos(north)*windSign,dy=Math.sin(north)*windSign;
+        let moisture = 0, previousHeight = 0, weight = 0;
+        for (const [a,b,w] of [[x-Math.sign(dx),y,Math.abs(dx)],[x,y-Math.sign(dy),Math.abs(dy)]]) {
+          if (w < .001) continue;
+          if (a >= 0 && b >= 0 && a < cols && b < rows) { moisture += vapor[b*cols+a]*w; previousHeight += Math.max(0,h[b*cols+a])*w; } else moisture += w;
+          weight += w;
+        }
+        moisture /= weight||1; previousHeight /= weight||1;
+        const rise = Math.max(0,h[i]-previousHeight), a = Math.abs(latitude[i]);
+        const belt = .21+.72*Math.exp(-((a/18)**2))+.45*Math.exp(-(((a-52)/17)**2));
+        rain[i] = T.clamp((.12+moisture*.82+rise*3)*belt*(wetness/55));
+        vapor[i] = T.clamp(moisture*.984-rise*1.5,.012,1);
+      }
+    }
+    return { temperature, rain, latitude };
+  }
+  function analyze(terrain, options = {}) {
+    const { cols, rows, heights: h } = terrain, n = h.length, water = h.map(v=>v<=0), land = h.map(v=>v>0);
+    const hydro = drainage(terrain), weather = climate(terrain,options), flow = new Float64Array(n), lake = new Uint16Array(n), slope = new Float32Array(n);
+    const depressions = h.map((v,i)=>v>0 && hydro.filled[i]-v>.018), lakes = T.components(depressions,cols,rows);
+    let lakeId = 0; const lakeGroups = [];
+    for (const cells of lakes.groups) if (cells.length >= 3 && cells.length < n*.04 && cells.some(i=>weather.rain[i]>.22)) { lakeId++; for (const i of cells) lake[i] = lakeId; lakeGroups.push(cells); }
+    for (let i = 0; i < n; i++) {
+      flow[i] = land[i] ? weather.rain[i]*Math.max(.3,1-weather.temperature[i]/70) : 0;
+      T.neighbors(i,cols,rows,(j,d)=>{slope[i]=Math.max(slope[i],Math.abs(h[i]-h[j])/d);});
+    }
+    for (let k = hydro.order.length-1; k >= 0; k--) { const i = hydro.order[k], j = hydro.receiver[i]; if (j >= 0) flow[j] += flow[i]; }
+    const landCount = land.filter(Boolean).length, threshold = Math.max(16,landCount/600), river = h.map((v,i)=>v>0 && flow[i]>=threshold);
+    const coastDistance = T.distances(water,cols,rows), riverDistance = T.distances(river,cols,rows);
+    const navigable = land.map((v,i)=>v && !lake[i]), masses = T.components(navigable,cols,rows);
+    const seas = T.components(water,cols,rows), ocean = new Uint8Array(n);
+    for (const cells of seas.groups) if (cells.some(i=>i%cols===0||i%cols===cols-1||i<cols||i>=n-cols)) for (const i of cells) ocean[i]=1;
+    const cover = new Uint8Array(n);
+    for (let i = 0; i < n; i++) { const t = weather.temperature[i], moisture = weather.rain[i]+(riverDistance[i]<3?.09:0);
+      cover[i] = water[i] ? 0 : lake[i] ? 11 : h[i]>.57 && t<6 ? 10 : t< -10 ? 1 : t<0 ? 2 : t<9 ? moisture>.38?3:9 : moisture<.2 ? 8 : moisture<.34 ? 9 : t>22 ? moisture>.65?6:7 : moisture>.57?4:5;
+    }
+    return { ...hydro, ...weather, cols, rows, flow, lake, lakeGroups, slope, river, riverDistance, coastDistance, masses, ocean, cover, threshold, landCount };
+  }
+  function environment(terrain, a) {
+    return { version:1, signature:T.fingerprint(terrain), temperature:Array.from(a.temperature,v=>Math.round(v*10)/10||0), rain:Array.from(a.rain,v=>Math.round(v*1000)/1000), biomes:Array.from(a.cover), lakes:Array.from(a.lake) };
+  }
+  function validEnvironment(t) {
+    const e=t?.environment, n=t?.cols*t?.rows;
+    return !!e && e.version===1 && e.signature===T.fingerprint(t) && ['temperature','rain','biomes','lakes'].every(k=>Array.isArray(e[k])&&e[k].length===n)
+      && e.temperature.every(v=>Number.isFinite(v)&&v>=-100&&v<=80) && e.rain.every(v=>Number.isFinite(v)&&v>=0&&v<=1)
+      && e.biomes.every(v=>Number.isInteger(v)&&v>=0&&v<biomes.length) && e.lakes.every(v=>Number.isInteger(v)&&v>=0&&v<65536)
+      && (e.countries===undefined || Array.isArray(e.countries)&&e.countries.length<=24&&e.countries.every(c=>typeof c==='string'&&/^#[\da-f]{6}$/i.test(c)))
+      && (e.owner===undefined || Array.isArray(e.owner)&&e.owner.length===n&&Array.isArray(e.countries)&&e.owner.every(v=>Number.isInteger(v)&&v>=-1&&v<e.countries.length));
+  }
+  function rivers(terrain, a) {
+    const { cols, rows } = terrain, upstream = new Uint16Array(a.flow.length), result=[];
+    for (let i=0;i<a.river.length;i++) if(a.river[i]&&a.receiver[i]>=0&&a.river[a.receiver[i]]) upstream[a.receiver[i]]++;
+    for (let i=0;i<a.river.length;i++) if(a.river[i] && upstream[i]!==1) {
+      const cells=[i]; let j=i;
+      while(a.receiver[j]>=0) { const next=a.receiver[j]; cells.push(next); if(!a.river[next]||upstream[next]!==1)break;j=next; }
+      if(cells.length<2 || cells.every(k=>a.lake[k]))continue;
+      const points=cells.map(k=>[k%cols/(cols-1),Math.floor(k/cols)/(rows-1)]);
+      result.push({cells,points,flow:a.flow[cells.at(-2)],mouth:terrain.heights[cells.at(-1)]<=0});
+    }
+    return result.sort((a,b)=>b.flow-a.flow);
+  }
+  return Object.freeze({ biomes, drainage, climate, analyze, environment, validEnvironment, rivers });
+});
+
+;
+
+/* === gb-map-world-society.js === */
+;
+/* Settlement suitability and travel-cost-based countries and transport. */
+(function(root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain);
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapWorldSociety = api;
+})(globalThis, function(T) {
+  'use strict';
+  const roots = ['アステ','エルド','セレ','リーネ','ヴァル','ノヴァ','カレ','オル','ミラ','ルミ','テラ','フィオ','ベル','アル','サル','レイ','イリ','トリ','メル','ガル'];
+  const endings = ['リア','ティア','オン','ディア','ナ','ール','ノス','ヴィア','ニア','レア'];
+  const palette = ['#9a6755','#5c8299','#8b749e','#a18a4b','#588b78','#a46683','#7e8b4f','#a57949','#657e9e','#9a8c78','#587f83','#8f7752'];
+  function placeNames(seed, count) { const random=T.rng(seed+':names'), used=new Set(), result=[]; while(result.length<count) { const name=roots[Math.floor(random()*roots.length)]+endings[Math.floor(random()*endings.length)]; if(!used.has(name)){used.add(name);result.push(name);} } return result; }
+  const point = (i,a) => [i%a.cols/(a.cols-1),Math.floor(i/a.cols)/(a.rows-1)];
+  function cities(terrain,a,options) {
+    const {cols,rows,heights:h}=terrain, random=T.rng(options.seed+':cities'), candidates=[];
+    const freshDistance=T.distances(a.river.map((v,i)=>v||a.lake[i]>0),cols,rows);
+    for(let i=0;i<h.length;i++) {
+      if(h[i]<=0 || h[i]>.57 || a.lake[i] || a.slope[i]>.2 || a.temperature[i]<-5 || a.rain[i]<.12)continue;
+      if(a.masses.groups[a.masses.ids[i]].length<8)continue;
+      // Wet settlements may use local streams below the world-map threshold.
+      // In dry country a visible river or lake must supply the settlement.
+      if(a.rain[i]<.34&&freshDistance[i]>3)continue;
+      let seaNeighbors=0, landNeighbors=0;T.neighbors(i,cols,rows,j=>{seaNeighbors+=a.ocean[j];landNeighbors+=Number(h[j]>0);});
+      let harbor=false;T.neighbors(i,cols,rows,j=>{if(a.ocean[j])harbor=true;},false);
+      const port=harbor&&seaNeighbors>0&&landNeighbors>=3;
+      const water=Math.exp(-freshDistance[i]/4)*.32+(port?.1:0);
+      const score=.4*T.clamp(1-Math.abs(a.temperature[i]-17)/35)+.22*T.clamp(1-Math.abs(a.rain[i]-.65)) +water-h[i]*.35-a.slope[i]*1.2+random()*.05;
+      candidates.push({cell:i,point:point(i,a),score,port,mass:a.masses.ids[i]});
+    }
+    candidates.sort((a,b)=>b.score-a.score||a.cell-b.cell);
+    const selected=[], spacing=Math.max(4,Math.sqrt(a.landCount/options.cities)*.7), existing=options.existing||[];
+    const distance=(p,q)=>Math.hypot((p[0]-q[0])*cols,(p[1]-q[1])*rows);
+    const available=(p,space)=>selected.every(c=>distance(p,c.point)>=space)&&existing.every(q=>distance(p,q)>=space*.7);
+    const masses=[...a.masses.groups.keys()].sort((x,y)=>a.masses.groups[y].length-a.masses.groups[x].length);
+    for(const mass of masses) { if(selected.length>=options.cities||a.masses.groups[mass].length<80)continue;
+      const local=candidates.filter(c=>c.mass===mass), chosen=local.find(c=>c.port&&available(c.point,spacing))||local.find(c=>available(c.point,spacing)); if(chosen)selected.push(chosen);
+    }
+    for(const factor of [1,.85,.7]) for(const c of candidates) { if(selected.length>=options.cities)break; if(c.port&&selected.filter(c=>c.port).length>=Math.ceil(options.cities*.48))continue; if(!selected.includes(c)&&available(c.point,spacing*factor))selected.push(c); }
+    const names=placeNames(options.seed,selected.length);
+    return selected.map((c,i)=>({...c,name:names[i],index:i,capital:false}));
+  }
+  function traversable(terrain,a,i,sea) { return sea ? !!a.ocean[i] : terrain.heights[i]>0&&!a.lake[i]; }
+  function landCost(terrain,a,i,j,d=1) {
+    const rise=Math.abs(terrain.heights[j]-terrain.heights[i]);
+    const riverCross=Number(a.river[i]!==a.river[j])*Math.min(5,a.flow[j]/a.threshold*.15);
+    return d*(1+rise*24+terrain.heights[j]**2*10+a.slope[j]*4+riverCross+(a.cover[j]===8?.7:0));
+  }
+  function path(terrain,a,start,end,sea=false) {
+    if(!traversable(terrain,a,start,sea)||!traversable(terrain,a,end,sea))return null;
+    const {cols,rows}=terrain,n=terrain.heights.length, costs=new Float64Array(n).fill(Infinity),previous=new Int32Array(n).fill(-1),closed=new Uint8Array(n),heap=new T.Heap();
+    const ex=end%cols,ey=Math.floor(end/cols),estimate=i=>Math.hypot(i%cols-ex,Math.floor(i/cols)-ey);
+    costs[start]=0;heap.push(start,estimate(start));
+    while(heap.length) { const {id:i}=heap.pop();if(closed[i])continue;closed[i]=1;if(i===end)break;
+      T.neighbors(i,cols,rows,(j,d)=>{if(closed[j]||!traversable(terrain,a,j,sea))return;
+        const x=i%cols,y=Math.floor(i/cols),jx=j%cols,jy=Math.floor(j/cols);
+        if(x!==jx&&y!==jy&&(!traversable(terrain,a,y*cols+jx,sea)||!traversable(terrain,a,jy*cols+x,sea)))return;
+        const step=sea?d*(1+Math.max(0,.08+terrain.heights[j])*2):landCost(terrain,a,i,j,d),next=costs[i]+step;
+        if(next<costs[j]){costs[j]=next;previous[j]=i;heap.push(j,next+estimate(j));}
+      });
+    }
+    if(!Number.isFinite(costs[end]))return null;
+    const cells=[];for(let i=end;i>=0;i=previous[i]){cells.push(i);if(i===start)break;}cells.reverse();
+    return {cells,cost:costs[end],points:cells.map(i=>point(i,a))};
+  }
+  function connections(terrain,a,settlements,sea=false) {
+    const ports=sea?settlements.filter(c=>c.port):settlements,edges=[],pairs=new Set();
+    const seaCell=c=>{let best=-1;T.neighbors(c.cell,a.cols,a.rows,j=>{if(a.ocean[j]&&(best<0||terrain.heights[j]<terrain.heights[best]))best=j;},false);return best;};
+    for(const c of ports) {
+      const sorted=ports.filter(q=>q!==c&&(sea||q.mass===c.mass)).sort((p,q)=>Math.hypot(p.point[0]-c.point[0],p.point[1]-c.point[1])-Math.hypot(q.point[0]-c.point[0],q.point[1]-c.point[1])),nearby=sorted.slice(0,sea?3:4);
+      if(sea){const masses=new Set();for(const q of sorted)if(q.mass!==c.mass&&!masses.has(q.mass)){masses.add(q.mass);if(!nearby.includes(q))nearby.push(q);}}
+      for(const q of nearby){const key=[c.index,q.index].sort((a,b)=>a-b).join(':');if(pairs.has(key))continue;pairs.add(key);
+        const route=path(terrain,a,sea?seaCell(c):c.cell,sea?seaCell(q):q.cell,sea);if(!route)continue;
+        if(sea)route.points=[c.point,...route.points,q.point];edges.push({...route,from:c.index,to:q.index,sea});
+      }
+    }
+    edges.sort((a,b)=>a.cost-b.cost);
+    const parent=settlements.map((_,i)=>i),find=i=>{while(parent[i]!==i)i=parent[i];return i;},chosen=[];
+    for(const edge of edges){const p=find(edge.from),q=find(edge.to);if(p!==q){parent[p]=q;chosen.push(edge);}else if(!sea&&chosen.length<settlements.length*1.15&&edge.cost<35)chosen.push(edge);}
+    // Nearest-neighbor candidate graphs can separate clusters on one continent.
+    // Bridge those components with another terrain search, never a straight line.
+    if(!sea)for(;;){let best=null;for(const c of settlements)for(const q of settlements)if(c.mass===q.mass&&find(c.index)!==find(q.index)){const d=Math.hypot(c.point[0]-q.point[0],c.point[1]-q.point[1]);if(!best||d<best.d)best={c,q,d};}if(!best)break;const route=path(terrain,a,best.c.cell,best.q.cell);if(!route)break;chosen.push({...route,from:best.c.index,to:best.q.index,sea:false});parent[find(best.c.index)]=find(best.q.index);}
+    return chosen;
+  }
+  function countries(terrain,a,settlements,options) {
+    const {cols,rows}=terrain,n=terrain.heights.length,owner=new Int16Array(n).fill(-1),cost=new Float64Array(n).fill(Infinity),heap=new T.Heap(),capitals=[];
+    const wanted=Math.min(options.nations,settlements.length),rank=[...settlements].sort((a,b)=>b.score-a.score),masses=[...a.masses.groups.keys()].sort((x,y)=>a.masses.groups[y].length-a.masses.groups[x].length);
+    for(const mass of masses){if(capitals.length>=wanted)break;const city=rank.find(c=>c.mass===mass);if(city)capitals.push(city);}
+    while(capitals.length<wanted){let best=null,score=-1;for(const c of rank)if(!capitals.includes(c)){const distance=Math.min(...capitals.map(p=>Math.hypot((p.point[0]-c.point[0])*cols,(p.point[1]-c.point[1])*rows)));const value=distance*(.6+c.score);if(value>score){best=c;score=value;}}if(!best)break;capitals.push(best);}
+    capitals.forEach((c,id)=>{c.capital=true;c.country=id;owner[c.cell]=id;cost[c.cell]=0;heap.push(c.cell,0);});
+    while(heap.length){const {id:i,cost:value}=heap.pop();if(value!==cost[i])continue;T.neighbors(i,cols,rows,(j,d)=>{if(!traversable(terrain,a,j,false))return;
+      const step=landCost(terrain,a,i,j,d)*(1+Math.max(0,terrain.heights[j]-.3)*8),next=value+step;
+      if(next<cost[j]){cost[j]=next;owner[j]=owner[i];heap.push(j,next);}
+    },false);}
+    // Uninhabited offshore islands attach as a whole; do not split them into cells.
+    for(const group of a.masses.groups) if(group.length&&owner[group[0]]<0&&capitals.length){const p=point(group[0],a),closest=capitals.map((c,id)=>({id,d:Math.hypot(c.point[0]-p[0],c.point[1]-p[1])})).sort((a,b)=>a.d-b.d)[0].id;for(const i of group)owner[i]=closest;}
+    for(const c of settlements)c.country=owner[c.cell];
+    const states=capitals.map((capital,id)=>{const cells=[];for(let i=0;i<n;i++)if(owner[i]===id)cells.push(i);
+      const mainland=cells.filter(i=>a.masses.ids[i]===capital.mass);let x=0,y=0;for(const i of mainland){x+=i%cols;y+=Math.floor(i/cols);}x/=mainland.length||1;y/=mainland.length||1;
+      let center=capital.cell,distance=Infinity;for(const i of mainland){const d=(i%cols-x)**2+(Math.floor(i/cols)-y)**2;if(d<distance&&terrain.heights[i]<.5){distance=d;center=i;}}
+      return {id,name:capital.name+(['王国','連邦','共和国','公国'][id%4]),capital:capital.index,color:palette[id%palette.length],point:point(center,a),cells:cells.length};});
+    return {owner,states};
+  }
+  function borders(terrain,a,owner) {
+    const {cols,rows}=terrain, groups=new Map();
+    const add=(p,q,left,right)=>{if(left===right||left<0||right<0)return;const key=[left,right].sort((a,b)=>a-b).join(':');if(!groups.has(key))groups.set(key,[]);groups.get(key).push({p,q,used:false});};
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const i=y*cols+x;if(x+1<cols)add([x+.5,y-.5],[x+.5,y+.5],owner[i],owner[i+1]);if(y+1<rows)add([x-.5,y+.5],[x+.5,y+.5],owner[i],owner[i+cols]);}
+    const result=[];
+    for(const [pair,edges]of groups){const nodes=new Map();for(const e of edges)for(const p of[e.p,e.q]){const key=p.join(',');if(!nodes.has(key))nodes.set(key,[]);nodes.get(key).push(e);}
+      for(const first of edges){if(first.used)continue;let e=first,key=nodes.get(e.p.join(',')).length!==2?e.p.join(','):e.q.join(',');const pts=[];
+        for(let limit=0;e&&limit<=edges.length;limit++){e.used=true;const p=e.p.join(',')===key?e.p:e.q,q=e.p===p?e.q:e.p;pts.push(p);key=q.join(',');const next=nodes.get(key).filter(c=>!c.used);if(next.length!==1){pts.push(q);break;}e=next[0];}
+        if(pts.length>=2)result.push({pair:pair.split(':').map(Number),points:T.simplify(pts,.28).map(([x,y])=>[T.clamp(x/(cols-1)),T.clamp(y/(rows-1))])});
+      }
+    }
+    return result;
+  }
+  function generate(terrain,a,options) {
+    const settlements=cities(terrain,a,options),nations=countries(terrain,a,settlements,options);
+    return {cities:settlements,...nations,borders:borders(terrain,a,nations.owner),roads:connections(terrain,a,settlements),seaRoutes:connections(terrain,a,settlements,true)};
+  }
+  return Object.freeze({ cities, path, landCost, countries, borders, connections, generate, placeNames, point });
+});
+
+;
+
+/* === gb-map-terrain-render.js === */
+;
+/* One physical-map renderer shared by the editor, PNG and portable viewer. */
+(function(root,factory){
+  const node=typeof module==='object'&&module.exports;
+  const api=factory(node?require('./gb-map-world-terrain.js'):root.MeldexMapWorldTerrain,node?require('./gb-map-world-geography.js'):root.MeldexMapWorldGeography);
+  if(node)module.exports=api;else root.MeldexMapTerrainRender=api;
+})(globalThis,function(T,G){
+  'use strict';
+  const rgb=hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  const colors=G.biomes.map(b=>rgb(b.color));
+  function pixels(t,width=Math.min(1536,t.cols*6),height=Math.round(width*(t.rows-1)/(t.cols-1))){
+    width=Math.max(8,Math.min(4096,Math.round(width)));height=Math.max(8,Math.min(4096,Math.round(height)));
+    const data=new Uint8ClampedArray(width*height*4),hasEnvironment=G.validEnvironment(t),e=hasEnvironment?t.environment:null,c=t.cols,r=t.rows,mode=t.presentation||'biomes';
+    const h=t.heights,at=(x,y)=>h[Math.max(0,Math.min(r-1,y))*c+Math.max(0,Math.min(c-1,x))],normals=h.map((_,i)=>[(at(i%c+1,Math.floor(i/c))-at(i%c-1,Math.floor(i/c)))*8,(at(i%c,Math.floor(i/c)+1)-at(i%c,Math.floor(i/c)-1))*8]);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const gx=x/(width-1)*(c-1),gy=y/(height-1)*(r-1),ix=Math.floor(gx),iy=Math.floor(gy),u=gx-ix,v=gy-iy;
+      const ids=[iy*c+ix,iy*c+Math.min(c-1,ix+1),Math.min(r-1,iy+1)*c+ix,Math.min(r-1,iy+1)*c+Math.min(c-1,ix+1)],weights=[(1-u)*(1-v),u*(1-v),(1-u)*v,u*v];
+      const z=ids.reduce((s,i,k)=>s+h[i]*weights[k],0);
+      let color,shade=1;
+      if(z<=0){const depth=Math.min(1,-z),shelf=Math.exp(-depth*19),deep=T.clamp(depth*1.3);color=[89-26*deep+65*shelf,139-29*deep+45*shelf,166-29*deep+29*shelf];}
+      else{
+        if(e&&mode!=='elevation'){color=[0,0,0];let weight=0;ids.forEach((i,k)=>{if(h[i]<=0)return;let co=colors[e.biomes[i]===11?(e.rain[i]>.55?4:5):e.biomes[i]];
+          if(mode==='temperature'){const v=T.clamp((e.temperature[i]+25)/60);co=[70+165*v,140+45*Math.sin(v*Math.PI)-50*v,195-125*v];}
+          else if(mode==='rain'){const v=e.rain[i];co=[215-142*v,185-25*v,122+30*v];}
+          else if(mode==='political'&&e.owner?.[i]>=0&&e.countries?.[e.owner[i]])co=rgb(e.countries[e.owner[i]]).map(v=>v*.48+245*.52);
+          for(let ch=0;ch<3;ch++)color[ch]+=co[ch]*weights[k];weight+=weights[k];});if(weight)color=color.map(v=>v/weight);else color=[174,184,132];}
+        else color=z<.25?[181-z*95,191-z*80,137-z*35]:[161+z*50,159+z*48,137+z*65];
+        const dx=ids.reduce((s,i,k)=>s+normals[i][0]*weights[k],0),dy=ids.reduce((s,i,k)=>s+normals[i][1]*weights[k],0),normal=Math.hypot(dx,dy,1);
+        const light=(-dx*-.55-dy*-.65+.57)/normal;
+        shade=T.clamp(.72+light*.5,.48,1.18);
+        const thematic=e&&!['biomes','elevation'].includes(mode),ridge=thematic?0:T.clamp((z-.22)/.55),rock=[161,151,132];color=color.map((v,k)=>v*(1-ridge*.64)+rock[k]*ridge*.64);
+        const temperature=e?ids.reduce((s,i,k)=>s+e.temperature[i]*weights[k],0):20-z*35;
+        const snow=thematic?0:T.clamp((-temperature-2)/12)*T.clamp((z-.3)/.24);
+        color=color.map((v,k)=>v*(1-snow)+[235,237,227][k]*snow);
+        const beach=T.clamp(1-z/.012)*T.clamp((temperature-3)/14)*T.clamp(1-Math.hypot(dx,dy)*.6);color=color.map((v,k)=>v*(1-beach)+[214,207,165][k]*beach);
+      }
+      const offset=(y*width+x)*4;for(let k=0;k<3;k++)data[offset+k]=T.clamp(color[k]*shade,0,255);data[offset+3]=255;
+    }
+    return {width,height,data};
+  }
+  function canvas(terrain){const p=pixels(terrain),c=document.createElement('canvas');c.width=p.width;c.height=p.height;const context=c.getContext('2d'),image=context.createImageData(p.width,p.height);image.data.set(p.data);context.putImageData(image,0,0);return c;}
+  function style(f){const role=f.cartography?.role;
+    const base={role:typeof role==='string'?role:'',weight:3,fillOpacity:.22,fontSize:16,label:true,symbolSize:20};
+    if(role==='river'){const flow=Number.isFinite(f.cartography.flow)?T.clamp(f.cartography.flow,0,1e9):1;return {...base,weight:T.clamp(.5+Math.log1p(flow)*.22,.65,2.6),label:false};}
+    if(role==='road')return {...base,weight:1.05,label:false};
+    if(role==='shipping')return {...base,weight:.85,dash:'5 5',label:false};
+    if(role==='border')return {...base,weight:1.15,dash:'4 2',label:false};
+    if(role==='lake')return {...base,weight:.3,fillOpacity:.95,label:false};
+    if(role==='city')return {...base,fontSize:f.cartography.capital?12:11,symbolSize:f.icon==='port'?13:f.cartography.capital?10:6};
+    if(role==='country-label')return {...base,fontSize:17};
+    if(role==='mountain-label')return {...base,fontSize:12};
+    if(role==='river-label')return {...base,fontSize:11};
+    return base;
+  }
+  function symbol(f,fallback){return f.cartography?.role==='city'?(f.icon==='port'?'⚓':f.cartography.capital?'◉':'●'):fallback;}
+  return Object.freeze({pixels,canvas,style,symbol});
+});
+
+;
+
+/* === gb-map-view.js === */
+;
+/* Leaflet rendering is isolated from document mutation and persistence. */
+(function (root) {
+  'use strict';
+  const D = () => root.MeldexMapDocument;
+  const SYMBOLS = { pin: '●', city: '◆', castle: '♜', mountain: '▲', forest: '♠', port: '⚓' };
+  function terrainCanvas(terrain) { return root.MeldexMapTerrainRender.canvas(terrain); }
+  class MapView {
+    constructor(container, callbacks) {
+      this.container = container; this.callbacks = callbacks; this.tool = 'select'; this.draft = []; this.symbol = 'pin';
+      if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+      this.rotation = 0; this.selectedIds = new Set(); this.items = new Map();
+      this.interaction = new root.MeldexMapInteraction.Controller(this);
+      this._pointer = event => this._paintPointer(event);
+      ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'].forEach(type => container.addEventListener(type, this._pointer, true));
+      this._observer = new ResizeObserver(() => this._resize());
+      this._observer.observe(container);
+    }
+    xy(latlng) {
+      if (this.doc.coordinate_system === 'local') return [latlng.lng, -latlng.lat];
+      return [((latlng.lng + 180) % 360 + 360) % 360 - 180, Math.max(-85.051129, Math.min(85.051129, latlng.lat))];
+    }
+    latlng(point) { return this.doc.coordinate_system === 'local' ? [-point[1], point[0]] : [point[1], point[0]]; }
+    selection() { return this.selectedIds; }
+    choose(ids, active = null) {
+      this.selectedIds = new Set(ids); this.selectedId = active && this.selectedIds.has(active) ? active : ids.at(-1) || null;
+      if (this.callbacks.selection) this.callbacks.selection([...this.selectedIds], this.selectedId); else this.callbacks.select?.(this.selectedId);
+      this._features();
+    }
+    screenPoint(point) {
+      const p = this.map.latLngToContainerPoint(this.latlng(point)), size = this.map.getSize();
+      const q = root.MeldexMapInteraction.rotate([p.x - size.x / 2, p.y - size.y / 2], this.rotation);
+      return [q[0] + this.container.clientWidth / 2, q[1] + this.container.clientHeight / 2];
+    }
+    setRotation(value, notify = true) {
+      const next = root.MeldexMapInteraction.angle(value); if (next === this.rotation) return;
+      this.rotation = next; this._resize(); this._indicators(); if (notify) this.callbacks.rotation?.(next);
+    }
+    _resize() {
+      if (!this.map || !this.host) return;
+      const w = this.container.clientWidth, h = this.container.clientHeight;
+      const size = this.rotation ? Math.ceil(Math.hypot(w, h)) : null;
+      Object.assign(this.host.style, { width: (size || w) + 'px', height: (size || h) + 'px', transform: `translate(-50%,-50%) rotate(${this.rotation}deg)` });
+      this.map.invalidateSize({ pan: true, animate: false }); this._indicators();
+    }
+    zoomAt(zoom, screen = null, anchor = null) {
+      zoom = Math.max(this.map.getMinZoom(), Math.min(this.map.getMaxZoom(), zoom));
+      const p = screen || [this.container.clientWidth / 2, this.container.clientHeight / 2], native = this.interaction.native(p);
+      if (!anchor) this.map.setZoomAround(native, zoom, { animate: false });
+      else {
+        const size = this.map.getSize(), offset = native.subtract(size.divideBy(2));
+        this.map.setView(this.map.unproject(this.map.project(anchor, zoom).subtract(offset), zoom), zoom, { animate: false });
+      }
+    }
+    stepZoom(direction, screen = null) {
+      const z = this.map.getZoom();
+      const next = this.doc.coordinate_system === 'local' ? Math.log2(Math.max(.1, (Math.round(2 ** z * 10) + direction) / 10)) : z + direction * Math.log2(1.1);
+      this.zoomAt(next, screen);
+    }
+    zoom100() { this.zoomAt(this.doc.coordinate_system === 'world' ? 13 : 0); }
+    resetView() { this.setRotation(0); this.map.setView(this.doc.coordinate_system === 'local' ? [-this.doc.canvas.height / 2, this.doc.canvas.width / 2] : this.map.getCenter(), this.doc.coordinate_system === 'local' ? 0 : 13, { animate: false }); }
+    panScreen(delta) { const d = root.MeldexMapInteraction.rotate(delta, -this.rotation); this.map.panBy([-d[0], -d[1]], { animate: false }); }
+    focusSelection() {
+      const features = this.doc.features.filter(f => this.selectedIds.has(f.id));
+      if (features.length === 1) this.focus(features[0]);
+      else if (features.length) this._fitPoints(features.flatMap(f => f.points), this.map.getZoom());
+    }
+    setDocument(doc, readOnly = false) {
+      const rebuild = !this.map || this.doc?.coordinate_system !== doc.coordinate_system;
+      if (this.doc?.features !== doc.features) this.interaction.cancel();
+      this.doc = doc; this.readOnly = readOnly;
+      if (rebuild) this._create();
+      const basemap = doc.basemap + ':' + (doc.basemap_style || 'pale');
+      if (this._basemap !== basemap) {
+        this.tiles?.remove(); this.tiles = null; this._basemap = basemap;
+        if (doc.coordinate_system === 'world') this.map.setMinZoom(doc.basemap === 'gsi' ? 2 : 1);
+        if (doc.coordinate_system === 'world' && doc.basemap !== 'blank') {
+          const gsi = doc.basemap === 'gsi';
+          this.tiles = L.tileLayer(gsi ? 'https://cyberjapandata.gsi.go.jp/xyz/' + (doc.basemap_style === 'standard' ? 'std' : 'pale') + '/{z}/{x}/{y}.png' : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, maxNativeZoom: gsi ? 18 : 19, minZoom: gsi ? 2 : 1,
+            attribution: gsi ? '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a> · 海岸線: NIMA/USGS VMAP0 (1997)' + (doc.basemap_style === 'standard' ? ' · 海底地形: GEBCO Digital Atlas (BODC・IOC/IHO, 2003, <a href="https://www.gebco.net" target="_blank" rel="noopener">GEBCO</a>) · 海上保安庁許可第292502号（水路業務法第25条に基づく類似刊行物）' : '')
+              : '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>',
+          }).addTo(this.map);
+          this.tiles.on('tileerror', () => {
+            if (!this._tileErrorShown) { this._tileErrorShown = true; this.callbacks.message?.('背景地図を取得できません。保存済みの地点や図形は保持されています。'); }
+          });
+        }
+      }
+      this._terrain(); this._features(); this._indicators();
+      if (rebuild) {
+        if (doc.view) this.map.setView(this.latlng(doc.view.center), doc.view.zoom);
+        else this.fit();
+      }
+    }
+    _create() {
+      this.interaction.reset(); this.map?.stop(); this.map?.remove(); this.container.replaceChildren(); this._basemap = null; this._terrainData = null; this._backgroundData = null;
+      this.container.classList.add('leaflet-container');
+      this.host = document.createElement('div'); this.host.className = 'gb-map-viewport'; this.container.appendChild(this.host);
+      Object.assign(this.host.style, { width: this.container.clientWidth + 'px', height: this.container.clientHeight + 'px' });
+      this.overlay = null; this.background = null; this.paper = null; this.tiles = null; this._tileErrorShown = false;
+      const local = this.doc.coordinate_system === 'local';
+      this.map = L.map(this.host, { crs: local ? L.CRS.Simple : L.CRS.EPSG3857, minZoom: local ? -5 : 1,
+        maxZoom: local ? Math.log2(5) : 19, zoomControl: false, attributionControl: true, worldCopyJump: !local,
+        dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false,
+        preferCanvas: true, zoomSnap: 0, zoomAnimation: false, markerZoomAnimation: false });
+      this.map.mouseEventToContainerPoint = event => this.interaction.native(this.interaction.local(event));
+      this.container.appendChild(this.map._controlContainer);
+      this.map.setView(local ? [-this.doc.canvas.height / 2, this.doc.canvas.width / 2] : [35.68, 139.76], local ? -2 : 5);
+      const backgroundPane = this.map.createPane('map-background');
+      backgroundPane.style.zIndex = '250'; backgroundPane.style.pointerEvents = 'none';
+      const paperPane = this.map.createPane('map-paper');
+      paperPane.style.zIndex = '200'; paperPane.style.pointerEvents = 'none';
+      const zoom = L.control({ position: 'topleft' }); zoom.onAdd = () => {
+        const el = L.DomUtil.create('div', 'leaflet-bar gb-map-zoom-control');
+        for (const [symbol, label, step] of [['+', '拡大', 1], ['−', '縮小', -1]]) { const b = document.createElement('button'); b.type = 'button'; b.textContent = symbol; b.setAttribute('aria-label', label); b.onclick = () => this.stepZoom(step); el.appendChild(b); }
+        L.DomEvent.disableClickPropagation(el); return el;
+      }; zoom.addTo(this.map);
+      this.features = L.featureGroup().addTo(this.map); this.drafts = L.featureGroup().addTo(this.map);
+      this.sheetFeatures = L.featureGroup().addTo(this.map);
+      const compass = L.control({ position: 'topright' });
+      compass.onAdd = () => {
+        const el = L.DomUtil.create('div', 'gb-map-compass');
+        el.setAttribute('aria-label', '北方向');
+        this.compass = document.createElement('div'); this.compass.className = 'gb-map-compass-arrow'; this.compass.textContent = 'N\n▲';
+        el.appendChild(this.compass); L.DomEvent.disableClickPropagation(el); return el;
+      }; compass.addTo(this.map);
+      const scale = L.control({ position: 'bottomleft' });
+      scale.onAdd = () => {
+        const el = L.DomUtil.create('div', 'gb-map-scale'); el.setAttribute('aria-label', '縮尺');
+        this.scaleLabel = document.createElement('span'); this.scaleLine = document.createElement('div'); this.scaleNote = document.createElement('small');
+        el.append(this.scaleLabel, this.scaleLine, this.scaleNote); L.DomEvent.disableClickPropagation(el); return el;
+      }; scale.addTo(this.map);
+      this.map.on('moveend zoomend', () => {
+        if (!this.map || this._destroyed) return;
+        this._indicators();
+        this.callbacks.view?.({ center: this.xy(this.map.getCenter()), zoom: this.map.getZoom() });
+        this.callbacks.zoom?.(this.map.getZoom());
+      });
+      this.map.on('mousemove', event => this.callbacks.position?.(this.xy(event.latlng)));
+      this.setTool(this.tool);
+      this._resize();
+    }
+    fit() {
+      if (!this.map) return;
+      const local = this.doc.coordinate_system === 'local';
+      if (!local && !this.doc.features.length) { this.map.setView([35.68, 139.76], this.doc.basemap === 'gsi' ? 7 : 5); return; }
+      const points = local ? [[0, 0], [this.doc.canvas.width, this.doc.canvas.height]] : this.doc.features.flatMap(f => f.points);
+      this._fitPoints(points, local ? Math.log2(1.5) : 14);
+    }
+    _fitPoints(points, maxZoom) {
+      let x1 = Infinity, x2 = -Infinity, y1 = Infinity, y2 = -Infinity;
+      for (const point of points) { const p = this.map.project(this.latlng(point), 0); x1 = Math.min(x1, p.x); x2 = Math.max(x2, p.x); y1 = Math.min(y1, p.y); y2 = Math.max(y2, p.y); }
+      const a = this.rotation * Math.PI / 180;
+      const width = Math.abs(Math.cos(a)) * (x2 - x1) + Math.abs(Math.sin(a)) * (y2 - y1);
+      const height = Math.abs(Math.sin(a)) * (x2 - x1) + Math.abs(Math.cos(a)) * (y2 - y1);
+      const factor = Math.min(Math.max(1, this.container.clientWidth - 60) / Math.max(width, 1e-9), Math.max(1, this.container.clientHeight - 60) / Math.max(height, 1e-9));
+      const zoom = Math.max(this.map.getMinZoom(), Math.min(this.map.getMaxZoom(), maxZoom, Math.log2(factor)));
+      this.map.setView(this.map.unproject(L.point((x1 + x2) / 2, (y1 + y2) / 2), 0), zoom, { animate: false });
+    }
+    focus(feature) {
+      if (!D().visibleInPeriod(feature, this.periodId)) {
+        this.periodId = (this.doc.periods || []).find(period => feature.period_ids?.includes(period.id))?.id || '';
+        this.callbacks.period?.(this.periodId);
+      }
+      if (!this._visible(feature)) this.callbacks.reveal?.(feature);
+      if (feature.points.length === 1) this.map.panTo(this.latlng(feature.points[0]), { animate: false });
+      else this._fitPoints(feature.points, this.doc.coordinate_system === 'local' ? 2 : 14);
+      if (!this.selectedIds.has(feature.id)) this.select(feature.id);
+      else { this.selectedId = feature.id; this._features(); }
+    }
+    select(id) { this.selectedId = id; this.selectedIds = new Set(id ? [id] : []); this._features(); }
+    setTool(tool, symbol = 'pin') {
+      this.cancel(); this.tool = tool; this.symbol = symbol;
+      if (!this.map) return;
+      this.container.dataset.tool = tool;
+      this.map.dragging.disable(); this.map.doubleClickZoom.disable();
+    }
+    _terrain(override) {
+      const doc = this.doc;
+      if (doc.coordinate_system !== 'local') return;
+      const bounds = [[-doc.canvas.height, 0], [0, doc.canvas.width]];
+      if (!this.paper) this.paper = L.rectangle(bounds, { pane: 'map-paper', interactive: false, stroke: false, fillColor: '#ecede2', fillOpacity: 1 }).addTo(this.map);
+      else this.paper.setBounds(bounds);
+      if (doc.background?.data_url !== this._backgroundData) {
+        this.background?.remove(); this._backgroundData = doc.background?.data_url;
+        this.background = this._backgroundData ? L.imageOverlay(this._backgroundData, bounds, { interactive: false, pane: 'map-background', zIndex: 1 }).addTo(this.map) : null;
+      }
+      if (!override && doc.terrain === this._terrainData) return;
+      this._terrainData = doc.terrain;
+      const terrain = override || doc.terrain;
+      this.overlay?.remove(); this.overlay = null;
+      if (terrain) this.overlay = L.imageOverlay(terrainCanvas(terrain).toDataURL('image/png'), bounds, { interactive: false, pane: 'map-background', zIndex: 2, opacity: doc.background ? 0.7 : 1 }).addTo(this.map);
+      this.background?.bringToBack();
+    }
+    _visible(feature) {
+      const layer = this.doc.layers.find(l => l.id === feature.layer_id);
+      return !!layer && (this.layerVisibility?.[layer.id] ?? layer.visible) && D().visibleInPeriod(feature, this.periodId)
+        && (!this.featureKind || feature.kind === this.featureKind)
+        && (!this.filter || (feature.label + ' ' + feature.tags.join(' ') + ' ' + feature.description).toLocaleLowerCase().includes(this.filter));
+    }
+    _features() {
+      if (!this.features) return;
+      this.features.clearLayers();
+      this.items.clear();
+      for (const layer of [...this.doc.layers].reverse()) for (const feature of this.doc.features.filter(f => f.layer_id === layer.id && this._visible(f))) {
+        const selected = this.selectedIds.has(feature.id) || feature.id === this.selectedId, editable = !this.readOnly && !layer.locked && this.tool === 'select';
+        const points = D().drawPoints(feature, this.doc).map(p => this.latlng(p)), cart = root.MeldexMapTerrainRender.style(feature); let item;
+        if (['pin', 'label'].includes(feature.kind)) {
+          const el = document.createElement('span'); el.className = 'gb-map-pin' + (selected ? ' selected' : '') + (feature.kind === 'label' ? ' text-only' : '');
+          el.style.color = feature.color; el.dataset.mapFeatureId = feature.id; el.dataset.mapRole = cart.role;
+          el.dataset.mapRank = feature.cartography?.rank === 'minor' ? 'minor' : 'major';
+          if (cart.role) el.style.fontSize = cart.fontSize + 'px';
+          if (cart.role === 'city' && feature.points[0][0] > this.doc.canvas.width * .82) { el.style.flexDirection = 'row-reverse'; el.style.transform = `translateX(calc(-100% + ${cart.symbolSize}px))`; }
+          if (cart.role && feature.kind === 'label') el.style.transform = 'translateX(-50%)';
+          if (feature.kind !== 'label') { const icon = document.createElement('b'); icon.textContent = root.MeldexMapTerrainRender.symbol(feature, SYMBOLS[feature.icon] || SYMBOLS.pin); if (cart.role === 'city') { icon.style.fontSize = cart.symbolSize + 'px'; icon.style.lineHeight = '16px'; } el.appendChild(icon); }
+          const text = document.createElement('span'); text.textContent = feature.label; el.appendChild(text);
+          item = L.marker(points[0], { icon: L.divIcon({ html: el, className: 'gb-map-marker', iconSize: cart.role === 'city' ? [16,16] : [24, 28], iconAnchor: cart.role === 'city' ? [cart.symbolSize/2,8] : cart.role && feature.kind === 'label' ? [0,12] : [12, 14] }),
+            draggable: false, opacity: layer.opacity, zIndexOffset: selected ? 1000 : 0, title: feature.label, alt: feature.label || '地点' });
+        } else {
+          const options = { color: feature.color, weight: selected ? Math.max(4,cart.weight) : cart.weight, opacity: layer.opacity,
+            fillOpacity: feature.kind === 'region' ? cart.fillOpacity * layer.opacity : 0, dashArray: cart.dash || (feature.kind === 'route' && feature.dashed ? '8 5' : null) };
+          item = feature.kind === 'region' ? L.polygon(points, options) : L.polyline(points, options);
+          if (feature.label) { const tip = document.createElement('span'); tip.textContent = feature.label; item.bindTooltip(tip); }
+        }
+        this.items.set(feature.id, item);
+        item.addTo(this.features);
+        item.on('keypress', event => {
+          if (event.originalEvent?.key === 'Enter') { this.choose([feature.id], feature.id); this.container.focus({ preventScroll: true }); }
+        });
+        if (feature.kind === 'route' && feature.arrow && points.length >= 2) {
+          const a = this.map.latLngToLayerPoint(points[points.length - 2]), b = this.map.latLngToLayerPoint(points[points.length - 1]);
+          const el = document.createElement('span'); el.className = 'gb-map-route-arrow'; el.textContent = '▶'; el.style.color = feature.color;
+          el.style.transform = `rotate(${Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI}deg)`;
+          item._mapArrow = L.marker(points[points.length - 1], { interactive: false, opacity: layer.opacity,
+            icon: L.divIcon({ html: el, className: 'gb-map-marker', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(this.features);
+        }
+        if (selected && editable && this.editVertices && ['route', 'region'].includes(feature.kind)) {
+          item._mapHandles = [];
+          feature.points.forEach((point, index) => {
+            const el = document.createElement('span'); el.className = 'gb-map-vertex'; el.dataset.mapVertex = index; el.dataset.mapFeatureId = feature.id;
+            item._mapHandles.push(L.marker(this.latlng(point), { draggable: false, icon: L.divIcon({ html: el, className: 'gb-map-marker', iconSize: [12, 12], iconAnchor: [6, 6] }) }).addTo(this.features));
+          });
+        }
+      }
+    }
+    hit(event, excluded = new Set()) {
+      // Pointer capture retargets a stroke to the surface. Pins have no Canvas
+      // path hit-test, so inspect the element at the actual pointer position.
+      const target = this.container.hasPointerCapture(event.pointerId)
+        ? document.elementFromPoint(event.clientX, event.clientY) : event.target;
+      const id = target && this.container.contains(target) ? target.closest?.('[data-map-feature-id]')?.dataset.mapFeatureId : null;
+      if (id && !excluded.has(id)) return this.doc.features.find(f => f.id === id && this._visible(f));
+      const point = this.map.mouseEventToLayerPoint(event);
+      for (const [key, item] of [...this.items].reverse()) {
+        if (excluded.has(key) || !item._containsPoint?.(point)) continue;
+        return this.doc.features.find(f => f.id === key);
+      }
+      return null;
+    }
+    preview(id, points) {
+      const item = this.items.get(id), feature = this.doc.features.find(f => f.id === id); if (!item || !feature) return;
+      const latlngs = D().drawPoints({ ...feature, points }, this.doc).map(p => this.latlng(p));
+      if (feature.kind === 'pin' || feature.kind === 'label') item.setLatLng(latlngs[0]); else item.setLatLngs(latlngs);
+      item._mapHandles?.forEach((marker, i) => marker.setLatLng(this.latlng(points[i])));
+      if (item._mapArrow && latlngs.length > 1) {
+        const a = this.map.latLngToLayerPoint(latlngs.at(-2)), b = this.map.latLngToLayerPoint(latlngs.at(-1));
+        item._mapArrow.setLatLng(latlngs.at(-1));
+        item._mapArrow.getElement().firstElementChild.style.transform = `rotate(${Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI}deg)`;
+      }
+    }
+    previewHidden(ids) { for (const id of ids) { const item = this.items.get(id); if (item?.setOpacity) item.setOpacity(.15); else item?.setStyle({ opacity: .15, fillOpacity: .03 }); } }
+    inRectangle(a, b) {
+      const left = Math.min(a[0], b[0]), right = Math.max(a[0], b[0]), top = Math.min(a[1], b[1]), bottom = Math.max(a[1], b[1]);
+      const inside = p => p[0] >= left && p[0] <= right && p[1] >= top && p[1] <= bottom;
+      const segment = (p, q) => {
+        let low = 0, high = 1;
+        for (const [s, d, min, max] of [[p[0], q[0] - p[0], left, right], [p[1], q[1] - p[1], top, bottom]]) {
+          if (!d) { if (s < min || s > max) return false; continue; }
+          const x = (min - s) / d, y = (max - s) / d; low = Math.max(low, Math.min(x, y)); high = Math.min(high, Math.max(x, y)); if (low > high) return false;
+        }
+        return true;
+      };
+      return this.doc.features.filter(f => {
+        if (!this._visible(f)) return false;
+        const p = D().drawPoints(f, this.doc).map(pt => this.screenPoint(pt));
+        let contains = false;
+        if (f.kind === 'region') for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+          if ((p[i][1] > top) !== (p[j][1] > top) && left < (p[j][0] - p[i][0]) * (top - p[i][1]) / (p[j][1] - p[i][1]) + p[i][0]) contains = !contains;
+        }
+        return p.some(inside) || p.some((pt, i) => i && segment(p[i - 1], pt))
+          || f.kind === 'region' && (contains || segment(p.at(-1), p[0]));
+      }).map(f => f.id);
+    }
+    setSheetPlaces(places) {
+      if (!this.map || !this.sheetFeatures) return;
+      this.sheetFeatures.clearLayers();
+      for (const place of places.slice(0, 10000)) {
+        const el = document.createElement('span'); el.className = 'gb-map-pin';
+        const icon = document.createElement('b'); icon.textContent = '◇'; icon.style.color = '#b46c22';
+        const label = document.createElement('span'); label.textContent = place.label; el.append(icon, label);
+        const marker = L.marker(this.latlng(place.point), { keyboard: true, title: place.label,
+          icon: L.divIcon({ html: el, className: 'gb-map-marker gb-map-sheet-place', iconSize: [24, 28], iconAnchor: [12, 26] }) }).addTo(this.sheetFeatures);
+        marker.on('click', event => { L.DomEvent.stopPropagation(event); this.callbacks.sheetPlace?.(place); });
+      }
+    }
+    _click(event) {
+      const point = this.xy(event.latlng);
+      if (this.tool === 'select') { this.callbacks.select(null); return; }
+      if (this.readOnly && this.tool !== 'measure' || ['land', 'sea'].includes(this.tool)) return;
+      if (['pin', 'label', 'symbol'].includes(this.tool)) this.callbacks.action({ type: 'add', kind: this.tool === 'label' ? 'label' : 'pin', points: [point], icon: this.symbol });
+      else { if (!this.draft.length || Math.hypot(...this.screenPoint(point).map((n, i) => n - this.screenPoint(this.draft.at(-1))[i])) > .5) this.draft.push(point); this._draft(); }
+    }
+    _draft() {
+      this.drafts?.clearLayers();
+      if (!this.draft.length) { this.callbacks.draft?.(0, ''); return; }
+      const points = this.draft.map(p => this.latlng(p));
+      L.polyline(points, { color: '#d87923', dashArray: '5 5', weight: 3 }).addTo(this.drafts);
+      for (const point of points) L.circleMarker(point, { radius: 4, color: '#d87923' }).addTo(this.drafts);
+      this.callbacks.draft?.(this.draft.length, D().distanceLabel(D().distance(this.draft, this.doc), this.doc));
+    }
+    finish() {
+      const minimum = this.tool === 'region' ? 3 : 2;
+      if (this.draft.length < minimum) { this.callbacks.message?.(`${minimum}点以上を指定してください`); return false; }
+      if (this.tool === 'measure') this.callbacks.message?.('距離: ' + D().distanceLabel(D().distance(this.draft, this.doc), this.doc));
+      else this.callbacks.action({ type: 'add', kind: this.tool, points: D().clone(this.draft) });
+      this.cancel(); return true;
+    }
+    cancel() {
+      this.draft = []; this.drafts?.clearLayers(); this.callbacks.draft?.(0, '');
+      if (this._painting) { this._painting = null; this._terrainData = null; this._terrain(); if (this.container.hasPointerCapture(this._paintingId)) this.container.releasePointerCapture(this._paintingId); }
+    }
+    _indicators() {
+      if (!this.map || !this.scaleLabel || !this.container.clientWidth) return;
+      this.container.classList.toggle('gb-map-atlas-small', this.doc?.coordinate_system === 'local' && this.map.getZoom() < -.4);
+      const center = [this.container.clientWidth / 2, this.container.clientHeight / 2];
+      const points = [-50, 50].map(x => this.xy(this.map.containerPointToLatLng(this.interaction.native([center[0] + x, center[1]]))));
+      const bar = D().scaleBar(D().distance(points, this.doc));
+      this.scaleLabel.textContent = D().distanceLabel(bar.distance, this.doc); this.scaleLine.style.width = bar.pixels + 'px';
+      this.scaleNote.textContent = this.doc.coordinate_system === 'local' && !this.doc.scale.distance_per_unit ? '縮尺未設定' : '';
+      this.compass.style.transform = `rotate(${(this.doc.coordinate_system === 'world' ? 0 : this.doc.scale.north_degrees) + this.rotation}deg)`;
+      this.compass.parentElement.title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
+    }
+    _paintPointer(event) {
+      if (!this.map || !['land', 'sea'].includes(this.tool) || this.readOnly || event.target.closest('.leaflet-control') || this.interaction.navigationEvent(event)) return;
+      if (event.type === 'pointerdown') {
+        if (event.button !== 0) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+        this._painting = this.doc.terrain ? D().clone(this.doc.terrain)
+          : { cols: 128, rows: 80, heights: Array(128 * 80).fill(-0.6) };
+        this._paintingId = event.pointerId; this.container.setPointerCapture(event.pointerId);
+      }
+      if (!this._painting || event.pointerId !== this._paintingId) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (['pointercancel', 'lostpointercapture'].includes(event.type)) { this._painting = null; this._terrainData = null; this._terrain(); return; }
+      if (event.type === 'pointerup') {
+        const terrain = this._painting; this._painting = null;
+        this.container.releasePointerCapture(event.pointerId);
+        this.callbacks.action({ type: 'terrain', terrain }); return;
+      }
+      const [x, y] = this.xy(this.map.mouseEventToLatLng(event));
+      const t = this._painting, radius = this.brushSize || 70;
+      for (let row = 0; row < t.rows; row++) for (let col = 0; col < t.cols; col++) {
+        if (Math.hypot(col / (t.cols - 1) * this.doc.canvas.width - x, row / (t.rows - 1) * this.doc.canvas.height - y) <= radius) t.heights[row * t.cols + col] = this.tool === 'sea' ? -0.5 : 0.25;
+      }
+      this._terrain(t);
+    }
+    async exportPNG() {
+      if (this.doc.coordinate_system !== 'local') throw new Error('PNG書き出しは創作地図で利用できます');
+      const doc = { ...this.doc, layers: this.doc.layers.map(l => ({ ...l, visible: this.layerVisibility?.[l.id] ?? l.visible })) }, periodId = this.periodId,
+        featureKind = this.featureKind, filter = this.filter, ratio = Math.min(1, 4096 / Math.max(doc.canvas.width, doc.canvas.height));
+      const canvas = document.createElement('canvas'); canvas.width = Math.round(doc.canvas.width * ratio); canvas.height = Math.round(doc.canvas.height * ratio);
+      const c = canvas.getContext('2d'); c.scale(ratio, ratio); c.fillStyle = '#ecede2'; c.fillRect(0, 0, doc.canvas.width, doc.canvas.height);
+      if (doc.background) { const image = new Image(); image.src = doc.background.data_url; await image.decode(); c.drawImage(image, 0, 0, doc.canvas.width, doc.canvas.height); }
+      if (doc.terrain) { c.globalAlpha = doc.background ? 0.7 : 1; c.drawImage(terrainCanvas(doc.terrain), 0, 0, doc.canvas.width, doc.canvas.height); c.globalAlpha = 1; }
+      for (const layer of [...doc.layers].reverse().filter(l => l.visible)) for (const f of doc.features.filter(f => f.layer_id === layer.id && D().visibleInPeriod(f, periodId)
+        && (!featureKind || f.kind === featureKind) && (!filter || (f.label + ' ' + f.tags.join(' ') + ' ' + f.description).toLocaleLowerCase().includes(filter)))) {
+        const cart = root.MeldexMapTerrainRender.style(f);
+        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontSize / ratio}px sans-serif`;
+        c.setLineDash(cart.dash ? cart.dash.split(' ').map(Number).map(n=>n/ratio) : f.dashed ? [8/ratio,5/ratio] : []);
+        if (f.kind === 'pin') { if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
+        if (['route', 'region'].includes(f.kind)) {
+          const points = D().drawPoints(f, doc);
+          c.beginPath(); points.forEach((p, i) => i ? c.lineTo(...p) : c.moveTo(...p));
+          if (f.kind === 'region') { c.closePath(); c.globalAlpha = layer.opacity * cart.fillOpacity; c.fill(); c.globalAlpha = layer.opacity; }
+          c.stroke();
+          if (f.kind === 'route' && f.arrow) {
+            const a = points[points.length - 2], b = points[points.length - 1];
+            c.save(); c.translate(...b); c.rotate(Math.atan2(b[1] - a[1], b[0] - a[0]));
+            c.beginPath(); c.moveTo(0, 0); c.lineTo(-16 / ratio, -7 / ratio); c.lineTo(-16 / ratio, 7 / ratio); c.closePath(); c.fill(); c.restore();
+          }
+        }
+        if (f.label && cart.label) { let x=f.points[0][0]+(f.kind==='pin'?(cart.role==='city'?cart.symbolSize/2+4:18)/ratio:0);const y=f.points[0][1],width=c.measureText(f.label).width;
+          if(cart.role&&f.kind==='label')x-=width/2;
+          if(cart.role==='city'&&x+width>doc.canvas.width-12/ratio)x=f.points[0][0]-(cart.symbolSize/2+4)/ratio-width;
+          if(cart.role)x=Math.max(12/ratio,Math.min(doc.canvas.width-width-12/ratio,x));
+          if(cart.role){c.save();c.setLineDash([]);c.strokeStyle='rgba(255,255,244,.8)';c.lineWidth=2.5/ratio;c.strokeText(f.label,x,y);c.restore();} c.fillText(f.label,x,y); }
+      }
+      c.globalAlpha = 1; c.setLineDash([]); c.resetTransform(); c.fillStyle = 'rgba(255,255,255,.86)'; c.fillRect(16, canvas.height - 67, 205, 50);
+      const per100 = 100 / ratio * (doc.scale.distance_per_unit || 1), bar = D().scaleBar(per100);
+      c.fillStyle = c.strokeStyle = '#26313b'; c.lineWidth = 2; c.font = '14px sans-serif';
+      c.fillText(D().distanceLabel(bar.distance, doc), 24, canvas.height - 45);
+      c.beginPath(); c.moveTo(24, canvas.height - 38); c.lineTo(24, canvas.height - 32); c.lineTo(24 + bar.pixels, canvas.height - 32); c.lineTo(24 + bar.pixels, canvas.height - 38); c.stroke();
+      if (!doc.scale.distance_per_unit) { c.font = '11px sans-serif'; c.fillText('縮尺未設定', 135, canvas.height - 30); }
+      c.save(); c.translate(canvas.width - 48, 50); c.rotate(doc.scale.north_degrees * Math.PI / 180);
+      c.font = 'bold 20px sans-serif'; c.textAlign = 'center'; c.fillText('N', 0, -12); c.fillText('▲', 0, 12); c.restore();
+      const period = (doc.periods || []).find(item => item.id === periodId);
+      if (period) { c.fillStyle = '#26313b'; c.font = '16px sans-serif'; c.fillText(period.name, 20, 30, Math.max(1, canvas.width - 100)); }
+      return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    }
+    destroy() {
+      if (this._destroyed) return;
+      this._destroyed = true;
+      this.interaction.destroy();
+      this._observer.disconnect();
+      const map = this.map; this.map = null; map?.stop(); map?.remove();
+      ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'].forEach(type => this.container.removeEventListener(type, this._pointer, true));
+    }
+  }
+  root.MeldexMapView = MapView;
+})(globalThis);
+
+;
+
+/* === gb-map-settlements.js === */
+;
+/* Deterministic city drafts use ordinary layers and pins, preserving old readers. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapSettlements = api;
+})(globalThis, function (D) {
+  'use strict';
+  function generate(source, options) {
+    const doc = D.parse(source), { seed, count, spacing, prefix, color } = options;
+    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから都市候補を作成してください');
+    if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || !Number.isInteger(count) || count < 1 || count > 100
+      || !Number.isFinite(spacing) || spacing < 1 || spacing > 1e7 || typeof prefix !== 'string' || !prefix.trim() || prefix.length > 64
+      || typeof color !== 'string' || !/^#[\da-f]{6}$/i.test(color)) throw new Error('都市生成の条件を確認してください');
+    if (doc.layers.length >= 100 || doc.features.length >= 10000) throw new Error('レイヤーまたは図形の上限に達しています');
+    let state = 2166136261;
+    for (const character of seed) state = Math.imul(state ^ character.codePointAt(0), 16777619) >>> 0;
+    const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+    const { cols, rows, heights } = doc.terrain, candidates = [];
+    for (let y = 0; y < rows - 1; y++) for (let x = 0; x < cols - 1; x++) {
+      // Four corners bound the interpolated centre shown by the renderer.
+      const corners = [heights[y * cols + x], heights[y * cols + x + 1], heights[(y + 1) * cols + x], heights[(y + 1) * cols + x + 1]];
+      const low = Math.min(...corners), high = Math.max(...corners);
+      if (low < 0.035 || high > 0.65 || high - low > 0.35) continue;
+      candidates.push({ point: [(x + 0.5) / cols * doc.canvas.width, (y + 0.5) / rows * doc.canvas.height],
+        score: random() * 0.6 + (0.5 - (low + high) / 2) * 0.8 - (high - low) * 0.4 });
+    }
+    candidates.sort((a, b) => b.score - a.score || a.point[1] - b.point[1] || a.point[0] - b.point[0]);
+    const buckets = new Map(), add = point => {
+      const key = Math.floor(point[0] / spacing) + ',' + Math.floor(point[1] / spacing);
+      if (!buckets.has(key)) buckets.set(key, []); buckets.get(key).push(point);
+    };
+    doc.features.filter(feature => feature.kind === 'pin').forEach(feature => add(feature.points[0]));
+    const available = point => {
+      const bx = Math.floor(point[0] / spacing), by = Math.floor(point[1] / spacing);
+      for (let y = by - 1; y <= by + 1; y++) for (let x = bx - 1; x <= bx + 1; x++) {
+        if ((buckets.get(x + ',' + y) || []).some(other => (point[0] - other[0]) ** 2 + (point[1] - other[1]) ** 2 < spacing ** 2)) return false;
+      }
+      return true;
+    };
+    const selected = [], names = new Set(doc.features.map(feature => feature.label)); let sequence = 1;
+    for (const candidate of candidates) {
+      if (!available(candidate.point)) continue;
+      while (names.has(prefix.trim() + ' ' + sequence)) sequence++;
+      const label = prefix.trim() + ' ' + sequence++; names.add(label);
+      selected.push({ point: candidate.point, label }); add(candidate.point);
+      if (selected.length >= Math.min(count, 10000 - doc.features.length)) break;
+    }
+    return { seed, count, spacing, prefix: prefix.trim(), color, candidates: selected };
+  }
+  function materialize(plan) {
+    const layer = { id: D.id(), name: plan.prefix + '（生成）', visible: true, locked: false, opacity: 1,
+      generation: { kind: 'settlements', generator_version: 1, seed: plan.seed, count: plan.count, spacing: plan.spacing, prefix: plan.prefix, color: plan.color } };
+    const features = plan.candidates.map(candidate => ({ ...D.feature('pin', [candidate.point], layer.id, candidate.label),
+      icon: 'city', color: plan.color, tags: ['都市'], description: '地形から生成した都市候補' }));
+    return { layer, features };
+  }
+  function show(app) {
+    app._commitInput();
+    if (app._inputDirty) throw new Error('入力内容を確認してから都市を生成してください');
+    if (app._settlementsPreview?.panel.isConnected) { app._settlementsPreview.panel.querySelector('input')?.focus(); return; }
+    if (app.editingDisabled || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    app._worldPreview?.destroy(); app._generatorPreview?.destroy(); app._climatePreview?.destroy();
+    const store = app.store, canEdit = app._editGuard(), path = app.path;
+    const panel = document.createElement('div'); panel.className = 'gb-map-generator'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', '都市生成のプレビュー');
+    const heading = document.createElement('h3'); heading.textContent = '都市候補を生成';
+    const help = document.createElement('p'); help.textContent = '生成・手描きした地形の陸地から、低めで平坦な場所を選びます。既存の地点との間隔を保ち、確認後に新しいレイヤーへ追加します。'; panel.append(heading, help);
+    const previous = [...store.doc.layers].reverse().find(layer => layer.generation?.kind === 'settlements' && layer.generation.generator_version === 1)?.generation;
+    let source = null, draft = null, preview = null, previewConditions = '', pending = false;
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = '条件を設定し、プレビューを作成してください。';
+    const clear = () => { source = null; draft = null; previewConditions = ''; adopt.disabled = true; preview?.destroy(); preview = null; canvas.replaceChildren(); };
+    const input = (name, value, attributes = {}) => {
+      const label = document.createElement('label'); label.className = 'gb-map-field';
+      const caption = document.createElement('span'); caption.textContent = name;
+      const control = document.createElement('input'); control.setAttribute('aria-label', name); Object.assign(control, attributes); control.value = value;
+      control.oninput = control.onchange = () => { clear(); status.textContent = '条件が変わりました。プレビューを作り直してください。'; };
+      label.append(caption, control); panel.appendChild(label); return control;
+    };
+    const seed = input('都市生成のシード', typeof previous?.seed === 'string' ? previous.seed : 'cities', { maxLength: 128 });
+    const count = input('生成する都市数', Number.isInteger(previous?.count) ? previous.count : 20, { type: 'number', min: 1, max: 100, step: 1 });
+    const spacing = input('最小間隔（地図単位）', Number.isFinite(previous?.spacing) ? previous.spacing : Math.round(Math.hypot(store.doc.canvas.width, store.doc.canvas.height) / 15), { type: 'number', min: 1, max: 1e7, step: 'any' });
+    const prefix = input('都市名の接頭辞', typeof previous?.prefix === 'string' ? previous.prefix : '都市', { maxLength: 64 });
+    const color = input('都市の色', previous?.color || app.colorInput.value, { type: 'color' });
+    const canvas = document.createElement('div'); canvas.className = 'gb-map-generator-preview';
+    const conditions = () => JSON.stringify([seed.value, count.value, spacing.value, prefix.value, color.value]);
+    const current = () => panel.isConnected && canEdit() && app.store === store && app.path === path && app._active !== false;
+    const cleanup = () => { MeldexMapChrome.closePanel(panel); preview?.destroy(); preview = null; panel.remove(); if (app._settlementsPreview?.panel === panel) app._settlementsPreview = null; };
+    const generateButton = app._button('都市候補をプレビュー', () => {
+      if (pending || !current() || ![seed, count, spacing, prefix, color].every(control => control.reportValidity())) return;
+      clear();
+      try {
+        source = store.doc;
+        const plan = generate(source, { seed: seed.value, count: Number(count.value), spacing: Number(spacing.value), prefix: prefix.value, color: color.value });
+        draft = materialize(plan);
+        previewConditions = conditions();
+        const doc = D.clone(source); doc.layers.push(draft.layer); doc.features.push(...draft.features);
+        preview = new MeldexMapView(canvas, { action: () => {}, select: () => {} }); preview.setDocument(doc, true);
+        status.textContent = `${draft.features.length}/${plan.count}件の都市候補を配置できます。` + (draft.features.length < plan.count ? '陸地・間隔・図形上限の条件により希望数に届いていません。' : '') + ' 元の地図はまだ変更していません。';
+        adopt.disabled = !draft.features.length;
+      } catch (error) { clear(); status.textContent = error.message; }
+    });
+    const adopt = app._button('都市を新しいレイヤーへ追加', async () => {
+      if (pending || !current() || !draft) return;
+      if (conditions() !== previewConditions) { clear(); status.textContent = '条件が変わりました。プレビューを作り直してください。'; return; }
+      if (store.doc !== source || app._inputDirty) { clear(); status.textContent = '地図が変更されました。プレビューを作り直してください。'; return; }
+      const result = draft, original = source, configuration = previewConditions;
+      pending = true; adopt.disabled = true; generateButton.disabled = true;
+      try {
+        const access = await MeldexEntityDetail.resolveReadOnly(path, false);
+        if (!current() || draft !== result) return;
+        if (access.readOnly) { clear(); status.textContent = access.reason || 'このマップは編集できません'; return; }
+        if (store.doc !== original || app._inputDirty || conditions() !== configuration) {
+          clear(); status.textContent = '地図または条件が変更されました。プレビューを作り直してください。'; return;
+        }
+        if (app.update(doc => { doc.layers.push(result.layer); doc.features.push(...result.features); })) {
+          app._activeLayer = result.layer.id; cleanup(); app._render(); app._message(result.features.length + '件の都市候補を追加しました');
+        }
+      } catch (error) { if (current()) status.textContent = '追加できません: ' + error.message; }
+      finally { pending = false; adopt.disabled = !draft; generateButton.disabled = false; }
+    }, { disabled: true });
+    panel.append(status, canvas, generateButton, adopt, app._button('閉じる', cleanup));
+    app._settlementsPreview = { panel, destroy: cleanup }; MeldexMapChrome.openPanel(panel); seed.focus();
+  }
+  return Object.freeze({ generate, materialize, show });
+});
+
+;
+
+/* === gb-map-periods.js === */
+;
+/* Chapter/era membership is optional; viewing never changes the map document. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapPeriods = api;
+})(globalThis, function (D) {
+  'use strict';
+  const selected = app => (app.store.doc.periods || []).some(period => period.id === app.state.mapPeriodId) ? app.state.mapPeriodId : '';
+  function choose(app, id) {
+    id = (app.store.doc.periods || []).some(period => period.id === id) ? id : '';
+    app.state.mapPeriodId = id;
+    const tab = app._tab(); if (tab) tab.state.mapPeriodId = id;
+    GBLayout.saveLayout();
+  }
+  function remove(doc, id) {
+    if (!(doc.periods || []).some(period => period.id === id)) return false;
+    doc.periods = doc.periods.filter(period => period.id !== id);
+    for (const feature of doc.features) if (feature.period_ids?.includes(id)) {
+      feature.period_ids = feature.period_ids.filter(key => key !== id);
+      if (!feature.period_ids.length) delete feature.period_ids;
+    }
+  }
+  function name(value, doc, except = '') {
+    const result = value.trim();
+    if (!result || [...result].length > 120) throw new Error('章・時代の名前は1〜120文字で入力してください');
+    if ((doc.periods || []).some(period => period.id !== except && period.name === result)) throw new Error('同じ名前の章・時代があります');
+    return result;
+  }
+  async function edit(app, rename = false) {
+    app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+    const canEdit = app._editGuard(), original = app.store.doc;
+    const target = (original.periods || []).find(period => period.id === selected(app));
+    if (rename && !target) return;
+    const value = await cfPrompt(rename ? '章・時代の名前を変更（120文字まで）' : '章・時代を追加（120文字まで）', target && rename ? target.name : '');
+    if (value === null || value === undefined || !canEdit() || app._active === false) return;
+    const access = await MeldexEntityDetail.resolveReadOnly(app.path, false);
+    if (!canEdit() || app._active === false) return;
+    if (access.readOnly) throw new Error(access.reason || 'このマップは編集できません');
+    if (app.store.doc !== original) throw new Error('地図が変更されました。もう一度操作してください');
+    const label = name(value, original, rename ? target.id : ''), id = rename ? target.id : D.id();
+    if (app.update(doc => {
+      if (rename) doc.periods.find(period => period.id === id).name = label;
+      else { if ((doc.periods || []).length >= 100) throw new Error('章・時代は100件までです'); (doc.periods ||= []).push({ id, name: label }); }
+    })) {
+      choose(app, id); app._render();
+    }
+  }
+  async function erase(app) {
+    app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+    const canEdit = app._editGuard(), source = app.store.doc, id = selected(app), target = (source.periods || []).find(period => period.id === id);
+    if (!target || !await cfConfirm(`「${target.name}」を削除しますか？ 図形は削除しません。この章・時代だけに割り当てた図形は、すべての章・時代で表示されます。`)) return;
+    if (!canEdit() || app._active === false || app.store.doc !== source) return;
+    const access = await MeldexEntityDetail.resolveReadOnly(app.path, false);
+    if (!canEdit() || app._active === false || app.store.doc !== source) return;
+    if (access.readOnly) throw new Error(access.reason || 'このマップは編集できません');
+    if (app.update(doc => remove(doc, id))) { choose(app, ''); app._render(); }
+  }
+  function render(app) {
+    const root = app.periodsRoot; root.replaceChildren();
+    const id = selected(app);
+    const tab = app._tab();
+    if (app.state.mapPeriodId !== id || tab && tab.state.mapPeriodId !== id) choose(app, id);
+    const label = document.createElement('label'); label.className = 'gb-map-field';
+    const caption = document.createElement('span'); caption.textContent = '表示する章・時代';
+    const select = document.createElement('select'); select.setAttribute('aria-label', '表示する章・時代'); select.add(new Option('すべて', ''));
+    for (const period of app.store.doc.periods || []) select.add(new Option(period.name, period.id));
+    select.value = id;
+    select.onchange = () => {
+      app._commitInput(); if (app._inputDirty) { select.value = id; app._message('入力内容を確認してください'); return; }
+      choose(app, select.value); app._render();
+    };
+    label.append(caption, select); root.append(label, app._button('章・時代を追加', () => edit(app), { disabled: app.editingDisabled }),
+      app._button('章・時代の名前を変更', () => edit(app, true), { disabled: app.editingDisabled || !id }),
+      app._button('章・時代を削除', () => erase(app), { disabled: app.editingDisabled || !id }));
+  }
+  function inspector(app, root, feature) {
+    if (!(app.store.doc.periods || []).length) return;
+    const group = document.createElement('fieldset'), legend = document.createElement('legend'); legend.textContent = '表示する章・時代の割り当て'; group.appendChild(legend);
+    const note = document.createElement('small'); note.textContent = '未選択はすべてに表示。新しい図形・生成・取り込みは、最初はすべてが対象です。'; group.appendChild(note);
+    const canEdit = app._editGuard(feature.id);
+    for (const period of app.store.doc.periods) {
+      const label = document.createElement('label'); label.className = 'gb-map-field';
+      const check = document.createElement('input'); check.type = 'checkbox'; check.checked = !!feature.period_ids?.includes(period.id); check.disabled = !canEdit(); check.setAttribute('aria-label', '表示対象: ' + period.name);
+      check.onchange = () => {
+        if (!group.isConnected || !canEdit()) return;
+        app.update(doc => {
+          const target = doc.features.find(item => item.id === feature.id), ids = new Set(target.period_ids || []);
+          if (check.checked) ids.add(period.id); else ids.delete(period.id);
+          if (ids.size) target.period_ids = [...ids]; else delete target.period_ids;
+        }); app._render();
+      };
+      label.append(check, document.createTextNode(period.name)); group.appendChild(label);
+    }
+    root.appendChild(group);
+  }
+  return Object.freeze({ selected, choose, remove, render, inspector });
+});
+
+;
+
+/* === gb-map-climate.js === */
+;
+/* Creative climate drafts are ordinary editable regions, not live weather data. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapClimate = api;
+})(globalThis, function (D) {
+  'use strict';
+  const types = Object.freeze([
+    { key: 'polar', name: '寒帯', color: '#c1dce5' }, { key: 'cold', name: '亜寒帯', color: '#739d9e' },
+    { key: 'temperate', name: '温帯', color: '#8cae6f' }, { key: 'tropical', name: '熱帯', color: '#31966f' },
+    { key: 'dry', name: '乾燥帯', color: '#d5b775' }, { key: 'alpine', name: '高山帯', color: '#aaa3ae' },
+  ].map(Object.freeze));
+  function generate(source, options) {
+    const doc = D.parse(source), { seed, warmth, wetness, equator, columns, name } = options;
+    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから気候帯の下案を作成してください');
+    if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || typeof name !== 'string' || !name.trim() || name.length > 64
+      || ![warmth, wetness, equator].every(value => Number.isFinite(value) && value >= 0 && value <= 100)
+      || !Number.isInteger(columns) || columns < 4 || columns > 32) throw new Error('気候帯生成の条件を確認してください');
+    if (doc.layers.length >= 100 || doc.features.length >= 10000) throw new Error('レイヤーまたは図形の上限に達しています');
+    let state = 2166136261;
+    for (const character of seed) state = Math.imul(state ^ character.codePointAt(0), 16777619) >>> 0;
+    const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+    const phases = [random() * Math.PI * 2, random() * Math.PI * 2];
+    const rows = Math.max(4, Math.min(24, Math.round(columns * doc.canvas.height / doc.canvas.width)));
+    const terrain = doc.terrain, angle = ((doc.scale.north_degrees % 360 + 360) % 360) * Math.PI / 180;
+    const sx = Math.sin(angle), sy = -Math.cos(angle), extent = (Math.abs(sx) * doc.canvas.width + Math.abs(sy) * doc.canvas.height) / 2;
+    const sample = (x, y) => {
+      const gx = Math.min(terrain.cols - 1, x * terrain.cols), gy = Math.min(terrain.rows - 1, y * terrain.rows);
+      const ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
+      const get = (cx, cy) => terrain.heights[Math.min(terrain.rows - 1, cy) * terrain.cols + Math.min(terrain.cols - 1, cx)];
+      return get(ix, iy) * (1 - fx) * (1 - fy) + get(ix + 1, iy) * fx * (1 - fy) + get(ix, iy + 1) * (1 - fx) * fy + get(ix + 1, iy + 1) * fx * fy;
+    };
+    const cells = [];
+    for (let y = 0; y < rows; y++) for (let x = 0; x < columns; x++) {
+      const nx = (x + 0.5) / columns, ny = (y + 0.5) / rows, height = sample(nx, ny);
+      if (height < 0.035) { cells.push(null); continue; }
+      const northness = ((nx - 0.5) * doc.canvas.width * sx + (ny - 0.5) * doc.canvas.height * sy) / extent;
+      const latitude = Math.abs((1 - northness) / 2 - equator / 100) / Math.max(equator / 100, 1 - equator / 100);
+      const heat = warmth / 100 * 0.85 + 0.25 - latitude * 0.8 - Math.max(0, height) * 0.4;
+      const moisture = wetness / 100 + 0.3 * Math.sin(nx * Math.PI * 4 + phases[0]) * Math.cos(ny * Math.PI * 3 + phases[1]) - height * 0.1;
+      cells.push(height > 0.7 ? 'alpine' : heat < 0.18 ? 'polar' : moisture < 0.28 ? 'dry' : heat > 0.58 ? 'tropical' : heat < 0.36 ? 'cold' : 'temperate');
+    }
+    const rectangles = []; let active = new Map();
+    for (let y = 0; y < rows; y++) {
+      const next = new Map();
+      for (let x = 0; x < columns;) {
+        const kind = cells[y * columns + x], start = x++;
+        while (x < columns && cells[y * columns + x] === kind) x++;
+        if (!kind) continue;
+        const key = kind + ':' + start + ':' + x, previous = active.get(key);
+        const rectangle = previous || { kind, x1: start, x2: x, y1: y, y2: y + 1 };
+        if (previous) previous.y2 = y + 1; else rectangles.push(rectangle);
+        next.set(key, rectangle);
+      }
+      active = next;
+    }
+    if (doc.features.length + rectangles.length > 10000 || doc.features.reduce((sum, feature) => sum + feature.points.length, 0) + rectangles.length * 4 > 100000) throw new Error('図形または頂点の上限を超えます。区画数を減らすか地図の図形を整理してください');
+    const names = new Set(doc.features.map(feature => feature.label)), counters = new Map();
+    const regions = rectangles.map(rectangle => {
+      const type = types.find(item => item.key === rectangle.kind); let number = counters.get(type.key) || 1;
+      while (names.has(type.name + ' ' + number)) number++;
+      const label = type.name + ' ' + number; names.add(label); counters.set(type.key, number + 1);
+      const x1 = rectangle.x1 / columns * doc.canvas.width, x2 = rectangle.x2 / columns * doc.canvas.width;
+      const y1 = rectangle.y1 / rows * doc.canvas.height, y2 = rectangle.y2 / rows * doc.canvas.height;
+      return { key: type.key, label, color: type.color, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] };
+    });
+    return { seed, warmth, wetness, equator, columns, rows, name: name.trim(), north_degrees: doc.scale.north_degrees, cells, regions,
+      summary: types.map(type => ({ ...type, cells: cells.filter(key => key === type.key).length })).filter(type => type.cells) };
+  }
+  function materialize(plan) {
+    const layer = { id: D.id(), name: plan.name + '（生成）', visible: true, locked: false, opacity: 0.85,
+      generation: { kind: 'climate', generator_version: 1, seed: plan.seed, warmth: plan.warmth, wetness: plan.wetness,
+        equator: plan.equator, columns: plan.columns, name: plan.name, north_degrees: plan.north_degrees } };
+    const features = plan.regions.map(region => ({ ...D.feature('region', region.points, layer.id, region.label), color: region.color,
+      description: '区画中央の地形から分類した創作用の気候帯下案', tags: ['気候', types.find(type => type.key === region.key).name] }));
+    return { layer, features };
+  }
+  function prepare(source, options) {
+    const plan = generate(source, options), draft = materialize(plan), doc = D.clone(source);
+    doc.layers.push(draft.layer); doc.features.push(...draft.features);
+    // Use the actual pretty-printed storage representation, including the
+    // existing image/text payload, before enabling adoption.
+    D.parse(JSON.stringify(doc, null, 2));
+    return { plan, draft, doc };
+  }
+  function show(app) {
+    app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+    if (app._climatePreview?.panel.isConnected) { app._climatePreview.panel.querySelector('input')?.focus(); return; }
+    if (app.editingDisabled || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    app._worldPreview?.destroy(); app._generatorPreview?.destroy(); app._settlementsPreview?.destroy();
+    const store = app.store, canEdit = app._editGuard(), path = app.path;
+    const previous = [...store.doc.layers].reverse().find(layer => layer.generation?.kind === 'climate' && layer.generation.generator_version === 1)?.generation;
+    const panel = document.createElement('div'); panel.className = 'gb-map-generator'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', '気候帯生成のプレビュー');
+    const title = document.createElement('h3'); title.textContent = '気候帯の下案を生成';
+    const help = document.createElement('p'); help.textContent = '区画中央の地形と地図の北方向を使って分類します。海岸の形には一致しません。確認後に編集できる領域として追加します。'; panel.append(title, help);
+    let source = null, draft = null, preview = null, configuration = '', pending = false;
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = '条件を設定してプレビューしてください。';
+    const clear = () => { source = null; draft = null; configuration = ''; adopt.disabled = true; preview?.destroy(); preview = null; canvas.replaceChildren(); legend.replaceChildren(); };
+    const input = (labelText, value, attributes = {}) => {
+      const label = document.createElement('label'); label.className = 'gb-map-field'; const text = document.createElement('span'); text.textContent = labelText;
+      const control = document.createElement('input'); control.setAttribute('aria-label', labelText); control.required = true; Object.assign(control, attributes); control.value = value;
+      control.oninput = control.onchange = () => { clear(); status.textContent = '条件が変わりました。プレビューを作り直してください。'; };
+      label.append(text, control); panel.appendChild(label); return control;
+    };
+    const seed = input('気候帯のシード', typeof previous?.seed === 'string' ? previous.seed : 'climate', { maxLength: 128 });
+    const number = (label, key, fallback, min = 0, max = 100, step = 'any') => input(label, Number.isFinite(previous?.[key]) ? previous[key] : fallback, { type: 'number', min, max, step });
+    const warmth = number('暖かさ（0〜100）', 'warmth', 60), wetness = number('湿り気（0〜100）', 'wetness', 55);
+    const equator = number('赤道の位置（北端から%）', 'equator', 50), columns = number('横の区画数', 'columns', 16, 4, 32, 1);
+    const name = input('気候レイヤーの名前', typeof previous?.name === 'string' ? previous.name : '気候', { maxLength: 64 });
+    const conditions = () => JSON.stringify([seed.value, warmth.value, wetness.value, equator.value, columns.value, name.value]);
+    const canvas = document.createElement('div'); canvas.className = 'gb-map-generator-preview';
+    const legend = document.createElement('div'); legend.setAttribute('role', 'group'); legend.setAttribute('aria-label', '気候帯の凡例'); legend.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:8px 0';
+    const current = () => panel.isConnected && canEdit() && app.store === store && app.path === path && app._active !== false;
+    const cleanup = () => { MeldexMapChrome.closePanel(panel); preview?.destroy(); preview = null; panel.remove(); if (app._climatePreview?.panel === panel) app._climatePreview = null; };
+    const generateButton = app._button('気候帯をプレビュー', () => {
+      if (pending || !current() || ![seed, warmth, wetness, equator, columns, name].every(control => control.reportValidity())) return;
+      clear();
+      try {
+        source = store.doc;
+        const prepared = prepare(source, { seed: seed.value, warmth: Number(warmth.value), wetness: Number(wetness.value), equator: Number(equator.value), columns: Number(columns.value), name: name.value });
+        const { plan, doc } = prepared; draft = prepared.draft; configuration = conditions();
+        preview = new MeldexMapView(canvas, { action: () => {}, select: () => {} }); preview.setDocument(doc, true);
+        const land = plan.summary.reduce((sum, type) => sum + type.cells, 0);
+        for (const type of plan.summary) {
+          const item = document.createElement('span'), swatch = document.createElement('span'); swatch.style.cssText = 'display:inline-block;width:12px;height:12px;margin-right:4px'; swatch.style.backgroundColor = type.color;
+          item.append(swatch, document.createTextNode(type.name + ' 約' + Math.round(type.cells / land * 100) + '%')); legend.appendChild(item);
+        }
+        status.textContent = `${plan.columns}×${plan.rows}区画から${draft.features.length}領域。北方向${plan.north_degrees}°。` + (land ? '元の地図はまだ変更していません。' : '区画中央に陸地がありません。地形や区画数を調整してください。');
+        adopt.disabled = !draft.features.length;
+      } catch (error) { clear(); status.textContent = error.message; }
+    });
+    const adopt = app._button('気候帯を新しいレイヤーへ追加', async () => {
+      if (pending || !current() || !draft) return;
+      if (store.doc !== source || app._inputDirty || conditions() !== configuration) { clear(); status.textContent = '地図または条件が変更されました。プレビューを作り直してください。'; return; }
+      const result = draft, original = source, settings = configuration; pending = true; adopt.disabled = true; generateButton.disabled = true;
+      try {
+        const access = await MeldexEntityDetail.resolveReadOnly(path, false);
+        if (!current() || draft !== result) return;
+        if (access.readOnly) { clear(); status.textContent = access.reason || 'このマップは編集できません'; return; }
+        if (store.doc !== original || app._inputDirty || conditions() !== settings) { clear(); status.textContent = '地図または条件が変更されました。プレビューを作り直してください。'; return; }
+        if (app.update(doc => { doc.layers.push(result.layer); doc.features.push(...result.features); })) { app._activeLayer = result.layer.id; cleanup(); app._render(); app._message(result.features.length + '領域の気候帯を追加しました'); }
+      } catch (error) { if (current()) status.textContent = '追加できません: ' + error.message; }
+      finally { pending = false; adopt.disabled = !draft; generateButton.disabled = false; }
+    }, { disabled: true });
+    panel.append(status, legend, canvas, generateButton, adopt, app._button('閉じる', cleanup));
+    app._climatePreview = { panel, destroy: cleanup }; MeldexMapChrome.openPanel(panel); seed.focus();
+  }
+  return Object.freeze({ types, generate, materialize, prepare, show });
+});
+
+;
+
+/* === gb-map-grid.js === */
+;
+/* Bounded cell geometry shared by creative generators. Coordinates use y down. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapGrid = api;
+})(globalThis, function () {
+  'use strict';
+  function rng(seed) {
+    let state = 2166136261;
+    for (const c of String(seed)) state = Math.imul(state ^ c.codePointAt(0), 16777619) >>> 0;
+    return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+  }
+  function sample(t, x, y) {
+    const gx = Math.max(0, Math.min(t.cols - 1, x * t.cols)), gy = Math.max(0, Math.min(t.rows - 1, y * t.rows));
+    const ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
+    const get = (a, b) => t.heights[Math.min(t.rows - 1, b) * t.cols + Math.min(t.cols - 1, a)];
+    return (get(ix, iy) * (1 - fx) + get(ix + 1, iy) * fx) * (1 - fy) + (get(ix, iy + 1) * (1 - fx) + get(ix + 1, iy + 1) * fx) * fy;
+  }
+  function rectangles(cells, columns, rows, key) {
+    const result = []; let active = new Map();
+    for (let y = 0; y < rows; y++) {
+      const next = new Map();
+      for (let x = 0; x < columns;) {
+        const start = x++, value = cells[y * columns + start];
+        while (x < columns && cells[y * columns + x] === value) x++;
+        if (value !== key) continue;
+        const signature = start + ':' + x, box = active.get(signature) || { x1: start, x2: x, y1: y, y2: y };
+        if (!active.has(signature)) result.push(box);
+        box.y2 = y + 1; next.set(signature, box);
+      }
+      active = next;
+    }
+    return result.map(b => [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]]);
+  }
+  function polygons(cells, columns, rows, key) {
+    const edges = [], starts = new Map(), at = (x, y) => x >= 0 && x < columns && y >= 0 && y < rows && cells[y * columns + x] === key;
+    const add = (x, y, nx, ny, direction) => {
+      const edge = { a: [x, y], b: [nx, ny], direction, used: false }; edges.push(edge);
+      const s = x + ',' + y; if (!starts.has(s)) starts.set(s, []); starts.get(s).push(edge);
+    };
+    for (let y = 0; y < rows; y++) for (let x = 0; x < columns; x++) if (at(x, y)) {
+      if (!at(x, y - 1)) add(x, y, x + 1, y, 0);
+      if (!at(x + 1, y)) add(x + 1, y, x + 1, y + 1, 1);
+      if (!at(x, y + 1)) add(x + 1, y + 1, x, y + 1, 2);
+      if (!at(x - 1, y)) add(x, y + 1, x, y, 3);
+    }
+    const loops = [];
+    for (const first of edges) {
+      if (first.used) continue;
+      const points = []; let edge = first;
+      do {
+        edge.used = true; points.push(edge.a);
+        if (edge.b[0] === first.a[0] && edge.b[1] === first.a[1]) break;
+        const candidates = (starts.get(edge.b.join(',')) || []).filter(e => !e.used);
+        // Follow the right boundary at diagonal contacts; do not join islands.
+        edge = [1, 0, 3, 2].map(turn => candidates.find(e => e.direction === (edge.direction + turn) % 4)).find(Boolean);
+        if (!edge) throw new Error('領域の境界を生成できません');
+      } while (points.length <= edges.length);
+      const simple = points.filter((p, i) => {
+        const a = points[(i + points.length - 1) % points.length], b = points[(i + 1) % points.length];
+        return (p[0] - a[0]) * (b[1] - p[1]) !== (p[1] - a[1]) * (b[0] - p[0]);
+      });
+      loops.push(simple);
+    }
+    const area = points => points.reduce((sum, p, i) => { const q = points[(i + 1) % points.length]; return sum + p[0] * q[1] - q[0] * p[1]; }, 0);
+    // Native regions have no holes. Rectangles retain lakes and enclaves exactly.
+    return loops.some(loop => area(loop) < 0) ? rectangles(cells, columns, rows, key) : loops;
+  }
+  return Object.freeze({ rng, sample, rectangles, polygons });
+});
+
+;
+
+/* === gb-map-world-building.js === */
+;
+/* Seeded, offline world-building drafts. Output remains ordinary editable geometry. */
+(function (root, factory) {
+  const node = typeof module === 'object' && module.exports;
+  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument,
+    node ? require('./gb-map-grid.js') : root.MeldexMapGrid, node ? require('./gb-map-climate.js') : root.MeldexMapClimate);
+  if (node) module.exports = api; else root.MeldexMapWorldBuilding = api;
+})(globalThis, function (D, G, C) {
+  'use strict';
+  const names = { nations: '国家', vegetation: '植生', town: '都市・集落' };
+  const colors = ['#af765e', '#698eb2', '#9a8bba', '#b59c51', '#629d8b', '#b26f95', '#80964f', '#b38342'];
+  const plants = [
+    ['polar', 'ツンドラ', '#bec8a5'], ['cold', '針葉樹林', '#547b68'], ['temperate', '広葉樹林', '#6a965b'],
+    ['tropical', '熱帯林', '#27835b'], ['dry', '乾燥草原・低木', '#bca573'], ['alpine', '高山植生', '#a4a795'],
+  ];
+  function regions(doc, cells, columns, rows, types) {
+    const used = new Set(doc.features.map(f => f.label)), result = [];
+    for (const type of types) {
+      let number = 1;
+      for (const points of G.polygons(cells, columns, rows, type.key)) {
+        while (used.has(type.label + ' ' + number)) number++;
+        const label = type.label + ' ' + number++; used.add(label);
+        result.push({ kind: 'region', points: points.map(([x, y]) => [x / columns * doc.canvas.width, y / rows * doc.canvas.height]),
+          label, color: type.color, tags: [type.label], description: '区画中央の陸地を使った創作の下案。境界は区画単位です。' });
+      }
+    }
+    return result;
+  }
+  function nations(doc, options) {
+    const { count, columns, seed } = options;
+    if (!Number.isInteger(count) || count < 1 || count > 32 || !Number.isInteger(columns) || columns < 8 || columns > 64) throw new Error('国家数は1〜32、横の区画数は8〜64で指定してください');
+    const rows = Math.max(8, Math.min(48, Math.round(columns * doc.canvas.height / doc.canvas.width))), random = G.rng(seed);
+    const heights = Array.from({ length: columns * rows }, (_, i) => G.sample(doc.terrain, (i % columns + .5) / columns, (Math.floor(i / columns) + .5) / rows));
+    const land = heights.map((h, i) => h >= .035 ? i : -1).filter(i => i >= 0), centers = [];
+    const separation = (a, b) => ((a % columns - b % columns) * doc.canvas.width / columns) ** 2 + ((Math.floor(a / columns) - Math.floor(b / columns)) * doc.canvas.height / rows) ** 2;
+    if (!land.length) return { features: [], detail: '区画中央に陸地がありません。' };
+    centers.push(land[Math.floor(random() * land.length)]);
+    while (centers.length < Math.min(count, land.length)) {
+      let candidate = -1, best = -1;
+      for (const cell of land) {
+        const distance = Math.min(...centers.map(c => separation(c, cell)));
+        const score = distance * (.85 + random() * .3);
+        if (score > best && !centers.includes(cell)) { best = score; candidate = cell; }
+      }
+      centers.push(candidate);
+    }
+    const cells = Array(heights.length).fill(null), cost = Array(heights.length).fill(Infinity), done = new Uint8Array(heights.length);
+    centers.forEach((c, i) => { cells[c] = i; cost[c] = 0; });
+    // Bounded (at most 3072 cells) multi-source Dijkstra. Steep/high terrain
+    // increases the expansion cost; sea is never traversed or assigned.
+    for (;;) {
+      let current = -1, best = Infinity;
+      for (const cell of land) if (!done[cell] && cost[cell] < best) { best = cost[cell]; current = cell; }
+      if (current < 0) break;
+      done[current] = 1;
+      const x = current % columns, y = Math.floor(current / columns);
+      for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+        const next = ny * columns + nx;
+        if (nx < 0 || ny < 0 || nx >= columns || ny >= rows || heights[next] < .035 || done[next]) continue;
+        const step = (nx === x ? doc.canvas.height / rows : doc.canvas.width / columns) * (1 + Math.abs(heights[next] - heights[current]) * 6 + Math.max(0, heights[next]) * 2);
+        if (best + step < cost[next]) { cost[next] = best + step; cells[next] = cells[current]; }
+      }
+    }
+    // Unseeded islands belong wholly to the nearest seed, avoiding artificial
+    // nation fragments from assigning each island cell independently.
+    for (const first of land) if (cells[first] === null) {
+      const island = [first]; cells[first] = -1;
+      for (let i = 0; i < island.length; i++) {
+        const c = island[i], x = c % columns, y = Math.floor(c / columns);
+        for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+          const n = ny * columns + nx;
+          if (nx >= 0 && nx < columns && ny >= 0 && ny < rows && heights[n] >= .035 && cells[n] === null) { cells[n] = -1; island.push(n); }
+        }
+      }
+      const distances = centers.map(c => Math.min(...island.map(cell => separation(c, cell))));
+      const owner = distances.indexOf(Math.min(...distances)); island.forEach(c => { cells[c] = owner; });
+    }
+    const types = centers.map((_, i) => ({ key: i, label: options.name + ' ' + (i + 1), color: colors[i % colors.length] }));
+    return { features: regions(doc, cells, columns, rows, types), cells, columns, rows,
+      detail: `${centers.length}か国（希望${count}）、${columns}×${rows}区画。海岸線は区画で近似します。` };
+  }
+  function vegetation(doc, options) {
+    const climate = C.generate(doc, { ...options, equator: options.equator ?? 50 });
+    const types = plants.map(([key, label, color]) => ({ key, label, color }));
+    return { features: regions(doc, climate.cells, climate.columns, climate.rows, types), cells: climate.cells,
+      columns: climate.columns, rows: climate.rows, detail: '暖かさ・湿り気・標高・北方向に基づく6種類の植生下案。海岸線は区画で近似します。' };
+  }
+  function town(doc, options) {
+    const { count, angle, seed } = options;
+    if (!Number.isInteger(count) || count < 8 || count > 200 || !Number.isFinite(angle) || angle < -180 || angle > 180) throw new Error('建物数は8〜200、街路の角度は-180〜180で指定してください');
+    const random = G.rng(seed), size = Math.min(doc.canvas.width, doc.canvas.height) * .68, step = size / 8, half = size / 2;
+    const theta = angle * Math.PI / 180, transform = ([x, y]) => [doc.canvas.width / 2 + x * Math.cos(theta) - y * Math.sin(theta), doc.canvas.height / 2 + x * Math.sin(theta) + y * Math.cos(theta)];
+    const result = [], used = new Set(doc.features.map(f => f.label));
+    const add = (kind, points, label, color, tag) => {
+      let name = label, n = 2; while (used.has(name)) name = label + ' (' + n++ + ')'; used.add(name);
+      result.push({ kind, points: points.map(transform), label: name, color, tags: [tag], description: '編集用の都市・集落下案。背景の水面・斜面には自動で合わせません。' });
+    };
+    for (let i = -2; i <= 2; i++) {
+      const p = i * step * 1.5;
+      add('route', [[-half, p], [half, p]], '東西通り ' + (i + 3), '#a28a62', '街路');
+      add('route', [[p, -half], [p, half]], '南北通り ' + (i + 3), '#a28a62', '街路');
+    }
+    const plaza = step * .33;
+    add('region', [[-plaza, -plaza], [plaza, -plaza], [plaza, plaza], [-plaza, plaza]], options.name + ' 中央広場', '#c9b891', '広場');
+    const lots = [];
+    for (let y = -11; y <= 11; y++) for (let x = -11; x <= 11; x++) {
+      const px = x * step / 3 + step / 6, py = y * step / 3 + step / 6;
+      if (Math.abs(px) < plaza * 1.8 && Math.abs(py) < plaza * 1.8) continue;
+      const streetDistance = v => Math.min(...[-3, -1.5, 0, 1.5, 3].map(s => Math.abs(v / step - s)));
+      if (streetDistance(px) < .18 || streetDistance(py) < .18) continue;
+      lots.push({ x: px, y: py, score: random() });
+    }
+    lots.sort((a, b) => a.score - b.score);
+    const chosen = [];
+    for (const lot of lots) {
+      if (chosen.some(p => Math.abs(p.x - lot.x) < step * .325 && Math.abs(p.y - lot.y) < step * .325)) continue;
+      chosen.push(lot); if (chosen.length >= count) break;
+    }
+    chosen.forEach((p, i) => {
+      const s = step * (.12 + random() * .04);
+      add('region', [[p.x - s, p.y - s], [p.x + s, p.y - s], [p.x + s, p.y + s], [p.x - s, p.y + s]], options.name + ' 建物 ' + (i + 1), '#aa8c75', '建物');
+    });
+    for (const [i, [x, y]] of [[-1, -1], [1, -1], [-1, 1], [1, 1]].entries()) {
+      const x1 = x < 0 ? -half : 0, y1 = y < 0 ? -half : 0;
+      add('region', [[x1, y1], [x1 + half, y1], [x1 + half, y1 + half], [x1, y1 + half]], options.name + ' 街区 ' + (i + 1), '#bbc1ab', '街区');
+    }
+    // Streets/buildings must draw above the broad district fills in this layer.
+    result.sort((a, b) => Number(a.tags[0] !== '街区') - Number(b.tags[0] !== '街区'));
+    return { features: result, detail: `10街路・4街区・1広場・${chosen.length}建物（希望${count}）。地図中央に配置します。` };
+  }
+  function prepare(source, kind, options) {
+    const doc = D.parse(source);
+    if (!Object.hasOwn(names, kind) || doc.coordinate_system !== 'local') throw new Error('創作地図で実行してください');
+    if (typeof options.seed !== 'string' || !options.seed.trim() || options.seed.length > 128 || typeof options.name !== 'string' || !options.name.trim() || options.name.length > 64) throw new Error('シードと名前を入力してください');
+    if (kind !== 'town' && !doc.terrain) throw new Error('先に地形を生成してください');
+    const plan = ({ nations, vegetation, town })[kind](doc, options);
+    const layer = { id: D.id(), name: options.name.trim() + '（生成）', visible: true, locked: false, opacity: kind === 'town' ? 1 : .65,
+      generation: { ...D.clone(options), kind, generator_version: 1 } };
+    const features = plan.features.map(f => ({ ...D.feature(f.kind, f.points, layer.id, f.label), ...f }));
+    if (doc.layers.length >= 100 || doc.features.length + features.length > 10000
+      || doc.features.concat(features).reduce((sum, f) => sum + f.points.length, 0) > 100000) throw new Error('レイヤー・図形・頂点の上限を超えます。生成数を減らすか、地図の図形を整理してください');
+    doc.layers.push(layer); doc.features.push(...features);
+    D.parse(JSON.stringify(doc, null, 2));
+    return { plan, draft: { layer, features }, doc };
+  }
+  function show(app, kind) {
+    app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+    const canEdit = app._editGuard(), store = app.store, path = app.path;
+    if (!canEdit() || store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    app._worldPreview?.destroy(); app._climatePreview?.destroy(); app._settlementsPreview?.destroy(); app._generatorPreview?.destroy();
+    const panel = document.createElement('div'); panel.className = 'gb-map-generator'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', names[kind] + '生成のプレビュー');
+    const heading = document.createElement('h3'); heading.textContent = names[kind] + 'の下案を生成'; panel.appendChild(heading);
+    const help = document.createElement('p'); help.textContent = kind === 'town' ? '地図中央へ街路・街区・建物を配置します。画像・地形へは自動で合わせません。子地図でも利用できます。' : 'シードから創作用の領域を作成します。区画中央で海陸を判定し、既存の領域は残します。'; panel.appendChild(help);
+    let preview = null, prepared = null, source = null, signature = '', pending = false;
+    const controls = {}, previous = [...store.doc.layers].reverse().find(l => l.generation?.kind === kind)?.generation || {};
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = '条件を設定してプレビューしてください。';
+    const canvas = document.createElement('div'); canvas.className = 'gb-map-generator-preview';
+    const clear = () => { preview?.destroy(); preview = null; prepared = source = null; adopt.disabled = true; canvas.replaceChildren(); };
+    const input = (key, label, value, attributes = {}) => {
+      const wrap = document.createElement('label'); wrap.className = 'gb-map-field'; const text = document.createElement('span'); text.textContent = label;
+      const control = document.createElement('input'); control.setAttribute('aria-label', label); control.required = true; Object.assign(control, attributes); control.value = previous[key] ?? value;
+      control.oninput = control.onchange = () => { clear(); status.textContent = '条件が変わりました。プレビューを作り直してください。'; };
+      controls[key] = control; wrap.append(text, control); panel.appendChild(wrap);
+    };
+    input('seed', '生成のシード', kind, { maxLength: 128 }); input('name', '生成する名前', names[kind], { maxLength: 64 });
+    const number = (key, label, value, min, max, step = 1) => input(key, label, value, { type: 'number', min, max, step });
+    if (kind === 'nations') { number('count', '国家数', 6, 1, 32); number('columns', '横の区画数', 32, 8, 64); }
+    if (kind === 'vegetation') {
+      number('warmth', '暖かさ（0〜100）', 60, 0, 100, 'any'); number('wetness', '湿り気（0〜100）', 55, 0, 100, 'any');
+      number('equator', '赤道の位置（北端から%）', 50, 0, 100, 'any'); number('columns', '横の区画数', 16, 4, 32);
+    }
+    if (kind === 'town') { number('count', '建物数', 80, 8, 200); number('angle', '街路の角度（度）', 0, -180, 180, 'any'); }
+    const options = () => Object.fromEntries(Object.entries(controls).map(([k, c]) => [k, c.type === 'number' ? Number(c.value) : c.value]));
+    const conditions = () => JSON.stringify(Object.values(controls).map(c => c.value));
+    const current = () => panel.isConnected && canEdit() && app.path === path && app.store === store && app._active !== false;
+    const cleanup = () => { MeldexMapChrome.closePanel(panel); preview?.destroy(); panel.remove(); if (app._worldPreview?.panel === panel) app._worldPreview = null; };
+    const generate = app._button(names[kind] + 'をプレビュー', () => {
+      if (pending || !current() || !Object.values(controls).every(c => c.reportValidity())) return;
+      clear();
+      try {
+        source = store.doc; prepared = prepare(source, kind, options()); signature = conditions();
+        preview = new MeldexMapView(canvas, { action: () => {}, select: () => {} }); preview.setDocument(prepared.doc, true);
+        status.textContent = prepared.plan.detail + ` ${prepared.draft.features.length}図形。元の地図はまだ変更していません。`;
+        adopt.disabled = !prepared.draft.features.length;
+      } catch (error) { clear(); status.textContent = error.message; }
+    });
+    const adopt = app._button(names[kind] + 'を新しいレイヤーへ追加', async () => {
+      if (pending || !current() || !prepared) return;
+      const result = prepared, original = source, settings = signature;
+      const unchanged = () => store.doc === original && !app._inputDirty && conditions() === settings;
+      if (!unchanged()) { clear(); status.textContent = '地図または条件が変更されました。プレビューを作り直してください。'; return; }
+      pending = true; adopt.disabled = true; generate.disabled = true;
+      try {
+        const access = await MeldexEntityDetail.resolveReadOnly(path, false);
+        if (!current() || prepared !== result) return;
+        if (access.readOnly || !unchanged()) { clear(); status.textContent = access.readOnly ? (access.reason || 'このマップは編集できません') : '地図または条件が変更されました。プレビューを作り直してください。'; return; }
+        if (app.update(doc => { doc.layers.push(result.draft.layer); doc.features.push(...result.draft.features); })) {
+          app._activeLayer = result.draft.layer.id; cleanup(); app._render(); app._message(names[kind] + 'の下案を追加しました');
+        }
+      } catch (error) { if (current()) status.textContent = '追加できません: ' + error.message; }
+      finally { pending = false; generate.disabled = false; adopt.disabled = !prepared; }
+    }, { disabled: true });
+    panel.append(status, canvas, generate, adopt, app._button('閉じる', cleanup));
+    app._worldPreview = { panel, destroy: cleanup }; MeldexMapChrome.openPanel(panel); controls.seed.focus();
+  }
+  return Object.freeze({ prepare, show });
+});
+
+;
+
+/* === gb-map-travel.js === */
+;
+/* Travel is a transparent estimate from geometry and user-specified conditions. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapTravel = api;
+})(globalThis, function (D) {
+  'use strict';
+  const unit = doc => doc.coordinate_system === 'world' ? 'km' : doc.scale.unit;
+  function estimate(doc, feature, settings) {
+    if (feature?.kind !== 'route') throw new Error('経路を選択してください');
+    if (doc.coordinate_system === 'local' && !doc.scale.distance_per_unit) throw new Error('旅程を計算するには縮尺を設定してください');
+    const { speed, daily_hours, rest_days } = settings;
+    if (!Number.isFinite(speed) || speed <= 0 || speed > 1e7 || !Number.isFinite(daily_hours) || daily_hours <= 0 || daily_hours > 24
+      || !Number.isInteger(rest_days) || rest_days < 0 || rest_days > 36500 || settings.unit !== unit(doc)) throw new Error('移動条件と距離の単位を確認してください');
+    const distance = D.distance(D.drawPoints(feature, doc), doc), hours = distance / speed;
+    if (!Number.isFinite(hours)) throw new Error('旅程の概算が大きすぎます');
+    const movingDays = Math.max(hours > 0 ? 1 : 0, Math.ceil(hours / daily_hours - 1e-10));
+    if (!Number.isSafeInteger(movingDays) || !Number.isSafeInteger(movingDays + rest_days)) throw new Error('旅程の概算が大きすぎます。移動条件と縮尺を確認してください');
+    return { distance, hours, movingDays, totalDays: movingDays + rest_days, unit: settings.unit };
+  }
+  function inspector(app, root, feature, locked) {
+    if (feature.kind !== 'route' || feature.cartography?.role === 'border') return;
+    const section = document.createElement('section'); section.setAttribute('aria-label', '旅程の概算');
+    const heading = document.createElement('h4'); heading.textContent = '旅程の概算'; section.appendChild(heading);
+    const doc = app.store.doc, currentUnit = unit(doc), plan = feature.travel_plan, compatible = plan?.unit === currentUnit;
+    const hint = document.createElement('p'); hint.textContent = '速度と1日の移動時間を入力してください。地形・天候・道路の状況は自動で補正しません。'; section.appendChild(hint);
+    const fields = {};
+    const input = (key, label, value, min, max, step) => {
+      const wrap = document.createElement('label'); wrap.className = 'gb-map-field'; const caption = document.createElement('span'); caption.textContent = label;
+      const control = document.createElement('input'); Object.assign(control, { type: 'number', min, max, step, required: true, value }); control.setAttribute('aria-label', label);
+      fields[key] = control; wrap.append(caption, control); section.appendChild(wrap);
+      control.oninput = () => { output.textContent = '条件を変更しました。「概算する」で更新してください。'; };
+    };
+    input('speed', '移動速度（' + (currentUnit === 'unit' ? '任意単位' : currentUnit) + '/時）', compatible ? plan.speed : '', .000001, 1e7, 'any');
+    input('daily_hours', '1日の移動時間（時間）', compatible ? plan.daily_hours : '', .000001, 24, 'any');
+    input('rest_days', '休息日数（日）', compatible ? plan.rest_days : 0, 0, 36500, 1);
+    const output = document.createElement('p'); output.setAttribute('role', 'status');
+    const conditions = () => ({ schema_version: 1, unit: currentUnit, ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, Number(v.value)])) });
+    const calculate = () => {
+      if (!Object.values(fields).every(c => c.reportValidity())) return null;
+      try {
+        const settings = conditions(), result = estimate(app.store.doc, app.store.doc.features.find(f => f.id === feature.id), settings);
+        output.textContent = `距離 ${D.distanceLabel(result.distance, app.store.doc)} ・ 移動 ${result.hours.toLocaleString('ja-JP', { maximumFractionDigits: 1 })}時間 ・ 移動${result.movingDays}日 + 休息${settings.rest_days}日 = 合計${result.totalDays}日（概算）`;
+        return settings;
+      } catch (error) { output.textContent = error.message; return null; }
+    };
+    section.append(app._button('概算する', calculate), app._button('移動条件を経路に保存', async () => {
+      const settings = calculate(); if (!settings) return;
+      const canEdit = app._editGuard(feature.id), store = app.store, original = store.doc;
+      if (!canEdit()) return;
+      const access = await MeldexEntityDetail.resolveReadOnly(app.path, false);
+      if (!section.isConnected || !canEdit() || store.doc !== original || app._selected !== feature.id) return;
+      if (access.readOnly) { output.textContent = access.reason || 'この経路は編集できません'; return; }
+      if (JSON.stringify(conditions()) !== JSON.stringify(settings)) { output.textContent = '条件が変わりました。もう一度保存してください。'; return; }
+      const candidate = D.clone(original); candidate.features.find(f => f.id === feature.id).travel_plan = { ...(feature.travel_plan || {}), ...settings };
+      D.parse(JSON.stringify(candidate, null, 2));
+      app._editFeature(next => { next.travel_plan = { ...(next.travel_plan || {}), ...settings }; });
+    }, { disabled: locked }), output);
+    if (compatible) calculate(); else output.textContent = plan ? '距離の単位が変わりました。速度を入力し直してください。' : '移動条件を入力してください。';
+    if (doc.coordinate_system === 'local' && !doc.scale.distance_per_unit) output.textContent = '旅程を計算するには縮尺を設定してください';
+    root.appendChild(section);
+  }
+  return Object.freeze({ unit, estimate, inspector });
+});
+
+;
+
+/* === gb-map-saved-views.js === */
+;
+/* Named views change the viewing state without rewriting geometry or history. */
+(function (root, factory) {
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
+  if (typeof module === 'object' && module.exports) module.exports = api; else root.MeldexMapSavedViews = api;
+})(globalThis, function (D) {
+  'use strict';
+  const kinds = ['', 'pin', 'route', 'region', 'label'];
+  const rotation = n => typeof n === 'number' && Number.isFinite(n) ? ((n + 180) % 360 + 360) % 360 - 180 : 0;
+  function capture(doc, state, viewport, name) {
+    if (!name.trim() || [...name.trim()].length > 80) throw new Error('表示名は1〜80文字で入力してください');
+    const view = { id: D.id(), name: name.trim(), center: D.clone(viewport.center), zoom: viewport.zoom, rotation: rotation(state.mapRotation),
+      layer_ids: doc.layers.filter(l => state.mapLayerVisibility?.[l.id] ?? l.visible).map(l => l.id),
+      filter: typeof state.mapSearch === 'string' ? state.mapSearch.slice(0, 1000) : '',
+      feature_kind: kinds.includes(state.mapFeatureKind) ? state.mapFeatureKind : '', period_id: state.mapPeriodId || '' };
+    D.parse({ ...doc, saved_views: [view] }); return view;
+  }
+  function apply(app, view) {
+    app._commitInput();
+    if (app._inputDirty) { app._message('入力内容を確認してから表示を切り替えてください'); return false; }
+    const doc = app.store.doc;
+    app.state.mapLayerVisibility = Object.fromEntries(doc.layers.map(l => [l.id, view.layer_ids.includes(l.id)]));
+    app.state.mapSearch = view.filter; app.state.mapFeatureKind = view.feature_kind; app.state.mapRotation = rotation(view.rotation);
+    app.state.mapPeriodId = (doc.periods || []).some(p => p.id === view.period_id) ? view.period_id : '';
+    app.state.mapViewport = { center: D.clone(view.center), zoom: view.zoom };
+    app.state.mapViewSystem = doc.coordinate_system; app.state.mapSavedViewId = view.id;
+    app.search.value = view.filter; app.kindFilter.value = view.feature_kind;
+    app._saveViewState(); app._render(); app.view.map.setView(app.view.latlng(view.center), view.zoom);
+    return true;
+  }
+  function render(app) {
+    const root = app.savedViewsRoot; root.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = '保存した表示'; root.appendChild(title);
+    const list = document.createElement('select'); list.style.width = '100%'; list.setAttribute('aria-label', '保存した表示'); list.add(new Option('表示を選択', ''));
+    for (const v of app.store.doc.saved_views || []) list.add(new Option(v.name, v.id));
+    list.value = app.state.mapSavedViewId || '';
+    list.onchange = () => {
+      const v = app.store.doc.saved_views?.find(v => v.id === list.value);
+      if (v) { if (!apply(app, v)) list.value = app.state.mapSavedViewId || ''; }
+      else { app.state.mapSavedViewId = ''; app._saveViewState(); render(app); }
+    };
+    root.append(list, app._button('現在の表示を保存', async () => {
+      app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+      const store = app.store, doc = store.doc, canEdit = app._editGuard();
+      const value = await cfPrompt('表示名（80文字まで）', ''); if (value == null || !canEdit()) return;
+      const access = await MeldexEntityDetail.resolveReadOnly(app.path, false);
+      if (!canEdit() || app._active === false || store.doc !== doc) return;
+      if (access.readOnly) throw new Error(access.reason || 'このマップは編集できません');
+      if ((doc.saved_views || []).length >= 50) throw new Error('表示は50件まで保存できます');
+      const viewport = { center: app.view.xy(app.view.map.getCenter()), zoom: app.view.map.getZoom() };
+      const view = capture(doc, app.state, viewport, value);
+      if ((doc.saved_views || []).some(v => v.name === view.name)) throw new Error('同じ表示名があります');
+      D.parse(JSON.stringify({ ...doc, saved_views: [...(doc.saved_views || []), view] }, null, 2));
+      if (app.update(next => { (next.saved_views ||= []).push(view); })) { app.state.mapSavedViewId = view.id; app._saveViewState(); app._render(); }
+    }, { disabled: app.editingDisabled }), app._button('選択した表示を削除', async () => {
+      const doc = app.store.doc, canEdit = app._editGuard(), target = doc.saved_views?.find(v => v.id === list.value);
+      if (!target || !await cfConfirm('保存した表示「' + target.name + '」を削除しますか？ 地図の図形は保持されます。')) return;
+      const access = await MeldexEntityDetail.resolveReadOnly(app.path, false);
+      if (!canEdit() || app.store.doc !== doc || app._active === false) return;
+      if (access.readOnly) throw new Error(access.reason || 'このマップは編集できません');
+      if (app.update(next => { next.saved_views = next.saved_views.filter(v => v.id !== target.id); })) { app.state.mapSavedViewId = ''; app._saveViewState(); app._render(); }
+    }, { disabled: app.editingDisabled || !(app.store.doc.saved_views || []).some(v => v.id === list.value) }));
+  }
+  return Object.freeze({ capture, apply, render });
+});
+
+;
+
+/* === gb-map-world-generator.js === */
+;
+/* A single guarded transaction builds an internally consistent fantasy world. */
+(function(root,factory){
+  const node=typeof module==='object'&&module.exports;
+  const api=factory(node?require('./gb-map-document.js'):root.MeldexMapDocument,node?require('./gb-map-world-terrain.js'):root.MeldexMapWorldTerrain,node?require('./gb-map-world-geography.js'):root.MeldexMapWorldGeography,node?require('./gb-map-world-society.js'):root.MeldexMapWorldSociety,node?require('./gb-map-grid.js'):root.MeldexMapGrid);
+  if(node)module.exports=api;else root.MeldexMapWorldGenerator=api;
+})(globalThis,function(D,T,G,S,Grid){
+  'use strict';
+  const defaults=Object.freeze({seed:'',name:'新しい世界',template:'continent',land:37,roughness:72,warmth:50,wetness:55,cities:32,nations:10,widthKm:24000});
+  const presentations=[['biomes','自然・植生'],['elevation','標高'],['temperature','気温'],['rain','降水'],['political','国家']];
+  function parameters(input={}){
+    const o=Object.fromEntries(Object.entries(defaults).map(([key,value])=>[key,input[key]??value]));
+    if(typeof o.seed!=='string'||!o.seed.trim()||o.seed.length>128||typeof o.name!=='string'||!o.name.trim()||[...o.name].length>64||!['continent','island','archipelago'].includes(o.template))throw new Error('シード・世界名・地形の種類を確認してください');
+    for(const [key,lo,hi]of[['land',10,80],['roughness',0,100],['warmth',0,100],['wetness',0,100],['widthKm',100,60000],['cities',4,80],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
+    if(o.nations>o.cities)throw new Error('国家数は都市数以下にしてください');
+    return o;
+  }
+  function prepare(source,input){
+    const doc=D.parse(source),o=parameters(input);
+    if(doc.coordinate_system!=='local')throw new Error('創作地図で実行してください');
+    if(doc.layers.length>93)throw new Error('世界地図には7つのレイヤーを追加します。レイヤーの上限100件を超えます');
+    const cols=doc.canvas.width>=doc.canvas.height?256:Math.max(32,Math.round(256*doc.canvas.width/doc.canvas.height)),rows=Math.max(32,Math.min(256,Math.round(cols*doc.canvas.height/doc.canvas.width)));
+    const terrain=T.generate(o.seed,o.template,o.land/100,o.roughness,{cols,rows}),climateOptions={seed:o.seed,warmth:o.warmth,wetness:o.wetness,north:doc.scale.north_degrees};
+    let analysis=G.analyze(terrain,climateOptions);
+    // Retain resolvable lakes. Fill smaller depressions to their spill surface
+    // so a visible river cannot climb ground hidden beneath an omitted pond.
+    terrain.heights=terrain.heights.map((h,i)=>h>0&&!analysis.lake[i]?Math.max(h,analysis.filled[i]):h);
+    terrain.conditioning_version=1;analysis=G.analyze(terrain,climateOptions);
+    const previous=new Set(doc.layers.filter(l=>l.generation?.kind==='coherent-world').map(l=>l.id));
+    const existing=doc.features.filter(f=>f.kind==='pin'&&!previous.has(f.layer_id)).map(f=>[f.points[0][0]/doc.canvas.width,f.points[0][1]/doc.canvas.height]);
+    const society=S.generate(terrain,analysis,{...o,existing}),rivers=G.rivers(terrain,analysis),group=D.id(),layers={},features=[];
+    const toMap=p=>[p[0]*doc.canvas.width,p[1]*doc.canvas.height];
+    const addLayer=(key,name)=>{const layer={id:D.id(),name,visible:true,locked:false,opacity:1,generation:{kind:'coherent-world',generator_version:3,group,part:key}};layers[key]=layer;return layer;};
+    for(const [key,label]of[['cities','都市・港'],['labels','地名'],['borders','国境'],['roads','陸路'],['shipping','航路'],['rivers','河川'],['lakes','湖']])addLayer(key,label+'（'+o.name+'）');
+    const add=(kind,points,key,label,color,role,extra={})=>{const f={...D.feature(kind,points.map(toMap),layers[key].id,label),color,tags:[({'cities':'都市','labels':'地名','borders':'国家','roads':'陸路','shipping':'航路','rivers':'河川','lakes':'湖'})[key]],cartography:{role},...extra};features.push(f);return f;};
+    for(const [index,river]of rivers.entries())add('route',river.points,'rivers','河川 '+(index+1),'#397f9c','river',{cartography:{role:'river',flow:Math.round(river.flow)},description:'降水の集積と標高から生成した水系。合流して海または湖へ流れます。',line_style:'curve'});
+    for(const state of society.states)add('label',[state.point],'labels',state.name,state.color,'country-label');
+    for(const city of society.cities){const state=society.states[city.country];add('pin',[city.point],'cities',city.name,city.capital?'#65433c':'#46564c','city',{
+      icon:city.port?'port':city.capital?'castle':'city',cartography:{role:'city',capital:city.capital,rank:city.capital||city.port?'major':'minor'},
+      tags:[city.port?'港':'都市',...(city.capital?['首都']:[]),...(state?[state.name]:[])],description:`${state?.name||'未所属'}。${city.port?'外海に接する港。':'水と気候、勾配を考慮した居住地。'}標高の目安 ${Math.round(terrain.heights[city.cell]*6500)}m、年平均気温の目安 ${Math.round(analysis.temperature[city.cell])}℃。`});}
+    for(const border of society.borders)add('route',border.points,'borders',border.pair.map(i=>society.states[i].name).join(' / '),'#806855','border',{line_style:'curve',description:'首都からの移動費用と山地・河川の障壁による国境。'});
+    for(const road of society.roads)add('route',road.points,'roads',society.cities[road.from].name+' — '+society.cities[road.to].name,'#91765a','road',{description:'海と湖を避け、勾配・峠・河川の横断費用を考慮した陸路。',travel_plan:{schema_version:1,unit:'km',speed:5,daily_hours:8,rest_days:0}});
+    for(const route of society.seaRoutes)add('route',route.points,'shipping',society.cities[route.from].name+' — '+society.cities[route.to].name,'#607d8b','shipping',{dashed:true,description:'港から外海へ出て、陸地を横切らない航路。',travel_plan:{schema_version:1,unit:'km',speed:15,daily_hours:12,rest_days:0}});
+    const lakeCells=Array.from(analysis.lake),lakeIds=[...new Set(lakeCells)].filter(Boolean);
+    for(const id of lakeIds){const polygons=Grid.polygons(lakeCells,cols,rows,id);for(const poly of polygons){const outline=polygons.length===1?poly.flatMap((p,i)=>{const q=poly[(i+1)%poly.length];return [[p[0]*.75+q[0]*.25,p[1]*.75+q[1]*.25],[p[0]*.25+q[0]*.75,p[1]*.25+q[1]*.75]];}):poly;
+      add('region',outline.map(([x,y])=>[T.clamp((x-.5)/(cols-1)),T.clamp((y-.5)/(rows-1))]),'lakes','湖 '+id,'#77aabd','lake');}}
+    const mountains=T.components(terrain.heights.map(h=>h>.42),cols,rows).groups.filter(g=>g.length>=5).sort((a,b)=>b.length-a.length).slice(0,8);
+    const mountainNames=S.placeNames(o.seed+':mountains',mountains.length);
+    const mountainLabels=[];
+    mountains.forEach((cells,i)=>{const center=cells.reduce((best,k)=>terrain.heights[k]>terrain.heights[best]?k:best,cells[0]),p=S.point(center,analysis);if(mountainLabels.some(q=>Math.hypot((p[0]-q[0])*cols,(p[1]-q[1])*rows)<cols*.14))return;mountainLabels.push(p);add('label',[p],'labels',mountainNames[i]+'山脈','#6a6257','mountain-label');});
+    terrain.environment=G.environment(terrain,analysis);terrain.environment.owner=Array.from(society.owner);terrain.environment.countries=society.states.map(s=>s.color);terrain.presentation='biomes';
+    if(doc.features.length+features.length>10000||[...doc.features,...features].reduce((sum,f)=>sum+f.points.length,0)>100000)throw new Error('図形または頂点の上限を超えます。元の地図を保持したまま生成を中止しました');
+    const stats={landRatio:analysis.landCount/terrain.heights.length,landmasses:analysis.masses.groups.filter(g=>g.length>=30).length,rivers:rivers.length,lakes:lakeIds.length,cities:society.cities.length,ports:society.cities.filter(c=>c.port).length,nations:society.states.length,roads:society.roads.length,seaRoutes:society.seaRoutes.length};
+    for(const layer of doc.layers)if(previous.has(layer.id))layer.visible=false;
+    doc.layers.push(...Object.values(layers));doc.features.push(...features);doc.terrain=terrain;doc.background=null;
+    doc.scale={...doc.scale,distance_per_unit:o.widthKm/doc.canvas.width,unit:'km'};
+    doc.world_generation={version:3,parameters:o,stats,group,layer_ids:Object.values(layers).map(l=>l.id)};
+    D.parse(JSON.stringify(doc,null,2));
+    return {doc,stats,parameters:o,analysis,society,rivers,previousLayers:[...previous],layers};
+  }
+  function show(app){
+    app._commitInput();if(app._inputDirty)throw new Error('入力内容を確認してください');
+    if(app.editingDisabled||app.store.doc.coordinate_system!=='local')throw new Error('編集できる創作地図で実行してください');
+    app._generatorPreview?.destroy();app._settlementsPreview?.destroy();app._climatePreview?.destroy();app._worldPreview?.destroy();
+    const store=app.store,path=app.path,canEdit=app._editGuard(),panel=document.createElement('div');panel.className='gb-map-generator gb-map-world-generator';panel.setAttribute('role','region');panel.setAttribute('aria-label','世界地図生成のプレビュー');
+    const title=document.createElement('h3');title.textContent='世界地図を生成';const help=document.createElement('p');help.textContent='地形・水系・気候・植生から都市、国境、陸路と航路をまとめて作成します。プレビューで確認してから採用してください。';panel.append(title,help);
+    let prepared=null,source=null,signature='',preview=null,pending=false;const controls={},previous=store.doc.world_generation?.parameters||{};
+    const status=document.createElement('p');status.setAttribute('role','status');status.textContent='条件を設定してください。';
+    const clear=()=>{prepared=null;preview?.destroy();preview=null;canvas.replaceChildren();adopt.disabled=true;};
+    const input=(key,label,value,attrs={})=>{const wrap=document.createElement('label');wrap.className='gb-map-field';const text=document.createElement('span');text.textContent=label;const c=document.createElement('input');c.className=attrs.type==='number'?'gb-input gb-num-input':'gb-input';c.setAttribute('aria-label',label);Object.assign(c,attrs);c.required=true;c.value=value;c.oninput=c.onchange=()=>{clear();status.textContent='条件が変わりました。プレビューを作り直してください。';};wrap.append(text,c);panel.append(wrap);controls[key]=c;};
+    input('name','世界名',previous.name||app.state.label||defaults.name,{maxLength:64});input('seed','シード',previous.seed||String(Date.now()),{maxLength:128});
+    const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append('地形の種類');const template=document.createElement('select');template.className='gb-select';template.setAttribute('aria-label','地形の種類');for(const [key,name]of[['continent','大陸'],['archipelago','群島'],['island','島']])template.add(new Option(name,key));template.value=previous.template||defaults.template;template.onchange=clear;wrap.append(template);panel.append(wrap);controls.template=template;
+    for(const [key,label,min,max]of[['land','陸地の割合（%）',10,80],['roughness','山地の起伏（0〜100）',0,100],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数',4,80],['nations','国家数',1,24],['widthKm','地図の横幅（km）',100,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    const mode=document.createElement('select');mode.className='gb-select';mode.setAttribute('aria-label','プレビューの配色');for(const [key,name]of presentations)mode.add(new Option(name,key));mode.onchange=()=>{if(prepared){prepared.doc.terrain.presentation=mode.value;preview?.setDocument(prepared.doc,true);}};
+    const modeLabel=document.createElement('label');modeLabel.className='gb-map-field';modeLabel.append('プレビューの配色',mode);
+    const canvas=document.createElement('div');canvas.className='gb-map-generator-preview gb-map-world-preview';panel.append(modeLabel,status,canvas);
+    const values=()=>Object.fromEntries(Object.entries(controls).map(([k,c])=>[k,c.type==='number'?Number(c.value):c.value]));
+    const conditions=()=>JSON.stringify(Object.values(controls).map(c=>c.value));
+    const current=()=>panel.isConnected&&canEdit()&&app.store===store&&app.path===path&&app._active!==false;
+    const cleanup=()=>{MeldexMapChrome.closePanel(panel);preview?.destroy();preview=null;prepared=null;panel.remove();if(app._worldPreview?.panel===panel)app._worldPreview=null;};
+    const generate=app._button('世界地図をプレビュー',async()=>{
+      if(pending||!current()||!Object.values(controls).every(c=>c.reportValidity()))return;
+      clear();pending=true;generate.disabled=true;status.textContent='地形・水系・都市と交通を生成しています…';
+      try{await new Promise(resolve=>requestAnimationFrame(resolve));if(!current())return;source=store.doc;signature=conditions();prepared=prepare(source,values());prepared.doc.terrain.presentation=mode.value;
+        if(!current()||source!==store.doc||signature!==conditions()){clear();return;}
+        preview=new MeldexMapView(canvas,{select:()=>{}});preview.setDocument(prepared.doc,true);const s=prepared.stats;
+        status.textContent=`陸地${Math.round(s.landRatio*100)}%・主な陸塊${s.landmasses}・河川${s.rivers}・湖${s.lakes}・都市${s.cities}（港${s.ports}）・国家${s.nations}・陸路${s.roads}・航路${s.seaRoutes}。採用すると背景と縮尺を更新します。以前の世界生成レイヤーは保持して非表示にします。`;
+      }catch(e){clear();status.textContent=e.userMessage||e.message;}finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
+    });
+    const adopt=app._button('この世界地図を採用',async()=>{
+      if(pending||!prepared||!current())return;const candidate=prepared;const valid=()=>current()&&prepared===candidate&&store.doc===source&&signature===conditions();
+      if(!valid()){clear();status.textContent='地図または条件が変更されました。プレビューを作り直してください。';return;}
+      pending=true;generate.disabled=adopt.disabled=true;
+      try{if((source.terrain||source.background)&&!await cfConfirm('背景と縮尺を生成した世界地図へ更新します。手描き図形を保持し、以前の世界生成レイヤーは非表示にします。採用しますか？'))return;
+        if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid())return;if(access.readOnly){status.textContent=access.reason||'編集ロック中のため採用できません';return;}
+        if(app.update(d=>Object.assign(d,candidate.doc))){for(const id of candidate.previousLayers)if(app.state.mapLayerVisibility)delete app.state.mapLayerVisibility[id];app.state.mapSearch='';app.state.mapFeatureKind='';app.search.value='';app.kindFilter.value='';app._selection=new Set();app._selected=null;app._activeLayer=candidate.layers.cities.id;cleanup();app._buildSettingsRefresh();app._render();app.view.fit();app._saveViewState();}
+      }finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
+    },{disabled:true});
+    panel.append(generate,adopt,app._button('閉じる',cleanup));app._worldPreview={panel,kind:'world',destroy:cleanup};MeldexMapChrome.openPanel(panel);
+  }
+  return Object.freeze({defaults,presentations,parameters,prepare,show});
+});
+
+;
+
+/* === gb-map-controls.js === */
+;
+/* Scoped controls; values from files are always assigned as text/value. */
+const MeldexMapControls = (() => {
+  const D = () => MeldexMapDocument;
+  function field(app, parent, label, value, apply, options = {}) {
+    const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
+    const caption = document.createElement('span'); caption.textContent = label;
+    const input = document.createElement(options.multiline ? 'textarea' : 'input');
+    input.className = options.multiline ? 'gb-textarea' : options.type === 'number' ? 'gb-input gb-num-input' : 'gb-input';
+    if (!options.multiline) input.type = options.type || 'text';
+    input.value = value ?? ''; input.disabled = options.disabled ?? app.editingDisabled; input.setAttribute('aria-label', label);
+    if (options.min != null) input.min = options.min;
+    if (options.max != null) input.max = options.max;
+    if (options.step != null) input.step = options.step;
+    input.dataset.mapField = 'true';
+    input.addEventListener('input', () => { if (options.transient !== true) app._inputDirty = true; });
+    input.addEventListener('change', () => {
+      if (!input.checkValidity()) { input.reportValidity(); return; }
+      apply(input.value); if (options.transient !== true) app._inputDirty = false;
+    });
+    wrap.append(caption, input);
+    if (options.type === 'color') {
+      input.hidden = true;
+      const swatch = app._button(label + 'を選択', event => {
+        const selected = app._selected, canEdit = app._editGuard(selected);
+        openColorPalette(event.currentTarget, input.value, value => {
+          if (!canEdit() || app._selected !== selected) return;
+          input.value = value; apply(value);
+        }, { allowTransparent: false });
+      }, { disabled: input.disabled });
+      swatch.className = 'gb-color-swatch'; swatch.textContent = ''; swatch.title = label + 'を選択'; swatch.style.backgroundColor = input.value; swatch.setAttribute('aria-label', label + 'を選択');
+      wrap.appendChild(swatch);
+    }
+    parent.appendChild(wrap); return input;
+  }
+  function select(parent, label, choices, value, apply, disabled = false) {
+    const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
+    const caption = document.createElement('span'); caption.textContent = label;
+    const control = document.createElement('select'); control.className = 'gb-select'; control.setAttribute('aria-label', label); control.disabled = disabled;
+    for (const [key, text] of choices) control.add(new Option(text, key));
+    control.value = value; control.onchange = () => apply(control.value);
+    wrap.append(caption, control); parent.appendChild(wrap); return control;
+  }
+  function settings(app) {
+    const root = app.settings, doc = app.store.doc;
+    const canEdit = app._editGuard();
+    select(root, '地図の種類', [['local', '創作地図'], ['world', '現実の地図']], doc.coordinate_system, async value => {
+      if (value === app.store.doc.coordinate_system) return;
+      if ((app.store.doc.features.length || app.store.doc.terrain || app.store.doc.background) && !await cfConfirm('座標の異なる地図へ切り替えると、現在の地形と図形を置き換えます。続けますか？（元に戻せます）')) {
+        root.querySelector('select').value = app.store.doc.coordinate_system; return;
+      }
+      if (!canEdit()) return;
+      if (!app.update(next => { Object.assign(next, D().create(next.title, value)); delete next.saved_views; delete next.world_generation; })) return;
+      app.state.mapViewport = null; app.state.mapLayerVisibility = {}; app.state.mapSearch = ''; app.state.mapFeatureKind = ''; app.state.mapSavedViewId = '';
+      app.search.value = ''; app.kindFilter.value = ''; app._saveViewState();
+      app._selected = null; app._activeLayer = 'places'; app.view.setTool('select'); app._buildSettingsRefresh(); app._render();
+    }, app.editingDisabled);
+    const world = document.createElement('div'); root.appendChild(world); app.worldControls.push(world);
+    select(world, '背景地図', [['osm', 'OpenStreetMap'], ['gsi', '地理院（淡色）'], ['gsi-standard', '地理院（標準）'], ['blank', '背景なし']], doc.basemap === 'gsi' && doc.basemap_style === 'standard' ? 'gsi-standard' : doc.basemap, value => {
+      app.update(next => { next.basemap = value === 'gsi-standard' ? 'gsi' : value; if (next.basemap === 'gsi') next.basemap_style = value === 'gsi-standard' ? 'standard' : 'pale'; }); app._render();
+      if (value.startsWith('gsi') && !app.store.doc.features.length) app.view.map.setView([36, 138], 7);
+    }, app.editingDisabled);
+    const coords = document.createElement('div'); coords.className = 'gb-map-coordinate-input'; world.appendChild(coords);
+    const longitude = field(app, coords, '経度', 139.76, () => {}, { type: 'number', min: -180, max: 180, step: 'any', disabled: false, transient: true });
+    const latitude = field(app, coords, '緯度', 35.68, () => {}, { type: 'number', min: -85.051129, max: 85.051129, step: 'any', disabled: false, transient: true });
+    world.appendChild(app._button('座標へ移動', () => { if (!longitude.reportValidity() || !latitude.reportValidity()) return; app.view.map.setView([Number(latitude.value), Number(longitude.value)], 13); }));
+    const local = document.createElement('div'); root.appendChild(local); app.localControls.push(local);
+    const imageInput = document.createElement('input'); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp'; imageInput.hidden = true;
+    imageInput.onchange = async () => {
+      const file = imageInput.files[0]; imageInput.value = ''; if (!file) return;
+      try {
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 12 * 1024 * 1024) throw new Error('12MB以下のPNG・JPEG・WebP画像を選んでください');
+        const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('画像を読み込めません')); reader.readAsDataURL(file); });
+        const image = new Image(); image.src = data; await image.decode();
+        if (!canEdit()) return;
+        if (image.naturalWidth * image.naturalHeight > 64000000) throw new Error('画像は6400万画素以下にしてください');
+        if ((app.store.doc.background || app.store.doc.terrain) && !await cfConfirm('現在の背景をこの画像に置き換えますか？ 地点・図形は保持されます。')) return;
+        if (!canEdit()) return;
+        app.update(next => {
+          next.background = { data_url: data }; next.terrain = null;
+          if (!next.features.length) { const ratio = Math.min(1, 4096 / Math.max(image.naturalWidth, image.naturalHeight)); next.canvas = { width: Math.max(128, Math.round(image.naturalWidth * ratio)), height: Math.max(128, Math.round(image.naturalHeight * ratio)) }; next.view = null; }
+        });
+        app._render(); app.view.fit();
+      } catch (error) { app._message(error.message); }
+    };
+    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled }),
+      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled }),
+      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled }),
+      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled })));
+    if (MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.terrain.presentation || 'biomes',
+      value => { app.update(next => { next.terrain.presentation = value; }); app._render(); }, app.editingDisabled);
+    field(app, local, '100地図単位の距離', doc.scale.distance_per_unit === null ? '' : doc.scale.distance_per_unit * 100,
+      value => { app.update(next => { next.scale.distance_per_unit = value === '' ? null : Number(value) / 100; }); app._render(); }, { type: 'number', min: 0.000001, step: 'any' });
+    select(local, '距離の単位', [['km', 'km'], ['m', 'm'], ['mi', 'mile'], ['unit', '任意単位']], doc.scale.unit,
+      value => { app.update(next => { next.scale.unit = value; }); app._render(); }, app.editingDisabled);
+    field(app, local, '北方向（上から時計回りの角度）', doc.scale.north_degrees,
+      value => { app.update(next => { next.scale.north_degrees = Number(value); if(next.terrain?.environment){delete next.terrain.environment;delete next.terrain.presentation;} }); app._buildSettingsRefresh(); app._render(); }, { type: 'number', min: -360, max: 360, step: 1 });
+    const calibration = field(app, local, '計測線の実際の距離', '', () => {}, { type: 'number', min: 0.000001, step: 'any', transient: true });
+    local.appendChild(app._button('計測線で縮尺を設定', () => {
+      const points = app.view.draft;
+      if (app.view.tool !== 'measure' || points.length < 2 || !Number(calibration.value) || !calibration.reportValidity()) { app._message('「計測」で2点以上を選び、実際の距離を入力してください'); return; }
+      const units = D().distance(points, { ...app.store.doc, scale: { distance_per_unit: null } });
+      if (!(units > 0)) { app._message('離れた2点を選んでください'); return; }
+      app.update(next => { next.scale.distance_per_unit = Number(calibration.value) / units; });
+      app._buildSettingsRefresh(); app._render(); app.view._draft();
+    }, { disabled: app.editingDisabled }));
+    const brush = field(app, local, '地形ブラシの半径', app.view?.brushSize || 70, value => { app.view.brushSize = Number(value); }, { type: 'number', min: 5, max: 1000, step: 5 });
+    brush.dataset.mapBrush = 'true';
+    const note = document.createElement('small'); note.textContent = '縮尺を設定すると、地図上の距離と縮尺バーに反映されます。'; local.appendChild(note);
+    if(doc.world_generation&&!MeldexMapWorldGeography.validEnvironment(doc.terrain)){const hint=document.createElement('small');hint.textContent='地形・方角の編集後は気候と植生の配色を解除します。世界地図を再生成すると、水系や都市を含めて整合を取り直せます。';local.appendChild(hint);}
+    app._buildSettingsRefresh = () => {
+      app.localControls = app.localControls.filter(el => !root.contains(el)); app.worldControls = app.worldControls.filter(el => !root.contains(el));
+      root.replaceChildren(); settings(app);
+    };
+  }
+  function layers(app) {
+    const root = app.layerList; root.replaceChildren();
+    app.store.doc.layers.forEach((layer, index) => {
+      const row = document.createElement('div'); row.className = 'gb-map-layer';
+      const pick = app._button(layer.name, () => { app._activeLayer = layer.id; layers(app); }); pick.setAttribute('aria-pressed', String(layer.id === app._activeLayer)); row.appendChild(pick);
+      const edit = mutator => { app.update(doc => mutator(doc.layers.find(l => l.id === layer.id))); app._render(); };
+      for (const [key, label] of [['visible', '表示'], ['locked', 'ロック']]) {
+        const wrap = document.createElement('label'), input = document.createElement('input'); wrap.className = 'gb-check'; input.type = 'checkbox'; input.checked = key === 'visible' ? app._layerVisible(layer) : layer[key]; input.disabled = key !== 'visible' && app.editingDisabled;
+        input.setAttribute('aria-label', layer.name + 'の' + label); input.onchange = () => {
+          if (key === 'visible') {
+            if (app.editingDisabled) { (app.state.mapLayerVisibility ||= {})[layer.id] = input.checked; app._saveViewState(); app._render(); return; }
+            if (app.state.mapLayerVisibility) delete app.state.mapLayerVisibility[layer.id]; app._saveViewState();
+          }
+          edit(next => { next[key] = input.checked; });
+        }; wrap.append(input, document.createTextNode(label)); row.appendChild(wrap);
+      }
+      const opacity = document.createElement('input'); opacity.className = 'tb-range'; opacity.type = 'range'; opacity.min = 0; opacity.max = 1; opacity.step = 0.1; opacity.value = layer.opacity; opacity.disabled = app.editingDisabled;
+      opacity.setAttribute('aria-label', layer.name + 'の不透明度'); opacity.onchange = () => edit(next => { next.opacity = Number(opacity.value); }); row.appendChild(opacity);
+      const up = app._button('前面へ移動', () => {
+        app.update(doc => { [doc.layers[index - 1], doc.layers[index]] = [doc.layers[index], doc.layers[index - 1]]; }); app._render();
+      }, { disabled: app.editingDisabled || !index });
+      up.className = 'tb-icon-btn'; up.innerHTML = lucide('arrowUp', 16); up.title = '前面へ移動'; up.setAttribute('aria-label', layer.name + 'を前面へ移動'); row.appendChild(up);
+      const rename = app._button('名前を変更', async () => {
+        const canEdit = app._editGuard();
+        const name = await cfPrompt('レイヤー名', layer.name);
+        if (canEdit() && name?.trim() && app.store.doc.layers.some(l => l.id === layer.id)) edit(next => { next.name = name.trim(); });
+      }, { disabled: app.editingDisabled });
+      rename.className = 'tb-icon-btn'; rename.innerHTML = lucide('pencil', 16); rename.title = '名前を変更'; rename.setAttribute('aria-label', layer.name + 'の名前を変更'); row.appendChild(rename); root.appendChild(row);
+    });
+  }
+  function places(app) {
+    app.placeList.replaceChildren();
+    for (const f of app.store.doc.features.filter(f => app.view._visible(f))) {
+      const row = app._button(f.label || '名前なし', () => { app._select(f.id); app.view.focus(f); });
+      row.setAttribute('aria-pressed', String(app._selection?.has(f.id) || f.id === app._selected)); row.dataset.mapFeatureId = f.id; app.placeList.appendChild(row);
+    }
+    if (!app.placeList.children.length) app.placeList.textContent = '表示する地点・図形がありません';
+  }
+  function inspector(app) {
+    const root = app.inspector; root.replaceChildren();
+    const f = app.store.doc.features.find(item => item.id === app._selected);
+    const title = document.createElement('h3'); title.textContent = '選択項目'; root.appendChild(title);
+    if (!f) { const hint = document.createElement('p'); hint.textContent = '地点や図形を選択すると、名前・説明・関連資料を編集できます。'; root.appendChild(hint); return; }
+    const locked = app.editingDisabled || app.store.doc.layers.find(l => l.id === f.layer_id)?.locked;
+    MeldexMapPeriods.inspector(app, root, f);
+    field(app, root, '名前', f.label, value => app._editFeature(next => { next.label = value; }), { disabled: locked });
+    field(app, root, '説明', f.description, value => app._editFeature(next => { next.description = value; }), { multiline: true, disabled: locked });
+    const tags = document.createElement('div'); tags.className = 'gb-map-field';
+    const tagsTitle = document.createElement('span'); tagsTitle.textContent = 'タグ'; tags.appendChild(tagsTitle);
+    const chips = document.createElement('div'); chips.className = 'gb-map-tag-chips'; tags.appendChild(chips);
+    const canEdit = app._editGuard(f.id);
+    for (const name of f.tags) {
+      const chip = window.MeldexGlobalTags?.createTagChip?.({ id: name, name }, { compact: true,
+        ...(!locked ? { onRemove: () => { if (canEdit() && app._selected === f.id) app._editFeature(next => { next.tags = next.tags.filter(tag => tag !== name); }); } } : {}) });
+      if (chip) chips.appendChild(chip); else { const text = document.createElement('span'); text.textContent = name; chips.appendChild(text); }
+    }
+    const addTag = document.createElement('input'); addTag.className = 'gb-input'; addTag.setAttribute('aria-label', 'タグを追加'); addTag.placeholder = 'タグを追加'; addTag.disabled = locked; addTag.maxLength = 500;
+    const commitTags = () => {
+      const values = addTag.value.split(/[,、]/).map(t => t.trim()).filter(Boolean);
+      if (!values.length || !canEdit() || app._selected !== f.id) return;
+      app._editFeature(next => { next.tags = [...new Set([...next.tags, ...values])]; });
+    };
+    addTag.addEventListener('input', () => { app._inputDirty = !!addTag.value.trim(); });
+    addTag.addEventListener('change', commitTags); addTag.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); commitTags(); } });
+    tags.appendChild(addTag); root.appendChild(tags);
+    field(app, root, '色', f.color, value => app._editFeature(next => { next.color = value; }), { type: 'color', disabled: locked });
+    select(root, '配置レイヤー', app.store.doc.layers.filter(l => !l.locked || l.id === f.layer_id).map(l => [l.id, l.name]), f.layer_id,
+      value => app._editFeature(next => { next.layer_id = value; }), locked);
+    if (f.points.length > 1) {
+      const length = document.createElement('p'); length.textContent = '線の長さ: ' + D().distanceLabel(D().distance(D().drawPoints(f, app.store.doc), app.store.doc), app.store.doc); root.appendChild(length);
+      root.appendChild(app._button(app.view.editVertices ? '頂点編集を終了' : '頂点を編集', () => { app.view.editVertices = !app.view.editVertices; app._setTool('select'); app._render(); }, { disabled: locked }));
+    }
+    if (f.kind === 'route') {
+      select(root, '経路の形', [['straight', '折れ線'], ['curve', '曲線']], f.line_style || 'straight', value => app._editFeature(next => { next.line_style = value; }), locked);
+      const wrap = document.createElement('label'), input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!f.arrow; input.disabled = locked;
+      input.onchange = () => app._editFeature(next => { next.arrow = input.checked; }); wrap.append(input, document.createTextNode('終点に矢印を表示')); root.appendChild(wrap);
+    }
+    MeldexMapTravel.inspector(app, root, f, locked);
+    const linksTitle = document.createElement('h4'); linksTitle.textContent = '関連するファイル・トピック'; root.appendChild(linksTitle);
+    for (const link of f.links.filter(link => link.role !== 'child-map')) {
+      const row = document.createElement('div'); row.className = 'gb-map-link-row';
+      row.appendChild(app._button(link.label || link.path, async () => {
+        const target = await GBLinkRouter.resolveAsync(link.path, { linkType: link.type || '' });
+        return navOpen({ ...target, path: link.path, label: link.label || link.path });
+      }));
+      row.appendChild(app._button('解除', () => app._editFeature(next => { next.links = next.links.filter(l => l.path !== link.path); }), { disabled: locked })); root.appendChild(row);
+    }
+    if (typeof MeldexLinkModal !== 'undefined') root.appendChild(app._button('リンクする資料を選択', () => {
+      const selected = f.id;
+      const canEdit = app._editGuard(selected);
+      MeldexLinkModal.show(null, link => {
+        if (link.type !== 'file') { app._message('Meldex内のファイルまたはトピックを選んでください'); return; }
+        if (!canEdit() || app._selected !== selected) return;
+        app._editFeature(next => { if (!next.links.some(l => l.path === link.path)) next.links.push({ path: link.path, label: link.name, type: link.fileType }); });
+      });
+    }, { disabled: locked }));
+    MeldexMapRelations.inspector(app, f, root, locked);
+    if (app.store.doc.coordinate_system === 'world') root.appendChild(app._button('Googleマップで開く', () => {
+      const [lng, lat] = f.points[0]; const url = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(lat + ',' + lng);
+      window.open(url, '_blank', 'noopener');
+    }));
+    root.appendChild(app._button('削除', async () => {
+      const canEdit = app._editGuard(f.id);
+      if (!await cfConfirm('選択した地点・図形を削除しますか？（元に戻せます）')) return;
+      if (!canEdit()) return;
+      app.update(doc => { doc.features = doc.features.filter(item => item.id !== f.id); }); app._selected = null; app._render();
+    }, { disabled: locked }));
+  }
+  function generator(app) {
+    app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
+    if (app.editingDisabled || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    app._settlementsPreview?.destroy(); app._climatePreview?.destroy(); app._worldPreview?.destroy();
+    const canEdit = app._editGuard(), store = app.store, path = app.path;
+    if (app._generator?.isConnected) { app._generator.querySelector('input')?.focus(); return; }
+    const panel = document.createElement('div'); panel.className = 'gb-map-generator'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', '地形生成のプレビュー');
+    const title = document.createElement('h3'); title.textContent = '地形生成'; panel.appendChild(title);
+    const seed = field(app, panel, 'シード', app.store.doc.terrain?.seed || String(Date.now()), () => {}, { disabled: false, transient: true });
+    let template = app.store.doc.terrain?.template || 'continent';
+    const templateInput = select(panel, '地形の種類', [['continent', '大陸'], ['island', '島'], ['archipelago', '群島']], template, value => { template = value; clear(); });
+    const land = field(app, panel, '陸地の割合（%）', 45, () => {}, { type: 'number', min: 10, max: 80, step: 1, disabled: false, transient: true });
+    const roughness = field(app, panel, '起伏（0〜100）', store.doc.terrain?.roughness ?? 50, () => {}, { type: 'number', min: 0, max: 100, step: 1, disabled: false, transient: true });
+    const preview = document.createElement('div'); preview.className = 'gb-map-generator-preview'; panel.appendChild(preview);
+    let candidate = null, previewView = null, source = null, signature = '', pending = false;
+    const conditions = () => JSON.stringify([seed.value, templateInput.value, land.value, roughness.value]);
+    const clear = () => { candidate = null; previewView?.destroy(); previewView = null; preview.replaceChildren(); adopt.disabled = true; };
+    for (const input of [seed, land, roughness]) { input.required = true; input.addEventListener('input', clear); input.addEventListener('change', clear); }
+    const cleanup = () => {
+      MeldexMapChrome.closePanel(panel);
+      previewView?.destroy(); previewView = null; panel.remove();
+      if (app._generator === panel) app._generator = null;
+      if (app._generatorPreview?.panel === panel) app._generatorPreview = null;
+    };
+    const generate = app._button('プレビュー', () => {
+      if (pending || !canEdit() || ![seed, land, roughness].every(input => input.reportValidity())) return;
+      clear(); source = store.doc;
+      candidate = D().generate(seed.value, template, Number(land.value) / 100, Number(roughness.value)); signature = conditions();
+      D().parse(JSON.stringify({ ...source, terrain: candidate, background: null }, null, 2));
+      previewView?.destroy(); previewView = new MeldexMapView(preview, { action: () => {}, select: () => {} });
+      previewView.setDocument({ ...source, terrain: candidate, background: null }, true);
+      adopt.disabled = false;
+    });
+    const adopt = app._button('この地形を採用', async () => {
+      if (pending || !candidate || !canEdit()) return;
+      const result = candidate, original = source, settings = signature;
+      const current = () => canEdit() && panel.isConnected && app.path === path && app._active !== false && store.doc === original && candidate === result && conditions() === settings && !app._inputDirty;
+      if (!current()) { clear(); app._message('地図または条件が変更されました。プレビューを作り直してください。'); return; }
+      pending = true; generate.disabled = adopt.disabled = true;
+      try {
+        if ((source.terrain || source.background) && !await cfConfirm('現在の背景をプレビューの地形へ置き換えますか？ 地点・図形は保持されます。')) return;
+        if (!current()) return;
+        const access = await MeldexEntityDetail.resolveReadOnly(path, false);
+        if (!current()) return;
+        if (access.readOnly) { app._message(access.reason || 'このマップは編集できません'); return; }
+        if (app.update(doc => { doc.terrain = result; doc.background = null; })) { cleanup(); app._render(); }
+      } finally { pending = false; generate.disabled = false; adopt.disabled = !candidate; }
+    }, { disabled: true });
+    panel.append(generate, adopt, app._button('閉じる', cleanup));
+    app._generator = panel; MeldexMapChrome.openPanel(panel);
+    app._generatorPreview = { panel, destroy: cleanup };
+  }
+  function interchange(app) {
+    if (app._interchange?.panel.isConnected) { app._interchange.panel.querySelector('input')?.focus(); return; }
+    const canEdit = app._editGuard(), store = app.store;
+    const panel = document.createElement('div'); panel.className = 'gb-map-generator'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', '地図データの入出力');
+    const heading = document.createElement('h3'); heading.textContent = '地図データの入出力';
+    const help = document.createElement('p'); help.textContent = 'CSVは地点・文字、GeoJSONは地点・経路・穴のない領域、GPXは地点・経路に対応します。GeoJSON・GPXは現実地図専用です。';
+    const note = document.createElement('p'); note.textContent = '標高・時刻・外部リンク・独自属性は取り込みません。書き出しには非表示レイヤーも含みます。元の編集情報を保管する場合は「マップを書き出す」を使ってください。';
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.csv,.geojson,.json,.gpx'; input.setAttribute('aria-label', '取り込む地図データ'); input.disabled = app.editingDisabled;
+    const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = 'ファイルを選ぶと、取り込む内容を確認できます。';
+    const list = document.createElement('ul');
+    let plan = null, filename = '', reading = 0;
+    const close = () => { reading++; MeldexMapChrome.closePanel(panel); panel.remove(); if (app._interchange?.panel === panel) app._interchange = null; };
+    const adopt = app._button('新しいレイヤーへ取り込む', () => {
+      if (!plan || !panel.isConnected || app.store !== store) return;
+      if (plan.coordinate_system !== store.doc.coordinate_system) throw new Error('地図の種類が変わりました。ファイルを選び直してください');
+      if (!canEdit()) return;
+      const layer = { id: D().id(), name: filename.replace(/\.[^.]+$/, '').slice(0, 80) || '取込データ', visible: true, locked: false, opacity: 1 };
+      const features = plan.features.map(f => ({ ...D().clone(f), layer_id: layer.id, id: D().id() }));
+      const next = D().clone(store.doc); next.layers.push(layer); next.features.push(...features);
+      D().parse(JSON.stringify(next));
+      if (!app.update(doc => { doc.layers.push(layer); doc.features.push(...features); })) return;
+      app._activeLayer = layer.id; app._selected = null; app.view.cancel(); app._render();
+      app._message(`${features.length}件を新しいレイヤーへ取り込みました。元に戻せます。`); close();
+    }, { disabled: true });
+    input.onchange = async () => {
+      const generation = ++reading, file = input.files[0]; input.value = ''; plan = null; adopt.disabled = true; list.replaceChildren();
+      if (!file) return;
+      status.textContent = '読み込んでいます…';
+      try {
+        if (file.size > 8 * 1024 * 1024) throw new Error('8MB以下のファイルを指定してください');
+        const source = await file.text();
+        if (generation !== reading || !canEdit() || !panel.isConnected) return;
+        const format = file.name.split('.').pop().toLowerCase();
+        plan = MeldexMapInterchange.read(source, format, store.doc.coordinate_system); filename = file.name;
+        const counts = new Map(); plan.features.forEach(f => counts.set(f.kind, (counts.get(f.kind) || 0) + 1));
+        status.textContent = `${plan.features.length}件（` + Array.from(counts, ([kind, count]) => ({ pin: '地点', label: '文字', route: '経路', region: '領域' })[kind] + count).join('・') + '）を新しいレイヤーへ追加します。現在の地形・図形は保持されます。';
+        for (const f of plan.features.slice(0, 5)) { const li = document.createElement('li'); li.textContent = f.label || '名前なし'; list.appendChild(li); }
+        adopt.disabled = false;
+      } catch (error) { if (generation === reading && panel.isConnected) status.textContent = '取り込めません: ' + error.message; }
+    };
+    panel.append(heading, help, note, input, status, list, adopt);
+    for (const [format, label] of [['csv', 'CSVを書き出す'], ['geojson', 'GeoJSONを書き出す'], ['gpx', 'GPXを書き出す']]) {
+      panel.appendChild(app._button(label, async () => {
+        app._commitInput();
+        if (app._inputDirty) throw new Error('入力内容を確認してから書き出してください');
+        const output = MeldexMapInterchange.write(store.doc, format), name = app.state.label;
+        if (output.omitted && !await cfConfirm(`${format.toUpperCase()}に対応しない${output.omitted}件の図形を除いて書き出しますか？ 元のマップには残ります。`)) return;
+        await MeldexExportSave.saveText(output.text, { initialfile: name + output.extension, extension: output.extension, mime: output.mime });
+      }, { disabled: format !== 'csv' && store.doc.coordinate_system !== 'world' }));
+    }
+    panel.appendChild(app._button('閉じる', close)); MeldexMapChrome.openPanel(panel); app._interchange = { panel, destroy: close };
+  }
+  return Object.freeze({ settings, layers, places, inspector, generator, interchange });
+})();
+
+;
+
+/* === gb-map-package.js === */
+;
+/* Read-only creative-map packages. Original paths and topic metadata stay local. */
+(function (root, factory) {
+  const node = typeof module === 'object' && module.exports;
+  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument, node ? require('./gb-map-world-geography.js') : root.MeldexMapWorldGeography);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.MeldexMapPackage = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (D, G) {
+  'use strict';
+  const MAX_MAPS = 64, MAX_BYTES = 48 * 1024 * 1024;
+  const assets = ['vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/LICENSE',
+    'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
+  const key = path => String(path).replace(/\\/g, '/').toLocaleLowerCase();
+  const pick = (obj, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(obj, field)).map(field => [field, D.clone(obj[field])]));
+  function portable(doc, links) {
+    const result = pick(doc, ['fileType', 'schema_version', 'title', 'coordinate_system']);
+    result.canvas = pick(doc.canvas, ['width', 'height']); result.basemap = 'blank';
+    result.scale = pick(doc.scale, ['distance_per_unit', 'unit', 'north_degrees']);
+    const periods = new Map((doc.periods || []).map((period, index) => [period.id, 'period-' + index]));
+    if (doc.periods) result.periods = doc.periods.map(period => ({ id: periods.get(period.id), name: period.name }));
+    const layers = new Map(doc.layers.map((layer, index) => [layer.id, 'layer-' + index]));
+    result.layers = doc.layers.map(layer => ({ ...pick(layer, ['name', 'visible', 'locked', 'opacity']), id: layers.get(layer.id) }));
+    const cartography = feature => {
+      const c = feature.cartography;
+      if (!c || !['river','road','shipping','border','lake','city','country-label','mountain-label','river-label'].includes(c.role)) return {};
+      return { cartography: { role:c.role, ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
+    };
+    result.features = doc.features.map((feature, index) => ({
+      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags']),
+      id: 'feature-' + index, layer_id: layers.get(feature.layer_id),
+      ...cartography(feature),
+      ...(feature.period_ids ? { period_ids: feature.period_ids.map(id => periods.get(id)) } : {}),
+      icon: ['pin', 'city', 'castle', 'mountain', 'forest', 'port'].includes(feature.icon) ? feature.icon : 'pin',
+      line_style: feature.line_style === 'curve' ? 'curve' : 'straight', arrow: !!feature.arrow, dashed: !!feature.dashed,
+      links: feature.links.filter(link => link.role === 'child-map' && links.has(key(link.path))).map(link => {
+        const target = links.get(key(link.path));
+        return { path: target.id + '.mel-map', label: target.doc.title, role: 'child-map', type: 'map', package_map_id: target.id };
+      }),
+    }));
+    result.terrain = doc.terrain ? pick(doc.terrain, ['cols', 'rows', 'heights']) : null;
+    if (doc.terrain && G.validEnvironment(doc.terrain)) {
+      result.terrain.environment = pick(doc.terrain.environment,['version','signature','temperature','rain','biomes','lakes','owner','countries']);
+      if (['biomes','elevation','temperature','rain','political'].includes(doc.terrain.presentation)) result.terrain.presentation=doc.terrain.presentation;
+    }
+    result.background = doc.background ? pick(doc.background, ['data_url']) : null; result.view = null;
+    return D.parse(result);
+  }
+  async function collect(rootPath, read, options = {}) {
+    const check = options.check || (() => {});
+    const canonical = options.canonicalPath || (path => String(path).replace(/\\/g, '/'));
+    const maps = new Map(), seen = new Set(), queue = [canonical(rootPath)], skipped = [], snapshots = [];
+    let bytes = 0, omittedLinks = 0, omittedSources = 0;
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      check();
+      const path = queue[cursor], pathKey = key(path);
+      if (seen.has(pathKey)) continue;
+      if (seen.size >= MAX_MAPS) throw new Error('持ち出す地図は64件以内にしてください');
+      seen.add(pathKey);
+      const loaded = await read(path); check();
+      const doc = D.parse(loaded.content);
+      bytes += new TextEncoder().encode(typeof loaded.content === 'string' ? loaded.content : JSON.stringify(loaded.content)).length;
+      if (bytes > MAX_BYTES) throw new Error('持ち出す地図の合計は48MB以内にしてください');
+      if (!loaded.etag) throw new Error('地図の保存状態を確認できません');
+      snapshots.push({ path, etag: loaded.etag });
+      if (doc.coordinate_system !== 'local') {
+        if (!cursor) throw new Error('持ち出しパッケージは創作地図で利用できます');
+        skipped.push(doc.title); continue;
+      }
+      maps.set(pathKey, { id: 'map-' + maps.size, doc });
+      omittedSources += (doc.sheet_sources || []).length;
+      for (const feature of doc.features) for (const link of feature.links) {
+        if (link.role === 'child-map' && options.includeChildren !== false) queue.push(canonical(link.path));
+        else omittedLinks++;
+      }
+    }
+    const aliases = new Map(maps);
+    for (const entry of maps.values()) for (const feature of entry.doc.features) for (const link of feature.links) {
+      const target = maps.get(key(canonical(link.path))); if (target) aliases.set(key(link.path), target);
+    }
+    const data = { fileType: 'meldex-map-package', schema_version: 1, root: 'map-0',
+      maps: Array.from(maps.values(), item => ({ id: item.id, doc: portable(item.doc, aliases) })) };
+    return { data, snapshots, skipped, omittedLinks, omittedSources, bytes };
+  }
+  async function verify(plan, read, check = () => {}) {
+    for (const source of plan.snapshots) {
+      check();
+      const loaded = await read(source.path); check();
+      if (loaded.etag !== source.etag) throw new Error('地図が変更されました。「内容を確認」からやり直してください');
+    }
+  }
+  function dataScript(data) {
+    return 'window.MELDEX_MAP_PACKAGE=' + JSON.stringify(data).replace(/[<\u2028\u2029]/g, char => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0')) + ';\n';
+  }
+  async function build(plan, loadAsset, zip, check = () => {}) {
+    check();
+    // The HTML template is served as text so the app's HTML bootstrap (local
+    // session credentials) is never injected into a portable document.
+    const entries = await Promise.all(assets.map(async name => ({ name: name === 'map-package-viewer.txt' ? 'index.html' : name, data: await loadAsset(name) })));
+    check();
+    entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
+    entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,
+      root: plan.data.root, maps: plan.data.maps.map(item => ({ id: item.id, title: item.doc.title })), read_only: true }, null, 2)) });
+    entries.push({ name: 'お読みください.txt', data: new TextEncoder().encode('ZIPをすべて展開し、index.htmlをブラウザで開いてください。インターネット接続やMeldexは不要です。\n閲覧用パッケージです。元のマップは.mel-mapで別途保管してください。\n非表示レイヤー・説明・タグも含みます。資料リンク、シート参照、現実地図は含みません。\nLeafletの著作権表示はvendor/leaflet/LICENSEを参照してください。\n') });
+    const bytes = await zip(entries); check();
+    return new Blob([bytes], { type: 'application/zip' });
+  }
+  function show(app) {
+    const store = app.store, generation = app._generation, path = app.path;
+    let active = true, busy = false, plan = null, signature = '';
+    const current = () => active && app.store === store && app._generation === generation && app.path === path && app._active !== false;
+    const controller = new AbortController();
+    const check = () => { if (!current()) throw new DOMException('持ち出し処理を中止しました', 'AbortError'); };
+    const canonical = value => MeldexLocationData.canonicalPath(value, state.vaultPath);
+    const read = value => apiFetch('/file?path=' + encodeURIComponent(value), { cache: 'no-store', signal: controller.signal });
+    const status = document.createElement('p'); status.setAttribute('role', 'status');
+    const list = document.createElement('ul'), label = document.createElement('label'), children = document.createElement('input');
+    children.type = 'checkbox'; children.checked = true; children.setAttribute('aria-label', '子地図を含める'); label.append(children, document.createTextNode(' 子地図を含める'));
+    const warning = document.createElement('p'); warning.textContent = '創作地図と画像を閲覧用ZIPにまとめます。非表示レイヤー・説明・タグも含みます。資料リンクとシートの参照表示は含みません。子地図は保存済みの内容を使用します。';
+    const reset = () => { plan = null; save.disabled = true; list.replaceChildren(); status.textContent = '「内容を確認」で含まれる地図を確認してください。'; };
+    const setBusy = value => { busy = value; preview.disabled = value; children.disabled = value; save.disabled = value || !plan; };
+    const preview = app._button('内容を確認', async () => {
+      if (busy || !current()) return;
+      reset(); setBusy(true); status.textContent = '地図を確認しています…';
+      try {
+        if (!await app.flush()) throw new Error('現在のマップを保存してから実行してください');
+        if (!current()) return;
+        signature = JSON.stringify(store.doc);
+        const result = await collect(path, read, { canonicalPath: canonical, includeChildren: children.checked, check });
+        if (!current()) return;
+        if (signature !== JSON.stringify(store.doc)) throw new Error('地図が変更されました。「内容を確認」からやり直してください');
+        if (result.snapshots[0]?.etag !== store.etag) throw new Error('保存先の地図が変更されています。マップを再読込してから実行してください');
+        plan = result;
+        for (const item of plan.data.maps) { const row = document.createElement('li'); row.textContent = item.doc.title || '無題'; list.appendChild(row); }
+        status.textContent = `${plan.data.maps.length}件、約${(plan.bytes / 1024 / 1024).toFixed(1)}MB。資料リンク等${plan.omittedLinks}件・シート参照${plan.omittedSources}件を除外。`
+          + (plan.skipped.length ? `現実地図${plan.skipped.length}件を除外: ${plan.skipped.join('、')}` : '') + ' ZIPを展開してindex.htmlを開くと閲覧できます。';
+      } catch (error) { if (current()) { reset(); status.textContent = '確認できません: ' + error.message; } }
+      finally { setBusy(false); }
+    });
+    const save = app._button('ZIPを保存', async () => {
+      if (busy || !plan || !current()) return;
+      setBusy(true);
+      try {
+        const blob = await build(plan, async name => {
+          const response = await fetch(new URL(name, document.baseURI), { signal: controller.signal });
+          if (!response.ok) throw new Error('閲覧用ファイルを取得できません: ' + name);
+          return new Uint8Array(await response.arrayBuffer());
+        }, MeldexArchiveZipEngine.buildZip, check);
+        await verify(plan, read, check);
+        if (!current()) return;
+        if (store.dirty || app._inputDirty || signature !== JSON.stringify(store.doc)) throw new Error('地図が変更されました。「内容を確認」からやり直してください');
+        const saved = await MeldexExportSave.saveBlob(blob, { initialfile: plan.data.maps[0].doc.title + '-持ち出し.zip', extension: '.zip' });
+        if (saved !== false && current()) dialog.close('saved');
+      } catch (error) { if (current()) { reset(); status.textContent = '保存できません: ' + error.message; } }
+      finally { setBusy(false); }
+    });
+    const dialog = GBUI.createModal({ title: '持ち出しパッケージ', footer: [app._button('閉じる', () => dialog.close()), preview, save], onClose: () => { active = false; controller.abort(); } });
+    children.onchange = reset; dialog.body.append(warning, label, status, list); reset(); dialog.open();
+  }
+  return Object.freeze({ collect, verify, build, dataScript, show });
+});
+
+;
+
+/* === gb-map-chrome.js === */
+;
+/* Map chrome uses the same toolbar, menus and option-panel shell as other tools. */
+(function (root) {
+  'use strict';
+  const icon = name => typeof lucide === 'function' ? lucide(name, 16) : '';
+  const dialogs = new WeakMap();
+  function closePanel(panel) {
+    const modal = dialogs.get(panel); if (!modal) return;
+    dialogs.delete(panel); modal.close();
+  }
+  function openPanel(panel) {
+    const actions = [...panel.children].filter(el => el.tagName === 'BUTTON');
+    const close = actions.find(el => el.dataset.mapAction === '閉じる');
+    const heading = panel.querySelector(':scope > h3');
+    panel.classList.add('gb-map-modal-content', 'gb-map-options');
+    const title = heading?.textContent || 'マップ';
+    const modal = GBUI.createModal({ title, closeLabel: title + 'を閉じる', body: panel, footer: actions,
+      initialFocus: () => panel.querySelector('input:not([type=hidden]),select,textarea'),
+      geometryKey: 'map-' + (panel.getAttribute('aria-label') || heading?.textContent || 'dialog'),
+      onClose: () => { dialogs.delete(panel); close?.click(); } });
+    modal.modal.style.width = 'min(640px, calc(100vw - 32px))';
+    close?.addEventListener('click', () => closePanel(panel));
+    dialogs.set(panel, modal); modal.open(); return modal;
+  }
+  function iconButton(app, label, name, action, id) {
+    const button = app._button(label, action, { id });
+    button.className = 'tb-icon-btn'; button.innerHTML = icon(name);
+    button.title = label; button.setAttribute('aria-label', label); return button;
+  }
+  function convert(button, label, name) {
+    button.className = 'tb-icon-btn'; button.innerHTML = icon(name);
+    button.title = label; button.setAttribute('aria-label', label); return button;
+  }
+  function section(title, content, open = false) {
+    const el = document.createElement('details'); el.className = 'gb-map-section'; el.open = open;
+    const summary = document.createElement('summary'); summary.textContent = title;
+    el.append(summary, ...content); return el;
+  }
+  function decorate(app) {
+    const toolbar = app.el.querySelector('.gb-map-toolbar'), tools = app.el.querySelector('.gb-map-tools');
+    const commands = new Map([...toolbar.querySelectorAll('button')].map(b => [b.dataset.mapAction, b]));
+    app._mapCommands = commands;
+    const parking = app._mapParking = document.createElement('div'); parking.hidden = true; app.el.appendChild(parking);
+    parking.append(...toolbar.children);
+    toolbar.className = 'gb-toolbar gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
+    const menu = iconButton(app, 'マップメニュー', 'menu', event => showToolMenu(event, 'map', app), 'menu'); menu.classList.add('tool-menu-btn');
+    menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
+    const reveal = iconButton(app, 'フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('map', event), 'reveal');
+    const title = app._mapTitle = document.createElement('span'); title.className = 'tb-title tb-file-title'; title.textContent = app.state.label || 'マップ'; title.title = title.textContent;
+    const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
+    app.undoButton.dataset.gbTooltipKey = 'history.undo'; app.redoButton.dataset.gbTooltipKey = 'history.redo';
+    toolbar.append(menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
+    const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
+    for (const [tool, button] of app.toolButtons) toolbar.appendChild(convert(button, button.textContent, toolIcons[tool]));
+    const spacer = document.createElement('div'); spacer.className = 'tb-spacer'; toolbar.appendChild(spacer);
+    app.sidebarToggle = iconButton(app, 'レイヤーと地点一覧', 'layers', () => { app.sidebar.hidden = !app.sidebar.hidden; app.sidebarToggle.setAttribute('aria-pressed', String(!app.sidebar.hidden)); }, 'navigator');
+    app.sidebarToggle.setAttribute('aria-pressed', 'false');
+    app.inspectorToggle = iconButton(app, 'オプションを開く', 'panelRight', () => { app._syncDetailPanel(); toggleOptionPanel(); }, 'options');
+    app.inspectorToggle.classList.add('gb-toolbar-option-panel-btn'); app.inspectorToggle.dataset.gbTooltipKey = 'panel.right.toggle';
+    const search = iconButton(app, '地図内を検索', 'search', () => { app.sidebar.hidden = false; app.sidebarToggle.setAttribute('aria-pressed', 'true'); app._mapNavigatorTab('places'); app.search.focus(); }, 'search');
+    const reload = commands.get('再読込');
+    toolbar.append(app.sidebarToggle, convert(reload, '再読み込み', 'refreshCw'), search, app.inspectorToggle, app.saveStatus);
+    app.saveStatus.classList.add('tb-meta');
+
+    tools.className = 'gb-toolbar gb-map-contextbar'; tools.setAttribute('role', 'toolbar');
+    app.symbolInput.className = 'gb-select';
+    const color = iconButton(app, '追加する図形の色', 'palette', event => {
+      openColorPalette(event.currentTarget, app.colorInput.value, value => { if (!app.editingDisabled) { app.colorInput.value = value; color.style.setProperty('--map-color', value); } }, { allowTransparent: false });
+    }, 'draw-color'); color.className += ' gb-map-color-button'; color.style.setProperty('--map-color', app.colorInput.value);
+    color.disabled = app.editingDisabled; app.colorInput.hidden = true; app.colorInput.removeAttribute('aria-label');
+    const cancel = tools.querySelector('[data-map-action="取消"]');
+    tools.replaceChildren(app.symbolInput, app.colorInput, color, convert(app.finishButton, '描画を確定', 'check'), convert(cancel, '描画を取消', 'x'));
+    app._contextColor = color; app._contextCancel = cancel; app._contextBar = tools;
+    app._contextBrush = document.createElement('label'); app._contextBrush.className = 'gb-map-brush'; app._contextBrush.append('ブラシ ');
+    const brush = document.createElement('input'); brush.type = 'range'; brush.min = 5; brush.max = 300; brush.step = 5; brush.value = app.view.brushSize || 70; brush.className = 'tb-range'; brush.setAttribute('aria-label', 'ブラシの半径');
+    brush.oninput = () => { app.view.brushSize = Number(brush.value); }; app._contextBrush.appendChild(brush); tools.prepend(app._contextBrush);
+
+    const sidebar = app.sidebar; sidebar.replaceChildren(); sidebar.hidden = true; sidebar.setAttribute('aria-label', 'レイヤーと地点一覧');
+    const nav = document.createElement('div'); nav.className = 'gb-tabbar'; nav.setAttribute('role', 'tablist'); nav.setAttribute('aria-label', '地図の一覧');
+    const layers = document.createElement('div'), places = document.createElement('div'); layers.className = places.className = 'gb-map-navigator-page';
+    const addLayer = [...parking.querySelectorAll('[data-map-action="レイヤー追加"]')][0] || app._button('レイヤー追加', () => {
+      const id = MeldexMapDocument.id(); if (app.update(d => { d.layers.push({ id, name: '新しいレイヤー', visible: true, locked: false, opacity: 1 }); })) { app._activeLayer = id; app._renderLayers(); }
+    }, { disabled: app.editingDisabled });
+    layers.append(addLayer, app.layerList); places.append(app.search, app.kindFilter, app.placeList);
+    const pages = { layers, places }, tabs = new Map();
+    app._mapNavigatorTab = id => { for (const [key, page] of Object.entries(pages)) { page.hidden = key !== id; tabs.get(key).setAttribute('aria-selected', String(key === id)); tabs.get(key).classList.toggle('gb-inner-tab-active', key === id); } };
+    for (const [id, label] of [['layers', 'レイヤー'], ['places', '地点・図形']]) {
+      const b = app._button(label, () => app._mapNavigatorTab(id)); b.className = 'gb-inner-tab'; b.setAttribute('role', 'tab'); tabs.set(id, b); nav.appendChild(b);
+    }
+    sidebar.append(nav, layers, places); app._mapNavigatorTab('layers');
+    const closeNav = iconButton(app, '一覧を閉じる', 'x', () => { sidebar.hidden = true; app.sidebarToggle.setAttribute('aria-pressed', 'false'); }, 'close-navigator'); nav.appendChild(closeNav);
+
+    const options = app.optionsRoot = document.createElement('div'); options.className = 'gb-map-options';
+    const settingsTitle = document.createElement('h3'); settingsTitle.textContent = '地図の設定';
+    options.append(settingsTitle, app.settings, section('章・時代', [app.periodsRoot]), section('保存した表示', [app.savedViewsRoot]), section('シートの場所', [app.sheetSources, app.sheetStatus]));
+    parking.append(options, app.inspector);
+    app.inspector.classList.add('gb-map-options'); app.inspector.hidden = false;
+    for (const host of [options, app.inspector]) host.addEventListener('keydown', event => { if (app.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); } });
+    const empty = app._mapEmpty = document.createElement('div'); empty.className = 'gb-map-empty';
+    const emptyTitle = document.createElement('strong'); emptyTitle.textContent = '世界を描き始める';
+    const hint = document.createElement('p'); hint.textContent = '地形・川・都市をまとめて生成するか、地図画像を読み込んで作成できます。';
+    const actions = document.createElement('div');
+    actions.append(app._button('地図画像を読み込む', () => app.settings.querySelector('input[type=file]')?.click(), { disabled: app.editingDisabled }), app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled }));
+    empty.append(emptyTitle, hint, actions); app.el.querySelector('.gb-map-body').appendChild(empty);
+
+    const bar = app.el.querySelector('.gb-map-viewbar'); bar.className = 'gb-toolbar gb-map-viewbar';
+    app.zoomSlider.className = 'tb-range'; app.rotationSlider.className = 'tb-range';
+    const buttons = [...bar.querySelectorAll('button')];
+    const icons = ['zoomOut', 'zoomIn', 'square', 'maximize', 'disc'];
+    buttons.forEach((b, i) => convert(b, ['縮小', '拡大', '100%', '全体表示', '回転をリセット'][i], icons[i]));
+    bar.replaceChildren(app.zoomSlider, app.zoomLabel, buttons[0], buttons[1], buttons[2], buttons[3], sep(), app.rotationSlider, app.rotationLabel, buttons[4]);
+    bar.appendChild(app.position);
+    const breadcrumbs = app.breadcrumbs; breadcrumbs.className = 'gb-map-breadcrumbs'; app.el.insertBefore(breadcrumbs, app.el.querySelector('.gb-map-body'));
+    refresh(app);
+    root.MeldexToolbarOverflow?.setup(toolbar, { keep: ['[data-map-action="menu"]', '[data-map-action="options"]', '[data-map-action="select"]'] });
+  }
+  function refresh(app) {
+    if (!app._contextBar || !app.view || !app.store || app.view._destroyed) return;
+    const tool = app.view.tool, draft = app.view.draft.length > 0;
+    if (app._mapEmpty) app._mapEmpty.hidden = app.editingDisabled || tool !== 'select' || app.store.doc.coordinate_system !== 'local' || !!app.store.doc.background || !!app.store.doc.terrain || !!app.store.doc.features.length;
+    app._contextBar.hidden = !draft && ['select', 'measure', 'erase'].includes(tool);
+    app.symbolInput.hidden = tool !== 'symbol'; app._contextBrush.hidden = !['land', 'sea'].includes(tool);
+    app._contextColor.hidden = ['select', 'measure', 'erase', 'land', 'sea'].includes(tool);
+    app.finishButton.hidden = app._contextCancel.hidden = !draft;
+    for (const [id, b] of app.toolButtons) b.classList.toggle('active', id === tool);
+    if (app._mapTitle) { app._mapTitle.textContent = app.state.label || 'マップ'; app._mapTitle.title = app._mapTitle.textContent; }
+    root.MeldexToolbarOverflow?.refresh();
+  }
+  function details(app, tab = null) {
+    if (app._active === false || app.paneId !== GBLayout.activePane || !app.view?.map || !app.store || !app.optionsRoot || !app.inspector) return;
+    const settings = document.getElementById('detail-tab-map-settings'), selection = document.getElementById('detail-tab-map-selection');
+    if (!settings || !selection) return;
+    if (settings.firstElementChild !== app.optionsRoot) settings.replaceChildren(app.optionsRoot);
+    if (selection.firstElementChild !== app.inspector) selection.replaceChildren(app.inspector);
+    document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = false; });
+    const chosen = tab || (typeof _resolveDetailTabForType === 'function' ? _resolveDetailTabForType('map', app._selected ? 'map-selection' : 'map-settings') : 'map-settings');
+    if (typeof switchDetailTab === 'function' && _currentDetailTab !== chosen) switchDetailTab(chosen);
+  }
+  function menuItems(app) {
+    const run = action => async () => { try { await action(); } catch (e) { app._message(e.userMessage || e.message); } };
+    const command = (label, id, name, shortcut) => ({ label, icon: name, shortcut, disabled: !!app._mapCommands.get(id)?.disabled, action: run(() => app._mapCommands.get(id)?.click()) });
+    const local = app.store.doc.coordinate_system === 'local';
+    return [command('新規マップ', '新規', 'filePlus'), command('保存', '保存', 'save', 'Ctrl+S'), command('再読み込み', '再読込', 'refreshCw'), { separator: true },
+      { label: app.state.mapBrowseMode ? '作図モードに戻る' : '閲覧モード', icon: app.state.mapBrowseMode ? 'pencil' : 'eye', action: run(() => app._toggleBrowseMode()) },
+      ...(local ? [{ label: '生成', icon: 'sparkles', submenu: [
+        { label: '世界地図を生成', icon: 'globe', action: run(() => MeldexMapWorldGenerator.show(app)), disabled: app.editingDisabled },
+        { label: '地形を生成', icon: 'mountain', action: run(() => MeldexMapControls.generator(app)), disabled: app.editingDisabled },
+        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled },
+        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled },
+        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled })),
+      ] }] : []),
+      { label: '読み込み・書き出し', icon: 'import', submenu: [command('データ入出力', 'データ入出力', 'arrowLeftRight'), command('マップを書き出す', 'マップを書き出す', 'fileDown'), ...(local ? [command('PNG画像を書き出す', 'PNG', 'image'), command('持ち出しパッケージ', '持ち出しパッケージ', 'package')] : [])] },
+      { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },
+      { label: 'レイヤーと地点一覧', icon: 'layers', action: () => app.sidebarToggle.click() }, { label: '全体表示', icon: 'maximize', shortcut: 'Ctrl+0', action: () => app.view.fit() }];
+  }
+  function destroy(app) {
+    const menu = document.querySelector('.tool-menu-dropdown[data-tool-menu-root]');
+    if (menu && app.el.contains(menu._sourceButton)) menu._cleanup?.({ restoreFocus: false });
+    app.el.querySelectorAll('.gb-toolbar').forEach(el => root.MeldexToolbarOverflow?.teardown(el));
+    app.optionsRoot?.remove(); app.inspector?.remove();
+    app._contextBar = null;
+  }
+  root.MeldexMapChrome = Object.freeze({ decorate, refresh, details, menuItems, destroy, openPanel, closePanel });
+})(globalThis);
+
+;
+
+/* === gb-tool-map.js === */
+;
+/* First-class map tab, using the shared guarded file API and panel lifecycle. */
+class MapAppComponent extends ToolComponent {
+  create() {
+    this.el = document.createElement('section'); this.el.className = 'gb-map-app';
+    this.el.setAttribute('aria-label', 'マップ'); this.el.dataset.e2eId = 'map-app';
+    this._generation = 0; this._draftOwner = MeldexMapDocument.id(); this._activeLayer = 'places';
+    this._beforeUnload = event => { if (this.store?.dirty || this._inputDirty) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', this._beforeUnload);
+    this.el.addEventListener('keydown', event => { if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); } });
+    return this.el;
+  }
+  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(t => t.id === this.tabId); }
+  get editingDisabled() { return this.readOnly || !!this.state.mapBrowseMode; }
+  _saveViewState() {
+    const tab = this._tab(); if (tab) tab.state = { ...tab.state, ...this.state };
+    GBLayout.saveLayout();
+  }
+  _layerVisible(layer) { return this.state.mapLayerVisibility?.[layer.id] ?? layer.visible; }
+  _toggleBrowseMode() {
+    this._commitInput(); if (this._inputDirty) { this._message('入力内容を確認してください'); return; }
+    this.state.mapBrowseMode = !this.state.mapBrowseMode;
+    this.state.mapViewport = { center: this.view.xy(this.view.map.getCenter()), zoom: this.view.map.getZoom() };
+    this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy();
+    this.view.destroy(); this._build(); this._render(); this._saveViewState();
+    this._message(this.readOnly ? 'このマップは読み取り専用です。地点や図形は編集できません。'
+      : this.state.mapBrowseMode ? '閲覧モードです。地点の移動・作図・編集を停止しています。' : '作図モードです。地点や図形を編集できます。');
+  }
+  activate() {
+    super.activate();
+    const path = this._tab()?.path || this.state.mapPath;
+    if (path && path !== this.path) this.ready = this.load(path);
+    else if (!path && !this.store) {
+      this.el.replaceChildren();
+      const message = document.createElement('p'); message.textContent = this._tab()?.state?.pendingCreate ? 'マップを作成しています…' : 'マップを作成するか、フォルダツリーから開いてください。';
+      this.el.append(message);
+      if (!this._tab()?.state?.pendingCreate) this.el.append(this._button('マップを作成', () => addPanelMenuTool('map', { paneId: this.paneId })));
+    }
+    this.view?.map?.invalidateSize({ pan: true, animate: false });
+    this._syncDetailPanel();
+    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+  }
+  async load(path, options = {}) {
+    if (!MeldexMapDocument.isAvailable()) { this.el.textContent = 'マップ初期版はデスクトップ版本体で開いてください。'; return false; }
+    if (this.store && !options.ignoreDraft && !await this.flush()) return false;
+    const generation = ++this._generation;
+    this._sheetSignature = null; this._sheetCache = new Map(); this._directParents = [];
+    clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
+    this.el.textContent = 'マップを読み込んでいます…';
+    try {
+      const [loaded, access] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false)]);
+      if (generation !== this._generation || !this.el) return false;
+      const doc = MeldexMapDocument.parse(loaded.content);
+      this.readOnly = !!access.readOnly;
+      const target = path;
+      this.store = new MeldexMapDocument.Store(doc, loaded.etag, async (content, etag) => {
+        const actual = this.path;
+        const access = await MeldexEntityDetail.resolveReadOnly(actual, false);
+        if (access.readOnly) throw new Error('マップは読み取り専用です');
+        const result = await apiPut('/file?path=' + encodeURIComponent(actual), { content, if_match_etag: etag });
+        await window.GbBacklinks?.requestUpdate?.(actual);
+        return result;
+      }, () => this._changed());
+      const cached = !options.ignoreDraft && !this.readOnly && this._readDraft();
+      if (cached && await cfConfirm('保存できていないマップの下書きを復元しますか？')) {
+        if (generation !== this._generation || this.path !== target) return false;
+        this.store.doc = MeldexMapDocument.parse(cached.doc); this.store.etag = cached.etag;
+        this.store.revision++; this._recoveredKey = cached.key;
+      }
+      if (generation !== this._generation || !this.el) return false;
+      this.state = { ...this.state, mapPath: path, label: doc.display_title || doc.title };
+      if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
+      this._activeLayer = this.store.doc.layers[0].id; this._selected = null; this._selection = new Set(); this._inputDirty = false;
+      this._inspectorShown = false;
+      this._build(); this._render(); this._changed();
+      MeldexMapRelations.findParents(this).catch(() => {});
+      this._syncDetailPanel();
+      if (typeof addRecent === 'function') addRecent(this.state.label, path, 'map');
+      return true;
+    } catch (error) {
+      if (generation !== this._generation || !this.el) return false;
+      this.view?.destroy(); this.view = null; this.store = null;
+      this.el.replaceChildren();
+      const message = document.createElement('p'); message.textContent = 'マップを開けません: ' + (error.userMessage || error.message);
+      this.el.append(message, this._button('再読込', () => this.load(path)));
+      return false;
+    }
+  }
+  _button(label, action, options = {}) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn'; button.textContent = label;
+    button.dataset.mapAction = options.id || label; button.disabled = !!options.disabled;
+    button.addEventListener('click', async event => { try { await action(event); } catch (error) { this._message(error.userMessage || error.message); } });
+    return button;
+  }
+  _message(text) { if (this.message) this.message.textContent = text; if (typeof showStatus === 'function') showStatus(text); }
+  _draftPrefix() { return 'meldex-map-draft:' + this.path + ':'; }
+  _draftKey() { return this._draftPrefix() + this._draftOwner; }
+  _readDraft() {
+    try {
+      const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter(key => key?.startsWith(this._draftPrefix()));
+      return keys.map(key => { try { return { ...JSON.parse(localStorage.getItem(key)), key }; } catch (_) { return null; } })
+        .filter(draft => { try { return draft && MeldexMapDocument.parse(draft.doc) && typeof draft.etag === 'string'; } catch (_) { return false; } })
+        .sort((a, b) => b.time - a.time)[0];
+    } catch (_) { return null; }
+  }
+  _changed() {
+    const store = this.store;
+    if (!store || !this.el) return;
+    if (store.dirty) {
+      try { localStorage.setItem(this._draftKey(), JSON.stringify({ doc: store.doc, etag: store.etag, time: Date.now() })); this._draftFailed = false; }
+      catch (_) { this._draftFailed = true; }
+    } else {
+      try { localStorage.removeItem(this._draftKey()); if (this._recoveredKey) localStorage.removeItem(this._recoveredKey); } catch (_) {}
+      this._recoveredKey = null;
+    }
+    if (this.saveStatus) {
+      this.saveStatus.textContent = store.error ? '保存できません: ' + (store.error.userMessage || store.error.message)
+        : store.pending ? '保存しています…' : this.readOnly ? '読み取り専用' : store.dirty ? '未保存' : '保存済み';
+      if (this._draftFailed && store.dirty) this.saveStatus.textContent += '（下書きの保全にも失敗しました。マップを書き出してください）';
+      this.saveStatus.title = this.saveStatus.textContent;
+      this.saveStatus.classList.toggle('error', !!store.error || !!this._draftFailed && store.dirty);
+    }
+    if (this.undoButton) this.undoButton.disabled = this.editingDisabled || !store.undoStack.length;
+    if (this.redoButton) this.redoButton.disabled = this.editingDisabled || !store.redoStack.length;
+    clearTimeout(this._saveTimer);
+    if (store.dirty && !store.pending && !store.error && !this.readOnly) this._saveTimer = setTimeout(() => { if (this.store === store) store.save(); }, 800);
+  }
+  update(mutator, history = true) {
+    if (this.editingDisabled || !this.store) return false;
+    try { return this.store.update(mutator, history); }
+    catch (error) { this._message(error.message); return false; }
+  }
+  _editGuard(featureId = null) {
+    const store = this.store, generation = this._generation, system = store?.doc.coordinate_system;
+    return () => {
+      if (!store || this.store !== store || this._generation !== generation || this.editingDisabled || store.doc.coordinate_system !== system) return false;
+      if (!featureId) return true;
+      const feature = store.doc.features.find(f => f.id === featureId);
+      return !!feature && !store.doc.layers.find(l => l.id === feature.layer_id)?.locked;
+    };
+  }
+  _action(action) {
+    const doc = this.store.doc, layer = doc.layers.find(l => l.id === this._activeLayer);
+    if (this.editingDisabled) return;
+    if (action.source && action.source !== doc.features) { this.view._features(); this._message('地図が変更されたため操作を取り消しました'); return; }
+    if (action.type === 'transform') {
+      const editable = action.changes.filter(change => doc.features.some(f => f.id === change.id && !doc.layers.find(l => l.id === f.layer_id)?.locked));
+      this.update(next => { for (const change of editable) next.features.find(f => f.id === change.id).points = MeldexMapDocument.clone(change.points); });
+    } else if (action.type === 'erase') {
+      this._deleteSelected(action.ids); return;
+    } else if (action.type === 'terrain') {
+      this.update(next => { next.terrain = action.terrain; delete next.terrain.environment; delete next.terrain.presentation; });
+      this._buildSettingsRefresh();
+    }
+    else if (action.type === 'add') {
+      if (!layer || layer.locked) { this._message('編集ロック中のレイヤーには追加できません'); return; }
+      const feature = MeldexMapDocument.feature(action.kind, action.points, layer.id,
+        ({ pin: '地点', route: '経路', region: '領域', label: '地名' })[action.kind]);
+      feature.icon = action.icon || 'pin'; feature.color = this.colorInput.value;
+      if (this.update(next => next.features.push(feature))) { this._selected = feature.id; this._selection = new Set([feature.id]); this._inspectorShown = true; }
+    } else if (['move', 'vertex'].includes(action.type)) {
+      const feature = doc.features.find(f => f.id === action.id);
+      if (!feature || doc.layers.find(l => l.id === feature.layer_id)?.locked) return;
+      this.update(next => {
+        const target = next.features.find(f => f.id === action.id);
+        if (action.type === 'vertex') target.points[action.index] = action.point;
+        else target.points = [action.point];
+      });
+    }
+    this._render();
+    if (action.type === 'add') MeldexMapChrome.details(this, 'map-selection');
+    if (action.edit) this._editName(this._selected);
+  }
+  _select(id) { this._selectMany(id ? [id] : [], id); }
+  _selectMany(ids, active = null) {
+    this._selection = new Set(ids.filter(id => this.store.doc.features.some(f => f.id === id)));
+    this._selected = active && this._selection.has(active) ? active : [...this._selection].at(-1) || null;
+    this._inspectorShown = !!this._selected;
+    this.view.selectedIds = new Set(this._selection); this.view.selectedId = this._selected; this.view._features(); this._renderPlaces(); this._renderInspector();
+    MeldexMapChrome.details(this, this._selected ? 'map-selection' : 'map-settings');
+  }
+  _editName(id) {
+    this._select(id); if (!id || !this._editGuard(id)()) return;
+    const input = this.inspector.querySelector('[aria-label="名前"]'); input?.focus(); input?.select();
+  }
+  async _deleteSelected(ids = [...(this._selection || [])]) {
+    if (this.editingDisabled) return;
+    const source = this.store.doc, canEdit = this._editGuard();
+    const allowed = new Set(source.features.filter(f => ids.includes(f.id) && !source.layers.find(l => l.id === f.layer_id)?.locked).map(f => f.id));
+    if (!allowed.size || !await cfConfirm(`${allowed.size}件の地点・図形を削除しますか？`)) return;
+    if (!canEdit() || this.store.doc !== source) return;
+    if (this.update(doc => { doc.features = doc.features.filter(f => !allowed.has(f.id)); })) { this._selectMany([]); this._render(); }
+  }
+  _duplicateSelected() {
+    if (this.editingDisabled) return;
+    const D = MeldexMapDocument, source = this.store.doc, features = source.features.filter(f => this._selection?.has(f.id) && !source.layers.find(l => l.id === f.layer_id)?.locked);
+    const delta = MeldexMapInteraction.rotate([20, 20], -this.view.rotation), zoom = this.view.map.getZoom();
+    const copies = features.map(f => ({ ...D.clone(f), id: D.id(), label: f.label + ' コピー', points: f.points.map(p => this.view.xy(this.view.map.unproject(this.view.map.project(this.view.latlng(p), zoom).add(L.point(...delta)), zoom))) }));
+    D.parse(JSON.stringify({ ...source, features: source.features.concat(copies) }, null, 2));
+    if (this.update(doc => doc.features.push(...copies))) { this._selectMany(copies.map(f => f.id)); this._render(); }
+  }
+  async _command(name) {
+    try {
+      this._commitInput(); if (this._inputDirty) { this._message('入力内容を確認してください'); return; }
+      if (name === 'delete') await this._deleteSelected(); else if (name === 'duplicate') this._duplicateSelected();
+    } catch (error) { this._message(error.message); }
+  }
+  _navigateSelection(key, additive = false) {
+    const f = this.store.doc.features.find(f => f.id === this._selected), center = feature => { const p = feature.points.map(p => this.view.screenPoint(p)); return [p.reduce((s, p) => s + p[0], 0) / p.length, p.reduce((s, p) => s + p[1], 0) / p.length]; };
+    const origin = f ? center(f) : [0, 0]; let best = null, distance = Infinity;
+    for (const next of this.store.doc.features.filter(f => this.view._visible(f) && f.id !== this._selected)) {
+      const p = center(next), x = p[0] - origin[0], y = p[1] - origin[1];
+      if (f && !({ ArrowLeft: x < 0, ArrowRight: x > 0, ArrowUp: y < 0, ArrowDown: y > 0 })[key]) continue;
+      const d = Math.hypot(x, y); if (d < distance) { best = next; distance = d; }
+    }
+    if (best) { this._selectMany(additive ? [...this._selection, best.id] : [best.id], best.id); this.view.focus(best); }
+  }
+  _editFeature(mutator) {
+    const id = this._selected, layer = this.store.doc.layers.find(l => l.id === this.store.doc.features.find(f => f.id === id)?.layer_id);
+    if (!layer || layer.locked) { this._message('編集ロック中のレイヤーは変更できません'); return; }
+    this.update(doc => { const feature = doc.features.find(f => f.id === id); if (feature) mutator(feature); });
+    this._inputDirty = false; this._render();
+  }
+  _setTool(tool) {
+    if (this.editingDisabled && !['select', 'measure'].includes(tool)) return;
+    this.view.setTool(tool, this.symbolInput.value);
+    if (tool !== 'select') { this._inspectorShown = false; this._renderInspector(); this.sidebar.hidden = true; this.sidebarToggle?.setAttribute('aria-pressed', 'false'); }
+    this.toolButtons.forEach((button, key) => button.setAttribute('aria-pressed', String(key === tool)));
+    this._message(({ select: this.editingDisabled ? '地点や図形を選択します。閲覧中は移動しません。' : '地点や図形を選択します。地点はドラッグで移動できます。', pin: '地図をクリックして地点を置きます。',
+      label: '地図をクリックして地名を置きます。', symbol: '地図をクリックして記号を置きます。',
+      route: '経路の各点をクリックし、「確定」で完了します。', region: '領域の頂点をクリックし、「確定」で閉じます。',
+      measure: '計測する各点をクリックしてください。', land: 'ドラッグして陸地を描きます。', sea: 'ドラッグして海を描きます。', erase: '消す図形をなぞります。元に戻すで復旧できます。' })[tool]);
+    this.view._features();
+    MeldexMapChrome.refresh(this);
+  }
+  _render() {
+    if (!this.store || !this.view) return;
+    if (!this.store.doc.layers.some(layer => layer.id === this._activeLayer)) this._activeLayer = this.store.doc.layers[0].id;
+    this.view.periodId = MeldexMapPeriods.selected(this);
+    this.view.setRotation(this.state.mapRotation || 0, false);
+    this.view.filter = typeof this.state.mapSearch === 'string' ? this.state.mapSearch.trim().toLocaleLowerCase() : '';
+    this.view.featureKind = this.state.mapFeatureKind || '';
+    this.view.layerVisibility = this.state.mapLayerVisibility || {};
+    const viewport = this.state.mapViewport;
+    // Tab viewport is only reused in the coordinate system that captured it.
+    this.view.setDocument({ ...this.store.doc, view: viewport && this.state.mapViewSystem === this.store.doc.coordinate_system ? viewport : this.store.doc.view }, this.editingDisabled);
+    this._selection = new Set([...(this._selection || [])].filter(id => this.store.doc.features.some(f => f.id === id)));
+    this.view.selectedIds = new Set(this._selection); this.view.selectedId = this._selected; this.view._features(); this._renderZoom();
+    MeldexMapPeriods.render(this); this._renderLayers(); this._renderPlaces(); this._renderInspector(); this._changed();
+    MeldexMapSavedViews.render(this);
+    this.breadcrumbs.replaceChildren(); MeldexMapRelations.breadcrumbs(this, this.breadcrumbs);
+    this.sheetSources.replaceChildren(); MeldexMapRelations.sources(this, this.sheetSources);
+    MeldexMapRelations.refresh(this).catch(error => { this.sheetStatus.textContent = error.message; });
+    this.localControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'local'; });
+    this.worldControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'world'; });
+    MeldexMapChrome.refresh(this);
+  }
+  _build() {
+    if (this._mapParking) MeldexMapChrome.destroy(this);
+    this.el.replaceChildren(); this.localControls = []; this.worldControls = []; this.toolButtons = new Map();
+    const toolbar = document.createElement('div'); toolbar.className = 'gb-map-toolbar'; this.el.appendChild(toolbar);
+    this.browseButton = this._button('閲覧モード', () => this._toggleBrowseMode()); this.browseButton.setAttribute('aria-pressed', String(!!this.state.mapBrowseMode)); toolbar.appendChild(this.browseButton);
+    this.breadcrumbs = document.createElement('nav'); this.breadcrumbs.setAttribute('aria-label', '親子地図'); toolbar.appendChild(this.breadcrumbs);
+    toolbar.append(this._button('新規', () => addPanelMenuTool('map', { paneId: this.paneId })), this._button('保存', () => this.flush(), { disabled: this.readOnly }),
+      this._button('再読込', () => this.reload()), this._button('マップを書き出す', () => this.exportDocument()),
+      this._button('データ入出力', () => MeldexMapControls.interchange(this)));
+    this.undoButton = this._button('元に戻す', () => this.restore('undo')); this.redoButton = this._button('やり直す', () => this.restore('redo'));
+    toolbar.append(this.undoButton, this.redoButton, this._button('全体表示', () => this.view.fit()));
+    const exportPNG = this._button('PNG', async () => {
+      const blob = await this.view.exportPNG(); if (!blob) throw new Error('画像を作成できませんでした');
+      await MeldexExportSave.saveBlob(blob, { filename: this.state.label + '.png', extension: '.png' });
+    }); toolbar.appendChild(exportPNG); this.localControls.push(exportPNG);
+    const packageExport = this._button('持ち出しパッケージ', () => MeldexMapPackage.show(this));
+    toolbar.appendChild(packageExport); this.localControls.push(packageExport);
+    this.sidebarToggle = this._button('一覧・設定', () => {
+      this.sidebar.hidden = !this.sidebar.hidden; this.sidebarToggle.setAttribute('aria-pressed', String(!this.sidebar.hidden));
+    }); this.sidebarToggle.setAttribute('aria-pressed', 'true'); toolbar.appendChild(this.sidebarToggle);
+    this.inspectorToggle = this._button('選択項目', () => { this._inspectorShown = !this._inspectorShown; this._renderInspector(); }); toolbar.appendChild(this.inspectorToggle);
+    this.saveStatus = document.createElement('span'); this.saveStatus.className = 'gb-map-save-status'; this.saveStatus.setAttribute('role', 'status'); toolbar.appendChild(this.saveStatus);
+    const tools = document.createElement('div'); tools.className = 'gb-map-tools'; tools.setAttribute('aria-label', '地図の編集ツール'); this.el.appendChild(tools);
+    for (const [tool, label] of [['select', '選択'], ['pin', '地点'], ['route', '経路'], ['region', '領域'], ['label', '文字'], ['symbol', '記号'], ['land', '陸地'], ['sea', '海'], ['erase', '消しゴム'], ['measure', '計測']]) {
+      const button = this._button(label, () => this._setTool(tool), { id: tool, disabled: this.editingDisabled && !['select', 'measure'].includes(tool) });
+      button.setAttribute('aria-pressed', String(tool === 'select')); this.toolButtons.set(tool, button); tools.appendChild(button);
+      if (['land', 'sea'].includes(tool)) this.localControls.push(button);
+    }
+    this.symbolInput = document.createElement('select'); this.symbolInput.setAttribute('aria-label', '記号の種類');
+    this.symbolInput.disabled = this.editingDisabled;
+    for (const [value, label] of [['pin', '● 地点'], ['city', '◆ 都市'], ['castle', '♜ 城'], ['mountain', '▲ 山'], ['forest', '♠ 森林'], ['port', '⚓ 港']]) this.symbolInput.add(new Option(label, value));
+    this.symbolInput.onchange = () => this._setTool('symbol'); tools.appendChild(this.symbolInput);
+    this.colorInput = document.createElement('input'); this.colorInput.type = 'color'; this.colorInput.value = '#3b82c4'; this.colorInput.setAttribute('aria-label', '追加する図形の色'); tools.appendChild(this.colorInput);
+    this.colorInput.disabled = this.editingDisabled;
+    this.finishButton = this._button('確定', () => this.view.finish()); this.finishButton.disabled = true;
+    tools.append(this.finishButton, this._button('取消', () => this.view.cancel()));
+    const body = document.createElement('div'); body.className = 'gb-map-body'; this.el.appendChild(body);
+    const sidebar = this.sidebar = document.createElement('aside'); sidebar.className = 'gb-map-sidebar'; sidebar.setAttribute('aria-label', '地図の設定と地点一覧'); body.appendChild(sidebar);
+    this.settings = document.createElement('div'); this.settings.className = 'gb-map-settings'; sidebar.appendChild(this.settings); this._buildSettings();
+    this.periodsRoot = document.createElement('div'); this.periodsRoot.className = 'gb-map-periods'; sidebar.appendChild(this.periodsRoot);
+    this.savedViewsRoot = document.createElement('div'); sidebar.appendChild(this.savedViewsRoot);
+    const layerTitle = document.createElement('h3'); layerTitle.textContent = 'レイヤー'; sidebar.append(layerTitle, this._button('レイヤー追加', () => {
+      const id = MeldexMapDocument.id(); this.update(doc => doc.layers.push({ id, name: '新しいレイヤー', visible: true, locked: false, opacity: 1 })); this._activeLayer = id; this._renderLayers();
+    }, { disabled: this.editingDisabled }));
+    this.layerList = document.createElement('div'); sidebar.appendChild(this.layerList);
+    const placeTitle = document.createElement('h3'); placeTitle.textContent = '地点・図形'; sidebar.appendChild(placeTitle);
+    this.search = document.createElement('input'); this.search.type = 'search'; this.search.placeholder = '名前・タグ・説明を検索'; this.search.setAttribute('aria-label', '地図内を検索');
+    this.search.maxLength = 1000; this.search.value = this.state.mapSearch || '';
+    this.kindFilter = document.createElement('select'); this.kindFilter.setAttribute('aria-label', '図形の種類で絞り込む');
+    for (const [key, label] of [['', 'すべての種類'], ['pin', '地点・記号'], ['route', '経路'], ['region', '領域'], ['label', '文字']]) this.kindFilter.add(new Option(label, key));
+    this.kindFilter.value = this.state.mapFeatureKind || '';
+    const filter = () => {
+      this.state.mapSearch = this.search.value; this.state.mapFeatureKind = this.kindFilter.value; this._saveViewState();
+      this.view.filter = this.search.value.trim().toLocaleLowerCase(); this.view.featureKind = this.kindFilter.value;
+      this.view._features(); this._renderPlaces();
+    };
+    this.search.oninput = filter; this.kindFilter.onchange = filter; sidebar.append(this.search, this.kindFilter);
+    this.placeList = document.createElement('div'); this.placeList.className = 'gb-map-places'; sidebar.appendChild(this.placeList);
+    this.sheetSources = document.createElement('div'); sidebar.appendChild(this.sheetSources);
+    this.sheetStatus = document.createElement('p'); this.sheetStatus.className = 'gb-map-sheet-status'; this.sheetStatus.setAttribute('role', 'status'); sidebar.appendChild(this.sheetStatus);
+    const surface = document.createElement('div'); surface.className = 'gb-map-surface'; surface.setAttribute('aria-label', '地図'); body.appendChild(surface);
+    this.inspector = document.createElement('aside'); this.inspector.className = 'gb-map-inspector'; this.inspector.setAttribute('aria-label', '選択項目'); body.appendChild(this.inspector);
+    const status = document.createElement('div'); status.className = 'gb-map-status'; this.el.appendChild(status);
+    const zoomBar = document.createElement('div'); zoomBar.className = 'gb-map-viewbar'; this.el.insertBefore(zoomBar, status);
+    this.zoomSlider = document.createElement('input'); this.zoomSlider.type = 'range'; this.zoomSlider.setAttribute('aria-label', 'ズーム倍率');
+    this.zoomLabel = document.createElement('output'); this.zoomLabel.setAttribute('aria-label', '現在の倍率');
+    this.zoomSlider.oninput = () => this.view.zoomAt(this.store.doc.coordinate_system === 'world' ? Number(this.zoomSlider.value) : Math.log2(Number(this.zoomSlider.value) / 100));
+    this.rotationSlider = document.createElement('input'); Object.assign(this.rotationSlider, { type: 'range', min: -180, max: 180, step: 1 }); this.rotationSlider.setAttribute('aria-label', '表示の回転');
+    this.rotationSlider.oninput = () => this.view.setRotation(Number(this.rotationSlider.value));
+    this.rotationLabel = document.createElement('output');
+    zoomBar.append(this._button('−', () => this.view.stepZoom(-1), { id: 'zoom-out' }), this.zoomSlider, this.zoomLabel, this._button('＋', () => this.view.stepZoom(1), { id: 'zoom-in' }),
+      this._button('100%', () => this.view.zoom100()), this._button('全体', () => this.view.fit()), this.rotationSlider, this.rotationLabel, this._button('回転リセット', () => this.view.setRotation(0)));
+    this.message = document.createElement('span'); this.message.setAttribute('role', 'status');
+    this.position = document.createElement('span'); status.append(this.message, this.position);
+    this.view = new MeldexMapView(surface, {
+      action: action => this._action(action), select: id => this._select(id), message: text => this._message(text),
+      selection: (ids, active) => this._selectMany(ids, active), edit: id => this._editName(id), command: name => this._command(name),
+      rotation: degrees => { this.state.mapRotation = degrees; this._saveViewState(); this._renderZoom(); }, zoom: () => this._renderZoom(),
+      draft: (count, distance) => { this.finishButton.disabled = count < (this.view?.tool === 'region' ? 3 : 2); if (count) this.message.textContent = `${count}点 ・ ${distance}`; MeldexMapChrome.refresh(this); },
+      position: point => { this.position.textContent = point.map(n => n.toFixed(this.store.doc.coordinate_system === 'world' ? 5 : 1)).join(', '); },
+      view: view => { this._viewport = view; this.state.mapViewport = view; this.state.mapViewSystem = this.store.doc.coordinate_system; this._saveViewState(); },
+      period: id => {
+        MeldexMapPeriods.choose(this, id); this._render();
+        this._message('表示する章・時代を「' + ((this.store.doc.periods || []).find(period => period.id === id)?.name || 'すべて') + '」へ切り替えました');
+      },
+      reveal: feature => {
+        this.state.mapSearch = ''; this.state.mapFeatureKind = '';
+        (this.state.mapLayerVisibility ||= {})[feature.layer_id] = true;
+        this.search.value = ''; this.kindFilter.value = ''; this._saveViewState(); this._render();
+        this._message('移動先の地点・図形を表示するため、絞り込みとレイヤー表示を調整しました。');
+      },
+      sheetPlace: async place => {
+        try {
+          if (place.topicRef && !place.path) { await window.MeldexTopicPlacementUI?.showDetail?.({ topicRef: place.topicRef, label: place.name }); return; }
+          if (!place.path) throw new Error('元のトピックのパスを取得できません');
+          await navOpen({ type: 'entity', path: place.path, label: place.name });
+        } catch (error) { this._message(error.userMessage || error.message); }
+      },
+    });
+    MeldexMapChrome.decorate(this);
+    this._message('地図の種類を選び、地点や地形を追加してください。');
+  }
+  _buildSettings() { MeldexMapControls.settings(this); }
+  _renderZoom() {
+    if (!this.zoomSlider || !this.view?.map) return;
+    const v = this.view, world = this.store.doc.coordinate_system === 'world', z = v.map.getZoom();
+    this.zoomSlider.min = world ? v.map.getMinZoom() : 100 * 2 ** v.map.getMinZoom(); this.zoomSlider.max = world ? v.map.getMaxZoom() : 100 * 2 ** v.map.getMaxZoom(); this.zoomSlider.step = world ? .01 : .1;
+    this.zoomSlider.value = world ? z : 100 * 2 ** z; this.zoomLabel.textContent = world ? 'Z ' + z.toFixed(2) : (100 * 2 ** z).toLocaleString('ja-JP', { maximumFractionDigits: 1 }) + '%';
+    this.rotationSlider.value = v.rotation; this.rotationLabel.textContent = Math.round(v.rotation) + '°';
+  }
+  _renderLayers() { MeldexMapControls.layers(this); }
+  _renderPlaces() { MeldexMapControls.places(this); }
+  _renderInspector() {
+    MeldexMapControls.inspector(this);
+    this.inspector.hidden = false;
+    MeldexMapChrome.details(this);
+  }
+  _syncDetailPanel() {
+    const path = this.path || this._tab()?.path || this.state.mapPath;
+    if (!path || this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
+    window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
+  }
+  restore(direction) { this._commitInput(); if (!this.editingDisabled && this.store.restore(direction)) { this._inputDirty = false; this.view.cancel(); this._buildSettingsRefresh(); this._render(); } }
+  _commitInput() { const input = document.activeElement; if ((this.el?.contains(input) || this.optionsRoot?.contains(input) || this.inspector?.contains(input)) && input.matches('input,textarea,select')) input.blur(); }
+  async flush() {
+    this._commitInput(); clearTimeout(this._saveTimer);
+    if (!this.store) return true;
+    if (this._inputDirty) { this._message('入力内容を確認してから保存してください'); return false; }
+    if (!this.editingDisabled && this._viewport) this.update(doc => { doc.view = this._viewport; }, false);
+    clearTimeout(this._saveTimer);
+    const store = this.store, hadChanges = store.dirty || !!store.error, saved = await store.save();
+    // A user can keep typing while a save is in flight. Do not close the tab
+    // over an input that has not yet reached its change/blur commit boundary.
+    const clean = saved && this.store === store && !store.dirty && !this._inputDirty;
+    if (clean && hadChanges) this._message('マップを保存しました');
+    return clean;
+  }
+  async reload() {
+    this._commitInput();
+    if (this.store?.dirty && !await this.flush()) {
+      if (!await cfConfirm('未保存の編集は下書きに残ります。画面を保存先の最新版に切り替えますか？')) return false;
+      return this.load(this.path, { ignoreDraft: true });
+    }
+    return this.load(this.path);
+  }
+  async exportDocument() {
+    this._commitInput();
+    return MeldexExportSave.saveText(JSON.stringify(this.store.doc, null, 2), { initialfile: this.state.label + '.mel-map', extension: '.mel-map', mime: 'application/json' });
+  }
+  handleKeyDown(event) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || !this.store || !this.view) return false;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { this.flush(); return true; }
+    if (MeldexMapInteraction.editableTarget(event.target) || event.target.closest?.('button,.leaflet-control')) return false;
+    const actual = typeof _normalizeKeyEvent === 'function' ? _normalizeKeyEvent(event) : '';
+    const matches = (id, fallback) => {
+      const key = typeof getShortcutKey === 'function' ? getShortcutKey(id) : fallback;
+      return !!key && actual === (typeof _normalizeKeyDef === 'function' ? _normalizeKeyDef(key) : key);
+    };
+    if (matches('global.undo', 'ctrl+z')) { this.restore('undo'); return true; }
+    if (matches('global.redo', 'ctrl+y') || matches('global.redo2', 'ctrl+shift+z')) { this.restore('redo'); return true; }
+    if (event.key === 'Escape') {
+      if (this.view.draft.length || this.view._painting) this.view.cancel();
+      else if (this.view.tool !== 'select') this._setTool('select');
+      else this._selectMany([]);
+      return true;
+    }
+    if (event.key === 'Enter' && this.view?.draft.length) { this.view.finish(); return true; }
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.startsWith('Arrow')) { this._navigateSelection(event.key, event.shiftKey); return true; }
+    const commands = [
+      ['board.search', 'ctrl+f', () => { this.sidebar.hidden = false; this.sidebarToggle?.setAttribute('aria-pressed', 'true'); this._mapNavigatorTab?.('places'); this.search.focus(); this.search.select(); }],
+      ['board.delete', 'delete', () => this._command('delete')],
+      ['board.selectAll', 'ctrl+a', () => this._selectMany(this.store.doc.features.filter(f => this.view._visible(f)).map(f => f.id))],
+      ['board.deselectAll', 'ctrl+d', () => this._selectMany([])],
+      ['board.edit', 'f2', () => this._editName(this._selected)],
+      ['board.zoomIn', 'ctrl+=', () => this.view.stepZoom(1)], ['board.zoomOut', 'ctrl+-', () => this.view.stepZoom(-1)],
+      ['board.zoomFit', 'ctrl+0', () => this.view.fit()], ['board.zoom100', 'ctrl+1', () => this.view.zoom100()],
+    ];
+    for (const [id, key, run] of commands) if (matches(id, key)) { run(); return true; }
+    return false;
+  }
+  onPathRename(oldPath, newPath, options) {
+    if (!this.store || !this.path) return;
+    const next = _mapRenamedPath(this.path, oldPath, newPath);
+    if (next !== this.path) { const key = this._draftKey(); this.path = next; this.state.mapPath = next; if (this.store.dirty) { this._changed(); try { localStorage.removeItem(key); } catch (_) {} } }
+    if (this.path === newPath && options?.label != null) {
+      this.state.label = this.store.doc.title = options.label;
+      if (this.store.doc.display_title != null || options.titleOnly) this.store.doc.display_title = options.label;
+      if (options.etag && !this.store.pending) this.store.etag = options.etag;
+    }
+    for (const feature of this.store.doc.features) for (const link of feature.links) link.path = _mapRenamedPath(link.path, oldPath, newPath);
+    for (const source of this.store.doc.sheet_sources || []) source.path = _mapRenamedPath(source.path, oldPath, newPath);
+    for (const parent of this.state.mapTrail || []) parent.path = _mapRenamedPath(parent.path, oldPath, newPath);
+    this._changed(); this._renderInspector(); MeldexMapChrome.refresh(this);
+  }
+  getState() { return { ...this.state, mapPath: this.path || this.state.mapPath || '' }; }
+  getDetailContent() { return this.path ? { type: 'map', path: this.path } : null; }
+  destroy(options = {}) {
+    if (!options.skipFlush && (this.store?.dirty || this.store?.pending || this._inputDirty)) return false;
+    ++this._generation; clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this);
+    window.removeEventListener('beforeunload', this._beforeUnload); super.destroy(); return true;
+  }
+}
+registerToolComponent('map', { cls: MapAppComponent, icon: 'map', label: 'マップ', multi: true, requiresViewLock: true });
+async function openMapApp(path, label, options = {}) {
+  if (!MeldexMapDocument.isAvailable()) { showStatus('マップ初期版はデスクトップ版本体で開いてください。', true); return false; }
+  path = MeldexLocationData.canonicalPath(path, state.vaultPath);
+  const trail = Array.isArray(options.mapTrail) ? options.mapTrail : [];
+  const paneId = options.paneId || (typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane);
+  const tabId = GBTabs.addTab(paneId, label || 'マップ', 'map', path, { mapPath: path, label: label || 'マップ', mapTrail: trail }, options);
+  if (!tabId) return false;
+  if (typeof navPush === 'function' && !options.skipNavPush) navPush({ type: 'map', path, label: label || 'マップ' }, paneId);
+  if (!options.skipSaveLastView && typeof saveLastView === 'function') saveLastView({ type: 'map', path, label: label || 'マップ' });
+  let component = getComponentInstance(tabId);
+  for (let frame = 0; !component && frame < 60; frame++) {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    component = getComponentInstance(tabId);
+  }
+  if (!component) throw new Error('マップの表示準備を完了できませんでした');
+  if (component) {
+    component.state.mapTrail = trail;
+    const tab = component._tab(); if (tab) tab.state.mapTrail = trail;
+    if (component.breadcrumbs) { component.breadcrumbs.replaceChildren(); MeldexMapRelations.breadcrumbs(component, component.breadcrumbs); }
+  }
+  const ready = await (component?.ready || true);
+  if (ready) {
+    component.state.mapTrail = trail;
+    const tab = component._tab(); if (tab) tab.state.mapTrail = trail;
+    component.breadcrumbs?.replaceChildren();
+    if (component.breadcrumbs) MeldexMapRelations.breadcrumbs(component, component.breadcrumbs);
+    GBLayout.saveLayout();
+  }
+  if (ready && component?.store && !trail.length) {
+    await MeldexMapRelations.findParents(component).catch(() => {});
+  }
+  return ready;
+}
+
+;
+
 /* === gb-form-document.js === */
 ;
 /* Standalone form definitions share sheet data and the topic-layout contract. */
@@ -169232,8 +173859,9 @@ class FormAppComponent extends ToolComponent {
     return normalizeDbFormConfig({ ...cfg, layoutId: layout?.id || '', mode: this._mode || (this.definitionReadOnly ? 'entry' : doc.formConfig?.mode) || 'entry' },
       [...props, ...MeldexDbFormModel.layoutFields(layout)], propTypes);
   }
-  saveConfig(config) {
+  saveConfig(config, options = {}) {
     this._mode = config.mode;
+    if (options.shared === false) return true;
     if (this.definitionReadOnly) return true;
     const previous = { ...this.store.doc.formConfig, mode: config.mode, layoutId: config.layoutId };
     return this._update(doc => {
@@ -170877,8 +175505,39 @@ function _dbResolveEntityCreateRenderContext(ctx, dbPath) {
 
 function _dbRenderEntityCreateContext(renderCtx, dbPath) {
   if (!renderCtx) return;
+  const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
+  const selectedCell = table?.querySelector?.('td.active-cell');
+  const selectedName = selectedCell?.closest?.('tr')?.dataset?.entityName;
+  const selectedProp = selectedCell?.dataset?.propName || '';
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
   else if (typeof renderPivot === 'function') renderPivot(renderCtx);
+  if (!selectedName || typeof setActiveCell !== 'function') return;
+  const restore = row => {
+    if (renderCtx.destroyed || (renderCtx.dbPath && renderCtx.dbPath !== dbPath)) return;
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : null;
+    if (current?.isConnected) return;
+    if (typeof activeCell !== 'undefined' && activeCell !== selectedCell) return;
+    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(renderCtx)) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused !== selectedCell && !selectedCell.contains?.(focused)) return;
+    const cell = selectedProp
+      ? row.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(selectedProp)}"]`)
+      : row.querySelector('td.col-entity');
+    if (cell) setActiveCell(cell, { scroll: false });
+  };
+  const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(renderCtx, selectedName) : null;
+  if (row) restore(row);
+  else if (typeof _waitForEntityRow === 'function') _waitForEntityRow(renderCtx, selectedName, restore);
+}
+
+const _dbEntityEditVersions = new Map();
+
+function _dbEntityEditVersion(dbPath) {
+  return _dbEntityEditVersions.get(_dbNormalizePath(dbPath)) || 0;
+}
+
+function _dbNoteEntityEdit(dbPath) {
+  _dbEntityEditVersions.set(_dbNormalizePath(dbPath), _dbEntityEditVersion(dbPath) + 1);
 }
 
 function _dbEnsureCreatedEntitiesVisibleLocally(ctx, dbPath, createdNames, options) {
@@ -170892,12 +175551,16 @@ function _dbEnsureCreatedEntitiesVisibleLocally(ctx, dbPath, createdNames, optio
     : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   if (typeof state !== 'undefined' && normalize(state.currentDbPath || '') === normalize(dbPath || '')) targets.push(state);
   let changed = false;
+  const shared = new Map(createdNames.map(name => [name,
+    targets.map(target => target?.pivotData?.entities?.[name]).find(entity => entity?._id)
+      || targets.map(target => target?.pivotData?.entities?.[name]).find(Boolean) || {},
+  ]));
   targets.forEach(target => {
     const data = target?.pivotData;
     if (!data?.entities) return;
     createdNames.forEach(name => {
       if (!Object.prototype.hasOwnProperty.call(data.entities, name)) {
-        data.entities[name] = {};
+        data.entities[name] = shared.get(name);
         changed = true;
       }
     });
@@ -171021,10 +175684,22 @@ function _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap) {
     : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   const target = normalize(dbPath || '');
   const names = new Set(Object.keys(entitiesMap || {}));
+  const displayNamesOnly = ctx?.pivotData?.separate_storage_names === true;
+  if (!displayNamesOnly) names.add(target.split('/').pop());
+  const collectEntries = entities => {
+    Object.entries(entities || {}).forEach(([name, entity]) => {
+      names.add(name);
+      // 新形式では表示名と保存名を独立させ、改名前の保存名で番号を飛ばさない。
+      const path = normalize(entity?._entry_path || '');
+      const slashAt = path.lastIndexOf('/');
+      if (!displayNamesOnly && path && (slashAt < 0 || path.slice(0, slashAt) === target)) names.add(path.slice(slashAt + 1).replace(/\.md$/i, ''));
+    });
+  };
+  collectEntries(entitiesMap);
   const collectFrom = (source) => {
-    if (!source || (target && normalize(source.dbPath || '') !== target)) return;
-    Object.keys(source.pivotData?.entities || {}).forEach(name => names.add(name));
-    (Array.isArray(source._lastEntityNames) ? source._lastEntityNames : []).forEach(name => names.add(name));
+    if (!source || (target && normalize(source.dbPath || source.currentDbPath || '') !== target)) return;
+    collectEntries(source.pivotData?.entities);
+    if (!displayNamesOnly) (Array.isArray(source._lastEntityNames) ? source._lastEntityNames : []).forEach(name => names.add(name));
   };
   collectFrom(ctx);
   if (typeof state !== 'undefined') collectFrom(state);
@@ -171033,7 +175708,16 @@ function _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap) {
   return [...names].filter(Boolean);
 }
 
+function _dbApplyCreatedEntityData(dbPath, entity, saved) {
+  if (!entity || !saved) return;
+  Object.entries(saved).forEach(([key, value]) => {
+    if (key.startsWith('_') || !Object.prototype.hasOwnProperty.call(entity, key)) entity[key] = value;
+  });
+  window.GbDbEntryIdentity?.registerEntry?.(dbPath, saved._id, saved._entry_path);
+}
+
 function _dbCreateEntityOptimistic(ctx, dbPath, options) {
+  _dbNoteEntityEdit(dbPath);
   const createOpts = options || {};
   const entitiesMap = ctx?.pivotData?.entities || {};
   const existing = _dbCollectEntityNamesForCreate(ctx, dbPath, entitiesMap);
@@ -171048,12 +175732,18 @@ function _dbCreateEntityOptimistic(ctx, dbPath, options) {
   const renderCtx = shouldPlaceInManualOrder && typeof _dbPlaceCreatedEntitiesInManualOrder === 'function'
     ? (_dbPlaceCreatedEntitiesInManualOrder(visibleCtx, dbPath, [localName], createOpts) || visibleCtx)
     : visibleCtx;
+  const optimisticEntity = renderCtx?.pivotData?.entities?.[localName];
   const createPromise = (async () => {
     const created = typeof _apiCreateEntityWithUniqueName === 'function'
       ? await _apiCreateEntityWithUniqueName(dbPath, existing, { name: localName, baseName })
       : null;
     const response = created?.response || await apiPost('/entity/create', { parent_path: dbPath, name: localName });
     const name = created?.name || localName;
+    // API応答でこの行だけを確定する。改名でキーが変わっていても同じ行へ反映する。
+    // 先に入力されたセル値は、作成時点の値で上書きしない。
+    if (optimisticEntity && response?.entity_data) {
+      _dbApplyCreatedEntityData(dbPath, optimisticEntity, response.entity_data);
+    }
     return {
       name,
       requestedName: localName,
@@ -171064,7 +175754,7 @@ function _dbCreateEntityOptimistic(ctx, dbPath, options) {
   const trackedPromise = typeof _dbRegisterPendingEntityCreate === 'function'
     ? _dbRegisterPendingEntityCreate(dbPath, localName, createPromise)
     : createPromise;
-  return { name: localName, renderCtx, promise: trackedPromise, baseName, baseline: existing };
+  return { name: localName, entity: optimisticEntity, renderCtx, promise: trackedPromise, baseName, baseline: existing };
 }
 
 // サーバーが実際に付けた名前が楽観行の仮名と異なる場合、ローカル表示（エンティティ
@@ -171124,13 +175814,15 @@ async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
     if (!confirmed) return null;
     if (confirmed !== created.name) _dbRenameOptimisticEntityLocally(ctx, dbPath, created.name, confirmed);
     const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
-    if (renderCtx) renderCtx.pivotData = pivotData;
-    if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
+    // 結果不明の作成を確認する場合も、その1行だけを反映する。
+    // 照合中に別の名前入力・追加が進んだシート全体を差し替えない。
+    const localEntity = created?.entity || renderCtx?.pivotData?.entities?.[confirmed];
+    _dbApplyCreatedEntityData(dbPath, localEntity, pivotData.entities[confirmed]);
     if (!_dbEntityCreateIsEditing(renderCtx)) {
       if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
       else if (typeof renderPivot === 'function') renderPivot(renderCtx);
     }
-    return { name: confirmed, path: created?.path || (typeof _entityPath === 'function' ? _entityPath(dbPath, confirmed) : `${dbPath}/${confirmed}.md`) };
+    return { name: confirmed, path: pivotData.entities[confirmed]?._entry_path || created?.path || (typeof _entityPath === 'function' ? _entityPath(dbPath, confirmed) : `${dbPath}/${confirmed}.md`) };
   } catch {
     return null;
   }
@@ -171138,7 +175830,7 @@ async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
 
 function _dbEntityCreateIsEditing(renderCtx) {
   const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
-  if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
+  if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,.value-input,[contenteditable="true"]')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
   if (renderCtx?.paneId) {
     const paneId = MeldexEscape.cssIdent(renderCtx.paneId);
@@ -171222,9 +175914,21 @@ function _dbKeepNewEntryRowVisible(ctx) {
   }
 }
 
-async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
+async function _dbReloadAfterEntityCreate(ctx, dbPath) {
   const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
-  setTimeout(async () => {
+  if (!renderCtx) return null;
+  clearTimeout(renderCtx._dbEntityReloadTimer);
+  const reloadSeq = (renderCtx._dbEntityReloadSeq || 0) + 1;
+  renderCtx._dbEntityReloadSeq = reloadSeq;
+  const isCurrent = () => !renderCtx.destroyed
+    && (!renderCtx.dbPath || _dbNormalizePath(renderCtx.dbPath) === _dbNormalizePath(dbPath))
+    && renderCtx._dbEntityReloadSeq === reloadSeq;
+  const retry = () => {
+    if (isCurrent()) renderCtx._dbEntityReloadTimer = setTimeout(refresh, 120);
+  };
+  const refresh = async () => {
+    if (!isCurrent()) return;
+    if (_dbEntityCreateIsEditing(renderCtx)) { retry(); return; }
     try {
       let pivotData;
       // A value can start saving while the background read is in flight.
@@ -171235,22 +175939,26 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         return known != null && Number(entity?._revision || 0) < known;
       });
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(dbPath);
         if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        if (!isCurrent()) return;
+        if (_dbEntityCreateIsEditing(renderCtx)) { retry(); return; }
+        const editVersion = _dbEntityEditVersion(dbPath);
         pivotData = await apiFetch(_dbPivotFetchUrl(dbPath), {skipBrowseCache:true,cache:'no-store'});
         if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(dbPath) === false) return;
+        if (!isCurrent()) return;
+        // 読込中に追加・改名が完了していても、その前の snapshot を適用しない。
+        // 編集中は描画だけでなく pivotData の置換も延期する。
+        if (_dbEntityCreateIsEditing(renderCtx) || editVersion !== _dbEntityEditVersion(dbPath)) { retry(); return; }
         if (!staleAfterWrite()) break;
         if (attempt === 2) return;
       }
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
       // サーバー作成が未確定の楽観的エントリは取得データに含まれないため、行が消えないよう再マージする
       if (typeof _dbMergePendingEntityCreates === 'function') _dbMergePendingEntityCreates(dbPath, pivotData);
-      // 直前に作成が確定した名前も、SQLite の可視化タイミング等でこの取得にまだ
-      // 現れていない場合があるため、行が一瞬消えないよう空スタブで保持する（次回取得で実体化）。
-      if (pivotData && pivotData.entities && typeof pivotData.entities === 'object') {
-        (createdNames || []).forEach(name => {
-          if (name && !(name in pivotData.entities)) pivotData.entities[name] = {};
-        });
-      }
+      // 作成時の名前は既に改名済みの場合があるため、空の旧名行を補わない。
+      window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
+      window.GbDbEntryIdentity?.registerPivot?.(dbPath, pivotData);
       if (renderCtx) renderCtx.pivotData = pivotData;
       if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
       if (!_dbEntityCreateIsEditing(renderCtx)) {
@@ -171287,13 +175995,19 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         MeldexAutoLink.scheduleIdle();
       }
     } catch {}
-  }, 0);
+  };
+  renderCtx._dbEntityReloadTimer = setTimeout(refresh, 0);
   return renderCtx;
 }
 
 function _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx) {
   const items = (createdItems || []).filter(item => item?.name && item?.path);
   if (!items.length) return;
+  // 現行のSQLiteシートは保存応答に確定済みの行を含む。全体の再取得は不要。
+  if (items.every(item => item.response?.entity_data)) {
+    if (!_dbEntityCreateIsEditing(renderCtx)) _dbRenderEntityCreateContext(renderCtx, dbPath);
+    return;
+  }
   Promise.resolve().then(async () => {
     for (const item of items) {
       if (typeof _shouldRunFrontendAutoFillOnCreate === 'function' && !_shouldRunFrontendAutoFillOnCreate(item.response)) continue;
@@ -172104,7 +176818,7 @@ function _dbTableCandidateSnapshot(val) {
   return {
     file: val.file || '',
     property: val.property || '',
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
     value: val.value || '',
     status: val.status || '採用',
     note: val.note || '',
@@ -172116,7 +176830,7 @@ function _dbTableValueObjFromSnapshot(snapshot, propName) {
   return {
     file: snapshot.file,
     property: snapshot.property || propName,
-    candidate_index: snapshot.candidate_index,
+    candidate_id: snapshot?.candidate_id, entry_id: snapshot?.entry_id, candidate_index: snapshot.candidate_index,
     value: snapshot.value,
     status: snapshot.status,
     note: snapshot.note,
@@ -172145,7 +176859,7 @@ async function _dbTablePostCandidateSnapshot(dbPath, entityName, propName, snaps
     ...snapshot,
     file: result?.path || snapshot.file,
     property: result?.property || propName,
-    candidate_index: result?.candidate_index,
+    candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
   };
 }
 
@@ -172255,7 +176969,7 @@ async function _handleGroupDrop(ctx, draggedNames, newGroupKey) {
         const after = {
           file: result?.path || ep,
           property: result?.property || groupByProp,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           value: newGroupKey,
           status: '採用',
           note: '',
@@ -174451,15 +179165,20 @@ function _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps) {
 function _dbDisposeVirtualRows(ctx) {
   const v = ctx?._dbVirtualRows;
   if (!v) return;
+  v.disposed = true;
   if (v.scroller && v.onScroll) v.scroller.removeEventListener('scroll', v.onScroll);
   if (v.onResize) window.removeEventListener('resize', v.onResize);
   if (v.resizeObserver) v.resizeObserver.disconnect();
+  if (v.rowResizeObserver) v.rowResizeObserver.disconnect();
   if (v.raf) cancelAnimationFrame(v.raf);
   if (ctx?._dbVirtualBacklinkTimer) {
     clearTimeout(ctx._dbVirtualBacklinkTimer);
     ctx._dbVirtualBacklinkTimer = null;
   }
-  if (v.table && v.table._dbVirtualRows === v) v.table._dbVirtualRows = null;
+  if (v.table && v.table._dbVirtualRows === v) {
+    v.table.style.overflowAnchor = v.previousOverflowAnchor;
+    v.table._dbVirtualRows = null;
+  }
   if (ctx) ctx._dbVirtualRows = null;
 }
 
@@ -174570,6 +179289,10 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   // Falling back to the globally active/legacy sheet loses image cell context.
   config = { ...config, ctx };
   const table = tbody.closest('table');
+  // Spacer updates preserve the logical anchor below. Browser scroll anchoring
+  // would apply a second correction and move the visible rows out of view.
+  const previousOverflowAnchor = table?.style.overflowAnchor || '';
+  if (table) table.style.overflowAnchor = 'none';
 
   const colSpan = (config.visibleProps?.length || 0) + 3;
   const topSpacer = _dbCreateVirtualSpacerRow('db-virtual-spacer-row db-virtual-spacer-top', colSpan);
@@ -174579,10 +179302,39 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   tbody.insertBefore(bottomSpacer, anchor);
 
   const rowHeight = _dbVirtualEstimateRowHeight(config);
+  // Store measured height deltas in a Fenwick tree: prefix offsets and updates
+  // stay logarithmic even when a sheet has many rows and wrapped image cells.
+  const measuredHeights = new Map();
+  const heightDeltas = new Float64Array(rowTasks.length + 1);
+  const offsetFor = index => {
+    let offset = index * rowHeight;
+    for (let i = index; i > 0; i -= i & -i) offset += heightDeltas[i];
+    return offset;
+  };
+  const indexAtOffset = offset => {
+    let low = 0, high = Math.max(0, rowTasks.length - 1);
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (offsetFor(mid + 1) <= offset) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
+  const measureRow = (index, row) => {
+    const height = row?.offsetHeight;
+    if (!height || height === (measuredHeights.get(index) || rowHeight)) return false;
+    const delta = height - (measuredHeights.get(index) || rowHeight);
+    measuredHeights.set(index, height);
+    for (let i = index + 1; i < heightDeltas.length; i += i & -i) heightDeltas[i] += delta;
+    return true;
+  };
   const renderToken = config.renderToken;
   const vState = {
     rowTasks,
     rowHeight,
+    offsetFor,
+    heightFor: index => measuredHeights.get(index) || rowHeight,
+    previousOverflowAnchor,
     scroller,
     topSpacer,
     bottomSpacer,
@@ -174596,52 +179348,67 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     onScroll: null,
     onResize: null,
     resizeObserver: null,
+    rowResizeObserver: null,
+    rowIndexes: new Map(),
     forceNextRender: false,
+    measureNextRender: false,
     renderNow: null,
     renderToken,
   };
   ctx._dbVirtualRows = vState;
   if (table) table._dbVirtualRows = vState;
 
-  const renderVisible = (force = false) => {
+  const renderVisible = (force = false, remeasure = false) => {
+    if (vState.disposed) return;
     if (renderToken && ctx._renderToken !== renderToken) return;
     if (ctx.destroyed || bottomSpacer.parentNode !== tbody) return;
     const viewportHeight = Math.max(240, scroller.clientHeight || window.innerHeight || 600);
-    const first = Math.max(0, Math.floor((scroller.scrollTop || 0) / rowHeight) - DB_VIRTUAL_ROW_OVERSCAN);
+    const scrollTop = scroller.scrollTop || 0;
+    const anchorIndex = indexAtOffset(scrollTop);
+    const anchorOffset = scrollTop - offsetFor(anchorIndex);
+    const first = Math.max(0, anchorIndex - DB_VIRTUAL_ROW_OVERSCAN);
     const visibleCount = Math.min(
       DB_VIRTUAL_MAX_RENDERED_TASKS,
-      Math.ceil(viewportHeight / rowHeight) + DB_VIRTUAL_ROW_OVERSCAN * 2,
+      Math.max(Math.ceil(viewportHeight / rowHeight),
+        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + DB_VIRTUAL_ROW_OVERSCAN * 2,
     );
     const last = Math.min(rowTasks.length, first + visibleCount);
-    if (!force && first === vState.start && last === vState.end) return;
+    if (!force && !remeasure && first === vState.start && last === vState.end) return;
 
     const previousRows = new Map();
     vState.renderedRows.forEach((row, offset) => {
       const index = vState.start + offset;
       if (!force && index >= first && index < last) previousRows.set(index, row);
-      else row.remove();
+      else {
+        vState.rowResizeObserver?.unobserve(row);
+        vState.rowIndexes.delete(row);
+        row.remove();
+      }
     });
     vState.renderedRows = [];
-    _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight);
-    _dbSetVirtualSpacerHeight(bottomSpacer, (rowTasks.length - last) * rowHeight);
+    _dbSetVirtualSpacerHeight(topSpacer, offsetFor(first));
+    _dbSetVirtualSpacerHeight(bottomSpacer, offsetFor(rowTasks.length) - offsetFor(last));
 
-    const frag = document.createDocumentFragment();
+    // Keep retained rows attached. Moving a focused editor through a fragment
+    // blurs it even when the same row DOM is inserted again immediately.
+    let cursor = topSpacer.nextSibling || bottomSpacer;
     for (let i = first; i < last; i++) {
       const row = previousRows.get(i) || _dbRenderVirtualTask(rowTasks[i], config);
       vState.renderedRows.push(row);
-      frag.appendChild(row);
+      if (row !== cursor) tbody.insertBefore(row, cursor);
+      cursor = row.nextSibling || bottomSpacer;
+      vState.rowIndexes.set(row, i);
+      vState.rowResizeObserver?.observe(row);
     }
-    tbody.insertBefore(frag, bottomSpacer);
-    // Empty image cells can be much shorter than the estimated image row.
-    // Keep the logical viewport anchor at its actual rendered position; otherwise
-    // revealing a row can leave every thumbnail outside IntersectionObserver.
-    const anchorIndex = Math.min(last, Math.max(first, Math.floor((scroller.scrollTop || 0) / rowHeight)));
-    let heightCorrection = 0;
-    for (let index = first; index < anchorIndex; index++) {
-      heightCorrection += rowHeight - (vState.renderedRows[index - first]?.offsetHeight || rowHeight);
+    let heightsChanged = false;
+    vState.renderedRows.forEach((row, offset) => {
+      if (measureRow(first + offset, row)) heightsChanged = true;
+    });
+    if (heightsChanged) {
+      _dbSetVirtualSpacerHeight(topSpacer, offsetFor(first));
+      _dbSetVirtualSpacerHeight(bottomSpacer, offsetFor(rowTasks.length) - offsetFor(last));
+      scroller.scrollTop = Math.max(0, offsetFor(anchorIndex) + anchorOffset);
     }
-    _dbSetVirtualSpacerHeight(topSpacer, first * rowHeight + heightCorrection);
-    _dbSetVirtualSpacerHeight(bottomSpacer, Math.max(0, (rowTasks.length - last) * rowHeight - heightCorrection));
     vState.start = first;
     vState.end = last;
     ctx._renderDoneRows = Math.max(0, last - first);
@@ -174663,22 +179430,33 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     }
   };
 
-  const requestRender = (force = false) => {
+  const requestRender = (force = false, remeasure = false) => {
+    if (vState.disposed) return;
     vState.forceNextRender = vState.forceNextRender || force;
+    vState.measureNextRender = vState.measureNextRender || remeasure;
     if (vState.raf) return;
     vState.raf = requestAnimationFrame(() => {
       vState.raf = 0;
       const shouldForce = vState.forceNextRender;
+      const shouldMeasure = vState.measureNextRender;
       vState.forceNextRender = false;
-      renderVisible(shouldForce);
+      vState.measureNextRender = false;
+      renderVisible(shouldForce, shouldMeasure);
     });
   };
   vState.renderNow = renderVisible;
   vState.onScroll = () => requestRender(false);
-  vState.onResize = () => requestRender(true);
+  vState.onResize = () => requestRender(false, true);
   scroller.addEventListener('scroll', vState.onScroll, { passive: true });
   window.addEventListener('resize', vState.onResize);
   if (typeof ResizeObserver === 'function') {
+    vState.rowResizeObserver = new ResizeObserver(entries => {
+      if (entries.some(entry => {
+        const index = vState.rowIndexes.get(entry.target);
+        return index != null && entry.target.offsetHeight > 0
+          && entry.target.offsetHeight !== vState.heightFor(index);
+      })) requestRender(false, true);
+    });
     let lastWidth = scroller.clientWidth;
     let lastHeight = scroller.clientHeight;
     vState.resizeObserver = new ResizeObserver(() => {
@@ -174687,7 +179465,7 @@ function _dbRunVirtualRowRenderer(ctx, config) {
       if (nextWidth === lastWidth && nextHeight === lastHeight) return;
       lastWidth = nextWidth;
       lastHeight = nextHeight;
-      requestRender(true);
+      requestRender(false, true);
     });
     vState.resizeObserver.observe(scroller);
   }
@@ -174701,8 +179479,12 @@ function _dbRevealVirtualEntityRow(ctx, entityName) {
   const index = v.rowTasks.findIndex(task => task.kind === 'entity' && task.entityName === entityName);
   if (index < 0) return false;
   const viewportHeight = Math.max(240, v.scroller?.clientHeight || window.innerHeight || 600);
-  v.scroller.scrollTop = Math.max(0, Math.round(index * v.rowHeight - viewportHeight / 2));
+  v.scroller.scrollTop = Math.max(0, Math.round(v.offsetFor(index) - viewportHeight / 2));
   v.renderNow?.(true);
+  // The target's height becomes known on its first mount. Center using that
+  // measurement as well, so wrapped thumbnails are actually in the viewport.
+  v.scroller.scrollTop = Math.max(0, Math.round(v.offsetFor(index) - Math.max(0, viewportHeight - v.heightFor(index)) / 2));
+  v.renderNow?.();
   return true;
 }
 
@@ -174852,34 +179634,78 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
 }
 
 function _restoreDbNavigationViewSnapshot(dbPath, snapshot) {
-  if (!snapshot?.savedView || !Number.isInteger(snapshot.viewIdx)) return false;
+  if (!snapshot?.savedView) return false;
   const cfg = getDbViewConfig(dbPath);
-  if (!Array.isArray(cfg.savedViews) || snapshot.viewIdx < 0 || snapshot.viewIdx >= cfg.savedViews.length) return false;
+  if (!Array.isArray(cfg.savedViews)) return false;
+  const id = String(snapshot.savedView.id || '');
+  const idx = id ? cfg.savedViews.findIndex(view => String(view?.id || '') === id)
+    : (Number.isInteger(snapshot.viewIdx) ? snapshot.viewIdx : -1);
+  const current = cfg.savedViews[idx];
+  if (!current || (!id && (current.name !== snapshot.savedView.name || current.viewMode !== snapshot.savedView.viewMode))) return false;
   try {
-    cfg.savedViews[snapshot.viewIdx] = JSON.parse(JSON.stringify(snapshot.savedView));
+    cfg.savedViews[idx] = {
+      ...JSON.parse(JSON.stringify(snapshot.savedView)),
+      id: current.id,
+      name: current.name,
+      viewMode: current.viewMode,
+    };
   } catch {
     return false;
   }
-  cfg.currentViewIdx = snapshot.viewIdx;
+  cfg.currentViewIdx = idx;
   saveDbViewConfig(dbPath, cfg, { skipHistory: true, skipBackend: true });
   return true;
+}
+
+function _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode) {
+  if (requestedViewMode) {
+    const cfg = getDbViewConfig(dbPath);
+    const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
+    const modeOf = view => view?.viewMode === 'calendar' ? 'timeline' : (view?.viewMode || 'pivot');
+    const currentIdx = typeof _getCurrentDbViewIndexFromConfig === 'function'
+      ? _getCurrentDbViewIndexFromConfig(cfg, { ctx }) : cfg.currentViewIdx;
+    const idx = views[currentIdx] && modeOf(views[currentIdx]) === requestedViewMode
+      ? currentIdx : views.findIndex(view => modeOf(view) === requestedViewMode);
+    if (idx >= 0 && ctx) {
+      ctx.currentViewIdx = idx;
+      ctx.currentViewId = String(views[idx].id || '');
+    }
+    return requestedViewMode;
+  }
+  return getCurrentViewMode(dbPath, { ctx });
 }
 
 function _renderDbLoadError(ctx, error) {
   ctx = _normalizeDbRenderContext(ctx);
   if (!ctx) return;
   clearPivot(ctx);
-  const message = 'シートを読み込めませんでした: ' + (error?.message || error || '不明なエラー');
+  const detail = /timeout|タイムアウト/i.test(error?.message || '')
+    ? '読み込みに時間がかかっています。再読み込みしてください。'
+    : (error?.userMessage || error?.message || error || '不明なエラー');
+  const message = 'シートを読み込めませんでした: ' + detail;
   const safeMessage = MeldexEscape.html(message);
+  const targetPath = ctx.dbPath;
+  const width = Math.max(160, Math.min(480, (ctx.containerEl?.clientWidth || 528) - 48));
+  const errorHtml = `<div class="db-load-error" role="alert" style="max-width:${width}px;padding:24px;white-space:normal;overflow-wrap:anywhere;color:var(--fg2);">${safeMessage}<div style="margin-top:12px;"><button type="button" class="db-load-retry gb-btn" aria-label="シートの読み込みを再試行">再読み込み</button></div></div>`;
+  const bindRetry = container => {
+    const button = container?.querySelector('.db-load-retry');
+    button?.addEventListener('click', async () => {
+      if (ctx.destroyed || ctx.dbPath !== targetPath) return;
+      button.disabled = true;
+      try { await selectDatabase(targetPath, ctx, { forceReload: true }); }
+      catch (retryError) { _renderDbLoadError(ctx, retryError); }
+      finally { if (button.isConnected) button.disabled = false; }
+    });
+  };
   const tblId = ctx?.tableId || 'pivot-table';
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
   if (tbody) {
-    tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${safeMessage}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="999">${errorHtml}</td></tr>`;
+    bindRetry(tbody);
   }
-  const errorHtml = `<div class="db-load-error" role="alert" style="padding:40px;text-align:center;color:var(--fg2);">${safeMessage}</div>`;
   ['.tree-view', '.gallery-view', '.kanban-view', '.timeline-view', '.chart-view', '.graph-view', '.form-view'].forEach(selector => {
     const container = _paneEl(ctx, selector);
-    if (container) container.innerHTML = errorHtml;
+    if (container) { container.innerHTML = errorHtml; bindRetry(container); }
   });
 }
 
@@ -175058,12 +179884,12 @@ async function selectDatabase(dbPath, ctx, opts) {
     const _navEntry = {type:'pivot', path: dbPath};
     navPush(_navEntry);
   }
-  if (!openOpts.skipRecent) addRecent(dbPath.split('/').pop() || '', dbPath, 'database');
+  if (!openOpts.skipRecent) addRecent(dbPerfTargetLabel, dbPath, 'database');
   if (!openOpts.skipAutoVersion) startAutoVersion(dbPath, 'db');
   if (!openOpts.skipHistoryScope) {
     const historyScope = typeof _dbViewConfigHistoryScope === 'function'
       ? _dbViewConfigHistoryScope(dbPath)
-      : 'db:' + (dbPath.split('/').pop() || dbPath);
+      : 'db:' + dbPerfTargetLabel;
     historySetScope(historyScope);
   }
 
@@ -175071,7 +179897,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (!openOpts.skipHighlight) highlightOutlinerNode(dbPath);
 
   // DBフォルダ名をカテゴリ名として表示
-  const dbName = dbPath.split('/').pop() || dbPath;
+  const dbName = dbPerfTargetLabel;
   if (!openOpts.skipGlobalUi) {
     const toolbarCategoryEl = document.getElementById('toolbar-category');
     if (toolbarCategoryEl) {
@@ -175130,10 +179956,11 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (Number.isInteger(openOpts.restoreViewIdx)) {
     const cfgForRestore = getDbViewConfig(dbPath);
     if (Array.isArray(cfgForRestore.savedViews) && openOpts.restoreViewIdx >= 0 && openOpts.restoreViewIdx < cfgForRestore.savedViews.length) {
-      setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true });
+      // Restoration only primes the cache; metadata has not been read yet.
+      setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true, skipBackend: true });
     }
   }
-  let dbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
+  let dbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
 
@@ -175160,7 +179987,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
     const viewConfigReadState = _captureDbViewConfigReadState(dbPath);
-    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal });
+    const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { signal: dbLoadController.signal, foreground: true, silentError: true });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
     if (dbMetadata.display_title) {
@@ -175191,7 +180018,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     if (backendViewConfigApplied) {
       if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
-      const latestMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
+      const latestMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
       if (latestMode && latestMode !== dbViewMode) {
         dbViewMode = latestMode;
         ctx.viewMode = dbViewMode;
@@ -175209,14 +180036,42 @@ async function selectDatabase(dbPath, ctx, opts) {
         hasBackendViewConfig: !!_hasBackendDbViewConfigData(backendViewConfig),
       });
     }
-  } catch {
+  } catch (error) {
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
-    const emptyMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
-    ctx.dbMetadata = emptyMetadata;
-    if (syncGlobalState) state.dbMetadata = emptyMetadata;
     if (typeof _logPerfEvent === 'function') {
       _logPerfEvent('sheet.metadata.error', metadataPerfStartedAt, { targetLabel: dbPerfTargetLabel });
     }
+    // Never render a schema-less sheet as text after a failed metadata read.
+    // Image arrays otherwise become [object Object], and edits use wrong types.
+    // If only view/style application failed, keep the schema already received.
+    if (!ctx.dbMetadata) {
+      // A completed move can outlive its UI response (or a restored tab). Resolve
+      // the same stable identity, never create/migrate a sheet at the old path.
+      if (error?.status === 404 && !openOpts.recoveredMovedPath && typeof _pathToFileId === 'function') {
+        const fileId = _pathToFileId(dbPath);
+        if (fileId) {
+          let resolved = null;
+          try {
+            resolved = await apiFetch('/file-path?id=' + encodeURIComponent(fileId), {
+              signal: dbLoadController.signal, foreground: true, silentError: true,
+            });
+          } catch {}
+          if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+          if (resolved?.path && resolved.path !== dbPath) {
+            renameAppPathReferences(dbPath, resolved.path, { fileId, type: 'database', preserveMountedViews: true, skipDbReload: true });
+            return completeLoad(await selectDatabase(resolved.path, ctx, {
+              ...openOpts, forceReload: true, recoveredMovedPath: true,
+            }));
+          }
+        }
+      }
+      _renderDbLoadError(ctx, error);
+      if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
+        showStatus('シート設定の読み込みエラー: ' + (error?.message || error), true);
+      }
+      return completeLoad({ ok: false, error });
+    }
+    console.warn('[Meldex] シート表示設定の適用に失敗しました', error);
   }
 
   // localStorage → バックエンドへの自動マイグレーション（property_types）
@@ -175251,7 +180106,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
-    const pivotData = await apiFetch(url, { signal: dbLoadController.signal });
+    const pivotData = await apiFetch(url, { signal: dbLoadController.signal, foreground: true });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
@@ -175276,7 +180131,7 @@ async function selectDatabase(dbPath, ctx, opts) {
         .catch(() => {});
     }
     const latestDbViewMode = getCurrentViewMode(dbPath);
-    const effectiveLatestDbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
+    const effectiveLatestDbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode) || latestDbViewMode;
     // 互換テスト用: if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
     if (effectiveLatestDbViewMode && effectiveLatestDbViewMode !== dbViewMode) {
       // 互換テスト用: dbViewMode = latestDbViewMode;
@@ -175862,7 +180717,7 @@ function _autoFillValueRef(val, propName) {
   return {
     file: val.file || val.path || '',
     property: val.property || propName,
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
   };
 }
 
@@ -175977,7 +180832,8 @@ async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath, 
     if (value === '' || value == null) continue;
     const ep = _autoFillEntityPathForWrite(entityPath);
     if (!ep) continue;
-    const entName = _autoFillEntityNameFromPath(ep);
+    const entName = typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(ep, pivotData) : _autoFillEntityNameFromPath(ep);
     const ent = pivotData?.entities?.[entName] || null;
     try {
       const op = await _writeAutoFillValue(ep, ent, pName, value, writeStatus);
@@ -176292,7 +181148,7 @@ async function _bulkReplaceEntityPropValues(entityPath, prop, values) {
   const current = [...((entity?.properties || {})[prop] || [])].sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
   for (const v of current) {
     if (v.candidate_index != null && v.file) {
-      await _apiPutValue({ file: v.file, entry_path: entityPath, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+      await _apiPutValue({ file: v.file, entry_path: entityPath, property: prop, candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v.candidate_index }, { _delete: true });
     } else if (v.file) {
       await apiPost('/outliner/delete', { path: v.file });
     }
@@ -176677,18 +181533,18 @@ function _showBulkEditModal(entityNames, ctx) {
             const extras = existingVals.filter(v => v !== primary).sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
             for (const v of extras) {
               if (v.candidate_index != null && v.file) {
-                await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+                await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v.candidate_index }, { _delete: true });
               } else if (v.file) {
                 await _apiPutValue({ file: v.file, entry_path: ep, property: prop }, { _delete: true });
               }
             }
           } else {
             const res = await _apiPostValue(ep, prop, value, status, '');
-            createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+            createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index };
           }
         } else {
           const res = await _apiPostValue(ep, prop, value, status, '');
-          createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+          createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index };
         }
         if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {
@@ -176775,10 +181631,22 @@ async function _bulkDeleteEntities(entityNames, ctx) {
   if (!names.length) return;
   const entries = names.map(name => ({
     name,
-    path: _entityPath(dbPath, name),
+    path: _entityPath(dbPath, name, ctx?.pivotData),
     entryId: String(ctx?.pivotData?.entities?.[name]?._id || ''),
     assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
+  // 名前から保存先を推定してはいけない。改名済みの実体を旧名の仮行が指すことがある。
+  const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  const valid = entries.every(entry => {
+    const saved = pivot?.entities?.[entry.name];
+    return saved && (pivot.new_format !== true || (entry.entryId && saved._id === entry.entryId))
+      && _entityPath(dbPath, entry.name, pivot) === entry.path;
+  });
+  if (!valid) {
+    await window.GbDbEntryIdentity.reload(ctx, dbPath);
+    showStatus('選択した行の保存状態が変わったため削除を中止しました。行を選び直してください', true);
+    return;
+  }
   const confirmMessage = `${names.length} 件のトピックをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
@@ -176795,7 +181663,7 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     confirmation: confirmed,
   });
   const deletedItems = result.trashRefs;
-  const ok = deletedItems.length;
+  const ok = result.successes.length;
   const fail = result.failures.length;
   _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
   const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;
@@ -176995,19 +181863,21 @@ function _splitRelationIdsForSync(value) {
 
 async function _getRelationEntityId(dbPath, entityPath) {
   if (!dbPath || !entityPath) return '';
-  const entityName = typeof _getPivotEntityName === 'function'
-    ? _getPivotEntityName(entityPath)
-    : (entityPath.split('/').pop() || '').replace(/\.md$/, '');
   const ctx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
   const pivot = ctx?.pivotData || (typeof state !== 'undefined' && state.currentDbPath === dbPath ? state.pivotData : null);
+  const entityName = typeof _dbPivotEntityNameForPath === 'function'
+    ? _dbPivotEntityNameForPath(entityPath, pivot)
+    : (entityPath.split('/').pop() || '').replace(/\.md$/, '');
   const liveId = pivot?.entities?.[entityName]?._id;
   if (liveId) return liveId;
   let map = await _getRelationMap(dbPath);
-  if (!map.nameToId[entityName] && map.new_format) {
+  const mapName = () => typeof _dbPivotEntityNameForPath === 'function'
+    ? (_dbPivotEntityNameForPath(entityPath, map) || entityName) : entityName;
+  if (!map.nameToId[mapName()] && map.new_format) {
     _invalidateRelationTargetCaches(dbPath);
     map = await _getRelationMap(dbPath);
   }
-  return map.nameToId[entityName] || entityName;
+  return map.nameToId[mapName()] || entityName;
 }
 
 function _prepareBidirectionalRemoteState(sourceDbPath, propName, ptc, createdTargets) {
@@ -177071,7 +181941,7 @@ async function _createBidirectionalRelationValue({sourceDbPath, entityPath, prop
       const file = result.path || result.file || '';
       if (result.candidate_index != null) {
         await _apiPutValue({file, entry_path:entityPath,
-          property:result.property || propName, candidate_index:result.candidate_index}, {_delete:true});
+          property:result.property || propName, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index:result.candidate_index}, {_delete:true});
       } else if (file) {
         await apiPost('/outliner/delete', {path:file});
       }
@@ -177094,7 +181964,7 @@ function _bidirectionalValueSnapshot(val) {
     file: val.file || '',
     entry_path: val.entry_path || '',
     property: val.property || '',
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
     value: val.value || '',
     status: val.status || '採用',
     note: val.note || '',
@@ -177107,7 +181977,7 @@ function _bidirectionalValueObjFromSnapshot(snapshot, propName, entityPath) {
     file: snapshot.file,
     entry_path: snapshot.entry_path || entityPath,
     property: snapshot.property || propName,
-    candidate_index: snapshot.candidate_index,
+    candidate_id: snapshot?.candidate_id, entry_id: snapshot?.entry_id, candidate_index: snapshot.candidate_index,
     value: snapshot.value,
     status: snapshot.status,
     note: snapshot.note,
@@ -177134,7 +182004,7 @@ async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot
       file: createdResult.path || createdResult.file || entityPath,
       entry_path: entityPath,
       property: createdResult.property || propName,
-      candidate_index: createdResult.candidate_index,
+      candidate_id: createdResult?.candidate_id, entry_id: createdResult?.entry_id, candidate_index: createdResult.candidate_index,
     }, { _delete: true });
   }
 }
@@ -178415,7 +183285,7 @@ function renderTimeline(ctx) {
         const valueRef = (val) => val ? {
           file: val.file,
           property: val.property,
-          candidate_index: val.candidate_index,
+          candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
           value: val.value || '',
         } : null;
         const appliedWrites = [];
@@ -178431,7 +183301,7 @@ function renderTimeline(ctx) {
           const ref = {
             file: res?.path,
             property: res?.property || propName,
-            candidate_index: res?.candidate_index,
+            candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index,
             value,
           };
           if (ref.file) appliedWrites.push({ kind: 'create', ref });
@@ -180855,7 +185725,7 @@ function getActiveFormConfig(dbPath, props, propTypes, ctx) {
 function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
   const invalid = globalThis.MeldexDbFormModel?.validateDefinition(formConfig);
   if (invalid) { if (typeof showStatus === 'function') showStatus(invalid, true); return false; }
-  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig);
+  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig, options);
   if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
   const config = getDbViewConfig(dbPath);
   if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {
@@ -181564,6 +186434,7 @@ function setCurrentViewIdx(dbPath, idx, options = {}) {
     historyLabel: label,
     historyDetail: options.detail || '',
     skipHistory: options.skipHistory === true || !label,
+    skipBackend: options.skipBackend === true,
   });
 }
 
@@ -181971,7 +186842,7 @@ function renderDbNoViewsGuide(ctx) {
 }
 
 /* ==============================
-   DB設定モーダル（エントリ名テンプレート等）
+   DB設定モーダル
    ============================== */
 function _setDbCalendarMappingFallbackOnViews(cfg, mapping) {
   const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
@@ -181987,8 +186858,6 @@ function _setDbCalendarMappingFallbackOnViews(cfg, mapping) {
 
 async function _showDbConfigModal(dbPath, ctx) {
   const cfg = getDbViewConfig(dbPath);
-  const nameTemplate = cfg.entryNameTemplate || '';
-
   const localCtx = ctx || _currentPaneState();
   let pivotData = localCtx?.dbPath === dbPath ? localCtx.pivotData : null;
   if (!pivotData && state.currentDbPath === dbPath) pivotData = state.pivotData;
@@ -182002,14 +186871,12 @@ async function _showDbConfigModal(dbPath, ctx) {
   }
   if (!dbMetadata) dbMetadata = { property_types: null, calendar_mapping: null };
   const props = pivotData ? pivotData.properties : [];
-  const propHints = props.map(p => `{${p}}`).join(', ');
 
   const activeView = typeof getCurrentDbViewConfigEntry === 'function'
     ? getCurrentDbViewConfigEntry(dbPath, { ctx: localCtx })
     : null;
   const showFooter = activeView ? activeView.showFooter === true : false;
   const thumbnailSize = activeView?.thumbnailSize || 'small';
-  const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
   const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
@@ -182021,10 +186888,6 @@ async function _showDbConfigModal(dbPath, ctx) {
   const content = document.createElement('div');
   content.className = 'db-config-modal-body';
   content.innerHTML = `
-      <div class="field">
-        <label for="dbcfg-name-template">トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
-        <input id="dbcfg-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
-      </div>
       <div class="field">
         <div class="gb-check-help-row">
           <label class="gb-check dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox" aria-controls="dbcfg-status-editor" aria-expanded="${statusOn}"${statusOn ? ' checked' : ''}> ステータス機能</label>
@@ -182041,9 +186904,8 @@ async function _showDbConfigModal(dbPath, ctx) {
         <div class="dbcfg-section-content">
         <div class="dbcfg-display-grid">
           <label class="gb-check dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
-          <label class="gb-check dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
           <div class="dbcfg-inline-field gb-field-select-row">
-            <label for="dbcfg-thumbnail-size">サムネイル</label>
+            <label for="dbcfg-thumbnail-size">画像リンクのサムネイル ${fieldHelp('テキストなどのセルに画像ファイルのパスを入力した場合のプレビューサイズです。画像列の表示サイズは、その列の列設定にある「表の画像高さ」で変更します', { e2eId: 'dbcfg-thumbnail-size-help' })}</label>
             <select id="dbcfg-thumbnail-size" class="gb-select">
               <option value="small"${thumbnailSize !== 'large' ? ' selected' : ''}>小</option>
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
@@ -182087,7 +186949,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const modalApi = globalThis.GBUI.createModal({
     id: 'db-config', title: 'シート設定', body: content,
     footer: [templateButton, footerSpacer, cancelButton, saveButton],
-    variant: 'standard', geometryKey: 'db-config', minWidth: '0', initialFocus: '#dbcfg-name-template',
+    variant: 'standard', geometryKey: 'db-config', minWidth: '0', initialFocus: '#dbcfg-status-enabled',
     returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
     closeLabel: 'シート設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: reason => reason === 'saved' || (!busy && !childOpen),
@@ -182248,13 +187110,11 @@ async function _showDbConfigModal(dbPath, ctx) {
       saveButton.focus({ preventScroll: true });
     };
     const c = _cloneDbViewObject(getDbViewConfig(dbPath));
-    c.entryNameTemplate = o.querySelector('#dbcfg-name-template').value.trim();
     const targetView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
       ? _getCurrentDbViewConfigEntryFromConfig(c, { ctx: localCtx })
       : null;
     const viewSettingsTarget = targetView || c;
     viewSettingsTarget.showFooter = !!o.querySelector('#dbcfg-show-footer')?.checked;
-    viewSettingsTarget.entityColumnPinned = o.querySelector('#dbcfg-entity-pinned')?.checked !== false;
     viewSettingsTarget.thumbnailSize = o.querySelector('#dbcfg-thumbnail-size')?.value || 'small';
     c.statusEnabled = !!o.querySelector('#dbcfg-status-enabled')?.checked;
     c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'right-sidebar';
@@ -182957,7 +187817,7 @@ function _kanbanValueRef(valueObj, propName) {
   return {
     file: valueObj?.file,
     property: valueObj?.property || propName,
-    candidate_index: valueObj?.candidate_index,
+    candidate_id: valueObj?.candidate_id, entry_id: valueObj?.entry_id, candidate_index: valueObj?.candidate_index,
   };
 }
 
@@ -183068,11 +187928,21 @@ function _appendDbCardImagePreview(root, items, options = {}) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
-      window.MeldexPwaFileUrl.applyToElement(img, src);
-    } else {
-      img.src = src;
-    }
+    const applySource = url => {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+        window.MeldexPwaFileUrl.applyToElement(img, url);
+      } else {
+        img.src = url;
+      }
+    };
+    let triedOriginal = false;
+    img.addEventListener('error', () => {
+      if (triedOriginal || !img.isConnected || mediaKind !== 'image') return;
+      triedOriginal = true;
+      const original = _imageSrc(item, false);
+      if (original && original !== src) applySource(original);
+    });
+    applySource(src);
     img.alt = item.caption || item.filename || options.propName || '画像';
     img.dataset.imageIndex = String(idx);
     img.addEventListener('click', (ev) => {
@@ -183299,7 +188169,7 @@ function renderGallery(ctx) {
   const hiddenCols = getHiddenCols(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
   const entityNames = typeof _dbSortedEntityNames === 'function'
@@ -183719,7 +188589,7 @@ function renderKanban(ctx) {
   const entitiesMap = data.entities;
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const entityNames = typeof _dbSortedEntityNames === 'function'
     ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
@@ -183892,7 +188762,7 @@ function renderKanban(ctx) {
               const oldRelations = Array.isArray(target.relations) ? JSON.parse(JSON.stringify(target.relations)) : [];
               const oldPublishedIn = Array.isArray(target.published_in) ? JSON.parse(JSON.stringify(target.published_in)) : [];
               const entityPath = _entityPath(dbPath, entityName);
-              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_index: target.candidate_index };
+              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_id: target?.candidate_id, entry_id: target?.entry_id, candidate_index: target.candidate_index };
               await _apiPutValue(target, { _delete: true });
               historyPush('カンバン移動: ' + entityName,
                 async () => {
@@ -183901,7 +188771,7 @@ function renderKanban(ctx) {
                     published_in: oldPublishedIn,
                     created: target.created || '',
                   });
-                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index };
                   await selectDatabase(dbPath, ctx);
                 },
                 async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
@@ -183922,13 +188792,13 @@ function renderKanban(ctx) {
             try {
               const entityPath = _entityPath(dbPath, entityName);
               const result = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index };
               if (createdRef.file) {
                 historyPush('カンバン移動: ' + entityName,
                   async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
                   async () => {
                     const redo = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
+                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index };
                     await selectDatabase(dbPath, ctx);
                   },
                   _dbScope(dbPath)
@@ -193646,7 +198516,7 @@ function _dbFindValueRef(dbPath, entityName, propName, val, rawIndex, pivotData)
   return {
     file: val?.file || _entityPath(dbPath, entityName, pivotData),
     property: val?.property || propName,
-    candidate_index: val?.candidate_index != null ? val.candidate_index : rawIndex,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val?.candidate_index != null ? val.candidate_index : rawIndex,
     value: val?.value,
     status: val?.status,
   };
@@ -198148,7 +203018,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     ${_calendarUserFields('cal-detail', ev)}
     ${ev.linkedEntryPath ? `
     <div class="field">
-      <label>元エントリ <span style="font-size:10px;color:var(--fg2);margin-left:6px;">${ev.linkedAutoGenerated ? '(自動生成)' : ''}</span></label>
+      <label>元トピック <span style="font-size:10px;color:var(--fg2);margin-left:6px;">${ev.linkedAutoGenerated ? '(自動生成)' : ''}</span></label>
       <div style="display:flex;gap:6px;align-items:center;">
         <div style="flex:1;font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(ev.linkedEntryPath)}</div>
         <button id="cal-detail-open-entry" type="button">元エントリを開く</button>
@@ -198894,7 +203764,7 @@ function _templateEntryRow(entry) {
 
 async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
   const t = templates.find(x => String(x.id) === String(tid));
-  if (!t || !t.entries?.length) { showStatus('エントリがありません', true); return false; }
+  if (!t || !t.entries?.length) { showStatus('トピックがありません', true); return false; }
   const weeks = parseInt(await cfPrompt('何週間分生成しますか？', '4')) || 0;
   if (weeks <= 0) return false;
   const curDate = getCalendarDate(dbPath);
@@ -199643,7 +204513,7 @@ function _showSyncModal(dbPath) {
           createdRef: {
             file: res?.path || ev.linkedEntryPath,
             property: ev.linkedEntrySourceProperty,
-            candidate_index: res?.candidate_index,
+            candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index,
           },
           newValue: newDateVal,
           status: writeStatus,
@@ -219074,15 +223944,20 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
           dest_folder: targetPath,
           conflict_policy: 'error',
         });
-        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        // The move is committed. A detached view cannot turn it into a failed
+        // file operation or keep the other editors bound to the old path.
+        ok += 1;
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(oldPath, res.new_path, {
+          try { renameAppPathReferences(oldPath, res.new_path, {
             label: res.new_name || source.name,
             fileId: res.file_id,
             type: source.type || 'file',
-          });
+          }); } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
         }
-        ok += 1;
+        if (!copySource && typeof handleRelocateResponse === 'function') {
+          try { handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
+        }
       } catch (error) {
         failures.push({ name: source.name || source.path, error });
       }
@@ -219091,7 +223966,9 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
   }
-  if (typeof loadOutliner === 'function') {
+  if (typeof refreshOutliner === 'function') {
+    await refreshOutliner({ force: true, reason: 'folder-panel-drop-move' });
+  } else if (typeof loadOutliner === 'function') {
     await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
   }
   if (_folderPath && typeof openFolder === 'function') {
@@ -219176,7 +224053,8 @@ function _folderApplyManualDrop(intent, targetItem) {
   }
   const selectedPaths = (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
   renderFolderGrid({ preserveSelectedPaths: selectedPaths });
-  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  if (typeof refreshOutliner === 'function') void refreshOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  else if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
   showStatus('並び順を変更しました');
   return true;
 }
@@ -219901,8 +224779,36 @@ function renderFolderGrid(opts) {
   if (filteredItems.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'fv-empty-state';
-    empty.textContent = _folderItems.length > 0 && _folderHasActiveFilters(dcfg) ? '条件に一致する項目がありません'
+    const searchTags = window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || [];
+    const filteredOut = _folderItems.length > 0 && (_folderHasActiveFilters(dcfg) || searchTags.length > 0);
+    empty.textContent = filteredOut ? `${_folderItems.length}項目が絞り込みで非表示です`
       : _folderBrowseIncomplete ? '読み込めた項目はありません' : 'このフォルダは空です';
+    if (filteredOut) {
+      empty.style.flexDirection = 'column';
+      empty.style.gap = '12px';
+      const summary = document.createElement('div');
+      const conditions = [];
+      if (String(dcfg.filterText || '').trim()) conditions.push('名前・パス');
+      const types = _folderFilterArray(dcfg.filterTypes);
+      if (types.length) conditions.push('種類: ' + types.map(_folderItemTypeLabel).join('、'));
+      if (_folderFilterArray(dcfg.filterExts).length) conditions.push('拡張子');
+      if (_folderHasActiveFolderFilter(dcfg)) conditions.push('所属フォルダ');
+      if (_folderHasActiveTagFilter(dcfg) || searchTags.length) conditions.push('タグ');
+      if (dcfg.filterModifiedPreset && dcfg.filterModifiedPreset !== 'all') conditions.push('更新日時');
+      summary.textContent = '適用中の条件: ' + conditions.join(' / ');
+      empty.appendChild(summary);
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'gb-btn gb-btn-sm';
+      reset.dataset.e2eId = 'folder-empty-clear-filters';
+      reset.textContent = '絞り込みを解除';
+      reset.addEventListener('click', () => {
+        _clearFolderFilters();
+        if (searchTags.length) window.MeldexUnifiedSearch?.writeTagCondition?.({ tagIds: [] });
+        renderFolderGrid({ resetScrollTop: true });
+      });
+      empty.appendChild(reset);
+    }
     container.appendChild(empty);
     return;
   }
@@ -220179,6 +225085,7 @@ function renderFolderGrid(opts) {
           name: selected.name || '',
           path: selected.path,
           type: selected.type || 'file',
+          linked: !!selected.linked,
           sourceSurface: 'folder-panel',
         }));
       const primary = dragItems.find(selected => selected.path === item.path) || dragItems[0];
@@ -220205,6 +225112,7 @@ function renderFolderGrid(opts) {
     });
     el.addEventListener('dragend', async (e) => {
       el.classList.remove('dragging');
+      if (typeof clearDragIndicators === 'function') clearDragIndicators();
       // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
       const shouldPopout = typeof shouldOpenDragPopout === 'function'
         ? await shouldOpenDragPopout(e, window._gbFolderViewDragNonce)
@@ -221618,7 +226526,9 @@ let _lassoJustCompleted = false;
   let _lassoMoved = false;
   grid.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest('.fv-item')) return;
+    // Empty-state/retry controls are actions, not blank-space lasso starts.
+    // Pointer capture on the grid would retarget their click to the grid.
+    if (e.target.closest('.fv-item, button, a, input, textarea, select, [role="button"], [contenteditable="true"]')) return;
     _lassoActive = true;
     _lassoMoved = false;
     // Ctrl+ドラッグ: 既存選択を保持
@@ -221745,6 +226655,7 @@ async function openFolderItem(item) {
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
   else if (item.type === 'form-app') { openFormApp(item.path, item.name, _expOpts); }
+  else if (item.type === 'map') { openMapApp(item.path, item.name, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
   else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
@@ -222192,10 +227103,11 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
           }
           const oldPath = item.path;
           const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
-          if (res?.new_path && typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+          try {
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
           const newPath = res?.new_path || item.path;
           pastedPaths.push(newPath);
           executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
@@ -222213,7 +227125,9 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     }
 
     if (mode === 'cut') {
-      if (typeof _folderToolbarClipboard !== 'undefined') {
+      if (typeof options.onCutResult === 'function') {
+        options.onCutResult(failed);
+      } else if (typeof _folderToolbarClipboard !== 'undefined') {
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
       if (executedMoves.length && typeof historyPush === 'function') {
@@ -222221,9 +227135,9 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
           const from = m.currentPath;
           const r = await apiPost('/outliner/move', { path: from, dest_folder: destination });
           m.currentPath = r?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
-          if (typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-          }
+          try {
+            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
+          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
         };
         const moveUndo = () => replayHistoryItems(executedMoves, false, m => move(m, m.oldParent), options);
         const moveRedo = () => replayHistoryItems(executedMoves, true, m => move(m, destFolder), options);
@@ -224349,6 +229263,7 @@ function _installFolderBlankContextMenu(container) {
     ['シート', 'database', 'db'],
     ['ボード', 'board', 'presentation'],
     ['フォーム', 'form-app', 'clipboardList'],
+    ['マップ', 'map', 'map'],
     ['カレンダー', 'calendar', 'calendar'],
   ]);
 
@@ -224480,6 +229395,7 @@ function _installFolderBlankContextMenu(container) {
   async function _folderToolbarRefresh(preservePaths = [], options = {}) {
     const folderPath = _folderToolbarCurrentPath();
     const refreshTrees = () => {
+      if (typeof refreshOutliner === 'function') return refreshOutliner({ force: true, reason: 'folder-toolbar' });
       const refreshJobs = [];
       if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
       if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
@@ -224487,21 +229403,29 @@ function _installFolderBlankContextMenu(container) {
     };
     // Creation is already durable. Display its folder contents immediately;
     // refreshing other roots must not hold the new item behind a full scan.
-    if (!options.backgroundTrees) await refreshTrees();
-    if (folderPath && typeof openFolder === 'function') {
-      await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
+    const treeResults = !options.backgroundTrees ? await refreshTrees() : [];
+    if (options.isCurrent && !options.isCurrent()) return false;
+    let folderOk = true;
+    if (options.refreshFolder !== false && folderPath && typeof openFolder === 'function') {
+      const scroller = options.preserveScroll && typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+      const scroll = scroller ? [scroller.scrollLeft, scroller.scrollTop] : null;
+      folderOk = await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
         skipShowView: true,
         skipSaveLastView: true,
         skipNavPush: true,
         skipHighlight: true,
         skipGlobalUi: true,
-      });
-      if (preservePaths.length && typeof renderFolderGrid === 'function') {
+        ...(options.isCurrent ? { isLegacyLoadCurrent: options.isCurrent } : {}),
+      }) !== false;
+      if (options.isCurrent && !options.isCurrent()) return false;
+      if (folderOk && preservePaths.length && typeof renderFolderGrid === 'function') {
         renderFolderGrid({ preserveSelectedPaths: preservePaths });
       }
+      if (scroll) { scroller.scrollLeft = scroll[0]; scroller.scrollTop = scroll[1]; }
     }
     if (options.backgroundTrees) void refreshTrees();
     _folderToolbarScheduleUpdate();
+    return folderOk && !(treeResults || []).some(result => result?.status === 'rejected');
   }
 
   function _folderToolbarCloseMenus(options = {}) {
@@ -224679,6 +229603,13 @@ function _installFolderBlankContextMenu(container) {
     if (typeof executeFolderPasteWithChoice === 'function') {
       await executeFolderPasteWithChoice(clip, destFolder, {
         ...options,
+        onCutResult: failedItems => {
+          // The clipboard belongs to this closure. Do not overwrite a newer
+          // copy/cut made while the asynchronous paste was in progress.
+          if (_folderToolbarClipboard === clip) {
+            _folderToolbarClipboard = failedItems.length ? { mode: 'cut', items: failedItems } : null;
+          }
+        },
         refresh: typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh,
       });
       return;
@@ -224707,10 +229638,11 @@ function _installFolderBlankContextMenu(container) {
           }
           const oldPath = item.path;
           const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
-          if (res?.new_path && typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+          try {
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
           pastedPaths.push(res?.new_path || item.path);
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
@@ -225002,6 +229934,18 @@ function _installFolderBlankContextMenu(container) {
 
   global.initFolderToolbarActions = initFolderToolbarActions;
   global.updateFolderToolbarActions = updateFolderToolbarActions;
+  global.refreshFolderAfterExternalChange = (options = {}) => {
+    const path = _folderToolbarCurrentPath();
+    const scroller = typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+    const visible = !!path && !!scroller?.getClientRects().length;
+    return _folderToolbarRefresh(_folderToolbarSelectionItems().map(item => item.path), {
+      preserveScroll: true,
+      refreshFolder: visible,
+      isCurrent: () => _folderToolbarCurrentPath() === path
+        && (!visible || _folderGridEl() === scroller && !!scroller.getClientRects().length)
+        && (!options.isCurrent || options.isCurrent()),
+    });
+  };
   global.showFolderToolbarAddMenu = showFolderToolbarAddMenu;
   global.folderToolbarCopySelection = folderToolbarCopySelection;
   global.folderToolbarCutSelection = folderToolbarCutSelection;
@@ -227027,7 +231971,6 @@ if (typeof window !== 'undefined') {
 
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
-    const toggle = row.querySelector('.tree-toggle');
     const _expOpts = fileOpenOptions({ skipHighlight: true });
 
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
@@ -227045,6 +231988,8 @@ if (typeof window !== 'undefined') {
       if (typeof openPage === 'function') openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
       if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name, _expOpts);
+    } else if (item.type === 'map') {
+      if (typeof openMapApp === 'function') openMapApp(item.path, item.name, _expOpts);
     } else if (item.type === 'form-app') {
       if (typeof openFormApp === 'function') openFormApp(item.path, item.name, _expOpts);
     } else if (item.type === 'board') {
@@ -227072,7 +232017,7 @@ if (typeof window !== 'undefined') {
         if (!handledByMobileExplorer && typeof openFolder === 'function') {
           folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
         }
-        if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+        // フォルダを開く操作ではツリーの展開状態を変えない。展開は矢印・左右キーで行う。
         const nodeSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
           ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
           : null;
@@ -227462,6 +232407,7 @@ function _outlinerResolvedType(type, path) {
   const lowerPath = String(path || '').split(/[?#]/)[0].toLowerCase();
   if (!['folder', 'database', 'entity'].includes(rawType) && (lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md'))) return 'board';
   if (lowerPath.endsWith('.mel-form')) return 'form-app';
+  if (lowerPath.endsWith('.mel-map')) return 'map';
   if (type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(path))) return 'scriptnote';
   return type || 'page';
 }
@@ -228077,28 +233023,115 @@ function _outlinerExternalDragItems(event, payloadOverride) {
     name: row?.name || '',
     path: row?.path || '',
     type: row?.type || 'file',
+    linked: !!row?.linked,
     sourceSurface: row?.sourceSurface || sourceSurface || 'main',
   })).filter(row => {
     const key = String(row.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
-  });
+  }).filter((row, _index, all) => !all.some(parent => parent !== row
+    && _treeNodeIsAncestor({ _nodeData: parent }, { _nodeData: row })));
+}
+
+function _outlinerRowDropPosition(event, row, item) {
+  const container = item.type === 'folder' || item.type === 'database';
+  if (item._isRoot || item._form_parent_path || (event.altKey && container)) return 'inside';
+  const rect = row.getBoundingClientRect();
+  const fraction = (event.clientY - rect.top) / Math.max(1, rect.height);
+  if (container && fraction >= 0.25 && fraction <= 0.75) return 'inside';
+  return fraction < 0.5 ? 'above' : 'below';
+}
+
+function _outlinerRowDropTarget(node, item, position, rootPath) {
+  if (position === 'inside') {
+    if (!['folder', 'database'].includes(item.type) || !item.path) return null;
+    return { path: item.path, name: item.name, position, rootPath };
+  }
+  if (item._isRoot || item._form_parent_path) return null;
+  const logicalParent = window.GBOutlinerVirtualRender?.parentPathForItem?.(node.parentElement, item.path);
+  const parentNode = node.parentElement?.closest('.tree-node');
+  const path = logicalParent !== undefined ? logicalParent || parentNode?._nodeData?.path || ''
+    : parentNode?._nodeData?.path || (node.closest('#body-home') ? _homeFolderPath : rootPath) || '';
+  return { path, name: path.split(/[\\/]/).pop() || 'ソースフォルダ', position, anchorPath: item.path, rootPath };
+}
+
+async function _outlinerDropSiblings(target) {
+  const key = target.path || '_root';
+  const cfg = getSortForFolder(key);
+  const serverSort = ['name', 'modified', 'created'].includes(cfg.sort) ? cfg.sort : 'name';
+  const items = await apiFetch('/browse?path=' + encodeURIComponent(target.path || '')
+    + (target.rootPath ? '&root=' + encodeURIComponent(target.rootPath) : '')
+    + '&all_files=true&form_hierarchy=true&sort=' + serverSort + '&order=' + cfg.order
+    + (!['name', 'manual'].includes(cfg.sort) ? '&detail=true' : ''));
+  if (target.anchorPath && !items.some(item => item.path === target.anchorPath)) {
+    throw new Error('挿入先の項目が見つかりません。フォルダツリーを更新してください');
+  }
+  return cfg.sort === 'manual' ? _sortItemsByManualOrder(items, key)
+    : [...items].sort((a, b) => compareItemsForFolderSort(a, b, cfg.sort, cfg.order));
+}
+
+function _saveOutlinerDropPlacement(target, siblings, movedItems) {
+  if (!movedItems.length) return;
+  const incoming = new Set(movedItems.flatMap(item => [item.path, item.oldPath]).filter(Boolean));
+  const rest = siblings.filter(item => !incoming.has(item.path));
+  const anchor = rest.findIndex(item => item.path === target.anchorPath);
+  // Never turn an unavailable anchor into a silent drop at the bottom.
+  if (target.anchorPath && anchor < 0) throw new Error('挿入先の項目が見つかりません。フォルダツリーを更新してください');
+  const index = target.anchorPath ? anchor + (target.position === 'below' ? 1 : 0) : rest.length;
+  rest.splice(index, 0, ...movedItems);
+  const key = target.path || '_root';
+  setManualOrder(key, rest.map(item => item.path));
+  setSortSetting(key, 'manual', 'asc');
+}
+
+async function _linkExternalItemsIntoOutlinerFolder(items, targetItem) {
+  let result;
+  try {
+    result = await addFolderLinksBatchWithHistory(items, targetItem.path);
+  } catch (error) {
+    showStatus('リンク登録に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    return 0;
+  }
+  const failed = result?.failed_count || 0;
+  const succeeded = (result?.results || []).filter(row => row.status !== 'failed').length;
+  try {
+    await refreshOutliner({ force: true, reason: 'external-drop-link' });
+    showStatus(`${result?.created_count || 0} 件を「${targetItem.name || targetItem.path}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && succeeded === 0);
+  } catch {
+    showStatus('リンク登録後の表示を更新できませんでした。フォルダツリーを再読み込みしてください。', true);
+  }
+  return succeeded;
 }
 
 async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
-  if (!targetPath || !Array.isArray(items) || items.length === 0) return;
+  if (!targetItem || !Array.isArray(items) || items.length === 0) return 0;
+  const placement = { position: 'inside', ...targetItem, path: targetPath };
+  let siblings;
+  try {
+    siblings = await _outlinerDropSiblings(placement);
+  } catch (error) {
+    showStatus('移動先を確認できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    return 0;
+  }
   const progress = window.MeldexImportProgress;
   const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let processed = 0;
   let succeeded = 0;
   const failures = [];
+  const movedItems = [];
   try {
     for (const source of items) {
       try {
         const copySource = source.sourceSurface === 'sheet-image';
-        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+        if (source.linked || isItemLocked(source.path) || isItemLocked(targetPath)) {
+          throw new Error('リンクファイルや編集ロック中の項目は移動できません');
+        }
+        const oldPath = String(source.path || '').replace(/\\/g, '/');
+        const sameParent = oldPath.substring(0, Math.max(0, oldPath.lastIndexOf('/'))) === targetPath;
+        const res = sameParent && !copySource ? { new_path: source.path, new_name: source.name }
+          : await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
           path: source.path,
           dest_folder: targetPath,
         } : {
@@ -228106,15 +233139,20 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
           dest_folder: targetPath,
           conflict_policy: 'error',
         });
-        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(source.path, res.new_path, {
-            label: res.new_name || source.name,
-            fileId: res.file_id,
-            type: source.type || 'file',
-          });
-        }
+        movedItems.push({ ...source, oldPath: copySource ? '' : source.path, path: res.new_path || source.path, name: res.new_name || source.name });
         succeeded += 1;
+        try {
+          if (!copySource && res?.new_path && res.new_path !== source.path && typeof renameAppPathReferences === 'function') {
+            renameAppPathReferences(source.path, res.new_path, {
+              label: res.new_name || source.name,
+              fileId: res.file_id,
+              type: source.type || 'file',
+            });
+          }
+          if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        } catch (error) {
+          console.warn('[Meldex] 移動後の表示を再読み込みします', error);
+        }
       } catch (error) {
         failures.push({ source, error });
       }
@@ -228124,7 +233162,12 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
-  await loadOutliner({ force: true, reason: 'external-drop-move' });
+  let refreshError = null;
+  try {
+    _saveOutlinerDropPlacement(placement, siblings, movedItems);
+    if (succeeded && placement.position === 'inside' && targetPath) saveExpandedState(targetPath, true);
+  } catch (error) { refreshError = error; }
+  await refreshOutliner({ force: true, reason: 'external-drop-move' });
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
     const label = document.getElementById('folder-title')?.textContent || _folderPath;
     await openFolder(label, _folderPath, {
@@ -228136,7 +233179,9 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
       skipGlobalUi: true,
     });
   }
-  if (failures.length) {
+  if (refreshError) {
+    showStatus(`${succeeded}件は移動しましたが、挿入位置を保存できませんでした: ${refreshError.message}`, true);
+  } else if (failures.length) {
     const reason = String(failures[0].error?.userMessage || failures[0].error?.message || '');
     showStatus(`${succeeded}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
   } else {
@@ -229156,7 +234201,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
     // 設定「クリックで開く」が単クリックの場合: 選択に続けてそのまま開く。
     // フォルダも含め全項目種別に一貫して適用する（フォルダだけ例外にすると
     // 「なぜこれだけ2回押さないと開かないのか」という不整合が生じるため）。
-    // activateNode はフォルダなら開く+展開、ファイルなら対応するビューを開く。
+    // activateNode は対応するビューを開く。フォルダのツリー展開状態は変えない。
     if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
       window.GBOutlinerActivation.activateNode(div);
     }
@@ -229280,17 +234325,21 @@ function createTreeNodeFromBrowse(item, rootPath) {
       return;
     }
     e.preventDefault();
+    e.stopPropagation();
     if (!draggedNode) {
       const externalItems = _outlinerExternalDragItems(e);
       const bridgeCandidate = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
-      if ((!externalItems.length && !bridgeCandidate) || !(isFolder || isDB) || item._isRoot && !item.path
-          || externalItems.some(source => source.type === 'entity') || isItemLocked(item.path)) {
+      const position = _outlinerRowDropPosition(e, row, item);
+      const target = _outlinerRowDropTarget(div, item, position, rootPath);
+      clearDragIndicators();
+      if ((!externalItems.length && !bridgeCandidate) || !target || (e.altKey && position !== 'inside') || isItemLocked(target.path)
+          || externalItems.some(source => source.type === 'entity' || source.linked || source.path === item.path
+            || _treeNodeIsAncestor({ _nodeData: source }, { _nodeData: target }))) {
         e.dataTransfer.dropEffect = 'none';
         return;
       }
-      e.dataTransfer.dropEffect = 'move';
-      clearDragIndicators();
-      row.classList.add('drag-over-inside');
+      e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
+      row.classList.add('drag-over-' + position);
       return;
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
@@ -229310,21 +234359,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
       return;
     }
 
-    const rect = row.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const h = rect.height;
-
-    if (isFolder || isDB) {
-      if (y < h * 0.25) row.classList.add('drag-over-above');
-      else if (y > h * 0.75) row.classList.add('drag-over-below');
-      else row.classList.add('drag-over-inside');
-    } else {
-      if (y < h * 0.5) row.classList.add('drag-over-above');
-      else row.classList.add('drag-over-below');
-    }
+    row.classList.add('drag-over-' + _outlinerRowDropPosition(e, row, item));
   });
 
-  row.addEventListener('dragleave', () => {
+  row.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget && row.contains(e.relatedTarget)) return;
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
 
@@ -229344,7 +234383,13 @@ function createTreeNodeFromBrowse(item, rootPath) {
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
-      if (isDB && typeof MeldexSheetEntryAttachments !== 'undefined' && !isItemLocked(item.path)) {
+      // Capture the indicated position before asynchronous payload resolution or
+      // dragend clears the marker. The same geometry drives dragover and drop.
+      const position = _outlinerRowDropPosition(e, row, item);
+      const target = _outlinerRowDropTarget(div, item, position, rootPath);
+      clearDragIndicators();
+      if (!target || isItemLocked(target.path)) return;
+      if (position === 'inside' && isDB && typeof MeldexSheetEntryAttachments !== 'undefined') {
         clearDragIndicators();
         const handled = await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
         if (handled > 0) return;
@@ -229352,15 +234397,18 @@ function createTreeNodeFromBrowse(item, rootPath) {
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
         const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        const targetPath = String(item.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        return source.type !== 'entity' && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
+        const targetPath = String(target.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        return source.type !== 'entity' && !source.linked && sourcePath !== String(item.path || '').replace(/\\/g, '/').toLowerCase()
+          && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
       });
       clearDragIndicators();
-      if (!(isFolder || isDB) || isItemLocked(item.path) || externalItems.length === 0) {
+      if (externalItems.length === 0) {
         if (resolved) MeldexDnD.failDrop(resolved);
         return;
       }
-      const completed = await _moveExternalItemsIntoOutlinerFolder(externalItems, item);
+      const completed = e.altKey
+        ? (position === 'inside' ? await _linkExternalItemsIntoOutlinerFolder(externalItems, item) : 0)
+        : await _moveExternalItemsIntoOutlinerFolder(externalItems, target);
       if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);
       return;
@@ -229463,7 +234511,17 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
     (async () => {
+      const placement = { ..._outlinerRowDropTarget(div, item, position, rootPath), path: destFolder };
+      let siblings = null;
+      if (nodes.some(n => {
+        const path = n._nodeData?.path || '';
+        return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
+      })) {
+        try { siblings = await _outlinerDropSiblings(placement); }
+        catch (error) { showStatus('移動先を確認できませんでした: ' + error.message, true); return; }
+      }
       const moved = [];
+      const movedItems = [];
       let movedAcrossFolders = false;
       let processed = 0;
       const failures = [];
@@ -229479,11 +234537,13 @@ function createTreeNodeFromBrowse(item, rootPath) {
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
         if (destFolder === srcFolder) {
           moved.push(n);
+          movedItems.push({ ...dragData, oldPath: dragData.path });
           processed += 1;
           window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         movedAcrossFolders = true;
+        let moveCommitted = false;
         try {
           const oldPath = dragData.path;
           const res = await apiPost('/outliner/move', {
@@ -229491,7 +234551,14 @@ function createTreeNodeFromBrowse(item, rootPath) {
             dest_folder: destFolder,
             conflict_policy: 'error',
           });
+          moveCommitted = true;
+          moved.push(n);
+          movedItems.push({ ...dragData, oldPath, path: res.new_path || oldPath, name: res.new_name || dragData.name });
           if (res.new_path) {
+            // Rebind save targets before any fallible DOM/view callbacks.
+            if (typeof renameAppPathReferences === 'function') {
+              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
+            }
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
             } else {
@@ -229500,14 +234567,16 @@ function createTreeNodeFromBrowse(item, rootPath) {
               const lbl = n.querySelector('.tree-label');
               if (lbl && res.new_name) lbl.textContent = res.new_name;
             }
-            window.GBOutlinerVirtualRender?.renamePath(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
-            if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
-            }
+            window.GBOutlinerVirtualRender?.renamePath?.(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
           }
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-          moved.push(n);
         } catch (err) {
+          if (moveCommitted) {
+            // The filesystem is already committed. Do not report a failed move
+            // or skip the authoritative refresh because a view callback failed.
+            console.warn('[Meldex] 移動後の表示を再読み込みします', err);
+            continue;
+          }
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
           failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
@@ -229518,16 +234587,18 @@ function createTreeNodeFromBrowse(item, rootPath) {
         }
       }
       window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${moved.length}件移動・${failures.length}件失敗`, details: failures });
-      if (moved.length === 0) return;
       // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
       // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
       // サーバー上の確定状態を一度だけ読み直し、部分成功も含めてツリー全体を
       // 同じスナップショットへ揃える。同一フォルダ内の並べ替えは下の局所更新を維持する。
       if (movedAcrossFolders) {
+        try { _saveOutlinerDropPlacement(placement, siblings || [], movedItems); }
+        catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
         await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
         return;
       }
+      if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
       // 適切に後始末する（refresh()側の再マウントに新しい行要素の生成を任せる）。
@@ -229617,6 +234688,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
 }
 
 function clearDragIndicators() {
+  const home = document.getElementById('body-home');
+  if (home) home.style.outline = '';
   document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
     el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
@@ -229906,7 +234979,17 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
           return { status: 'rejected', reason };
         });
       }
-    } catch {}
+      throw new Error('削除結果を確認できませんでした。フォルダツリーを更新して状態を確認してください。');
+    } catch (reason) {
+      // Only an absent legacy endpoint permits a single-item fallback. A token
+      // may already be consumed after a conflict, timeout or uncertain response.
+      if (![404, 405].includes(Number(reason?.status))) {
+        return batchTargets.map(item => {
+          try { options.onFailure?.(item, reason); } catch {}
+          return { status: 'rejected', reason };
+        });
+      }
+    }
   }
   const results = [];
   for (const item of targets) {
@@ -230082,7 +235165,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
     if (!trashRef) {
       if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
-      else failed.push(targets[index]);
+      else failed.push({ ...targets[index], error: result.reason });
       return;
     }
     succeeded.push({ ...targets[index], ...trashRef });
@@ -230210,10 +235293,13 @@ function _pushMainCalendarSettingsHistory(label, beforeSnapshot, detail) {
 
 // --- ホバー追加メニュー ---
 function _cloudPhase1CreateItems(items) {
+  items = (items || []).filter(item => (Array.isArray(item) ? item[1] : item?.type) !== 'map'
+    || typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable());
   return window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
 }
 
 function _isCloudPhase1BlockedCreateType(type) {
+  if (type === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) return true;
   return !!window.MeldexCloudBootstrap?.isPhase1UnsupportedCreateType?.(type);
 }
 
@@ -230406,13 +235492,13 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
   if (nodeData?.type === 'database' && nodeData.path) {
     _outlinerAppendMenuItem(menu, {
-      label: 'エントリ',
+      label: 'トピック',
       icon: 'plus',
       action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -230552,7 +235638,9 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
     _removeOutlinerNodesForPaths(result.deletedPaths);
     if (result.failedCount) {
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
+      const reason = result.failed?.[0]?.error;
+      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
       loadOutliner();
     } else if (result.succeeded.length) {
       showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
@@ -230604,7 +235692,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,
@@ -231387,6 +236475,7 @@ function _openOutlinerCreatedNode(nd, name) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
   else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
@@ -233700,10 +238789,11 @@ function _favCloneNode(node) {
   return JSON.parse(JSON.stringify(node));
 }
 
-function _favExists(tree, path) {
+function _favExists(tree, path, fileId = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '') {
   for (const n of tree) {
-    if (n.path === path && n.type !== 'fav-folder') return true;
-    if (n.children && _favExists(n.children, path)) return true;
+    const storedId = n.file_id || (typeof _pathToFileId === 'function' ? _pathToFileId(n.path) : '');
+    if (n.type !== 'fav-folder' && (n.path === path || (fileId && storedId === fileId))) return true;
+    if (n.children && _favExists(n.children, path, fileId)) return true;
   }
   return false;
 }
@@ -233908,7 +238998,45 @@ function _createFavoriteMoreButton(node, isFavFolder) {
   return button;
 }
 
+function _bindFavoriteFileDropTarget() {
+  const section = document.getElementById('section-favorites');
+  if (!section || section.dataset.fileDropBound === '1') return;
+  section.dataset.fileDropBound = '1';
+  const accepts = e => typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+  section.addEventListener('dragover', e => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    section.style.outline = '2px solid var(--accent)';
+  }, true);
+  section.addEventListener('dragleave', e => {
+    if (!section.contains(e.relatedTarget)) section.style.outline = '';
+  });
+  document.addEventListener('dragend', () => { section.style.outline = ''; });
+  section.addEventListener('drop', async e => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    section.style.outline = '';
+    let resolved;
+    try {
+      resolved = await MeldexDnD.resolveDropData(e, 'node');
+      if (!resolved) return;
+      const items = resolved.payload.items || [resolved.payload];
+      for (const item of items) {
+        addToFavorites(item.name || item.label || item.path.split(/[\\/]/).pop(), item.path, item.type || 'page');
+      }
+      MeldexDnD.completeDrop(resolved);
+    } catch (error) {
+      if (resolved) MeldexDnD.failDrop(resolved);
+      showStatus('お気に入りへの登録に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    }
+  }, true);
+}
+
 function renderFavorites() {
+  _bindFavoriteFileDropTarget();
   const container = document.getElementById('body-favorites');
   if (!container) return;
   const favs = getFavorites();
@@ -234176,14 +239304,28 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
   if (!homeBody) return;
   homeBody.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (!draggedNode) return;
-    e.dataTransfer.dropEffect = 'move';
+    const external = !draggedNode && (_outlinerExternalDragItems(e).length
+      || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')));
+    if (!draggedNode && !external) return;
+    e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
     homeBody.style.outline = '2px solid var(--accent)';
   });
   homeBody.addEventListener('dragleave', () => { homeBody.style.outline = ''; });
   homeBody.addEventListener('drop', async (e) => {
     e.preventDefault();
     homeBody.style.outline = '';
+    if (!draggedNode && _homeFolderPath) {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const items = _outlinerExternalDragItems(e, resolved?.payload).filter(source =>
+        source.type !== 'entity' && !source.linked && source.path !== _homeFolderPath
+        && !_treeNodeIsAncestor({ _nodeData: source }, { _nodeData: { path: _homeFolderPath } }));
+      const target = { path: _homeFolderPath, name: 'ホームフォルダ', position: 'inside' };
+      const completed = e.altKey ? await _linkExternalItemsIntoOutlinerFolder(items, target)
+        : await _moveExternalItemsIntoOutlinerFolder(items, target);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     if (!draggedNode || !_homeFolderPath) return;
     const nodes = (draggedNodes || [draggedNode]).filter(Boolean);
     let movedCount = 0;
@@ -234196,11 +239338,12 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
       try {
         const oldPath = dragData.path;
         const _res = await apiPost('/outliner/move', { path: oldPath, dest_folder: _homeFolderPath });
-        if (_res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
-        }
-        if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res);
         movedCount++;
+        try {
+          if (_res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
+        } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+        try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res); }
+        catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
       } catch { skippedCount++; showStatus('移動に失敗', true); }
     }
     await renderHomeFolderTree({ force: true, reason: 'home-drop' });
@@ -234435,6 +239578,7 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
     { label: 'フォーム', icon: 'clipboardList', type: 'form-app', open: (paneId) => _openPanelMenuItem('form-app', paneId) },
+    { label: 'マップ', icon: 'map', type: 'map', open: (paneId) => _openPanelMenuItem('map', paneId) },
     { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
   ],
 }];
@@ -236113,7 +241257,9 @@ async function doVaultReplace(all) {
     childrenDiv._virtualState = state;
     childrenDiv.dataset.virtual = 'true';
     childrenDiv.style.position = 'relative';
-    childrenDiv.style.display = 'block';
+    // Inline display overrides .tree-children.collapsed and leaves the entire
+    // virtual spacer visible after folding a large source folder.
+    childrenDiv.style.display = '';
 
     items.forEach(function (item) {
       if (item && item.path) _pathToContainer.set(item.path, { childrenDiv: childrenDiv, state: state });
@@ -238014,7 +243160,7 @@ _bindClipSearchResultDelegation();
 /* === gb-duplicate-monitor-format.js === */
 ;
 /* 重複ファイル一覧の表示整形。
- * ラベル・パス表示・バッジ・グループHTMLの組み立てだけを持ち、
+ * ラベル・パス表示・グループの選択・絞り込み・ページ表示を持ち、
  * 監視やスキャンの制御は gb-duplicate-monitor.js 側に残す（責務単位の分離）。
  * esc() は meldex-core のものを呼び出し時に参照する。
  */
@@ -238145,7 +243291,7 @@ _bindClipSearchResultDelegation();
       const src = global.MeldexSheetAttachments?.thumbUrlForPath
         ? global.MeldexSheetAttachments.thumbUrlForPath(path, 180)
         : '/api/thumbnail?path=' + encodeURIComponent(path.replace(/\\/g, '/')) + '&size=180';
-      return `<div class="dup-item-thumb" data-meldex-image-host><img src="${src}" alt="${esc(name)}" data-dup-image data-meldex-content-image></div>`;
+      return `<div class="dup-item-thumb" data-meldex-image-host><img src="${esc(src)}" alt="${esc(name)}" loading="lazy" decoding="async" data-dup-image data-meldex-content-image></div>`;
     }
     return `<div class="dup-item-thumb dup-item-file-icon" aria-hidden="true">${lucide('file', 32)}</div>`;
   }
@@ -238159,7 +243305,7 @@ _bindClipSearchResultDelegation();
     const dimension = isImage(file) && file?.width
       ? `${Number(file.width)}×${Number(file.height)}`
       : '';
-    const selectedLabel = automatic && isExisting(file) ? '既存ファイル（初期選択）' : (checked ? '残す' : '選択');
+    const selectedLabel = automatic && isExisting(file) ? (checked ? '既存ファイル（選択中）' : '既存ファイル') : (checked ? '残す' : '選択');
     return `<div class="dup-item${checked ? ' dup-item-selected' : ''}" role="button" tabindex="0"
       aria-pressed="${checked ? 'true' : 'false'}" aria-label="${esc(fileName(file))}を残す"
       data-dup-item data-group="${groupIndex}" data-index="${fileIndex}" data-path="${esc(path)}"
@@ -238182,14 +243328,18 @@ _bindClipSearchResultDelegation();
     </div>`;
   }
 
-  function groupHtml(group, groupIndex, automatic) {
+  function groupHtml(group, groupIndex, automatic, options = {}) {
     const type = TYPE_LABELS[group.type] || TYPE_LABELS.exact_file;
-    const initialIndex = selectedIndex(group, automatic);
-    const items = group.files.map((file, fileIndex) => (
-      itemHtml(file, groupIndex, fileIndex, fileIndex === initialIndex, automatic)
+    const initialIndex = options.selected ?? selectedIndex(group, automatic);
+    const offset = options.offset || 0;
+    const end = Math.min(group.files.length, offset + (options.limit || group.files.length));
+    const items = group.files.slice(offset, end).map((file, index) => (
+      itemHtml(file, groupIndex, offset + index, offset + index === initialIndex, automatic)
     )).join('');
     return `<section class="dup-group" data-group="${groupIndex}">
       <div class="dup-group-header">
+        <label class="dup-group-include"><input type="checkbox" data-dup-include data-group="${groupIndex}"
+          ${options.included === false ? '' : 'checked'} aria-label="グループ ${groupIndex + 1}を一括整理の対象にする">整理対象</label>
         <span class="gb-badge ${type[1]}">${type[0]}</span>
         <span class="dup-group-title">グループ ${groupIndex + 1}</span>
         <span class="dup-group-count">${group.files.length}件</span>
@@ -238198,8 +243348,165 @@ _bindClipSearchResultDelegation();
           data-e2e-id="duplicate-resolve-group-${groupIndex}"
           aria-label="グループ ${groupIndex + 1} の選択したファイルを残す">選択したファイルを残す</button>
       </div>
+      <div class="dup-group-choice">残すファイル: ${esc(fileName(group.files[initialIndex]))}</div>
       <div class="dup-group-body">${items}</div>
+      ${group.files.length > end - offset ? `<div class="dup-file-pager">
+        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="-1" data-group="${groupIndex}" ${offset ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の前のファイル">前へ</button>
+        <span>${offset + 1}–${end} / ${group.files.length}件</span>
+        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="1" data-group="${groupIndex}" ${end < group.files.length ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の次のファイル">次へ</button>
+      </div>` : ''}
     </section>`;
+  }
+
+  // 同じ既存ファイルを含む完全一致の通知は、一つの判断へまとめる。
+  // 類似画像の関係には推移律がないため、完全一致だけを結合する。
+  function consolidateGroups(groups) {
+    const owners = new Map();
+    const merged = [];
+    for (const group of groups) {
+      if (group.type === 'similar_image') { merged.push(group); continue; }
+      const matches = new Set(group.files.map(file => owners.get(group.type + ':' + filePath(file))).filter(Boolean));
+      const target = matches.values().next().value || { ...group, files: [] };
+      if (!matches.size) merged.push(target);
+      const files = new Map(target.files.map(file => [filePath(file), file]));
+      for (const source of [...matches, group]) {
+        for (const file of source.files) {
+          const prior = files.get(filePath(file));
+          files.set(filePath(file), prior && isExisting(prior) ? prior : file);
+        }
+        if (source !== target && matches.has(source)) source._mergedInto = target;
+      }
+      target.files = [...files.values()];
+      target.files.forEach(file => owners.set(group.type + ':' + filePath(file), target));
+    }
+    return merged.filter(group => !group._mergedInto);
+  }
+
+  function createResultView(overlay, groups, automatic, onRender) {
+    const PAGE_SIZE = 10;
+    const FILE_PAGE_SIZE = 12;
+    const states = groups.map(group => ({ selected: selectedIndex(group, automatic), included: true,
+      resolved: false, failed: false, removed: new Set(), offset: 0 }));
+    const results = overlay.querySelector('[data-dup-results]');
+    const tools = overlay.querySelector('[data-dup-result-tools]');
+    tools.hidden = false;
+    tools.innerHTML = `<div class="dup-result-filters">
+      <input type="search" class="gb-input" data-dup-search placeholder="ファイル名・保存場所で検索" aria-label="重複ファイルを検索">
+      <select class="gb-select" data-dup-type aria-label="重複の種類"><option value="">すべての種類</option>
+        ${Object.entries(TYPE_LABELS).map(([key, label]) => `<option value="${key}">${label[0]}</option>`).join('')}</select>
+      <select class="gb-select" data-dup-state aria-label="整理状況"><option value="">すべての状況</option><option value="pending">未整理</option><option value="resolved">整理済み</option></select>
+      <select class="gb-select" data-dup-selection aria-label="整理対象を一括変更"><option value="">整理対象を一括変更</option>
+        <option value="all-on">すべてを対象にする</option><option value="all-off">すべてを対象外にする</option>
+        <option value="filtered-on">絞り込み結果を対象にする</option><option value="filtered-off">絞り込み結果を対象外にする</option></select>
+      <label class="dup-compact-toggle"><input type="checkbox" data-dup-compact ${groups.length > 20 ? 'checked' : ''}>コンパクト表示</label>
+    </div><div class="dup-result-navigation">
+      <span data-dup-page-summary role="status"></span>
+      <label><input type="checkbox" data-dup-page-include>このページを整理対象にする</label>
+      <span class="dup-group-spacer"></span>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="-1" aria-label="前の重複グループ">前へ</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="1" aria-label="次の重複グループ">次へ</button>
+    </div><div class="gb-section-desc">各グループで残すファイルを選びます。一括整理は、検索やページ外を含む「整理対象」の全グループに適用されます。</div>`;
+    let page = 0;
+    let visible = [];
+    let filtered = [];
+    overlay.classList.toggle('dup-results-compact', groups.length > 20);
+    const searchText = groups.map(group => group.files.map(file => fileName(file) + ' ' + fileLocation(file) + ' ' + filePath(file)).join(' ').toLocaleLowerCase());
+    const view = { states, busy: false, render, updateSummary, recordRemoved };
+    function recordRemoved(results) {
+      const removed = new Set(results.filter(result => result.status === 'replaced').map(result => result.path));
+      states.forEach((state, index) => {
+        groups[index].files.forEach(file => { if (removed.has(filePath(file))) state.removed.add(filePath(file)); });
+        const remaining = groups[index].files.map((file, fileIndex) => ({ file, fileIndex }))
+          .filter(({ file }) => !state.removed.has(filePath(file)));
+        if (state.removed.has(filePath(groups[index].files[state.selected])) && remaining.length) state.selected = remaining[0].fileIndex;
+        if (remaining.length <= 1) state.resolved = true;
+      });
+    }
+    function updateSummary() {
+      const count = states.filter(state => state.included && !state.resolved).length;
+      const button = overlay.querySelector('[data-dup-resolve-all]');
+      button.textContent = `選択した${count.toLocaleString('ja-JP')}グループをまとめて整理`;
+      button.disabled = view.busy || count === 0;
+      button.hidden = groups.length < 2;
+      const pending = visible.filter(index => !states[index].resolved);
+      const toggle = tools.querySelector('[data-dup-page-include]');
+      toggle.checked = pending.length > 0 && pending.every(index => states[index].included);
+      toggle.indeterminate = !toggle.checked && pending.some(index => states[index].included);
+      toggle.disabled = view.busy || !pending.length;
+      tools.querySelector('[data-dup-selection]').disabled = view.busy;
+      if (!view.busy && states.some(state => state.resolved || state.failed)) {
+        const resolved = states.filter(state => state.resolved).length;
+        overlay.querySelector('[data-dup-status]').textContent = `整理済み ${resolved.toLocaleString('ja-JP')} / ${groups.length.toLocaleString('ja-JP')}グループ`
+          + (states.some(state => state.failed && !state.resolved) ? '（失敗したファイルは再試行できます）' : '');
+      }
+    }
+    function render() {
+      const query = tools.querySelector('[data-dup-search]').value.trim().toLocaleLowerCase();
+      const type = tools.querySelector('[data-dup-type]').value;
+      const status = tools.querySelector('[data-dup-state]').value;
+      filtered = groups.map((_, index) => index).filter(index => (!query || searchText[index].includes(query))
+        && (!type || groups[index].type === type)
+        && (!status || states[index].resolved === (status === 'resolved')));
+      page = Math.max(0, Math.min(page, Math.ceil(filtered.length / PAGE_SIZE) - 1));
+      visible = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+      results.innerHTML = visible.map(index => groupHtml(groups[index], index, automatic,
+        { ...states[index], limit: FILE_PAGE_SIZE })).join('')
+        || '<div class="gb-empty-placeholder">条件に合う重複グループはありません</div>';
+      for (const index of visible) {
+        const state = states[index];
+        const element = results.querySelector(`.dup-group[data-group="${index}"]`);
+        element.classList.toggle('dup-group-resolved', state.resolved);
+        const button = element.querySelector('[data-dup-resolve]');
+        button.disabled = view.busy || state.resolved;
+        if (state.resolved) button.textContent = '整理済み';
+        else if (state.failed) button.textContent = '失敗したファイルを再試行';
+        element.querySelector('[data-dup-include]').disabled = view.busy || state.resolved;
+        element.querySelectorAll('[data-dup-item]').forEach(item => {
+          const disabled = view.busy || state.resolved || state.removed.has(filePath(groups[index].files[Number(item.dataset.index)]));
+          item.setAttribute('aria-disabled', String(disabled));
+          item.querySelector('[data-dup-radio]').disabled = disabled;
+        });
+      }
+      tools.querySelector('[data-dup-page-summary]').textContent = filtered.length
+        ? `${(page * PAGE_SIZE + 1).toLocaleString('ja-JP')}–${Math.min((page + 1) * PAGE_SIZE, filtered.length).toLocaleString('ja-JP')} / ${filtered.length.toLocaleString('ja-JP')}グループ`
+        : '0グループ';
+      tools.querySelector('[data-dup-page="-1"]').disabled = page === 0;
+      tools.querySelector('[data-dup-page="1"]').disabled = (page + 1) * PAGE_SIZE >= filtered.length;
+      updateSummary();
+      onRender();
+    }
+    tools.addEventListener('input', event => {
+      if (event.target.matches('[data-dup-search]')) { page = 0; render(); }
+    });
+    tools.addEventListener('change', event => {
+      if (event.target.matches('[data-dup-compact]')) overlay.classList.toggle('dup-results-compact', event.target.checked);
+      if (event.target.matches('[data-dup-type],[data-dup-state]')) { page = 0; render(); }
+      if (event.target.matches('[data-dup-selection]') && !view.busy) {
+        const action = event.target.value;
+        const targets = action.startsWith('all-') ? states.map((_, index) => index) : filtered;
+        if (action) targets.filter(index => !states[index].resolved).forEach(index => { states[index].included = action.endsWith('-on'); });
+        event.target.value = '';
+        render();
+      }
+      if (event.target.matches('[data-dup-page-include]') && !view.busy) {
+        visible.filter(index => !states[index].resolved).forEach(index => { states[index].included = event.target.checked; });
+        render();
+      }
+    });
+    overlay.addEventListener('click', event => {
+      const pager = event.target.closest('[data-dup-page]');
+      const files = event.target.closest('[data-dup-files]');
+      if (pager) { page += Number(pager.dataset.dupPage); render(); }
+      if (files) { states[Number(files.dataset.group)].offset += Number(files.dataset.dupFiles) * FILE_PAGE_SIZE; render(); }
+    });
+    overlay.addEventListener('change', event => {
+      if (event.target.matches('[data-dup-include]') && !view.busy) {
+        states[Number(event.target.dataset.group)].included = event.target.checked;
+        updateSummary();
+      }
+    });
+    render();
+    return view;
   }
 
   global.MeldexDuplicateFormat = {
@@ -238220,6 +243527,8 @@ _bindClipSearchResultDelegation();
     itemVisual,
     itemHtml,
     groupHtml,
+    consolidateGroups,
+    createResultView,
   };
 })(window);
 
@@ -238234,6 +243543,9 @@ _bindClipSearchResultDelegation();
   const ALERT_POLL_MS = 2500;
   const alertQueue = [];
   const queuedAlertIds = new Set();
+  let alertsReady = false;
+  let alertIdleSnapshot = '';
+  let alertPollInFlight = false;
   let activeAlertModal = null;
   let alertPollTimer = null;
   let monitorStarted = false;
@@ -238245,7 +243557,7 @@ _bindClipSearchResultDelegation();
   const {
     safeText, filePath, fileName, fileLocation, pathParts, displayPath,
     targetHtml, isImage, isExisting, modifiedText, normalizeType, normalizeGroup,
-    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml,
+    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml, consolidateGroups, createResultView,
   } = window.MeldexDuplicateFormat;
 
   function createOverlay(options) {
@@ -238265,6 +243577,7 @@ _bindClipSearchResultDelegation();
       </div>
       <div class="dup-progress-current" data-dup-progress-current hidden></div>
     </div>
+    <div class="dup-result-tools" data-dup-result-tools hidden></div>
     <div class="dup-results" data-dup-results></div>`;
 
     const footer = document.createElement('div');
@@ -238386,16 +243699,19 @@ _bindClipSearchResultDelegation();
     const duplicateCount = Number(payload?.total_duplicates)
       || groups.reduce((total, group) => total + Math.max(0, group.files.length - 1), 0);
     if (status) status.textContent = `${groups.length}グループ / ${duplicateCount}件の重複を検出`;
-    if (results) results.innerHTML = groups.map((group, index) => groupHtml(group, index, automatic)).join('');
     if (keepAll) keepAll.hidden = false;
     if (resolveAll) resolveAll.hidden = groups.length < 2;
-    bindResultActions(overlay);
+    overlay._dupView = createResultView(overlay, groups, automatic, () => bindResultActions(overlay));
     return groups;
   }
 
   function chooseItem(item) {
     const group = item?.closest('.dup-group');
-    if (!group) return;
+    if (!group || item.getAttribute('aria-disabled') === 'true') return;
+    const overlay = item.closest('.dup-monitor-overlay');
+    const state = overlay._dupView.states[Number(item.dataset.group)];
+    state.selected = Number(item.dataset.index);
+    group.querySelector('.dup-group-choice').textContent = '残すファイル: ' + fileName(overlay._dupGroups[Number(item.dataset.group)].files[state.selected]);
     group.querySelectorAll('[data-dup-item]').forEach(candidate => {
       const selected = candidate === item;
       candidate.classList.toggle('dup-item-selected', selected);
@@ -238415,9 +243731,8 @@ _bindClipSearchResultDelegation();
   }
 
   function bindResultActions(overlay) {
-    if (overlay.dataset.dupResultsBound === '1') return;
-    overlay.dataset.dupResultsBound = '1';
-    overlay.querySelectorAll('[data-dup-image]').forEach(image => {
+    overlay.querySelectorAll('[data-dup-image]:not([data-dup-image-bound])').forEach(image => {
+      image.dataset.dupImageBound = '1';
       image.addEventListener('error', () => {
         image.alt = '画像を表示できません';
         image.hidden = true;
@@ -238429,6 +243744,11 @@ _bindClipSearchResultDelegation();
         thumb.appendChild(message);
       }, { once: true });
       window.MeldexImageLoading?.track?.(image, { host: image.closest('.dup-item-thumb'), errorMode: 'silent' });
+    });
+    if (overlay.dataset.dupResultsBound === '1') return;
+    overlay.dataset.dupResultsBound = '1';
+    overlay.addEventListener('change', event => {
+      if (event.target.matches('[data-dup-radio]')) chooseItem(event.target.closest('[data-dup-item]'));
     });
     overlay.addEventListener('click', event => {
       const radio = event.target.closest?.('[data-dup-radio]');
@@ -238454,23 +243774,37 @@ _bindClipSearchResultDelegation();
     });
   }
 
+  async function confirmResolution(overlay, message) {
+    overlay._dupView.busy = true;
+    overlay._dupView.render();
+    try {
+      if (await cfConfirm(message)) return true;
+    } catch (error) {
+      showStatus('整理の確認画面を開けませんでした: ' + userError(error), true);
+    }
+    overlay._dupView.busy = false;
+    overlay._dupView.render();
+    return false;
+  }
+
   async function resolveGroup(overlay, groupIndex, button) {
     const group = overlay._dupGroups?.[groupIndex];
+    if (overlay._dupView.busy) return;
+    const state = overlay._dupView.states[groupIndex];
     const groupElement = overlay.querySelector(`.dup-group[data-group="${groupIndex}"]`);
     const radio = groupElement?.querySelector(`input[name="dup-keep-${groupIndex}"]:checked`);
-    if (!group || !radio) {
+    if (!group || !state || state.resolved) {
       showStatus('残すファイルを選択してください', true);
       return;
     }
-    const keepIndex = Number(radio.value);
+    const keepIndex = state.selected;
     const keepFile = group.files[keepIndex];
-    const replaceFiles = group.files.filter((_, index) => index !== keepIndex);
-    const confirmed = await cfConfirm(
+    const replaceFiles = group.files.filter((file, index) => index !== keepIndex && !state.removed.has(filePath(file)));
+    const confirmed = await confirmResolution(overlay,
       `「${fileName(keepFile)}」を残し、ほかの${replaceFiles.length}件をゴミ箱へ移動しますか？\n\n` +
       '自動では削除されません。この操作を確定した場合だけ整理します。'
     );
     if (!confirmed) return;
-    button.disabled = true;
     try {
       const res = await runBackgroundJob('/duplicate-resolve', {
         background: true,
@@ -238481,8 +243815,11 @@ _bindClipSearchResultDelegation();
       });
       const results = Array.isArray(res?.results) ? res.results : [];
       const succeeded = results.filter(result => result.status === 'replaced').length;
-      const failed = results.filter(result => result.status !== 'replaced').length;
+      const failed = replaceFiles.length - succeeded;
+      overlay._dupView.recordRemoved(results);
+      state.failed = failed > 0;
       if (failed === 0 && succeeded === replaceFiles.length) {
+        state.resolved = true;
         groupElement.classList.add('dup-group-resolved');
         button.innerHTML = lucide('check', 12) + ' 解決済み';
         showStatus(`${succeeded}件を整理しました`);
@@ -238493,40 +243830,50 @@ _bindClipSearchResultDelegation();
       }
       await refreshFolder(overlay.dataset.folderPath || '');
     } catch (error) {
+      state.failed = true;
       button.disabled = false;
       button.textContent = '失敗したため再試行';
       showStatus('重複ファイルを整理できませんでした: ' + userError(error), true);
+    } finally {
+      overlay._dupView.busy = false;
+      overlay._dupView.render();
     }
   }
 
   async function resolveAllGroups(overlay, button) {
+    if (overlay._dupView.busy) return;
     const plans = [];
     (overlay._dupGroups || []).forEach((group, groupIndex) => {
+      const state = overlay._dupView.states[groupIndex];
       const groupElement = overlay.querySelector(`.dup-group[data-group="${groupIndex}"]`);
-      if (!groupElement || groupElement.classList.contains('dup-group-resolved')) return;
-      const radio = groupElement.querySelector(`input[name="dup-keep-${groupIndex}"]:checked`);
-      if (!radio) return;
-      const keepIndex = Number(radio.value);
+      if (state.resolved || !state.included) return;
+      const keepIndex = state.selected;
       const keepFile = group.files[keepIndex];
-      const replaceFiles = group.files.filter((_, index) => index !== keepIndex);
-      if (keepFile && replaceFiles.length) plans.push({ group, groupIndex, groupElement, keepFile, replaceFiles });
+      const replaceFiles = group.files.filter((file, index) => index !== keepIndex && !state.removed.has(filePath(file)));
+      if (keepFile && replaceFiles.length) plans.push({ group, groupIndex, groupElement, keepFile, replaceFiles, state });
     });
     if (!plans.length) {
       showStatus('整理する重複グループがありません');
       return;
     }
-    const deleteCount = plans.reduce((total, plan) => total + plan.replaceFiles.length, 0);
-    const confirmed = await cfConfirm(
+    const keepPaths = new Set(plans.map(plan => filePath(plan.keepFile)));
+    if (plans.some(plan => plan.replaceFiles.some(file => keepPaths.has(filePath(file))))) {
+      showStatus('別のグループで残すファイルが整理対象に含まれています。選択を見直すか、グループごとに整理してください。', true);
+      return;
+    }
+    const deleteCount = new Set(plans.flatMap(plan => plan.replaceFiles.map(filePath))).size;
+    const confirmed = await confirmResolution(overlay,
       `${plans.length}グループで選択したファイルを残し、重複${deleteCount}件をゴミ箱へ移動しますか？\n\n`
       + '各グループの選択をまとめて実行します。自動では削除されません。'
     );
     if (!confirmed) return;
-    button.disabled = true;
     let succeeded = 0;
     let failed = 0;
     try {
       for (const plan of plans) {
-        const groupButton = plan.groupElement.querySelector('[data-dup-resolve]');
+        plan.replaceFiles = plan.replaceFiles.filter(file => !plan.state.removed.has(filePath(file)));
+        if (!plan.replaceFiles.length) continue;
+        const groupButton = plan.groupElement?.querySelector('[data-dup-resolve]');
         if (groupButton) groupButton.disabled = true;
         try {
           const res = await runBackgroundJob('/duplicate-resolve', {
@@ -238538,28 +243885,34 @@ _bindClipSearchResultDelegation();
           });
           const results = Array.isArray(res?.results) ? res.results : [];
           const groupSucceeded = results.filter(result => result.status === 'replaced').length;
-          const groupFailed = results.filter(result => result.status !== 'replaced').length;
+          const groupFailed = plan.replaceFiles.length - groupSucceeded;
+          overlay._dupView.recordRemoved(results);
+          plan.state.failed = groupFailed > 0;
           succeeded += groupSucceeded;
           failed += groupFailed;
           if (groupFailed === 0 && groupSucceeded === plan.replaceFiles.length) {
-            plan.groupElement.classList.add('dup-group-resolved');
+            plan.state.resolved = true;
             if (groupButton) groupButton.innerHTML = lucide('check', 12) + ' 解決済み';
           } else if (groupButton) {
             groupButton.disabled = false;
             groupButton.textContent = '失敗したため再試行';
           }
         } catch (_) {
+          plan.state.failed = true;
           failed += plan.replaceFiles.length;
           if (groupButton) {
             groupButton.disabled = false;
             groupButton.textContent = '失敗したため再試行';
           }
         }
+        const status = overlay.querySelector('[data-dup-status]');
+        if (status) status.textContent = `${plans.indexOf(plan) + 1} / ${plans.length}グループを整理中`;
       }
       showStatus(`${succeeded}件を整理${failed ? ` / ${failed}件は整理できませんでした` : 'しました'}`, failed > 0);
       await refreshFolder(overlay.dataset.folderPath || '');
     } finally {
-      button.disabled = false;
+      overlay._dupView.busy = false;
+      overlay._dupView.render();
     }
   }
 
@@ -238594,7 +243947,7 @@ _bindClipSearchResultDelegation();
       return true;
     };
     const close = reason => overlay._dupModalApi?.close(reason || 'button');
-    overlay._dupOnBeforeClose = () => !requestCancellation();
+    overlay._dupOnBeforeClose = () => !overlay._dupView?.busy && !requestCancellation();
     overlay._dupOnClose = () => {
       if (!overlay._dupCloseHandled) {
         overlay._dupCloseHandled = true;
@@ -238687,11 +244040,18 @@ _bindClipSearchResultDelegation();
     const fresh = [];
     (Array.isArray(alerts) ? alerts : []).forEach((alert, index) => {
       const id = alertIdentity(alert, index);
-      if (queuedAlertIds.has(id)) return;
-      queuedAlertIds.add(id);
-      fresh.push({ ...alert, _alertId: id });
+      const key = id + ':' + safeText(alert?.last_seen ?? JSON.stringify(alert?.groups || alert));
+      if (queuedAlertIds.has(key)) return;
+      const pendingIndex = alertQueue.findIndex(candidate => candidate._alertId === id);
+      if (pendingIndex >= 0) {
+        queuedAlertIds.delete(alertQueue[pendingIndex]._alertKey);
+        alertQueue[pendingIndex] = { ...alert, _alertId: id, _alertKey: key };
+      } else {
+        fresh.push({ ...alert, _alertId: id, _alertKey: key });
+      }
+      queuedAlertIds.add(key);
     });
-    if (fresh.length) alertQueue.push(fresh);
+    fresh.forEach(alert => alertQueue.push(alert));
     drainAlertQueue();
   }
 
@@ -238700,28 +244060,29 @@ _bindClipSearchResultDelegation();
   }
 
   async function acknowledgeAlerts(alerts) {
-    const ids = alerts.map(alert => alert._alertId).filter(id => !id.startsWith('anonymous-'));
-    if (!ids.length) return;
-    await Promise.allSettled(ids.map(id => (
-      apiPost('/duplicate-alerts/' + encodeURIComponent(id) + '/ack', {}, { silentError: true })
-    )));
+    const identified = alerts.filter(alert => !alert._alertId.startsWith('anonymous-'));
+    for (let offset = 0; offset < identified.length; offset += 20) {
+      await Promise.allSettled(identified.slice(offset, offset + 20).map(alert => (
+        apiPost('/duplicate-alerts/' + encodeURIComponent(alert._alertId) + '/ack',
+          { last_seen: alert.last_seen }, { silentError: true })
+      )));
+    }
   }
 
   function drainAlertQueue() {
-    if (activeAlertModal || !alertQueue.length || hasBlockingModal()) return;
-    const alerts = alertQueue.shift();
+    if (!alertsReady || !isLocalDuplicateMode() || activeAlertModal || !alertQueue.length || hasBlockingModal()) return;
+    const alerts = alertQueue.splice(0);
     const payload = {
-      groups: alerts.flatMap(alert => normalizeGroups(alert)),
-      total_duplicates: alerts.reduce((total, alert) => total + (Number(alert?.total_duplicates) || 0), 0),
+      groups: consolidateGroups(alerts.flatMap(alert => normalizeGroups(alert))),
     };
     if (!payload.groups.length) {
-      alerts.forEach(alert => queuedAlertIds.delete(alert._alertId));
+      alerts.forEach(alert => queuedAlertIds.delete(alert._alertKey));
       return;
     }
     const overlay = createOverlay({
       titleId: 'duplicate-alert-title',
       e2eId: 'duplicate-alert-modal',
-      title: alerts.length > 1 ? `保存後に見つかった重複（${alerts.length}件）` : '保存後に重複が見つかりました',
+      title: '重複チェックが完了しました',
       status: '既存ファイルを選択しています。必要な場合だけ整理してください。',
     });
     activeAlertModal = overlay;
@@ -238738,11 +244099,30 @@ _bindClipSearchResultDelegation();
       stopMonitorForTests();
       return;
     }
+    if (alertPollInFlight || activeAlertModal) return;
+    alertPollInFlight = true;
     try {
-      const payload = await apiFetch('/duplicate-alerts', { silentError: true });
-      enqueueAlerts(Array.isArray(payload) ? payload : payload?.alerts);
+      alertsReady = false;
+      const alerts = [];
+      let cursor = null;
+      do {
+        const payload = await apiFetch('/duplicate-alerts' + (cursor ? '?before_id=' + cursor : ''), { silentError: true });
+        if (!isLocalDuplicateMode() || payload?.processing) { alertIdleSnapshot = ''; return; }
+        alerts.push(...(Array.isArray(payload) ? payload : payload?.alerts || []));
+        const next = Number(payload?.next_before_id) || null;
+        if (next && cursor && next >= cursor) throw new Error('Invalid duplicate alert cursor');
+        cursor = next;
+      } while (cursor);
+      // 連続する保存や次の照合の開始も吸収するため、同じ完了結果を次のpollで確認する。
+      const snapshot = JSON.stringify(alerts);
+      alertsReady = snapshot === alertIdleSnapshot;
+      alertIdleSnapshot = snapshot;
+      if (alertsReady) enqueueAlerts(alerts);
     } catch (_) {
+      alertIdleSnapshot = '';
       // 起動直後や一時的なオフラインでは次のpollで回復させる。
+    } finally {
+      alertPollInFlight = false;
     }
   }
 
@@ -239487,7 +244867,7 @@ const GBPaneBridge = (() => {
 
   // ToolComponentで描画するタイプ（レガシーコンテナを使わない、独自DOM生成）
   const COMPONENT_TYPES = new Set([
-    'calendar', 'search', 'scriptnote', 'form-app', 'version', 'board', 'system-sheet',
+    'calendar', 'search', 'scriptnote', 'form-app', 'map', 'version', 'board', 'system-sheet',
     'information', 'backlinks', 'file-theme', 'preview',
   ]);
 
@@ -239533,6 +244913,7 @@ const GBPaneBridge = (() => {
     graph: 'シート',
     form: 'シート',
     board: 'ボード',
+    map: 'マップ',
     folder: 'フォルダ',
     entity: 'エントリ',
     media: 'メディア',
@@ -241445,6 +246826,7 @@ const GBPaneBridge = (() => {
     };
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
+    if (tabType === 'map') return tabPath('mapPath');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
@@ -242653,7 +248035,7 @@ const GBPaneBridge = (() => {
       const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
+        board: 'ボード', map: 'マップ', 'form-app': 'フォーム', calendar: 'スケジュール',
         folder: 'フォルダ', outliner: 'フォルダツリー',
         search: '検索', preview: 'ビューワー',
       };
@@ -242684,12 +248066,12 @@ const GBPaneBridge = (() => {
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
+      board: 'ボード', map: 'マップ', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
       chat: 'チャット', history: 'ヒストリー', annotation: 'アノテート',
     };
-    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'form-app']);
+    const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'form-app', 'map']);
     // API の type 値 → タブの type 値（同名なら省略）
     // ここに無いタイプは toolType がそのままタブ type になる
     const _PANEL_FILE_OPEN_TYPES = {
@@ -242705,6 +248087,7 @@ const GBPaneBridge = (() => {
       if (toolType === 'scriptnote') state.scenarioPath = path;
       if (toolType === 'board') state.boardPath = path;
       if (toolType === 'form-app') state.formPath = path;
+      if (toolType === 'map') state.mapPath = path;
       if (toolType === 'database') state.dbPath = path;
       return state;
     }
@@ -242749,6 +248132,9 @@ const GBPaneBridge = (() => {
       }, 0));
     }
     async function _createPanelFileTab(toolType, paneId) {
+      if (toolType === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) {
+        showStatus('マップ初期版はデスクトップ版本体で開いてください。', true); return null;
+      }
       if (!_isPanelFileCreateType(toolType)) {
         if (typeof showStatus === 'function') showStatus('未対応のファイル種別です: ' + toolType, true);
         return null;
@@ -242792,7 +248178,7 @@ const GBPaneBridge = (() => {
         return null;
       }
     }
-    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'calendar', 'preview']);
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'form-app', 'map', 'calendar', 'preview']);
     function _isMainPanelPane(paneId) {
       const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));
@@ -243010,7 +248396,7 @@ const GBPaneBridge = (() => {
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール', preview: 'ビューワー',
+          board: 'ボード', map: 'マップ', 'form-app': 'フォーム', calendar: 'スケジュール', preview: 'ビューワー',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
           annotation: 'アノテート', detail: 'オプション',
         };
@@ -243028,7 +248414,7 @@ const GBPaneBridge = (() => {
     function _showEmptyToolView(toolType) {
       const labels = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', 'form-app': 'フォーム', calendar: 'スケジュール',
+      board: 'ボード', map: 'マップ', 'form-app': 'フォーム', calendar: 'スケジュール',
       folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
@@ -243526,6 +248912,7 @@ const GBPaneBridge = (() => {
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
       ['フォーム', 'clipboardList', () => openToolTab('form-app')],
+      ['マップ', 'map', () => openToolTab('map')],
       ['スケジュール', 'calendar', () => openToolTab('calendar')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],
@@ -244508,7 +249895,7 @@ const GBSubPanel = (() => {
       window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
       return true;
     }
-    root.textContent = 'エントリを表示できません';
+    root.textContent = 'トピックを表示できません';
     return false;
   }
 
@@ -245063,6 +250450,51 @@ const GBSubPanel = (() => {
     return _current ? { ..._current } : null;
   }
 
+  function onPathRename(oldPath, newPath, options = {}) {
+    if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
+    const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
+    const viewerState = frame ? _captureViewerFrameState(frame) : null;
+    const updateViewerUrl = value => {
+      if (!value) return value;
+      try {
+        const url = new URL(value, location.href);
+        let changed = false;
+        ['file', 'pdf', 'path'].forEach(key => {
+          if (!url.searchParams.has(key)) return;
+          const path = url.searchParams.get(key);
+          const next = _mapRenamedPath(path, oldPath, newPath);
+          if (next !== path) { url.searchParams.set(key, next); changed = true; }
+        });
+        return changed ? url.href : value;
+      } catch { return value; }
+    };
+    const update = entry => {
+      if (!entry) return;
+      const exact = entry.path === oldPath;
+      _updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (entry.state) _updatePathRefs(entry.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (entry.state?.viewerUrl) entry.state.viewerUrl = updateViewerUrl(entry.state.viewerUrl);
+      if (exact && options.label != null) entry.label = options.label;
+    };
+    [_current, ..._navHistory, ...(_pane?.tabs || [])].forEach(update);
+    _sheetEmbed?.onPathRename?.(oldPath, newPath)?.catch?.(error => {
+      if (typeof showStatus === 'function') showStatus('移動後のシートを確認できませんでした: ' + error.message, true);
+    });
+    _contentEl?.querySelectorAll('[data-path],[data-db-path],[data-entity-path]').forEach(el => {
+      ['path', 'dbPath', 'entityPath'].forEach(key => {
+        if (el.dataset[key]) el.dataset[key] = _mapRenamedPath(el.dataset[key], oldPath, newPath);
+      });
+    });
+    if (frame) {
+      const url = updateViewerUrl(frame.src);
+      if (url !== frame.src) {
+        frame.addEventListener('load', () => _restoreViewerFrameState(frame, viewerState), { once: true });
+        frame.src = url;
+      }
+    }
+    if (_current) _updateHeader(_current);
+  }
+
   return {
     open,
     close: closeContent,
@@ -245072,6 +250504,7 @@ const GBSubPanel = (() => {
     createRootElement,
     isOpen,
     getCurrentTarget,
+    onPathRename,
   };
 })();
 
@@ -246762,7 +252195,7 @@ const RECENT_KEY = 'meldex-recent';
 function _railAppType(type) {
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'database'].includes(type)) return 'database';
   if (type === 'scenario') return 'scriptnote';
-  return ['page', 'scriptnote', 'board', 'form-app'].includes(type) ? type : '';
+  return ['page', 'scriptnote', 'board', 'form-app', 'map'].includes(type) ? type : '';
 }
 
 function rememberRailAppFile(entry) {
@@ -247169,7 +252602,9 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
-      component.onPathRename?.(oldPath, newPath, options);
+      // A detached view must not interrupt rebinding the other open editors.
+      try { component.onPathRename?.(oldPath, newPath, options); }
+      catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
     });
   }
 
@@ -247177,6 +252612,8 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     state[key] = _mapRenamedPath(state[key], oldPath, newPath);
   });
   _renameRuntimePathReferences(oldPath, newPath, exactLabel);
+  try { window.GBSubPanel?.onPathRename?.(oldPath, newPath, options); }
+  catch (error) { console.warn('[Meldex] 移動後のサブパネル更新に失敗しました', error); }
 
   if (options.titleOnly && options.etag && exactLabel != null) {
     const coordinator = window.MeldexDocumentSaveCoordinator;
@@ -247243,7 +252680,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
     } else if (typeof GBLayout.render === 'function') GBLayout.render();
     if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
   }
-  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
+  if (!options.skipDbReload) _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
 }
 
 function purgeAppPathReferences(paths) {
@@ -247614,6 +253051,7 @@ function navOpen(entry, opts) {
   if (entry.type === 'page') return openPage(entry.label, entry.path, o);
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
   if (entry.type === 'form-app') return openFormApp(entry.path, entry.label, o);
+  if (entry.type === 'map') return openMapApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
   if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
@@ -248056,7 +253494,7 @@ function _applyNavEntryToBoundTab(navState, entry) {
     }
     return true;
   };
-  const formFileChanged = nextType === 'form-app' && tab.path !== (entry.path || entry.dbPath || '');
+  const formFileChanged = ['form-app', 'map'].includes(nextType) && tab.path !== (entry.path || entry.dbPath || '');
   if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
     const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
     if (component && typeof removeComponentInstanceSafely === 'function') {
@@ -248448,10 +253886,29 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 // 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
-function _gbAppApiFetchDefaultTimeout(path) {
+const GB_APP_API_FETCH_FILE_OPERATIONS = new Set([
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/trash/restore', '/trash/delete', '/trash/empty',
+  '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
+  '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
+  '/version/save-folder', '/version/restore-folder', '/version/save-sqlite-db', '/version/restore-sqlite-db',
+  '/sheet-archive/archive', '/sheet-archive/restore', '/data-protection/db-backup', '/data-protection/export-backup',
+]);
+const GB_APP_API_FETCH_STORAGE_WRITES = [
+  '/value', '/db-metadata', '/entity', '/annotations', '/cal', '/calendar-db',
+  '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
+  '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
+];
+function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
+  // ファイル操作は実体の変更後にもDB・参照・タグを更新する。通常の15秒で応答を捨てない。
+  if (GB_APP_API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 監査したSQLite・共有設定の書込経路は、30秒のロック待ちと付随更新を待つ。
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+      && GB_APP_API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
   if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
@@ -248564,7 +254021,7 @@ function _gbAppApiFetchIsAbortError(e) {
 
 // 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
 // タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
-async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
+async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs, consumeResponse) {
   const controller = new AbortController();
   const externalSignal = requestOpts?.signal || null;
   const fetchOpts = { ...(requestOpts || {}) };
@@ -248583,7 +254040,8 @@ async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
   }
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    return await fetch(url, { ...fetchOpts, signal: controller.signal });
+    const response = await fetch(url, { ...fetchOpts, signal: controller.signal });
+    return consumeResponse ? await consumeResponse(response) : response;
   } catch (e) {
     if (_gbAppApiFetchIsAbortError(e) && timedOut) {
       const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
@@ -248668,42 +254126,45 @@ async function apiFetch(path, opts) {
         const requestedTimeout = Number(requestOpts?.timeoutMs);
         const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
           ? Math.min(requestedTimeout, GB_APP_API_FETCH_MAX_TIMEOUT_MS)
-          : _gbAppApiFetchDefaultTimeout(path);
-        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
-            ...perfInfo,
-            status: res.status,
-            contentLength: res.headers?.get?.('content-length') || '',
-            retriedAfterMutation,
-          });
-        }
-        const backendPerf = _apiFetchBackendPerf(res);
-        if (!res.ok) {
-          let detail = res.statusText || '';
-          let payload = null;
-          try {
-            payload = await res.clone().json();
-            const rawDetail = payload?.error || payload?.detail || detail;
-            detail = rawDetail && typeof rawDetail === 'object'
-              ? (rawDetail.message || rawDetail.code || detail)
-              : rawDetail;
-          } catch {}
-          const error = new Error(`HTTP ${res.status}: ${detail}`);
-          error.status = res.status;
-          error.payload = payload;
-          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-        }
-        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-        const data = await res.json();
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
-            ...perfInfo,
-            backendPerf,
-            retriedAfterMutation,
-          });
-        }
+          : _gbAppApiFetchDefaultTimeout(path, requestOpts);
+        // 本文の読込が止まった場合も、ヘッダー待ちと同じタイムアウト・キャンセルを適用する。
+        const { data, backendPerf } = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs, async res => {
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+              ...perfInfo,
+              status: res.status,
+              contentLength: res.headers?.get?.('content-length') || '',
+              retriedAfterMutation,
+            });
+          }
+          const backendPerf = _apiFetchBackendPerf(res);
+          if (!res.ok) {
+            let detail = res.statusText || '';
+            let payload = null;
+            try {
+              payload = await res.clone().json();
+              const rawDetail = payload?.error || payload?.detail || detail;
+              detail = rawDetail && typeof rawDetail === 'object'
+                ? (rawDetail.message || rawDetail.code || detail)
+                : rawDetail;
+            } catch (error) { if (_gbAppApiFetchIsAbortError(error)) throw error; }
+            const error = new Error(`HTTP ${res.status}: ${detail}`);
+            error.status = res.status;
+            error.payload = payload;
+            error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+            throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+          }
+          const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+          const data = await res.json();
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+              ...perfInfo,
+              backendPerf,
+              retriedAfterMutation,
+            });
+          }
+          return { data, backendPerf };
+        });
         // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
         // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
         if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
@@ -248719,7 +254180,7 @@ async function apiFetch(path, opts) {
             });
           } catch {}
         }
-        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts);
+        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts, data);
         if (method !== 'GET') {
           _gbAppApiFetchInvalidateReadCaches();
         } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
@@ -249488,6 +254949,7 @@ async function init() {
         if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
         else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
+        else if (openType === 'map') { restored = (await openMapApp(openPath, openLabel, _urlOpenOpts)) !== false; }
         else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
         else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
         else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
@@ -249552,6 +255014,7 @@ async function init() {
           else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
           else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
+          else if (last.type === 'map' && last.path) { restored = (await openMapApp(last.path, last.label || '', _expOpts)) !== false; }
           else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
           else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
           else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
@@ -250811,6 +256274,9 @@ window.addEventListener('message', (e) => {
   // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
   const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
   if (msg.type === 'viewer-current-file-changed') {
+    // A hidden Viewer can finish loading after navigation back to a Sheet.
+    // Its late notification must not replace the current option/file target.
+    if (!sourceIframe.getClientRects().length) return;
     if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
     return;
   }
@@ -251770,6 +257236,8 @@ function trackIframeLoading(iframe, msg, opts) {
 
 // サーバーへの定期ハートビート（exe版: ブラウザ閉じたらサーバー自動終了用）
 let _heartbeatTimer = null;
+let _heartbeatInFlight = null;
+let _webclipDirectoryRevision = null;
 
 function _isHeartbeatCloudMode() {
   return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
@@ -251778,7 +257246,34 @@ function _isHeartbeatCloudMode() {
 }
 
 function _sendHeartbeat() {
-  fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
+  if (_heartbeatInFlight) return _heartbeatInFlight;
+  _heartbeatInFlight = fetch('/api/heartbeat', { method: 'POST' })
+    .then(response => response.ok ? response.json() : null)
+    .then(async data => {
+      const revision = data?.webclip_directory_revision;
+      if (typeof revision !== 'string') return;
+      if (_webclipDirectoryRevision === null) { _webclipDirectoryRevision = revision; return; }
+      if (_webclipDirectoryRevision === revision) return;
+      const isCurrent = () => {
+        const active = typeof document === 'undefined' ? null : document.activeElement;
+        const input = active?.closest?.('input, textarea, [contenteditable="true"]');
+        const controls = ['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'hidden', 'image'];
+        return !(active?.isContentEditable || input && !controls.includes(input.type));
+      };
+      // Recheck after asynchronous tree refresh, too: editing can start meanwhile.
+      if (!isCurrent()) return;
+      let result;
+      if (typeof window.refreshFolderAfterExternalChange === 'function') {
+        result = await window.refreshFolderAfterExternalChange({ isCurrent });
+      } else if (typeof refreshOutliner === 'function') {
+        result = await refreshOutliner({ force: true, coalesce: true, reason: 'webclip-directory-change' });
+      } else return;
+      if (result === false || Array.isArray(result) && result.some(row => row?.status === 'rejected')) return;
+      _webclipDirectoryRevision = revision;
+    })
+    .catch(() => {})
+    .finally(() => { _heartbeatInFlight = null; });
+  return _heartbeatInFlight;
 }
 
 function _startHeartbeat() {
@@ -252513,7 +258008,7 @@ ${bodyHtml}
       }
       case 'entity': {
         const title = document.getElementById('entity-title')?.textContent?.trim();
-        return title || state?.currentEntityPath?.split(/[\\/]/).pop()?.replace(/\.\w+$/, '') || 'エントリ';
+        return title || state?.currentEntityPath?.split(/[\\/]/).pop()?.replace(/\.\w+$/, '') || 'トピック';
       }
       case 'database':
         return state?.currentDbPath?.split('/').pop() || 'シート';
@@ -252528,9 +258023,9 @@ ${bodyHtml}
       case 'entity-layout': {
         const canvasEl = _findVisibleEntityLayoutCanvas();
         const grid = canvasEl?.closest('.entity-props-grid-container');
-        const layoutName = grid?.querySelector('.el-tab.active .el-tab-label')?.textContent?.trim() || 'エントリレイアウト';
+        const layoutName = grid?.querySelector('.el-tab.active .el-tab-label')?.textContent?.trim() || 'トピックレイアウト';
         const entityName = _entityLayoutEntityName(canvasEl);
-        return entityName && entityName !== 'エントリ' ? entityName + ' - ' + layoutName : layoutName;
+        return entityName && entityName !== 'トピック' ? entityName + ' - ' + layoutName : layoutName;
       }
       default:
         return '無題';
@@ -252605,7 +258100,7 @@ ${bodyHtml}
   async function _exportEntityLayout() {
     const opts = entityLayoutExportOptions();
     if (!opts) {
-      showStatus('エントリレイアウトが表示されていません', true);
+      showStatus('トピックレイアウトが表示されていません', true);
       return null;
     }
     return exportToHtml(opts.canvasEl, opts.htmlOptions);
@@ -253060,7 +258555,7 @@ const MeldexExportImage = (() => {
       csv: () => (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV',
       calendar: () => 'カレンダー',
       'entity-layout': () => (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
-        ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'エントリレイアウト')
+        ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'トピックレイアウト')
         : 'エントリレイアウト',
     };
 
@@ -253405,8 +258900,16 @@ function _resolveToolMenuButton(event) {
 
 function showToolMenu(e, toolType, component) {
   e.stopPropagation();
+  if (component === e) component = null; // gb-events appends the event after explicit arguments.
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
+  if (!component && typeof getComponentInstance === 'function' && typeof GBTabs !== 'undefined') {
+    const subpanel = btn?.closest('#gb-subpanel-root') && window.GBSubPanel?.getCurrentTarget?.();
+    const paneId = btn?.closest('[data-pane-id]')?.dataset.paneId;
+    const tab = paneId ? GBTabs.getActiveTab(paneId) : null;
+    if (subpanel) component = { path: subpanel.path, state: { ...subpanel.state, label: subpanel.label } };
+    else if (tab) component = getComponentInstance(tab.id) || { paneId, tabId: tab.id, state: tab.state || {} };
+  }
   document.querySelectorAll('.tool-menu-dropdown').forEach(el => {
     if (typeof el._cleanup === 'function') el._cleanup({ restoreFocus: false });
     else el.remove();
@@ -253534,6 +259037,23 @@ function getCurrentFilePath() {
   if (state?.view === 'calendar') return state.currentDbPath || null;
   if (state?.view === 'folder' && typeof _folderPath !== 'undefined') return _folderPath || null;
   return null;
+}
+
+function _toolMenuFileTarget(toolType, component) {
+  const tabs = typeof GBTabs !== 'undefined' ? GBTabs : null;
+  const tab = component
+    ? (component.paneId && component.tabId ? tabs?.getTabs?.(component.paneId)?.find(item => item.id === component.tabId) : null)
+    : tabs?.getActiveTab?.(typeof GBLayout !== 'undefined' ? GBLayout.activePane : undefined);
+  const tabType = ['db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(tab?.type) ? 'database' : tab?.type;
+  if (!component && tabType === toolType && typeof getComponentInstance === 'function') component = getComponentInstance(tab.id);
+  const stateKey = { page: 'pagePath', database: 'dbPath', board: 'boardPath', csv: 'csvPath',
+    calendar: 'calendarPath', scriptnote: 'scenarioPath', 'form-app': 'formPath', map: 'mapPath', folder: 'folderPath' }[toolType];
+  const ownPath = toolType === 'scriptnote' ? component?._editor?._path || component?.state?.scenarioPath || component?.path
+    : component?.path || component?.state?.[stateKey];
+  const path = tab && tabType !== toolType && !component ? ''
+    : String(ownPath || tab?.path || (!component ? getCurrentFilePath() : '') || '').trim();
+  const label = String(tab?.label || component?.state?.label || path.split(/[\\/]/).pop() || '');
+  return { path, label, type: toolType };
 }
 
 function getCurrentFileAssetId(path) {
@@ -254226,6 +259746,10 @@ async function _deleteCurrentFile(toolType) {
 }
 // ツール別メニュー項目
 function buildToolMenuItems(toolType, component) {
+  const registrationItems = _toolMenuFileRegistrationItems(toolType, component);
+  if (toolType === 'map' && component && window.MeldexMapChrome) {
+    return [...MeldexMapChrome.menuItems(component), { separator: true }, ...registrationItems];
+  }
   const currentPath = getCurrentFilePath();
   const hasFile = !!currentPath;
   const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
@@ -254431,6 +259955,7 @@ function buildToolMenuItems(toolType, component) {
     { label: 'シート', icon: 'db', action: () => _createFolderViewItem('database') },
     { label: 'ボード', icon: 'presentation', action: () => _createFolderViewItem('board') },
     { label: 'フォーム', icon: 'clipboardList', action: () => _createFolderViewItem('form-app') },
+    { label: 'マップ', icon: 'map', action: () => _createFolderViewItem('map') },
     { label: 'カレンダー', icon: 'calendar', action: () => _createFolderViewItem('calendar') },
   ];
   const common = isFolderTool
@@ -254472,12 +259997,32 @@ function buildToolMenuItems(toolType, component) {
   return [
     ...common,
     ...(specific[toolType] || []),
+    { separator: true },
+    ...registrationItems,
     ...fileActions,
     ...tailPre,
     { separator: true },
     recentItem,
     ...importExportBlock,
     ...tailClose,
+  ];
+}
+
+function _toolMenuFileRegistrationItems(toolType, component) {
+  const target = _toolMenuFileTarget(toolType, component);
+  const registered = !!target.path && typeof getFavorites === 'function' && typeof _favExists === 'function'
+    && _favExists(getFavorites(), target.path);
+  const run = async (label, action) => {
+    try { await action(); }
+    catch (error) { if (typeof showStatus === 'function') showStatus(`${label}に失敗しました: ${error?.userMessage || error?.message || error}`, true); }
+  };
+  return [
+    { label: registered ? 'お気に入りに登録済み' : 'お気に入りに登録', icon: 'star',
+      disabled: !target.path || registered || typeof addToFavorites !== 'function',
+      action: () => run('お気に入りへの登録', () => addToFavorites(target.label, target.path, target.type)) },
+    { label: '指定フォルダにリンクファイルを追加...', icon: 'link2',
+      disabled: !target.path || typeof showAddFolderLinkModal !== 'function',
+      action: () => run('リンクファイルの追加', () => showAddFolderLinkModal(target.path, null)) },
   ];
 }
 
@@ -255100,7 +260645,7 @@ async function _exportDictFile(options = {}) {
     const entries = Array.isArray(data?.entries) ? data.entries : [];
     const prepared = _prepareDictExport(entries, new Set());
     if (prepared.statuses.length === 0) {
-      showStatus('ルビ付きエントリがありません', true);
+      showStatus('ルビ付きトピックがありません', true);
       return;
     }
     const STATUS_ORDER = ['採用', '掲載済み', '連載中', '確定', '案', '草稿', '保留', 'ボツ', '(未設定)'];
@@ -255121,7 +260666,7 @@ async function _exportDictFile(options = {}) {
       return;
     }
     if (output.lines.length === 0) {
-      showStatus('選択したステータスの辞書エントリがありません', true);
+      showStatus('選択したステータスの辞書項目がありません', true);
       return;
     }
     if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
@@ -255137,7 +260682,7 @@ async function _exportDictFile(options = {}) {
         dialogTitle: '辞書ファイルを書き出し',
         filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
         bom: true,
-        okMessage: `${output.lines.length}件の辞書エントリを出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
+        okMessage: `${output.lines.length}件の辞書項目を出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
         cancelMessage: '辞書ファイルの保存をキャンセルしました',
         errorMessage: '辞書ファイルの保存に失敗しました',
     });
@@ -255194,6 +260739,7 @@ async function _exportDictFile(options = {}) {
     { label: 'シート', icon: 'database', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
     { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
+    ...(typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable() ? [{ label: 'マップ', icon: 'map', type: 'map' }] : []),
     { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
   ];
 
@@ -255206,6 +260752,7 @@ async function _exportDictFile(options = {}) {
       { label: 'シート', icon: 'database', type: 'database' },
       { label: 'ボード', icon: 'presentation', type: 'board' },
       { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
+      ...(typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable() ? [{ label: 'マップ', icon: 'map', type: 'map' }] : []),
       { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
     ],
   }];
@@ -255215,6 +260762,7 @@ async function _exportDictFile(options = {}) {
     scriptnote: 'シナリオ',
     board: 'ボード',
     'form-app': 'フォーム',
+    map: 'マップ',
     database: 'シート',
     calendar: 'カレンダー',
     csv: 'CSV',
@@ -259928,7 +265476,7 @@ function _dbTreeValueRef(dbPath, entityName, propName, value, rawIndex, data) {
   return {
     file: value?.file || _entityPath(dbPath, entityName, data),
     property: value?.property || propName,
-    candidate_index: value?.candidate_index != null ? value.candidate_index : rawIndex,
+    candidate_id: value?.candidate_id, entry_id: value?.entry_id, candidate_index: value?.candidate_index != null ? value.candidate_index : rawIndex,
     value: value?.value,
     status: value?.status,
   };
@@ -259957,7 +265505,7 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
   } else {
     const entityPath = _entityPath(dbPath, entityName, data);
     const result = await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
-    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: result?.candidate_index ?? raw.length };
+    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length };
     entityData[propName] = [...raw, added];
     if (typeof _dbUndoValue === 'function') {
       _dbUndoValue(label, added, '', nextValue, undefined, undefined, { dbPath, ctx });

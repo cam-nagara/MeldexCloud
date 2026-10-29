@@ -232,7 +232,7 @@ function _kanbanValueRef(valueObj, propName) {
   return {
     file: valueObj?.file,
     property: valueObj?.property || propName,
-    candidate_index: valueObj?.candidate_index,
+    candidate_id: valueObj?.candidate_id, entry_id: valueObj?.entry_id, candidate_index: valueObj?.candidate_index,
   };
 }
 
@@ -343,11 +343,21 @@ function _appendDbCardImagePreview(root, items, options = {}) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
-      window.MeldexPwaFileUrl.applyToElement(img, src);
-    } else {
-      img.src = src;
-    }
+    const applySource = url => {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexPwaFileUrl?.applyToElement) {
+        window.MeldexPwaFileUrl.applyToElement(img, url);
+      } else {
+        img.src = url;
+      }
+    };
+    let triedOriginal = false;
+    img.addEventListener('error', () => {
+      if (triedOriginal || !img.isConnected || mediaKind !== 'image') return;
+      triedOriginal = true;
+      const original = _imageSrc(item, false);
+      if (original && original !== src) applySource(original);
+    });
+    applySource(src);
     img.alt = item.caption || item.filename || options.propName || '画像';
     img.dataset.imageIndex = String(idx);
     img.addEventListener('click', (ev) => {
@@ -574,7 +584,7 @@ function renderGallery(ctx) {
   const hiddenCols = getHiddenCols(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
   const entityNames = typeof _dbSortedEntityNames === 'function'
@@ -994,7 +1004,7 @@ function renderKanban(ctx) {
   const entitiesMap = data.entities;
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const entityNames = typeof _dbSortedEntityNames === 'function'
     ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
@@ -1167,7 +1177,7 @@ function renderKanban(ctx) {
               const oldRelations = Array.isArray(target.relations) ? JSON.parse(JSON.stringify(target.relations)) : [];
               const oldPublishedIn = Array.isArray(target.published_in) ? JSON.parse(JSON.stringify(target.published_in)) : [];
               const entityPath = _entityPath(dbPath, entityName);
-              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_index: target.candidate_index };
+              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_id: target?.candidate_id, entry_id: target?.entry_id, candidate_index: target.candidate_index };
               await _apiPutValue(target, { _delete: true });
               historyPush('カンバン移動: ' + entityName,
                 async () => {
@@ -1176,7 +1186,7 @@ function renderKanban(ctx) {
                     published_in: oldPublishedIn,
                     created: target.created || '',
                   });
-                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index };
                   await selectDatabase(dbPath, ctx);
                 },
                 async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
@@ -1197,13 +1207,13 @@ function renderKanban(ctx) {
             try {
               const entityPath = _entityPath(dbPath, entityName);
               const result = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index };
               if (createdRef.file) {
                 historyPush('カンバン移動: ' + entityName,
                   async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
                   async () => {
                     const redo = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
+                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index };
                     await selectDatabase(dbPath, ctx);
                   },
                   _dbScope(dbPath)

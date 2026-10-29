@@ -56,7 +56,10 @@ function _imageSrc(item, preferThumb, thumbSize) {
     const preview = item.thumb_url || item.preview_url || item.preview_src || item.thumb;
     if (preview) {
       if (/^(https?:|data:|blob:|\/)/i.test(preview)) return preview;
-      return '/api/media/file?path=' + encodeURIComponent(preview);
+      const path = String(preview).replace(/\\/g, '/');
+      return path.startsWith('_media/')
+        ? '/api/media/file?path=' + encodeURIComponent(path)
+        : _attachmentUrlFromPath(path, true, thumbSize);
     }
   }
   // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
@@ -68,11 +71,16 @@ function _imageSrc(item, preferThumb, thumbSize) {
     return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
   }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
-    || item.thumb_url || item.url || item.src || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
+    || item.url || item.src || item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
   if (!rel) return '';
   if (/^(https?:|data:|blob:)/.test(rel)) return rel;
   if (rel.startsWith('/')) return rel;
-  return '/api/media/file?path=' + encodeURIComponent(rel);
+  // Only legacy uploads live in _media. Imported src/url references can point
+  // to ordinary files in any registered source root (including hidden files).
+  const path = rel.replace(/\\/g, '/');
+  if (path.startsWith('_media/')) return '/api/media/file?path=' + encodeURIComponent(path);
+  const kind = _attachmentKind(item);
+  return _attachmentUrlFromPath(path, !!preferThumb && (kind === 'image' || kind === 'video'), thumbSize);
 }
 
 // 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
@@ -371,7 +379,7 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
         file: result.path || result.file || entityPath,
         entry_path: entityPath,
         property: propName,
-        candidate_index: result.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
         value: newValue,
         status,
         note: '',

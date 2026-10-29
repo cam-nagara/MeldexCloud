@@ -60,7 +60,7 @@
     const result = await _apiPostValue(path, prop, value, '採用', '', undefined, { baseRevision: ctx.data.revision });
     noteRevision(ctx, result);
     const created = { property: prop, value, status: '採用', note: '', file: result.path || path,
-      entry_path: result.new_path || path, candidate_index: result.candidate_index, entry_revision: result.revision };
+      entry_path: result.new_path || path, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index, entry_revision: result.revision };
     if (!ctx.data.properties) ctx.data.properties = {};
     if (!Array.isArray(ctx.data.properties[prop])) ctx.data.properties[prop] = [];
     ctx.data.properties[prop].push(created);
@@ -71,7 +71,7 @@
       }, async () => {
         const next = await _apiPostValue(path, prop, value, '採用', '');
         noteRevision(ctx, next);
-        Object.assign(created, { candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
+        Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
         ctx.data.properties[prop].push(created); ctx.rerender();
       }, '');
     }

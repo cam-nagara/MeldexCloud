@@ -266,13 +266,15 @@ function withLocalStorageSettingsHistory(label, keys, mutator, detail, onRestore
      ようにするための登録テーブル。scriptnote 特例（_captureScriptnoteState/
      _restoreScriptnoteState）はそのままプロバイダとして登録し、挙動を変えない。
    - board（フェーズ3-3）は 'board:<パス>' スコープ全体を対象に同じ仕組みへ乗せる。
-   - db:（シート）スコープは通常のプロパティ編集が既に正しい undo/redo クロージャを
-     push時点で用意しているため、ここには登録しない（登録すると個々の編集が持つ
-     正しいredoが毎回スナップショット差し替えで上書きされ、退行してしまうため）。
+   - db:（シート）は保存完了待ちだけを登録する。各編集のundo/redoは保持し、
+     全体スナップショットへの差し替えは行わない。
    ============================== */
 const _historySnapshotProviders = {};
 function historyRegisterSnapshotProvider(scopePrefix, provider) {
-  if (!scopePrefix || !provider || typeof provider.capture !== 'function' || typeof provider.restore !== 'function') return;
+  if (!scopePrefix || !provider) return;
+  const snapshots = typeof provider.capture === 'function' && typeof provider.restore === 'function';
+  const prepareOnly = typeof provider.prepare === 'function' && provider.capture == null && provider.restore == null;
+  if (!snapshots && !prepareOnly) return;
   _historySnapshotProviders[scopePrefix] = provider;
 }
 function _findHistorySnapshotProvider(scope) {
@@ -288,7 +290,20 @@ function _findHistorySnapshotProvider(scope) {
   return bestProvider;
 }
 
-// scriptnote: 既存の capture/restore をそのまま登録する（挙動不変のリファクタ）。
+// シートは複数セルの保存と履歴登録が完了してからUndo/Redoを選ぶ。
+historyRegisterSnapshotProvider('db:', {
+  prepare: scope => {
+    if (typeof waitForPendingDbValueMutations !== 'function') return true;
+    const paths = [typeof state !== 'undefined' ? state.currentDbPath : ''];
+    if (typeof getAllPanes === 'function') {
+      for (const pane of Object.values(getAllPanes() || {})) paths.push(pane?.dbPath || pane?.currentDbPath || '');
+    }
+    const path = paths.find(value => value && typeof _dbScopeForPath === 'function' && _dbScopeForPath(value) === scope);
+    return waitForPendingDbValueMutations(path || '');
+  },
+});
+
+// scriptnote: 既存の capture/restore をそのまま登録する。
 historyRegisterSnapshotProvider('scriptnote:', {
   prepare: (scope) => typeof _sn2PrepareHistoryNavigation !== 'function' || _sn2PrepareHistoryNavigation(scope),
   capture: (scope) => (typeof _captureScriptnoteState === 'function' ? _captureScriptnoteState(scope) : null),
@@ -401,7 +416,7 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
     }
     let inverse = entry[opposite];
     const provider = _findHistorySnapshotProvider(actualScope);
-    if (provider && typeof inverse !== 'function') {
+    if (typeof provider?.capture === 'function' && typeof inverse !== 'function') {
       const snapshot = await provider.capture(actualScope);
       if (snapshot == null) throw new Error('復元対象の現在の状態を取得できません');
       inverse = () => provider.restore(snapshot, actualScope);

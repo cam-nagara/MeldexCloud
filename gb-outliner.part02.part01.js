@@ -134,7 +134,17 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
           return { status: 'rejected', reason };
         });
       }
-    } catch {}
+      throw new Error('削除結果を確認できませんでした。フォルダツリーを更新して状態を確認してください。');
+    } catch (reason) {
+      // Only an absent legacy endpoint permits a single-item fallback. A token
+      // may already be consumed after a conflict, timeout or uncertain response.
+      if (![404, 405].includes(Number(reason?.status))) {
+        return batchTargets.map(item => {
+          try { options.onFailure?.(item, reason); } catch {}
+          return { status: 'rejected', reason };
+        });
+      }
+    }
   }
   const results = [];
   for (const item of targets) {
@@ -310,7 +320,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
     if (!trashRef) {
       if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
-      else failed.push(targets[index]);
+      else failed.push({ ...targets[index], error: result.reason });
       return;
     }
     succeeded.push({ ...targets[index], ...trashRef });
@@ -438,10 +448,13 @@ function _pushMainCalendarSettingsHistory(label, beforeSnapshot, detail) {
 
 // --- ホバー追加メニュー ---
 function _cloudPhase1CreateItems(items) {
+  items = (items || []).filter(item => (Array.isArray(item) ? item[1] : item?.type) !== 'map'
+    || typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable());
   return window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
 }
 
 function _isCloudPhase1BlockedCreateType(type) {
+  if (type === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) return true;
   return !!window.MeldexCloudBootstrap?.isPhase1UnsupportedCreateType?.(type);
 }
 
@@ -634,13 +647,13 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
   if (nodeData?.type === 'database' && nodeData.path) {
     _outlinerAppendMenuItem(menu, {
-      label: 'エントリ',
+      label: 'トピック',
       icon: 'plus',
       action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
     });
     _outlinerAppendMenuSeparator(menu);
   }
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
@@ -780,7 +793,9 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
     _removeOutlinerNodesForPaths(result.deletedPaths);
     if (result.failedCount) {
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
+      const reason = result.failed?.[0]?.error;
+      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
       loadOutliner();
     } else if (result.succeeded.length) {
       showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
@@ -832,7 +847,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']]).forEach(([label,type,icon]) => {
+    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
       _outlinerAppendMenuItem(createPanel, {
         label,
         icon,

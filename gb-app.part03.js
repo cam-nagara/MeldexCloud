@@ -306,6 +306,9 @@ window.addEventListener('message', (e) => {
   // 移動・改名時の追従先がサブパネルの画像へすり替わる。前後のフォルダ移動もそのビューワーの中で行う。
   const fromSubpanelViewer = !!sourceIframe.classList?.contains('gb-subpanel-viewer-frame');
   if (msg.type === 'viewer-current-file-changed') {
+    // A hidden Viewer can finish loading after navigation back to a Sheet.
+    // Its late notification must not replace the current option/file target.
+    if (!sourceIframe.getClientRects().length) return;
     if (!fromSubpanelViewer) _syncViewerCurrentFileFromMessage(msg);
     return;
   }
@@ -1265,6 +1268,8 @@ function trackIframeLoading(iframe, msg, opts) {
 
 // サーバーへの定期ハートビート（exe版: ブラウザ閉じたらサーバー自動終了用）
 let _heartbeatTimer = null;
+let _heartbeatInFlight = null;
+let _webclipDirectoryRevision = null;
 
 function _isHeartbeatCloudMode() {
   return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
@@ -1273,7 +1278,34 @@ function _isHeartbeatCloudMode() {
 }
 
 function _sendHeartbeat() {
-  fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
+  if (_heartbeatInFlight) return _heartbeatInFlight;
+  _heartbeatInFlight = fetch('/api/heartbeat', { method: 'POST' })
+    .then(response => response.ok ? response.json() : null)
+    .then(async data => {
+      const revision = data?.webclip_directory_revision;
+      if (typeof revision !== 'string') return;
+      if (_webclipDirectoryRevision === null) { _webclipDirectoryRevision = revision; return; }
+      if (_webclipDirectoryRevision === revision) return;
+      const isCurrent = () => {
+        const active = typeof document === 'undefined' ? null : document.activeElement;
+        const input = active?.closest?.('input, textarea, [contenteditable="true"]');
+        const controls = ['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'hidden', 'image'];
+        return !(active?.isContentEditable || input && !controls.includes(input.type));
+      };
+      // Recheck after asynchronous tree refresh, too: editing can start meanwhile.
+      if (!isCurrent()) return;
+      let result;
+      if (typeof window.refreshFolderAfterExternalChange === 'function') {
+        result = await window.refreshFolderAfterExternalChange({ isCurrent });
+      } else if (typeof refreshOutliner === 'function') {
+        result = await refreshOutliner({ force: true, coalesce: true, reason: 'webclip-directory-change' });
+      } else return;
+      if (result === false || Array.isArray(result) && result.some(row => row?.status === 'rejected')) return;
+      _webclipDirectoryRevision = revision;
+    })
+    .catch(() => {})
+    .finally(() => { _heartbeatInFlight = null; });
+  return _heartbeatInFlight;
 }
 
 function _startHeartbeat() {

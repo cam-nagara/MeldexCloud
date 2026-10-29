@@ -1515,7 +1515,7 @@
   regId('cal-detail-rec-opts',     { label: '繰り返しオプション', desc: '繰り返しの詳細オプションを設定します' });
   regId('cal-detail-save',         { label: '保存',     desc: 'イベントの内容を保存します' });
   regId('cal-detail-delete',       { label: '削除',     desc: 'このイベントを削除します' });
-  regId('cal-detail-open-entry',   { label: 'エントリを開く', desc: 'リンクされているシートのエントリを開きます' });
+  regId('cal-detail-open-entry',   { label: 'トピックを開く', desc: 'リンクされているシートのトピックを開きます' });
 
   // シナリオ フィルタ保存ダイアログ
   regId('sn-filter-preset',         { label: 'プリセット選択', desc: '保存済みのフィルタプリセットを選びます' });

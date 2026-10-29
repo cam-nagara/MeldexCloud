@@ -1,3 +1,4 @@
+  getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
 
 function _treeNodeIsAncestor(parentNode, childNode) {
@@ -34,28 +35,115 @@ function _outlinerExternalDragItems(event, payloadOverride) {
     name: row?.name || '',
     path: row?.path || '',
     type: row?.type || 'file',
+    linked: !!row?.linked,
     sourceSurface: row?.sourceSurface || sourceSurface || 'main',
   })).filter(row => {
     const key = String(row.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
-  });
+  }).filter((row, _index, all) => !all.some(parent => parent !== row
+    && _treeNodeIsAncestor({ _nodeData: parent }, { _nodeData: row })));
+}
+
+function _outlinerRowDropPosition(event, row, item) {
+  const container = item.type === 'folder' || item.type === 'database';
+  if (item._isRoot || item._form_parent_path || (event.altKey && container)) return 'inside';
+  const rect = row.getBoundingClientRect();
+  const fraction = (event.clientY - rect.top) / Math.max(1, rect.height);
+  if (container && fraction >= 0.25 && fraction <= 0.75) return 'inside';
+  return fraction < 0.5 ? 'above' : 'below';
+}
+
+function _outlinerRowDropTarget(node, item, position, rootPath) {
+  if (position === 'inside') {
+    if (!['folder', 'database'].includes(item.type) || !item.path) return null;
+    return { path: item.path, name: item.name, position, rootPath };
+  }
+  if (item._isRoot || item._form_parent_path) return null;
+  const logicalParent = window.GBOutlinerVirtualRender?.parentPathForItem?.(node.parentElement, item.path);
+  const parentNode = node.parentElement?.closest('.tree-node');
+  const path = logicalParent !== undefined ? logicalParent || parentNode?._nodeData?.path || ''
+    : parentNode?._nodeData?.path || (node.closest('#body-home') ? _homeFolderPath : rootPath) || '';
+  return { path, name: path.split(/[\\/]/).pop() || 'ソースフォルダ', position, anchorPath: item.path, rootPath };
+}
+
+async function _outlinerDropSiblings(target) {
+  const key = target.path || '_root';
+  const cfg = getSortForFolder(key);
+  const serverSort = ['name', 'modified', 'created'].includes(cfg.sort) ? cfg.sort : 'name';
+  const items = await apiFetch('/browse?path=' + encodeURIComponent(target.path || '')
+    + (target.rootPath ? '&root=' + encodeURIComponent(target.rootPath) : '')
+    + '&all_files=true&form_hierarchy=true&sort=' + serverSort + '&order=' + cfg.order
+    + (!['name', 'manual'].includes(cfg.sort) ? '&detail=true' : ''));
+  if (target.anchorPath && !items.some(item => item.path === target.anchorPath)) {
+    throw new Error('挿入先の項目が見つかりません。フォルダツリーを更新してください');
+  }
+  return cfg.sort === 'manual' ? _sortItemsByManualOrder(items, key)
+    : [...items].sort((a, b) => compareItemsForFolderSort(a, b, cfg.sort, cfg.order));
+}
+
+function _saveOutlinerDropPlacement(target, siblings, movedItems) {
+  if (!movedItems.length) return;
+  const incoming = new Set(movedItems.flatMap(item => [item.path, item.oldPath]).filter(Boolean));
+  const rest = siblings.filter(item => !incoming.has(item.path));
+  const anchor = rest.findIndex(item => item.path === target.anchorPath);
+  // Never turn an unavailable anchor into a silent drop at the bottom.
+  if (target.anchorPath && anchor < 0) throw new Error('挿入先の項目が見つかりません。フォルダツリーを更新してください');
+  const index = target.anchorPath ? anchor + (target.position === 'below' ? 1 : 0) : rest.length;
+  rest.splice(index, 0, ...movedItems);
+  const key = target.path || '_root';
+  setManualOrder(key, rest.map(item => item.path));
+  setSortSetting(key, 'manual', 'asc');
+}
+
+async function _linkExternalItemsIntoOutlinerFolder(items, targetItem) {
+  let result;
+  try {
+    result = await addFolderLinksBatchWithHistory(items, targetItem.path);
+  } catch (error) {
+    showStatus('リンク登録に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    return 0;
+  }
+  const failed = result?.failed_count || 0;
+  const succeeded = (result?.results || []).filter(row => row.status !== 'failed').length;
+  try {
+    await refreshOutliner({ force: true, reason: 'external-drop-link' });
+    showStatus(`${result?.created_count || 0} 件を「${targetItem.name || targetItem.path}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && succeeded === 0);
+  } catch {
+    showStatus('リンク登録後の表示を更新できませんでした。フォルダツリーを再読み込みしてください。', true);
+  }
+  return succeeded;
 }
 
 async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
-  if (!targetPath || !Array.isArray(items) || items.length === 0) return;
+  if (!targetItem || !Array.isArray(items) || items.length === 0) return 0;
+  const placement = { position: 'inside', ...targetItem, path: targetPath };
+  let siblings;
+  try {
+    siblings = await _outlinerDropSiblings(placement);
+  } catch (error) {
+    showStatus('移動先を確認できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    return 0;
+  }
   const progress = window.MeldexImportProgress;
   const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
   let processed = 0;
   let succeeded = 0;
   const failures = [];
+  const movedItems = [];
   try {
     for (const source of items) {
       try {
         const copySource = source.sourceSurface === 'sheet-image';
-        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+        if (source.linked || isItemLocked(source.path) || isItemLocked(targetPath)) {
+          throw new Error('リンクファイルや編集ロック中の項目は移動できません');
+        }
+        const oldPath = String(source.path || '').replace(/\\/g, '/');
+        const sameParent = oldPath.substring(0, Math.max(0, oldPath.lastIndexOf('/'))) === targetPath;
+        const res = sameParent && !copySource ? { new_path: source.path, new_name: source.name }
+          : await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
           path: source.path,
           dest_folder: targetPath,
         } : {
@@ -63,15 +151,20 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
           dest_folder: targetPath,
           conflict_policy: 'error',
         });
-        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(source.path, res.new_path, {
-            label: res.new_name || source.name,
-            fileId: res.file_id,
-            type: source.type || 'file',
-          });
-        }
+        movedItems.push({ ...source, oldPath: copySource ? '' : source.path, path: res.new_path || source.path, name: res.new_name || source.name });
         succeeded += 1;
+        try {
+          if (!copySource && res?.new_path && res.new_path !== source.path && typeof renameAppPathReferences === 'function') {
+            renameAppPathReferences(source.path, res.new_path, {
+              label: res.new_name || source.name,
+              fileId: res.file_id,
+              type: source.type || 'file',
+            });
+          }
+          if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        } catch (error) {
+          console.warn('[Meldex] 移動後の表示を再読み込みします', error);
+        }
       } catch (error) {
         failures.push({ source, error });
       }
@@ -81,7 +174,12 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
-  await loadOutliner({ force: true, reason: 'external-drop-move' });
+  let refreshError = null;
+  try {
+    _saveOutlinerDropPlacement(placement, siblings, movedItems);
+    if (succeeded && placement.position === 'inside' && targetPath) saveExpandedState(targetPath, true);
+  } catch (error) { refreshError = error; }
+  await refreshOutliner({ force: true, reason: 'external-drop-move' });
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
     const label = document.getElementById('folder-title')?.textContent || _folderPath;
     await openFolder(label, _folderPath, {
@@ -93,7 +191,9 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
       skipGlobalUi: true,
     });
   }
-  if (failures.length) {
+  if (refreshError) {
+    showStatus(`${succeeded}件は移動しましたが、挿入位置を保存できませんでした: ${refreshError.message}`, true);
+  } else if (failures.length) {
     const reason = String(failures[0].error?.userMessage || failures[0].error?.message || '');
     showStatus(`${succeeded}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
   } else {
@@ -798,103 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
   row.appendChild(toggle);
 
   // Icon（ルートフォルダにはアイコンを表示しない）
-  if (!item._isRoot) {
-    const icon = document.createElement('span');
-    icon.className = 'tree-icon';
-    icon.innerHTML = _outlinerIconMarkup(item, 18);
-    // リンクファイルマーク
-    if (item.linked) {
-      icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
-    }
-    row.appendChild(icon);
-    // フォルダツリー改修Phase4: 軽量サムネイル表示・OS登録形式アイコン（対象外/OFF時は何もしない）
-    window.GBOutlinerThumbnails?.attachToRow(row, item, icon);
-  }
-
-  // Label
-  const label = document.createElement('span');
-  label.className = 'tree-label';
-  label.textContent = item.name || '';
-  if (item._isRoot) label.style.fontWeight = 'bold';
-  row.appendChild(label);
-  if (isUnavailableRoot) {
-    const notice = document.createElement('span');
-    notice.className = 'tree-source-mapping-badge';
-    notice.textContent = '場所を確認';
-    notice.title = 'このPCでDropbox同期フォルダの場所を確認してください';
-    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;cursor:pointer;';
-    notice.addEventListener('click', (e) => {
-      e.stopPropagation();
-      window.MeldexSettingsCloudLink?.confirmSourceFolderLocation?.(item);
-    });
-    row.title = notice.title;
-    row.dataset.gbTooltip = notice.title;
-    row.appendChild(notice);
-  }
-  if (itemLocked) {
-    const lockBadge = document.createElement('span');
-    lockBadge.className = 'tree-lock-badge';
-    lockBadge.innerHTML = lucide('lock', 12);
-    const lockReason = typeof getItemLockReason === 'function' ? getItemLockReason(item.path) : '';
-    lockBadge.title = isSystemLockedItem(item.path) ? 'システム保護中です' : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
-    lockBadge.dataset.gbTooltip = lockBadge.title;
-    lockBadge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:4px;flex-shrink:0;';
-    row.title = lockBadge.title;
-    row.dataset.gbTooltip = lockBadge.title;
-    row.appendChild(lockBadge);
-  }
-  // ホバーアクションボタン（Notion風: メニュー + 追加）
-  if (item.type !== 'entity') {
-    const hoverBtns = document.createElement('span');
-    hoverBtns.className = 'tree-hover-btns';
-    hoverBtns.draggable = false;
-    hoverBtns.addEventListener('dragstart', (e) => e.preventDefault());
-    // メニューボタン
-    const menuBtn = document.createElement('span');
-    menuBtn.className = 'tree-hover-btn';
-    menuBtn.innerHTML = lucide('ellipsis', 14);
-    menuBtn.title = 'メニュー';
-    menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (!treeSelection.has(div)) { treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div; }
-      const r = menuBtn.getBoundingClientRect();
-      const z = parseFloat(document.documentElement.style.zoom) || 1;
-      showTreeContextMenu(r.left / z, r.bottom / z, div, item, label);
-    });
-    hoverBtns.appendChild(menuBtn);
-    // 追加ボタン
-    if (!itemLocked) {
-      hoverBtns.appendChild(_createOutlinerAddHoverButton(div, item));
-    }
-    row.appendChild(hoverBtns);
-  }
-
-  // ルートフォルダの背景色
-  if (item._isRoot) row.classList.add('tree-root-row');
-
-  div.appendChild(row);
-  _syncOutlinerConflictBadgeToNode(div);
-
-  // Children container (lazy-loaded)
-  const childrenDiv = document.createElement('div');
-  childrenDiv.className = 'tree-children collapsed';
-  childrenDiv.dataset.loaded = 'false';
-  div.appendChild(childrenDiv);
-
-  // 保存済み色を適用
-  const savedColor = getNodeColor(item.path);
-  if (savedColor) applyNodeColor(row, savedColor);
-  // ロック状態を反映
-  if (itemLocked) {
-    label.style.fontStyle = 'italic';
-  }
-
-  // Toggle click — lazy load children
-  toggle.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    if (!isExpandable) return;
-    // 仮想化中の親に属する行は、子孫も同じ論理モデルへ接続する。
-    // 親コンテナ全件をDOM化せず、表示範囲＋オーバースキャンだけを維持する。
-    const parentVirtualContainer = div.parentElement && div.parentElement.dataset && div.parentElement.dataset.virtual === 'true'
-      ? div.parentElement : null;

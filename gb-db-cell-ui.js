@@ -106,6 +106,7 @@ async function _cellUiRecoverMutationFailure(dbPath, ctx, error, actionLabel) {
   const detail = error?.message || String(error || '不明なエラー');
   if (typeof showStatus === 'function') showStatus(`${actionLabel || '保存'}に失敗: ${detail}`, true);
   if (!dbPath || typeof selectDatabase !== 'function') return;
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
   try {
     await selectDatabase(dbPath, ctx || undefined, { silent: true });
   } catch {}
@@ -177,11 +178,12 @@ function _cellUiRelationIds(value) {
 
 async function _cellUiSelfPairRelationContext(dbPath, entityPath, ptc) {
   if (!dbPath || !ptc || ptc.relationDb !== '' || !ptc.pairWith) return null;
-  const entityName = _cellUiEntityNameFromPath(entityPath);
   let pivotData = (typeof state !== 'undefined' && state.currentDbPath === dbPath) ? state.pivotData : null;
   if (!pivotData && typeof apiFetch === 'function') {
     try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch {}
   }
+  const entityName = typeof _dbPivotEntityNameForPath === 'function'
+    ? _dbPivotEntityNameForPath(entityPath, pivotData) : _cellUiEntityNameFromPath(entityPath);
   const sourceId = pivotData?.entities?.[entityName]?._id || entityName;
   return { relDb: dbPath, pairPropName: ptc.pairWith, sourceId };
 }
@@ -935,7 +937,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
               file: result.path || currentVal.file,
               entry_path: entityPath,
               property: propName,
-              candidate_index: result.candidate_index,
+              candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
               value: relationValue,
               status: savedStatus,
               note: savedNote,
@@ -1055,6 +1057,10 @@ function startInlineEdit(span, val, entityPath, propName) {
   const old = _cellUiValueToString(val.value);
   const oldRichHtml = _dbRichHtmlForValue(val);
   const editedTd = span.closest('td');
+  const editorSession = {};
+  if (editedTd) editedTd._dbInlineEditorSession = editorSession;
+  const ownsEditor = () => span.isConnected !== false
+    && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
   const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
@@ -1099,6 +1105,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   let focusMovedOutside = false;
   const restoreEditedCellSelection = (afterRender = false, moveTo = null) => {
     const restore = () => {
+      if (!ownsEditor()) return;
       // 別パネルへのクリック後や保存中のフォーカス移動を、古いセルの復元で奪わない。
       const focused = document.activeElement;
       if (focusMovedOutside) return;
@@ -1169,7 +1176,7 @@ function startInlineEdit(span, val, entityPath, propName) {
                   file: result.path || currentVal.file,
                   entry_path: entityPath,
                   property: propName,
-                  candidate_index: result.candidate_index,
+                  candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                   value: old,
                   status: savedStatus,
                   note: savedNote,
@@ -1187,11 +1194,13 @@ function startInlineEdit(span, val, entityPath, propName) {
         }
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
-        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-        else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+        if (ownsEditor()) {
+          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+          else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+        }
         restoreEditedCellSelection(true, moveTo);
       } catch (e) {
-        span.textContent = old;
+        if (ownsEditor()) span.textContent = old;
         window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
         restoreEditedCellSelection(true);
@@ -1216,16 +1225,20 @@ function startInlineEdit(span, val, entityPath, propName) {
           showStatus('保存しました', false, { passiveSave: true });
           window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
             candidateIndex: val.candidate_index, value: nv });
-          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-          else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+          if (ownsEditor()) {
+            if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+            else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+          }
           restoreEditedCellSelection(true, moveTo);
         } catch (e) {
           window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
             candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
-          val.value = old;
-          if (oldRichHtml) val.rich_html = oldRichHtml;
-          else delete val.rich_html;
-          restoreOldDisplay();
+          if (val.value === nv) {
+            val.value = old;
+            if (oldRichHtml) val.rich_html = oldRichHtml;
+            else delete val.rich_html;
+          }
+          if (ownsEditor()) restoreOldDisplay();
           restoreEditedCellSelection(true);
           await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
         }

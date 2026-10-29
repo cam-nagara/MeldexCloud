@@ -147,8 +147,16 @@ function _resolveToolMenuButton(event) {
 
 function showToolMenu(e, toolType, component) {
   e.stopPropagation();
+  if (component === e) component = null; // gb-events appends the event after explicit arguments.
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
+  if (!component && typeof getComponentInstance === 'function' && typeof GBTabs !== 'undefined') {
+    const subpanel = btn?.closest('#gb-subpanel-root') && window.GBSubPanel?.getCurrentTarget?.();
+    const paneId = btn?.closest('[data-pane-id]')?.dataset.paneId;
+    const tab = paneId ? GBTabs.getActiveTab(paneId) : null;
+    if (subpanel) component = { path: subpanel.path, state: { ...subpanel.state, label: subpanel.label } };
+    else if (tab) component = getComponentInstance(tab.id) || { paneId, tabId: tab.id, state: tab.state || {} };
+  }
   document.querySelectorAll('.tool-menu-dropdown').forEach(el => {
     if (typeof el._cleanup === 'function') el._cleanup({ restoreFocus: false });
     else el.remove();
@@ -276,6 +284,23 @@ function getCurrentFilePath() {
   if (state?.view === 'calendar') return state.currentDbPath || null;
   if (state?.view === 'folder' && typeof _folderPath !== 'undefined') return _folderPath || null;
   return null;
+}
+
+function _toolMenuFileTarget(toolType, component) {
+  const tabs = typeof GBTabs !== 'undefined' ? GBTabs : null;
+  const tab = component
+    ? (component.paneId && component.tabId ? tabs?.getTabs?.(component.paneId)?.find(item => item.id === component.tabId) : null)
+    : tabs?.getActiveTab?.(typeof GBLayout !== 'undefined' ? GBLayout.activePane : undefined);
+  const tabType = ['db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(tab?.type) ? 'database' : tab?.type;
+  if (!component && tabType === toolType && typeof getComponentInstance === 'function') component = getComponentInstance(tab.id);
+  const stateKey = { page: 'pagePath', database: 'dbPath', board: 'boardPath', csv: 'csvPath',
+    calendar: 'calendarPath', scriptnote: 'scenarioPath', 'form-app': 'formPath', map: 'mapPath', folder: 'folderPath' }[toolType];
+  const ownPath = toolType === 'scriptnote' ? component?._editor?._path || component?.state?.scenarioPath || component?.path
+    : component?.path || component?.state?.[stateKey];
+  const path = tab && tabType !== toolType && !component ? ''
+    : String(ownPath || tab?.path || (!component ? getCurrentFilePath() : '') || '').trim();
+  const label = String(tab?.label || component?.state?.label || path.split(/[\\/]/).pop() || '');
+  return { path, label, type: toolType };
 }
 
 function getCurrentFileAssetId(path) {

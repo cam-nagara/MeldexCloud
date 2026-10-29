@@ -1,3 +1,33 @@
+  await new Promise(r => setTimeout(r, 500));
+  return state;
+}
+
+async function _restoreMeldexWindowForScreenshot(state) {
+  if (state?.hidden) await _setMeldexWindowVisibilityForScreenshot('restore', state.hwnds || []);
+  else window.focus();
+}
+
+function _cropScreenshotCanvas(canvas, region) {
+  const cropped = document.createElement('canvas');
+  cropped.width = Math.max(1, Math.round(region.width));
+  cropped.height = Math.max(1, Math.round(region.height));
+  cropped.getContext('2d').drawImage(
+    canvas,
+    Math.round(region.x),
+    Math.round(region.y),
+    cropped.width,
+    cropped.height,
+    0,
+    0,
+    cropped.width,
+    cropped.height
+  );
+  return cropped;
+}
+
+function _selectScreenshotRegionFromCanvas(canvas) {
+  return new Promise(resolve => {
+    if (typeof window.GBUI?.createModal !== 'function') {
       resolve(null);
       return;
     }
@@ -868,33 +898,3 @@ function _viewerFolderNavOpenTarget(folderPath, result, targetIframe = null) {
   }
   const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
   if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
-  openViewer(url);
-}
-
-async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath, targetIframe = null) {
-  await _viewerFolderNavRevealCurrentFolder(currentFolderPath, { skipHighlight: !!targetIframe });
-  let cursorPath = currentFolderPath;
-  for (let guard = 0; guard < 400; guard++) {
-    const nodes = _viewerFolderNavFolderNodes();
-    if (!nodes.length) break;
-    let cursorIndex = _viewerFolderNavFindIndex(nodes, cursorPath);
-    if (cursorIndex < 0) cursorIndex = direction > 0 ? -1 : nodes.length;
-    const candidate = nodes[cursorIndex + direction];
-    if (!candidate) break;
-    await _viewerFolderNavEnsureAncestorsExpanded(candidate);
-    const candidatePath = _viewerFolderNavNodePath(candidate);
-    if (!candidatePath) {
-      cursorPath = '';
-      continue;
-    }
-    const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
-    if (result.has) {
-      _viewerFolderNavOpenTarget(candidatePath, result, targetIframe);
-      return true;
-    }
-    const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
-    if (expanded && direction < 0) continue;
-    cursorPath = candidatePath;
-  }
-  return false;
-}

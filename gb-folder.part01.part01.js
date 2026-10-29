@@ -670,8 +670,36 @@ function renderFolderGrid(opts) {
   if (filteredItems.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'fv-empty-state';
-    empty.textContent = _folderItems.length > 0 && _folderHasActiveFilters(dcfg) ? '条件に一致する項目がありません'
+    const searchTags = window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || [];
+    const filteredOut = _folderItems.length > 0 && (_folderHasActiveFilters(dcfg) || searchTags.length > 0);
+    empty.textContent = filteredOut ? `${_folderItems.length}項目が絞り込みで非表示です`
       : _folderBrowseIncomplete ? '読み込めた項目はありません' : 'このフォルダは空です';
+    if (filteredOut) {
+      empty.style.flexDirection = 'column';
+      empty.style.gap = '12px';
+      const summary = document.createElement('div');
+      const conditions = [];
+      if (String(dcfg.filterText || '').trim()) conditions.push('名前・パス');
+      const types = _folderFilterArray(dcfg.filterTypes);
+      if (types.length) conditions.push('種類: ' + types.map(_folderItemTypeLabel).join('、'));
+      if (_folderFilterArray(dcfg.filterExts).length) conditions.push('拡張子');
+      if (_folderHasActiveFolderFilter(dcfg)) conditions.push('所属フォルダ');
+      if (_folderHasActiveTagFilter(dcfg) || searchTags.length) conditions.push('タグ');
+      if (dcfg.filterModifiedPreset && dcfg.filterModifiedPreset !== 'all') conditions.push('更新日時');
+      summary.textContent = '適用中の条件: ' + conditions.join(' / ');
+      empty.appendChild(summary);
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'gb-btn gb-btn-sm';
+      reset.dataset.e2eId = 'folder-empty-clear-filters';
+      reset.textContent = '絞り込みを解除';
+      reset.addEventListener('click', () => {
+        _clearFolderFilters();
+        if (searchTags.length) window.MeldexUnifiedSearch?.writeTagCondition?.({ tagIds: [] });
+        renderFolderGrid({ resetScrollTop: true });
+      });
+      empty.appendChild(reset);
+    }
     container.appendChild(empty);
     return;
   }
@@ -948,6 +976,7 @@ function renderFolderGrid(opts) {
           name: selected.name || '',
           path: selected.path,
           type: selected.type || 'file',
+          linked: !!selected.linked,
           sourceSurface: 'folder-panel',
         }));
       const primary = dragItems.find(selected => selected.path === item.path) || dragItems[0];
@@ -974,6 +1003,7 @@ function renderFolderGrid(opts) {
     });
     el.addEventListener('dragend', async (e) => {
       el.classList.remove('dragging');
+      if (typeof clearDragIndicators === 'function') clearDragIndicators();
       // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
       const shouldPopout = typeof shouldOpenDragPopout === 'function'
         ? await shouldOpenDragPopout(e, window._gbFolderViewDragNonce)

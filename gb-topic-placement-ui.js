@@ -29,23 +29,25 @@
     return String(value?.checkpointId || value?.revision || value || '');
   }
 
-  function rememberView(detail) {
+  function rememberView(detail, options = {}) {
     const path = normalizePath(detail?.dbPath || detail?.legacyPath);
     if (!path || !detail?.viewDocument) return;
-    const previous = viewsByPath.get(path);
-    const legacyRefsByName = new Map(previous?.legacyRefsByName || []);
+    const previous = options.cache === false ? null : viewsByPath.get(path);
+    const sameSource = previous?.sourceId === String(detail.sourceId || '');
+    const legacyRefsByName = new Map(sameSource ? previous?.legacyRefsByName || [] : []);
     (detail.topicRecords || []).forEach((record) => {
       const legacyName = String(record?.legacyPath || '').replace(/\\/g, '/').split('/').pop();
       const ref = record?.topicRef || (record?.topicId && detail.sourceId
         ? { sourceId: detail.sourceId, topicId: record.topicId } : null);
-      if (legacyName && ref?.sourceId && ref?.topicId
+      if (legacyName && !record.createdByPlacementMutationId && ref?.sourceId && ref?.topicId
         && (!record.originDocumentId || record.originDocumentId === detail.viewDocument.documentId)) {
         legacyRefsByName.set(legacyName.replace(/\.[^.]+$/, ''), clone(ref));
       }
     });
-    viewsByPath.set(path, {
+    const view = {
       sourceId: String(detail.sourceId || ''),
       path,
+      relativePath: normalizePath(detail.relativePath || (sameSource ? previous?.relativePath : '') || ''),
       archiveRelativePath: String(detail.archiveRelativePath || ''),
       document: clone(detail.viewDocument),
       checkpoint: clone(detail.checkpoint || {}),
@@ -53,7 +55,9 @@
       legacyRefsByName,
       readOnly: detail.readOnly === true,
       updatedAt: Date.now(),
-    });
+    };
+    if (options.cache !== false) viewsByPath.set(path, view);
+    return view;
   }
 
   function recordKey(record, fallbackSourceId) {
@@ -127,8 +131,22 @@
     return candidate;
   }
 
-  function projectSheetPivot(dbPath, pivotData, preferredViewId) {
-    const view = viewsByPath.get(normalizePath(dbPath));
+  function legacyEntryPath(dbPath, record) {
+    const path = normalizePath(record?.legacyPath);
+    if (!path) return '';
+    return path.startsWith(normalizePath(dbPath) + '/') || /^(?:[a-z]:\/|\/|source:)/i.test(path)
+      ? path : normalizePath(dbPath + '/' + path);
+  }
+
+  function matchesLegacyEntry(view, record, entity) {
+    if (!entity?._entry_path || (entity._id && String(entity._id) !== String(record?.topicId))) return false;
+    const path = normalizePath(entity._entry_path);
+    return path === legacyEntryPath(view.path, record)
+      || (!!view.relativePath && path === legacyEntryPath(view.relativePath, record));
+  }
+
+  function projectSheetPivot(dbPath, pivotData, preferredViewId, snapshotView) {
+    const view = snapshotView || viewsByPath.get(normalizePath(dbPath));
     if (!view || !pivotData?.entities) return pivotData;
     const previousProjection = pivotData._topicPlacementProjection || {};
     const baseProperties = Array.isArray(previousProjection.baseProperties)
@@ -141,11 +159,22 @@
       || view.document?.activeView || '');
     const placements = (view.document?.placements || []).filter(item => item?.surface === 'sheet'
       && (!requestedViewId || String(item.viewId || '') === requestedViewId));
-    const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
-    for (const [name, ref] of view.legacyRefsByName || []) {
-      if (!placementKeys.has(topicKey(ref))) delete pivotData.entities[name];
-    }
     const records = new Map((view.records || []).map(record => [recordKey(record, view.sourceId), record]));
+    // 保存名と表示名は異なる。移行キャッシュの旧名で行を作らず、現在の保存先へ結び付ける。
+    const legacyNames = new Map();
+    for (const [oldName, ref] of view.legacyRefsByName || []) {
+      const key = topicKey(ref);
+      const record = records.get(key);
+      const matched = Object.entries(pivotData.entities).find(([, entity]) =>
+        matchesLegacyEntry(view, record, entity))?.[0];
+      const fallback = pivotData.new_format !== true && pivotData.entities[oldName]
+        && !pivotData.entities[oldName]._entry_path ? oldName : null;
+      legacyNames.set(key, matched || fallback);
+    }
+    const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
+    for (const [key, name] of legacyNames) {
+      if (name && !placementKeys.has(key)) delete pivotData.entities[name];
+    }
     const columns = columnsForDocument(view.document, requestedViewId);
     const propertyNames = columns.map(column => String(column?.name || column?.columnId || '')).filter(Boolean);
     pivotData.properties = [...new Set([...baseProperties, ...propertyNames])];
@@ -153,10 +182,12 @@
       const ref = placement.topicRef;
       const record = records.get(topicKey(ref));
       if (!record) return;
-      const legacyName = [...(view.legacyRefsByName || [])].find(([, knownRef]) =>
-        topicKey(knownRef) === topicKey(ref))?.[0];
+      const legacyName = legacyNames.get(topicKey(ref));
+      // SQLiteから消えた行を古い配置スナップショットで再生成しない。
+      if (pivotData.new_format === true && legacyNames.has(topicKey(ref)) && !legacyName) return;
       const name = legacyName || uniqueEntityName(record.title || ref.topicId, ref, pivotData.entities);
-      const entity = { topicRef: clone(ref), _topicPlacementId: placement.placementId,
+      const savedEntity = legacyName ? pivotData.entities[legacyName] : null;
+      const entity = { ...savedEntity, topicRef: clone(ref), _topicPlacementId: placement.placementId,
         _topicViewId: placement.viewId,
         _topicCanonicalOnly: !legacyName, _topicDbPath: normalizePath(dbPath),
         _topicReadOnly: view.readOnly === true };
@@ -164,6 +195,18 @@
         const columnName = String(column?.name || column?.columnId || '');
         const value = propertyForColumn(record, placement, column);
         if (!columnName) return;
+        if (legacyName && baseProperties.includes(columnName)) {
+          // 元シートの値が正本。配置キャッシュで候補ID・保存先・新しい値を落とさない。
+          const native = savedEntity?.[columnName];
+          entity[columnName] = Array.isArray(native) ? native.map(candidate => ({ ...candidate,
+            topicRef: clone(ref), _topicCanonicalOnly: false, _topicDbPath: normalizePath(dbPath),
+            _topicReadOnly: view.readOnly === true,
+            _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
+            _topicColumnId: column.columnId || column.id || columnName, _topicColumnName: columnName,
+            _topicColumnType: column.columnType || column.type || 'text',
+          })) : [];
+          return;
+        }
         // Legacy sheet values are candidate records, not a single cell value.
         const candidates = Array.isArray(value) && value.every(candidate =>
           candidate && typeof candidate === 'object' && !Array.isArray(candidate)
@@ -174,6 +217,7 @@
           ...(candidates === value ? { candidate_index: candidateIndex, _topicCandidateList: true,
             _topicCandidateOriginal: clone(candidate) } : {}),
           topicRef: clone(ref), _topicCanonicalOnly: !legacyName,
+          _topicValueMissing: value === undefined,
           _topicDbPath: normalizePath(dbPath),
           _topicReadOnly: view.readOnly === true,
           _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
@@ -192,12 +236,18 @@
   }
 
   function rerenderProjectedSheets(path) {
+    const visible = data => JSON.stringify({ properties: data.properties, entities: data.entities }, (key, value) =>
+      ['_topicReadOnly', 'entry_revision', '_revision'].includes(key) ? undefined : value);
     const contexts = Object.values(global.getAllPanes?.() || {});
     const current = global._currentPaneState?.();
     if (current && !contexts.includes(current)) contexts.push(current);
     contexts.forEach((ctx) => {
       if (!ctx?.pivotData || normalizePath(ctx.dbPath) !== normalizePath(path)) return;
+      const visibleBefore = visible(ctx.pivotData);
       projectSheetPivot(path, ctx.pivotData, ctx.currentViewId);
+      const visibleAfter = visible(ctx.pivotData);
+      // 保存の反映だけでセル・範囲選択や編集中のDOMを破棄しない。
+      if (visibleBefore === visibleAfter) return;
       const mode = ctx.viewMode || 'pivot';
       if (mode === 'gallery') global.renderGallery?.(ctx);
       else if (mode === 'kanban') global.renderKanban?.(ctx);
@@ -218,6 +268,10 @@
     if (entityData?.topicRef?.sourceId && entityData?.topicRef?.topicId) return clone(entityData.topicRef);
     const name = String(entityName || '');
     const record = (view?.records || []).find(item => {
+      if (item.originDocumentId && item.originDocumentId !== view.document?.documentId) return false;
+      if (entityData?._entry_path) {
+        return matchesLegacyEntry(view, item, entityData);
+      }
       const legacy = String(item?.legacyPath || '').replace(/\\/g, '/').split('/').pop() || '';
       const stem = legacy.replace(/\.[^.]+$/, '');
       return legacy === name || stem === name;
@@ -302,6 +356,7 @@
       ) || null,
       path, document: clone(document), revision: checkpointId(view?.checkpoint),
       label: String(node?.text || '').split('\n')[0] || 'トピック', surface: 'board',
+      pendingSave: !!(state?.dirty || state?.editing || (state?.nodes || []).some(item => global.bdHasPendingNodeTextWrite?.(item))),
       readOnly: view?.readOnly === true,
     };
   }
@@ -651,6 +706,33 @@
 
   async function updateProjectedValue(valueRef, updates) {
     const ref = valueRef?.topicRef;
+    const task = () => updateProjectedValueNow(valueRef, updates);
+    if (ref?.sourceId && ref?.topicId && typeof global._dbQueueEntryMutation === 'function') {
+      return global._dbQueueEntryMutation(`topic:${ref.sourceId}/${ref.topicId}`, valueRef._topicDbPath, task);
+    }
+    return task();
+  }
+
+  function projectSheetSnapshot(dbPath, pivotData, detail) {
+    const view = rememberView({ ...detail, dbPath }, { cache: false });
+    return view ? projectSheetPivot(dbPath, pivotData, null, view) : pivotData;
+  }
+
+  function emptyProjectedValue(dbPath, entity, columnName) {
+    const view = viewsByPath.get(normalizePath(dbPath));
+    if (!view || !entity?._topicCanonicalOnly || !entity.topicRef) return null;
+    const column = columnsForDocument(view.document, entity._topicViewId).find(item => String(item.name || item.columnId || '') === columnName);
+    const placement = (view.document.placements || []).find(item => item.placementId === entity._topicPlacementId);
+    const record = (view.records || []).find(item => recordKey(item, view.sourceId) === topicKey(entity.topicRef));
+    if (!column || !placement || !record) throw new Error('この列の共有列IDを確認できません');
+    return { topicRef: clone(entity.topicRef), _topicCanonicalOnly: true, _topicDbPath: normalizePath(dbPath),
+      _topicReadOnly: entity._topicReadOnly, _topicPropertyFamilyId: effectivePropertyFamilyId(record, placement, column),
+      _topicColumnId: column.columnId, _topicColumnName: columnName, property: columnName,
+      _topicColumnType: column.columnType || column.type || 'text' };
+  }
+
+  async function updateProjectedValueNow(valueRef, updates) {
+    const ref = valueRef?.topicRef;
     const dbPath = normalizePath(valueRef?._topicDbPath);
     const view = viewsByPath.get(dbPath);
     if (!ref?.sourceId || !ref?.topicId || !view) {
@@ -667,14 +749,26 @@
     const familyId = String(valueRef._topicPropertyFamilyId || '');
     if (!familyId) throw new Error('この列の共有列IDを確認できません');
     const typed = clone(record.propertyValuesByFamilyId || {});
+    if (Object.prototype.hasOwnProperty.call(updates || {}, '_expected_value')
+      && JSON.stringify(typed[familyId]?.value) !== JSON.stringify(updates._expected_value)) {
+      throw new Error('場所の値が変更されています。シートを再読込してから編集してください');
+    }
     const order = [...(record.propertyValueOrder || [])];
     const properties = clone(record.properties || {});
     const columnName = String(valueRef.property || valueRef._topicColumnName || valueRef._topicColumnId || '');
     let nextValue = updates?.new_value !== undefined ? updates.new_value : valueRef.value;
     const candidateList = valueRef._topicCandidateList === true;
+    if (updates?._append_candidate) {
+      const stored = typed[familyId]?.value;
+      if (stored !== undefined && !Array.isArray(stored)) throw new Error('列の保存形式が変わりました。シートを再読込してください');
+      nextValue = [...clone(stored || []), clone(updates._append_candidate)];
+    }
     if (candidateList) {
       const stored = typed[familyId]?.value;
-      const index = valueRef.candidate_index;
+      const identity = valueRef.candidate_id || valueRef._topicCandidateOriginal?.candidate_id;
+      const matched = Array.isArray(stored) && identity
+        ? stored.map((candidate, index) => candidate?.candidate_id === identity ? index : -1).filter(index => index >= 0) : [];
+      const index = identity ? matched.length === 1 ? matched[0] : -1 : valueRef.candidate_index;
       if (!Array.isArray(stored) || !Number.isInteger(index) || !stored[index]
           || JSON.stringify(stored[index]) !== JSON.stringify(valueRef._topicCandidateOriginal)) {
         throw new Error('候補値が更新されています。シートを再読込してから編集してください');
@@ -729,6 +823,8 @@
       },
     );
     if (candidateList && !updates?._delete) {
+      const identity = valueRef.candidate_id || valueRef._topicCandidateOriginal?.candidate_id;
+      if (identity) valueRef.candidate_index = nextValue.findIndex(candidate => candidate?.candidate_id === identity);
       valueRef._topicCandidateOriginal = clone(nextValue[valueRef.candidate_index]);
     }
     const affected = [];
@@ -773,6 +869,15 @@
 
   async function updateProjectedBoardText(node, text) {
     const ref = node?.topicRef;
+    const task = () => updateProjectedBoardTextNow(node, text);
+    if (ref?.sourceId && ref?.topicId && typeof global._dbQueueEntryMutation === 'function') {
+      return global._dbQueueEntryMutation(`topic:${ref.sourceId}/${ref.topicId}`, liveBoardState()?.path || '', task);
+    }
+    return task();
+  }
+
+  async function updateProjectedBoardTextNow(node, text) {
+    const ref = node?.topicRef;
     if (!ref?.sourceId || !ref?.topicId) throw new Error('トピックIDを確認できません');
     if (node?._topicReadOnly === true) throw new Error('このトピック表示は読み取り専用です');
     const loaded = await global.apiFetch(
@@ -813,6 +918,55 @@
         || (['move', 'detach'].includes(operation) && !source?.placement)) {
       throw new Error('このトピックの配置情報を確認できません');
     }
+    if (source.surface === 'board' && global.GbTopicLiveBridge?.flushOpenedSheet
+        && !(source._savedSnapshotVerified && normalizePath(liveBoardState()?.path) !== normalizePath(source.path))) {
+      const board = liveBoardState();
+      if (!board || normalizePath(board.path) !== normalizePath(source.path)) {
+        throw new Error('元のボードを表示してから操作してください');
+      }
+      global.MeldexBoardTopicIntegration?.commitPendingEdits?.(board);
+      const pending = global.bdWaitPendingNodeTextWrites?.(board.nodes);
+      if (pending && await pending === false) throw new Error('トピックの保存を完了できません');
+      if (board.dirty && await global.bdSave?.() !== true) throw new Error('ボードの保存を完了できません');
+      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path, { owner: board });
+      if (!flushed.ok || flushed.mode !== 'commit') {
+        throw new Error('最新のボードを確認できないため操作を中止しました: ' + (flushed.error?.message || flushed.status || flushed.mode));
+      }
+      const current = viewsByPath.get(normalizePath(source.path));
+      const record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
+      const placement = current?.document?.placements?.find(item =>
+        item.placementId === source.placement?.placementId && topicKey(item.topicRef) === topicKey(source.topicRef));
+      if (!record || !placement) throw new Error('トピックの配置が変更されています');
+      source = { ...source, record, placement, document: current.document,
+        revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
+    }
+    if (source.placement?.surface === 'sheet' && source.record?.legacyPath
+        && !source.record.createdByPlacementMutationId && global.GbTopicLiveBridge?.flushOpenedSheet) {
+      const previousView = viewsByPath.get(normalizePath(source.path));
+      if (await global.waitForPendingDbValueMutations?.(source.path) === false) {
+        throw new Error('保存が続いているため、トピックの操作を中止しました');
+      }
+      if (previousView?.relativePath && previousView.relativePath !== normalizePath(source.path)) {
+        if (await global.waitForPendingDbValueMutations?.(previousView.relativePath) === false) {
+          throw new Error('保存が続いているため、トピックの操作を中止しました');
+        }
+      }
+      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path);
+      if (!flushed.ok || flushed.mode !== 'commit') {
+        throw new Error('最新の保存内容を確認できないため、トピックの操作を中止しました: ' + (flushed.error?.message || flushed.status || flushed.mode));
+      }
+      const current = viewsByPath.get(normalizePath(source.path));
+      const record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
+      const placement = current?.document?.placements?.find(item =>
+        item.placementId === source.placement.placementId && topicKey(item.topicRef) === topicKey(source.topicRef));
+      if (!record || !placement) throw new Error('トピックの配置が変更されています');
+      const pivot = await global.apiFetch(`/pivot?path=${encodeURIComponent(source.path)}`, { silentError: true });
+      if (pivot?.new_format === true && !Object.values(pivot.entities || {}).some(entity => matchesLegacyEntry(current, record, entity))) {
+        throw new Error('元のトピックが変更されています');
+      }
+      source = { ...source, record, placement, document: current.document,
+        revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
+    }
     if (source.readOnly === true) throw new Error('このトピック表示は読み取り専用です');
     let target = explicitTarget || null;
     if (operation === 'duplicate' && !target) {
@@ -824,6 +978,9 @@
     } else if (!target && operation !== 'detach') {
       target = await pickTarget();
       if (!target) return { ok: false, state: 'cancelled' };
+    }
+    if (target?.documentId === source.document?.documentId) {
+      target = { ...target, revision: source.revision, document: source.document };
     }
     const bindings = operation === 'detach' ? []
       : Array.isArray(executeOptions.columnBindings) ? clone(executeOptions.columnBindings)
@@ -980,10 +1137,14 @@
       baseRevision: String(source.revision || ''),
       path: normalizePath(source.path),
       label: String(source.label || 'トピック').slice(0, 256),
+      ...(source.pendingSave ? { pendingSave: true } : {}),
     };
   }
 
   async function resolveTransferredSource(value) {
+    if (value?.surface === 'board' && value?.pendingSave) {
+      throw new Error('元のボードの保存中です。保存が完了してからドラッグしてください');
+    }
     const ref = value?.topicRef;
     const documentId = String(value?.documentId || '');
     if (!ref?.sourceId || !ref?.topicId || !documentId) {
@@ -1014,6 +1175,7 @@
       path: normalizePath(value.path), document: clone(snapshot.viewDocument), revision,
       label: String(value.label || loaded?.topic?.title || 'トピック'),
       surface: String(placement.surface || value.surface || ''), readOnly: false,
+      _savedSnapshotVerified: true,
     };
   }
 
@@ -1151,7 +1313,7 @@
   if (typeof document !== 'undefined') installDragAndDrop();
   global.MeldexTopicPlacementUI = Object.freeze({
     MIME, rememberView, sheetSource, treeSource, boardSource, menuItems, execute, showDetail, pickTarget,
-    renameColumn, projectSheetPivot, refreshView, updateProjectedValue, renameProjectedTopic,
+    renameColumn, projectSheetPivot, projectSheetSnapshot, emptyProjectedValue, refreshView, updateProjectedValue, renameProjectedTopic,
     updateProjectedBoardText, usageTarget, usageCanOpen, openUsage, retryRefresh,
     sourcesFromElement, transferSource, resolveTransferredSource,
   });

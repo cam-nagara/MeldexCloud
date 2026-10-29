@@ -234,10 +234,11 @@
           }
           const oldPath = item.path;
           const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
-          if (res?.new_path && typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+          try {
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
           const newPath = res?.new_path || item.path;
           pastedPaths.push(newPath);
           executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
@@ -255,7 +256,9 @@
     }
 
     if (mode === 'cut') {
-      if (typeof _folderToolbarClipboard !== 'undefined') {
+      if (typeof options.onCutResult === 'function') {
+        options.onCutResult(failed);
+      } else if (typeof _folderToolbarClipboard !== 'undefined') {
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
       if (executedMoves.length && typeof historyPush === 'function') {
@@ -263,9 +266,9 @@
           const from = m.currentPath;
           const r = await apiPost('/outliner/move', { path: from, dest_folder: destination });
           m.currentPath = r?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
-          if (typeof renameAppPathReferences === 'function') {
-            renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-          }
+          try {
+            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
+          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
         };
         const moveUndo = () => replayHistoryItems(executedMoves, false, m => move(m, m.oldParent), options);
         const moveRedo = () => replayHistoryItems(executedMoves, true, m => move(m, destFolder), options);

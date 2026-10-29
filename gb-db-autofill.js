@@ -85,7 +85,7 @@ function _autoFillValueRef(val, propName) {
   return {
     file: val.file || val.path || '',
     property: val.property || propName,
-    candidate_index: val.candidate_index,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
   };
 }
 
@@ -200,7 +200,8 @@ async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath, 
     if (value === '' || value == null) continue;
     const ep = _autoFillEntityPathForWrite(entityPath);
     if (!ep) continue;
-    const entName = _autoFillEntityNameFromPath(ep);
+    const entName = typeof _dbPivotEntityNameForPath === 'function'
+      ? _dbPivotEntityNameForPath(ep, pivotData) : _autoFillEntityNameFromPath(ep);
     const ent = pivotData?.entities?.[entName] || null;
     try {
       const op = await _writeAutoFillValue(ep, ent, pName, value, writeStatus);

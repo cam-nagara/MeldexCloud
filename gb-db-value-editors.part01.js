@@ -66,6 +66,9 @@ function _valueEditorLockMessage(dbPath, propName, ctx) {
 function _valueEditorReload(dbPath, ctx) {
   if (!dbPath || typeof selectDatabase !== 'function') return undefined;
   const reloadCtx = ctx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(reloadCtx)) {
+    return typeof _dbReloadAfterEntityCreate === 'function' ? _dbReloadAfterEntityCreate(reloadCtx, dbPath) : undefined;
+  }
   return selectDatabase(dbPath, reloadCtx || undefined, { silent: true });
 }
 
@@ -77,8 +80,15 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
   const old = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');
   const editedTd = span.closest('td');
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
+  const editorSession = {};
+  if (editedTd) editedTd._dbInlineEditorSession = editorSession;
+  const ownsEditor = () => span.isConnected !== false
+    && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
   const restoreEditedCellSelection = (afterRender = false) => {
     const restore = () => {
+      if (!ownsEditor()) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && focused !== input && !editedTd?.contains?.(focused)) return;
       const target = typeof _cellUiResolveRenderedCell === 'function'
         ? _cellUiResolveRenderedCell(editedTd, entityPath, propName, editedRoot)
         : editedTd;
@@ -123,15 +133,17 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
         else if (saveRef.file) val.file = saveRef.file;
         if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
-        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
-        restoreEditedCellSelection(true);
+        if (ownsEditor()) {
+          if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+          restoreEditedCellSelection(true);
+        }
       } catch (e) {
         window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: saveRef.candidate_index, before: old, value: nv });
         if (editedTd) window.MeldexSheetCellRecovery?.render(editedTd, entityPath, propName, valueCtx);
-        val.value = old;
+        if (val.value === nv) val.value = old;
         showStatus('保存に失敗: ' + (e?.message || e), true);
-        restore();
+        if (ownsEditor()) restore();
       }
     };
     if (typeof _cellUiScheduleAfterPaint === 'function') {

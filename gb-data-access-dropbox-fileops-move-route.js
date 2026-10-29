@@ -5,7 +5,7 @@
       const destFolder = _normalizeFolderPath(body?.dest_folder || '');
       _rejectProductionStructureMutation(sourcePath, '移動');
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
-        throw new Error('制作管理の管理リストエントリの配置は変更できません');
+        throw new Error('制作管理の管理リストトピックの配置は変更できません');
       }
       const source = await _resolveEntryHandle(provider, sourcePath);
       const destEntry = await _resolveEntryHandle(provider, destFolder);
@@ -40,10 +40,10 @@
           : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
       ));
       await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _updateAnnotationsForPathMutation(provider, {
+      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
         action: 'move', oldPath: sourcePath, newPath: conflict.path,
         isFolder: source.kind === 'directory', annotationPlan,
-      });
+      }));
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');

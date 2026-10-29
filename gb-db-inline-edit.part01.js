@@ -201,28 +201,13 @@ function _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName) {
 
 function _dbRefreshEntityRenameInBackground(ctx, dbPath, entityName) {
   if (!dbPath) return;
-  setTimeout(() => {
-    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-    const reload = window.GbDbEntryIdentity
-      ? window.GbDbEntryIdentity.reload(ctx, dbPath)
-      : selectDatabase(dbPath, ctx, {
-          silent: true,
-          skipRecent: true,
-          skipNavPush: true,
-          skipSaveLastView: true,
-          skipAutoVersion: true,
-        });
-    Promise.resolve(reload).then(() => {
-      if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-      setTimeout(() => {
-        if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-        restoreActiveCellByEntityName(entityName, ctx);
-      }, 50);
-    }).catch(() => {});
-  }, 0);
+  // selectDatabase は取得開始時に pivotData を空にする。連続追加の途中では
+  // 使用せず、作成後と同じ入力・保存を守る再読込へまとめる。
+  void _dbReloadAfterEntityCreate(ctx, dbPath);
 }
 
 function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, dbPath) {
+  if (typeof _dbNoteEntityEdit === 'function') _dbNoteEntityEdit(dbPath);
   // 楽観再描画より前に manualOrder も同じ名前へ付け替える。
   // 画面だけ先に新名へ変わって manualOrder が旧名のままだと、保存完了まで一度末尾へ落ちる。
   // 保存失敗時は呼び出し側が newName → oldName で本関数を再実行するため、順序も同時に戻る。
@@ -230,6 +215,17 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
     _dbRenameLocalRefs(dbPath, oldName, newName);
   }
   const changed = _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName);
+  const ownInput = td?.querySelector?.('.entity-rename-input');
+  if (changed && !ownInput?.isConnected && typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) {
+    // 先行保存の失敗で名前を戻す場合も、次の入力欄を全体描画で破棄しない。
+    const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(ctx, oldName) : null;
+    if (row) {
+      row.dataset.entityName = newName;
+      row.querySelectorAll('.entity-name-label').forEach(label => { label.textContent = newName; });
+      row.querySelectorAll('[data-entity-name]').forEach(el => { el.dataset.entityName = newName; });
+    }
+    return true;
+  }
   if (changed && typeof renderPivot === 'function') {
     renderPivot(ctx);
     setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
@@ -244,6 +240,28 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
   td?.querySelector?.('.entity-rename-input')?.remove?.();
   setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
   return false;
+}
+
+function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
+  // 作成待ちの間も改名全体を追跡し、再読込がその隙間へ入らないようにする。
+  const saved = (async () => {
+    if (entity?._topicCanonicalOnly && entity?.topicRef) {
+      return window.MeldexTopicPlacementUI.renameProjectedTopic(entity, newName);
+    }
+    const path = entity?._entry_path || (typeof _dbResolveEntityPathForRename === 'function'
+      ? await _dbResolveEntityPathForRename(dbPath, oldName)
+      : _entityPath(dbPath, oldName));
+    const result = await window.GbDbEntryIdentity.rename({
+      dbPath, oldName, newName, path, ctx,
+      entryId: entity?._id || entity?.entry_id || '',
+    });
+    // 更新日時なども確定した1行の応答から反映する。
+    if (result?.entity_data && typeof _dbApplyCreatedEntityData === 'function') {
+      _dbApplyCreatedEntityData(dbPath, entity, result.entity_data);
+    }
+    return result;
+  })();
+  return typeof _dbTrackValueMutation === 'function' ? _dbTrackValueMutation(dbPath, saved) : saved;
 }
 
 function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
@@ -297,27 +315,18 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
     }
-    const stableEntryId = _renEntities?.[oldName]?._id || _renEntities?.[oldName]?.entry_id || '';
     const projectedEntity = _renEntities?.[oldName];
-    const originalEntryPath = projectedEntity?._entry_path || null;
     // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
     // 保存に失敗したら catch で旧名へ戻す。
     _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
     try {
       if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
-        await window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName);
+        await _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
         restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
         return;
       }
-      const renamePath = originalEntryPath || (typeof _dbResolveEntityPathForRename === 'function'
-        ? await _dbResolveEntityPathForRename(dbPath, oldName)
-        : _entityPath(dbPath, oldName));
-      await window.GbDbEntryIdentity.rename({
-        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
-        entryId: stableEntryId,
-      });
+      await _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
       _dbUndoRename(dbPath, oldName, newName, _renCtx);
-      _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
     } catch(e) {
       // 通信結果不明では、サーバー側だけ成功した変更を画面から消さない。
       if (!e?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -346,13 +355,11 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         if (typeof showStatus === 'function') showStatus('同じ名前のトピックが既にあります: ' + newName, true);
         renderPivot(_renCtx); doAfter(); return;
       }
-      const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';
       const projectedEntity = _renEntitiesTab?.[oldName];
-      const originalEntryPath = projectedEntity?._entry_path || null;
       // 楽観的更新: 先に新名を表示してからサーバ保存
       _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       if (projectedEntity?._topicCanonicalOnly && projectedEntity?.topicRef) {
-        window.MeldexTopicPlacementUI.renameProjectedTopic(projectedEntity, newName)
+        _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity)
           .then(() => setTimeout(doAfter, 50))
           .catch((error) => {
             _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -361,15 +368,8 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           });
         return;
       }
-      const renamePathPromise = originalEntryPath ? Promise.resolve(originalEntryPath) : typeof _dbResolveEntityPathForRename === 'function'
-        ? _dbResolveEntityPathForRename(dbPath, oldName)
-        : Promise.resolve(_entityPath(dbPath, oldName));
-      renamePathPromise.then(renamePath => window.GbDbEntryIdentity.rename({
-        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
-        entryId: stableEntryId,
-      })).then(() => {
+      _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity).then(() => {
         _dbUndoRename(dbPath, oldName, newName, _renCtx);
-        _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         setTimeout(doAfter, 50);
       }).catch((error) => {
         if (!error?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -402,6 +402,8 @@ function restoreActiveCellByProp(propName, ctxOverride) {
 
 function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
   setTimeout(() => {
+    // 前の保存の完了で、既に始まっている次の入力からフォーカスを奪わない。
+    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctxOverride)) return;
     const table = _currentPivotTable(ctxOverride);
     if (!table) return;
     const dataRows = _currentPivotRows(ctxOverride);
@@ -432,6 +434,7 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
 }
 
 function restoreActiveCellByEntityName(entityName, ctxOverride) {
+  if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctxOverride)) return;
   const table = _currentPivotTable(ctxOverride);
   if (!table) return;
   const dataRows = _currentPivotRows(ctxOverride);

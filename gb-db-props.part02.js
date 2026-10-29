@@ -497,6 +497,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     },
     // 互換テスト用: showUnifiedFilterModal()
     { label: 'すべての条件フィルター...', action: () => showUnifiedFilterModal({ ctx }) },
+    { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, '__entity__', { switchTab: true, ctx, source: e?.target || e?.currentTarget }) },
     { type: 'sep' },
     ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' トピック名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });

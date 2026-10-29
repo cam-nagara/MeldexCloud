@@ -314,6 +314,19 @@ function _stampPivotValueEntityPaths(dbPath, pivotData) {
   return pivotData;
 }
 
+function _dbPivotEntityNameForPath(entityPath, pivotData) {
+  const sourcePath = _dbNormalizePath(entityPath);
+  const dbPath = _dbPathFromEntityPath(sourcePath);
+  const path = _dbNormalizePath(window.GbDbEntryIdentity?.resolvePath?.({}, sourcePath, dbPath) || sourcePath);
+  const name = _dbEntityNameFromPath(path);
+  const entities = pivotData?.entities || {};
+  const direct = entities[name];
+  if (direct && (!direct._entry_path || _dbNormalizePath(direct._entry_path) === path)) return name;
+  // 表示名だけの改名では保存先は変わらない。同名の別行より保存先の一致を優先する。
+  const found = Object.entries(entities).find(([, entity]) => entity?._entry_path && _dbNormalizePath(entity._entry_path) === path);
+  return found?.[0] || (direct?._entry_path ? '' : name);
+}
+
 function _resolveEntityPathFromValObj(val) {
   if (!val) return state.currentEntityPath || '';
   if (window.GbDbEntryIdentity) {
@@ -446,6 +459,7 @@ function _markDbAutoVersionDirty(dbPath) {
 const _dbPendingValueMutations = new Map();
 const _dbEntryMutationChains = new Map();
 const _dbEntryRevisionCache = new Map();
+const _dbEntryRevisionIdentityCache = new Map();
 
 function _dbTrackValueMutation(dbPath, promise) {
   const tracked = Promise.resolve(promise);
@@ -475,8 +489,7 @@ async function waitForPendingDbValueMutations(dbPath) {
 
 function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const normalizedEntityPath = _dbNormalizePath(entityPath);
-  const cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
-  if (Number.isInteger(cached) && cached >= 0) return cached;
+  let cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
   const revisions = [
     fallbackValue?.entry_revision,
     fallbackValue?.revision,
@@ -485,7 +498,15 @@ function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const dbPath = _dbPathFromEntityPath(normalizedEntityPath) || '';
   const entityName = _dbEntityNameFromPath(normalizedEntityPath);
   const considerPivot = (pivotData) => {
-    const revision = Number(pivotData?.entities?.[entityName]?._revision);
+    const name = typeof _dbPivotEntityNameForPath === 'function' ? _dbPivotEntityNameForPath(normalizedEntityPath, pivotData) : entityName;
+    const entity = pivotData?.entities?.[name];
+    const id = String(entity?._id || entity?.entry_id || '');
+    const cachedId = _dbEntryRevisionIdentityCache.get(normalizedEntityPath);
+    if (id && cachedId && id !== cachedId) {
+      _dbEntryRevisionCache.delete(normalizedEntityPath);
+      cached = NaN;
+    }
+    const revision = Number(entity?._revision);
     if (Number.isInteger(revision) && revision >= 0) revisions.push(revision);
   };
   if (typeof _dbPaneContextsForPath === 'function') {
@@ -494,7 +515,7 @@ function _dbLatestEntryRevision(entityPath, fallbackValue) {
   if (!dbPath || _dbNormalizePath(state.currentDbPath || '') === _dbNormalizePath(dbPath)) {
     considerPivot(state.pivotData);
   }
-  const known = revisions
+  const known = [cached, ...revisions]
     .map(value => Number(value))
     .filter(value => Number.isInteger(value) && value >= 0);
   return known.length ? Math.max(...known) : null;
@@ -536,8 +557,11 @@ function _dbPropagateEntryRevision(entityPath, revision) {
     addPivot(state.pivotData);
   }
   pivots.forEach(pivotData => {
-    const entityData = pivotData.entities?.[entityName];
+    const name = typeof _dbPivotEntityNameForPath === 'function' ? _dbPivotEntityNameForPath(normalizedEntityPath, pivotData) : entityName;
+    const entityData = pivotData.entities?.[name];
     if (!entityData) return;
+    const id = String(entityData._id || entityData.entry_id || '');
+    if (id) _dbEntryRevisionIdentityCache.set(normalizedEntityPath, id);
     entityData._revision = nextRevision;
     Object.values(entityData).forEach(values => {
       if (!Array.isArray(values)) return;
@@ -546,6 +570,13 @@ function _dbPropagateEntryRevision(entityPath, revision) {
       });
     });
   });
+}
+
+function _dbCandidateIdentityFields(value) {
+  return {
+    ...(value?.candidate_id ? { candidate_id: value.candidate_id } : {}),
+    ...(value?.entry_id ? { entry_id: value.entry_id } : {}),
+  };
 }
 
 async function _apiPutValue(valObj, updates) {
@@ -558,6 +589,7 @@ async function _apiPutValue(valObj, updates) {
       valObj.file = created.path || created.file || valObj.file;
       valObj.entry_path = created.new_path || created.path || valObj.entry_path;
     }
+    Object.assign(valObj, _dbCandidateIdentityFields(created));
     delete valObj._pendingCreate;
   }
   if (valObj?._topicCanonicalOnly && valObj?.topicRef) {
@@ -581,20 +613,33 @@ async function _apiPutValue(valObj, updates) {
     if (valObj.candidate_index != null) {
       body.property = valObj.property;
       body.candidate_index = valObj.candidate_index;
+      if (valObj.candidate_id) body.candidate_id = valObj.candidate_id;
     }
+    if (valObj.entry_id) body.expected_entry_id = valObj.entry_id;
     const targetPath = (valObj.candidate_index != null || !valObj.file || writeEntityPath?.endsWith('.md'))
       ? (writeEntityPath || valObj.file)
       : (valObj.file || writeEntityPath);
-    const res = await apiPut('/value?path=' + encodeURIComponent(targetPath), body);
+    const url = '/value?path=' + encodeURIComponent(targetPath);
+    let res;
+    try { res = await apiPut(url, body); }
+    catch (error) {
+      const ambiguous = error?.name === 'AbortError' || error?.name === 'TypeError'
+        || /timeout|network|failed to fetch/i.test(String(error?.message || ''));
+      if (!body.operation_id || !ambiguous) throw error;
+      res = await apiPut(url, body);
+    }
     _dbApplyAutoTaskRenameResult(res);
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;
     if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
+    if (res?.candidate_id) valObj.candidate_id = res.candidate_id;
     if (res?.revision != null) valObj.entry_revision = Number(res.revision);
     const entityPath = _resolveEntityPathFromValObj(valObj);
     if (res?.revision != null) _dbPropagateEntryRevision(entityPath, res.revision);
     const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
-    const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
+    const replacement = Array.isArray(res?.candidates) ? res.candidates : null;
+    const nextValue = replacement ? (replacement.find(v => ['採用', '掲載済み'].includes(v.status)) || replacement[0])?.value || ''
+      : updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
     _markDbAutoVersionDirty(dbPath);
     try {
       if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
@@ -649,6 +694,8 @@ function _syncValueRefAfterSave(saveRef, target) {
   if (saveRef.folder_path !== undefined) target.folder_path = saveRef.folder_path;
   if (saveRef.property !== undefined) target.property = saveRef.property;
   if (saveRef.candidate_index !== undefined) target.candidate_index = saveRef.candidate_index;
+  if (saveRef.candidate_id !== undefined) target.candidate_id = saveRef.candidate_id;
+  if (saveRef.entry_id !== undefined) target.entry_id = saveRef.entry_id;
   if (saveRef.entry_revision !== undefined) target.entry_revision = saveRef.entry_revision;
   if (saveRef._topicCandidateOriginal !== undefined) {
     target._topicCandidateOriginal = JSON.parse(JSON.stringify(saveRef._topicCandidateOriginal));
@@ -727,6 +774,20 @@ function _entityDefaultName(baseName, index) {
   return index <= 1 ? base : base + index;
 }
 
+function _entityNextDefaultIndex(existingNames, baseName) {
+  const base = String(baseName || '無題').trim() || '無題';
+  let next = 1;
+  for (const name of existingNames || []) {
+    if (name === base) next = Math.max(next, 2);
+    else if (String(name).startsWith(base)) {
+      const suffix = String(name).slice(base.length);
+      const number = /^[1-9]\d*$/.test(suffix) ? Number(suffix) : NaN;
+      if (Number.isSafeInteger(number + 1)) next = Math.max(next, number + 1);
+    }
+  }
+  return next;
+}
+
 const _dbPendingEntityCreates = new Map();
 
 async function waitForPendingDbEntityCreates(dbPath) {
@@ -748,12 +809,13 @@ function _dbNextLocalEntityName(dbPath, existingNames, baseName) {
   const used = new Set((existingNames || []).map(name => String(name || '')).filter(Boolean));
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
     if (name) used.add(name);
   });
-  let index = 1;
+  let index = _entityNextDefaultIndex(used, baseName);
   let candidate = _entityDefaultName(baseName, index);
   while (used.has(candidate)) {
     index += 1;
@@ -815,6 +877,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   // 同じ候補名へ収束し、409 が連鎖して「同名エントリが多数」に至るのを防ぐ。
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
@@ -822,7 +885,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   });
   const bodyExtra = options.body && typeof options.body === 'object' ? options.body : {};
   const baseName = String(options.baseName || options.name || '無題').trim() || '無題';
-  let index = 1;
+  let index = _entityNextDefaultIndex(used, baseName);
   let lastError = null;
   for (let attempt = 0; attempt < 50; attempt++) {
     let name = String(options.name || '').trim();
@@ -843,7 +906,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
         { silentError: true, timeoutMs: 120000 }
       );
       const path = (response && (response.path || response.entry_path)) || `${dbPath}/${name}.md`;
-      return { response, name, path };
+      return { response, name: response?.name || name, path };
     } catch (error) {
       lastError = error;
       if (_isEntityCreateNameConflict(error)) continue;

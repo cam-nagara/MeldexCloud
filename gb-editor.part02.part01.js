@@ -544,7 +544,7 @@ function _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey) {
     e2eId: 'entity-freetext-conflict-pending-banner',
     onConfirm: () => {
       _entityFreeTextReviewConflict(hostEl, entityPath, documentKey)
-        .catch(() => showStatus('エントリ本文の競合確認に失敗しました', true));
+        .catch(() => showStatus('トピック本文の競合確認に失敗しました', true));
     },
   });
 }
@@ -570,7 +570,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     : String(record?.localMd || '');
   window.MeldexConflictPendingBanner?.hide?.(documentKey);
   const keepLocal = typeof cfConfirm === 'function'
-    ? await cfConfirm('このエントリ本文は他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は下書きに残ります）')
+    ? await cfConfirm('このトピック本文は他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は下書きに残ります）')
     : false;
   try {
     if (!hostEl || hostEl.dataset.entityPath !== entityPath) {
@@ -589,7 +589,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
           });
       const resolved = coordinator?.resolveConflict?.(documentKey, generation);
       if (coordinator && !resolved) {
-        throw new Error('エントリ本文の競合状態が更新されたため、上書き結果を確定できません');
+        throw new Error('トピック本文の競合状態が更新されたため、上書き結果を確定できません');
       }
       hostEl.dataset.lastSavedMd = localMd;
       if (target.mode === 'value') {
@@ -608,7 +608,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
       coordinator?.bindDocumentIdentity?.(target.path, result || {});
       if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
       await window.MeldexDraftRecovery?.markSynced?.(target.path);
-      showStatus('自分の編集でエントリ本文を上書き保存しました');
+      showStatus('自分の編集でトピック本文を上書き保存しました');
       return;
     }
 
@@ -635,11 +635,11 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     hostEl.dataset.lastSavedTransportRevision = '';
     const resolved = coordinator?.resolveConflict?.(documentKey, generation);
     if (coordinator && !resolved) {
-      throw new Error('エントリ本文の競合状態が更新されたため、再読込結果を確定できません');
+      throw new Error('トピック本文の競合状態が更新されたため、再読込結果を確定できません');
     }
     if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
     _bindEntityFreeTextParticipant(hostEl, entityPath);
-    showStatus('最新版のエントリ本文を読み込みました');
+    showStatus('最新版のトピック本文を読み込みました');
   } catch (error) {
     _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record);
     throw error;

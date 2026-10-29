@@ -508,7 +508,7 @@
             editorState.saveRequested = true;
           }
         } catch {
-          if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
+          if (typeof showStatus === 'function') showStatus('トピック本文の保存に失敗しました', true);
           ok = false;
           break;
         }

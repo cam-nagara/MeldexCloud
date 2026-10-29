@@ -396,7 +396,7 @@ function _dbTreeValueRef(dbPath, entityName, propName, value, rawIndex, data) {
   return {
     file: value?.file || _entityPath(dbPath, entityName, data),
     property: value?.property || propName,
-    candidate_index: value?.candidate_index != null ? value.candidate_index : rawIndex,
+    candidate_id: value?.candidate_id, entry_id: value?.entry_id, candidate_index: value?.candidate_index != null ? value.candidate_index : rawIndex,
     value: value?.value,
     status: value?.status,
   };
@@ -425,7 +425,7 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
   } else {
     const entityPath = _entityPath(dbPath, entityName, data);
     const result = await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
-    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_index: result?.candidate_index ?? raw.length };
+    const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length };
     entityData[propName] = [...raw, added];
     if (typeof _dbUndoValue === 'function') {
       _dbUndoValue(label, added, '', nextValue, undefined, undefined, { dbPath, ctx });

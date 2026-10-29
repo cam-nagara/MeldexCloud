@@ -40,6 +40,7 @@
     { label: 'シート', icon: 'database', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
     { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
+    ...(typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable() ? [{ label: 'マップ', icon: 'map', type: 'map' }] : []),
     { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
   ];
 
@@ -52,6 +53,7 @@
       { label: 'シート', icon: 'database', type: 'database' },
       { label: 'ボード', icon: 'presentation', type: 'board' },
       { label: 'フォーム', icon: 'clipboardList', type: 'form-app' },
+      ...(typeof MeldexMapDocument !== 'undefined' && MeldexMapDocument.isAvailable() ? [{ label: 'マップ', icon: 'map', type: 'map' }] : []),
       { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
     ],
   }];
@@ -61,6 +63,7 @@
     scriptnote: 'シナリオ',
     board: 'ボード',
     'form-app': 'フォーム',
+    map: 'マップ',
     database: 'シート',
     calendar: 'カレンダー',
     csv: 'CSV',

@@ -149,7 +149,7 @@
       ? checker({ path: sourcePath, type: isDirectory ? 'folder' : '' })
       : true;
     if (fits) return;
-    throw new Error(`シートの中にはエントリだけを置けます。「${_basename(sourcePath)}」はシートの外へ移動してください`);
+    throw new Error(`シートの中にはトピックだけを置けます。「${_basename(sourcePath)}」はシートの外へ移動してください`);
   }
 
   const PRODUCTION_RESERVED_ENTRY_PROPERTIES = Object.freeze({

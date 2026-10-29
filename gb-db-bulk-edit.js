@@ -297,7 +297,7 @@ async function _bulkReplaceEntityPropValues(entityPath, prop, values) {
   const current = [...((entity?.properties || {})[prop] || [])].sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
   for (const v of current) {
     if (v.candidate_index != null && v.file) {
-      await _apiPutValue({ file: v.file, entry_path: entityPath, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+      await _apiPutValue({ file: v.file, entry_path: entityPath, property: prop, candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v.candidate_index }, { _delete: true });
     } else if (v.file) {
       await apiPost('/outliner/delete', { path: v.file });
     }
@@ -682,18 +682,18 @@ function _showBulkEditModal(entityNames, ctx) {
             const extras = existingVals.filter(v => v !== primary).sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
             for (const v of extras) {
               if (v.candidate_index != null && v.file) {
-                await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+                await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_id: v?.candidate_id, entry_id: v?.entry_id, candidate_index: v.candidate_index }, { _delete: true });
               } else if (v.file) {
                 await _apiPutValue({ file: v.file, entry_path: ep, property: prop }, { _delete: true });
               }
             }
           } else {
             const res = await _apiPostValue(ep, prop, value, status, '');
-            createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+            createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index };
           }
         } else {
           const res = await _apiPostValue(ep, prop, value, status, '');
-          createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+          createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index };
         }
         if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {
@@ -780,10 +780,22 @@ async function _bulkDeleteEntities(entityNames, ctx) {
   if (!names.length) return;
   const entries = names.map(name => ({
     name,
-    path: _entityPath(dbPath, name),
+    path: _entityPath(dbPath, name, ctx?.pivotData),
     entryId: String(ctx?.pivotData?.entities?.[name]?._id || ''),
     assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
+  // 名前から保存先を推定してはいけない。改名済みの実体を旧名の仮行が指すことがある。
+  const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  const valid = entries.every(entry => {
+    const saved = pivot?.entities?.[entry.name];
+    return saved && (pivot.new_format !== true || (entry.entryId && saved._id === entry.entryId))
+      && _entityPath(dbPath, entry.name, pivot) === entry.path;
+  });
+  if (!valid) {
+    await window.GbDbEntryIdentity.reload(ctx, dbPath);
+    showStatus('選択した行の保存状態が変わったため削除を中止しました。行を選び直してください', true);
+    return;
+  }
   const confirmMessage = `${names.length} 件のトピックをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
@@ -800,7 +812,7 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     confirmation: confirmed,
   });
   const deletedItems = result.trashRefs;
-  const ok = deletedItems.length;
+  const ok = result.successes.length;
   const fail = result.failures.length;
   _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
   const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;

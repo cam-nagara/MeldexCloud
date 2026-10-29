@@ -330,7 +330,7 @@ async function _dbRestoreDeletedOptionWrites(writes) {
       const result = await _apiPostValue(old.entry_path || old.file, old.property, write.oldValue,
         old.status || '採用', old.note || '', old.rich_html, old);
       restored.push({ ref: { ...old, file: result.path || old.file,
-        candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index, entry_revision: result.revision }, write, created: true });
     }
   } catch (error) {
     // Undoの途中で失敗しても、成功した分だけ復元された状態を残さない。

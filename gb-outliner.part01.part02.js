@@ -331,7 +331,7 @@
     // 設定「クリックで開く」が単クリックの場合: 選択に続けてそのまま開く。
     // フォルダも含め全項目種別に一貫して適用する（フォルダだけ例外にすると
     // 「なぜこれだけ2回押さないと開かないのか」という不整合が生じるため）。
-    // activateNode はフォルダなら開く+展開、ファイルなら対応するビューを開く。
+    // activateNode は対応するビューを開く。フォルダのツリー展開状態は変えない。
     if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
       window.GBOutlinerActivation.activateNode(div);
     }
@@ -455,17 +455,21 @@
       return;
     }
     e.preventDefault();
+    e.stopPropagation();
     if (!draggedNode) {
       const externalItems = _outlinerExternalDragItems(e);
       const bridgeCandidate = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
-      if ((!externalItems.length && !bridgeCandidate) || !(isFolder || isDB) || item._isRoot && !item.path
-          || externalItems.some(source => source.type === 'entity') || isItemLocked(item.path)) {
+      const position = _outlinerRowDropPosition(e, row, item);
+      const target = _outlinerRowDropTarget(div, item, position, rootPath);
+      clearDragIndicators();
+      if ((!externalItems.length && !bridgeCandidate) || !target || (e.altKey && position !== 'inside') || isItemLocked(target.path)
+          || externalItems.some(source => source.type === 'entity' || source.linked || source.path === item.path
+            || _treeNodeIsAncestor({ _nodeData: source }, { _nodeData: target }))) {
         e.dataTransfer.dropEffect = 'none';
         return;
       }
-      e.dataTransfer.dropEffect = 'move';
-      clearDragIndicators();
-      row.classList.add('drag-over-inside');
+      e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
+      row.classList.add('drag-over-' + position);
       return;
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
@@ -485,21 +489,11 @@
       return;
     }
 
-    const rect = row.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const h = rect.height;
-
-    if (isFolder || isDB) {
-      if (y < h * 0.25) row.classList.add('drag-over-above');
-      else if (y > h * 0.75) row.classList.add('drag-over-below');
-      else row.classList.add('drag-over-inside');
-    } else {
-      if (y < h * 0.5) row.classList.add('drag-over-above');
-      else row.classList.add('drag-over-below');
-    }
+    row.classList.add('drag-over-' + _outlinerRowDropPosition(e, row, item));
   });
 
-  row.addEventListener('dragleave', () => {
+  row.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget && row.contains(e.relatedTarget)) return;
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
 
@@ -519,7 +513,13 @@
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
-      if (isDB && typeof MeldexSheetEntryAttachments !== 'undefined' && !isItemLocked(item.path)) {
+      // Capture the indicated position before asynchronous payload resolution or
+      // dragend clears the marker. The same geometry drives dragover and drop.
+      const position = _outlinerRowDropPosition(e, row, item);
+      const target = _outlinerRowDropTarget(div, item, position, rootPath);
+      clearDragIndicators();
+      if (!target || isItemLocked(target.path)) return;
+      if (position === 'inside' && isDB && typeof MeldexSheetEntryAttachments !== 'undefined') {
         clearDragIndicators();
         const handled = await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
         if (handled > 0) return;
@@ -527,15 +527,18 @@
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
         const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        const targetPath = String(item.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        return source.type !== 'entity' && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
+        const targetPath = String(target.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        return source.type !== 'entity' && !source.linked && sourcePath !== String(item.path || '').replace(/\\/g, '/').toLowerCase()
+          && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
       });
       clearDragIndicators();
-      if (!(isFolder || isDB) || isItemLocked(item.path) || externalItems.length === 0) {
+      if (externalItems.length === 0) {
         if (resolved) MeldexDnD.failDrop(resolved);
         return;
       }
-      const completed = await _moveExternalItemsIntoOutlinerFolder(externalItems, item);
+      const completed = e.altKey
+        ? (position === 'inside' ? await _linkExternalItemsIntoOutlinerFolder(externalItems, item) : 0)
+        : await _moveExternalItemsIntoOutlinerFolder(externalItems, target);
       if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
       else if (resolved) MeldexDnD.failDrop(resolved);
       return;
@@ -638,7 +641,17 @@
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
     (async () => {
+      const placement = { ..._outlinerRowDropTarget(div, item, position, rootPath), path: destFolder };
+      let siblings = null;
+      if (nodes.some(n => {
+        const path = n._nodeData?.path || '';
+        return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
+      })) {
+        try { siblings = await _outlinerDropSiblings(placement); }
+        catch (error) { showStatus('移動先を確認できませんでした: ' + error.message, true); return; }
+      }
       const moved = [];
+      const movedItems = [];
       let movedAcrossFolders = false;
       let processed = 0;
       const failures = [];
@@ -654,11 +667,13 @@
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
         if (destFolder === srcFolder) {
           moved.push(n);
+          movedItems.push({ ...dragData, oldPath: dragData.path });
           processed += 1;
           window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
           continue;
         }
         movedAcrossFolders = true;
+        let moveCommitted = false;
         try {
           const oldPath = dragData.path;
           const res = await apiPost('/outliner/move', {
@@ -666,7 +681,14 @@
             dest_folder: destFolder,
             conflict_policy: 'error',
           });
+          moveCommitted = true;
+          moved.push(n);
+          movedItems.push({ ...dragData, oldPath, path: res.new_path || oldPath, name: res.new_name || dragData.name });
           if (res.new_path) {
+            // Rebind save targets before any fallible DOM/view callbacks.
+            if (typeof renameAppPathReferences === 'function') {
+              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
+            }
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
             } else {
@@ -675,14 +697,16 @@
               const lbl = n.querySelector('.tree-label');
               if (lbl && res.new_name) lbl.textContent = res.new_name;
             }
-            window.GBOutlinerVirtualRender?.renamePath(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
-            if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
-            }
+            window.GBOutlinerVirtualRender?.renamePath?.(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
           }
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-          moved.push(n);
         } catch (err) {
+          if (moveCommitted) {
+            // The filesystem is already committed. Do not report a failed move
+            // or skip the authoritative refresh because a view callback failed.
+            console.warn('[Meldex] 移動後の表示を再読み込みします', err);
+            continue;
+          }
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
           failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
@@ -693,16 +717,18 @@
         }
       }
       window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${moved.length}件移動・${failures.length}件失敗`, details: failures });
-      if (moved.length === 0) return;
       // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
       // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
       // サーバー上の確定状態を一度だけ読み直し、部分成功も含めてツリー全体を
       // 同じスナップショットへ揃える。同一フォルダ内の並べ替えは下の局所更新を維持する。
       if (movedAcrossFolders) {
+        try { _saveOutlinerDropPlacement(placement, siblings || [], movedItems); }
+        catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
         await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
         return;
       }
+      if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
       // 適切に後始末する（refresh()側の再マウントに新しい行要素の生成を任せる）。
@@ -792,6 +818,8 @@
 }
 
 function clearDragIndicators() {
+  const home = document.getElementById('body-home');
+  if (home) home.style.outline = '';
   document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
     el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });

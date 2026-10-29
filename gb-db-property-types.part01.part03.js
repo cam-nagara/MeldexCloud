@@ -4,7 +4,7 @@
         <input id="pt-calsync-title-tmpl" type="text" value="${esc(safe.titleTemplate || '{entryName}')}" placeholder="{entryName}">
       </div>
       <div class="field"><label>説明テンプレート ${fieldHelp('テンプレ変数に加え、トピックの採用列名も {列名} で参照できます')}</label>
-        <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストエントリ: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
+        <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストトピック: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
       </div>
       <div class="field"><label>色ルール (JSON 配列) ${fieldHelp('上から順に評価し、最初にマッチしたルールの color を使います。default ルールがフォールバックになります')}</label>
         <textarea id="pt-calsync-color-rules" rows="5" placeholder='[

@@ -11,6 +11,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     { type: 'checkbox', label: 'チェックボックス', icon: 'checkSquare' },
     { type: 'color', label: 'カラー', icon: 'palette' },
     { type: 'date', label: '日時', icon: 'calendar' },
+    { type: 'location', label: '場所', icon: 'mapPin' },
     { type: 'link', label: 'リンク', icon: 'externalLink' },
     { type: 'multi-link', label: 'リンク（複数）', icon: 'link2' },
     { type: 'image', label: '画像・ファイル', icon: 'image' },

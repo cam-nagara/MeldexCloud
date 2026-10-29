@@ -957,7 +957,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       if (rowNum !== 1 && !items.length) return;
       const swatchesEl = document.createElement('div');
       swatchesEl.className = 'gb-palette-row-swatches gb-palette-row-swatches--flat';
-      if (rowNum === 1) {
+      if (rowNum === 1 && options.allowTransparent !== false) {
         const transSwatch = document.createElement('div');
         transSwatch.className = 'gb-swatch';
         transSwatch.dataset.type = 'transparent';
@@ -1083,6 +1083,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     // 空の見出しは隠す。フッターの書き出し／読み込みは0色でも利用できる。
     customSectionHeaderRow.hidden = customs.length === 0;
     customs.forEach((c, i) => {
+      if (c === 'transparent' && options.allowTransparent === false) return;
       const swatch = document.createElement('div');
       swatch.className = 'gb-swatch'; swatch.dataset.type = 'custom';
       swatch.dataset.hex = c.toLowerCase(); swatch.dataset.customIdx = String(i);

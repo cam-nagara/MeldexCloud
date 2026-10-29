@@ -29,6 +29,7 @@ function setCurrentViewIdx(dbPath, idx, options = {}) {
     historyLabel: label,
     historyDetail: options.detail || '',
     skipHistory: options.skipHistory === true || !label,
+    skipBackend: options.skipBackend === true,
   });
 }
 
@@ -436,7 +437,7 @@ function renderDbNoViewsGuide(ctx) {
 }
 
 /* ==============================
-   DB設定モーダル（エントリ名テンプレート等）
+   DB設定モーダル
    ============================== */
 function _setDbCalendarMappingFallbackOnViews(cfg, mapping) {
   const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
@@ -452,8 +453,6 @@ function _setDbCalendarMappingFallbackOnViews(cfg, mapping) {
 
 async function _showDbConfigModal(dbPath, ctx) {
   const cfg = getDbViewConfig(dbPath);
-  const nameTemplate = cfg.entryNameTemplate || '';
-
   const localCtx = ctx || _currentPaneState();
   let pivotData = localCtx?.dbPath === dbPath ? localCtx.pivotData : null;
   if (!pivotData && state.currentDbPath === dbPath) pivotData = state.pivotData;
@@ -467,14 +466,12 @@ async function _showDbConfigModal(dbPath, ctx) {
   }
   if (!dbMetadata) dbMetadata = { property_types: null, calendar_mapping: null };
   const props = pivotData ? pivotData.properties : [];
-  const propHints = props.map(p => `{${p}}`).join(', ');
 
   const activeView = typeof getCurrentDbViewConfigEntry === 'function'
     ? getCurrentDbViewConfigEntry(dbPath, { ctx: localCtx })
     : null;
   const showFooter = activeView ? activeView.showFooter === true : false;
   const thumbnailSize = activeView?.thumbnailSize || 'small';
-  const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
   const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
@@ -486,10 +483,6 @@ async function _showDbConfigModal(dbPath, ctx) {
   const content = document.createElement('div');
   content.className = 'db-config-modal-body';
   content.innerHTML = `
-      <div class="field">
-        <label for="dbcfg-name-template">トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
-        <input id="dbcfg-name-template" class="gb-input" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
-      </div>
       <div class="field">
         <div class="gb-check-help-row">
           <label class="gb-check dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox" aria-controls="dbcfg-status-editor" aria-expanded="${statusOn}"${statusOn ? ' checked' : ''}> ステータス機能</label>
@@ -506,9 +499,8 @@ async function _showDbConfigModal(dbPath, ctx) {
         <div class="dbcfg-section-content">
         <div class="dbcfg-display-grid">
           <label class="gb-check dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
-          <label class="gb-check dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
           <div class="dbcfg-inline-field gb-field-select-row">
-            <label for="dbcfg-thumbnail-size">サムネイル</label>
+            <label for="dbcfg-thumbnail-size">画像リンクのサムネイル ${fieldHelp('テキストなどのセルに画像ファイルのパスを入力した場合のプレビューサイズです。画像列の表示サイズは、その列の列設定にある「表の画像高さ」で変更します', { e2eId: 'dbcfg-thumbnail-size-help' })}</label>
             <select id="dbcfg-thumbnail-size" class="gb-select">
               <option value="small"${thumbnailSize !== 'large' ? ' selected' : ''}>小</option>
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
@@ -552,7 +544,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const modalApi = globalThis.GBUI.createModal({
     id: 'db-config', title: 'シート設定', body: content,
     footer: [templateButton, footerSpacer, cancelButton, saveButton],
-    variant: 'standard', geometryKey: 'db-config', minWidth: '0', initialFocus: '#dbcfg-name-template',
+    variant: 'standard', geometryKey: 'db-config', minWidth: '0', initialFocus: '#dbcfg-status-enabled',
     returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
     closeLabel: 'シート設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
     onBeforeClose: reason => reason === 'saved' || (!busy && !childOpen),
@@ -713,13 +705,11 @@ async function _showDbConfigModal(dbPath, ctx) {
       saveButton.focus({ preventScroll: true });
     };
     const c = _cloneDbViewObject(getDbViewConfig(dbPath));
-    c.entryNameTemplate = o.querySelector('#dbcfg-name-template').value.trim();
     const targetView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
       ? _getCurrentDbViewConfigEntryFromConfig(c, { ctx: localCtx })
       : null;
     const viewSettingsTarget = targetView || c;
     viewSettingsTarget.showFooter = !!o.querySelector('#dbcfg-show-footer')?.checked;
-    viewSettingsTarget.entityColumnPinned = o.querySelector('#dbcfg-entity-pinned')?.checked !== false;
     viewSettingsTarget.thumbnailSize = o.querySelector('#dbcfg-thumbnail-size')?.value || 'small';
     c.statusEnabled = !!o.querySelector('#dbcfg-status-enabled')?.checked;
     c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'right-sidebar';

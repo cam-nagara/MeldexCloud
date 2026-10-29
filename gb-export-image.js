@@ -221,7 +221,7 @@ const MeldexExportImage = (() => {
       csv: () => (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV',
       calendar: () => 'カレンダー',
       'entity-layout': () => (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
-        ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'エントリレイアウト')
+        ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'トピックレイアウト')
         : 'エントリレイアウト',
     };
 

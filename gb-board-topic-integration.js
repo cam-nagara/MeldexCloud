@@ -118,7 +118,14 @@
   }
 
   function keepTopicRefs(values) {
-    return (Array.isArray(values) ? values : []).map(resolveTopicRef).filter(Boolean);
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).map(resolveTopicRef).filter((ref) => {
+      if (!ref) return false;
+      const key = JSON.stringify([ref.sourceId, ref.topicId]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   function keepEdges(values) {
@@ -222,7 +229,7 @@
       defaultSurface: 'board',
       membership: {
         mode: 'manual',
-        manualTopicRefs: (board.nodes || []).map((node) => clone(node.topicRef)),
+        manualTopicRefs: keepTopicRefs((board.nodes || []).map((node) => node.topicRef)),
         queryDefinition: null,
       },
       sources: [{ sourceId: 'local-vault' }],
@@ -267,7 +274,7 @@
     const document = normalizeTopicDocument(board.topicViewDocument, board, board.path);
     if (!document.boardViews.length) {
       document.membership = document.membership || { mode: 'manual' };
-      document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+      document.membership.manualTopicRefs = keepTopicRefs((board.nodes || []).map((node) => node.topicRef));
       board.topicViewDocument = document;
       board.activeBoardViewId = null;
       return null;
@@ -282,7 +289,7 @@
       document.boardViews[targetIndex], runtimeForCapture(board),
     );
     document.membership = document.membership || { mode: 'manual' };
-    document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+    document.membership.manualTopicRefs = keepTopicRefs((board.nodes || []).map((node) => node.topicRef));
     board.topicViewDocument = document;
     board.activeBoardViewId = document.boardViews[targetIndex].boardViewId;
     return document.boardViews[targetIndex];
@@ -324,6 +331,9 @@
         positions[key] = { ...clone(position), topicRef };
       });
       view.positionsByTopicRef = positions;
+      Object.values(view.positionsByNodeId || {}).forEach(position => {
+        if (position?.topicRef) position.topicRef = replaceTopicRef(position.topicRef, replacements);
+      });
       (view.groups || []).forEach((group) => {
         group.topicRefs = (group.topicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       });
@@ -388,34 +398,40 @@
     const records = new Map((detail.topicRecords || []).map(record => [
       topicKey(record?.topicRef || canonicalRef(detail.sourceId, record?.topicId)), record,
     ]));
-    const existing = new Map((board.nodes || []).filter(node => node?.topicRef)
-      .map(node => [topicKey(node.topicRef), node]));
+    const existing = new Map();
+    (board.nodes || []).filter(node => node?.topicRef).forEach(node => {
+      const key = topicKey(node.topicRef);
+      if (!existing.has(key)) existing.set(key, []);
+      existing.get(key).push(node);
+    });
     const unbound = (board.nodes || []).filter(node => !node?.topicRef);
     const nodes = [];
     placements.forEach((placement, index) => {
       const key = topicKey(placement.topicRef);
       const record = records.get(key);
       const position = placement.position || placement.boardPosition || {};
-      let node = existing.get(key);
-      if (!node) {
+      const visuals = existing.get(key) || [];
+      if (!visuals.length) {
         const id = `topic-${hashText(key)}`;
         const x = Number.isFinite(+position.x) ? +position.x : 40 + (index % 5) * 180;
         const y = Number.isFinite(+position.y) ? +position.y : 40 + Math.floor(index / 5) * 100;
-        node = typeof global.bdNode === 'function'
+        const node = typeof global.bdNode === 'function'
           ? global.bdNode(recordText(record), x, y, position.w, position.h, { id, topicRef: clone(placement.topicRef) })
           : { id, text: recordText(record), x, y, w: position.w || 160, h: position.h || 0,
             topicRef: clone(placement.topicRef) };
-      } else {
+        visuals.push(node);
+      }
+      visuals.forEach(node => {
         node.topicRef = clone(placement.topicRef);
         if (record && !global.bdHasPendingNodeTextWrite?.(node)) node.text = recordText(record);
-        if (Number.isFinite(+position.x)) node.x = +position.x;
-        if (Number.isFinite(+position.y)) node.y = +position.y;
-      }
-      node._topicCanonicalOnly = (record?.originDocumentId
-        && record.originDocumentId !== document.documentId)
-        || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
-      node._topicReadOnly = detail.readOnly === true;
-      nodes.push(node);
+        if (visuals.length === 1 && Number.isFinite(+position.x)) node.x = +position.x;
+        if (visuals.length === 1 && Number.isFinite(+position.y)) node.y = +position.y;
+        node._topicCanonicalOnly = !record?.legacyNodeId || (record?.originDocumentId
+          && record.originDocumentId !== document.documentId)
+          || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
+        node._topicReadOnly = detail.readOnly === true;
+        if (!nodes.some(item => item.id === node.id)) nodes.push(node);
+      });
     });
     board.nodes = [...unbound, ...nodes];
     board.topicViewDocument = document;
@@ -425,7 +441,7 @@
   }
 
   function canonicalizeBoard(board, detail) {
-    commitPendingEdits(board);
+    if (board.editing || board.dirty) return { replacementCount: 0, placementsChanged: false, displayChanged: false, deferred: true };
     const sourceId = String(detail?.sourceId || '');
     const mapping = detail?.legacyNodeTopicIds || {};
     const replacements = new Map();
@@ -436,6 +452,9 @@
       node.topicRef = canonicalRef(sourceId, topicId);
     });
     if (replacements.size) {
+      board.nodes.forEach(node => {
+        if (node.topicRef) node.topicRef = replaceTopicRef(node.topicRef, replacements);
+      });
       board.topicViewDocument = replaceDocumentTopicRefs(board.topicViewDocument, replacements);
       board.hiddenTopicRefs = (board.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
       applyView(board, activeView(board));
@@ -485,7 +504,7 @@
       const result = await original.apply(this, arguments);
       if (result === true && savedPath && !current?._topicBridgeDestroyed
           && !current?.readOnly && !current?.readonly && !current?.isReadOnly) {
-        global.GbTopicLiveBridge?.scheduleAfterSave?.(savedPath, { reason: 'board-save' });
+        global.GbTopicLiveBridge?.scheduleAfterSave?.(savedPath, { reason: 'board-save', owner: current });
       }
       return result;
     };
@@ -497,9 +516,11 @@
 
   function viewGroupsToLegacy(board, groups) {
     const nodeByRef = new Map((board.nodes || []).map((node) => [topicKey(node.topicRef), node.id]));
+    const liveIds = new Set((board.nodes || []).map(node => node.id));
     return (groups || []).map((group) => ({
       ...clone(group), id: group.groupId, groupId: group.groupId,
-      nodeIds: (group.topicRefs || []).map((ref) => nodeByRef.get(topicKey(ref))).filter(Boolean),
+      nodeIds: Array.isArray(group.nodeIds) ? group.nodeIds.filter(id => liveIds.has(id))
+        : (group.topicRefs || []).map((ref) => nodeByRef.get(topicKey(ref))).filter(Boolean),
     }));
   }
 
@@ -513,7 +534,9 @@
         delete result[side]; delete result[`${side}Point`]; delete result[`${side}Anchor`];
         if (endpoint.targetKind === 'point') result[`${side}Point`] = clone(endpoint.targetRef);
         else if (endpoint.targetKind === 'topic') {
-          result[side] = nodeByRef.get(topicKey(endpoint.targetRef)) || '';
+          const visual = (board.nodes || []).find(node => node.id === line[side]);
+          result[side] = visual && topicKey(visual.topicRef) === topicKey(endpoint.targetRef)
+            ? visual.id : nodeByRef.get(topicKey(endpoint.targetRef)) || '';
         } else if (endpoint.targetKind === 'group') {
           result[side] = typeof endpoint.targetRef === 'string'
             ? endpoint.targetRef : endpoint.targetRef?.groupId || '';
@@ -531,11 +554,20 @@
     if (!view || !global.MeldexBoardTopicViews) return;
     const next = global.MeldexBoardTopicViews.applyViewState(view, { nodes: board.nodes || [] });
     board.nodes = next.nodes;
+    const canonicalIds = new Set(view.canonicalTopicNodeIds || []);
+    board.nodes.forEach(node => { if (canonicalIds.has(node.id)) node._topicCanonicalOnly = true; });
     board.groups = viewGroupsToLegacy(board, view.groups);
     board.connections = viewLinesToLegacy(board, view.lines);
     board.hiddenTopicRefs = clone(view.hiddenTopicRefs || []);
     const collapsed = new Set((view.collapsedTopicRefs || []).map(topicKey));
-    board.nodes.forEach(node => { node.collapsed = !!node.topicRef && collapsed.has(topicKey(node.topicRef)); });
+    const counts = new Map();
+    board.nodes.forEach(node => counts.set(topicKey(node.topicRef), (counts.get(topicKey(node.topicRef)) || 0) + 1));
+    board.nodes.forEach(node => {
+      const own = view.positionsByNodeId?.[node.id];
+      node.collapsed = own && topicKey(own.topicRef) === topicKey(node.topicRef)
+        ? !!own.collapsed : counts.get(topicKey(node.topicRef)) > 1 ? !!node.collapsed
+          : !!node.topicRef && collapsed.has(topicKey(node.topicRef));
+    });
     board.topicStyleOverrides = clone(view.styleOverrides || {});
     board.panX = Number(view.camera?.pan?.x) || 0;
     board.panY = Number(view.camera?.pan?.y) || 0;

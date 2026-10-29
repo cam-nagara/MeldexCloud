@@ -789,15 +789,20 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
           dest_folder: targetPath,
           conflict_policy: 'error',
         });
-        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        // The move is committed. A detached view cannot turn it into a failed
+        // file operation or keep the other editors bound to the old path.
+        ok += 1;
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(oldPath, res.new_path, {
+          try { renameAppPathReferences(oldPath, res.new_path, {
             label: res.new_name || source.name,
             fileId: res.file_id,
             type: source.type || 'file',
-          });
+          }); } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
         }
-        ok += 1;
+        if (!copySource && typeof handleRelocateResponse === 'function') {
+          try { handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
+        }
       } catch (error) {
         failures.push({ name: source.name || source.path, error });
       }
@@ -806,7 +811,9 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
   }
-  if (typeof loadOutliner === 'function') {
+  if (typeof refreshOutliner === 'function') {
+    await refreshOutliner({ force: true, reason: 'folder-panel-drop-move' });
+  } else if (typeof loadOutliner === 'function') {
     await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
   }
   if (_folderPath && typeof openFolder === 'function') {
@@ -891,7 +898,8 @@ function _folderApplyManualDrop(intent, targetItem) {
   }
   const selectedPaths = (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
   renderFolderGrid({ preserveSelectedPaths: selectedPaths });
-  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  if (typeof refreshOutliner === 'function') void refreshOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  else if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
   showStatus('並び順を変更しました');
   return true;
 }

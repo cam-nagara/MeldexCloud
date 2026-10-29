@@ -60,7 +60,7 @@ function getActiveFormConfig(dbPath, props, propTypes, ctx) {
 function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
   const invalid = globalThis.MeldexDbFormModel?.validateDefinition(formConfig);
   if (invalid) { if (typeof showStatus === 'function') showStatus(invalid, true); return false; }
-  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig);
+  if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig, options);
   if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
   const config = getDbViewConfig(dbPath);
   if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {

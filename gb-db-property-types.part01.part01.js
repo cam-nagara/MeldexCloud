@@ -1580,7 +1580,7 @@ async function _buttonActionWriteValue(dbPath, entityName, entityPath, propName,
     const result = await _apiPostValue(entityPath, propName, value, '採用', '');
     _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, null, value, {
       file: result?.path || result?.file,
-      candidate_index: result?.candidate_index,
+      candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       status: '採用',
       note: '',
       property: propName,

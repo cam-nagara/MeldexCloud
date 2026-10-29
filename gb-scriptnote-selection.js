@@ -28,6 +28,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _guardRowBulkAction() {
+    if (this._readOnly) return false;
     if (this._isRowSelectionOwnerActive()) return true;
     if (this._rowSelection) this._rowSelection.clear();
     if (this._gridCellSelection) this._gridCellSelection.clear();
@@ -158,7 +159,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       newRows.push(row);
       if (selectedIds.has(row.id)) {
         const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
-        newRows.push({ ...row, id: nextId, columns: { ...(row.columns || {}) } });
+        newRows.push({ ...JSON.parse(JSON.stringify(row)), id: nextId });
       }
     });
     this.doc.rows = newRows;
@@ -248,6 +249,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkChangeRole() {
+    const ownerDocument = this.doc;
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
@@ -287,7 +289,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       item.dataset.sn2BulkRoleOption = name;
       item.textContent = name;
       item.addEventListener('click', () => {
-        if (!this._guardRowBulkAction()) { close(); return; }
+        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) { close(); return; }
         close();
         this._pushUndo('一括タイプ変更');
         this.doc.rows.forEach((row) => {
@@ -315,6 +317,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkDeleteRows() {
+    const ownerDocument = this.doc;
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
@@ -329,6 +332,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(`${selectedIds.size}行を削除しますか？`, () => {
+        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) return;
+        if (!this.doc.rows.some(row => !selectedIds.has(row.id))) {
+          if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
+          return;
+        }
         this._pushUndo('一括行削除');
         this.doc.rows = this.doc.rows.filter((row) => !selectedIds.has(row.id));
         this._clearRowSelection();

@@ -458,6 +458,7 @@
       const body = {
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
+        expected_entry_name: item.name,
         assetId: item.assetId || undefined,
         operation_id: item.operationId,
         ...(item.confirmationPayload || {}),
@@ -646,6 +647,13 @@
   function deleteEntries(options) {
     const dbPath = normalize(options?.dbPath);
     if (!dbPath) return Promise.reject(new Error('削除対象のシートが特定できません'));
+    const rawEntries = Array.isArray(options?.entries) ? options.entries : [];
+    const pivot = options?.ctx?.pivotData;
+    if (pivot?.new_format === true && rawEntries.some(entry => !String(
+      entry?.entryId || entry?.entry_id || entryIdFromEntity(pivot.entities?.[entry?.name || entry?.entityName]),
+    ).trim())) {
+      return Promise.reject(new Error('保存済みの行IDを確認できないため削除を中止しました。行を選び直してください'));
+    }
     const queue = getDeleteQueue(dbPath);
     addQueueContext(queue, options?.ctx);
     const requestEntries = [];

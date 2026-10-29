@@ -155,7 +155,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '全体',         fields: pick(['--db-header-bg', '--db-border-color']) },
           { label: '選択', fields: pick(['--db-selection-fg', '--db-selection-color']) },
           { label: 'ヘッダー',     fields: pick(['--db-th-fg', '--db-th-bg', '--db-th-bold', '--db-th-italic', '--db-th-font']) },
-          { label: 'エントリ列',   fields: pick(['--db-entity-fg', '--db-entity-bg', '--db-entity-bold', '--db-entity-italic', '--db-entity-font']) },
+          { label: 'トピック列',   fields: pick(['--db-entity-fg', '--db-entity-bg', '--db-entity-bold', '--db-entity-italic', '--db-entity-font']) },
           { label: 'セル',         fields: pick(['--db-cell-fg', '--db-cell-bg', '--db-cell-bold', '--db-cell-italic', '--db-cell-font']) },
           { label: 'アクティブセル枠', fields: pick(['--db-active-color', '--db-active-width']) },
           { label: 'テーブル罫線', fields: pick(['--db-grid-border', '--db-show-grid']) },

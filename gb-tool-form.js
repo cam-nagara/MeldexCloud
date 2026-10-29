@@ -212,8 +212,9 @@ class FormAppComponent extends ToolComponent {
     return normalizeDbFormConfig({ ...cfg, layoutId: layout?.id || '', mode: this._mode || (this.definitionReadOnly ? 'entry' : doc.formConfig?.mode) || 'entry' },
       [...props, ...MeldexDbFormModel.layoutFields(layout)], propTypes);
   }
-  saveConfig(config) {
+  saveConfig(config, options = {}) {
     this._mode = config.mode;
+    if (options.shared === false) return true;
     if (this.definitionReadOnly) return true;
     const previous = { ...this.store.doc.formConfig, mode: config.mode, layoutId: config.layoutId };
     return this._update(doc => {

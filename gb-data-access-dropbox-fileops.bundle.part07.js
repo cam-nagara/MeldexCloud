@@ -1,3 +1,5 @@
+    }
+
     if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };
     if (pathname === '/autostart' && method === 'GET') return { supported: false, enabled: false };
     if (pathname === '/autostart' && method === 'POST') return { ok: false, supported: false };

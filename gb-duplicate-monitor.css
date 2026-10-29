@@ -1,5 +1,5 @@
 .dup-monitor-modal {
-  width: min(840px, calc(100vw - 32px));
+  width: min(1080px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
 }
@@ -163,6 +163,69 @@
   min-height: 160px;
 }
 
+.dup-result-tools[hidden] { display: none; }
+
+.dup-result-tools {
+  position: sticky;
+  top: -4px;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--bg2);
+}
+
+.dup-result-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dup-result-filters input[type="search"] {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.dup-result-filters select { flex: 0 1 180px; min-width: 0; }
+.dup-compact-toggle { display: flex; align-items: center; font-size: var(--ui-font-11); white-space: nowrap; }
+
+.dup-result-navigation, .dup-file-pager, .dup-group-include {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--ui-font-11);
+}
+
+.dup-file-pager { justify-content: flex-end; padding: 8px; }
+.dup-group-include { white-space: nowrap; }
+.dup-group-choice {
+  padding: 8px;
+  overflow-wrap: anywhere;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+
+.dup-monitor-modal .dup-group-header { flex-wrap: wrap; }
+.dup-monitor-modal .dup-group-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
+}
+.dup-monitor-modal .dup-item { width: auto; min-width: 0; }
+.dup-monitor-modal .dup-item[aria-disabled="true"] { cursor: default; }
+.dup-monitor-modal .dup-item[aria-disabled="true"] .dup-item-info { color: var(--ui-fg-muted); }
+
+.dup-results-compact .dup-monitor-modal .dup-group-body {
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+}
+.dup-results-compact .dup-monitor-modal .dup-group-header { padding: 8px; }
+.dup-results-compact .dup-monitor-modal .dup-item { display: flex; align-items: center; }
+.dup-results-compact .dup-monitor-modal .dup-item-thumb { flex: 0 0 64px; height: 80px; }
+.dup-results-compact .dup-monitor-modal .dup-item-thumb > img { max-height: 80px; }
+.dup-results-compact .dup-monitor-modal .dup-item-info { flex: 1; min-width: 0; }
+
 .dup-group-spacer {
   flex: 1 1 auto;
 }
@@ -185,10 +248,6 @@
   font-size: var(--ui-font-11);
   line-height: 1.4;
   text-align: center;
-}
-
-.dup-monitor-modal .dup-item {
-  width: 180px;
 }
 
 .dup-monitor-modal .dup-item-thumb {

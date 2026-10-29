@@ -1221,10 +1221,11 @@ function _favCloneNode(node) {
   return JSON.parse(JSON.stringify(node));
 }
 
-function _favExists(tree, path) {
+function _favExists(tree, path, fileId = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '') {
   for (const n of tree) {
-    if (n.path === path && n.type !== 'fav-folder') return true;
-    if (n.children && _favExists(n.children, path)) return true;
+    const storedId = n.file_id || (typeof _pathToFileId === 'function' ? _pathToFileId(n.path) : '');
+    if (n.type !== 'fav-folder' && (n.path === path || (fileId && storedId === fileId))) return true;
+    if (n.children && _favExists(n.children, path, fileId)) return true;
   }
   return false;
 }
@@ -1429,7 +1430,45 @@ function _createFavoriteMoreButton(node, isFavFolder) {
   return button;
 }
 
+function _bindFavoriteFileDropTarget() {
+  const section = document.getElementById('section-favorites');
+  if (!section || section.dataset.fileDropBound === '1') return;
+  section.dataset.fileDropBound = '1';
+  const accepts = e => typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+  section.addEventListener('dragover', e => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    section.style.outline = '2px solid var(--accent)';
+  }, true);
+  section.addEventListener('dragleave', e => {
+    if (!section.contains(e.relatedTarget)) section.style.outline = '';
+  });
+  document.addEventListener('dragend', () => { section.style.outline = ''; });
+  section.addEventListener('drop', async e => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    section.style.outline = '';
+    let resolved;
+    try {
+      resolved = await MeldexDnD.resolveDropData(e, 'node');
+      if (!resolved) return;
+      const items = resolved.payload.items || [resolved.payload];
+      for (const item of items) {
+        addToFavorites(item.name || item.label || item.path.split(/[\\/]/).pop(), item.path, item.type || 'page');
+      }
+      MeldexDnD.completeDrop(resolved);
+    } catch (error) {
+      if (resolved) MeldexDnD.failDrop(resolved);
+      showStatus('お気に入りへの登録に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    }
+  }, true);
+}
+
 function renderFavorites() {
+  _bindFavoriteFileDropTarget();
   const container = document.getElementById('body-favorites');
   if (!container) return;
   const favs = getFavorites();

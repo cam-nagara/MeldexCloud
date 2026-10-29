@@ -142,7 +142,7 @@ const UI_STYLE_SECTIONS = {
   ],
   'シート': [
     { label: 'ヘッダー', fg:'--db-th-fg', bold:'--db-th-bold', italic:'--db-th-italic', bg:'--db-th-bg', text:'列名', font:'--db-th-font' },
-    { label: 'エントリ列', fg:'--db-entity-fg', bold:'--db-entity-bold', italic:'--db-entity-italic', bg:'--db-entity-bg', text:'キャラ名', font:'--db-entity-font' },
+    { label: 'トピック列', fg:'--db-entity-fg', bold:'--db-entity-bold', italic:'--db-entity-italic', bg:'--db-entity-bg', text:'キャラ名', font:'--db-entity-font' },
     { label: 'セル', fg:'--db-cell-fg', bold:'--db-cell-bold', italic:'--db-cell-italic', bg:'--db-cell-bg', text:'候補値テキスト', bgType:'rgba', font:'--db-cell-font' },
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },

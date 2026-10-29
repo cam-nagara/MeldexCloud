@@ -92,6 +92,7 @@
 
   async function _handled(call) {
     const result = await call();
+    if (result?.ok === false && result.error) throw result.error;
     return result !== false;
   }
 

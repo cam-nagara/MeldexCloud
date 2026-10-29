@@ -1,3 +1,147 @@
+  let pendingNode = null;
+  let existingNames = null;
+  let siblingNames = null;
+  if (!target.deferTreeInsert && target.container && !needsReload) {
+    existingNames = _outlinerSnapshotChildNames(target.container);
+    siblingNames = [...target.container.querySelectorAll(':scope > .tree-node')]
+      .map(node => node._nodeData?.path).filter(Boolean);
+    pendingNode = _createOutlinerPendingCreateNode(type, label);
+    _insertOutlinerCreateNode(target.container, pendingNode, anchorNode);
+  }
+  const saveCreateOrder = async (node) => {
+    if (!anchorNode || !siblingNames) return;
+    const names = siblingNames.slice();
+    const anchorIndex = anchorNode._nodeData?.path === parentPath
+      ? -1 : names.indexOf(anchorNode._nodeData?.path);
+    names.splice(anchorIndex + 1, 0, node.path);
+    setManualOrder(parentPath || '_root', names);
+    setSortSetting(parentPath || '_root', 'manual', 'asc');
+    if (needsReload) {
+      if (virtualTarget) {
+        const vr = window.GBOutlinerVirtualRender;
+        const inside = anchorNode._nodeData?.path === parentPath;
+        const referencePath = inside ? siblingNames[0] : anchorNode._nodeData?.path;
+        vr.dropInto(target.container, [node]);
+        if (referencePath) vr.reorderAround(target.container, [node.path], referencePath, inside ? 'above' : 'below');
+      }
+      _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+    }
+  };
+  try {
+    if (needsReload) {
+      const sortCfg = getSortForFolder(parentPath);
+      const virtualItems = window.GBOutlinerVirtualRender?.stateChildItemsFor(target.container, parentPath);
+      const items = virtualItems || await _outlinerFetchFolderListingForConfirm(parentPath, anchorNode, {
+        detail: !['manual', 'name'].includes(sortCfg.sort),
+      });
+      if (!Array.isArray(items)) throw new Error('追加先の並び順を取得できませんでした。もう一度お試しください');
+      existingNames = new Set(items.map(item => _outlinerCreateItemIdentity(item.type, item.name)).filter(Boolean));
+      const ordered = virtualItems || (sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, parentPath)
+        : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order)));
+      siblingNames = ordered.map(item => item.path).filter(Boolean);
+    }
+    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
+    // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
+    if (!res.node.name) res.node.name = res.node.label;
+    await saveCreateOrder(res.node);
+    if (needsReload) {
+      // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
+      const createdNode = _findTreeNodeByPath(res.node.path);
+      _selectOutlinerCreateNode(createdNode);
+      _openOutlinerCreatedNode(res.node, res.node.name);
+      return;
+    }
+
+    let insertTarget = target.deferTreeInsert
+      ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true })
+      : target;
+    // API待機中にワークスペースセクション等が再描画され、挿入先コンテナが
+    // DOMから切断されていた場合は挿入先を再解決する
+    if (!insertTarget.deferTreeInsert && !insertTarget.container?.isConnected) {
+      insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+    }
+    const nd = res.node;
+    const name = nd.name || nd.label || label;
+    // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
+    if (!insertTarget.deferTreeInsert && !insertTarget.container) {
+      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
+      return;
+    }
+    const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
+
+    if (!insertTarget.deferTreeInsert && newNode) {
+      if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
+      else _insertOutlinerCreateNode(insertTarget.container, newNode, anchorNode);
+      // 挿入直後に切断されている場合の軽い保険
+      if (!newNode.isConnected) loadOutliner();
+    }
+
+    // 選択状態にする
+    if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
+    // コンテンツを開く
+    _openOutlinerCreatedNode(nd, name);
+  } catch (e) {
+    if (e && e.isTimeout) {
+      await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, saveCreateOrder);
+    } else {
+      if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+      showStatus((e && e.message) || '追加に失敗しました', true);
+    }
+  }
+}
+
+// シートの中へエントリを追加する（シートに作れるのはエントリだけ）
+async function addSheetEntryAt(sheetPath) {
+  const path = String(sheetPath || '').trim();
+  if (!path) return;
+  try {
+    await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    showStatus('トピックを追加しました');
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
+  } catch (e) {
+    showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
+  }
+}
+
+// ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
+async function showAddOutlinerItem(type) {
+  // 選択中のアイテムから追加先を決定
+  let parentPath = '';
+  if (treeSelection.lastClicked && treeSelection.lastClicked._nodeData) {
+    // ホーム内のノードが選択されている場合
+    if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
+      const nd = treeSelection.lastClicked._nodeData;
+      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
+        const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
+        parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
+      } else {
+        const pn = treeSelection.lastClicked.parentElement?.closest('.tree-node');
+        parentPath = pn?._nodeData?.path || _homeFolderPath;
+      }
+    } else {
+      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
+    }
+  }
+  // 何も選択されていない場合、ホームフォルダにフォールバック
+  if (!parentPath && _homeFolderPath) {
+    parentPath = _homeFolderPath;
+  }
+  await addItemAt(parentPath, type);
+}
+
+// フォルダツリーのラベルをインライン編集
+function startTreeLabelEdit(labelEl, nodeData, onFinish) {
+  const old = labelEl.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = old === '無題' ? '' : old;
+  input.placeholder = '名前を入力';
+
+/* === gb-outliner.part03.js === */
+  input.style.cssText = 'width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:2px;padding:1px 4px;font-size:13px;outline:none;';
+  labelEl.textContent = '';
+  labelEl.appendChild(input);
   input.focus();
   // クリックがrowのclickイベントにバブルしてファイルを開くのを防止
   input.addEventListener('click', (e) => e.stopPropagation());
@@ -754,82 +898,3 @@ function _readOutlinerDroppedFile(file) {
     reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
     reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
     reader.readAsDataURL(file);
-  });
-}
-
-async function _uploadOutlinerDroppedFile(file, parentPath) {
-  try {
-    const data = await _readOutlinerDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
-  } catch (error) {
-    return {
-      ok: false,
-      name: file?.name || 'ファイル',
-      error: error?.message ? String(error.message) : '取り込みに失敗しました',
-    };
-  }
-}
-
-document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
-  e.preventDefault();
-  const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
-  let parentPath = '';
-  // ドロップ先のフォルダを検出
-  const nodeEl = e.target?.closest?.('.tree-node');
-  if (nodeEl && nodeEl._nodeData) {
-    const nd = nodeEl._nodeData;
-    if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
-    else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
-  }
-  if (typeof _folderImportOsDrop === 'function') {
-    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
-    return;
-  }
-  const progress = window.MeldexOperationProgress?.begin?.({
-    kind: 'file-import',
-    label: `${files.length}個のファイルをインポートしています`,
-    mode: 'determinate',
-    total: files.length,
-    processed: 0,
-    origin: document.getElementById('outliner-tree'),
-    showInTray: true,
-    priority: 40,
-  });
-  if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  let processed = 0;
-  const results = await Promise.all(files.map(async file => {
-    const result = await _uploadOutlinerDroppedFile(file, parentPath);
-    processed += 1;
-    progress?.update?.({ processed: processed, currentItem: file.name });
-    return result;
-  }));
-  try {
-    progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
-    await loadOutliner();
-  } catch (error) {
-    progress?.fail?.({ error: error });
-    throw error;
-  }
-  const succeeded = results.filter(result => result.ok);
-  const failed = results.filter(result => !result.ok);
-  if (failed.length) {
-    const names = failed.slice(0, 3).map(result => result.name).join('、');
-    const suffix = failed.length > 3 ? ` ほか${failed.length - 3}件` : '';
-    const summary = `${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`;
-    if (progress) {
-      progress.partial({
-        summary: summary,
-        detailCount: failed.length,
-        details: failed.map(result => ({ path: result.name, message: result.error })),
-      });
-    } else showStatus(summary, true);
-  } else {
-    if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
-    else showStatus(files.length + '個のファイルをインポートしました');
-  }
-});

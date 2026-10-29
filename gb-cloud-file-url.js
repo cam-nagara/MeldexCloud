@@ -505,6 +505,13 @@
     const raw = element.getAttribute(attrName);
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
+    if (!_runtime()?.isBrowserDataMode?.() && _looksLikeFileRawUrl(raw)) {
+      try {
+        // This query selects the script-free HTML response policy. Rebuilding
+        // its URL from just "path" would restore the opaque, image-blocking view.
+        if (new URL(raw, document.baseURI || window.location.href).searchParams.get('static_preview') === '1') return;
+      } catch {}
+    }
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
       if (isThumbnail && !_runtime()?.isBrowserDataMode?.()) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);

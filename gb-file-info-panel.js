@@ -19,6 +19,7 @@
     if (type === 'board') return 'layoutDashboard';
     if (type === 'database') return 'db';
     if (type === 'scriptnote') return 'bookOpenText';
+    if (type === 'map' || ext === 'mel-map') return 'map';
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'clapperboard';
     if (AUDIO_EXTS.has(ext)) return 'audio';
@@ -51,6 +52,8 @@
     const lowerName = fileName.toLowerCase();
     const inferredTypeLabel = kind === 'folder'
       ? 'フォルダ'
+      : type === 'map' || lowerName.endsWith('.mel-map')
+        ? 'マップ'
       : type === 'database' || lowerName.endsWith('.mel-sheet') || /(?:\.sheet|\.database)\.json$/.test(lowerName)
         ? 'シート'
         : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.mel-scenario')
@@ -77,6 +80,33 @@
     };
   }
 
+  function storageFormatLabel(filePath, meta, options) {
+    const name = String(filePath || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop().toLowerCase();
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
+    const type = String(options?.type || meta?.type || options?.kind || '').toLowerCase();
+    const nativeFormats = {
+      'mel-sheet': 'シート', 'mel-board': 'ボード', 'mel-scenario': 'シナリオ',
+      'mel-form': 'フォーム', 'mel-map': 'マップ',
+    };
+    if (Object.hasOwn(nativeFormats, ext)) return `Meldex${nativeFormats[ext]}（.${ext}）`;
+    if (ext === 'csv' || ext === 'tsv') return `${ext.toUpperCase()}ファイル（.${ext}）`;
+    if (name.endsWith('.scriptnote.json')) return 'Meldexシナリオ（JSON / .scriptnote.json）';
+    if (/\.board\.(?:json|md)$/.test(name) || ext === 'board') return `Meldexボード（.${name.endsWith('.board.json') ? 'board.json' : name.endsWith('.board.md') ? 'board.md' : 'board'}）`;
+    if (/(?:\.sheet|\.database)\.json$/.test(name)) return 'Meldexシート（JSON形式）';
+    if (name.endsWith('.calendar.json')) return 'Meldexスケジュール（.calendar.json）';
+    const appName = {database: 'シート', sheet: 'シート', board: 'ボード', scriptnote: 'シナリオ',
+      calendar: 'スケジュール', 'form-app': 'フォーム', form: 'フォーム', map: 'マップ'}[type];
+    const isFolder = meta?.kind === 'folder' || (!meta?.kind && options?.kind === 'folder');
+    if (appName) {
+      if (isFolder) return `Meldex${appName}（フォルダ形式）`;
+      if (ext === 'md') return `Meldex${appName}（Markdown / .md）`;
+      if (ext === 'json') return `Meldex${appName}（JSON形式）`;
+      return `Meldex${appName}`;
+    }
+    if (ext === 'md' && !isFolder) return 'Meldexノート（Markdown / .md）';
+    return '';
+  }
+
   function metadataRowsHtml(meta, options) {
     if (!meta) return '';
     const rows = [];
@@ -90,6 +120,9 @@
     } else if (linkedFolders.length > 0 || Number(meta?.links_count) > 0) {
       storageMethod = 'リンク元ファイル';
     }
+    const formatPath = isLinked ? meta?.source_path || options?.sourcePath || options?.filePath : options?.filePath;
+    const format = storageFormatLabel(formatPath, meta, options);
+    if (format) storageMethod = storageMethod === '通常のファイル' ? format : `${storageMethod} / ${format}`;
     rows.push(['保存方式', storageMethod]);
 
     if (isLinked) {
@@ -156,7 +189,7 @@
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
-      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, filePath, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
       + '</table>'
       + linkActionsHtml
       // タグはメモ入力欄の下（埋め込み情報の主要項目と埋め込み情報グループの間）に配置する。
@@ -200,7 +233,7 @@
     const isLinked = !!(options?.linked || meta?.linked || (options?.link_folder_path && options.link_folder_path !== options?.folderPath));
     const linkFolderPath = String(options?.link_folder_path || meta?.link_folder_path || options?.folderPath || '').trim();
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
-    if (rows) rows.innerHTML = metadataRowsHtml(meta, { ...options, isLinked, linkFolderPath });
+    if (rows) rows.innerHTML = metadataRowsHtml(meta, { ...options, filePath, isLinked, linkFolderPath });
     rows?.querySelector('[data-file-info-relocate]')?.addEventListener('click', () => {
       if (options?.isCurrent?.() === false) return;
       options?.onRelocate?.();

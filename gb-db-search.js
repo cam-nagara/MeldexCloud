@@ -73,7 +73,7 @@ function _dbFindValueRef(dbPath, entityName, propName, val, rawIndex, pivotData)
   return {
     file: val?.file || _entityPath(dbPath, entityName, pivotData),
     property: val?.property || propName,
-    candidate_index: val?.candidate_index != null ? val.candidate_index : rawIndex,
+    candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val?.candidate_index != null ? val.candidate_index : rawIndex,
     value: val?.value,
     status: val?.status,
   };

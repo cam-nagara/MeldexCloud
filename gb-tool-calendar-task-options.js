@@ -121,16 +121,18 @@
       user: this._getUser(),
     };
     this._savingTaskIds.add(editId);
+    let saved = false;
     try {
       await apiPut('/cal/tasks/' + editId, data);
+      saved = true;
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
       this._showStatus('ToDoを保存しました');
       return true;
     } catch {
-      this._showStatus('保存に失敗', true);
-      return false;
+      this._showStatus(saved ? 'ToDoは保存しましたが、表示を更新できませんでした。再読み込みしてください' : '保存に失敗', true);
+      return saved;
     } finally {
       this._savingTaskIds.delete(editId);
     }

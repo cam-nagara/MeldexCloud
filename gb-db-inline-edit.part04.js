@@ -101,15 +101,16 @@ function _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx) {
 }
 
 function _dbCanPersistCellValueRef(valueRef) {
+  if (valueRef?._pendingCreate) return true;
   const file = String(valueRef?.file || '').trim().replace(/\\/g, '/').toLowerCase();
   return !!file && file.endsWith('.md');
 }
 
 async function _dbDeleteValueRef(valueRef, propName) {
-  if (!valueRef?.file) return;
+  if (!valueRef?.file && !valueRef?._pendingCreate) return;
   const ref = { ...valueRef, property: valueRef.property || propName };
   if (!_dbCanPersistCellValueRef(ref)) return;
-  if (ref.candidate_index != null) {
+  if (ref.candidate_index != null || ref._pendingCreate) {
     await _apiPutValue(ref, { _delete: true });
   } else {
     await apiPost('/outliner/delete', { path: ref.file });
@@ -190,6 +191,48 @@ function _dbYieldCellBatchPaint() {
   });
 }
 
+async function _dbPersistAtomicCellCandidates(entityPath, propName, candidates, ctx, entryId, rawSnapshot = false) {
+  const payload = await Promise.all(candidates.map(async value => {
+    let candidate = value;
+    if (value._pendingCreate) candidate = { ...value, ..._dbCandidateIdentityFields(await value._pendingCreate) };
+    if (rawSnapshot) return { ...candidate };
+    if (candidate.candidate_id && !candidate._dbAtomicEdited) return { candidate_id: candidate.candidate_id };
+    const result = { value: candidate.value ?? '', status: candidate.status || '案', note: candidate.note || '', rich_html: candidate.rich_html || '' };
+    for (const key of ['candidate_id', 'link']) {
+      if (candidate[key] !== undefined) result[key] = candidate[key];
+    }
+    return result;
+  }));
+  const operationId = globalThis.crypto?.randomUUID?.() || ('cell-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+  return _apiPutValue({ file: entityPath, entry_path: entityPath, entry_id: entryId, property: propName }, {
+    property: propName, _replace_candidates: payload, operation_id: operationId, _candidate_snapshot: rawSnapshot,
+  });
+}
+
+function _dbPushAtomicCellHistory(ops, ctx) {
+  const records = ops.map(op => op.atomic).filter(value => Array.isArray(value?.before) && Array.isArray(value?.after));
+  if (!records.length || typeof historyPush !== 'function') return;
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const apply = async before => {
+    const applied = [];
+    try {
+      for (const record of (before ? [...records].reverse() : records)) {
+        const result = await _dbPersistAtomicCellCandidates(record.entityPath, record.propName,
+          before ? record.before : record.after, ctx, record.entryId, true);
+        applied.push({ record, previous: result.previous_candidates });
+      }
+    } catch (error) {
+      for (const { record, previous } of applied.reverse()) {
+        await _dbPersistAtomicCellCandidates(record.entityPath, record.propName, previous, ctx, record.entryId, true);
+      }
+      throw error;
+    } finally {
+      if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, forceReload: true });
+    }
+  };
+  historyPush(records[0].label + ': ' + records.length + ' セル', () => apply(true), () => apply(false), _dbScopeForPath(dbPath));
+}
+
 function _dbPrepareClearCellValues(td, ctx) {
   const { entityName, propName } = _dbCellEntityAndProp(td);
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
@@ -199,20 +242,40 @@ function _dbPrepareClearCellValues(td, ctx) {
   const entityData = data?.entities?.[entityName];
   if (!entityData || !Array.isArray(entityData[propName]) || entityData[propName].length === 0) return null;
   const snapshot = _dbSnapshotCellValues(entityData, propName);
+  const atomic = ctx?.pivotData?.atomic_candidate_replace && entityData._id
+    ? { entityPath, propName, entryId: entityData._id, label: 'セル消去' } : null;
+  const mutationSession = {};
+  td._dbInlineEditorSession = mutationSession;
   entityData[propName] = [];
   const refreshed = _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
   if (!refreshed && ctx) ctx._clipboardPasteNeedsRefresh = true;
   return {
+    atomic,
     target: td,
     entityPath,
     propName,
     persist: async () => {
-      for (const valueRef of _dbDeleteOrderForCellSnapshot(snapshot)) {
+      if (atomic) {
+        const result = await _dbPersistAtomicCellCandidates(entityPath, propName, [], ctx, atomic.entryId);
+        atomic.before = result.previous_candidates;
+        atomic.after = result.candidates;
+        return;
+      }
+      // 作成待ちの候補番号を確定してから降順にする。未確定の0番から消すと
+      // 後続候補が前へ詰まり、次の削除が別の値を指す。
+      const savedSnapshot = await Promise.all(snapshot.map(async value => {
+        if (!value._pendingCreate) return value;
+        const saved = await value._pendingCreate;
+        return { ...value, file: saved?.path || saved?.file || value.file,
+          candidate_id: saved?.candidate_id, entry_id: saved?.entry_id, candidate_index: saved?.candidate_index ?? value.candidate_index };
+      }));
+      for (const valueRef of _dbDeleteOrderForCellSnapshot(savedSnapshot)) {
         await _dbDeleteValueRef(valueRef, propName);
       }
     },
     rollback: () => {
-      _dbRestoreCellValues(entityData, propName, snapshot);
+      if (td._dbInlineEditorSession !== mutationSession) return;
+      _dbRestoreCellValues(entityData, propName, snapshot.filter(value => !value._pendingCreate?._dbCreateFailed));
       _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
   };
@@ -245,12 +308,14 @@ function _dbPrepareWriteClipboardCellValue(td, value, ctx, meta = {}) {
   const existingRef = existing ? { ...existing, property: existing.property || propName } : null;
   const status = meta.status || existing?.status || '採用';
   const note = meta.note || existing?.note || '';
+  const mutationSession = {};
+  td._dbInlineEditorSession = mutationSession;
   let localValue = null;
   if (typeof _upsertLocalPivotValue === 'function') {
     localValue = _upsertLocalPivotValue(entityPath, propName, existing, value, {
       file: existing?.file || '',
       property: propName,
-      candidate_index: existing?.candidate_index,
+      candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing?.candidate_index,
       status,
       note,
     }, ctx);
@@ -263,37 +328,82 @@ function _dbPrepareWriteClipboardCellValue(td, value, ctx, meta = {}) {
     localValue = { property: propName, value, status, note, file: '', candidate_index: null };
     entityData[propName].push(localValue);
   }
+  if (localValue) delete localValue.rich_html;
+  let resolveCreated, rejectCreated;
+  const pendingCreate = !existing || !_dbCanPersistCellValueRef(existingRef)
+    ? new Promise((resolve, reject) => { resolveCreated = resolve; rejectCreated = reject; }) : null;
+  if (pendingCreate) {
+    pendingCreate.catch(() => {});
+    if (localValue) localValue._pendingCreate = pendingCreate;
+  }
   const refreshed = _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
   if (!refreshed && ctx) ctx._clipboardPasteNeedsRefresh = true;
+  const atomic = ctx?.pivotData?.atomic_candidate_replace && entityData._id
+    ? { entityPath, propName, entryId: entityData._id, label: 'セル貼り付け' } : null;
+  const atomicDesired = atomic ? entityData[propName].map(candidate => ({ ...candidate, _dbAtomicEdited: candidate === localValue }))
+    .sort((a, b) => (a.candidate_index ?? Number.MAX_SAFE_INTEGER) - (b.candidate_index ?? Number.MAX_SAFE_INTEGER))
+    .map(candidate => {
+      if (candidate._pendingCreate !== pendingCreate) return candidate;
+      const copy = { ...candidate }; delete copy._pendingCreate; return copy;
+    }) : null;
   return {
+    atomic,
     target: td,
     entityPath,
     propName,
     persist: async () => {
+      if (atomic) {
+        try {
+          const result = await _dbPersistAtomicCellCandidates(entityPath, propName, atomicDesired, ctx, atomic.entryId);
+          atomic.before = result.previous_candidates;
+          atomic.after = result.candidates;
+          const index = existing?.candidate_id ? result.candidates.findIndex(c => c.candidate_id === existing.candidate_id) : 0;
+          const reference = { path: result.new_path || entityPath, file: result.new_path || entityPath,
+            property: propName, entry_id: result.entry_id, candidate_id: result.candidates[index]?.candidate_id,
+            candidate_index: index, entry_revision: result.revision, revision: result.revision };
+          if (localValue) _syncValueRefAfterSave(reference, localValue);
+          resolveCreated?.(reference);
+          return;
+        } catch (error) {
+          if (pendingCreate) pendingCreate._dbCreateFailed = true;
+          rejectCreated?.(error);
+          throw error;
+        } finally {
+          if (pendingCreate && localValue?._pendingCreate === pendingCreate) delete localValue._pendingCreate;
+        }
+      }
       if (existing && _dbCanPersistCellValueRef(existingRef)) {
         await _apiPutValue(existingRef, { new_value: value });
-        existing.value = value;
         existing.property = propName;
         if (existingRef?.file) existing.file = existingRef.file;
         if (existingRef?.candidate_index !== undefined) existing.candidate_index = existingRef.candidate_index;
-        delete existing.rich_html;
         if (localValue && localValue !== existing) {
           localValue.file = existing.file;
           localValue.candidate_index = existing.candidate_index;
         }
-        _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
+        if (td._dbInlineEditorSession === mutationSession) _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
         return;
       }
-      const result = await _apiPostValue(entityPath, propName, value, status, note);
-      if (localValue) {
-        localValue.file = result?.path || entityPath;
-        localValue.candidate_index = result?.candidate_index;
-        localValue.property = propName;
+      try {
+        const result = await _apiPostValue(entityPath, propName, value, status, note);
+        if (localValue) {
+          localValue.file = result?.path || entityPath;
+          localValue.candidate_index = result?.candidate_index;
+          localValue.property = propName;
+        }
+        resolveCreated?.(result);
+        if (td._dbInlineEditorSession === mutationSession) _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
+      } catch (error) {
+        if (pendingCreate) pendingCreate._dbCreateFailed = true;
+        rejectCreated?.(error);
+        throw error;
+      } finally {
+        if (pendingCreate && localValue?._pendingCreate === pendingCreate) delete localValue._pendingCreate;
       }
-      _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
     rollback: () => {
-      _dbRestoreCellValues(entityData, propName, snapshot);
+      if (td._dbInlineEditorSession !== mutationSession) return;
+      _dbRestoreCellValues(entityData, propName, snapshot.filter(value => !value._pendingCreate?._dbCreateFailed));
       _dbRefreshClipboardTargetCell(td, entityPath, propName, ctx);
     },
   };
@@ -312,21 +422,26 @@ async function _dbWriteClipboardCellValue(td, value, ctx, meta = {}) {
 }
 
 async function _dbPersistPreparedCellMutations(ops, ctx, debug) {
-  return _dbRunCellMutationsByEntity(ops, ctx, async op => {
-    try {
-      await op.persist();
-      return 1;
-    } catch (err) {
-      try { op.rollback(); } catch {}
-      if (debug?.errors) {
-        debug.errors.push({
-          target: _dbCellPasteDebugRef(op.target),
-          message: err?.message || String(err || ''),
-        });
+  const work = (async () => {
+    const results = await _dbRunCellMutationsByEntity(ops, ctx, async op => {
+      try {
+        await op.persist();
+        return 1;
+      } catch (err) {
+        try { op.rollback(); } catch {}
+        if (debug?.errors) {
+          debug.errors.push({
+            target: _dbCellPasteDebugRef(op.target),
+            message: err?.message || String(err || ''),
+          });
+        }
+        return -1;
       }
-      return -1;
-    }
-  });
+    });
+    _dbPushAtomicCellHistory(ops, ctx);
+    return results;
+  })();
+  return _dbTrackValueMutation(ctx?.dbPath || state.currentDbPath || '', work);
 }
 
 function _dbPasteTargetsFromClipboard(table, startCell, clipboard) {

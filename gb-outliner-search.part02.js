@@ -112,6 +112,7 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
     { label: 'フォーム', icon: 'clipboardList', type: 'form-app', open: (paneId) => _openPanelMenuItem('form-app', paneId) },
+    { label: 'マップ', icon: 'map', type: 'map', open: (paneId) => _openPanelMenuItem('map', paneId) },
     { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
   ],
 }];

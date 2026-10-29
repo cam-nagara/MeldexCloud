@@ -5,7 +5,7 @@ function getCurrentPublishContext() {
     return { kind: 'database', label: state.currentDbPath.split('/').pop() || 'シート', path: state.currentDbPath };
   }
   if (state?.view === 'entity' && state.currentEntityPath) {
-    return { kind: 'entity', label: state.currentEntityPath.split('/').pop()?.replace(/\.md$/, '') || 'エントリ', path: state.currentEntityPath };
+    return { kind: 'entity', label: state.currentEntityPath.split('/').pop()?.replace(/\.md$/, '') || 'トピック', path: state.currentEntityPath };
   }
   // 単一パネル対応種別 (page / csv / calendar)
   if (state?.view === 'page') {

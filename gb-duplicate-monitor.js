@@ -5,6 +5,9 @@
   const ALERT_POLL_MS = 2500;
   const alertQueue = [];
   const queuedAlertIds = new Set();
+  let alertsReady = false;
+  let alertIdleSnapshot = '';
+  let alertPollInFlight = false;
   let activeAlertModal = null;
   let alertPollTimer = null;
   let monitorStarted = false;
@@ -16,7 +19,7 @@
   const {
     safeText, filePath, fileName, fileLocation, pathParts, displayPath,
     targetHtml, isImage, isExisting, modifiedText, normalizeType, normalizeGroup,
-    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml,
+    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml, consolidateGroups, createResultView,
   } = window.MeldexDuplicateFormat;
 
   function createOverlay(options) {
@@ -36,6 +39,7 @@
       </div>
       <div class="dup-progress-current" data-dup-progress-current hidden></div>
     </div>
+    <div class="dup-result-tools" data-dup-result-tools hidden></div>
     <div class="dup-results" data-dup-results></div>`;
 
     const footer = document.createElement('div');
@@ -157,16 +161,19 @@
     const duplicateCount = Number(payload?.total_duplicates)
       || groups.reduce((total, group) => total + Math.max(0, group.files.length - 1), 0);
     if (status) status.textContent = `${groups.length}グループ / ${duplicateCount}件の重複を検出`;
-    if (results) results.innerHTML = groups.map((group, index) => groupHtml(group, index, automatic)).join('');
     if (keepAll) keepAll.hidden = false;
     if (resolveAll) resolveAll.hidden = groups.length < 2;
-    bindResultActions(overlay);
+    overlay._dupView = createResultView(overlay, groups, automatic, () => bindResultActions(overlay));
     return groups;
   }
 
   function chooseItem(item) {
     const group = item?.closest('.dup-group');
-    if (!group) return;
+    if (!group || item.getAttribute('aria-disabled') === 'true') return;
+    const overlay = item.closest('.dup-monitor-overlay');
+    const state = overlay._dupView.states[Number(item.dataset.group)];
+    state.selected = Number(item.dataset.index);
+    group.querySelector('.dup-group-choice').textContent = '残すファイル: ' + fileName(overlay._dupGroups[Number(item.dataset.group)].files[state.selected]);
     group.querySelectorAll('[data-dup-item]').forEach(candidate => {
       const selected = candidate === item;
       candidate.classList.toggle('dup-item-selected', selected);
@@ -186,9 +193,8 @@
   }
 
   function bindResultActions(overlay) {
-    if (overlay.dataset.dupResultsBound === '1') return;
-    overlay.dataset.dupResultsBound = '1';
-    overlay.querySelectorAll('[data-dup-image]').forEach(image => {
+    overlay.querySelectorAll('[data-dup-image]:not([data-dup-image-bound])').forEach(image => {
+      image.dataset.dupImageBound = '1';
       image.addEventListener('error', () => {
         image.alt = '画像を表示できません';
         image.hidden = true;
@@ -200,6 +206,11 @@
         thumb.appendChild(message);
       }, { once: true });
       window.MeldexImageLoading?.track?.(image, { host: image.closest('.dup-item-thumb'), errorMode: 'silent' });
+    });
+    if (overlay.dataset.dupResultsBound === '1') return;
+    overlay.dataset.dupResultsBound = '1';
+    overlay.addEventListener('change', event => {
+      if (event.target.matches('[data-dup-radio]')) chooseItem(event.target.closest('[data-dup-item]'));
     });
     overlay.addEventListener('click', event => {
       const radio = event.target.closest?.('[data-dup-radio]');
@@ -225,23 +236,37 @@
     });
   }
 
+  async function confirmResolution(overlay, message) {
+    overlay._dupView.busy = true;
+    overlay._dupView.render();
+    try {
+      if (await cfConfirm(message)) return true;
+    } catch (error) {
+      showStatus('整理の確認画面を開けませんでした: ' + userError(error), true);
+    }
+    overlay._dupView.busy = false;
+    overlay._dupView.render();
+    return false;
+  }
+
   async function resolveGroup(overlay, groupIndex, button) {
     const group = overlay._dupGroups?.[groupIndex];
+    if (overlay._dupView.busy) return;
+    const state = overlay._dupView.states[groupIndex];
     const groupElement = overlay.querySelector(`.dup-group[data-group="${groupIndex}"]`);
     const radio = groupElement?.querySelector(`input[name="dup-keep-${groupIndex}"]:checked`);
-    if (!group || !radio) {
+    if (!group || !state || state.resolved) {
       showStatus('残すファイルを選択してください', true);
       return;
     }
-    const keepIndex = Number(radio.value);
+    const keepIndex = state.selected;
     const keepFile = group.files[keepIndex];
-    const replaceFiles = group.files.filter((_, index) => index !== keepIndex);
-    const confirmed = await cfConfirm(
+    const replaceFiles = group.files.filter((file, index) => index !== keepIndex && !state.removed.has(filePath(file)));
+    const confirmed = await confirmResolution(overlay,
       `「${fileName(keepFile)}」を残し、ほかの${replaceFiles.length}件をゴミ箱へ移動しますか？\n\n` +
       '自動では削除されません。この操作を確定した場合だけ整理します。'
     );
     if (!confirmed) return;
-    button.disabled = true;
     try {
       const res = await runBackgroundJob('/duplicate-resolve', {
         background: true,
@@ -252,8 +277,11 @@
       });
       const results = Array.isArray(res?.results) ? res.results : [];
       const succeeded = results.filter(result => result.status === 'replaced').length;
-      const failed = results.filter(result => result.status !== 'replaced').length;
+      const failed = replaceFiles.length - succeeded;
+      overlay._dupView.recordRemoved(results);
+      state.failed = failed > 0;
       if (failed === 0 && succeeded === replaceFiles.length) {
+        state.resolved = true;
         groupElement.classList.add('dup-group-resolved');
         button.innerHTML = lucide('check', 12) + ' 解決済み';
         showStatus(`${succeeded}件を整理しました`);
@@ -264,40 +292,50 @@
       }
       await refreshFolder(overlay.dataset.folderPath || '');
     } catch (error) {
+      state.failed = true;
       button.disabled = false;
       button.textContent = '失敗したため再試行';
       showStatus('重複ファイルを整理できませんでした: ' + userError(error), true);
+    } finally {
+      overlay._dupView.busy = false;
+      overlay._dupView.render();
     }
   }
 
   async function resolveAllGroups(overlay, button) {
+    if (overlay._dupView.busy) return;
     const plans = [];
     (overlay._dupGroups || []).forEach((group, groupIndex) => {
+      const state = overlay._dupView.states[groupIndex];
       const groupElement = overlay.querySelector(`.dup-group[data-group="${groupIndex}"]`);
-      if (!groupElement || groupElement.classList.contains('dup-group-resolved')) return;
-      const radio = groupElement.querySelector(`input[name="dup-keep-${groupIndex}"]:checked`);
-      if (!radio) return;
-      const keepIndex = Number(radio.value);
+      if (state.resolved || !state.included) return;
+      const keepIndex = state.selected;
       const keepFile = group.files[keepIndex];
-      const replaceFiles = group.files.filter((_, index) => index !== keepIndex);
-      if (keepFile && replaceFiles.length) plans.push({ group, groupIndex, groupElement, keepFile, replaceFiles });
+      const replaceFiles = group.files.filter((file, index) => index !== keepIndex && !state.removed.has(filePath(file)));
+      if (keepFile && replaceFiles.length) plans.push({ group, groupIndex, groupElement, keepFile, replaceFiles, state });
     });
     if (!plans.length) {
       showStatus('整理する重複グループがありません');
       return;
     }
-    const deleteCount = plans.reduce((total, plan) => total + plan.replaceFiles.length, 0);
-    const confirmed = await cfConfirm(
+    const keepPaths = new Set(plans.map(plan => filePath(plan.keepFile)));
+    if (plans.some(plan => plan.replaceFiles.some(file => keepPaths.has(filePath(file))))) {
+      showStatus('別のグループで残すファイルが整理対象に含まれています。選択を見直すか、グループごとに整理してください。', true);
+      return;
+    }
+    const deleteCount = new Set(plans.flatMap(plan => plan.replaceFiles.map(filePath))).size;
+    const confirmed = await confirmResolution(overlay,
       `${plans.length}グループで選択したファイルを残し、重複${deleteCount}件をゴミ箱へ移動しますか？\n\n`
       + '各グループの選択をまとめて実行します。自動では削除されません。'
     );
     if (!confirmed) return;
-    button.disabled = true;
     let succeeded = 0;
     let failed = 0;
     try {
       for (const plan of plans) {
-        const groupButton = plan.groupElement.querySelector('[data-dup-resolve]');
+        plan.replaceFiles = plan.replaceFiles.filter(file => !plan.state.removed.has(filePath(file)));
+        if (!plan.replaceFiles.length) continue;
+        const groupButton = plan.groupElement?.querySelector('[data-dup-resolve]');
         if (groupButton) groupButton.disabled = true;
         try {
           const res = await runBackgroundJob('/duplicate-resolve', {
@@ -309,28 +347,34 @@
           });
           const results = Array.isArray(res?.results) ? res.results : [];
           const groupSucceeded = results.filter(result => result.status === 'replaced').length;
-          const groupFailed = results.filter(result => result.status !== 'replaced').length;
+          const groupFailed = plan.replaceFiles.length - groupSucceeded;
+          overlay._dupView.recordRemoved(results);
+          plan.state.failed = groupFailed > 0;
           succeeded += groupSucceeded;
           failed += groupFailed;
           if (groupFailed === 0 && groupSucceeded === plan.replaceFiles.length) {
-            plan.groupElement.classList.add('dup-group-resolved');
+            plan.state.resolved = true;
             if (groupButton) groupButton.innerHTML = lucide('check', 12) + ' 解決済み';
           } else if (groupButton) {
             groupButton.disabled = false;
             groupButton.textContent = '失敗したため再試行';
           }
         } catch (_) {
+          plan.state.failed = true;
           failed += plan.replaceFiles.length;
           if (groupButton) {
             groupButton.disabled = false;
             groupButton.textContent = '失敗したため再試行';
           }
         }
+        const status = overlay.querySelector('[data-dup-status]');
+        if (status) status.textContent = `${plans.indexOf(plan) + 1} / ${plans.length}グループを整理中`;
       }
       showStatus(`${succeeded}件を整理${failed ? ` / ${failed}件は整理できませんでした` : 'しました'}`, failed > 0);
       await refreshFolder(overlay.dataset.folderPath || '');
     } finally {
-      button.disabled = false;
+      overlay._dupView.busy = false;
+      overlay._dupView.render();
     }
   }
 
@@ -365,7 +409,7 @@
       return true;
     };
     const close = reason => overlay._dupModalApi?.close(reason || 'button');
-    overlay._dupOnBeforeClose = () => !requestCancellation();
+    overlay._dupOnBeforeClose = () => !overlay._dupView?.busy && !requestCancellation();
     overlay._dupOnClose = () => {
       if (!overlay._dupCloseHandled) {
         overlay._dupCloseHandled = true;
@@ -458,11 +502,18 @@
     const fresh = [];
     (Array.isArray(alerts) ? alerts : []).forEach((alert, index) => {
       const id = alertIdentity(alert, index);
-      if (queuedAlertIds.has(id)) return;
-      queuedAlertIds.add(id);
-      fresh.push({ ...alert, _alertId: id });
+      const key = id + ':' + safeText(alert?.last_seen ?? JSON.stringify(alert?.groups || alert));
+      if (queuedAlertIds.has(key)) return;
+      const pendingIndex = alertQueue.findIndex(candidate => candidate._alertId === id);
+      if (pendingIndex >= 0) {
+        queuedAlertIds.delete(alertQueue[pendingIndex]._alertKey);
+        alertQueue[pendingIndex] = { ...alert, _alertId: id, _alertKey: key };
+      } else {
+        fresh.push({ ...alert, _alertId: id, _alertKey: key });
+      }
+      queuedAlertIds.add(key);
     });
-    if (fresh.length) alertQueue.push(fresh);
+    fresh.forEach(alert => alertQueue.push(alert));
     drainAlertQueue();
   }
 
@@ -471,28 +522,29 @@
   }
 
   async function acknowledgeAlerts(alerts) {
-    const ids = alerts.map(alert => alert._alertId).filter(id => !id.startsWith('anonymous-'));
-    if (!ids.length) return;
-    await Promise.allSettled(ids.map(id => (
-      apiPost('/duplicate-alerts/' + encodeURIComponent(id) + '/ack', {}, { silentError: true })
-    )));
+    const identified = alerts.filter(alert => !alert._alertId.startsWith('anonymous-'));
+    for (let offset = 0; offset < identified.length; offset += 20) {
+      await Promise.allSettled(identified.slice(offset, offset + 20).map(alert => (
+        apiPost('/duplicate-alerts/' + encodeURIComponent(alert._alertId) + '/ack',
+          { last_seen: alert.last_seen }, { silentError: true })
+      )));
+    }
   }
 
   function drainAlertQueue() {
-    if (activeAlertModal || !alertQueue.length || hasBlockingModal()) return;
-    const alerts = alertQueue.shift();
+    if (!alertsReady || !isLocalDuplicateMode() || activeAlertModal || !alertQueue.length || hasBlockingModal()) return;
+    const alerts = alertQueue.splice(0);
     const payload = {
-      groups: alerts.flatMap(alert => normalizeGroups(alert)),
-      total_duplicates: alerts.reduce((total, alert) => total + (Number(alert?.total_duplicates) || 0), 0),
+      groups: consolidateGroups(alerts.flatMap(alert => normalizeGroups(alert))),
     };
     if (!payload.groups.length) {
-      alerts.forEach(alert => queuedAlertIds.delete(alert._alertId));
+      alerts.forEach(alert => queuedAlertIds.delete(alert._alertKey));
       return;
     }
     const overlay = createOverlay({
       titleId: 'duplicate-alert-title',
       e2eId: 'duplicate-alert-modal',
-      title: alerts.length > 1 ? `保存後に見つかった重複（${alerts.length}件）` : '保存後に重複が見つかりました',
+      title: '重複チェックが完了しました',
       status: '既存ファイルを選択しています。必要な場合だけ整理してください。',
     });
     activeAlertModal = overlay;
@@ -509,11 +561,30 @@
       stopMonitorForTests();
       return;
     }
+    if (alertPollInFlight || activeAlertModal) return;
+    alertPollInFlight = true;
     try {
-      const payload = await apiFetch('/duplicate-alerts', { silentError: true });
-      enqueueAlerts(Array.isArray(payload) ? payload : payload?.alerts);
+      alertsReady = false;
+      const alerts = [];
+      let cursor = null;
+      do {
+        const payload = await apiFetch('/duplicate-alerts' + (cursor ? '?before_id=' + cursor : ''), { silentError: true });
+        if (!isLocalDuplicateMode() || payload?.processing) { alertIdleSnapshot = ''; return; }
+        alerts.push(...(Array.isArray(payload) ? payload : payload?.alerts || []));
+        const next = Number(payload?.next_before_id) || null;
+        if (next && cursor && next >= cursor) throw new Error('Invalid duplicate alert cursor');
+        cursor = next;
+      } while (cursor);
+      // 連続する保存や次の照合の開始も吸収するため、同じ完了結果を次のpollで確認する。
+      const snapshot = JSON.stringify(alerts);
+      alertsReady = snapshot === alertIdleSnapshot;
+      alertIdleSnapshot = snapshot;
+      if (alertsReady) enqueueAlerts(alerts);
     } catch (_) {
+      alertIdleSnapshot = '';
       // 起動直後や一時的なオフラインでは次のpollで回復させる。
+    } finally {
+      alertPollInFlight = false;
     }
   }
 

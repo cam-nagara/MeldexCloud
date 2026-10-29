@@ -27,8 +27,28 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/open-file-dialog', 315000],
   ['/settings-transfer/export', 315000],
 ]);
-function _apiFetchDefaultTimeout(path) {
-  const pathname = String(path || '').split('?')[0];
+const API_FETCH_FILE_OPERATIONS = new Set([
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/trash/restore', '/trash/delete', '/trash/empty',
+  '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
+  '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
+  '/version/save-folder', '/version/restore-folder', '/version/save-sqlite-db', '/version/restore-sqlite-db',
+  '/sheet-archive/archive', '/sheet-archive/restore', '/data-protection/db-backup', '/data-protection/export-backup',
+]);
+const API_FETCH_STORAGE_WRITES = [
+  '/value', '/db-metadata', '/entity', '/annotations', '/cal', '/calendar-db',
+  '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
+  '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
+];
+function _apiFetchDefaultTimeout(path, options = {}) {
+  const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
+  const nativeDialogTimeout = API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
+  if (nativeDialogTimeout) return nativeDialogTimeout;
+  // 本体と同じく、フォルダ移動後のDB・参照・タグ更新を待つ。
+  if (API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+      && API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
 }
 const _apiFetchBrowseCache = new Map();
@@ -91,33 +111,42 @@ async function apiFetch(path, opts) {
   }
   let requestPromise = null;
   const controller = new AbortController();
+  const externalSignal = opts?.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const requestedTimeout = Number(opts?.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
     ? Math.min(requestedTimeout, API_FETCH_MAX_TIMEOUT_MS)
-    : _apiFetchDefaultTimeout(path);
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    : _apiFetchDefaultTimeout(path, opts);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
     requestPromise = (async () => {
+      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
       delete fetchOpts.timeoutMs;
       const fullUrl = API_BASE.replace(/\/+$/, '') + path;
       const res = await fetch(fullUrl, fetchOpts);
       if (!res.ok) {
         let detail = '';
+        let payload = null;
         try {
           const raw = await res.text();
           if (raw) {
             try {
-              const payload = JSON.parse(raw);
-              detail = payload?.detail || payload?.error || payload?.message || raw;
+              payload = JSON.parse(raw);
+              const value = payload?.detail || payload?.error || payload?.message || raw;
+              detail = value && typeof value === 'object' ? (value.message || value.code || raw) : value;
             } catch {
               detail = raw;
             }
           }
-        } catch {}
+        } catch (error) { if (error?.name === 'AbortError') throw error; }
         detail = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 500);
         const error = new Error(`HTTP ${res.status}: ${res.statusText}${detail ? ` — ${detail}` : ''}`);
         error.status = res.status;
+        error.payload = payload;
         throw error;
       }
       const json = await res.json();
@@ -134,9 +163,10 @@ async function apiFetch(path, opts) {
         _apiFetchBrowseCache.delete(firstKey);
       }
     }
+    window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
-    if (e.name === 'AbortError') {
+    if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
       const err = new Error(`リクエストがタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）`);
@@ -144,10 +174,11 @@ async function apiFetch(path, opts) {
       err.isTimeout = true;
       throw err;
     }
-    if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
+    if (e.name !== 'AbortError' && !opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
     if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
@@ -192,12 +223,13 @@ async function _meldexCorePrepareFileWrite(path, body) {
   }
 }
 
-async function apiPut(path, body) {
+async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
+    ...(options || {}),
   });
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
@@ -233,8 +265,8 @@ async function apiPost(path, body, options = {}) {
   return result;
 }
 
-async function apiDelete(path) {
-  return apiFetch(path, { method: 'DELETE' });
+async function apiDelete(path, options = {}) {
+  return apiFetch(path, { method: 'DELETE', ...(options || {}) });
 }
 
 // OSネイティブの「ファイルを開く」ダイアログを表示し、選択されたパスを返す（キャンセル時は空文字列）
@@ -1057,6 +1089,7 @@ const UI_TYPE_ICONS = {
   tags: 'tag',
   annotation: 'squarePen',
   sticky: 'clipboardList', 'form-app': 'clipboardList',
+  map: 'map',
   history: 'history',
   media: 'galleryThumbnails',
   html: 'globe',

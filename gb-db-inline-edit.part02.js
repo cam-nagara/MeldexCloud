@@ -11,6 +11,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
+  if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    MeldexSheetLocation.editCell(td, entityPath, propName, null, { dbPath, ctx }); return;
+  }
   // 値のあるリレーションは、クリックでもキーボードでも同じ置換エディタを使う。
   // 空セル用の追加経路では既存選択・解除・逆参照の更新を扱えない。
   if ((type === 'relation' || type === 'multi-relation') && typeof _showRelationDropdown === 'function') {
@@ -269,7 +272,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         entry_path: entityPath,
         entry_id: result?.entry_id || '',
         property: result?.property || propName,
-        candidate_index: result?.candidate_index,
+        candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
       const bidirectionalCtx = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional)
         ? { entityPath, propName, ptc }
@@ -360,7 +363,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, optimisticValue, value, {
           file: filePath,
           property: propName,
-          candidate_index: result?.candidate_index,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           status: writeStatus,
           note: '',
         }, ctx);
@@ -390,7 +393,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             status: writeStatus,
             note: '',
             file: filePath,
-            candidate_index: result?.candidate_index,
+            candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
           });
         }
         }
@@ -468,7 +471,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, value, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -495,7 +498,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
@@ -543,7 +546,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           _upsertLocalPivotValue(entityPath, propName, existing, nextValue, {
             file: existing.file,
             property: existing.property || propName,
-            candidate_index: existing.candidate_index,
+            candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
             status: existing.status || '採用',
             note: existing.note || '',
           }, ctx);
@@ -575,7 +578,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
                   file: result.path || currentRef.file,
                   entry_path: entityPath,
                   property: propName,
-                  candidate_index: result.candidate_index,
+                  candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result.candidate_index,
                   value: oldValue,
                   status: savedStatus,
                   note: savedNote,
@@ -612,7 +615,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
           file: saveRef.file || existing.file,
           property: existing.property || propName,
-          candidate_index: existing.candidate_index,
+          candidate_id: existing?.candidate_id, entry_id: existing?.entry_id, candidate_index: existing.candidate_index,
           status: existing.status || '採用',
           note: existing.note || '',
         }, ctx);
