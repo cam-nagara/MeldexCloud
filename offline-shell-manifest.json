@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.439-3304e232b6e767237fad",
+  "version": "0.7.439-2e4f1c47ebb01ecb9257",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -3809,7 +3809,7 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "b9394c4018b44e3d9657095aeb589b4d1645832211b625be3358b502a9df20cb"
+      "sha256": "84b74167fe2c76cd2dc948e576830238099920cd20a491f2717c29ffa1c03304"
     },
     {
       "path": "manual-versions.json",
@@ -3817,7 +3817,7 @@
     },
     {
       "path": "manual.html",
-      "sha256": "1ff79b75fb62296e952bd1b0618d480e8ee89f66443ced28dd9dc30ad3bb17ce"
+      "sha256": "278bc60d76b269464845756ae0116f86c3f2e87f9517d522c3e8bdcdef7499ab"
     },
     {
       "path": "meldex-app-capabilities.js",

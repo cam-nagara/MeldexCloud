@@ -10824,6 +10824,7 @@ Meldexのカレンダーデータ
 <p>保存要求は送信前にブラウザ内の保存待ちへ残します。接続や一時的な保存エラーが起きても、本文、取得済み画像、保存先、タグ、メモを保持し、接続が回復すると自動で再送します。ブラウザを閉じても保存待ちは残り、次に起動すると再送を再開します。</p>
 <p>ポップアップの<strong>保存待ち</strong>から件数、保存先、エラー理由を確認でき、<strong>今すぐ再送</strong>を押すと再試行できます。権限や入力内容の確認が必要な項目も消さずに残します。原因を解消してから再送してください。ブラウザを終了している間やPCのスリープ中は再送できません。</p>
 <p><strong>保存待ちに残しました</strong>は、Meldexへの保存完了とは区別して表示します。ブラウザの空き容量不足などで保存待ち自体を保持できない場合はエラーになります。更新時は拡張機能の再読み込みを使い、保存待ちがある間は拡張機能を削除しないでください。</p>
+<p>拡張機能1.3.8以降では、更新前から残っている保存待ちも、以前の保存先が存在することを確認してから再送します。保存先が削除されている場合は、本体で同じ場所にフォルダ・シートを作成または復元してから<strong>今すぐ再送</strong>を押してください。以前の要求の本文や添付は保持します。新しい保存操作で新規保存先を作る場合は、保存先欄に手入力するか、一覧の<strong>新規フォルダ</strong>を使います。</p>
 </div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-0fd56974b047--_4" data-manual-anchor="_4">ポップアップから保存する</h3><div class="manual-outline-content">
 <ol>
 <li>保存したいWebページを開く</li>
@@ -10862,7 +10863,7 @@ Meldexのカレンダーデータ
 <p>追加する場合は、ダイアログ上部の<strong>保存先</strong>でフォルダを選び、<strong>現在の保存先を追加</strong>を押します。表示する保存先は最大5件で、すべて一覧から外しても<strong>保存先を選ぶ</strong>は残ります。変更は画像の保存とは別に自動保存され、次回のドラッグにも反映されます。整理した後は、画像を保存しても表示順や一覧から外した状態を保ちます。</p>
 <p>画像はシートのトピックにはせず、選んだフォルダへ画像ファイルとして直接保存します。元のページURL、画像URL、タグ、メモ、取得できた場合は画像の幅と高さを画像ファイル自体へ埋め込むため、画像を単独で移動しても情報を保持できます。BMPは、情報を埋め込めるPNGへ画質を落とさず変換して保存します。</p>
 <p>保存した画像をMeldexで開くと、<strong>オプション &gt; 情報</strong>に画像サイズ、★評価、<strong>元ページ</strong>、<strong>メモ</strong>、その他の埋め込み情報が表示されます。元ページはクリックしてブラウザで開けます。メモは編集でき、保存すると画像ファイル自体へ書き戻されます（Web Clipperで取り込んだかどうかに関わらず、どの画像でも使えます）。</p>
-<p>ページ内容の保存先では、<strong>保存先フォルダ・シート</strong>から通常フォルダまたは既存シートを選べます。一覧でシートは<strong>（シート）</strong>と表示されます。通常フォルダを選んだ場合は、その内側に<strong>Webクリップ</strong>シートを作成し、元のフォルダや画像ファイルは変更しません。既存シートを選んだ場合は、そのシートにトピックを追加します。</p>
+<p>ページ内容の保存先では、<strong>保存先フォルダ・シート</strong>から通常フォルダまたは既存シートを選べます。一覧では専用のシートアイコンで区別します。通常フォルダを選んだ場合は、その内側に<strong>Webクリップ</strong>シートを作成し、元のフォルダや画像ファイルは変更しません。既存シートを選んだ場合は、そのシートにトピックを追加します。</p>
 <p>新しいWebクリップ用シートには<strong>ギャラリー</strong>と<strong>テーブル</strong>があり、最初はギャラリーでページのサムネイルを表示します。テーブルではトピック名の次に画像列を表示し、並び順は<strong>追加日時・降順</strong>です。既存シートに保存しても、自分で設定したビューや並び順は上書きされません。</p>
 <p>記事は本文部分の表示スタイルと画像・動画を保存し、ナビゲーションや関連する記事の一覧は含めません。保存したHTMLはサブパネルでも表示でき、<strong>別画面で開く</strong>から単独で表示できます。保存HTML内のスクリプトは実行しません。Web Clipperを更新した後は、拡張機能と取得するWebページを再読み込みしてください。</p>
 </div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-0fd56974b047--_7" data-manual-anchor="_7">ページ内の画像をまとめて保存する</h3><div class="manual-outline-content">
@@ -10946,8 +10947,7 @@ Meldexのカレンダーデータ
 <p>画像のドラッグ時に「Web Clipperが更新されました」と表示された場合は、そのWebページを再読み込みしてから操作してください。拡張機能を再読み込みする前から開いていたページには、古い処理が残ることがあります。</p>
 <p>保存先一覧や新規フォルダ作成でも <code>Failed to fetch</code> が出る場合は、Meldexへの接続を確認してください。Meldexの <strong>設定 → Webクリップ → Web Clipper → Web Clipperを準備</strong>で接続ブリッジを修復できます。その後、ブラウザの拡張機能画面でWeb Clipperを再読み込みし、保存したいWebページも開き直してください。接続ブリッジが正常なら、本体を閉じていても保存に必要なサービスだけが起動します。</p>
 <ul>
-<li>Meldexが起動しているか確認してください。</li>
-<li>ブラウザで <code>http://localhost:8001</code> を開けるか確認してください。</li>
+<li>ポップアップの<strong>保存待ち</strong>に表示されるエラー理由を確認してください。本体を閉じている場合は専用サービスへ接続するため、ブラウザで本体のポートを開けるかどうかだけでは判定できません。</li>
 <li>拡張機能を読み込んだあとに、保存したいWebページを開き直してください。</li>
 <li>それでも保存できない場合は、ブラウザの拡張機能画面でMeldex Web Clipperを再読み込みし、Webページも開き直してください。</li>
 </ul>
@@ -10955,9 +10955,10 @@ Meldexのカレンダーデータ
 <ol>
 <li>Meldexの <strong>設定 → Webクリップ → Web Clipper</strong> を開く</li>
 <li><strong>Web Clipperを準備</strong>をもう一度押す</li>
-<li>ブラウザ側で古いMeldex Web Clipperを削除する</li>
-<li>もう一度インストール手順を行う</li>
-</ol></div></section></div></section></div></section></article>
+<li>ブラウザの拡張機能画面でMeldex Web Clipperを<strong>再読み込み</strong>する</li>
+<li>保存対象のWebページも再読み込みする</li>
+</ol>
+<p>同じ読み込み用フォルダを復旧した場合、拡張機能の削除・入れ直しは不要です。保存待ちを保持するため、削除せず再読み込みしてください。</p></div></section></div></section></div></section></article>
 <article id="manual-d6251a0d37ae" class="manual-article" data-manual-path="03_設定と連携/Dropbox共有モード かんたん開始.md" data-manual-title="Dropbox共有モード かんたん開始"><p class="manual-version">Meldex v0.7.439 対応</p><section class="manual-outline-section manual-outline-level-1" data-outline-level="1"><h1 id="manual-d6251a0d37ae--dropbox" data-manual-anchor="dropbox">Dropbox共有モード かんたん開始</h1><div class="manual-outline-content">
 <p>Meldexをスマホ・タブレット・PCから同じDropboxフォルダにつないで使うための、いちばん短い手順です。
 普通の利用者は <strong>Dropbox Appを作りません</strong>。Dropboxにログインして、Meldexのアクセスを許可するだけです。</p>
