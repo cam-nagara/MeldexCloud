@@ -44,26 +44,30 @@
   let inTable = false, _tableRowCount = 0;
   let pendingTableLayout = null;
   let pendingNoteTitle = false;
+  let pendingCalloutMetadata = null;
   const headingSlugCounts = new Map();
   // リストネスト管理: スタックで深度・種別を追跡
-  const listStack = []; // [{ type: 'ul'|'ol', indent: number }, ...]
+  const listStack = []; // [{ type: 'ul'|'ol', indent: number, itemOpen: boolean }, ...]
 
   function closeListAll() {
     while (listStack.length > 0) {
       const t = listStack.pop();
+      if (t.itemOpen) html += '</li>';
       html += t.type === 'ul' ? '</ul>' : '</ol>';
     }
   }
-  function adjustListDepth(indent, type) {
+  function adjustListDepth(indent, type, start = 1) {
     // 現在の深度より浅くなった分だけ閉じる
     while (listStack.length > 0) {
       const top = listStack[listStack.length - 1];
       if (top.indent > indent) {
         listStack.pop();
+        if (top.itemOpen) html += '</li>';
         html += top.type === 'ul' ? '</ul>' : '</ol>';
       } else if (top.indent === indent && top.type !== type) {
         // 同深度でリスト種別が変わった場合は閉じて開き直す
         listStack.pop();
+        if (top.itemOpen) html += '</li>';
         html += top.type === 'ul' ? '</ul>' : '</ol>';
         break;
       } else {
@@ -72,9 +76,12 @@
     }
     // スタックが空、または現在の深度より浅い場合は新しいリストを開く
     if (listStack.length === 0 || listStack[listStack.length - 1].indent < indent) {
-      html += type === 'ul' ? '<ul>' : '<ol>';
-      listStack.push({ type, indent });
+      html += type === 'ul' ? '<ul>' : (start === 1 ? '<ol>' : `<ol start="${Number(start)}">`);
+      listStack.push({ type, indent, itemOpen: false });
     }
+    const current = listStack[listStack.length - 1];
+    if (current.itemOpen) html += '</li>';
+    current.itemOpen = true;
   }
 
   function splitMarkdownTableRow(line) {
@@ -99,6 +106,12 @@
   }
 
   for (let i = 0; i < lines.length; i++) {
+    const calloutMetadataMatch = lines[i].match(/^<!--meldex-callout:([^<>]*)-->$/);
+    if (!inCodeBlock && calloutMetadataMatch && /^>\s*\[!/.test(lines[i + 1] || '')) {
+      try { pendingCalloutMetadata = _calloutMetadata(JSON.parse(decodeURIComponent(calloutMetadataMatch[1]))); }
+      catch (_) { pendingCalloutMetadata = null; }
+      continue;
+    }
     const line = lines[i];
 
     // コードブロック

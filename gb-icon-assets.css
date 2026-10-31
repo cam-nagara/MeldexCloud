@@ -225,6 +225,28 @@
   flex-shrink: 0;
 }
 
+.gb-icon-picker-presets.gb-icon-picker-presets-icons {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  min-height: 34px;
+  max-height: none;
+  flex: 0 0 auto;
+}
+.gb-icon-picker-presets-icons .gb-icon-picker-preset {
+  flex: 0 0 30px;
+  justify-content: center;
+  padding: 4px;
+}
+.gb-icon-image-register { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; flex: 0 0 auto; }
+.gb-icon-image-register input { min-width: 0; width: 100%; font-size: 11px; }
+.gb-icon-image-register input:first-child { grid-column: 1 / -1; }
+.gb-icon-image-register [role="status"] { grid-column: 1 / -1; font-size: 11px; color: var(--fg2); }
+.callout-color-settings { padding-top: 6px; border-top: 1px solid var(--border); flex: 0 0 auto; }
+.callout-color-targets { display: flex; gap: 6px; margin-bottom: 4px; }
+.callout-color-targets [aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.callout-color-palette { overflow: auto; max-height: 90px; }
+
 .gb-icon-picker-footer {
   border-top: 1px solid var(--border);
   padding-top: 6px;

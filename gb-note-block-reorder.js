@@ -276,6 +276,7 @@
   // 6. ハンドル: 表示（hover/touch、全編集ホスト共通）
   // ============================================================
   let _handle = null;
+  let _addButton = null;
   let _hoverTargetBlock = null;
   let _hoverEditable = null;
   let _activeDrag = null;
@@ -287,6 +288,10 @@
     _handle.style.width = size + 'px';
     _handle.style.height = size + 'px';
     _handle.style.fontSize = enabled ? '20px' : '16px';
+    if (_addButton) {
+      _addButton.style.width = size + 'px';
+      _addButton.style.height = size + 'px';
+    }
   }
 
   // ユーザー指示(2026-08-05): ハンドルは全行で同じガター位置に固定する。
@@ -313,15 +318,32 @@
       const contentTop = er.top + padTop * z;
       _handle.style.top = (Math.max(2, contentTop - 22) / z) + 'px';
       _handle.style.left = (blockRect.left / z) + 'px';
+      _positionAddButton(true);
       return;
     }
     _handle.style.top = (blockRect.top / z) + 'px';
     const contentLeft = er.left + padLeft * z;
     _handle.style.left = (Math.max(2, contentLeft - 22) / z) + 'px';
+    _positionAddButton(false);
+  }
+
+  function _positionAddButton(vertical) {
+    if (!_addButton) return;
+    const size = parseFloat(_addButton.style.width) || HANDLE_H;
+    // 狭いガター・タッチ用44pxでも、追加ボタンが画面外へ消えないよう二つを一緒に補正する。
+    const axis = vertical ? 'top' : 'left';
+    const start = Math.max(size + 4, parseFloat(_handle.style[axis]));
+    _handle.style[axis] = start + 'px';
+    _addButton.style.left = (vertical ? parseFloat(_handle.style.left) : start - size - 2) + 'px';
+    _addButton.style.top = (vertical ? start - size - 2 : parseFloat(_handle.style.top)) + 'px';
   }
 
   function _hideHandle() {
-    if (_handle) _handle.style.opacity = '0';
+    for (const button of [_handle, _addButton]) {
+      if (!button) continue;
+      button.style.opacity = '0'; button.style.pointerEvents = 'none';
+      button.tabIndex = -1; button.setAttribute('aria-hidden', 'true');
+    }
     _hoverTargetBlock = null;
     _hoverEditable = null;
     if (LR()) LR().hideRowHighlight();
@@ -342,6 +364,7 @@
     const lr = LR();
     if (!nbt) return;
     if (_handle && (e.target === _handle || _handle.contains(e.target))) return; // ハンドル上では現状維持
+    if (_addButton?.contains(e.target)) return;
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) { _hideHandle(); return; } // 工程7-8: viewer/ロック中は出さない
     // 修正1: 直接ブロック上でない場合（ガター/余白）は、Y座標から対応する行を探す。
@@ -358,6 +381,9 @@
     _hoverTargetBlock = block;
     _hoverEditable = editable;
     handle.style.opacity = '1';
+    handle.style.pointerEvents = 'auto';
+    for (const button of [handle, _addButton]) { button.tabIndex = 0; button.removeAttribute('aria-hidden'); }
+    _addButton.style.opacity = '1'; _addButton.style.pointerEvents = 'auto';
   }
 
   function _onDocumentTouchStart(e) {
@@ -378,6 +404,9 @@
     _hoverTargetBlock = block;
     _hoverEditable = editable;
     handle.style.opacity = '1';
+    handle.style.pointerEvents = 'auto';
+    for (const button of [handle, _addButton]) { button.tabIndex = 0; button.removeAttribute('aria-hidden'); }
+    _addButton.style.opacity = '1'; _addButton.style.pointerEvents = 'auto';
   }
 
   // ============================================================
@@ -688,12 +717,44 @@
     handle.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:20px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--fg2);font-size:16px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;touch-action:none;';
     handle.setAttribute('contenteditable', 'false');
     handle.setAttribute('role', 'button');
+    handle.tabIndex = -1;
+    handle.setAttribute('aria-hidden', 'true');
+    handle.style.pointerEvents = 'none';
+    handle.setAttribute('aria-haspopup', 'menu');
     handle.setAttribute('aria-label', 'ドラッグでブロックを移動、クリックで行種メニューを開く、右クリックでメニューを開く');
     document.body.appendChild(handle);
     handle.addEventListener('pointerdown', _onHandlePointerDown);
     handle.addEventListener('contextmenu', _onHandleContextMenu);
     handle.addEventListener('pointerenter', _onHandlePointerEnter);
     handle.addEventListener('pointerleave', _onHandlePointerLeave);
+    // pointerupで開いたメニューを、直後のclickの共通dismissで閉じない。
+    handle.addEventListener('click', (e) => e.stopPropagation());
+    handle.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && _hoverTargetBlock) {
+        e.preventDefault(); _openBlockMenuFor(_hoverEditable, _hoverTargetBlock);
+      }
+    });
+    const add = document.createElement('button');
+    add.id = 'note-block-add'; add.type = 'button'; add.textContent = '+';
+    add.setAttribute('aria-label', 'この行の下に追加'); add.title = 'この行の下に追加';
+    add.setAttribute('aria-haspopup', 'menu');
+    add.tabIndex = -1; add.setAttribute('aria-hidden', 'true');
+    add.style.cssText = handle.style.cssText + 'cursor:pointer;border:0;background:var(--bg2);border-radius:4px;pointer-events:none;';
+    add.addEventListener('mousedown', (e) => e.preventDefault());
+    add.addEventListener('pointerenter', _onHandlePointerEnter);
+    add.addEventListener('pointerleave', _onHandlePointerLeave);
+    add.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const editable = _hoverEditable, block = _hoverTargetBlock;
+      if (!block || !NBT()?.isEditableWritable(editable)) return;
+      global.MeldexNoteBlockMenu.open({
+        anchorRect: add.getBoundingClientRect(), editable, insertMode: true,
+        onSelect: (typeId) => { NBT().insertLineAfter(typeId, editable, block); _hideHandle(); },
+        onClose: () => { if (LR()) LR().hideRowHighlight(); },
+      });
+    });
+    document.body.appendChild(add);
+    _addButton = add;
     _handle = handle;
     return handle;
   }

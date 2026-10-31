@@ -87,6 +87,14 @@
     } catch (_) {
       return null;
     }
+    // IDs added for local portable archives must not opt existing folder/SQLite
+    // sheets into automatic legacy migration. Dropbox's established IDs keep
+    // their existing migration behavior.
+    roots = roots.filter((root) => {
+      const id = sourceIdOf(root);
+      const generatedLocal = !root.provider && (id === 'source' || /^local:[0-9a-f]{64}$/.test(id));
+      return !generatedLocal || /\.mel-(sheet|board)$/i.test(rawPath);
+    });
     const registry = global.MeldexSourceFolderRegistry;
     const parsed = registry?.parseSourcePath?.(rawPath);
     if (parsed?.sourceId) {

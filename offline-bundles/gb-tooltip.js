@@ -91,7 +91,7 @@
     '.status-dropdown',
     '.cell-inline-dd',
     '.user-dropdown',
-    '.gb-context-menu:not(.chat-generation-settings-menu)',
+    '.gb-context-menu:not(.chat-generation-settings-menu):not(.gb-icon-picker)',
     '.db-picker-popup',
     '.gb-selection-float-bar',
     '.value-input',

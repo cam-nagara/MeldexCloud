@@ -1,3 +1,4 @@
+    ? sizeOrText
     : String(sizeOrText || '').length;
   if (size < threshold) return;
   if (_commonLoadingProgress()) {

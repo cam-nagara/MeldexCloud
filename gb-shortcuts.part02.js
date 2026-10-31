@@ -171,16 +171,6 @@
     if (typeof _folderSelected === 'undefined' || !_folderSelected) return false;
     return typeof _folderStartRename === 'function' && _folderStartRename(_folderSelected);
   },
-  // パネルセット: アクティブペインが属する panelset の N 番目のドックに切替
-  'panelset.group1': () => _switchPanelsetGroupByIndex(1),
-  'panelset.group2': () => _switchPanelsetGroupByIndex(2),
-  'panelset.group3': () => _switchPanelsetGroupByIndex(3),
-  'panelset.group4': () => _switchPanelsetGroupByIndex(4),
-  'panelset.group5': () => _switchPanelsetGroupByIndex(5),
-  'panelset.group6': () => _switchPanelsetGroupByIndex(6),
-  'panelset.group7': () => _switchPanelsetGroupByIndex(7),
-  'panelset.group8': () => _switchPanelsetGroupByIndex(8),
-  'panelset.group9': () => _switchPanelsetGroupByIndex(9),
 
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;

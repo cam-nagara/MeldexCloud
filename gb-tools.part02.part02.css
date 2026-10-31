@@ -1122,6 +1122,9 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   flex-direction: column;
   gap: 6px;
 }
+#google-personal-import .google-import-targets label {
+  flex-direction: row;
+}
 #google-personal-import .gb-input,
 #google-personal-import .gb-select {
   width: 100%;

@@ -958,63 +958,111 @@ function renderEntityPage(data) {
 
 // 既存のcontenteditable用カスタムundo
 const _CUSTOM_UNDO_MAX = 50;
+// HTML配列の既存契約を保ち、選択位置は配列に対応する別の弱参照へ保存する。
+const _customUndoSelections = new WeakMap();
+function _customUndoSelection(editable) {
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || !editable.contains(sel.anchorNode) || !editable.contains(sel.focusNode)) return null;
+  function point(node, offset) {
+    const path = [];
+    for (let current = node; current !== editable; current = current.parentNode) {
+      path.unshift(Array.prototype.indexOf.call(current.parentNode.childNodes, current));
+    }
+    return { path, offset };
+  }
+  return { anchor: point(sel.anchorNode, sel.anchorOffset), focus: point(sel.focusNode, sel.focusOffset) };
+}
+function _restoreCustomUndoSelection(editable, snapshot) {
+  function point(value) {
+    let node = editable;
+    for (const index of value.path) { node = node.childNodes[index]; if (!node) return null; }
+    return { node, offset: Math.min(value.offset, node.nodeType === 3 ? node.length : node.childNodes.length) };
+  }
+  const anchor = snapshot && point(snapshot.anchor), focus = snapshot && point(snapshot.focus);
+  const island = (anchor?.node.nodeType === 1 ? anchor.node : anchor?.node.parentElement)?.closest('[contenteditable="true"]');
+  (island && editable.contains(island) ? island : editable).focus({ preventScroll: true });
+  const sel = window.getSelection();
+  if (anchor && focus && sel) sel.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+}
+function _resetCustomUndo(editable) {
+  editable._customUndoStack = []; editable._customRedoStack = [];
+  editable._lastCustomOp = false; editable._customUndoInputPending = false;
+  editable._customUndoDocument = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+}
+function _ensureCustomUndoDocument(editable) {
+  const identity = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  if (editable._customUndoDocument !== identity) _resetCustomUndo(editable);
+}
+function _customUndoPush(stack, editable) {
+  const selections = _customUndoSelections.get(stack) || [];
+  selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
+  stack.push(editable.innerHTML);
+  selections.push({ html: editable.innerHTML, selection: _customUndoSelection(editable) });
+  if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
+  _customUndoSelections.set(stack, selections);
+}
+function _customUndoPop(stack) {
+  const selections = _customUndoSelections.get(stack);
+  const entry = selections?.[stack.length - 1];
+  const html = stack.pop();
+  if (selections) selections.length = stack.length;
+  return { html, selection: entry?.html === html ? entry.selection : null };
+}
 function _pushCustomUndo(editable) {
-  if (!editable._customUndoStack) editable._customUndoStack = [];
-  if (!editable._customRedoStack) editable._customRedoStack = [];
-  editable._customUndoStack.push(editable.innerHTML);
-  if (editable._customUndoStack.length > _CUSTOM_UNDO_MAX) editable._customUndoStack.shift();
-  editable._customRedoStack.length = 0; // redo履歴をクリア
+  _ensureCustomUndoDocument(editable);
+  _customUndoPush(editable._customUndoStack, editable);
+  editable._customRedoStack.length = 0;
   editable._lastCustomOp = true;
   editable._customUndoInputPending = true;
 }
-
-let _customUndoInProgress = false; // dispatchEvent中のinputリスナーを抑制
+function _customUndoHost(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement;
+  const host = el?.closest?.('#page-content, #entity-freetext, #dp-editable, .meldex-entity-detail-editor')
+    || el?.closest?.('[contenteditable="true"]');
+  if (!host?.isContentEditable || el?.closest?.('[contenteditable]')?.getAttribute('contenteditable') === 'false') return null;
+  if (host.matches(window.MeldexNoteBlockTypes?.EDITABLE_SELECTOR || ':not(*)')
+      && !window.MeldexNoteBlockTypes.isEditableWritable(host)) return null;
+  return host;
+}
+let _customUndoInProgress = false;
+function _applyCustomUndo(editable, redo) {
+  if (!editable || !editable.isContentEditable) return false;
+  _ensureCustomUndoDocument(editable);
+  const source = redo ? editable._customRedoStack : editable._customUndoStack;
+  if (!source.length || (!redo && !editable._lastCustomOp)) return false;
+  const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
+  _customUndoPush(redo ? editable._customUndoStack : editable._customRedoStack, editable);
+  const snapshot = _customUndoPop(source);
+  editable.innerHTML = snapshot.html;
+  editable._lastCustomOp = redo || editable._customUndoStack.length > 0;
+  editable._customUndoInputPending = false;
+  _restoreCustomUndoSelection(editable, snapshot.selection);
+  _customUndoInProgress = true;
+  try { editable.dispatchEvent(new Event('input', { bubbles: true })); }
+  finally { _customUndoInProgress = false; window.MeldexNoteRuby?.restoreScroll?.(scroll); }
+  return true;
+}
 document.addEventListener('keydown', function(e) {
-  if (!e.ctrlKey) return;
-  const editable = document.activeElement;
-  if (!editable || editable.contentEditable !== 'true') return;
+  if (!e.ctrlKey || e.altKey || e.defaultPrevented || e.isComposing) return;
+  const key = String(e.key).toLowerCase();
+  if (key !== 'z' && key !== 'y') return;
+  const editable = _customUndoHost(document.activeElement);
+  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey))) e.preventDefault();
+}, true);
 
-  // Ctrl+Z: カスタムアンドゥ（直前がカスタム操作の場合のみ）
-  if (e.key === 'z' && !e.shiftKey && editable._lastCustomOp && editable._customUndoStack && editable._customUndoStack.length > 0) {
-    e.preventDefault();
-    // innerHTML の総入れ替えはスクロール位置を捨てるため、前後で退避・復元する
-    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
-    editable._customRedoStack.push(editable.innerHTML);
-    editable.innerHTML = editable._customUndoStack.pop();
-    editable._lastCustomOp = editable._customUndoStack.length > 0;
-    _customUndoInProgress = true;
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    _customUndoInProgress = false;
-    window.MeldexNoteRuby?.restoreScroll?.(scroll);
-    return;
-  }
-  // Ctrl+Y / Ctrl+Shift+Z: カスタムリドゥ
-  if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && editable._customRedoStack && editable._customRedoStack.length > 0) {
-    e.preventDefault();
-    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
-    editable._customUndoStack.push(editable.innerHTML);
-    editable.innerHTML = editable._customRedoStack.pop();
-    editable._lastCustomOp = true;
-    _customUndoInProgress = true;
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    _customUndoInProgress = false;
-    window.MeldexNoteRuby?.restoreScroll?.(scroll);
-    return;
-  }
-}, true); // captureフェーズで先に処理
-
-// 通常の入力でカスタムフラグをクリア（以降のCtrl+Zはネイティブアンドゥに委譲）
+// Undo後の通常入力は古いRedoを破棄する。コールアウト内部からのinputも同じ文書へ集約する。
 document.addEventListener('input', function(e) {
-  if (_customUndoInProgress) return; // カスタムundo/redoの自動保存トリガーは無視
-  const editable = e.target;
-  if (editable && editable.contentEditable === 'true') {
-    if (editable._customUndoInputPending) {
-      editable._customUndoInputPending = false;
-      editable._lastCustomOp = true;
-      return;
-    }
-    editable._lastCustomOp = false;
+  if (_customUndoInProgress) return;
+  const editable = _customUndoHost(e.target);
+  if (!editable) return;
+  _ensureCustomUndoDocument(editable);
+  if (editable._customUndoInputPending) {
+    editable._customUndoInputPending = false;
+    editable._lastCustomOp = true;
+    return;
   }
+  editable._customRedoStack.length = 0;
+  editable._lastCustomOp = false;
 });
 
 /* ==============================
@@ -1139,6 +1187,7 @@ function _rtApplyNoteTitle() {
 function rtCmd(cmd, value) {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
+  if ((cmd === 'undo' || cmd === 'redo') && _applyCustomUndo(editable, cmd === 'redo')) return;
   document.execCommand(cmd, false, value || null);
   if (cmd === 'formatBlock') _rtClearNoteTitleAtSelection(editable);
 }
@@ -1201,6 +1250,77 @@ const CALLOUT_PRESETS = [
   { icon: 'bookmark', color: '#1abc9c', type: '', label: 'ブックマーク' },
 ];
 
+function _calloutMetadata(value) {
+  const meta = {};
+  for (const key of ['background', 'border']) {
+    const color = String(value?.[key] || '');
+    if (/^(transparent|#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i.test(color)
+      && CSS.supports('color', color)) meta[key] = color;
+  }
+  for (const key of ['label', 'keywords']) {
+    if (value?.[key]) meta[key] = String(value[key]).slice(0, 500);
+  }
+  return meta;
+}
+
+function _calloutImageLibraryKey() {
+  const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.();
+  const scope = workspace?.workspaceId || workspace?.workspace_id || workspace?.stableId
+    || window.MeldexWorkspaces?.getActiveId?.() || window.MeldexStandaloneFS?.rootPathLabel?.();
+  return scope ? 'meldex-callout-images-v1:' + scope : null;
+}
+
+function _calloutRegisteredImages(key) {
+  if (!key) return [];
+  try {
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(list) ? list.filter(item => item && typeof item.spec === 'string'
+      && GBIconAssets.normalizeSpec(item.spec).startsWith('image:')).map(item => ({
+        spec: item.spec, type: 'image', label: String(item.label || '登録画像').slice(0, 500),
+        keywords: String(item.keywords || '画像 写真 カスタム').slice(0, 500),
+      })) : [];
+  } catch (_) { return []; }
+}
+
+function _calloutImageOptions(editable, isCurrent) {
+  const libraryKey = _calloutImageLibraryKey();
+  const current = () => isCurrent() && _calloutImageLibraryKey() === libraryKey;
+  const imageItems = [...editable.querySelectorAll('.callout-icon[data-icon^="image:"]')].map(icon => ({
+    spec: icon.dataset.icon, label: icon.dataset.iconLabel || '登録画像',
+    keywords: icon.dataset.iconKeywords || '画像 写真 カスタム', type: 'image',
+  }));
+  imageItems.push(..._calloutRegisteredImages(libraryKey));
+  return {
+    presetsIconOnly: true, imageItems,
+    onUploadImage: async (file, details) => {
+      if (!current()) throw new Error('編集対象が変わったため、もう一度開いてください');
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type) || file.size > 10 * 1024 * 1024) {
+        throw new Error('10MB以下のPNG・JPEG・GIF・WebP画像を選択してください');
+      }
+      const path = editable.dataset.path || editable.dataset.entityPath || '';
+      if (!path) throw new Error('先にノートを保存してください');
+      const dir = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      const data = await _readFileAsDataURL(file);
+      if (!current()) throw new Error('編集対象が変わりました');
+      const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, filename: file.name }),
+      });
+      if (!result.ok || !result.path) throw new Error(result.error || '画像を登録できませんでした');
+      if (!current()) throw new Error('編集対象が変わりました。元のノートで画像を選び直してください');
+      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.path));
+      if (!spec) throw new Error('画像の保存先を読み込めませんでした');
+      const item = { spec, type: 'image', label: (details.label || file.name).slice(0, 500), keywords: (details.keywords || '画像 写真 カスタム').slice(0, 500) };
+      if (libraryKey) {
+        const items = _calloutRegisteredImages(libraryKey).filter(existing => existing.spec !== spec);
+        try { localStorage.setItem(libraryKey, JSON.stringify([...items, item])); }
+        catch (_) { if (typeof showStatus === 'function') showStatus('画像はノートに設定できますが、この端末の登録画像一覧を保存できませんでした', true); }
+      }
+      return item;
+    },
+  };
+}
+
 function insertNoteTable(rows = 3, cols = 3) {
   const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
                 || document.getElementById('page-content');
@@ -1228,6 +1348,11 @@ function insertNoteTable(rows = 3, cols = 3) {
 function insertCallout() {
   const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable');
   if (!editable) return;
+  const originalPath = editable.dataset.path || editable.dataset.entityPath;
+  const originalGeneration = editable._openPageLoadSeq;
+  const isCurrent = () => editable.isConnected && editable.isContentEditable
+    && (editable.dataset.path || editable.dataset.entityPath) === originalPath
+    && editable._openPageLoadSeq === originalGeneration;
   const insertRange = (rtTarget === editable && rtSavedSelection && _rtSelectionEditable(rtSavedSelection))
     ? rtSavedSelection.cloneRange()
     : null;
@@ -1241,17 +1366,20 @@ function insertCallout() {
   GBIconAssets.openPicker({
     title: 'コールアウトアイコン',
     className: 'callout-picker',
+    ..._calloutImageOptions(editable, () => isCurrent() && (!insertRange || editable.contains(insertRange.startContainer))),
     anchorEl: btn || editable,
+    restoreFocusEl: editable,
     includeLucide: true,
     includeNoto: true,
     presets: CALLOUT_PRESETS.map((p) => ({ ...p, spec: p.icon })),
     onSelect: (spec, item) => {
-      _insertCalloutBlock(editable, spec, item?.type || '', item?.color || '', insertRange);
+      if (!isCurrent() || (insertRange && !editable.contains(insertRange.startContainer))) return;
+      _insertCalloutBlock(editable, spec, _calloutPresetForSpec(spec)?.type || '', item?.color || '', insertRange, item);
     },
   });
 }
 
-function _insertCalloutBlock(editable, iconName, type, color, insertRange) {
+function _insertCalloutBlock(editable, iconName, type, color, insertRange, item) {
   editable.focus();
   if (insertRange && _rtSelectionEditable(insertRange)) {
     const sel = window.getSelection();
@@ -1262,7 +1390,9 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange) {
   const colorStyle = color ? ' style="color:' + esc(color) + ';"' : '';
   const spec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(iconName || 'lightbulb') : iconName;
   const iconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 20) : lucide(iconName, 20);
-  const html = `<div class="callout-block${cls}" contenteditable="false"><span class="callout-icon" data-icon="${esc(spec)}"${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
+  const imageAttrs = item?.type === 'image'
+    ? ` data-icon-label="${esc(item.label || '登録画像')}" data-icon-keywords="${esc(item.keywords || '画像 写真 カスタム')}"` : '';
+  const html = `<div class="callout-block${cls}" contenteditable="false"><span class="callout-icon" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
   document.execCommand('insertHTML', false, html);
   setTimeout(() => {
     const blocks = editable.querySelectorAll('.callout-block');
@@ -1290,18 +1420,30 @@ function _dispatchCalloutInput(iconEl) {
 function _openCalloutIconPicker(iconEl) {
   if (!iconEl) return false;
   if (typeof GBIconAssets === 'undefined') return;
+  const editable = iconEl.closest('#page-content, #entity-freetext, #dp-editable');
+  const nbt = window.MeldexNoteBlockTypes;
+  if (!editable || (nbt ? !nbt.isEditableWritable(editable) : !editable.isContentEditable)) return false;
+  const path = editable.dataset.path || editable.dataset.entityPath;
+  const generation = editable._openPageLoadSeq;
+  const isCurrent = () => iconEl.isConnected && editable.contains(iconEl)
+    && (editable.dataset.path || editable.dataset.entityPath) === path
+    && editable._openPageLoadSeq === generation && (nbt ? nbt.isEditableWritable(editable) : editable.isContentEditable);
 
-  function applyIcon(spec, color) {
+  function applyIcon(spec, color, item) {
+    if (!isCurrent()) return;
+    _pushCustomUndo(editable);
     const normalized = GBIconAssets.normalizeSpec(spec);
     iconEl.innerHTML = GBIconAssets.render(normalized, 20);
     iconEl.dataset.icon = normalized;
     iconEl.dataset.color = color || '';
     iconEl.style.color = color || '';
+    iconEl.dataset.iconLabel = item?.type === 'image' ? item.label || '登録画像' : '';
+    iconEl.dataset.iconKeywords = item?.type === 'image' ? item.keywords || '画像 写真 カスタム' : '';
     const block = iconEl.closest('.callout-block');
     // プリセットに一致するtypeがあれば適用
     if (block) {
       const preset = _calloutPresetForSpec(normalized);
-      block.className = 'callout-block' + (preset?.type ? ' callout-' + preset.type : '');
+      for (const type of ['info', 'warning', 'danger', 'success']) block.classList.toggle('callout-' + type, preset?.type === type);
     }
     _dispatchCalloutInput(iconEl);
   }
@@ -1309,25 +1451,40 @@ function _openCalloutIconPicker(iconEl) {
   GBIconAssets.openPicker({
     title: 'コールアウトアイコン',
     className: 'callout-picker',
+    ..._calloutImageOptions(editable, isCurrent),
     anchorEl: iconEl,
+    restoreFocusEl: editable,
     current: iconEl.dataset.icon || '',
     includeLucide: true,
     includeNoto: true,
     presets: CALLOUT_PRESETS.map((p) => ({ ...p, spec: p.icon })),
-    onSelect: (spec, item) => applyIcon(spec, item?.color || iconEl.dataset.color || ''),
+    onSelect: (spec, item) => applyIcon(spec, item?.color || iconEl.dataset.color || '', item),
     extraFooter: () => {
       const colorWrap = document.createElement('div');
-      colorWrap.style.cssText = 'padding-top:6px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;';
-      colorWrap.innerHTML = '<span style="font-size:11px;color:var(--fg2);">色</span>';
+      colorWrap.className = 'callout-color-settings';
       if (typeof createInlineColorGrid === 'function') {
-        const curColor = iconEl.dataset.color || '';
-        const cg = createInlineColorGrid(curColor, (c) => {
-          iconEl.style.color = c || '';
-          iconEl.dataset.color = c || '';
-          _dispatchCalloutInput(iconEl);
+        const block = iconEl.closest('.callout-block');
+        const targets = [['アイコン', iconEl, 'color', 'color'], ['枠', block, 'calloutBorder', 'borderColor'],
+          ['背景', block, 'calloutBackground', 'backgroundColor']];
+        const controls = document.createElement('div'); controls.className = 'callout-color-targets';
+        controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', '色の設定対象');
+        const palette = document.createElement('div'); palette.className = 'callout-color-palette';
+        const selectTarget = ([label, target, key, property]) => {
+          controls.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', button.textContent === label ? 'true' : 'false'));
+          const cg = createInlineColorGrid(target.dataset[key] || '', (c) => {
+            if (!isCurrent()) return;
+            _pushCustomUndo(editable);
+            target.style[property] = c || ''; target.dataset[key] = c || '';
+            _dispatchCalloutInput(iconEl);
+            selectTarget([label, target, key, property]);
+          });
+          cg.setAttribute('aria-label', label + 'の色'); palette.replaceChildren(cg);
+        };
+        targets.forEach(target => {
+          const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn gb-btn-xs';
+          button.textContent = target[0]; button.addEventListener('click', () => selectTarget(target)); controls.appendChild(button);
         });
-        cg.style.cssText += 'max-width:320px;';
-        colorWrap.appendChild(cg);
+        colorWrap.append(controls, palette); selectTarget(targets[0]);
       }
       return colorWrap;
     },

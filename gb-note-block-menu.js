@@ -79,7 +79,7 @@
     const removableText = _state.removableTextPrefix
       ? _state.removableTextPrefix + _state.query
       : '';
-    if (def.insertOnly) return { allowed: true, reason: '' };
+    if (def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
     return NBT.canConvert(def.id, _state.editable, _state.blockInfo, { removableText });
   }
 
@@ -227,8 +227,10 @@
       onSelect: opts.onSelect || null,
       onClose: opts.onClose || null,
       allowInsertItems: !!opts.allowInsertItems,
+      insertMode: !!opts.insertMode,
     };
     const menu = _ensureMenuEl();
+    menu.setAttribute('aria-label', opts.insertMode ? '下に追加する行種を選択' : '行種を選択');
     menu.style.display = '';
     _render();
     if (typeof positionPopup === 'function') {

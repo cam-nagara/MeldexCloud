@@ -315,6 +315,14 @@
     } catch (_) {
       return null;
     }
+    // IDs added for local portable archives must not opt existing folder/SQLite
+    // sheets into automatic legacy migration. Dropbox's established IDs keep
+    // their existing migration behavior.
+    roots = roots.filter((root) => {
+      const id = sourceIdOf(root);
+      const generatedLocal = !root.provider && (id === 'source' || /^local:[0-9a-f]{64}$/.test(id));
+      return !generatedLocal || /\.mel-(sheet|board)$/i.test(rawPath);
+    });
     const registry = global.MeldexSourceFolderRegistry;
     const parsed = registry?.parseSourcePath?.(rawPath);
     if (parsed?.sourceId) {
@@ -10402,7 +10410,8 @@
 
   function matchingHosts(path) {
     const normalized = normalizePath(path);
-    return Array.from(global.document?.querySelectorAll?.('[data-path]') || [])
+    // 公開設定・ツリー等にもdata-pathがある。本文ホストだけを保存・ロック・復元する。
+    return Array.from(global.document?.querySelectorAll?.('#page-content[data-path], #dp-editable[data-path], #entity-freetext[data-path], .meldex-entity-detail-editor[data-path]') || [])
       .filter((host) => normalizePath(host?.dataset?.path) === normalized && host?.dataset?.loadFailed !== '1');
   }
 
@@ -10432,7 +10441,7 @@
     }
   }
 
-  function partitionHostsAfterRestore(path, hosts) {
+  function partitionHostsAfterRestore(path, hosts, originals = new Map(), result = null) {
     const adapter = global.MeldexNoteSaveAdapter;
     if (typeof adapter?.serialize !== 'function') return { clean: hosts, dirty: [] };
     const clean = [];
@@ -10441,7 +10450,14 @@
       let liveMarkdown = null;
       try { liveMarkdown = adapter.serialize(host); } catch {}
       const baseline = host.dataset?.lastSavedMd || '';
-      if (liveMarkdown === null || liveMarkdown !== baseline) {
+      const original = originals.get(host);
+      // 保存応答がsourceのfrontmatterを先に進めても、ロック中の本文が元のままなら描画を更新する。
+      // 途中参加・未保存の別パネルは従来どおり保護する。
+      const body = value => String(value || '').replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
+      const acknowledged = original != null && typeof result?.saved_frontmatter === 'string'
+        ? result.saved_frontmatter + body(original) : original;
+      const unchanged = original != null ? (liveMarkdown === original || liveMarkdown === acknowledged) : liveMarkdown === baseline;
+      if (liveMarkdown === null || !unchanged) {
         dirty.push({ host, liveMarkdown, baseline });
       } else {
         clean.push(host);
@@ -10457,25 +10473,36 @@
     return hosts.map((host) => {
       if (!host || !('contentEditable' in host)) return { host, editable: null };
       const editable = host.contentEditable;
+      const islands = Array.from(host.querySelectorAll?.('[contenteditable="true"]') || []);
+      islands.forEach(island => { island.contentEditable = 'false'; });
       host.contentEditable = 'false';
-      return { host, editable };
+      return { host, editable, islands, path: host.dataset?.path, generation: host._openPageLoadSeq };
     });
   }
 
   function unlockHosts(locks) {
-    locks.forEach(({ host, editable }) => {
-      if (host && editable !== null) host.contentEditable = editable;
+    locks.forEach(({ host, editable, islands, path, generation }) => {
+      if (host && editable !== null && host.dataset?.path === path && host._openPageLoadSeq === generation) {
+        host.contentEditable = editable;
+        (islands || []).forEach(island => { if (host.contains(island)) island.contentEditable = 'true'; });
+      }
     });
   }
 
   function renderHost(host, path, markdown, result) {
     if (!host || normalizePath(host.dataset?.path) !== normalizePath(path)) return;
-    if (!global.MeldexNoteSaveAdapter?.renderSavedMarkdownIntoCleanHost?.(host, path, markdown)) {
+    const savedMarkdown = result?.savedMd != null ? result.savedMd : markdown;
+    if (!global.MeldexNoteSaveAdapter?.renderSavedMarkdownIntoCleanHost?.(host, path, savedMarkdown)) {
       throw new Error('ノートの表示を安全に更新できないため、再読込してください');
     }
-    host.dataset.lastSavedMd = result?.savedMd != null ? result.savedMd : markdown;
+    host.dataset.lastSavedMd = savedMarkdown;
     if (result?.etag) host.dataset.lastSavedEtag = result.etag;
-    if (result?.transport_revision) host.dataset.lastSavedTransportRevision = result.transport_revision;
+    if (result?.transport_revision) {
+      const revision = result.transport_revision;
+      host.dataset.lastSavedTransportRevision = global.MeldexDocumentSaveCoordinator?.normalizeTransportRevision?.(
+        global.MeldexDocumentSaveCoordinator.currentTransportName(), revision,
+      ) || (typeof revision === 'string' ? revision : `${revision.transport || 'local-etag'}:${revision.token || revision.etag || ''}`);
+    }
     global.MeldexImageLoading?.trackAll?.(host);
   }
 
@@ -10484,6 +10511,7 @@
     // 対象ホストのpath確定を待ってからDOMと保存先を同じ版へ戻す。
     const hosts = await waitForHost(path);
     assertHostsAreSaved(path, hosts);
+    const originals = new Map(hosts.map(host => [host, global.MeldexNoteSaveAdapter?.serialize?.(host)]));
     const locks = lockHosts(hosts);
     try {
       const host = hosts[0] || null;
@@ -10504,7 +10532,7 @@
       }
       // 保存待ち中に同じノートを別パネルで開くことがある。途中参加ホストを再検査し、
       // 未保存入力があればDOMを上書きせずドラフトへ保護する。
-      const latestHosts = partitionHostsAfterRestore(path, matchingHosts(path));
+      const latestHosts = partitionHostsAfterRestore(path, matchingHosts(path), originals, result);
       latestHosts.clean.forEach((item) => renderHost(item, path, markdown, result));
       if (!latestHosts.dirty.length) await global.MeldexDraftRecovery?.markSynced?.(path);
       global.markAutoVersionDirty?.(path, 'file');
@@ -96291,6 +96319,8 @@ async function resetLayoutToDefault() {
     contacts: 'Google連絡先',
     takeout: 'Google Takeout',
   };
+  const PERSONAL_MY_DRIVE_URL = 'https://drive.google.com/drive/folders/root';
+  const PERSONAL_SHARED_DRIVES_URL = 'https://drive.google.com/drive/u/0/shared-drives';
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -96684,97 +96714,451 @@ async function resetLayoutToDefault() {
           <p>認証設定は自分専用とし、ダウンロードしたJSONを共有フォルダへ置かないでください。Testingの認証は7日で失効するため、必要時に再接続します。取り込み済みコピーは接続解除後も編集できます。</p>
         </details>
         <p id="google-personal-state" role="status" aria-live="polite"></p>
-        <label>認証設定JSONを登録 <input id="google-personal-json" type="file" accept=".json,application/json"></label>
+        <input id="google-personal-json" type="file" accept=".json,application/json" aria-label="認証設定JSONを選択" hidden>
+        <button type="button" id="google-personal-json-choose" class="gb-btn gb-btn-sm">認証設定JSONを登録</button>
+        <p id="google-personal-json-status" role="status" aria-live="polite"></p>
         <div class="external-import-provider-actions">
           <button type="button" id="google-personal-connect" class="gb-btn gb-btn-sm">Googleに接続</button>
           <button type="button" id="google-personal-refresh" class="gb-btn gb-btn-sm">接続状態を更新</button>
           <button type="button" id="google-personal-disconnect" class="gb-btn gb-btn-sm">接続解除</button>
           <button type="button" id="google-personal-delete" class="gb-btn gb-btn-sm">認証設定を削除</button>
         </div>
+        <fieldset class="google-import-targets">
+          <legend>取り込み対象</legend>
+          <label><input type="checkbox" id="google-personal-docs" checked> Googleドキュメント</label>
+          <label><input type="checkbox" id="google-personal-sheets" checked> Googleスプレッドシート</label>
+        </fieldset>
         <p><label>ローカルソースフォルダ <select id="google-personal-source" class="gb-select"></select></label></p>
         <p><label>サブフォルダ（省略可） <input id="google-personal-subfolder" class="gb-input" placeholder="資料/企画"></label></p>
-        <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" placeholder="https://drive.google.com/drive/folders/…"></label></p>
-        <p>サブフォルダも確認します。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
+        <p>取り込み範囲: <strong id="google-personal-scope">マイドライブ全体</strong></p>
+        <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" value="${PERSONAL_MY_DRIVE_URL}" aria-describedby="google-personal-folder-help" placeholder="https://drive.google.com/drive/folders/…"></label></p>
+        <button type="button" id="google-personal-folder-auto" class="gb-btn gb-btn-sm">全体のURLを設定</button>
+        <p id="google-personal-folder-help">保存先に対応する全体のURLを自動設定します。共有ドライブの親フォルダを選んだ場合は、配下の共有ドライブをまとめて対象にします。一部だけを取り込む場合は、対応するGoogleフォルダのURLへ変更できます。</p>
+        <p>文書・表を先に検索し、保存に必要な親フォルダだけを確認します。選んだフォルダの配下も対象です。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
         <button type="button" id="google-personal-preview" class="gb-btn gb-btn-sm">対象と保存先を確認</button>
+        <button type="button" id="google-personal-preview-cancel" class="gb-btn gb-btn-sm" hidden>対象の確認を停止</button>
+        <p id="google-personal-progress" role="status" aria-live="polite"></p>
         <div id="google-personal-results" role="region" aria-label="取り込み対象と結果"></div>
         <button type="button" id="google-personal-run" class="gb-btn gb-btn-sm" hidden>確認した保存先へ取り込む</button>
         <button type="button" id="google-personal-cancel" class="gb-btn gb-btn-sm" hidden>取り込みを停止</button>
         <p id="google-personal-message" role="status" aria-live="polite"></p>`;
-      root.querySelector('#google-import-details').appendChild(panel);
+      // Put the actionable personal flow before the separately configured
+      // managed importer. Its connection and destination are independent.
+      root.querySelector('#google-import-details').prepend(panel);
       const find = id => panel.querySelector('#google-personal-' + id);
       const message = text => { find('message').textContent = text; };
-      const output = rows => {
-        find('results').replaceChildren();
-        const list = document.createElement('ul');
-        (rows || []).forEach(row => {
-          const item = document.createElement('li');
-          const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応' };
-          item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
-          list.appendChild(item);
-        });
-        find('results').appendChild(list);
+      const selectedTargets = () => ['docs', 'sheets'].filter(key => find(key).checked);
+      const updatePreviewEnabled = () => {
+        find('preview').disabled = !!panel._busy || !!panel._defaultLoading || !panel._connected
+          || !selectedTargets().length || !find('folder').value.trim();
+      };
+      let defaultTimer = null;
+      const cancelDefault = () => {
+        clearTimeout(defaultTimer);
+        panel._defaultGeneration = (panel._defaultGeneration || 0) + 1;
+        panel._defaultLoading = false;
+      };
+      const scopeLabel = () => {
+        const url = find('folder').value.trim();
+        find('scope').textContent = url === PERSONAL_MY_DRIVE_URL ? 'マイドライブ全体'
+          : url === PERSONAL_SHARED_DRIVES_URL ? '共有ドライブ全体' : url ? '指定したGoogleフォルダ' : 'URLを設定してください';
+      };
+      const applyFolderDefault = async () => {
+        cancelDefault();
+        if (!panel.isConnected) return;
+        panel._folderManual = false;
+        panel._needsFolderDefault = false;
+        const generation = panel._defaultGeneration;
+        if (!find('source').value) {
+          find('folder').value = PERSONAL_MY_DRIVE_URL;
+          scopeLabel(); updatePreviewEnabled(); return;
+        }
+        const source = find('source').value.replace(/[\\/]+$/, '')
+          + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
+        panel._defaultLoading = true;
+        find('folder').value = '';
+        find('scope').textContent = '全体のURLを自動設定中…';
+        updatePreviewEnabled();
+        try {
+          const data = await apiFetch('/google-import/local/folder-default?source=' + encodeURIComponent(source), { silentError: true });
+          if (!panel.isConnected || panel._defaultGeneration !== generation) return;
+          find('folder').value = data.folder_url;
+          find('scope').textContent = data.label;
+        } catch (err) {
+          if (panel.isConnected && panel._defaultGeneration === generation) {
+            find('scope').textContent = 'URLを自動設定できませんでした';
+            message((err.userMessage || err.message || '接続と保存先を確認してください。') + '「全体のURLを設定」で再試行できます。');
+          }
+        } finally {
+          if (panel._defaultGeneration === generation) {
+            panel._defaultLoading = false;
+            updatePreviewEnabled();
+          }
+        }
+      };
+      const queueFolderDefault = () => {
+        cancelDefault();
+        panel._defaultLoading = true;
+        find('folder').value = '';
+        find('scope').textContent = '全体のURLを自動設定中…';
+        updatePreviewEnabled();
+        defaultTimer = setTimeout(() => void applyFolderDefault(), 250);
+      };
+      const restoreTargets = job => {
+        const targets = Array.isArray(job.targets) ? job.targets : ['docs', 'sheets'];
+        for (const key of ['docs', 'sheets']) find(key).checked = targets.includes(key);
+      };
+      const output = (rows, paging = null) => {
+        rows = rows || [];
+        const generation = panel._outputGeneration = (panel._outputGeneration || 0) + 1;
+        const total = paging?.total ?? rows.length;
+        const size = 200;
+        let pageError = null;
+        let beforePageError = null;
+        const render = (pageRows, offset) => {
+          if (panel._outputGeneration !== generation) return;
+          find('results').replaceChildren();
+          if (total > size) {
+            const nav = document.createElement('nav');
+            nav.setAttribute('aria-label', '取り込み対象のページ');
+            for (const [label, delta, disabled] of [['前の200件', -size, offset === 0], ['次の200件', size, offset + size >= total]]) {
+              const button = document.createElement('button');
+              button.type = 'button'; button.className = 'gb-btn gb-btn-sm';
+              button.textContent = label; button.disabled = disabled;
+              button.addEventListener('click', async () => {
+                if (!pageError) beforePageError = find('message').textContent;
+                for (const item of nav.querySelectorAll('button')) item.disabled = true;
+                try {
+                  const nextOffset = offset + delta;
+                  const data = paging?.load ? await paging.load(nextOffset) : { items: rows.slice(nextOffset, nextOffset + size), offset: nextOffset };
+                  if (panel._outputGeneration !== generation) return;
+                  render(data.items, data.offset);
+                  if (pageError && find('message').textContent === pageError) message(beforePageError);
+                  pageError = null;
+                  find('results').querySelector('nav button:not(:disabled)')?.focus({ preventScroll: true });
+                } catch (err) {
+                  if (panel._outputGeneration === generation) {
+                    render(pageRows, offset);
+                    pageError = err.userMessage || err.message || '一覧を取得できませんでした。ページを選び直してください。';
+                    message(pageError);
+                  }
+                }
+              });
+              nav.appendChild(button);
+            }
+            const range = document.createElement('span');
+            range.textContent = ` ${offset + 1}～${Math.min(offset + size, total)} / ${total}件`;
+            nav.appendChild(range);
+            find('results').appendChild(nav);
+          }
+          const list = document.createElement('ul');
+          for (const row of pageRows) {
+            const item = document.createElement('li');
+            const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応', warning: '警告' };
+            item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
+            list.appendChild(item);
+          }
+          find('results').appendChild(list);
+        };
+        render(paging ? rows : rows.slice(0, size), paging?.offset || 0);
       };
       const invalidate = () => { panel._plan = null; find('run').hidden = true; };
+      const clearConnectionView = () => {
+        cancelDefault(); panel._needsFolderDefault = true;
+        panel._refreshGeneration = (panel._refreshGeneration || 0) + 1;
+        panel._checkedImportRecovery = panel._checkedPreviewRecovery = true;
+        invalidate(); output([]);
+        panel._previewJob = panel._job = null;
+        find('progress').textContent = '';
+        find('preview').textContent = '対象と保存先を確認';
+      };
+      const setBusy = busy => {
+        panel._busy = busy;
+        for (const id of ['json', 'json-choose', 'connect', 'disconnect', 'delete', 'docs', 'sheets', 'source', 'subfolder', 'folder', 'folder-auto', 'preview', 'run']) find(id).disabled = busy;
+        updatePreviewEnabled();
+      };
+      const changeConnection = async action => {
+        if (panel._authStarting) return;
+        panel._authStarting = true;
+        clearConnectionView(); setBusy(true);
+        try { await action(); }
+        finally { panel._authStarting = false; await refresh(); }
+      };
       const act = fn => async () => {
         try { await fn(); }
         catch (err) { message(err.userMessage || err.message || '操作に失敗しました'); }
       };
+      const watchPreview = async jobId => {
+        if (panel._watchingPreview === jobId) return;
+        panel._watchingPreview = jobId;
+        try {
+          while (panel.isConnected && panel._previewJob === jobId) {
+            const job = await apiFetch(`/google-import/local/preview-jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            if (!panel.isConnected || panel._previewJob !== jobId) return;
+            const progressLabel = { running: '確認中', done: '確認完了', failed: '確認失敗', cancelled: '確認停止', expired: '確認やり直し' }[job.status] || '確認結果';
+            const phaseLabel = job.status === 'running' ? (({ documents: '文書・表を検索', locations: '保存場所を確認', shortcuts: '文書・表へのリンクを確認' }[job.phase] || '')
+              + (job.scope_label ? ' / ' + job.scope_label : '')) : '';
+            find('progress').textContent = `${progressLabel}${phaseLabel ? '（' + phaseLabel + '）' : ''}: 文書・表取得 ${job.loaded ?? 0}件 / 保存場所確認 ${job.checked ?? 0}件 / 必要フォルダ ${job.folders ?? 0} / 文書・表へのリンク確認 ${job.aliases ?? 0}件 / 一覧 ${job.found}件`;
+            find('preview-cancel').disabled = !!job.cancel;
+            if (job.status === 'running') {
+              if (job.cancel) message('停止を要求しました。実行中のGoogle応答が戻り次第停止します。');
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            panel._previewJob = null;
+            find('preview-cancel').hidden = true;
+            if (job.status === 'done') {
+              const plan = job.result;
+              panel._plan = plan.plan_id;
+              output(plan.items, { total: plan.total, offset: plan.offset, load: offset => apiFetch(`/google-import/local/plans/${encodeURIComponent(plan.plan_id)}?offset=${offset}`, { silentError: true }) });
+              find('run').textContent = '確認した保存先へ取り込む';
+              find('run').hidden = !plan.ready;
+              message(`対象 ${plan.total}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
+            } else {
+              invalidate(); output([]);
+              find('preview').textContent = job.resumable ? '全体の確認を再開' : '対象と保存先を確認';
+              message(job.message || '対象の確認を完了できませんでした。もう一度確認してください。');
+            }
+            await refresh();
+            return;
+          }
+        } catch (err) {
+          message(`進捗を取得できませんでした。確認処理は続いている場合があります。「接続状態を更新」で再確認してください。${err.userMessage || err.message || ''}`);
+        } finally {
+          if (panel._watchingPreview === jobId) panel._watchingPreview = null;
+        }
+      };
+      const watchImport = async jobId => {
+        if (panel._watchingImport === jobId) return;
+        panel._watchingImport = jobId;
+        find('cancel').hidden = false;
+        try {
+          while (panel.isConnected && panel._job === jobId) {
+            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            if (!panel.isConnected || panel._job !== jobId) return;
+            if (job.status === 'running') {
+              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。' : `全体を取り込み中 ${job.processed} / ${job.total}`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            panel._job = null;
+            find('cancel').hidden = true;
+            const result = job.result;
+            if (result) {
+              output(result.items, { total: result.total, offset: result.offset, load: offset => apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}?offset=${offset}`, { silentError: true }).then(value => value.result) });
+              message(`${job.status === 'failed' ? '取り込み停止: ' + (job.message || '') + ' / ' : ''}取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。`);
+              invalidate();
+              if (result.retry_requires_preview) {
+                find('preview').textContent = '全体を確認し直す';
+              } else if (job.status === 'failed' || result.failed || result.unprocessed) {
+                panel._plan = result.plan_id;
+                find('run').textContent = '失敗・未処理をまとめて再試行';
+                find('run').hidden = false;
+              }
+              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
+            } else {
+              invalidate();
+              if (job.plan_id) {
+                panel._plan = job.plan_id;
+                find('run').textContent = '失敗・未処理をまとめて再試行';
+                find('run').hidden = false;
+              }
+              message(job.message || '取り込みを開始できませんでした。再試行してください。');
+            }
+            await refresh();
+            return;
+          }
+        } catch (err) {
+          message(`取り込みの進捗を取得できませんでした。処理は続いている場合があります。「接続状態を更新」で戻ってください。${err.userMessage || err.message || ''}`);
+        } finally {
+          if (panel._watchingImport === jobId) panel._watchingImport = null;
+        }
+      };
       const refresh = async () => {
+        const generation = panel._refreshGeneration = (panel._refreshGeneration || 0) + 1;
         const status = await apiFetch('/google-import/personal/status', { silentError: true });
-        find('state').textContent = status.reason || `${status.configured ? '設定登録済み' : '設定未登録'} / ${status.connected ? '接続済み' : '未接続'}${status.account ? ' / ' + status.account : ''}${status.busy ? ' / 取り込み中' : ''}`;
+        if (!panel.isConnected || panel._refreshGeneration !== generation) return;
+        const wasConnected = panel._connected;
+        panel._connected = !!status.connected;
+        find('state').textContent = status.reason || `${status.configured ? '設定登録済み' : '設定未登録'} / ${status.connected ? '接続済み' : '未接続'}${status.account ? ' / ' + status.account : ''}${status.busy ? ' / 処理中' : ''}`;
+        find('json-choose').textContent = status.configured ? '認証設定JSONを差し替える' : '認証設定JSONを登録';
+        find('json-status').textContent = status.reason || (status.configured
+          ? '認証設定JSONは登録済みです。変更する場合だけ、別のJSONを選択してください。'
+          : '認証設定JSONは未登録です。Google Cloudから取得したJSONを選択して登録してください。');
         root.querySelector('#google-import-connection-state').textContent = status.configured
           ? `${root._googlePayload?.connection?.connected ? '管理者用 接続済み / ' : ''}個人用 ${status.connected ? '接続済み' : '未接続'}`
           : stateLabel(root._googlePayload);
+        const managedAvailable = !!(root._googlePayload?.connection?.connected || root._googlePayload?.capabilities?.can_connect || root._googlePayload?.capabilities?.can_import);
+        root.querySelectorAll('[data-google-desktop-control]').forEach(element => { element.hidden = !managedAvailable; });
+        root.querySelector('#google-import-capability').textContent = managedAvailable
+          ? '管理者用Google接続の設定です。個人用の接続・保存先は上の設定を使います。'
+          : '';
+        root.querySelector('#google-import-capability').hidden = !managedAvailable;
         const selected = find('source').value;
         find('source').replaceChildren();
+        const empty = document.createElement('option');
+        empty.value = ''; empty.textContent = 'ローカルソースフォルダを選択';
+        find('source').appendChild(empty);
         for (const row of status.source_folders || []) {
           const option = document.createElement('option');
           option.value = row.path; option.textContent = row.name || row.path;
           find('source').appendChild(option);
         }
         if (selected) find('source').value = selected;
-        find('connect').disabled = !status.configured || !status.available || status.busy;
-        find('preview').disabled = !status.connected || status.busy;
-        for (const id of ['json', 'disconnect', 'delete', 'source', 'subfolder', 'folder']) find(id).disabled = !!status.busy;
+        if (selected && find('source').value !== selected) {
+          cancelDefault(); panel._folderManual = false;
+          find('source').value = '';
+          find('folder').value = PERSONAL_MY_DRIVE_URL;
+          scopeLabel();
+          invalidate();
+          output([]);
+          find('progress').textContent = '';
+          message('保存先の登録が変わりました。ローカルソースフォルダを選び、対象を確認し直してください。');
+        }
+        const importJob = status.import_job;
+        if (importJob) {
+          const summary = importJob.result_summary;
+          root.querySelector('#google-import-last-run').textContent = importJob.status === 'running'
+            ? `個人用 取り込み中 ${importJob.processed} / ${importJob.total}`
+            : summary ? `個人用 前回: 作成${summary.created} / スキップ${summary.skipped} / 失敗${summary.failed} / 要確認${summary.blocked} / 未対応${summary.unsupported} / 未処理${summary.unprocessed}`
+              : '個人用 前回: 開始失敗';
+        } else {
+          root.querySelector('#google-import-last-run').textContent = lastRunLabel(root._googlePayload?.config?.run_state);
+        }
+        const importNewer = importJob && (!status.preview_job || importJob.created >= status.preview_job.created);
+        const restoreImport = importJob && (importJob.status === 'running' || panel._job === importJob.job_id || (!panel._checkedImportRecovery && importNewer));
+        panel._checkedImportRecovery = true;
+        if (restoreImport) {
+          cancelDefault(); panel._folderManual = true;
+          restoreTargets(importJob);
+          const normalize = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          const source = normalize(importJob.source);
+          const match = (status.source_folders || []).filter(row => source === normalize(row.path) || source.startsWith(normalize(row.path) + '/'))
+            .sort((a, b) => b.path.length - a.path.length)[0];
+          if (match) {
+            find('source').value = match.path;
+            find('subfolder').value = importJob.source.slice(match.path.replace(/[\\/]+$/, '').length).replace(/^[\\/]+/, '');
+            find('folder').value = importJob.folder_url;
+            scopeLabel();
+          }
+          panel._job = importJob.job_id;
+          void watchImport(importJob.job_id);
+        }
+        const job = status.preview_job;
+        const recover = !restoreImport && job && (job.status === 'running' || panel._previewJob === job.job_id || !panel._checkedPreviewRecovery);
+        panel._checkedPreviewRecovery = true;
+        if (recover) {
+          cancelDefault(); panel._folderManual = true;
+          restoreTargets(job);
+          // Reopening settings must reattach to the existing scan, never start
+          // another one or use the old destination left in the form.
+          const normalized = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          const source = normalized(job.source);
+          const match = (status.source_folders || []).filter(row => source === normalized(row.path) || source.startsWith(normalized(row.path) + '/'))
+            .sort((a, b) => b.path.length - a.path.length)[0];
+          if (match) {
+            find('source').value = match.path;
+            find('subfolder').value = job.source.slice(match.path.replace(/[\\/]+$/, '').length).replace(/^[\\/]+/, '');
+            find('folder').value = job.folder_url;
+            scopeLabel();
+            panel._previewJob = job.job_id;
+            find('preview-cancel').hidden = job.status !== 'running';
+            find('preview-cancel').disabled = !!job.cancel;
+            void watchPreview(job.job_id);
+          } else {
+            invalidate();
+          }
+        }
+        const busy = !!status.busy || !!panel._previewStarting || !!panel._importStarting || !!panel._authStarting;
+        setBusy(busy);
+        find('connect').disabled = !status.configured || !status.available || busy;
+        updatePreviewEnabled();
+        find('run').disabled = busy;
+        for (const id of ['json', 'json-choose', 'disconnect', 'delete', 'docs', 'sheets', 'source', 'subfolder', 'folder', 'folder-auto']) find(id).disabled = busy;
+        if (!busy && status.connected && !restoreImport && !recover && find('source').value && !panel._folderManual
+            && (panel._needsFolderDefault || (!wasConnected && status.connected))) void applyFolderDefault();
       };
       panel._refresh = refresh;
+      find('json-choose').addEventListener('click', () => find('json').click());
       find('json').addEventListener('change', act(async () => {
         const file = find('json').files?.[0];
         if (!file) return;
         if (file.size > 65536) throw new Error('認証設定JSONは64KB以下で指定してください');
-        invalidate();
-        await apiPost('/google-import/personal/credentials', { content: await file.text() }, { silentError: true });
-        find('json').value = '';
-        message('認証設定をこのPCの秘密ストアへ登録しました。Googleに接続してください。');
-        await refresh();
+        await changeConnection(async () => {
+          await apiPost('/google-import/personal/credentials', { content: await file.text() }, { silentError: true });
+          find('json').value = '';
+          message('認証設定をこのPCの秘密ストアへ登録しました。Googleに接続してください。');
+        });
       }));
       find('connect').addEventListener('click', act(async () => {
-        invalidate();
-        const result = await apiPost('/google-import/personal/oauth/start', {}, { silentError: true });
-        await openExternal(result.auth_url);
-        message('ブラウザで認証後、「接続状態を更新」を押してください。');
+        await changeConnection(async () => {
+          const result = await apiPost('/google-import/personal/oauth/start', {}, { silentError: true });
+          await openExternal(result.auth_url);
+          message('ブラウザで認証後、「接続状態を更新」を押してください。');
+        });
       }));
       find('refresh').addEventListener('click', act(refresh));
       for (const id of ['disconnect', 'delete']) find(id).addEventListener('click', act(async () => {
         const prompt = id === 'delete' ? 'このPCの個人用Google認証設定を削除しますか？取り込み済みファイルは残ります。' : '個人用Google接続を解除しますか？取り込み済みファイルは残ります。';
         if (!(typeof cfConfirm === 'function' ? await cfConfirm(prompt) : window.confirm(prompt))) return;
-        invalidate();
-        await apiPost('/google-import/personal/' + (id === 'delete' ? 'credentials' : 'disconnect'), {}, { method: id === 'delete' ? 'DELETE' : 'POST', silentError: true });
-        await refresh();
+        await changeConnection(async () => {
+          await apiPost('/google-import/personal/' + (id === 'delete' ? 'credentials' : 'disconnect'), {}, { method: id === 'delete' ? 'DELETE' : 'POST', silentError: true });
+        });
       }));
-      for (const id of ['source', 'subfolder', 'folder']) find(id).addEventListener('input', invalidate);
+      const selectionChanged = () => {
+        invalidate(); output([]);
+        find('preview').textContent = '対象と保存先を確認';
+        find('progress').textContent = '';
+        updatePreviewEnabled();
+        message(selectedTargets().length ? '対象と保存先を確認してください。' : '取り込み対象を1つ以上選択してください。');
+      };
+      find('source').addEventListener('input', () => {
+        find('subfolder').value = '';
+        selectionChanged();
+        void applyFolderDefault();
+      });
+      find('subfolder').addEventListener('input', () => {
+        selectionChanged();
+        if (!panel._folderManual) queueFolderDefault();
+      });
+      find('folder').addEventListener('input', () => {
+        cancelDefault(); panel._folderManual = true;
+        scopeLabel(); selectionChanged();
+        if (!find('folder').value.trim()) message('GoogleフォルダURLを入力するか「全体のURLを設定」を押してください。');
+      });
+      find('folder-auto').addEventListener('click', () => {
+        find('subfolder').value = '';
+        selectionChanged();
+        void applyFolderDefault();
+      });
+      for (const id of ['docs', 'sheets']) find(id).addEventListener('change', selectionChanged);
       find('preview').addEventListener('click', act(async () => {
         invalidate();
+        find('preview').textContent = '対象と保存先を確認';
+        output([]);
+        find('progress').textContent = '';
         message('Googleの対象とローカルの保存先を確認しています...');
         find('preview').disabled = true;
+        panel._previewStarting = true;
+        setBusy(true);
         try {
+          if (!find('source').value) throw new Error('取り込み先のローカルソースフォルダを選択してください');
+          const targets = selectedTargets();
+          if (!targets.length) throw new Error('取り込み対象を1つ以上選択してください。');
+          if (!find('folder').value.trim()) throw new Error('対応するGoogleフォルダURLを入力してください。マイドライブ全体は https://drive.google.com/drive/folders/root です。');
           const source = find('source').value.replace(/[\\/]+$/, '') + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
-          const plan = await apiPost('/google-import/local/preview', { source, folder_url: find('folder').value.trim() }, { silentError: true });
-          panel._plan = plan.plan_id;
-          output(plan.items);
-          find('run').hidden = !plan.items.some(row => row.status === 'ready');
-          message(`対象 ${plan.items.length}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
-        } finally { await refresh(); }
+          const job = await apiPost('/google-import/local/preview-jobs', { source, folder_url: find('folder').value.trim(), targets }, { silentError: true });
+          panel._previewJob = job.job_id;
+        } finally {
+          panel._previewStarting = false;
+          await refresh();
+        }
+      }));
+      find('preview-cancel').addEventListener('click', act(async () => {
+        if (!panel._previewJob) return;
+        await apiPost(`/google-import/local/preview-jobs/${encodeURIComponent(panel._previewJob)}/cancel`, {}, { silentError: true });
+        find('preview-cancel').disabled = true;
+        message('停止を要求しました。実行中のGoogle応答が戻り次第停止します。取り込みは実行していません。');
       }));
       find('cancel').addEventListener('click', act(async () => {
         if (panel._job) await apiPost(`/google-import/local/jobs/${encodeURIComponent(panel._job)}/cancel`, {}, { silentError: true });
@@ -96783,30 +97167,17 @@ async function resetLayoutToDefault() {
       find('run').addEventListener('click', act(async () => {
         if (!panel._plan) return;
         find('run').disabled = true;
+        panel._importStarting = true;
+        setBusy(true);
         try {
           panel._job = (await apiPost('/google-import/local/run', { plan_id: panel._plan }, { silentError: true })).job_id;
           find('cancel').hidden = false;
-          await refresh();
-          for (;;) {
-            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(panel._job)}`, { silentError: true });
-            if (job.status === 'failed') throw new Error(job.message || '取り込みを開始できませんでした');
-            if (job.status === 'done') {
-              const result = job.result;
-              output(result.items);
-              message(`取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。再試行は対象を確認し直してください。`);
-              invalidate();
-              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
-              break;
-            }
-            message(`取り込み中 ${job.processed} / ${job.total}`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
         } finally {
-          find('run').disabled = false;
-          find('cancel').hidden = true;
+          panel._importStarting = false;
           await refresh();
         }
       }));
+
     }
     try { await panel._refresh(); }
     catch (err) { panel.querySelector('#google-personal-state').textContent = err.userMessage || err.message || '個人用設定を取得できません'; }
@@ -105579,63 +105950,111 @@ function renderEntityPage(data) {
 
 // 既存のcontenteditable用カスタムundo
 const _CUSTOM_UNDO_MAX = 50;
+// HTML配列の既存契約を保ち、選択位置は配列に対応する別の弱参照へ保存する。
+const _customUndoSelections = new WeakMap();
+function _customUndoSelection(editable) {
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || !editable.contains(sel.anchorNode) || !editable.contains(sel.focusNode)) return null;
+  function point(node, offset) {
+    const path = [];
+    for (let current = node; current !== editable; current = current.parentNode) {
+      path.unshift(Array.prototype.indexOf.call(current.parentNode.childNodes, current));
+    }
+    return { path, offset };
+  }
+  return { anchor: point(sel.anchorNode, sel.anchorOffset), focus: point(sel.focusNode, sel.focusOffset) };
+}
+function _restoreCustomUndoSelection(editable, snapshot) {
+  function point(value) {
+    let node = editable;
+    for (const index of value.path) { node = node.childNodes[index]; if (!node) return null; }
+    return { node, offset: Math.min(value.offset, node.nodeType === 3 ? node.length : node.childNodes.length) };
+  }
+  const anchor = snapshot && point(snapshot.anchor), focus = snapshot && point(snapshot.focus);
+  const island = (anchor?.node.nodeType === 1 ? anchor.node : anchor?.node.parentElement)?.closest('[contenteditable="true"]');
+  (island && editable.contains(island) ? island : editable).focus({ preventScroll: true });
+  const sel = window.getSelection();
+  if (anchor && focus && sel) sel.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+}
+function _resetCustomUndo(editable) {
+  editable._customUndoStack = []; editable._customRedoStack = [];
+  editable._lastCustomOp = false; editable._customUndoInputPending = false;
+  editable._customUndoDocument = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+}
+function _ensureCustomUndoDocument(editable) {
+  const identity = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  if (editable._customUndoDocument !== identity) _resetCustomUndo(editable);
+}
+function _customUndoPush(stack, editable) {
+  const selections = _customUndoSelections.get(stack) || [];
+  selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
+  stack.push(editable.innerHTML);
+  selections.push({ html: editable.innerHTML, selection: _customUndoSelection(editable) });
+  if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
+  _customUndoSelections.set(stack, selections);
+}
+function _customUndoPop(stack) {
+  const selections = _customUndoSelections.get(stack);
+  const entry = selections?.[stack.length - 1];
+  const html = stack.pop();
+  if (selections) selections.length = stack.length;
+  return { html, selection: entry?.html === html ? entry.selection : null };
+}
 function _pushCustomUndo(editable) {
-  if (!editable._customUndoStack) editable._customUndoStack = [];
-  if (!editable._customRedoStack) editable._customRedoStack = [];
-  editable._customUndoStack.push(editable.innerHTML);
-  if (editable._customUndoStack.length > _CUSTOM_UNDO_MAX) editable._customUndoStack.shift();
-  editable._customRedoStack.length = 0; // redo履歴をクリア
+  _ensureCustomUndoDocument(editable);
+  _customUndoPush(editable._customUndoStack, editable);
+  editable._customRedoStack.length = 0;
   editable._lastCustomOp = true;
   editable._customUndoInputPending = true;
 }
-
-let _customUndoInProgress = false; // dispatchEvent中のinputリスナーを抑制
+function _customUndoHost(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement;
+  const host = el?.closest?.('#page-content, #entity-freetext, #dp-editable, .meldex-entity-detail-editor')
+    || el?.closest?.('[contenteditable="true"]');
+  if (!host?.isContentEditable || el?.closest?.('[contenteditable]')?.getAttribute('contenteditable') === 'false') return null;
+  if (host.matches(window.MeldexNoteBlockTypes?.EDITABLE_SELECTOR || ':not(*)')
+      && !window.MeldexNoteBlockTypes.isEditableWritable(host)) return null;
+  return host;
+}
+let _customUndoInProgress = false;
+function _applyCustomUndo(editable, redo) {
+  if (!editable || !editable.isContentEditable) return false;
+  _ensureCustomUndoDocument(editable);
+  const source = redo ? editable._customRedoStack : editable._customUndoStack;
+  if (!source.length || (!redo && !editable._lastCustomOp)) return false;
+  const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
+  _customUndoPush(redo ? editable._customUndoStack : editable._customRedoStack, editable);
+  const snapshot = _customUndoPop(source);
+  editable.innerHTML = snapshot.html;
+  editable._lastCustomOp = redo || editable._customUndoStack.length > 0;
+  editable._customUndoInputPending = false;
+  _restoreCustomUndoSelection(editable, snapshot.selection);
+  _customUndoInProgress = true;
+  try { editable.dispatchEvent(new Event('input', { bubbles: true })); }
+  finally { _customUndoInProgress = false; window.MeldexNoteRuby?.restoreScroll?.(scroll); }
+  return true;
+}
 document.addEventListener('keydown', function(e) {
-  if (!e.ctrlKey) return;
-  const editable = document.activeElement;
-  if (!editable || editable.contentEditable !== 'true') return;
+  if (!e.ctrlKey || e.altKey || e.defaultPrevented || e.isComposing) return;
+  const key = String(e.key).toLowerCase();
+  if (key !== 'z' && key !== 'y') return;
+  const editable = _customUndoHost(document.activeElement);
+  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey))) e.preventDefault();
+}, true);
 
-  // Ctrl+Z: カスタムアンドゥ（直前がカスタム操作の場合のみ）
-  if (e.key === 'z' && !e.shiftKey && editable._lastCustomOp && editable._customUndoStack && editable._customUndoStack.length > 0) {
-    e.preventDefault();
-    // innerHTML の総入れ替えはスクロール位置を捨てるため、前後で退避・復元する
-    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
-    editable._customRedoStack.push(editable.innerHTML);
-    editable.innerHTML = editable._customUndoStack.pop();
-    editable._lastCustomOp = editable._customUndoStack.length > 0;
-    _customUndoInProgress = true;
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    _customUndoInProgress = false;
-    window.MeldexNoteRuby?.restoreScroll?.(scroll);
-    return;
-  }
-  // Ctrl+Y / Ctrl+Shift+Z: カスタムリドゥ
-  if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && editable._customRedoStack && editable._customRedoStack.length > 0) {
-    e.preventDefault();
-    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
-    editable._customUndoStack.push(editable.innerHTML);
-    editable.innerHTML = editable._customRedoStack.pop();
-    editable._lastCustomOp = true;
-    _customUndoInProgress = true;
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    _customUndoInProgress = false;
-    window.MeldexNoteRuby?.restoreScroll?.(scroll);
-    return;
-  }
-}, true); // captureフェーズで先に処理
-
-// 通常の入力でカスタムフラグをクリア（以降のCtrl+Zはネイティブアンドゥに委譲）
+// Undo後の通常入力は古いRedoを破棄する。コールアウト内部からのinputも同じ文書へ集約する。
 document.addEventListener('input', function(e) {
-  if (_customUndoInProgress) return; // カスタムundo/redoの自動保存トリガーは無視
-  const editable = e.target;
-  if (editable && editable.contentEditable === 'true') {
-    if (editable._customUndoInputPending) {
-      editable._customUndoInputPending = false;
-      editable._lastCustomOp = true;
-      return;
-    }
-    editable._lastCustomOp = false;
+  if (_customUndoInProgress) return;
+  const editable = _customUndoHost(e.target);
+  if (!editable) return;
+  _ensureCustomUndoDocument(editable);
+  if (editable._customUndoInputPending) {
+    editable._customUndoInputPending = false;
+    editable._lastCustomOp = true;
+    return;
   }
+  editable._customRedoStack.length = 0;
+  editable._lastCustomOp = false;
 });
 
 /* ==============================
@@ -105760,6 +106179,7 @@ function _rtApplyNoteTitle() {
 function rtCmd(cmd, value) {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
+  if ((cmd === 'undo' || cmd === 'redo') && _applyCustomUndo(editable, cmd === 'redo')) return;
   document.execCommand(cmd, false, value || null);
   if (cmd === 'formatBlock') _rtClearNoteTitleAtSelection(editable);
 }
@@ -105822,6 +106242,77 @@ const CALLOUT_PRESETS = [
   { icon: 'bookmark', color: '#1abc9c', type: '', label: 'ブックマーク' },
 ];
 
+function _calloutMetadata(value) {
+  const meta = {};
+  for (const key of ['background', 'border']) {
+    const color = String(value?.[key] || '');
+    if (/^(transparent|#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i.test(color)
+      && CSS.supports('color', color)) meta[key] = color;
+  }
+  for (const key of ['label', 'keywords']) {
+    if (value?.[key]) meta[key] = String(value[key]).slice(0, 500);
+  }
+  return meta;
+}
+
+function _calloutImageLibraryKey() {
+  const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.();
+  const scope = workspace?.workspaceId || workspace?.workspace_id || workspace?.stableId
+    || window.MeldexWorkspaces?.getActiveId?.() || window.MeldexStandaloneFS?.rootPathLabel?.();
+  return scope ? 'meldex-callout-images-v1:' + scope : null;
+}
+
+function _calloutRegisteredImages(key) {
+  if (!key) return [];
+  try {
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(list) ? list.filter(item => item && typeof item.spec === 'string'
+      && GBIconAssets.normalizeSpec(item.spec).startsWith('image:')).map(item => ({
+        spec: item.spec, type: 'image', label: String(item.label || '登録画像').slice(0, 500),
+        keywords: String(item.keywords || '画像 写真 カスタム').slice(0, 500),
+      })) : [];
+  } catch (_) { return []; }
+}
+
+function _calloutImageOptions(editable, isCurrent) {
+  const libraryKey = _calloutImageLibraryKey();
+  const current = () => isCurrent() && _calloutImageLibraryKey() === libraryKey;
+  const imageItems = [...editable.querySelectorAll('.callout-icon[data-icon^="image:"]')].map(icon => ({
+    spec: icon.dataset.icon, label: icon.dataset.iconLabel || '登録画像',
+    keywords: icon.dataset.iconKeywords || '画像 写真 カスタム', type: 'image',
+  }));
+  imageItems.push(..._calloutRegisteredImages(libraryKey));
+  return {
+    presetsIconOnly: true, imageItems,
+    onUploadImage: async (file, details) => {
+      if (!current()) throw new Error('編集対象が変わったため、もう一度開いてください');
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type) || file.size > 10 * 1024 * 1024) {
+        throw new Error('10MB以下のPNG・JPEG・GIF・WebP画像を選択してください');
+      }
+      const path = editable.dataset.path || editable.dataset.entityPath || '';
+      if (!path) throw new Error('先にノートを保存してください');
+      const dir = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      const data = await _readFileAsDataURL(file);
+      if (!current()) throw new Error('編集対象が変わりました');
+      const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, filename: file.name }),
+      });
+      if (!result.ok || !result.path) throw new Error(result.error || '画像を登録できませんでした');
+      if (!current()) throw new Error('編集対象が変わりました。元のノートで画像を選び直してください');
+      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.path));
+      if (!spec) throw new Error('画像の保存先を読み込めませんでした');
+      const item = { spec, type: 'image', label: (details.label || file.name).slice(0, 500), keywords: (details.keywords || '画像 写真 カスタム').slice(0, 500) };
+      if (libraryKey) {
+        const items = _calloutRegisteredImages(libraryKey).filter(existing => existing.spec !== spec);
+        try { localStorage.setItem(libraryKey, JSON.stringify([...items, item])); }
+        catch (_) { if (typeof showStatus === 'function') showStatus('画像はノートに設定できますが、この端末の登録画像一覧を保存できませんでした', true); }
+      }
+      return item;
+    },
+  };
+}
+
 function insertNoteTable(rows = 3, cols = 3) {
   const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
                 || document.getElementById('page-content');
@@ -105849,6 +106340,11 @@ function insertNoteTable(rows = 3, cols = 3) {
 function insertCallout() {
   const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable');
   if (!editable) return;
+  const originalPath = editable.dataset.path || editable.dataset.entityPath;
+  const originalGeneration = editable._openPageLoadSeq;
+  const isCurrent = () => editable.isConnected && editable.isContentEditable
+    && (editable.dataset.path || editable.dataset.entityPath) === originalPath
+    && editable._openPageLoadSeq === originalGeneration;
   const insertRange = (rtTarget === editable && rtSavedSelection && _rtSelectionEditable(rtSavedSelection))
     ? rtSavedSelection.cloneRange()
     : null;
@@ -105862,17 +106358,20 @@ function insertCallout() {
   GBIconAssets.openPicker({
     title: 'コールアウトアイコン',
     className: 'callout-picker',
+    ..._calloutImageOptions(editable, () => isCurrent() && (!insertRange || editable.contains(insertRange.startContainer))),
     anchorEl: btn || editable,
+    restoreFocusEl: editable,
     includeLucide: true,
     includeNoto: true,
     presets: CALLOUT_PRESETS.map((p) => ({ ...p, spec: p.icon })),
     onSelect: (spec, item) => {
-      _insertCalloutBlock(editable, spec, item?.type || '', item?.color || '', insertRange);
+      if (!isCurrent() || (insertRange && !editable.contains(insertRange.startContainer))) return;
+      _insertCalloutBlock(editable, spec, _calloutPresetForSpec(spec)?.type || '', item?.color || '', insertRange, item);
     },
   });
 }
 
-function _insertCalloutBlock(editable, iconName, type, color, insertRange) {
+function _insertCalloutBlock(editable, iconName, type, color, insertRange, item) {
   editable.focus();
   if (insertRange && _rtSelectionEditable(insertRange)) {
     const sel = window.getSelection();
@@ -105883,7 +106382,9 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange) {
   const colorStyle = color ? ' style="color:' + esc(color) + ';"' : '';
   const spec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(iconName || 'lightbulb') : iconName;
   const iconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 20) : lucide(iconName, 20);
-  const html = `<div class="callout-block${cls}" contenteditable="false"><span class="callout-icon" data-icon="${esc(spec)}"${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
+  const imageAttrs = item?.type === 'image'
+    ? ` data-icon-label="${esc(item.label || '登録画像')}" data-icon-keywords="${esc(item.keywords || '画像 写真 カスタム')}"` : '';
+  const html = `<div class="callout-block${cls}" contenteditable="false"><span class="callout-icon" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
   document.execCommand('insertHTML', false, html);
   setTimeout(() => {
     const blocks = editable.querySelectorAll('.callout-block');
@@ -105911,18 +106412,30 @@ function _dispatchCalloutInput(iconEl) {
 function _openCalloutIconPicker(iconEl) {
   if (!iconEl) return false;
   if (typeof GBIconAssets === 'undefined') return;
+  const editable = iconEl.closest('#page-content, #entity-freetext, #dp-editable');
+  const nbt = window.MeldexNoteBlockTypes;
+  if (!editable || (nbt ? !nbt.isEditableWritable(editable) : !editable.isContentEditable)) return false;
+  const path = editable.dataset.path || editable.dataset.entityPath;
+  const generation = editable._openPageLoadSeq;
+  const isCurrent = () => iconEl.isConnected && editable.contains(iconEl)
+    && (editable.dataset.path || editable.dataset.entityPath) === path
+    && editable._openPageLoadSeq === generation && (nbt ? nbt.isEditableWritable(editable) : editable.isContentEditable);
 
-  function applyIcon(spec, color) {
+  function applyIcon(spec, color, item) {
+    if (!isCurrent()) return;
+    _pushCustomUndo(editable);
     const normalized = GBIconAssets.normalizeSpec(spec);
     iconEl.innerHTML = GBIconAssets.render(normalized, 20);
     iconEl.dataset.icon = normalized;
     iconEl.dataset.color = color || '';
     iconEl.style.color = color || '';
+    iconEl.dataset.iconLabel = item?.type === 'image' ? item.label || '登録画像' : '';
+    iconEl.dataset.iconKeywords = item?.type === 'image' ? item.keywords || '画像 写真 カスタム' : '';
     const block = iconEl.closest('.callout-block');
     // プリセットに一致するtypeがあれば適用
     if (block) {
       const preset = _calloutPresetForSpec(normalized);
-      block.className = 'callout-block' + (preset?.type ? ' callout-' + preset.type : '');
+      for (const type of ['info', 'warning', 'danger', 'success']) block.classList.toggle('callout-' + type, preset?.type === type);
     }
     _dispatchCalloutInput(iconEl);
   }
@@ -105930,25 +106443,40 @@ function _openCalloutIconPicker(iconEl) {
   GBIconAssets.openPicker({
     title: 'コールアウトアイコン',
     className: 'callout-picker',
+    ..._calloutImageOptions(editable, isCurrent),
     anchorEl: iconEl,
+    restoreFocusEl: editable,
     current: iconEl.dataset.icon || '',
     includeLucide: true,
     includeNoto: true,
     presets: CALLOUT_PRESETS.map((p) => ({ ...p, spec: p.icon })),
-    onSelect: (spec, item) => applyIcon(spec, item?.color || iconEl.dataset.color || ''),
+    onSelect: (spec, item) => applyIcon(spec, item?.color || iconEl.dataset.color || '', item),
     extraFooter: () => {
       const colorWrap = document.createElement('div');
-      colorWrap.style.cssText = 'padding-top:6px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;';
-      colorWrap.innerHTML = '<span style="font-size:11px;color:var(--fg2);">色</span>';
+      colorWrap.className = 'callout-color-settings';
       if (typeof createInlineColorGrid === 'function') {
-        const curColor = iconEl.dataset.color || '';
-        const cg = createInlineColorGrid(curColor, (c) => {
-          iconEl.style.color = c || '';
-          iconEl.dataset.color = c || '';
-          _dispatchCalloutInput(iconEl);
+        const block = iconEl.closest('.callout-block');
+        const targets = [['アイコン', iconEl, 'color', 'color'], ['枠', block, 'calloutBorder', 'borderColor'],
+          ['背景', block, 'calloutBackground', 'backgroundColor']];
+        const controls = document.createElement('div'); controls.className = 'callout-color-targets';
+        controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', '色の設定対象');
+        const palette = document.createElement('div'); palette.className = 'callout-color-palette';
+        const selectTarget = ([label, target, key, property]) => {
+          controls.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', button.textContent === label ? 'true' : 'false'));
+          const cg = createInlineColorGrid(target.dataset[key] || '', (c) => {
+            if (!isCurrent()) return;
+            _pushCustomUndo(editable);
+            target.style[property] = c || ''; target.dataset[key] = c || '';
+            _dispatchCalloutInput(iconEl);
+            selectTarget([label, target, key, property]);
+          });
+          cg.setAttribute('aria-label', label + 'の色'); palette.replaceChildren(cg);
+        };
+        targets.forEach(target => {
+          const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn gb-btn-xs';
+          button.textContent = target[0]; button.addEventListener('click', () => selectTarget(target)); controls.appendChild(button);
         });
-        cg.style.cssText += 'max-width:320px;';
-        colorWrap.appendChild(cg);
+        colorWrap.append(controls, palette); selectTarget(targets[0]);
       }
       return colorWrap;
     },
@@ -106243,26 +106771,30 @@ function mdToHtml(md, options) {
   let inTable = false, _tableRowCount = 0;
   let pendingTableLayout = null;
   let pendingNoteTitle = false;
+  let pendingCalloutMetadata = null;
   const headingSlugCounts = new Map();
   // リストネスト管理: スタックで深度・種別を追跡
-  const listStack = []; // [{ type: 'ul'|'ol', indent: number }, ...]
+  const listStack = []; // [{ type: 'ul'|'ol', indent: number, itemOpen: boolean }, ...]
 
   function closeListAll() {
     while (listStack.length > 0) {
       const t = listStack.pop();
+      if (t.itemOpen) html += '</li>';
       html += t.type === 'ul' ? '</ul>' : '</ol>';
     }
   }
-  function adjustListDepth(indent, type) {
+  function adjustListDepth(indent, type, start = 1) {
     // 現在の深度より浅くなった分だけ閉じる
     while (listStack.length > 0) {
       const top = listStack[listStack.length - 1];
       if (top.indent > indent) {
         listStack.pop();
+        if (top.itemOpen) html += '</li>';
         html += top.type === 'ul' ? '</ul>' : '</ol>';
       } else if (top.indent === indent && top.type !== type) {
         // 同深度でリスト種別が変わった場合は閉じて開き直す
         listStack.pop();
+        if (top.itemOpen) html += '</li>';
         html += top.type === 'ul' ? '</ul>' : '</ol>';
         break;
       } else {
@@ -106271,9 +106803,12 @@ function mdToHtml(md, options) {
     }
     // スタックが空、または現在の深度より浅い場合は新しいリストを開く
     if (listStack.length === 0 || listStack[listStack.length - 1].indent < indent) {
-      html += type === 'ul' ? '<ul>' : '<ol>';
-      listStack.push({ type, indent });
+      html += type === 'ul' ? '<ul>' : (start === 1 ? '<ol>' : `<ol start="${Number(start)}">`);
+      listStack.push({ type, indent, itemOpen: false });
     }
+    const current = listStack[listStack.length - 1];
+    if (current.itemOpen) html += '</li>';
+    current.itemOpen = true;
   }
 
   function splitMarkdownTableRow(line) {
@@ -106298,6 +106833,12 @@ function mdToHtml(md, options) {
   }
 
   for (let i = 0; i < lines.length; i++) {
+    const calloutMetadataMatch = lines[i].match(/^<!--meldex-callout:([^<>]*)-->$/);
+    if (!inCodeBlock && calloutMetadataMatch && /^>\s*\[!/.test(lines[i + 1] || '')) {
+      try { pendingCalloutMetadata = _calloutMetadata(JSON.parse(decodeURIComponent(calloutMetadataMatch[1]))); }
+      catch (_) { pendingCalloutMetadata = null; }
+      continue;
+    }
     const line = lines[i];
 
     // コードブロック
@@ -106448,8 +106989,12 @@ function mdToHtml(md, options) {
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
       const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
-      const iconHtml = `<span class="callout-icon" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
-      html += `<div class="callout-block${cls}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
+      const meta = pendingCalloutMetadata || {}; pendingCalloutMetadata = null;
+      const iconHtml = `<span class="callout-icon" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
+      const blockAttrs = (meta.background ? ` data-callout-background="${esc(meta.background)}"` : '')
+        + (meta.border ? ` data-callout-border="${esc(meta.border)}"` : '');
+      const blockStyle = `background-color:${meta.background || ''};border-color:${meta.border || ''};`;
+      html += `<div class="callout-block${cls}"${blockAttrs} style="${esc(blockStyle)}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
       continue;
     }
     // 引用（複数行をまとめて1つの<blockquote>に + 出典行検出）
@@ -106478,7 +107023,7 @@ function mdToHtml(md, options) {
       const indent = clm[1].length;
       const checked = clm[2].toLowerCase() === 'x';
       adjustListDepth(indent, 'ul');
-      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}</li>`;
+      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}`;
       continue;
     }
     // リスト（箇条書き）
@@ -106486,15 +107031,15 @@ function mdToHtml(md, options) {
     if (ulm) {
       const indent = ulm[1].length;
       adjustListDepth(indent, 'ul');
-      html += `<li>${inlinemd(ulm[2])}</li>`;
+      html += `<li>${inlinemd(ulm[2])}`;
       continue;
     }
     // リスト（番号付き）
-    const olm = line.match(/^(\s*)\d+\.\s+(.*)$/);
+    const olm = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
     if (olm) {
       const indent = olm[1].length;
-      adjustListDepth(indent, 'ol');
-      html += `<li>${inlinemd(olm[2])}</li>`;
+      adjustListDepth(indent, 'ol', Number(olm[2]));
+      html += `<li>${inlinemd(olm[3])}`;
       continue;
     }
 
@@ -107025,14 +107570,15 @@ function htmlToMd(html) {
           }
         }
         // BR由来の改行を空白区切りに変換（Markdown LI内では改行=行分離になるため）
-        const text = textParts.join(' ').replace(/ ?\n ?/g, ' ');
+        const text = textParts.join(' ').replace(/ ?\n ?/g, ' ').trim();
         const _liMk = _noteStatusMarker(node) + _nlIdMarker(node);
         if (node.classList?.contains('note-checklist-item')) {
           const checked = node.dataset?.checked === 'true' || !!node.querySelector('input.note-checklist-check')?.checked;
           return _liMk + indent + '- [' + (checked ? 'x' : ' ') + '] ' + text + '\n' + nestedList;
         }
         if (parent?.tagName === 'OL') {
-          const idx = [...parent.children].indexOf(node) + 1;
+          const start = parent.hasAttribute('start') ? Number(parent.getAttribute('start')) : 1;
+          const idx = [...parent.children].indexOf(node) + (Number.isFinite(start) ? start : 1);
           return _liMk + indent + idx + '. ' + text + '\n' + nestedList;
         }
         return _liMk + indent + '- ' + text + '\n' + nestedList;
@@ -107064,6 +107610,9 @@ function htmlToMd(html) {
           // data-icon属性があればLucide名、なければtextContent（旧emoji互換）
           const icon = iconEl?.dataset?.icon || iconEl?.textContent || 'lightbulb';
           const color = iconEl?.dataset?.color || '';
+          const meta = _calloutMetadata({ background: node.dataset.calloutBackground, border: node.dataset.calloutBorder,
+            label: iconEl?.dataset.iconLabel, keywords: iconEl?.dataset.iconKeywords });
+          const metadata = Object.keys(meta).length ? '<!--meldex-callout:' + encodeURIComponent(JSON.stringify(meta)) + '-->\n' : '';
           const bodyNode = node.querySelector('.callout-body');
           const body = bodyNode ? [...bodyNode.childNodes].map(walk).join('').trim() : '';
           const typeMatch = [...node.classList].find(c => c.startsWith('callout-') && c !== 'callout-block');
@@ -107071,7 +107620,7 @@ function htmlToMd(html) {
           const bodyLines = body.split('\n');
           const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
-          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
+          return _calloutMk + metadata + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
         }
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
@@ -107163,7 +107712,9 @@ function htmlToMd(html) {
   // ゼロ幅スペース除去（ルビ境界）
   md = md.replace(/\u200B/g, '');
   // 注: \n{3,}圧縮は行わない（ユーザーが意図的に追加した複数空行を保持するため）
-  return md.trim() + '\n';
+  // 空リスト末尾の「- 」「1. 」をtrimで削ると、再読込で本文へ化ける。
+  // 文書の外側の改行だけを整え、リスト記号に必要な空白を保持する。
+  return md.replace(/^\n+|\n+$/g, '') + '\n';
 }
 
 // パスを解決（絶対パスはそのまま、相対パスはvaultまたは現在のファイル基準で解決）
@@ -108502,7 +109053,7 @@ function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
 /* ==============================
    Notion風キーボードショートカット
    ============================== */
-// 書式ショートカット（Ctrl+B/I/U/E、Ctrl+Shift+1-9/0/H、Tab等）
+// 書式・見出し・本文・段落レベルのショートカットは中央管理する。
 // Ctrl+F/Shift+F、Alt+↓ → gb-shortcuts.js の中央ハンドラに移行済み
 
 // 残存ハンドラ: F2/Delete（フォルダツリー操作）、Shift+F10（キーボード右クリック）、
@@ -108688,7 +109239,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { label: 'コピー', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('copy')) },
     { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => navigator.clipboard.readText().then(t => document.execCommand('insertText', false, t)).catch(() => {})) },
     { type: 'sep' },
-    { label: '元に戻す', enabled: true, action: () => { editable.focus(); document.execCommand('undo'); } },
+    { label: '元に戻す', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, false)) document.execCommand('undo'); } },
     { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
     { type: 'sep' },
     { label: 'すべて選択', enabled: true, action: () => { editable.focus(); document.execCommand('selectAll'); } },
@@ -113081,6 +113632,10 @@ document.addEventListener('input', _onSlashInput);
     }
 
     if (!newRoot) return null;
+    // 行種を変えても段落ステータスは同じ論理行に属する。
+    if (info.block.hasAttribute('data-note-status')) {
+      (focusTarget?.closest('li') || newRoot).setAttribute('data-note-status', info.block.getAttribute('data-note-status'));
+    }
     _replaceSource(info, newRoot);
     return { newRoot, focusTarget };
   }
@@ -113258,6 +113813,95 @@ document.addEventListener('input', _onSlashInput);
     return { ok: true, block: result.newRoot };
   }
 
+  // 見出しは行種を変更し、リストは項目と子リストを一緒に一段だけ移動する。
+  function changeParagraphLevel(direction, options) {
+    const opts = options || {};
+    const editable = opts.editable || activeEditableHost();
+    if (!isEditableWritable(editable)) return { ok: false, reason: 'readonly' };
+    const range = opts.range || currentRangeWithin(editable);
+    const info = range && resolveCurrentBlock(editable, range);
+    if (!info || (direction !== 1 && direction !== -1)) return { ok: false, reason: 'no-current-block' };
+    if (info.kind === 'heading') {
+      const level = Number(info.block.tagName[1]) + direction;
+      if (level < 1 || level > 6) return { ok: false, reason: 'boundary' };
+      return convertCurrentLineTo('h' + level, { editable, range });
+    }
+    if (info.kind === 'body') {
+      return direction === -1 ? convertCurrentLineTo('h1', { editable, range }) : { ok: false, reason: 'boundary' };
+    }
+    if (info.kind !== 'list-item') return { ok: false, reason: 'unsupported-block' };
+    const li = info.block, list = li.parentElement;
+    const previous = li.previousElementSibling;
+    const parentLi = list.parentElement?.tagName === 'LI' ? list.parentElement : null;
+    if (direction === 1 && previous?.tagName !== 'LI') return { ok: false, reason: 'boundary' };
+    if (direction === -1 && !parentLi) return { ok: false, reason: 'boundary' };
+    const snapshot = _captureRowSnapshot(li, range);
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    if (direction === 1) {
+      let nested = previous.lastElementChild;
+      if (nested?.tagName !== list.tagName) {
+        nested = document.createElement(list.tagName.toLowerCase()); previous.appendChild(nested);
+      }
+      nested.appendChild(li);
+    } else {
+      // 昇格後も後続項目が対象行より前へ飛ばないよう、対象行の子へ移す。
+      const following = list.cloneNode(false); following.removeAttribute('id');
+      if (list.tagName === 'OL') following.start = list.start + Array.from(list.children).indexOf(li) + 1;
+      while (li.nextSibling) following.appendChild(li.nextSibling);
+      parentLi.after(li);
+      if (following.children.length) {
+        const nested = li.lastElementChild;
+        if (nested?.tagName === following.tagName) while (following.firstChild) nested.appendChild(following.firstChild);
+        else li.appendChild(following);
+      }
+      if (!list.children.length) list.remove();
+    }
+    _restoreRowSnapshot(li, snapshot); _focusEditableForConvert(editable);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block: li };
+  }
+
+  // 新しい空行だけを変換し、追加全体を1回のUndoにまとめる。
+  function insertLineAfter(typeId, editable, block) {
+    if (!getType(typeId) || !isEditableWritable(editable)
+      || !block?.isConnected || !editable.contains(block)) return { ok: false };
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    const row = document.createElement(block.tagName === 'LI' ? 'li' : 'div');
+    row.appendChild(document.createElement('br'));
+    block.after(row);
+    const range = document.createRange(); range.selectNodeContents(row); range.collapse(true);
+    const info = resolveCurrentBlock(editable, range);
+    const result = getBlockTypeId(info) === typeId
+      ? { newRoot: row, focusTarget: row }
+      : _performConvert(typeId, info, {});
+    // 空の差し替え用LIは番号を消費しない。
+    if (info.kind === 'list-item' && typeId !== 'ol' && result.newRoot.nextElementSibling?.tagName === 'OL') {
+      const followingList = result.newRoot.nextElementSibling;
+      followingList.start = followingList.start - 1;
+    }
+    _refreshHeadingSectionsAfterConvert(editable, 'body', typeId);
+    _restoreCaretAfterConvert(editable, typeId, result, null);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block: result.newRoot };
+  }
+
+  function handleEmptyListEnter(e) {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || e.key !== 'Enter'
+      || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const editable = e.target?.closest?.(EDITABLE_SELECTOR);
+    if (!isEditableWritable(editable)) return;
+    const range = currentRangeWithin(editable);
+    if (!range?.collapsed) return;
+    const info = resolveCurrentBlock(editable, range);
+    if (info?.kind !== 'list-item') return;
+    const ownContent = info.block.cloneNode(true);
+    ownContent.querySelectorAll('ul,ol').forEach(list => list.remove());
+    if (!_isBlockTextEmpty(ownContent) || ownContent.querySelector('img,video,audio,iframe,hr')) return;
+    e.preventDefault();
+    insertLineAfter(getBlockTypeId(info), editable, info.block);
+  }
+  document.addEventListener('keydown', handleEmptyListEnter, true);
+
   // ============================================================
   // 9. チェックリストの実チェック動作（クリックでチェック状態を切替）
   // ============================================================
@@ -113398,6 +114042,8 @@ document.addEventListener('input', _onSlashInput);
     getBlockTypeId,
     canConvert,
     convertCurrentLineTo,
+    changeParagraphLevel,
+    insertLineAfter,
     isBlockTextEmpty: _isBlockTextEmpty,
     // 工程7-8（gb-note-block-reorder.js）向けの新規公開: 既存の内部キャレット保持
     // ヘルパーをそのまま公開する（ロジックの重複作成を避けるため）。既存の
@@ -113499,7 +114145,7 @@ document.addEventListener('input', _onSlashInput);
     const removableText = _state.removableTextPrefix
       ? _state.removableTextPrefix + _state.query
       : '';
-    if (def.insertOnly) return { allowed: true, reason: '' };
+    if (def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
     return NBT.canConvert(def.id, _state.editable, _state.blockInfo, { removableText });
   }
 
@@ -113647,8 +114293,10 @@ document.addEventListener('input', _onSlashInput);
       onSelect: opts.onSelect || null,
       onClose: opts.onClose || null,
       allowInsertItems: !!opts.allowInsertItems,
+      insertMode: !!opts.insertMode,
     };
     const menu = _ensureMenuEl();
+    menu.setAttribute('aria-label', opts.insertMode ? '下に追加する行種を選択' : '行種を選択');
     menu.style.display = '';
     _render();
     if (typeof positionPopup === 'function') {
@@ -114392,6 +115040,7 @@ document.addEventListener('input', _onSlashInput);
   // 6. ハンドル: 表示（hover/touch、全編集ホスト共通）
   // ============================================================
   let _handle = null;
+  let _addButton = null;
   let _hoverTargetBlock = null;
   let _hoverEditable = null;
   let _activeDrag = null;
@@ -114403,6 +115052,10 @@ document.addEventListener('input', _onSlashInput);
     _handle.style.width = size + 'px';
     _handle.style.height = size + 'px';
     _handle.style.fontSize = enabled ? '20px' : '16px';
+    if (_addButton) {
+      _addButton.style.width = size + 'px';
+      _addButton.style.height = size + 'px';
+    }
   }
 
   // ユーザー指示(2026-08-05): ハンドルは全行で同じガター位置に固定する。
@@ -114429,15 +115082,32 @@ document.addEventListener('input', _onSlashInput);
       const contentTop = er.top + padTop * z;
       _handle.style.top = (Math.max(2, contentTop - 22) / z) + 'px';
       _handle.style.left = (blockRect.left / z) + 'px';
+      _positionAddButton(true);
       return;
     }
     _handle.style.top = (blockRect.top / z) + 'px';
     const contentLeft = er.left + padLeft * z;
     _handle.style.left = (Math.max(2, contentLeft - 22) / z) + 'px';
+    _positionAddButton(false);
+  }
+
+  function _positionAddButton(vertical) {
+    if (!_addButton) return;
+    const size = parseFloat(_addButton.style.width) || HANDLE_H;
+    // 狭いガター・タッチ用44pxでも、追加ボタンが画面外へ消えないよう二つを一緒に補正する。
+    const axis = vertical ? 'top' : 'left';
+    const start = Math.max(size + 4, parseFloat(_handle.style[axis]));
+    _handle.style[axis] = start + 'px';
+    _addButton.style.left = (vertical ? parseFloat(_handle.style.left) : start - size - 2) + 'px';
+    _addButton.style.top = (vertical ? start - size - 2 : parseFloat(_handle.style.top)) + 'px';
   }
 
   function _hideHandle() {
-    if (_handle) _handle.style.opacity = '0';
+    for (const button of [_handle, _addButton]) {
+      if (!button) continue;
+      button.style.opacity = '0'; button.style.pointerEvents = 'none';
+      button.tabIndex = -1; button.setAttribute('aria-hidden', 'true');
+    }
     _hoverTargetBlock = null;
     _hoverEditable = null;
     if (LR()) LR().hideRowHighlight();
@@ -114458,6 +115128,7 @@ document.addEventListener('input', _onSlashInput);
     const lr = LR();
     if (!nbt) return;
     if (_handle && (e.target === _handle || _handle.contains(e.target))) return; // ハンドル上では現状維持
+    if (_addButton?.contains(e.target)) return;
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) { _hideHandle(); return; } // 工程7-8: viewer/ロック中は出さない
     // 修正1: 直接ブロック上でない場合（ガター/余白）は、Y座標から対応する行を探す。
@@ -114474,6 +115145,9 @@ document.addEventListener('input', _onSlashInput);
     _hoverTargetBlock = block;
     _hoverEditable = editable;
     handle.style.opacity = '1';
+    handle.style.pointerEvents = 'auto';
+    for (const button of [handle, _addButton]) { button.tabIndex = 0; button.removeAttribute('aria-hidden'); }
+    _addButton.style.opacity = '1'; _addButton.style.pointerEvents = 'auto';
   }
 
   function _onDocumentTouchStart(e) {
@@ -114494,6 +115168,9 @@ document.addEventListener('input', _onSlashInput);
     _hoverTargetBlock = block;
     _hoverEditable = editable;
     handle.style.opacity = '1';
+    handle.style.pointerEvents = 'auto';
+    for (const button of [handle, _addButton]) { button.tabIndex = 0; button.removeAttribute('aria-hidden'); }
+    _addButton.style.opacity = '1'; _addButton.style.pointerEvents = 'auto';
   }
 
   // ============================================================
@@ -114804,12 +115481,44 @@ document.addEventListener('input', _onSlashInput);
     handle.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:20px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--fg2);font-size:16px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;touch-action:none;';
     handle.setAttribute('contenteditable', 'false');
     handle.setAttribute('role', 'button');
+    handle.tabIndex = -1;
+    handle.setAttribute('aria-hidden', 'true');
+    handle.style.pointerEvents = 'none';
+    handle.setAttribute('aria-haspopup', 'menu');
     handle.setAttribute('aria-label', 'ドラッグでブロックを移動、クリックで行種メニューを開く、右クリックでメニューを開く');
     document.body.appendChild(handle);
     handle.addEventListener('pointerdown', _onHandlePointerDown);
     handle.addEventListener('contextmenu', _onHandleContextMenu);
     handle.addEventListener('pointerenter', _onHandlePointerEnter);
     handle.addEventListener('pointerleave', _onHandlePointerLeave);
+    // pointerupで開いたメニューを、直後のclickの共通dismissで閉じない。
+    handle.addEventListener('click', (e) => e.stopPropagation());
+    handle.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && _hoverTargetBlock) {
+        e.preventDefault(); _openBlockMenuFor(_hoverEditable, _hoverTargetBlock);
+      }
+    });
+    const add = document.createElement('button');
+    add.id = 'note-block-add'; add.type = 'button'; add.textContent = '+';
+    add.setAttribute('aria-label', 'この行の下に追加'); add.title = 'この行の下に追加';
+    add.setAttribute('aria-haspopup', 'menu');
+    add.tabIndex = -1; add.setAttribute('aria-hidden', 'true');
+    add.style.cssText = handle.style.cssText + 'cursor:pointer;border:0;background:var(--bg2);border-radius:4px;pointer-events:none;';
+    add.addEventListener('mousedown', (e) => e.preventDefault());
+    add.addEventListener('pointerenter', _onHandlePointerEnter);
+    add.addEventListener('pointerleave', _onHandlePointerLeave);
+    add.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const editable = _hoverEditable, block = _hoverTargetBlock;
+      if (!block || !NBT()?.isEditableWritable(editable)) return;
+      global.MeldexNoteBlockMenu.open({
+        anchorRect: add.getBoundingClientRect(), editable, insertMode: true,
+        onSelect: (typeId) => { NBT().insertLineAfter(typeId, editable, block); _hideHandle(); },
+        onClose: () => { if (LR()) LR().hideRowHighlight(); },
+      });
+    });
+    document.body.appendChild(add);
+    _addButton = add;
     _handle = handle;
     return handle;
   }
@@ -247751,7 +248460,8 @@ const GBPaneBridge = (() => {
         else sc.textContent = '';
       }
       else if (['entity', 'page'].includes(effectiveToolbarViewName)) {
-        sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き';
+        if (typeof updateNoteShortcutStatusbar === 'function') updateNoteShortcutStatusbar(sc);
+        else sc.textContent = 'Ctrl+Alt+1〜3 見出し | Ctrl+Shift+N 本文 | Alt+Shift+←→ 段落レベル';
       } else if (effectiveToolbarViewName === 'scriptnote') {
         if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
         else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
@@ -255159,7 +255869,8 @@ function showView(viewName, ctx) {
     else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
     else sc.textContent = '';
   } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
-    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
+    if (typeof updateNoteShortcutStatusbar === 'function') updateNoteShortcutStatusbar(sc);
+    else sc.textContent = 'Ctrl+Alt+1〜3 見出し | Ctrl+Shift+N 本文 | Alt+Shift+←→ 段落レベル';
   } else if (resolvedViewName === 'scriptnote') {
     if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
     else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
@@ -261964,7 +262675,7 @@ async function _exportDictFile(options = {}) {
   // Shift+数字キーの記号→数字マッピング（US配列基準）
   const SHIFT_DIGIT_MAP = { '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
 
-  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo', 'panelset'];
+  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo'];
   const SCOPE_LABELS = {
     global: '全体',
     note: 'ノート',
@@ -261980,7 +262691,6 @@ async function _exportDictFile(options = {}) {
     comment: 'コメント',
     tray: '常駐アプリ',
     quickmemo: 'クイックメモ',
-    panelset: 'パネルセット',
   };
 
   // メインパネルで開いているアプリの種類 → ショートカットのスコープ。
@@ -262306,6 +263016,7 @@ async function _exportDictFile(options = {}) {
       ? global.captureLocalStorageSettings([STORAGE_KEY])
       : null;
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch { /* 保存できない環境では変更を持ち越さない */ }
+    if (typeof global.updateNoteShortcutStatusbar === 'function') global.updateNoteShortcutStatusbar();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
     if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
@@ -262340,6 +263051,7 @@ async function _exportDictFile(options = {}) {
   }
 
   function keyFor(id) {
+    if (!definitions[id]) return '';
     const custom = getCustom();
     if (custom[id]) return custom[id].key;
     return definitions[id]?.key || '';
@@ -262452,7 +263164,6 @@ async function _exportDictFile(options = {}) {
   // 設定ダイアログでは枠付き（boxed）、オプションパネルでは枠なしで使う。
 
   function _displayScope(id, def) {
-    if (id.startsWith('panelset.')) return 'panelset';
     return def.scope || 'global';
   }
 
@@ -262810,19 +263521,21 @@ const GB_SHORTCUTS = {
   'note.italic':          { key: 'ctrl+i',       label: '斜体',                      scope: 'note' },
   'note.underline':       { key: 'ctrl+u',       label: '下線',                      scope: 'note' },
   'note.strike':          { key: 'ctrl+shift+x', label: '取り消し線',                 scope: 'note' },
-  'note.h1':              { key: 'ctrl+shift+1', label: '見出し1',                   scope: 'note' },
-  'note.h2':              { key: 'ctrl+shift+2', label: '見出し2',                   scope: 'note' },
-  'note.h3':              { key: 'ctrl+shift+3', label: '見出し3',                   scope: 'note' },
+  'note.h1':              { key: 'ctrl+alt+1',   label: '見出し1',                   scope: 'note' },
+  'note.h2':              { key: 'ctrl+alt+2',   label: '見出し2',                   scope: 'note' },
+  'note.h3':              { key: 'ctrl+alt+3',   label: '見出し3',                   scope: 'note' },
   'note.h4':              { key: 'ctrl+shift+4', label: '見出し4',                   scope: 'note' },
   'note.h5':              { key: 'ctrl+shift+5', label: '見出し5',                   scope: 'note' },
   'note.h6':              { key: 'ctrl+shift+6', label: '見出し6',                   scope: 'note' },
-  'note.body':            { key: 'ctrl+shift+0', label: '本文に戻す',                scope: 'note' },
+  'note.body':            { key: 'ctrl+shift+n', label: '本文に戻す',                scope: 'note' },
   'note.ol':              { key: 'ctrl+shift+7', label: '番号付きリスト',             scope: 'note' },
   'note.ul':              { key: 'ctrl+shift+8', label: '箇条書きリスト',             scope: 'note' },
   'note.quote':           { key: 'ctrl+shift+9', label: '引用',                      scope: 'note' },
   'note.hr':              { key: 'ctrl+shift+h', label: '水平線を挿入',              scope: 'note' },
   'note.indent':          { key: 'tab',          label: 'インデント',                scope: 'note' },
   'note.outdent':         { key: 'shift+tab',    label: 'アウトデント',              scope: 'note' },
+  'note.demote':          { key: 'alt+shift+arrowright', label: '段落レベルを下げる', scope: 'note' },
+  'note.promote':         { key: 'alt+shift+arrowleft', label: '段落レベルを上げる',  scope: 'note' },
   // 修正4（バグ報告§4）: alt+shift+arrowup/down は Windows既定の入力言語切替
   // ホットキー（Alt+Shift）と衝突し、実機のキー操作では信頼できないことが
   // 確認された（合成イベントでは正しく動作するがOSに先取りされ得る）。
@@ -262976,16 +263689,6 @@ const GB_SHORTCUTS = {
   'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: 'アノテートを描く',                      scope: 'annotation', readonly: true },
   'annotation.dragTail':   { key: '', display: 'Alt+Shift+ドラッグ',     label: 'フキダシのしっぽを追加',           scope: 'annotation', readonly: true },
 
-  // --- パネルセット ---
-  'panelset.group1':      { key: 'ctrl+alt+1',   label: 'パネルセット ドック1',       scope: 'global' },
-  'panelset.group2':      { key: 'ctrl+alt+2',   label: 'パネルセット ドック2',       scope: 'global' },
-  'panelset.group3':      { key: 'ctrl+alt+3',   label: 'パネルセット ドック3',       scope: 'global' },
-  'panelset.group4':      { key: 'ctrl+alt+4',   label: 'パネルセット ドック4',       scope: 'global' },
-  'panelset.group5':      { key: 'ctrl+alt+5',   label: 'パネルセット ドック5',       scope: 'global' },
-  'panelset.group6':      { key: 'ctrl+alt+6',   label: 'パネルセット ドック6',       scope: 'global' },
-  'panelset.group7':      { key: 'ctrl+alt+7',   label: 'パネルセット ドック7',       scope: 'global' },
-  'panelset.group8':      { key: 'ctrl+alt+8',   label: 'パネルセット ドック8',       scope: 'global' },
-  'panelset.group9':      { key: 'ctrl+alt+9',   label: 'パネルセット ドック9',       scope: 'global' },
 };
 
 const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
@@ -263168,6 +263871,23 @@ function _shortcutStatusItem(id, label) {
   return display + ' ' + label;
 }
 
+function getNoteShortcutStatusText() {
+  return [
+    _shortcutStatusItem('note.h1', '見出し1'),
+    _shortcutStatusItem('note.h2', '見出し2'),
+    _shortcutStatusItem('note.h3', '見出し3'),
+    _shortcutStatusItem('note.body', '本文'),
+    _shortcutStatusItem('note.promote', 'レベルを上げる'),
+    _shortcutStatusItem('note.demote', 'レベルを下げる'),
+  ].filter(Boolean).join(' | ');
+}
+
+function updateNoteShortcutStatusbar(targetEl) {
+  const sc = targetEl || document.getElementById('sb-shortcuts');
+  if (!sc || (!targetEl && typeof state !== 'undefined' && !['page', 'entity'].includes(state.view))) return;
+  sc.textContent = getNoteShortcutStatusText();
+}
+
 function getScriptnoteShortcutStatusText() {
   // 2026-07-17 最新仕様に同期: Tab=タイプ選択・同タイプ行追加・セル内貼付・全選択/選択解除を追加、
   // 「上へ/下へ」は行移動であることが分かる表記へ変更
@@ -263307,26 +264027,6 @@ function _currentMainPanelSearchTool() {
 
 // === Part 1-5: アクションハンドラマップ ===
 
-function _switchPanelsetGroupByIndex(n) {
-  if (typeof GBPanelSet === 'undefined' || typeof GBLayout === 'undefined') return;
-  const ap = GBLayout.activePane;
-  if (!ap) return;
-  function findPanelset(node) {
-    if (!node) return null;
-    if (node.type === 'panelset') {
-      const active = (node.groups || []).find(g => g && g.id === node.activeGroupId);
-      if (active?.root && GBLayout.findNode(active.root, ap)) return node;
-    }
-    if (node.type === 'split' && Array.isArray(node.children)) {
-      for (const c of node.children) { const f = findPanelset(c); if (f) return f; }
-    }
-    return null;
-  }
-  const ps = findPanelset(GBLayout.root);
-  if (!ps || !ps.groups || ps.groups.length < n) return;
-  GBPanelSet.switchGroup(ps, ps.groups[n - 1].id);
-}
-
 function _activeCalendarShortcutComponent() {
   try {
     if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined' || typeof getComponentInstance !== 'function') return null;
@@ -263431,12 +264131,32 @@ function _runNoteRichTextCommand(cmd, value) {
 }
 
 function _runNoteHeadingShortcut(tag) {
-  if (!_activeNoteEditable()) return false;
+  const editable = _activeNoteEditable();
+  if (!editable) return false;
+  const types = window.MeldexNoteBlockTypes;
+  if (types) {
+    const range = _currentNoteSelectionRange();
+    const info = range && types.resolveCurrentBlock(editable, range);
+    const options = { editable, range };
+    if (info?.block.classList.contains('note-title')) options.beforeConvert = ({ block }) => {
+      block.classList.remove('note-title'); delete block.dataset.noteTitle;
+    };
+    return types.convertCurrentLineTo(tag === 'P' ? 'body' : tag.toLowerCase(), options).ok;
+  }
   if (typeof rtHeading === 'function') {
     rtHeading(tag);
   } else {
     document.execCommand('formatBlock', false, tag);
   }
+}
+
+function _changeNoteParagraphLevel(direction) {
+  const editable = _activeNoteEditable();
+  if (!editable || !window.MeldexNoteBlockTypes) return false;
+  const result = window.MeldexNoteBlockTypes.changeParagraphLevel(direction, {
+    editable, range: _currentNoteSelectionRange(),
+  });
+  return result.ok || result.reason === 'boundary';
 }
 
 function _currentNoteSelectionRange() {
@@ -263635,6 +264355,8 @@ const _shortcutHandlers = {
   'note.hr':        () => _runNoteRichTextCommand('insertHorizontalRule'),
   'note.indent':    () => _runNoteRichTextCommand('indent'),
   'note.outdent':   () => _runNoteRichTextCommand('outdent'),
+  'note.demote':    () => _changeNoteParagraphLevel(1),
+  'note.promote':   () => _changeNoteParagraphLevel(-1),
   'note.moveUp':    () => { if (typeof moveBlock === 'function') moveBlock('up'); },
   'note.moveDown':  () => { if (typeof moveBlock === 'function') moveBlock('down'); },
   'note.link':      () => {
@@ -264073,16 +264795,6 @@ const _shortcutHandlers = {
     if (typeof _folderSelected === 'undefined' || !_folderSelected) return false;
     return typeof _folderStartRename === 'function' && _folderStartRename(_folderSelected);
   },
-  // パネルセット: アクティブペインが属する panelset の N 番目のドックに切替
-  'panelset.group1': () => _switchPanelsetGroupByIndex(1),
-  'panelset.group2': () => _switchPanelsetGroupByIndex(2),
-  'panelset.group3': () => _switchPanelsetGroupByIndex(3),
-  'panelset.group4': () => _switchPanelsetGroupByIndex(4),
-  'panelset.group5': () => _switchPanelsetGroupByIndex(5),
-  'panelset.group6': () => _switchPanelsetGroupByIndex(6),
-  'panelset.group7': () => _switchPanelsetGroupByIndex(7),
-  'panelset.group8': () => _switchPanelsetGroupByIndex(8),
-  'panelset.group9': () => _switchPanelsetGroupByIndex(9),
 
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;

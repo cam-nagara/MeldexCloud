@@ -27,7 +27,7 @@
   // Shift+数字キーの記号→数字マッピング（US配列基準）
   const SHIFT_DIGIT_MAP = { '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
 
-  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo', 'panelset'];
+  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo'];
   const SCOPE_LABELS = {
     global: '全体',
     note: 'ノート',
@@ -43,7 +43,6 @@
     comment: 'コメント',
     tray: '常駐アプリ',
     quickmemo: 'クイックメモ',
-    panelset: 'パネルセット',
   };
 
   // メインパネルで開いているアプリの種類 → ショートカットのスコープ。
@@ -369,6 +368,7 @@
       ? global.captureLocalStorageSettings([STORAGE_KEY])
       : null;
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch { /* 保存できない環境では変更を持ち越さない */ }
+    if (typeof global.updateNoteShortcutStatusbar === 'function') global.updateNoteShortcutStatusbar();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
     if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
@@ -403,6 +403,7 @@
   }
 
   function keyFor(id) {
+    if (!definitions[id]) return '';
     const custom = getCustom();
     if (custom[id]) return custom[id].key;
     return definitions[id]?.key || '';
@@ -515,7 +516,6 @@
   // 設定ダイアログでは枠付き（boxed）、オプションパネルでは枠なしで使う。
 
   function _displayScope(id, def) {
-    if (id.startsWith('panelset.')) return 'panelset';
     return def.scope || 'global';
   }
 

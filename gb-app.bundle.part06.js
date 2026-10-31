@@ -1,3 +1,4 @@
+  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
   openViewer(url);
 }
 
@@ -897,4 +898,3 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   const options = opts || {};
   const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;
   const size = typeof sizeOrText === 'number'
-    ? sizeOrText

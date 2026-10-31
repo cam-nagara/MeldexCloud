@@ -736,7 +736,8 @@ function showView(viewName, ctx) {
     else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
     else sc.textContent = '';
   } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
-    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
+    if (typeof updateNoteShortcutStatusbar === 'function') updateNoteShortcutStatusbar(sc);
+    else sc.textContent = 'Ctrl+Alt+1〜3 見出し | Ctrl+Shift+N 本文 | Alt+Shift+←→ 段落レベル';
   } else if (resolvedViewName === 'scriptnote') {
     if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
     else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
@@ -897,4 +898,3 @@ async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
 
 async function _hideMeldexWindowForScreenshot() {
   const state = await _setMeldexWindowVisibilityForScreenshot('hide');
-  if (!state?.hidden) window.blur();

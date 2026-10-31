@@ -1,3 +1,4 @@
+  if (!state?.hidden) window.blur();
   await new Promise(r => setTimeout(r, 500));
   return state;
 }
@@ -897,4 +898,3 @@ function _viewerFolderNavOpenTarget(folderPath, result, targetIframe = null) {
     return;
   }
   const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
-  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);

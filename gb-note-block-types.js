@@ -699,6 +699,10 @@
     }
 
     if (!newRoot) return null;
+    // 行種を変えても段落ステータスは同じ論理行に属する。
+    if (info.block.hasAttribute('data-note-status')) {
+      (focusTarget?.closest('li') || newRoot).setAttribute('data-note-status', info.block.getAttribute('data-note-status'));
+    }
     _replaceSource(info, newRoot);
     return { newRoot, focusTarget };
   }
@@ -876,6 +880,95 @@
     return { ok: true, block: result.newRoot };
   }
 
+  // 見出しは行種を変更し、リストは項目と子リストを一緒に一段だけ移動する。
+  function changeParagraphLevel(direction, options) {
+    const opts = options || {};
+    const editable = opts.editable || activeEditableHost();
+    if (!isEditableWritable(editable)) return { ok: false, reason: 'readonly' };
+    const range = opts.range || currentRangeWithin(editable);
+    const info = range && resolveCurrentBlock(editable, range);
+    if (!info || (direction !== 1 && direction !== -1)) return { ok: false, reason: 'no-current-block' };
+    if (info.kind === 'heading') {
+      const level = Number(info.block.tagName[1]) + direction;
+      if (level < 1 || level > 6) return { ok: false, reason: 'boundary' };
+      return convertCurrentLineTo('h' + level, { editable, range });
+    }
+    if (info.kind === 'body') {
+      return direction === -1 ? convertCurrentLineTo('h1', { editable, range }) : { ok: false, reason: 'boundary' };
+    }
+    if (info.kind !== 'list-item') return { ok: false, reason: 'unsupported-block' };
+    const li = info.block, list = li.parentElement;
+    const previous = li.previousElementSibling;
+    const parentLi = list.parentElement?.tagName === 'LI' ? list.parentElement : null;
+    if (direction === 1 && previous?.tagName !== 'LI') return { ok: false, reason: 'boundary' };
+    if (direction === -1 && !parentLi) return { ok: false, reason: 'boundary' };
+    const snapshot = _captureRowSnapshot(li, range);
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    if (direction === 1) {
+      let nested = previous.lastElementChild;
+      if (nested?.tagName !== list.tagName) {
+        nested = document.createElement(list.tagName.toLowerCase()); previous.appendChild(nested);
+      }
+      nested.appendChild(li);
+    } else {
+      // 昇格後も後続項目が対象行より前へ飛ばないよう、対象行の子へ移す。
+      const following = list.cloneNode(false); following.removeAttribute('id');
+      if (list.tagName === 'OL') following.start = list.start + Array.from(list.children).indexOf(li) + 1;
+      while (li.nextSibling) following.appendChild(li.nextSibling);
+      parentLi.after(li);
+      if (following.children.length) {
+        const nested = li.lastElementChild;
+        if (nested?.tagName === following.tagName) while (following.firstChild) nested.appendChild(following.firstChild);
+        else li.appendChild(following);
+      }
+      if (!list.children.length) list.remove();
+    }
+    _restoreRowSnapshot(li, snapshot); _focusEditableForConvert(editable);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block: li };
+  }
+
+  // 新しい空行だけを変換し、追加全体を1回のUndoにまとめる。
+  function insertLineAfter(typeId, editable, block) {
+    if (!getType(typeId) || !isEditableWritable(editable)
+      || !block?.isConnected || !editable.contains(block)) return { ok: false };
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    const row = document.createElement(block.tagName === 'LI' ? 'li' : 'div');
+    row.appendChild(document.createElement('br'));
+    block.after(row);
+    const range = document.createRange(); range.selectNodeContents(row); range.collapse(true);
+    const info = resolveCurrentBlock(editable, range);
+    const result = getBlockTypeId(info) === typeId
+      ? { newRoot: row, focusTarget: row }
+      : _performConvert(typeId, info, {});
+    // 空の差し替え用LIは番号を消費しない。
+    if (info.kind === 'list-item' && typeId !== 'ol' && result.newRoot.nextElementSibling?.tagName === 'OL') {
+      const followingList = result.newRoot.nextElementSibling;
+      followingList.start = followingList.start - 1;
+    }
+    _refreshHeadingSectionsAfterConvert(editable, 'body', typeId);
+    _restoreCaretAfterConvert(editable, typeId, result, null);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block: result.newRoot };
+  }
+
+  function handleEmptyListEnter(e) {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || e.key !== 'Enter'
+      || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const editable = e.target?.closest?.(EDITABLE_SELECTOR);
+    if (!isEditableWritable(editable)) return;
+    const range = currentRangeWithin(editable);
+    if (!range?.collapsed) return;
+    const info = resolveCurrentBlock(editable, range);
+    if (info?.kind !== 'list-item') return;
+    const ownContent = info.block.cloneNode(true);
+    ownContent.querySelectorAll('ul,ol').forEach(list => list.remove());
+    if (!_isBlockTextEmpty(ownContent) || ownContent.querySelector('img,video,audio,iframe,hr')) return;
+    e.preventDefault();
+    insertLineAfter(getBlockTypeId(info), editable, info.block);
+  }
+  document.addEventListener('keydown', handleEmptyListEnter, true);
+
   // ============================================================
   // 9. チェックリストの実チェック動作（クリックでチェック状態を切替）
   // ============================================================
@@ -1016,6 +1109,8 @@
     getBlockTypeId,
     canConvert,
     convertCurrentLineTo,
+    changeParagraphLevel,
+    insertLineAfter,
     isBlockTextEmpty: _isBlockTextEmpty,
     // 工程7-8（gb-note-block-reorder.js）向けの新規公開: 既存の内部キャレット保持
     // ヘルパーをそのまま公開する（ロジックの重複作成を避けるため）。既存の

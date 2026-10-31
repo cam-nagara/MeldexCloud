@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.439",
+  "manual_version": "0.7.441",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "7547fd60da303ab87b771fc2a9345d0bb84a66ccba9d795aad90084303a76076",
-  "document_count": 210,
-  "chunk_count": 1955,
+  "source_digest": "26754940ec00d4aa3f855152470efcf81c441bab47a478ebf78dedbc676ecfc5",
+  "document_count": 203,
+  "chunk_count": 1947,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -158,7 +158,7 @@
       "path": "02_ツール別ガイド/ノートエディタ マニュアル.md",
       "title": "ノートエディタ",
       "category": "メインアプリ",
-      "source_sha256": "b6684e2dcc69753597974d158bd6bdb827b680de8d853e35e65d6d7e9f5358e3",
+      "source_sha256": "301a671e61461fc1b3b2e916ea2727f0ddb943f08658a43da5b3d9d7cb24c6c5",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -284,7 +284,7 @@
       "path": "03_設定と連携/Googleドライブの個人用取り込み.md",
       "title": "Googleドライブの個人用取り込み",
       "category": "設定・外部連携",
-      "source_sha256": "770ae83c9c81ef535a42f18a36aa96110d2388a8b5e66f9a061ea9225108f30b",
+      "source_sha256": "e793e87743080236bb925923d7c4e80c15a8199f6001a12f34fffddf827f62ee",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Google%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%81%AE%E5%80%8B%E4%BA%BA%E7%94%A8%E5%8F%96%E3%82%8A%E8%BE%BC%E3%81%BF.md"
     },
     {
@@ -526,6 +526,20 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2BO%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
     },
     {
+      "path": "04_サポート/ショートカット一覧/Alt+Shift+←（ノートエディタ）.md",
+      "title": "Alt+Shift+←",
+      "category": "ショートカット",
+      "source_sha256": "a777879759630792cf53a5a462eac8fe3ef0a1764164cd477cabba84b5b796b9",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2B%E2%86%90%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
+    },
+    {
+      "path": "04_サポート/ショートカット一覧/Alt+Shift+→（ノートエディタ）.md",
+      "title": "Alt+Shift+→",
+      "category": "ショートカット",
+      "source_sha256": "8964bea37709741be27fb33f8b8a8026cadaf6caf09f584c491957f66e4b674e",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2B%E2%86%92%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
+    },
+    {
       "path": "04_サポート/ショートカット一覧/Alt+←（全般）.md",
       "title": "Alt+←",
       "category": "ショートカット",
@@ -582,67 +596,25 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2B%3D%EF%BC%88%E3%83%9C%E3%83%BC%E3%83%89%EF%BC%89.md"
     },
     {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+1（パネルセット）.md",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+1（ノートエディタ）.md",
       "title": "Ctrl+Alt+1",
       "category": "ショートカット",
-      "source_sha256": "f5749745f79ef382eec0d804e5f234d4611ac02533c4d22c30ec700d72c2849e",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B1%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
+      "source_sha256": "410f96de7172fe4bd118cd329c55a4f494bf930bcd53a5638d9ef08000795cb7",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B1%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
     },
     {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+2（パネルセット）.md",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+2（ノートエディタ）.md",
       "title": "Ctrl+Alt+2",
       "category": "ショートカット",
-      "source_sha256": "e8610b108eb8c21910f931a79b8218a4f77544339948e389e545a7ef91dd86df",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B2%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
+      "source_sha256": "92c127bbf8072caf5ec1a571db705c890e78cd9d571a6aeae23735e303eb74cb",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B2%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
     },
     {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+3（パネルセット）.md",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+3（ノートエディタ）.md",
       "title": "Ctrl+Alt+3",
       "category": "ショートカット",
-      "source_sha256": "c7e20f9619b4c33876dd318a716bf2572effb99c84dadf991e8d3e952e6473b8",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B3%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+4（パネルセット）.md",
-      "title": "Ctrl+Alt+4",
-      "category": "ショートカット",
-      "source_sha256": "18c628cfc7477f96f9d845041a45dd284716efa3b6b14feee14c4698f7b88d9e",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B4%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+5（パネルセット）.md",
-      "title": "Ctrl+Alt+5",
-      "category": "ショートカット",
-      "source_sha256": "952a6b404e3b7da48dc2baa493f871d32fda6125e69fb387ce43ca8793390388",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B5%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+6（パネルセット）.md",
-      "title": "Ctrl+Alt+6",
-      "category": "ショートカット",
-      "source_sha256": "479182a84c68373f151e6d51eeceb9378f8ff24eddc32010cef14e1d3645067c",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B6%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+7（パネルセット）.md",
-      "title": "Ctrl+Alt+7",
-      "category": "ショートカット",
-      "source_sha256": "6dc891e2b8a07efe3e19a51bce5f5aa97a7d89db2e24748c4e4c8bf1ceb26fe7",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B7%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+8（パネルセット）.md",
-      "title": "Ctrl+Alt+8",
-      "category": "ショートカット",
-      "source_sha256": "57e67bdf7430bcce6d6f82dd1e86c79a7fcb5ee9e9bcc4b1ce259dca043dcbc4",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B8%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+9（パネルセット）.md",
-      "title": "Ctrl+Alt+9",
-      "category": "ショートカット",
-      "source_sha256": "5c1d72e773368e35071786c28fe6a5f557da8f7de302b61b9be3b57e2ab4f9a6",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B9%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md"
+      "source_sha256": "ef00871e1d5ea059390511ef33dd8f47d8dd870e78a70dd03331012fe1a695ed",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B3%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
     },
     {
       "path": "04_サポート/ショートカット一覧/Ctrl+A（CSVエディタ）.md",
@@ -841,34 +813,6 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BR%EF%BC%88%E3%82%B7%E3%83%8A%E3%83%AA%E3%82%AA%EF%BC%89.md"
     },
     {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+0（ノートエディタ）.md",
-      "title": "Ctrl+Shift+0",
-      "category": "ショートカット",
-      "source_sha256": "81a3fe31215fffacdfc68e20d58a7620a6481b6f3c196d993fcfe95e2a7b7820",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B0%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+1（ノートエディタ）.md",
-      "title": "Ctrl+Shift+1",
-      "category": "ショートカット",
-      "source_sha256": "9d4fc41cbe7a1c0a5cd5336aff70c532e1dd55e18558b2cafe7e2f841a9d2c9d",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B1%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+2（ノートエディタ）.md",
-      "title": "Ctrl+Shift+2",
-      "category": "ショートカット",
-      "source_sha256": "e35283847cf1d62cfb57f0eaf375378a2440fc6cdf0bdd7f11aab45ae1448998",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B2%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
-    },
-    {
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+3（ノートエディタ）.md",
-      "title": "Ctrl+Shift+3",
-      "category": "ショートカット",
-      "source_sha256": "e7709c441d2af3f140e48666d3b75bb84f36bd4b42a2b60c420481ddbc1f5a2d",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B3%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
-    },
-    {
       "path": "04_サポート/ショートカット一覧/Ctrl+Shift+4（ノートエディタ）.md",
       "title": "Ctrl+Shift+4",
       "category": "ショートカット",
@@ -958,6 +902,13 @@
       "category": "ショートカット",
       "source_sha256": "5ef64f3eb69442ea2feef149fbe9f1625fb894a447168affa8244cf8299e1072",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2BM%EF%BC%88%E5%85%A8%E8%88%AC%EF%BC%89.md"
+    },
+    {
+      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+N（ノートエディタ）.md",
+      "title": "Ctrl+Shift+N",
+      "category": "ショートカット",
+      "source_sha256": "13153e6d3db1d00bafd9bff490836438e7180a92f797ccee0b01e689e6a66fa0",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2BN%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md"
     },
     {
       "path": "04_サポート/ショートカット一覧/Ctrl+Shift+P（全般）.md",
@@ -1383,7 +1334,7 @@
       "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
       "title": "ショートカット一覧",
       "category": "ショートカット",
-      "source_sha256": "b9952c5953a5b03112ee7736468abae9f08139af4a411f8321930226308fb36b",
+      "source_sha256": "5266e1c173b68ed0c46b00a7c6649a24acee3f27e84c2ae6e0be2ef5397743a4",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md"
     },
     {
@@ -6656,7 +6607,7 @@
       "category": "メインアプリ",
       "heading": "行の種類を変更する",
       "anchor": "_8",
-      "text": "すでに書いた行を、あとから別の種類（見出し・箇条書き・コールアウトなど）に変更できます。次の 4 つの方法はすべて同じ選択肢（本文 / 見出し1〜6 / 箇条書き / 番号付きリスト / チェックリスト / コールアウト / 引用 / コードブロック / テーブル / 区切り線）から選べます。\n/（スラッシュ）: 空の行の先頭で / を入力するとメニューが開きます。続けて文字を入力すると項目を絞り込めます。/ 以外に何もない行で 区切り線 を選ぶと、その行が区切り線に変わります。本文がある行は区切り線に変換できません\nハンドル: 本文・見出し・リスト・コールアウト・引用・コード・表・区切り線など、すべての行種で左側にカーソルを合わせると縦のハンドル（⠿）が表示されます。ハンドルにカーソルがある間は行全体がハイライトされます。クリックするとメニューが開き、ドラッグすると行を移動できます（詳しくは次項）\n右クリック / 長押し: 行の文字列上で右クリック（タッチ端末では長押し）し、「行種変更」からサブメニューを開きます\nツールバー: ツールバー上部の「行の種類」ボタンを押すと、現在のテーマ・ファイルの見た目を反映した見本付きメニューが開きます。現在の行の種類がボタンに表示されます\nチェックリストへの変換は、見た目だけでなくチェック（✓）を付けられる項目になります。",
+      "text": "すでに書いた行を、あとから別の種類（見出し・箇条書き・コールアウトなど）に変更できます。次の 4 つの方法はすべて同じ選択肢（本文 / 見出し1〜6 / 箇条書き / 番号付きリスト / チェックリスト / コールアウト / 引用 / コードブロック / テーブル / 区切り線）から選べます。\n/（スラッシュ）: 空の行の先頭で / を入力するとメニューが開きます。続けて文字を入力すると項目を絞り込めます。/ 以外に何もない行で 区切り線 を選ぶと、その行が区切り線に変わります。本文がある行は区切り線に変換できません\nハンドル: 本文・見出し・リスト・コールアウト・引用・コード・表・区切り線など、すべての行種で左側にカーソルを合わせると縦のハンドル（⠿）が表示されます。ハンドルにカーソルがある間は行全体がハイライトされます。クリックするとメニューが開き、ドラッグすると行を移動できます（詳しくは次項）\n追加ボタン（＋）: ハンドルの左に表示されます。クリックして行の種類を選ぶと、その行の下に空の行を追加できます。元の行の内容は保持されます。\n箇条書き・番号付きリストの空の項目で Enter を押すと、空欄を残したまま同じ階層に次の項目を追加します。通常の本文に変更する場合は、行の種類から「本文」を選んでください。\n- 右クリック / 長押し: 行の文字列上で右クリック（タッチ端末では長押し）し、「行種変更」からサブメニューを開きます\n- ツールバー: ツールバー上部の「行の種類」ボタンを押すと、現在のテーマ・ファイルの見た目を反映した見本付きメニューが開きます。現在の行の種類がボタンに表示されます\nチェックリストへの変換は、見た目だけでなくチェック（✓）を付けられる項目になります。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_8"
     },
     {
@@ -6786,7 +6737,7 @@
       "category": "メインアプリ",
       "heading": "コールアウト（注意書きブロック）",
       "anchor": "_21",
-      "text": "引用記法に特別な構文を加えることで、色付きの注意書きブロックを挿入できます:\n> ヒントのテキスト\n> 注意のテキスト\n> 補足情報のテキスト\nコールアウト内のテキストは直接編集できます。アイコンと色はMarkdownの記法で指定します。\n行の先頭を選んで Alt+Shift+O を押すと、その行をコールアウトへ直接変換できます（/ やハンドル、右クリックの「行種変更」からも選べます）。",
+      "text": "引用記法に特別な構文を加えることで、色付きの注意書きブロックを挿入できます:\n> ヒントのテキスト\n> 注意のテキスト\n> 補足情報のテキスト\nコールアウト内のテキストは直接編集できます。アイコンと色はMarkdownの記法で指定します。\n行の先頭を選んで Alt+Shift+O を押すと、その行をコールアウトへ直接変換できます（/ やハンドル、右クリックの「行種変更」からも選べます）。\nコールアウトのアイコンをクリックすると選択画面が開きます。ヒント・情報・注意などの基本アイコンは、一行に並んだアイコンから選べます。アイコンと登録画像は日本語で検索でき、カーソルを合わせると名前と検索ワードが表示されます。「さらに表示」で一覧を追加表示できます。\n画像を登録 では、名前と検索ワードを入力してPNG・JPEG・GIF・WebP画像（10MB以下）を選べます。先にノートを保存してください。画像はノートと同じフォルダーに保存され、この端末の同じ作業領域の「登録画像」から再利用できます。ノートに設定した画像の名前と検索ワードは、ノートの保存・再読込でも保持されます。\n選択画面の アイコン／枠／背景 で色の設定対象を切り替え、パレットから色を選べます。「デフォルト」で個別の色指定を解除できます。画像自体の色は変わりません。設定した枠・背景色もノートと一緒に保存されます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_21"
     },
     {
@@ -6886,7 +6837,7 @@
       "category": "メインアプリ",
       "heading": "ショートカット一覧",
       "anchor": "_30",
-      "text": "操作\nショートカット\n元に戻す\nCtrl+Z\nやり直し\nCtrl+Y\n太字\nCtrl+B\n斜体\nCtrl+I\nリンク挿入\nCtrl+K\n取り消し線\nCtrl+Shift+X\n下線\nCtrl+U\n検索と置換\nCtrl+H\nプレーンテキスト貼り付け\nCtrl+Shift+V\nチェックリスト\nCtrl+Shift+L\n行を複製\nCtrl+D\nブロックを上へ移動\nCtrl+↑\nブロックを下へ移動\nCtrl+↓\nコールアウトに変換\nAlt+Shift+O\n次の段落を追加\nCtrl+Enter",
+      "text": "操作\nショートカット\n元に戻す\nCtrl+Z\nやり直し\nCtrl+Y\n太字\nCtrl+B\n斜体\nCtrl+I\nリンク挿入\nCtrl+K\n取り消し線\nCtrl+Shift+X\n下線\nCtrl+U\n見出し1に設定\nCtrl+Alt+1\n見出し2に設定\nCtrl+Alt+2\n見出し3に設定\nCtrl+Alt+3\n本文に戻す\nCtrl+Shift+N\n段落レベルを下げる\nAlt+Shift+→\n段落レベルを上げる\nAlt+Shift+←\n検索と置換\nCtrl+H\nプレーンテキスト貼り付け\nCtrl+Shift+V\nチェックリスト\nCtrl+Shift+L\n行を複製\nCtrl+D\nブロックを上へ移動\nCtrl+↑\nブロックを下へ移動\nCtrl+↓\nコールアウトに変換\nAlt+Shift+O\n次の段落を追加\nCtrl+Enter\n見出し1〜3・本文・段落レベル変更の既定キーはWordと共通です。見出しのレベルは1〜6の範囲で一段ずつ変更し、本文で「段落レベルを上げる」を押すと見出し1になります。リストでは、下げると直前の項目の子へ、上げると親と同じ階層へ移動します。変更先がない場合はそのままです。Tab／Shift+Tabのインデント操作も引き続き使えます。\n設定の「ショートカット」、またはオプションパネルの「ショートカットキー」で割り当てを変更できます。既存のカスタム設定は保持されます。旧パネルセットのドック切替ショートカットは撤去され、Ctrl+Alt+1〜3との既定の競合はありません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_30"
     },
     {
@@ -10626,7 +10577,7 @@
       "category": "設定・外部連携",
       "heading": "Meldexへ接続設定を登録する",
       "anchor": "meldex",
-      "text": "設定 → インポート → Google を展開します。\n個人用Google接続・一度だけ取り込む の 認証設定JSONを登録 で、ダウンロードしたJSONを選びます。\nGoogleに接続 を押します。\nブラウザのGoogle公式画面で、使うアカウントと読み取り許可を確認します。\nMeldexへ戻り、接続状態を更新 を押します。\n認証情報は、このPCのOS資格情報ストアへ保存します。ソースフォルダやMeldexの共有設定へコピーしません。OS資格情報ストアが利用できない場合は登録できません。ダウンロードした元のJSONは自動削除しません。\n接続解除 は保存済みの接続を解除し、認証設定を削除 は個人用の登録設定も削除します。どちらも取り込み済みのノート・シートを削除しません。取り込み中は設定を変更できません。",
+      "text": "設定 → インポート → Google を展開します。\n個人用Google接続・一度だけ取り込む の 認証設定JSONを登録 で、ダウンロードしたJSONを選びます。登録済みなら 認証設定JSONを差し替える と表示します。接続設定を変更する場合だけ使い、通常は登録し直す必要はありません。\nGoogleに接続 を押します。\nブラウザのGoogle公式画面で、使うアカウントと読み取り許可を確認します。\nMeldexへ戻り、接続状態を更新 を押します。\n認証情報は、このPCのOS資格情報ストアへ保存します。ソースフォルダやMeldexの共有設定へコピーしません。OS資格情報ストアが利用できない場合は登録できません。ダウンロードした元のJSONは自動削除しません。\nGoogleの詳細を開くと、最初に個人用の設定を表示します。管理者用の取り込みも利用できる環境では、その設定を個人用とは別に表示します。個人用接続では、ローカルソースフォルダ を保存先として指定してください。\n接続解除 は保存済みの接続を解除し、認証設定を削除 は個人用の登録設定も削除します。どちらも取り込み済みのノート・シートを削除しません。対象確認中・取り込み中は設定を変更できません。\n認証設定の登録・削除、接続解除、再認証の後は、以前の接続で作った確認一覧を使い回しません。対象と保存先を確認し直してください。保存済みコピーの重複防止記録は保持します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Google%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%81%AE%E5%80%8B%E4%BA%BA%E7%94%A8%E5%8F%96%E3%82%8A%E8%BE%BC%E3%81%BF.md&section=meldex"
     },
     {
@@ -10636,7 +10587,7 @@
       "category": "設定・外部連携",
       "heading": "元ファイルの隣へ取り込む",
       "anchor": "_1",
-      "text": "Google Drive for desktopのフォルダを、Meldexのソースフォルダに登録しておきます。\nローカルソースフォルダ を選びます。配下だけを対象にする場合は、サブフォルダ に相対的な場所を入力します。\nそのローカルフォルダに対応する、Googleドライブ上の フォルダURL を入力します。\n対象と保存先を確認 を押します。下位のフォルダも含めて一覧を作ります。\n元の名前と作成先、要確認・未対応の項目を確認し、確認した保存先へ取り込む を押します。\n作成・警告・スキップ・失敗・未処理の件数と、各項目の結果を確認します。\n例えば、企画書.gdoc の隣へ 企画書.md、予算.gsheet の隣へ 予算.mel-sheet を作成します。同名のファイルがある場合は、上書きせず番号を付けた候補を一覧に表示します。\nGoogle上とPC上のフォルダが一意に対応しない場合は、そのフォルダを個別に指定して確認し直してください。リンク・ジャンクションを経由する場所やショートカットは取り込めない場合があります。未対応・要確認があるとき、その配下まで全部取り込まれたとは扱わないでください。\n作成したMeldexファイルも、Google Driveの通常のファイル同期・共有対象になります。共有フォルダ内に保存すれば、コピーも同じ共有範囲へ載ります。ストリーミング方式でネット接続なしでも開きたい場合は、作成したファイルをDrive側で オフラインで使用可能 にしてください。",
+      "text": "Google Drive for desktopのフォルダを、Meldexのソースフォルダに登録しておきます。\n取り込み対象 で、Googleドキュメント・Googleスプレッドシートの必要な方にチェックを入れます。初期状態は両方です。少なくとも1つ選択してください。\nローカルソースフォルダ から、登録したマイドライブや対象の共有ドライブ内のフォルダを選びます。配下だけを対象にする場合は、サブフォルダ に相対的な場所を入力します。初期状態では保存先は未選択です。\n取り込み範囲 と、自動入力された GoogleフォルダURL を確認します。初期値は マイドライブ全体（https://drive.google.com/drive/folders/root）です。共有ドライブの保存先を選ぶと、共有ドライブ全体に対応するURLへ自動で切り替わるため、通常は手入力不要です。\n対象と保存先を確認 を押します。文書・表を先に検索し、選択フォルダの配下にあるファイルと保存先をバックグラウンドで確認します。取得した文書・表、保存場所を確認した件数、必要な親フォルダ、文書・表へのリンク、一覧の件数を表示します。\n元の名前と作成先、要確認・未対応の項目を確認し、確認した保存先へ取り込む を押します。\n作成・警告・スキップ・失敗・未処理の件数と、各項目の結果を確認します。\n警告の件数には、画像・コメント・組版・数式の再計算などを再現しない変換上の注意も含みます。保存に失敗した件数は、失敗・未処理として別に表示します。\nチェックした種類だけを検索・変換します。種類を変更した後は、以前の確認一覧から取り込まず、対象と保存先を確認 をやり直してください。実行中の設定画面を開き直すと、確認中・取り込み中の処理で選んだ種類へ戻ります。\n特定のフォルダだけを取り込みたい場合は、そのフォルダのURLへ変更できます。全体のURLを設定 を押すと、選択した保存先に対応する全体のURLへ戻ります。ドライブ名やフォルダ名が重複して対応付けられない場合は自動設定を止めます。接続アカウント・同期状態・名前を確認するか、対応するURLを指定してください。\nマイドライブ全体を確認する場合は、ローカル側でマイドライブを選び、サブフォルダは空欄、対応するGoogleフォルダURLは https://drive.google.com/drive/folders/root にします。フォルダ数・ファイル数の1万件制限はありません。全体を選んだまま、一度の確認と取り込みで順次処理します。15秒を超えても続け、一覧の表示に必要な200件ずつを取得します。ページを切り替えても、取り込み対象がそのページだけに絞られることはありません。\nGoogle側で選択したDocs・Sheetsに絞って検索し、そのファイルの保存場所を親フォルダへさかのぼって確認します。同じ親フォルダの情報は再利用します。全フォルダや全ショートカット、PC上の全ファイルを列挙しません。共有ドライブでは対象の共有ドライブ内を検索します。取得数には検索範囲内の文書・表が含まれ、選択フォルダの外にある文書・表は一覧から除外します。\n対象の文書・表を指すショートカットは個別に検索し、選択フォルダ内の保存場所を確認します。フォルダへのショートカット、選択範囲外の文書・表へのリンク、画像・PDF・動画・Slidesなどは一覧に含めません。作業一覧はPC内の作業用領域へ記録するため、大量の対象では空き容量も必要です。\n共有ドライブをまとめて取り込む場合も、ショートカットは各ドライブ内の対象に限定します。他の共有ドライブへ向くリンクは追跡せず、リンク先の元の文書・表を、そのドライブの確認時に取り込みます。\n確認中・取り込み中に設定画面を閉じても処理は続きます。Meldex本体を終了せず設定画面を開き直すと、実行中の全体処理へ戻ります。進捗取得に失敗した場合は 接続状態を更新 を押してください。Meldex本体を終了・再起動した場合は、全体の対象確認をやり直してください。成功済みのコピーは保存記録から判定してスキップします。\n例えば、企画書.gdoc と同じフォルダへ 企画書.md、予算.gsheet と同じフォルダへ 予算.mel-sheet を作成します。コピーの名前にはGoogle上のファイル名を使います。PC側の.gdoc・.gsheetだけを別名にしていても、その名前の探索は行いません。同名のコピーがある場合は、上書きせず番号を付けた候補を一覧に表示します。以前の保存記録があるファイルは、その記録を優先して重複を防ぎます。\nGoogle上とPC上のフォルダが一意に対応しない場合は、要確認の項目として表示します。他のフォルダは続けて確認します。Google Driveの同期状態や重複したフォルダ名を直した後、全体を確認し直せます。リンク・ジャンクションを経由する場所やショートカットは取り込めない場合があります。未対応・要確認があるとき、その配下まで全部取り込まれたとは扱わないでください。\nソースフォルダを追加・登録解除した後は、個人用接続欄の 接続状態を更新 で候補も更新できます。登録解除された保存先は未選択に戻り、別フォルダへ自動では切り替わりません。G:\\共有ドライブ を選ぶと、配下の共有ドライブを一度の操作でまとめて確認・取り込みします。各ドライブ名と同じローカルフォルダへ保存し、保存先を確認できないドライブは要確認として表示します。個別に取り込む場合は、G:\\共有ドライブ\\共有ドライブ名 やその配下を選択できます。\n作成したMeldexファイルも、Google Driveの通常のファイル同期・共有対象になります。共有フォルダ内に保存すれば、コピーも同じ共有範囲へ載ります。ストリーミング方式でネット接続なしでも開きたい場合は、作成したファイルをDrive側で オフラインで使用可能 にしてください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Google%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%81%AE%E5%80%8B%E4%BA%BA%E7%94%A8%E5%8F%96%E3%82%8A%E8%BE%BC%E3%81%BF.md&section=_1"
     },
     {
@@ -10656,7 +10607,7 @@
       "category": "設定・外部連携",
       "heading": "失敗・停止後の操作",
       "anchor": "_3",
-      "text": "取り込みを停止 を押すと、未処理分を残して停止します。すでに保存を確定したファイルは残ります。\n再試行するときは、接続・権限・容量・ローカルフォルダを確認してから、対象と保存先を確認 をやり直します。成功済みのコピーはスキップし、失敗・未処理分だけを処理します。\n一度取り込んだファイルをMeldexで編集・移動・削除しても、自動で上書き・復活させません。Google上の更新も自動では反映しません。前回の保存が未確定の場合は出力を照合して再開し、既存ファイルと衝突している場合は保全して停止します。",
+      "text": "対象の確認を停止 を押すと、実行中のGoogle応答が戻り次第、確認を停止します。確認だけではノート・シートを作りません。途中で停止・失敗した一覧からは取り込めません。Meldex本体を開いたままなら、同じ対象で 全体の確認を再開 を押すと、検索済みのページと確認済みの文書・表・親フォルダを保持して続きから確認します。保存先・Googleフォルダ・接続アカウントを変えた場合は、新しい全体確認になります。\n確認一覧は、Meldex本体を開いている間、長時間の取り込みと再試行に使えます。不完全なGoogle応答、繰り返される一覧ページ、フォルダの循環などは成功扱いにせず停止します。件数が多いことを理由に、フォルダを手作業で分ける必要はありません。\n取り込みを停止 を押すと、未処理分を残して停止します。すでに保存を確定したファイルは残ります。\n接続・権限・容量・ローカルフォルダを確認してから、失敗・未処理をまとめて再試行 を押します。同じ全体対象から成功済みのコピーをスキップし、失敗・未処理分を再試行します。保存先の登録やフォルダ構成を変更した場合は、全体の対象確認をやり直してください。\n取得中にソースフォルダの登録・Google側の配置・ショートカット先が変わった場合は、そのファイルの保存を止めます。一時ファイルの削除だけが拒否された場合は警告を表示し、残りの取り込みを続けます。処理中・処理後の件数は、Google欄の個人用の実行状況にも表示します。\n一度取り込んだファイルをMeldexで編集・移動・削除しても、自動で上書き・復活させません。Google上の更新も自動では反映しません。前回の保存が未確定の場合は出力を照合して再開し、既存ファイルと衝突している場合は保全して停止します。\n大量取り込み用の保存記録は、このPCの専用領域へ個別に記録します。旧方式の保存記録も引き継ぎ、元の記録は保持します。更新前のexeは新方式で追加された記録を読めないため、取り込みの再実行には更新済みのexeを使ってください。作成済みのノート・シートの形式は変わりません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/Google%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%81%AE%E5%80%8B%E4%BA%BA%E7%94%A8%E5%8F%96%E3%82%8A%E8%BE%BC%E3%81%BF.md&section=_3"
     },
     {
@@ -17100,6 +17051,26 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2BO%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=altshifto"
     },
     {
+      "id": "manual-chunk-f2a3494c0fc75994",
+      "path": "04_サポート/ショートカット一覧/Alt+Shift+←（ノートエディタ）.md",
+      "title": "Alt+Shift+←",
+      "category": "ショートカット",
+      "heading": "Alt+Shift+←",
+      "anchor": "altshift",
+      "text": "段落レベルを上げる。見出しでは見出しレベルを、リストでは項目の階層を一段変更します。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2B%E2%86%90%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=altshift"
+    },
+    {
+      "id": "manual-chunk-9a89856b1cd54059",
+      "path": "04_サポート/ショートカット一覧/Alt+Shift+→（ノートエディタ）.md",
+      "title": "Alt+Shift+→",
+      "category": "ショートカット",
+      "heading": "Alt+Shift+→",
+      "anchor": "altshift",
+      "text": "段落レベルを下げる。見出しでは見出しレベルを、リストでは項目の階層を一段変更します。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Alt%2BShift%2B%E2%86%92%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=altshift"
+    },
+    {
       "id": "manual-chunk-4dec563b94e839f1",
       "path": "04_サポート/ショートカット一覧/Alt+←（全般）.md",
       "title": "Alt+←",
@@ -17180,94 +17151,34 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2B%3D%EF%BC%88%E3%83%9C%E3%83%BC%E3%83%89%EF%BC%89.md&section=ctrl"
     },
     {
-      "id": "manual-chunk-21c95b0ec2b4bff7",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+1（パネルセット）.md",
+      "id": "manual-chunk-15ed63e733b034cb",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+1（ノートエディタ）.md",
       "title": "Ctrl+Alt+1",
       "category": "ショートカット",
       "heading": "Ctrl+Alt+1",
       "anchor": "ctrlalt1",
-      "text": "パネルセット ドック1",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B1%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt1"
+      "text": "見出し1",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B1%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlalt1"
     },
     {
-      "id": "manual-chunk-518d661a8e901f5a",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+2（パネルセット）.md",
+      "id": "manual-chunk-69897ece861cb000",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+2（ノートエディタ）.md",
       "title": "Ctrl+Alt+2",
       "category": "ショートカット",
       "heading": "Ctrl+Alt+2",
       "anchor": "ctrlalt2",
-      "text": "パネルセット ドック2",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B2%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt2"
+      "text": "見出し2",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B2%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlalt2"
     },
     {
-      "id": "manual-chunk-bb88b072bc4dfb94",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+3（パネルセット）.md",
+      "id": "manual-chunk-d1a2c73a6d367946",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+3（ノートエディタ）.md",
       "title": "Ctrl+Alt+3",
       "category": "ショートカット",
       "heading": "Ctrl+Alt+3",
       "anchor": "ctrlalt3",
-      "text": "パネルセット ドック3",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B3%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt3"
-    },
-    {
-      "id": "manual-chunk-1fe4fd6d463a9c60",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+4（パネルセット）.md",
-      "title": "Ctrl+Alt+4",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+4",
-      "anchor": "ctrlalt4",
-      "text": "パネルセット ドック4",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B4%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt4"
-    },
-    {
-      "id": "manual-chunk-ccfef4582e263ab6",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+5（パネルセット）.md",
-      "title": "Ctrl+Alt+5",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+5",
-      "anchor": "ctrlalt5",
-      "text": "パネルセット ドック5",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B5%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt5"
-    },
-    {
-      "id": "manual-chunk-7571c24a1dbafe22",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+6（パネルセット）.md",
-      "title": "Ctrl+Alt+6",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+6",
-      "anchor": "ctrlalt6",
-      "text": "パネルセット ドック6",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B6%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt6"
-    },
-    {
-      "id": "manual-chunk-6d88b2bfe3c6b53d",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+7（パネルセット）.md",
-      "title": "Ctrl+Alt+7",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+7",
-      "anchor": "ctrlalt7",
-      "text": "パネルセット ドック7",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B7%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt7"
-    },
-    {
-      "id": "manual-chunk-8ccfa59a1e03af97",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+8（パネルセット）.md",
-      "title": "Ctrl+Alt+8",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+8",
-      "anchor": "ctrlalt8",
-      "text": "パネルセット ドック8",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B8%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt8"
-    },
-    {
-      "id": "manual-chunk-ed3b294796e552e4",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Alt+9（パネルセット）.md",
-      "title": "Ctrl+Alt+9",
-      "category": "ショートカット",
-      "heading": "Ctrl+Alt+9",
-      "anchor": "ctrlalt9",
-      "text": "パネルセット ドック9",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B9%EF%BC%88%E3%83%91%E3%83%8D%E3%83%AB%E3%82%BB%E3%83%83%E3%83%88%EF%BC%89.md&section=ctrlalt9"
+      "text": "見出し3",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BAlt%2B3%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlalt3"
     },
     {
       "id": "manual-chunk-c46c451a3bb73a13",
@@ -17550,46 +17461,6 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BR%EF%BC%88%E3%82%B7%E3%83%8A%E3%83%AA%E3%82%AA%EF%BC%89.md&section=ctrlr"
     },
     {
-      "id": "manual-chunk-41c088884f8eb58d",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+0（ノートエディタ）.md",
-      "title": "Ctrl+Shift+0",
-      "category": "ショートカット",
-      "heading": "Ctrl+Shift+0",
-      "anchor": "ctrlshift0",
-      "text": "本文に戻す",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B0%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlshift0"
-    },
-    {
-      "id": "manual-chunk-1341abcb8fa890e5",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+1（ノートエディタ）.md",
-      "title": "Ctrl+Shift+1",
-      "category": "ショートカット",
-      "heading": "Ctrl+Shift+1",
-      "anchor": "ctrlshift1",
-      "text": "見出し1",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B1%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlshift1"
-    },
-    {
-      "id": "manual-chunk-a09fd77a54d56ea3",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+2（ノートエディタ）.md",
-      "title": "Ctrl+Shift+2",
-      "category": "ショートカット",
-      "heading": "Ctrl+Shift+2",
-      "anchor": "ctrlshift2",
-      "text": "見出し2",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B2%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlshift2"
-    },
-    {
-      "id": "manual-chunk-22b6778170289cae",
-      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+3（ノートエディタ）.md",
-      "title": "Ctrl+Shift+3",
-      "category": "ショートカット",
-      "heading": "Ctrl+Shift+3",
-      "anchor": "ctrlshift3",
-      "text": "見出し3",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2B3%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlshift3"
-    },
-    {
       "id": "manual-chunk-2129f12ba4f11a70",
       "path": "04_サポート/ショートカット一覧/Ctrl+Shift+4（ノートエディタ）.md",
       "title": "Ctrl+Shift+4",
@@ -17718,6 +17589,16 @@
       "anchor": "ctrlshiftm",
       "text": "パネル最大化/復元",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2BM%EF%BC%88%E5%85%A8%E8%88%AC%EF%BC%89.md&section=ctrlshiftm"
+    },
+    {
+      "id": "manual-chunk-adc42877b1199fc4",
+      "path": "04_サポート/ショートカット一覧/Ctrl+Shift+N（ノートエディタ）.md",
+      "title": "Ctrl+Shift+N",
+      "category": "ショートカット",
+      "heading": "Ctrl+Shift+N",
+      "anchor": "ctrlshiftn",
+      "text": "本文に戻す",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/Ctrl%2BShift%2BN%EF%BC%88%E3%83%8E%E3%83%BC%E3%83%88%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF%EF%BC%89.md&section=ctrlshiftn"
     },
     {
       "id": "manual-chunk-88b9851323c3b5bc",
@@ -18346,7 +18227,7 @@
       "category": "ショートカット",
       "heading": "ノートエディタ",
       "anchor": "_3",
-      "text": "キー\n操作\nCtrl+B\n太字\nCtrl+I\n斜体\nCtrl+U\n下線\nCtrl+Shift+X\n取り消し線\nCtrl+Shift+1\n見出し1\nCtrl+Shift+2\n見出し2\nCtrl+Shift+3\n見出し3\nCtrl+Shift+4\n見出し4\nCtrl+Shift+5\n見出し5\nCtrl+Shift+6\n見出し6\nCtrl+Shift+0\n本文に戻す\nCtrl+Shift+7\n番号付きリスト\nCtrl+Shift+8\n箇条書きリスト\nCtrl+Shift+9\n引用\nCtrl+Shift+H\n水平線を挿入\nTab\nインデント\nShift+Tab\nアウトデント\nCtrl+↑\nブロックを上に移動\nCtrl+↓\nブロックを下に移動\nCtrl+K\nリンクを挿入\nCtrl+Shift+V\nプレーンテキスト貼り付け\nCtrl+H\n検索と置換\nCtrl+Shift+`\nコードブロック挿入\nCtrl+Shift+L\nチェックリスト\nAlt+Shift+O\nコールアウトに変換\nCtrl+D\n行を複製\nAlt+↓\nルビを設定\nCtrl+Enter\n次の段落を追加",
+      "text": "キー\n操作\nCtrl+B\n太字\nCtrl+I\n斜体\nCtrl+U\n下線\nCtrl+Shift+X\n取り消し線\nCtrl+Alt+1\n見出し1\nCtrl+Alt+2\n見出し2\nCtrl+Alt+3\n見出し3\nCtrl+Shift+4\n見出し4\nCtrl+Shift+5\n見出し5\nCtrl+Shift+6\n見出し6\nCtrl+Shift+N\n本文に戻す\nCtrl+Shift+7\n番号付きリスト\nCtrl+Shift+8\n箇条書きリスト\nCtrl+Shift+9\n引用\nCtrl+Shift+H\n水平線を挿入\nTab\nインデント\nShift+Tab\nアウトデント\nAlt+Shift+→\n段落レベルを下げる\nAlt+Shift+←\n段落レベルを上げる\nCtrl+↑\nブロックを上に移動\nCtrl+↓\nブロックを下に移動\nCtrl+K\nリンクを挿入\nCtrl+Shift+V\nプレーンテキスト貼り付け\nCtrl+H\n検索と置換\nCtrl+Shift+`\nコードブロック挿入\nCtrl+Shift+L\nチェックリスト\nAlt+Shift+O\nコールアウトに変換\nCtrl+D\n行を複製\nAlt+↓\nルビを設定\nCtrl+Enter\n次の段落を追加",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_3"
     },
     {
@@ -18414,9 +18295,9 @@
       "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
       "title": "ショートカット一覧",
       "category": "ショートカット",
-      "heading": "パネルセット",
+      "heading": "常駐アプリ",
       "anchor": "_9",
-      "text": "キー\n操作\nCtrl+Alt+1\nパネルセット ドック1\nCtrl+Alt+2\nパネルセット ドック2\nCtrl+Alt+3\nパネルセット ドック3\nCtrl+Alt+4\nパネルセット ドック4\nCtrl+Alt+5\nパネルセット ドック5\nCtrl+Alt+6\nパネルセット ドック6\nCtrl+Alt+7\nパネルセット ドック7\nCtrl+Alt+8\nパネルセット ドック8\nCtrl+Alt+9\nパネルセット ドック9",
+      "text": "キー\n操作\nCtrl+PrintScreen\n全画面を撮影\nCtrl+Shift+PrintScreen\n範囲を撮影\nCtrl+Alt+PrintScreen\nウィンドウを撮影\nCtrl+Alt+M\nクイックメモを開く\nCtrl+Alt+S\n新規付箋を作成",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_9"
     },
     {
@@ -18424,9 +18305,9 @@
       "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
       "title": "ショートカット一覧",
       "category": "ショートカット",
-      "heading": "常駐アプリ",
+      "heading": "集計",
       "anchor": "_10",
-      "text": "キー\n操作\nCtrl+PrintScreen\n全画面を撮影\nCtrl+Shift+PrintScreen\n範囲を撮影\nCtrl+Alt+PrintScreen\nウィンドウを撮影\nCtrl+Alt+M\nクイックメモを開く\nCtrl+Alt+S\n新規付箋を作成",
+      "text": "カテゴリ\n件数\n全般\n21\nノートエディタ\n30\nシナリオ\n16\nシート\n11\nボード\n20\nカレンダー\n10\nCSVエディタ\n7\nフォルダパネル\n4\n常駐アプリ\n5\n合計\n123",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_10"
     },
     {
@@ -18434,9 +18315,9 @@
       "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
       "title": "ショートカット一覧",
       "category": "ショートカット",
-      "heading": "集計",
+      "heading": "ダイアログの操作",
       "anchor": "_11",
-      "text": "カテゴリ\n件数\n全般\n21\nノートエディタ\n26\nシナリオ\n16\nシート\n11\nボード\n20\nカレンダー\n10\nCSVエディタ\n7\nフォルダパネル\n4\nパネルセット\n9\n常駐アプリ\n5\n合計\n128",
+      "text": "上記の集計には含まれませんが、確認ダイアログや設定ダイアログなどのダイアログ・モーダルでは、共通して Tab / Shift+Tab（部品間の循環移動）と矢印キー（ボタン間の移動）が使えます。詳しくは UI用語ガイド の「ダイアログのキーボード操作」を参照してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_11"
     },
     {
@@ -18444,20 +18325,10 @@
       "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
       "title": "ショートカット一覧",
       "category": "ショートカット",
-      "heading": "ダイアログの操作",
-      "anchor": "_12",
-      "text": "上記の集計には含まれませんが、確認ダイアログや設定ダイアログなどのダイアログ・モーダルでは、共通して Tab / Shift+Tab（部品間の循環移動）と矢印キー（ボタン間の移動）が使えます。詳しくは UI用語ガイド の「ダイアログのキーボード操作」を参照してください。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_12"
-    },
-    {
-      "id": "manual-chunk-82863d9377790a78",
-      "path": "04_サポート/ショートカット一覧/ショートカット一覧.md",
-      "title": "ショートカット一覧",
-      "category": "ショートカット",
       "heading": "関連ページ",
-      "anchor": "_13",
+      "anchor": "_12",
       "text": "Meldex マニュアル\n各ツール別マニュアルのショートカット節も参照してください",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_13"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7/%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7.md&section=_12"
     },
     {
       "id": "manual-chunk-bb35f43c7a783698",

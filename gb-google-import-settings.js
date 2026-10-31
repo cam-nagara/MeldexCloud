@@ -11,6 +11,8 @@
     contacts: 'Google連絡先',
     takeout: 'Google Takeout',
   };
+  const PERSONAL_MY_DRIVE_URL = 'https://drive.google.com/drive/folders/root';
+  const PERSONAL_SHARED_DRIVES_URL = 'https://drive.google.com/drive/u/0/shared-drives';
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -404,97 +406,451 @@
           <p>認証設定は自分専用とし、ダウンロードしたJSONを共有フォルダへ置かないでください。Testingの認証は7日で失効するため、必要時に再接続します。取り込み済みコピーは接続解除後も編集できます。</p>
         </details>
         <p id="google-personal-state" role="status" aria-live="polite"></p>
-        <label>認証設定JSONを登録 <input id="google-personal-json" type="file" accept=".json,application/json"></label>
+        <input id="google-personal-json" type="file" accept=".json,application/json" aria-label="認証設定JSONを選択" hidden>
+        <button type="button" id="google-personal-json-choose" class="gb-btn gb-btn-sm">認証設定JSONを登録</button>
+        <p id="google-personal-json-status" role="status" aria-live="polite"></p>
         <div class="external-import-provider-actions">
           <button type="button" id="google-personal-connect" class="gb-btn gb-btn-sm">Googleに接続</button>
           <button type="button" id="google-personal-refresh" class="gb-btn gb-btn-sm">接続状態を更新</button>
           <button type="button" id="google-personal-disconnect" class="gb-btn gb-btn-sm">接続解除</button>
           <button type="button" id="google-personal-delete" class="gb-btn gb-btn-sm">認証設定を削除</button>
         </div>
+        <fieldset class="google-import-targets">
+          <legend>取り込み対象</legend>
+          <label><input type="checkbox" id="google-personal-docs" checked> Googleドキュメント</label>
+          <label><input type="checkbox" id="google-personal-sheets" checked> Googleスプレッドシート</label>
+        </fieldset>
         <p><label>ローカルソースフォルダ <select id="google-personal-source" class="gb-select"></select></label></p>
         <p><label>サブフォルダ（省略可） <input id="google-personal-subfolder" class="gb-input" placeholder="資料/企画"></label></p>
-        <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" placeholder="https://drive.google.com/drive/folders/…"></label></p>
-        <p>サブフォルダも確認します。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
+        <p>取り込み範囲: <strong id="google-personal-scope">マイドライブ全体</strong></p>
+        <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" value="${PERSONAL_MY_DRIVE_URL}" aria-describedby="google-personal-folder-help" placeholder="https://drive.google.com/drive/folders/…"></label></p>
+        <button type="button" id="google-personal-folder-auto" class="gb-btn gb-btn-sm">全体のURLを設定</button>
+        <p id="google-personal-folder-help">保存先に対応する全体のURLを自動設定します。共有ドライブの親フォルダを選んだ場合は、配下の共有ドライブをまとめて対象にします。一部だけを取り込む場合は、対応するGoogleフォルダのURLへ変更できます。</p>
+        <p>文書・表を先に検索し、保存に必要な親フォルダだけを確認します。選んだフォルダの配下も対象です。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
         <button type="button" id="google-personal-preview" class="gb-btn gb-btn-sm">対象と保存先を確認</button>
+        <button type="button" id="google-personal-preview-cancel" class="gb-btn gb-btn-sm" hidden>対象の確認を停止</button>
+        <p id="google-personal-progress" role="status" aria-live="polite"></p>
         <div id="google-personal-results" role="region" aria-label="取り込み対象と結果"></div>
         <button type="button" id="google-personal-run" class="gb-btn gb-btn-sm" hidden>確認した保存先へ取り込む</button>
         <button type="button" id="google-personal-cancel" class="gb-btn gb-btn-sm" hidden>取り込みを停止</button>
         <p id="google-personal-message" role="status" aria-live="polite"></p>`;
-      root.querySelector('#google-import-details').appendChild(panel);
+      // Put the actionable personal flow before the separately configured
+      // managed importer. Its connection and destination are independent.
+      root.querySelector('#google-import-details').prepend(panel);
       const find = id => panel.querySelector('#google-personal-' + id);
       const message = text => { find('message').textContent = text; };
-      const output = rows => {
-        find('results').replaceChildren();
-        const list = document.createElement('ul');
-        (rows || []).forEach(row => {
-          const item = document.createElement('li');
-          const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応' };
-          item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
-          list.appendChild(item);
-        });
-        find('results').appendChild(list);
+      const selectedTargets = () => ['docs', 'sheets'].filter(key => find(key).checked);
+      const updatePreviewEnabled = () => {
+        find('preview').disabled = !!panel._busy || !!panel._defaultLoading || !panel._connected
+          || !selectedTargets().length || !find('folder').value.trim();
+      };
+      let defaultTimer = null;
+      const cancelDefault = () => {
+        clearTimeout(defaultTimer);
+        panel._defaultGeneration = (panel._defaultGeneration || 0) + 1;
+        panel._defaultLoading = false;
+      };
+      const scopeLabel = () => {
+        const url = find('folder').value.trim();
+        find('scope').textContent = url === PERSONAL_MY_DRIVE_URL ? 'マイドライブ全体'
+          : url === PERSONAL_SHARED_DRIVES_URL ? '共有ドライブ全体' : url ? '指定したGoogleフォルダ' : 'URLを設定してください';
+      };
+      const applyFolderDefault = async () => {
+        cancelDefault();
+        if (!panel.isConnected) return;
+        panel._folderManual = false;
+        panel._needsFolderDefault = false;
+        const generation = panel._defaultGeneration;
+        if (!find('source').value) {
+          find('folder').value = PERSONAL_MY_DRIVE_URL;
+          scopeLabel(); updatePreviewEnabled(); return;
+        }
+        const source = find('source').value.replace(/[\\/]+$/, '')
+          + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
+        panel._defaultLoading = true;
+        find('folder').value = '';
+        find('scope').textContent = '全体のURLを自動設定中…';
+        updatePreviewEnabled();
+        try {
+          const data = await apiFetch('/google-import/local/folder-default?source=' + encodeURIComponent(source), { silentError: true });
+          if (!panel.isConnected || panel._defaultGeneration !== generation) return;
+          find('folder').value = data.folder_url;
+          find('scope').textContent = data.label;
+        } catch (err) {
+          if (panel.isConnected && panel._defaultGeneration === generation) {
+            find('scope').textContent = 'URLを自動設定できませんでした';
+            message((err.userMessage || err.message || '接続と保存先を確認してください。') + '「全体のURLを設定」で再試行できます。');
+          }
+        } finally {
+          if (panel._defaultGeneration === generation) {
+            panel._defaultLoading = false;
+            updatePreviewEnabled();
+          }
+        }
+      };
+      const queueFolderDefault = () => {
+        cancelDefault();
+        panel._defaultLoading = true;
+        find('folder').value = '';
+        find('scope').textContent = '全体のURLを自動設定中…';
+        updatePreviewEnabled();
+        defaultTimer = setTimeout(() => void applyFolderDefault(), 250);
+      };
+      const restoreTargets = job => {
+        const targets = Array.isArray(job.targets) ? job.targets : ['docs', 'sheets'];
+        for (const key of ['docs', 'sheets']) find(key).checked = targets.includes(key);
+      };
+      const output = (rows, paging = null) => {
+        rows = rows || [];
+        const generation = panel._outputGeneration = (panel._outputGeneration || 0) + 1;
+        const total = paging?.total ?? rows.length;
+        const size = 200;
+        let pageError = null;
+        let beforePageError = null;
+        const render = (pageRows, offset) => {
+          if (panel._outputGeneration !== generation) return;
+          find('results').replaceChildren();
+          if (total > size) {
+            const nav = document.createElement('nav');
+            nav.setAttribute('aria-label', '取り込み対象のページ');
+            for (const [label, delta, disabled] of [['前の200件', -size, offset === 0], ['次の200件', size, offset + size >= total]]) {
+              const button = document.createElement('button');
+              button.type = 'button'; button.className = 'gb-btn gb-btn-sm';
+              button.textContent = label; button.disabled = disabled;
+              button.addEventListener('click', async () => {
+                if (!pageError) beforePageError = find('message').textContent;
+                for (const item of nav.querySelectorAll('button')) item.disabled = true;
+                try {
+                  const nextOffset = offset + delta;
+                  const data = paging?.load ? await paging.load(nextOffset) : { items: rows.slice(nextOffset, nextOffset + size), offset: nextOffset };
+                  if (panel._outputGeneration !== generation) return;
+                  render(data.items, data.offset);
+                  if (pageError && find('message').textContent === pageError) message(beforePageError);
+                  pageError = null;
+                  find('results').querySelector('nav button:not(:disabled)')?.focus({ preventScroll: true });
+                } catch (err) {
+                  if (panel._outputGeneration === generation) {
+                    render(pageRows, offset);
+                    pageError = err.userMessage || err.message || '一覧を取得できませんでした。ページを選び直してください。';
+                    message(pageError);
+                  }
+                }
+              });
+              nav.appendChild(button);
+            }
+            const range = document.createElement('span');
+            range.textContent = ` ${offset + 1}～${Math.min(offset + size, total)} / ${total}件`;
+            nav.appendChild(range);
+            find('results').appendChild(nav);
+          }
+          const list = document.createElement('ul');
+          for (const row of pageRows) {
+            const item = document.createElement('li');
+            const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応', warning: '警告' };
+            item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
+            list.appendChild(item);
+          }
+          find('results').appendChild(list);
+        };
+        render(paging ? rows : rows.slice(0, size), paging?.offset || 0);
       };
       const invalidate = () => { panel._plan = null; find('run').hidden = true; };
+      const clearConnectionView = () => {
+        cancelDefault(); panel._needsFolderDefault = true;
+        panel._refreshGeneration = (panel._refreshGeneration || 0) + 1;
+        panel._checkedImportRecovery = panel._checkedPreviewRecovery = true;
+        invalidate(); output([]);
+        panel._previewJob = panel._job = null;
+        find('progress').textContent = '';
+        find('preview').textContent = '対象と保存先を確認';
+      };
+      const setBusy = busy => {
+        panel._busy = busy;
+        for (const id of ['json', 'json-choose', 'connect', 'disconnect', 'delete', 'docs', 'sheets', 'source', 'subfolder', 'folder', 'folder-auto', 'preview', 'run']) find(id).disabled = busy;
+        updatePreviewEnabled();
+      };
+      const changeConnection = async action => {
+        if (panel._authStarting) return;
+        panel._authStarting = true;
+        clearConnectionView(); setBusy(true);
+        try { await action(); }
+        finally { panel._authStarting = false; await refresh(); }
+      };
       const act = fn => async () => {
         try { await fn(); }
         catch (err) { message(err.userMessage || err.message || '操作に失敗しました'); }
       };
+      const watchPreview = async jobId => {
+        if (panel._watchingPreview === jobId) return;
+        panel._watchingPreview = jobId;
+        try {
+          while (panel.isConnected && panel._previewJob === jobId) {
+            const job = await apiFetch(`/google-import/local/preview-jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            if (!panel.isConnected || panel._previewJob !== jobId) return;
+            const progressLabel = { running: '確認中', done: '確認完了', failed: '確認失敗', cancelled: '確認停止', expired: '確認やり直し' }[job.status] || '確認結果';
+            const phaseLabel = job.status === 'running' ? (({ documents: '文書・表を検索', locations: '保存場所を確認', shortcuts: '文書・表へのリンクを確認' }[job.phase] || '')
+              + (job.scope_label ? ' / ' + job.scope_label : '')) : '';
+            find('progress').textContent = `${progressLabel}${phaseLabel ? '（' + phaseLabel + '）' : ''}: 文書・表取得 ${job.loaded ?? 0}件 / 保存場所確認 ${job.checked ?? 0}件 / 必要フォルダ ${job.folders ?? 0} / 文書・表へのリンク確認 ${job.aliases ?? 0}件 / 一覧 ${job.found}件`;
+            find('preview-cancel').disabled = !!job.cancel;
+            if (job.status === 'running') {
+              if (job.cancel) message('停止を要求しました。実行中のGoogle応答が戻り次第停止します。');
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            panel._previewJob = null;
+            find('preview-cancel').hidden = true;
+            if (job.status === 'done') {
+              const plan = job.result;
+              panel._plan = plan.plan_id;
+              output(plan.items, { total: plan.total, offset: plan.offset, load: offset => apiFetch(`/google-import/local/plans/${encodeURIComponent(plan.plan_id)}?offset=${offset}`, { silentError: true }) });
+              find('run').textContent = '確認した保存先へ取り込む';
+              find('run').hidden = !plan.ready;
+              message(`対象 ${plan.total}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
+            } else {
+              invalidate(); output([]);
+              find('preview').textContent = job.resumable ? '全体の確認を再開' : '対象と保存先を確認';
+              message(job.message || '対象の確認を完了できませんでした。もう一度確認してください。');
+            }
+            await refresh();
+            return;
+          }
+        } catch (err) {
+          message(`進捗を取得できませんでした。確認処理は続いている場合があります。「接続状態を更新」で再確認してください。${err.userMessage || err.message || ''}`);
+        } finally {
+          if (panel._watchingPreview === jobId) panel._watchingPreview = null;
+        }
+      };
+      const watchImport = async jobId => {
+        if (panel._watchingImport === jobId) return;
+        panel._watchingImport = jobId;
+        find('cancel').hidden = false;
+        try {
+          while (panel.isConnected && panel._job === jobId) {
+            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            if (!panel.isConnected || panel._job !== jobId) return;
+            if (job.status === 'running') {
+              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。' : `全体を取り込み中 ${job.processed} / ${job.total}`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            panel._job = null;
+            find('cancel').hidden = true;
+            const result = job.result;
+            if (result) {
+              output(result.items, { total: result.total, offset: result.offset, load: offset => apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}?offset=${offset}`, { silentError: true }).then(value => value.result) });
+              message(`${job.status === 'failed' ? '取り込み停止: ' + (job.message || '') + ' / ' : ''}取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。`);
+              invalidate();
+              if (result.retry_requires_preview) {
+                find('preview').textContent = '全体を確認し直す';
+              } else if (job.status === 'failed' || result.failed || result.unprocessed) {
+                panel._plan = result.plan_id;
+                find('run').textContent = '失敗・未処理をまとめて再試行';
+                find('run').hidden = false;
+              }
+              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
+            } else {
+              invalidate();
+              if (job.plan_id) {
+                panel._plan = job.plan_id;
+                find('run').textContent = '失敗・未処理をまとめて再試行';
+                find('run').hidden = false;
+              }
+              message(job.message || '取り込みを開始できませんでした。再試行してください。');
+            }
+            await refresh();
+            return;
+          }
+        } catch (err) {
+          message(`取り込みの進捗を取得できませんでした。処理は続いている場合があります。「接続状態を更新」で戻ってください。${err.userMessage || err.message || ''}`);
+        } finally {
+          if (panel._watchingImport === jobId) panel._watchingImport = null;
+        }
+      };
       const refresh = async () => {
+        const generation = panel._refreshGeneration = (panel._refreshGeneration || 0) + 1;
         const status = await apiFetch('/google-import/personal/status', { silentError: true });
-        find('state').textContent = status.reason || `${status.configured ? '設定登録済み' : '設定未登録'} / ${status.connected ? '接続済み' : '未接続'}${status.account ? ' / ' + status.account : ''}${status.busy ? ' / 取り込み中' : ''}`;
+        if (!panel.isConnected || panel._refreshGeneration !== generation) return;
+        const wasConnected = panel._connected;
+        panel._connected = !!status.connected;
+        find('state').textContent = status.reason || `${status.configured ? '設定登録済み' : '設定未登録'} / ${status.connected ? '接続済み' : '未接続'}${status.account ? ' / ' + status.account : ''}${status.busy ? ' / 処理中' : ''}`;
+        find('json-choose').textContent = status.configured ? '認証設定JSONを差し替える' : '認証設定JSONを登録';
+        find('json-status').textContent = status.reason || (status.configured
+          ? '認証設定JSONは登録済みです。変更する場合だけ、別のJSONを選択してください。'
+          : '認証設定JSONは未登録です。Google Cloudから取得したJSONを選択して登録してください。');
         root.querySelector('#google-import-connection-state').textContent = status.configured
           ? `${root._googlePayload?.connection?.connected ? '管理者用 接続済み / ' : ''}個人用 ${status.connected ? '接続済み' : '未接続'}`
           : stateLabel(root._googlePayload);
+        const managedAvailable = !!(root._googlePayload?.connection?.connected || root._googlePayload?.capabilities?.can_connect || root._googlePayload?.capabilities?.can_import);
+        root.querySelectorAll('[data-google-desktop-control]').forEach(element => { element.hidden = !managedAvailable; });
+        root.querySelector('#google-import-capability').textContent = managedAvailable
+          ? '管理者用Google接続の設定です。個人用の接続・保存先は上の設定を使います。'
+          : '';
+        root.querySelector('#google-import-capability').hidden = !managedAvailable;
         const selected = find('source').value;
         find('source').replaceChildren();
+        const empty = document.createElement('option');
+        empty.value = ''; empty.textContent = 'ローカルソースフォルダを選択';
+        find('source').appendChild(empty);
         for (const row of status.source_folders || []) {
           const option = document.createElement('option');
           option.value = row.path; option.textContent = row.name || row.path;
           find('source').appendChild(option);
         }
         if (selected) find('source').value = selected;
-        find('connect').disabled = !status.configured || !status.available || status.busy;
-        find('preview').disabled = !status.connected || status.busy;
-        for (const id of ['json', 'disconnect', 'delete', 'source', 'subfolder', 'folder']) find(id).disabled = !!status.busy;
+        if (selected && find('source').value !== selected) {
+          cancelDefault(); panel._folderManual = false;
+          find('source').value = '';
+          find('folder').value = PERSONAL_MY_DRIVE_URL;
+          scopeLabel();
+          invalidate();
+          output([]);
+          find('progress').textContent = '';
+          message('保存先の登録が変わりました。ローカルソースフォルダを選び、対象を確認し直してください。');
+        }
+        const importJob = status.import_job;
+        if (importJob) {
+          const summary = importJob.result_summary;
+          root.querySelector('#google-import-last-run').textContent = importJob.status === 'running'
+            ? `個人用 取り込み中 ${importJob.processed} / ${importJob.total}`
+            : summary ? `個人用 前回: 作成${summary.created} / スキップ${summary.skipped} / 失敗${summary.failed} / 要確認${summary.blocked} / 未対応${summary.unsupported} / 未処理${summary.unprocessed}`
+              : '個人用 前回: 開始失敗';
+        } else {
+          root.querySelector('#google-import-last-run').textContent = lastRunLabel(root._googlePayload?.config?.run_state);
+        }
+        const importNewer = importJob && (!status.preview_job || importJob.created >= status.preview_job.created);
+        const restoreImport = importJob && (importJob.status === 'running' || panel._job === importJob.job_id || (!panel._checkedImportRecovery && importNewer));
+        panel._checkedImportRecovery = true;
+        if (restoreImport) {
+          cancelDefault(); panel._folderManual = true;
+          restoreTargets(importJob);
+          const normalize = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          const source = normalize(importJob.source);
+          const match = (status.source_folders || []).filter(row => source === normalize(row.path) || source.startsWith(normalize(row.path) + '/'))
+            .sort((a, b) => b.path.length - a.path.length)[0];
+          if (match) {
+            find('source').value = match.path;
+            find('subfolder').value = importJob.source.slice(match.path.replace(/[\\/]+$/, '').length).replace(/^[\\/]+/, '');
+            find('folder').value = importJob.folder_url;
+            scopeLabel();
+          }
+          panel._job = importJob.job_id;
+          void watchImport(importJob.job_id);
+        }
+        const job = status.preview_job;
+        const recover = !restoreImport && job && (job.status === 'running' || panel._previewJob === job.job_id || !panel._checkedPreviewRecovery);
+        panel._checkedPreviewRecovery = true;
+        if (recover) {
+          cancelDefault(); panel._folderManual = true;
+          restoreTargets(job);
+          // Reopening settings must reattach to the existing scan, never start
+          // another one or use the old destination left in the form.
+          const normalized = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          const source = normalized(job.source);
+          const match = (status.source_folders || []).filter(row => source === normalized(row.path) || source.startsWith(normalized(row.path) + '/'))
+            .sort((a, b) => b.path.length - a.path.length)[0];
+          if (match) {
+            find('source').value = match.path;
+            find('subfolder').value = job.source.slice(match.path.replace(/[\\/]+$/, '').length).replace(/^[\\/]+/, '');
+            find('folder').value = job.folder_url;
+            scopeLabel();
+            panel._previewJob = job.job_id;
+            find('preview-cancel').hidden = job.status !== 'running';
+            find('preview-cancel').disabled = !!job.cancel;
+            void watchPreview(job.job_id);
+          } else {
+            invalidate();
+          }
+        }
+        const busy = !!status.busy || !!panel._previewStarting || !!panel._importStarting || !!panel._authStarting;
+        setBusy(busy);
+        find('connect').disabled = !status.configured || !status.available || busy;
+        updatePreviewEnabled();
+        find('run').disabled = busy;
+        for (const id of ['json', 'json-choose', 'disconnect', 'delete', 'docs', 'sheets', 'source', 'subfolder', 'folder', 'folder-auto']) find(id).disabled = busy;
+        if (!busy && status.connected && !restoreImport && !recover && find('source').value && !panel._folderManual
+            && (panel._needsFolderDefault || (!wasConnected && status.connected))) void applyFolderDefault();
       };
       panel._refresh = refresh;
+      find('json-choose').addEventListener('click', () => find('json').click());
       find('json').addEventListener('change', act(async () => {
         const file = find('json').files?.[0];
         if (!file) return;
         if (file.size > 65536) throw new Error('認証設定JSONは64KB以下で指定してください');
-        invalidate();
-        await apiPost('/google-import/personal/credentials', { content: await file.text() }, { silentError: true });
-        find('json').value = '';
-        message('認証設定をこのPCの秘密ストアへ登録しました。Googleに接続してください。');
-        await refresh();
+        await changeConnection(async () => {
+          await apiPost('/google-import/personal/credentials', { content: await file.text() }, { silentError: true });
+          find('json').value = '';
+          message('認証設定をこのPCの秘密ストアへ登録しました。Googleに接続してください。');
+        });
       }));
       find('connect').addEventListener('click', act(async () => {
-        invalidate();
-        const result = await apiPost('/google-import/personal/oauth/start', {}, { silentError: true });
-        await openExternal(result.auth_url);
-        message('ブラウザで認証後、「接続状態を更新」を押してください。');
+        await changeConnection(async () => {
+          const result = await apiPost('/google-import/personal/oauth/start', {}, { silentError: true });
+          await openExternal(result.auth_url);
+          message('ブラウザで認証後、「接続状態を更新」を押してください。');
+        });
       }));
       find('refresh').addEventListener('click', act(refresh));
       for (const id of ['disconnect', 'delete']) find(id).addEventListener('click', act(async () => {
         const prompt = id === 'delete' ? 'このPCの個人用Google認証設定を削除しますか？取り込み済みファイルは残ります。' : '個人用Google接続を解除しますか？取り込み済みファイルは残ります。';
         if (!(typeof cfConfirm === 'function' ? await cfConfirm(prompt) : window.confirm(prompt))) return;
-        invalidate();
-        await apiPost('/google-import/personal/' + (id === 'delete' ? 'credentials' : 'disconnect'), {}, { method: id === 'delete' ? 'DELETE' : 'POST', silentError: true });
-        await refresh();
+        await changeConnection(async () => {
+          await apiPost('/google-import/personal/' + (id === 'delete' ? 'credentials' : 'disconnect'), {}, { method: id === 'delete' ? 'DELETE' : 'POST', silentError: true });
+        });
       }));
-      for (const id of ['source', 'subfolder', 'folder']) find(id).addEventListener('input', invalidate);
+      const selectionChanged = () => {
+        invalidate(); output([]);
+        find('preview').textContent = '対象と保存先を確認';
+        find('progress').textContent = '';
+        updatePreviewEnabled();
+        message(selectedTargets().length ? '対象と保存先を確認してください。' : '取り込み対象を1つ以上選択してください。');
+      };
+      find('source').addEventListener('input', () => {
+        find('subfolder').value = '';
+        selectionChanged();
+        void applyFolderDefault();
+      });
+      find('subfolder').addEventListener('input', () => {
+        selectionChanged();
+        if (!panel._folderManual) queueFolderDefault();
+      });
+      find('folder').addEventListener('input', () => {
+        cancelDefault(); panel._folderManual = true;
+        scopeLabel(); selectionChanged();
+        if (!find('folder').value.trim()) message('GoogleフォルダURLを入力するか「全体のURLを設定」を押してください。');
+      });
+      find('folder-auto').addEventListener('click', () => {
+        find('subfolder').value = '';
+        selectionChanged();
+        void applyFolderDefault();
+      });
+      for (const id of ['docs', 'sheets']) find(id).addEventListener('change', selectionChanged);
       find('preview').addEventListener('click', act(async () => {
         invalidate();
+        find('preview').textContent = '対象と保存先を確認';
+        output([]);
+        find('progress').textContent = '';
         message('Googleの対象とローカルの保存先を確認しています...');
         find('preview').disabled = true;
+        panel._previewStarting = true;
+        setBusy(true);
         try {
+          if (!find('source').value) throw new Error('取り込み先のローカルソースフォルダを選択してください');
+          const targets = selectedTargets();
+          if (!targets.length) throw new Error('取り込み対象を1つ以上選択してください。');
+          if (!find('folder').value.trim()) throw new Error('対応するGoogleフォルダURLを入力してください。マイドライブ全体は https://drive.google.com/drive/folders/root です。');
           const source = find('source').value.replace(/[\\/]+$/, '') + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
-          const plan = await apiPost('/google-import/local/preview', { source, folder_url: find('folder').value.trim() }, { silentError: true });
-          panel._plan = plan.plan_id;
-          output(plan.items);
-          find('run').hidden = !plan.items.some(row => row.status === 'ready');
-          message(`対象 ${plan.items.length}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
-        } finally { await refresh(); }
+          const job = await apiPost('/google-import/local/preview-jobs', { source, folder_url: find('folder').value.trim(), targets }, { silentError: true });
+          panel._previewJob = job.job_id;
+        } finally {
+          panel._previewStarting = false;
+          await refresh();
+        }
+      }));
+      find('preview-cancel').addEventListener('click', act(async () => {
+        if (!panel._previewJob) return;
+        await apiPost(`/google-import/local/preview-jobs/${encodeURIComponent(panel._previewJob)}/cancel`, {}, { silentError: true });
+        find('preview-cancel').disabled = true;
+        message('停止を要求しました。実行中のGoogle応答が戻り次第停止します。取り込みは実行していません。');
       }));
       find('cancel').addEventListener('click', act(async () => {
         if (panel._job) await apiPost(`/google-import/local/jobs/${encodeURIComponent(panel._job)}/cancel`, {}, { silentError: true });
@@ -503,30 +859,17 @@
       find('run').addEventListener('click', act(async () => {
         if (!panel._plan) return;
         find('run').disabled = true;
+        panel._importStarting = true;
+        setBusy(true);
         try {
           panel._job = (await apiPost('/google-import/local/run', { plan_id: panel._plan }, { silentError: true })).job_id;
           find('cancel').hidden = false;
-          await refresh();
-          for (;;) {
-            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(panel._job)}`, { silentError: true });
-            if (job.status === 'failed') throw new Error(job.message || '取り込みを開始できませんでした');
-            if (job.status === 'done') {
-              const result = job.result;
-              output(result.items);
-              message(`取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。再試行は対象を確認し直してください。`);
-              invalidate();
-              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
-              break;
-            }
-            message(`取り込み中 ${job.processed} / ${job.total}`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
         } finally {
-          find('run').disabled = false;
-          find('cancel').hidden = true;
+          panel._importStarting = false;
           await refresh();
         }
       }));
+
     }
     try { await panel._refresh(); }
     catch (err) { panel.querySelector('#google-personal-state').textContent = err.userMessage || err.message || '個人用設定を取得できません'; }

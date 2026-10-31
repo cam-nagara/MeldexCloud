@@ -70,19 +70,21 @@ const GB_SHORTCUTS = {
   'note.italic':          { key: 'ctrl+i',       label: '斜体',                      scope: 'note' },
   'note.underline':       { key: 'ctrl+u',       label: '下線',                      scope: 'note' },
   'note.strike':          { key: 'ctrl+shift+x', label: '取り消し線',                 scope: 'note' },
-  'note.h1':              { key: 'ctrl+shift+1', label: '見出し1',                   scope: 'note' },
-  'note.h2':              { key: 'ctrl+shift+2', label: '見出し2',                   scope: 'note' },
-  'note.h3':              { key: 'ctrl+shift+3', label: '見出し3',                   scope: 'note' },
+  'note.h1':              { key: 'ctrl+alt+1',   label: '見出し1',                   scope: 'note' },
+  'note.h2':              { key: 'ctrl+alt+2',   label: '見出し2',                   scope: 'note' },
+  'note.h3':              { key: 'ctrl+alt+3',   label: '見出し3',                   scope: 'note' },
   'note.h4':              { key: 'ctrl+shift+4', label: '見出し4',                   scope: 'note' },
   'note.h5':              { key: 'ctrl+shift+5', label: '見出し5',                   scope: 'note' },
   'note.h6':              { key: 'ctrl+shift+6', label: '見出し6',                   scope: 'note' },
-  'note.body':            { key: 'ctrl+shift+0', label: '本文に戻す',                scope: 'note' },
+  'note.body':            { key: 'ctrl+shift+n', label: '本文に戻す',                scope: 'note' },
   'note.ol':              { key: 'ctrl+shift+7', label: '番号付きリスト',             scope: 'note' },
   'note.ul':              { key: 'ctrl+shift+8', label: '箇条書きリスト',             scope: 'note' },
   'note.quote':           { key: 'ctrl+shift+9', label: '引用',                      scope: 'note' },
   'note.hr':              { key: 'ctrl+shift+h', label: '水平線を挿入',              scope: 'note' },
   'note.indent':          { key: 'tab',          label: 'インデント',                scope: 'note' },
   'note.outdent':         { key: 'shift+tab',    label: 'アウトデント',              scope: 'note' },
+  'note.demote':          { key: 'alt+shift+arrowright', label: '段落レベルを下げる', scope: 'note' },
+  'note.promote':         { key: 'alt+shift+arrowleft', label: '段落レベルを上げる',  scope: 'note' },
   // 修正4（バグ報告§4）: alt+shift+arrowup/down は Windows既定の入力言語切替
   // ホットキー（Alt+Shift）と衝突し、実機のキー操作では信頼できないことが
   // 確認された（合成イベントでは正しく動作するがOSに先取りされ得る）。
@@ -236,16 +238,6 @@ const GB_SHORTCUTS = {
   'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: 'アノテートを描く',                      scope: 'annotation', readonly: true },
   'annotation.dragTail':   { key: '', display: 'Alt+Shift+ドラッグ',     label: 'フキダシのしっぽを追加',           scope: 'annotation', readonly: true },
 
-  // --- パネルセット ---
-  'panelset.group1':      { key: 'ctrl+alt+1',   label: 'パネルセット ドック1',       scope: 'global' },
-  'panelset.group2':      { key: 'ctrl+alt+2',   label: 'パネルセット ドック2',       scope: 'global' },
-  'panelset.group3':      { key: 'ctrl+alt+3',   label: 'パネルセット ドック3',       scope: 'global' },
-  'panelset.group4':      { key: 'ctrl+alt+4',   label: 'パネルセット ドック4',       scope: 'global' },
-  'panelset.group5':      { key: 'ctrl+alt+5',   label: 'パネルセット ドック5',       scope: 'global' },
-  'panelset.group6':      { key: 'ctrl+alt+6',   label: 'パネルセット ドック6',       scope: 'global' },
-  'panelset.group7':      { key: 'ctrl+alt+7',   label: 'パネルセット ドック7',       scope: 'global' },
-  'panelset.group8':      { key: 'ctrl+alt+8',   label: 'パネルセット ドック8',       scope: 'global' },
-  'panelset.group9':      { key: 'ctrl+alt+9',   label: 'パネルセット ドック9',       scope: 'global' },
 };
 
 const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
@@ -428,6 +420,23 @@ function _shortcutStatusItem(id, label) {
   return display + ' ' + label;
 }
 
+function getNoteShortcutStatusText() {
+  return [
+    _shortcutStatusItem('note.h1', '見出し1'),
+    _shortcutStatusItem('note.h2', '見出し2'),
+    _shortcutStatusItem('note.h3', '見出し3'),
+    _shortcutStatusItem('note.body', '本文'),
+    _shortcutStatusItem('note.promote', 'レベルを上げる'),
+    _shortcutStatusItem('note.demote', 'レベルを下げる'),
+  ].filter(Boolean).join(' | ');
+}
+
+function updateNoteShortcutStatusbar(targetEl) {
+  const sc = targetEl || document.getElementById('sb-shortcuts');
+  if (!sc || (!targetEl && typeof state !== 'undefined' && !['page', 'entity'].includes(state.view))) return;
+  sc.textContent = getNoteShortcutStatusText();
+}
+
 function getScriptnoteShortcutStatusText() {
   // 2026-07-17 最新仕様に同期: Tab=タイプ選択・同タイプ行追加・セル内貼付・全選択/選択解除を追加、
   // 「上へ/下へ」は行移動であることが分かる表記へ変更
@@ -567,26 +576,6 @@ function _currentMainPanelSearchTool() {
 
 // === Part 1-5: アクションハンドラマップ ===
 
-function _switchPanelsetGroupByIndex(n) {
-  if (typeof GBPanelSet === 'undefined' || typeof GBLayout === 'undefined') return;
-  const ap = GBLayout.activePane;
-  if (!ap) return;
-  function findPanelset(node) {
-    if (!node) return null;
-    if (node.type === 'panelset') {
-      const active = (node.groups || []).find(g => g && g.id === node.activeGroupId);
-      if (active?.root && GBLayout.findNode(active.root, ap)) return node;
-    }
-    if (node.type === 'split' && Array.isArray(node.children)) {
-      for (const c of node.children) { const f = findPanelset(c); if (f) return f; }
-    }
-    return null;
-  }
-  const ps = findPanelset(GBLayout.root);
-  if (!ps || !ps.groups || ps.groups.length < n) return;
-  GBPanelSet.switchGroup(ps, ps.groups[n - 1].id);
-}
-
 function _activeCalendarShortcutComponent() {
   try {
     if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined' || typeof getComponentInstance !== 'function') return null;
@@ -691,12 +680,32 @@ function _runNoteRichTextCommand(cmd, value) {
 }
 
 function _runNoteHeadingShortcut(tag) {
-  if (!_activeNoteEditable()) return false;
+  const editable = _activeNoteEditable();
+  if (!editable) return false;
+  const types = window.MeldexNoteBlockTypes;
+  if (types) {
+    const range = _currentNoteSelectionRange();
+    const info = range && types.resolveCurrentBlock(editable, range);
+    const options = { editable, range };
+    if (info?.block.classList.contains('note-title')) options.beforeConvert = ({ block }) => {
+      block.classList.remove('note-title'); delete block.dataset.noteTitle;
+    };
+    return types.convertCurrentLineTo(tag === 'P' ? 'body' : tag.toLowerCase(), options).ok;
+  }
   if (typeof rtHeading === 'function') {
     rtHeading(tag);
   } else {
     document.execCommand('formatBlock', false, tag);
   }
+}
+
+function _changeNoteParagraphLevel(direction) {
+  const editable = _activeNoteEditable();
+  if (!editable || !window.MeldexNoteBlockTypes) return false;
+  const result = window.MeldexNoteBlockTypes.changeParagraphLevel(direction, {
+    editable, range: _currentNoteSelectionRange(),
+  });
+  return result.ok || result.reason === 'boundary';
 }
 
 function _currentNoteSelectionRange() {
@@ -895,6 +904,8 @@ const _shortcutHandlers = {
   'note.hr':        () => _runNoteRichTextCommand('insertHorizontalRule'),
   'note.indent':    () => _runNoteRichTextCommand('indent'),
   'note.outdent':   () => _runNoteRichTextCommand('outdent'),
+  'note.demote':    () => _changeNoteParagraphLevel(1),
+  'note.promote':   () => _changeNoteParagraphLevel(-1),
   'note.moveUp':    () => { if (typeof moveBlock === 'function') moveBlock('up'); },
   'note.moveDown':  () => { if (typeof moveBlock === 'function') moveBlock('down'); },
   'note.link':      () => {

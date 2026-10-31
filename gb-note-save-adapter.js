@@ -392,6 +392,8 @@
     host.dataset.frontmatter = frontmatter;
     window.MeldexNoteEmbedBlock?.disposeWithin?.(host);
     host.innerHTML = html;
+    // ヒストリー・別パネル保存による表示更新を、以前のローカルUndoで戻さない。
+    if (typeof window._resetCustomUndo === 'function') window._resetCustomUndo(host);
     window.MeldexNoteEmbedBlock?.hydrate?.(host, bodyMd);
     host._noteEditRevision = (host._noteEditRevision || 0) + 1;
     host._noteEditSerializeCache = null;

@@ -339,7 +339,7 @@ function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
 /* ==============================
    Notion風キーボードショートカット
    ============================== */
-// 書式ショートカット（Ctrl+B/I/U/E、Ctrl+Shift+1-9/0/H、Tab等）
+// 書式・見出し・本文・段落レベルのショートカットは中央管理する。
 // Ctrl+F/Shift+F、Alt+↓ → gb-shortcuts.js の中央ハンドラに移行済み
 
 // 残存ハンドラ: F2/Delete（フォルダツリー操作）、Shift+F10（キーボード右クリック）、
@@ -525,7 +525,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { label: 'コピー', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('copy')) },
     { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => navigator.clipboard.readText().then(t => document.execCommand('insertText', false, t)).catch(() => {})) },
     { type: 'sep' },
-    { label: '元に戻す', enabled: true, action: () => { editable.focus(); document.execCommand('undo'); } },
+    { label: '元に戻す', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, false)) document.execCommand('undo'); } },
     { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
     { type: 'sep' },
     { label: 'すべて選択', enabled: true, action: () => { editable.focus(); document.execCommand('selectAll'); } },

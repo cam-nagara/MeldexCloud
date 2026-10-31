@@ -46,7 +46,77 @@
   }
 
   function _normalizeSearch(value) {
-    return String(value || '').toLowerCase().replace(/[-_\s:]/g, '');
+    return String(value || '').normalize('NFKC').toLowerCase().replace(/[ァ-ヶ]/g,
+      ch => String.fromCharCode(ch.charCodeAt(0) - 0x60)).replace(/[-_\s:]/g, '');
+  }
+
+  // 同梱の日本語絵文字辞書を、Lucideの英語名・タグにも接続する。
+  let _japaneseIndex = null;
+  let _japaneseIndexSource = null;
+  const JAPANESE_ICON_WORDS = {
+    accessibility: 'アクセシビリティ 支援', activity: '活動 心拍 波形', align: '整列 揃える',
+    arrow: '矢印 やじるし', asterisk: '星印 アスタリスク', audio: '音声 音楽', axis: '軸 座標',
+    badge: 'バッジ 印章', between: '間 間隔', blend: '混合 重ねる', blocks: 'ブロック',
+    book: '本 読書', bookmark: 'ブックマーク しおり', bot: 'ボット ロボット', box: '箱',
+    braces: '波括弧', brackets: '角括弧', bring: '前面', case: '文字 大文字 小文字',
+    chart: 'グラフ 図表', chevron: '山形 矢印', circle: '円 丸', clipboard: 'クリップボード 貼り付け',
+    columns: '列 段組', combine: '結合', command: 'コマンド 命令', component: '部品 コンポーネント',
+    concatenate: '連結', container: 'コンテナ 容器', contrast: 'コントラスト 明暗', copy: 'コピー 複製',
+    corner: '角 曲がる', crop: '切り抜き トリミング', crosshair: '照準 目標', database: 'データベース 保存',
+    delete: '削除 消す', diff: '差分 比較', dimensions: '寸法 大きさ', distribute: '均等 配置',
+    dock: 'ドック 固定', ellipsis: '省略 三点', equal: '等しい 同じ', expand: '拡大 展開',
+    external: '外部', file: 'ファイル 書類', filter: 'フィルター 絞り込み', flip: '反転',
+    fold: '折り畳み', folder: 'フォルダ', format: '書式', frame: '枠 フレーム', fullscreen: '全画面',
+    gantt: 'ガント 工程', git: 'ギット 変更履歴 分岐', grip: 'ハンドル つかむ 移動', group: 'グループ',
+    heading: '見出し', indent: 'インデント 字下げ', info: '情報 案内', inspection: '点検 検査',
+    italic: '斜体', iteration: '反復 繰り返し', kanban: 'カンバン 看板', layers: 'レイヤー 階層',
+    layout: 'レイアウト 配置', ligature: '合字', list: 'リスト 一覧 箇条書き', loader: '読込 待機',
+    locate: '位置 現在地', maximize: '最大化', merge: '統合 結合', minimize: '最小化',
+    minus: 'マイナス 引く 減らす', monitor: 'モニター 画面', mouse: 'マウス', move: '移動 動かす',
+    navigation: 'ナビゲーション 方角', network: 'ネットワーク 接続', option: 'オプション 選択',
+    outdent: '字下げ解除', package: '荷物 パッケージ', panel: 'パネル', panels: 'パネル',
+    parentheses: '丸括弧', pilcrow: '段落記号', pivot: 'ピボット 集計', plus: 'プラス 追加 足す',
+    pointer: 'ポインター カーソル', ratio: '比率', redo: 'やり直す', regex: '正規表現',
+    replace: '置換 入れ替え', rotate: '回転', rows: '行 段組', scan: 'スキャン 読取',
+    scaling: '拡大縮小', search: '検索 探す', send: '送信 送る', separator: '区切り線',
+    settings: '設定 歯車', shapes: '図形', shrink: '縮小', sliders: 'スライダー 調整',
+    space: '空白 間隔', spell: '綴り スペル 校正', split: '分割 分岐', square: '四角 正方形',
+    stretch: '伸ばす', strikethrough: '取り消し線', subscript: '下付き文字', superscript: '上付き文字',
+    table: 'テーブル 表', text: 'テキスト 文字', toggle: '切替 スイッチ', tooltip: 'ツールチップ ヒント',
+    type: '文字 書体', underline: '下線', undo: '元に戻す', ungroup: 'グループ解除',
+    unlink: 'リンク解除', unfold: '展開', upload: 'アップロード 登録', variable: '変数',
+    view: '表示 ビュー', waypoints: '経由地', wrap: '折り返し', zoom: 'ズーム 拡大縮小',
+    bluetooth: 'ブルートゥース 無線', building: '建物 ビル', calendar: 'カレンダー 日付 予定',
+    cast: 'キャスト 配信', clock: '時計 時間', code: 'コード プログラム', copyleft: 'コピーレフト 著作権',
+    dice: 'サイコロ', disc: 'ディスク 円盤', flower: '花', gamepad: 'ゲーム コントローラー',
+    grid: 'グリッド 格子', languages: '言語 翻訳', lasso: '投げ縄 選択', link: 'リンク 接続',
+    microwave: '電子レンジ', music: '音楽 音符', plug: 'プラグ 電源', repeat: '繰り返し リピート',
+    scale: '尺度 拡大縮小', share: '共有 シェア', tablet: 'タブレット 端末', tally: '集計 数える',
+    touchpad: 'タッチパッド', trash: 'ごみ箱 削除', volume: '音量 ボリューム', wallet: '財布',
+    db: 'シート データベース', scenario: 'シナリオ', sync: '同期 更新',
+  };
+
+  function _japaneseKeywords(name, tags) {
+    if (!_japaneseIndex || _japaneseIndexSource !== global.EMOJI_ANNOTATIONS) {
+      _japaneseIndexSource = global.EMOJI_ANNOTATIONS;
+      const counts = new Map();
+      for (const entry of Object.values(global.EMOJI_ANNOTATIONS || {})) {
+        for (const en of entry.e || []) {
+          if (!counts.has(en)) counts.set(en, new Map());
+          const words = counts.get(en);
+          for (const ja of entry.j || []) words.set(ja, (words.get(ja) || 0) + 1);
+        }
+      }
+      _japaneseIndex = new Map([...counts].map(([en, words]) => [en,
+        [...words].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([ja]) => ja).join(' ')]));
+    }
+    const kebab = _toKebab(name);
+    const tokens = [kebab, ...kebab.replace(/\d+(?:d)?/g, '-').split('-'), ...(tags || '').split(' ')];
+    return [...new Set(tokens.flatMap(token => [JAPANESE_ICON_WORDS[token], _japaneseIndex.get(token)]).filter(Boolean))].join(' ');
+  }
+
+  function _itemTooltip(item) {
+    return (item.label || item.spec) + '\n検索ワード: ' + (item.search || item.keywords || item.label || item.spec);
   }
 
   function _lucidePaths(name) {
@@ -81,13 +151,19 @@
       const code = _normalizeCode(entry.code);
       const emoji = entry.emoji || codeToEmoji(code);
       const annotations = _emojiAnnotationKeywords(emoji);
+      const fallbackLabel = /^[0-9]$/.test(emoji) ? '数字 ' + emoji
+        : /^1F1[EF][0-9A-F]$/.test(code) ? '地域記号 ' + String.fromCodePoint(parseInt(code, 16) - 0x1F1E6 + 65)
+        : code === '20E3' ? 'キーキャップ結合記号' : code;
       return {
         type: 'noto',
         spec: 'noto:' + code,
         code,
         emoji,
-        label: entry.name || code,
-        search: [entry.emoji || '', code, entry.name || '', annotations].join(' '),
+        label: entry.name || global.EMOJI_ANNOTATIONS?.[emoji]?.j?.slice(-1)[0] || fallbackLabel,
+        search: [entry.emoji || '', code, entry.name || '', annotations,
+          /^[0-9]$/.test(emoji) ? '数字 番号 ' + emoji : '',
+          /^1F1[EF][0-9A-F]$/.test(code) ? '地域記号 アルファベット ' + emoji : '',
+          code === '20E3' ? 'キーキャップ 囲み数字' : ''].join(' '),
       };
     }).filter((entry) => entry.code);
   }
@@ -209,7 +285,7 @@
         spec: 'lucide:' + name,
         name,
         label: kebab,
-        search: [name, kebab, tags].filter(Boolean).join(' '),
+        search: [name, kebab, tags, _japaneseKeywords(name, tags)].filter(Boolean).join(' '),
       };
     });
   }
@@ -226,7 +302,7 @@
         type: parseSpec(spec).type,
         spec,
         label: preset.label || parseSpec(spec).label || spec,
-        search: [preset.label || '', preset.keywords || '', spec].join(' '),
+        search: [preset.label || '', preset.keywords || '', parseSpec(spec).search || '', spec].join(' '),
         preset: true,
       };
     }).filter((item) => item.spec);
@@ -238,6 +314,13 @@
     const items = [];
     if (includeLucide) items.push(...listLucideIcons());
     if (includeNoto) items.push(...listNotoEmoji());
+    const seen = new Set();
+    for (const item of options.imageItems || []) {
+      const spec = normalizeSpec(item.spec);
+      if (!spec.startsWith('image:') || seen.has(spec)) continue;
+      seen.add(spec);
+      items.push({ ...item, type: 'image', spec, search: [item.label, item.keywords, '画像 写真 カスタム'].join(' ') });
+    }
     return items;
   }
 
@@ -265,6 +348,7 @@
     }
     if (includeLucide) defs.push({ id: 'lucide', label: 'Lucide', type: 'lucide' });
     if (includeNoto) defs.push({ id: 'noto', label: 'Noto Emoji', type: 'noto' });
+    if (options.onUploadImage) defs.push({ id: 'image', label: '登録画像', type: 'image' });
     return defs;
   }
 
@@ -292,7 +376,10 @@
     const pageSize = Math.max(24, Math.min(1000, Number(options.pageSize || options.initialPageSize) || 240));
     let visibleLimit = pageSize;
     let renderToken = 0;
-    document.querySelectorAll('.gb-icon-picker').forEach((picker) => picker.remove());
+    document.querySelectorAll('.gb-icon-picker').forEach((picker) => {
+      if (typeof picker._requestClose === 'function') picker._requestClose();
+      else picker.remove();
+    });
     const restoreTarget = options.restoreFocusEl || options.anchorEl || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const restoreFocus = () => {
       if (!restoreTarget || typeof restoreTarget.focus !== 'function' || !restoreTarget.isConnected) return;
@@ -307,6 +394,9 @@
     picker.setAttribute('aria-modal', 'false');
     picker.style.position = 'fixed';
     picker.style.zIndex = String(options.zIndex || 10004);
+    // タブや「さらに表示」はクリック中に自身を再描画する。切断された
+    // event.targetを共通dismissが外側クリックと判定しないよう境界で止める。
+    picker.addEventListener('click', (event) => event.stopPropagation());
     let closeHandler = null;
     let keydownHandler = null;
     const removePicker = () => {
@@ -318,6 +408,7 @@
       keydownHandler = null;
       setTimeout(restoreFocus, 0);
     };
+    picker._requestClose = removePicker;
 
     const header = document.createElement('div');
     header.className = 'gb-icon-picker-header';
@@ -346,17 +437,20 @@
     if (presets.length) {
       const presetWrap = document.createElement('div');
       presetWrap.className = 'gb-icon-picker-presets';
+      if (options.presetsIconOnly) presetWrap.classList.add('gb-icon-picker-presets-icons');
       presets.forEach((item) => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gb-icon-picker-preset';
         btn.dataset.e2eId = 'icon-picker-preset';
-        btn.title = item.label;
+        btn.title = _itemTooltip(item);
         btn.setAttribute('aria-label', item.label + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
         const previewColor = item.color ? ` style="color:${_escAttr(item.color)};"` : '';
-        btn.innerHTML = `<span class="gb-icon-picker-preset-icon"${previewColor}>${render(item.spec, 18)}</span><span>${_esc(item.label)}</span>`;
+        btn.innerHTML = `<span class="gb-icon-picker-preset-icon"${previewColor}>${render(item.spec, 18)}</span>`
+          + (options.presetsIconOnly ? '' : `<span>${_esc(item.label)}</span>`);
+        btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
         btn.addEventListener('click', () => selectItem(item));
         presetWrap.appendChild(btn);
       });
@@ -398,6 +492,30 @@
     search.placeholder = options.placeholder || '検索';
     search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
+
+    if (typeof options.onUploadImage === 'function') {
+      const form = document.createElement('div'); form.className = 'gb-icon-image-register';
+      const label = document.createElement('input'); label.className = 'gb-input'; label.placeholder = '画像の名前（省略時はファイル名）';
+      label.setAttribute('aria-label', '画像の名前');
+      const keywords = document.createElement('input'); keywords.className = 'gb-input'; keywords.placeholder = '検索ワード（例: 猫 ねこ キャラクター）';
+      keywords.setAttribute('aria-label', '画像の検索ワード');
+      const upload = document.createElement('button'); upload.type = 'button'; upload.className = 'gb-btn gb-btn-xs';
+      upload.textContent = '画像を登録'; upload.dataset.e2eId = 'icon-picker-image-upload';
+      const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.hidden = true;
+      fileInput.accept = 'image/png,image/jpeg,image/gif,image/webp';
+      const status = document.createElement('div'); status.setAttribute('role', 'status');
+      upload.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files?.[0]; if (!file) return;
+        upload.disabled = true; status.textContent = '登録中…';
+        try {
+          const item = await options.onUploadImage(file, { label: label.value.trim(), keywords: keywords.value.trim() });
+          if (picker.isConnected) selectItem(item);
+        } catch (error) { if (picker.isConnected) status.textContent = error.message || '画像の登録に失敗しました'; }
+        finally { upload.disabled = false; fileInput.value = ''; }
+      });
+      form.append(label, keywords, upload, fileInput, status); picker.appendChild(form);
+    }
 
     const grid = document.createElement('div');
     grid.className = 'gb-icon-picker-grid';
@@ -476,11 +594,12 @@
         btn.type = 'button';
         btn.className = 'gb-icon-picker-cell';
         btn.dataset.e2eId = 'icon-picker-cell';
-        btn.title = item.label || item.spec;
+        btn.title = _itemTooltip(item);
         btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
         btn.innerHTML = render(item.spec, options.itemSize || 22);
+        btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
         btn.addEventListener('click', () => selectItem(item));
         fragment.appendChild(btn);
       });

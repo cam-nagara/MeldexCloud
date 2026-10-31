@@ -54,8 +54,12 @@
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
       const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
-      const iconHtml = `<span class="callout-icon" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
-      html += `<div class="callout-block${cls}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
+      const meta = pendingCalloutMetadata || {}; pendingCalloutMetadata = null;
+      const iconHtml = `<span class="callout-icon" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
+      const blockAttrs = (meta.background ? ` data-callout-background="${esc(meta.background)}"` : '')
+        + (meta.border ? ` data-callout-border="${esc(meta.border)}"` : '');
+      const blockStyle = `background-color:${meta.background || ''};border-color:${meta.border || ''};`;
+      html += `<div class="callout-block${cls}"${blockAttrs} style="${esc(blockStyle)}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
       continue;
     }
     // 引用（複数行をまとめて1つの<blockquote>に + 出典行検出）
@@ -84,7 +88,7 @@
       const indent = clm[1].length;
       const checked = clm[2].toLowerCase() === 'x';
       adjustListDepth(indent, 'ul');
-      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}</li>`;
+      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}`;
       continue;
     }
     // リスト（箇条書き）
@@ -92,15 +96,15 @@
     if (ulm) {
       const indent = ulm[1].length;
       adjustListDepth(indent, 'ul');
-      html += `<li>${inlinemd(ulm[2])}</li>`;
+      html += `<li>${inlinemd(ulm[2])}`;
       continue;
     }
     // リスト（番号付き）
-    const olm = line.match(/^(\s*)\d+\.\s+(.*)$/);
+    const olm = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
     if (olm) {
       const indent = olm[1].length;
-      adjustListDepth(indent, 'ol');
-      html += `<li>${inlinemd(olm[2])}</li>`;
+      adjustListDepth(indent, 'ol', Number(olm[2]));
+      html += `<li>${inlinemd(olm[3])}`;
       continue;
     }
 
@@ -631,14 +635,15 @@ function htmlToMd(html) {
           }
         }
         // BR由来の改行を空白区切りに変換（Markdown LI内では改行=行分離になるため）
-        const text = textParts.join(' ').replace(/ ?\n ?/g, ' ');
+        const text = textParts.join(' ').replace(/ ?\n ?/g, ' ').trim();
         const _liMk = _noteStatusMarker(node) + _nlIdMarker(node);
         if (node.classList?.contains('note-checklist-item')) {
           const checked = node.dataset?.checked === 'true' || !!node.querySelector('input.note-checklist-check')?.checked;
           return _liMk + indent + '- [' + (checked ? 'x' : ' ') + '] ' + text + '\n' + nestedList;
         }
         if (parent?.tagName === 'OL') {
-          const idx = [...parent.children].indexOf(node) + 1;
+          const start = parent.hasAttribute('start') ? Number(parent.getAttribute('start')) : 1;
+          const idx = [...parent.children].indexOf(node) + (Number.isFinite(start) ? start : 1);
           return _liMk + indent + idx + '. ' + text + '\n' + nestedList;
         }
         return _liMk + indent + '- ' + text + '\n' + nestedList;
@@ -670,6 +675,9 @@ function htmlToMd(html) {
           // data-icon属性があればLucide名、なければtextContent（旧emoji互換）
           const icon = iconEl?.dataset?.icon || iconEl?.textContent || 'lightbulb';
           const color = iconEl?.dataset?.color || '';
+          const meta = _calloutMetadata({ background: node.dataset.calloutBackground, border: node.dataset.calloutBorder,
+            label: iconEl?.dataset.iconLabel, keywords: iconEl?.dataset.iconKeywords });
+          const metadata = Object.keys(meta).length ? '<!--meldex-callout:' + encodeURIComponent(JSON.stringify(meta)) + '-->\n' : '';
           const bodyNode = node.querySelector('.callout-body');
           const body = bodyNode ? [...bodyNode.childNodes].map(walk).join('').trim() : '';
           const typeMatch = [...node.classList].find(c => c.startsWith('callout-') && c !== 'callout-block');
@@ -677,7 +685,7 @@ function htmlToMd(html) {
           const bodyLines = body.split('\n');
           const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
-          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
+          return _calloutMk + metadata + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
         }
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
@@ -769,7 +777,9 @@ function htmlToMd(html) {
   // ゼロ幅スペース除去（ルビ境界）
   md = md.replace(/\u200B/g, '');
   // 注: \n{3,}圧縮は行わない（ユーザーが意図的に追加した複数空行を保持するため）
-  return md.trim() + '\n';
+  // 空リスト末尾の「- 」「1. 」をtrimで削ると、再読込で本文へ化ける。
+  // 文書の外側の改行だけを整え、リスト記号に必要な空白を保持する。
+  return md.replace(/^\n+|\n+$/g, '') + '\n';
 }
 
 // パスを解決（絶対パスはそのまま、相対パスはvaultまたは現在のファイル基準で解決）
