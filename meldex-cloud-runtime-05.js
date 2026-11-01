@@ -145760,7 +145760,7 @@ function hideBoardNoteTab() {
     _syncEntityAccessNotice(body, access);
     if (
       typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
-      && body.__MeldexAttachmentsRenderedReadOnly !== access.readOnly
+      && (body.__MeldexAttachmentsRequestedReadOnly ?? body.__MeldexAttachmentsRenderedReadOnly) !== access.readOnly
     ) {
       await body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
       if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
@@ -145917,6 +145917,7 @@ function hideBoardNoteTab() {
           return true;
         };
         const renderAttachmentsForAccess = (readOnly, requestedId) => {
+          body.__MeldexAttachmentsRequestedReadOnly = readOnly === true;
           attachmentsAccessQueue = attachmentsAccessQueue.catch(() => false)
             .then(() => renderAttachmentsNow(readOnly, requestedId));
           return attachmentsAccessQueue;
