@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.443-6ef0b27733f380d767f9",
+  "version": "0.7.443-c4a50b7f5d7801d95732",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -801,11 +801,11 @@
     },
     {
       "path": "gb-cloud-mobile-side-drawer.js",
-      "sha256": "aa82a08861029fb98d4b26df6edb41a1832ebb75f412abbca6785d439d181d98"
+      "sha256": "c7c5e4f4b67586024e8fa8d7806858d0594c0a94f9845d1280b856ce2c7ba03c"
     },
     {
       "path": "gb-cloud-mobile.css",
-      "sha256": "afb4f59c69777caf05967a50df1ddf50c268dc0065c823dc350155cfc9682b61"
+      "sha256": "4a7974ee0d31482d2e142889a3b1d5da1f632a6edc616d13893960726b1272fa"
     },
     {
       "path": "gb-cloud-mobile.js",
@@ -3833,7 +3833,7 @@
     },
     {
       "path": "meldex-cloud-core.css",
-      "sha256": "001a2346dd9367a0462f6820902d3d67f5d086e1f1779edca97299bf963cfa9a"
+      "sha256": "1f665d139bb9ea072b12af15467b29650bde97dfb040af4f6b463f8e62efe32b"
     },
     {
       "path": "meldex-cloud-feature-capture-01.js",
@@ -3865,7 +3865,7 @@
     },
     {
       "path": "meldex-cloud-runtime-05.js",
-      "sha256": "83ec6e6da32f046006d7d145ea7342ab19bc49637a5acb35df65e744526fa07d"
+      "sha256": "b118156daec9553a4d773a5a730d84850279a7863cf314ff7abe1c0395ed7be7"
     },
     {
       "path": "meldex-cloud-runtime-06.js",
@@ -3941,7 +3941,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "a4b75356c88df7fe54b5a59d142301d3119538d2f45843d97f0bd191dd8e6968"
+      "sha256": "63f2a8ac6d3bc94bfcab09831a50bdcfd03c3ca141baf1c412b5343509276eea"
     },
     {
       "path": "Meldex.ico",

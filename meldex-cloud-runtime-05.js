@@ -145849,6 +145849,10 @@ function hideBoardNoteTab() {
 
       _syncEntityAccessNotice(body, access);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
       const props = document.createElement('section');
       props.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-props';
       const propsTitle = document.createElement('h3');
@@ -145872,6 +145876,7 @@ function hideBoardNoteTab() {
           renderEntityPropsGridInto(grid, data, entityPath, {
             parentDb,
             surface: 'mobile-drawer',
+            topicTabs: true,
             readOnly: readOnly === true,
           });
           grid.__MeldexRenderedReadOnly = readOnly === true;
@@ -145881,7 +145886,7 @@ function hideBoardNoteTab() {
       } else {
         grid.textContent = '列を表示できません';
       }
-      body.appendChild(props);
+      columnsPane.appendChild(props);
 
       if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
         const renderAttachmentsForAccess = async (readOnly, selectedId) => {
@@ -145895,6 +145900,7 @@ function hideBoardNoteTab() {
             readOnly,
             surface: 'mobile-drawer',
             selectedId,
+            columnsPanel: columnsPane,
             beforeMutation: _flushActiveEditor,
             onReload: async (nextId) => {
               if (!await _flushActiveEditor()) return false;
@@ -145903,13 +145909,12 @@ function hideBoardNoteTab() {
               await _renderEntity(body, entityPath, name, reloadSeq, nextId);
             },
           });
-          const attachments = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
-          const page = body.querySelector(':scope > .cloud-mobile-side-drawer-page');
-          if (attachments && page) body.insertBefore(attachments, page);
           body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
         };
         body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
         await renderAttachmentsForAccess(access.readOnly, selectedId);
+      } else {
+        body.appendChild(columnsPane);
       }
 
       const page = document.createElement('section');
@@ -145968,7 +145973,7 @@ function hideBoardNoteTab() {
       if (!access.readOnly) _bindEditorHelpers(editor);
       _activeEditor = access.readOnly ? null : editorState;
       page.appendChild(editor);
-      body.appendChild(page);
+      columnsPane.appendChild(page);
     } catch {
       if (seq !== _renderSeq) return;
       _setError(body, 'エントリの表示に失敗しました');

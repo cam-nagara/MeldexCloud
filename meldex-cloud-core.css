@@ -8307,6 +8307,12 @@ html[data-single-window="1"] .left-chrome-floating {
     padding: 0 0 0 24px;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer[data-drawer-kind="entity"] .cloud-mobile-side-drawer-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-panel-content {
     display: flex !important;
     flex: 1 1 auto;
