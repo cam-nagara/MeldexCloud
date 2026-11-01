@@ -47610,7 +47610,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function _findMobileContentPane() {
     if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
     const panes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true });
-    return panes.find(pane => !_isOutlinerPane(pane)) || panes[0] || null;
+    const contentPanes = panes.filter(pane => pane.meldexRole !== 'subpanel-workspace');
+    return contentPanes.find(pane => !_isOutlinerPane(pane)) || contentPanes[0] || null;
   }
 
   function _rememberMobileCollapsedTarget(target) {
@@ -47669,7 +47670,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     let nextActivePaneId = '';
     const activeInfo = GBLayout.activePane ? GBLayout.findNode?.(GBLayout.root, GBLayout.activePane) : null;
-    if (activeInfo?.node && _isOutlinerPane(activeInfo.node)) {
+    if (activeInfo?.node && (_isOutlinerPane(activeInfo.node) || activeInfo.node.meldexRole === 'subpanel-workspace')) {
       const nextPane = _findMobileContentPane();
       if (nextPane && nextPane.id !== GBLayout.activePane) {
         nextActivePaneId = nextPane.id;

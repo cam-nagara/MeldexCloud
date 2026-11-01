@@ -226,7 +226,15 @@
       reg.idByPath.set(oldPath, entryId);
       reg.idByPath.set(newPath, entryId);
     }
-    contextsForDb(request.dbPath).forEach(ctx => {
+    const renameContexts = contextsForDb(request.dbPath);
+    // Forms keep a separate pivot snapshot. Updating only their current option
+    // text lets a pending history render resurrect the old record name.
+    if (typeof forEachComponent === 'function') forEachComponent(component => {
+      const ctx = component?.ctx;
+      if (ctx?.formApp && !ctx.destroyed && normalize(ctx.dbPath) === normalize(request.dbPath)
+          && !renameContexts.includes(ctx)) renameContexts.push(ctx);
+    });
+    renameContexts.forEach(ctx => {
       updatePivotTarget(ctx, oldName, newName, oldPath, newPath, entryId, result?.revision);
       updateContextDom(ctx, oldName, newName);
     });
