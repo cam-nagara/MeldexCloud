@@ -3299,9 +3299,10 @@
   async function _resolveSheetDefaultForm(provider, path, preferred) {
     const sheet = _normalizeFolderPath(path);
     let malformedPreferred = null, found = null;
-    const matches = async candidate => {
+    const matches = async (candidate, automatic = false) => {
       try {
         const doc = JSON.parse(await provider.readText(candidate));
+        if (automatic && doc.meldex?.topic_attachment === true) return false;
         return doc.fileType === 'meldex-form' && doc.schema_version === 1
           && _normalizeFolderPath(doc.sheet?.path) === sheet;
       } catch (error) {
@@ -3311,7 +3312,7 @@
     };
     if (preferred && await matches(preferred)) return preferred;
     await _iterateWorkspaceFiles(provider, async candidate => {
-      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate, true)) found = candidate;
     }, '');
     return found || malformedPreferred;
   }

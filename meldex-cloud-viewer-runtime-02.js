@@ -13638,6 +13638,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           if (item.type !== 'form-app') continue;
           try {
             const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.meldex?.topic_attachment === true) continue;
             if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
             const sheetPath = _normalizeFolderPath(doc.sheet.path);
             const handle = await _resolveEntryHandle(provider, sheetPath);

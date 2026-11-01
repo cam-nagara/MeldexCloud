@@ -901,7 +901,11 @@ const GBPaneBridge = (() => {
     const adoptsUnmarkedLiveContent = !liveView && !livePath
       && _hasMatchingUnmarkedLiveContent(viewEl, viewName, path);
     const needsLiveReload = !adoptsUnmarkedLiveContent
-      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path);
+      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path
+        // A layout rebuild can retain the view marker while replacing its
+        // sheet context. That empty context has no data to render.
+        || (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)
+          && !paneRenderCtx?.pivotData));
     const resolvedViewName = typeof _resolveDbPaneDisplayView === 'function'
       ? _resolveDbPaneDisplayView(viewName, tab)
       : viewName;
@@ -931,9 +935,6 @@ const GBPaneBridge = (() => {
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
-        // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
-        const needsDisplayReload = !_isPassiveToolPaneTab(prevView, { type: prevView, path: '' })
-          && _normalizeDbPaneView(prevView) !== resolvedViewName;
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
@@ -967,7 +968,9 @@ const GBPaneBridge = (() => {
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        // A linked editor also changes the shared view/path. Returning to this
+        // already rendered sheet must preserve the first click and its input.
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && needsLiveReload) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
           else if (typeof openHtmlFile === 'function') openHtmlFile(label, path, scopedBridgeOpts);

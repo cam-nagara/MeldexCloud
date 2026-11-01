@@ -5832,7 +5832,22 @@ mark.db-find-current-text {
 
 .gb-mobile-tab-dropdown { display: none; }
 
+.gb-tab-overflow-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; flex: 0 0 26px; width: 26px; height: 26px;
+  padding: 0; border: 1px solid transparent; border-radius: var(--ui-radius-sm, 3px);
+  background: transparent; color: var(--fg2); font-size: 11px; cursor: pointer;
+}
+.gb-tab-overflow-button[hidden] { display: none !important; }
+.gb-tab-overflow-button:hover, .gb-tab-overflow-button:focus-visible {
+  background: var(--ui-hover-bg); color: var(--fg); border-color: var(--border);
+}
+.gb-tab-overflow-menu .gb-mobile-tab-menu-row { min-height: 28px; }
+.gb-tab-overflow-menu .gb-mobile-tab-menu-item { padding: 5px 10px; font-size: 12px; }
+.gb-tab-overflow-menu .gb-mobile-tab-menu-close { flex-basis: 28px; width: 28px; font-size: 16px; }
+
 @media (max-width: 640px) {
+  .gb-tab-overflow-button { display: none !important; }
   [data-meldex-phone-tabs] .gb-mobile-tab-dropdown {
     box-sizing: border-box;
     display: flex;
@@ -5978,8 +5993,9 @@ mark.db-find-current-text {
 }
 
 .gb-subpanel-promote-btn {
-  padding: 0 8px;
-  gap: 5px;
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
   color: var(--fg);
   border-color: var(--border);
 }
@@ -5988,10 +6004,6 @@ mark.db-find-current-text {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.gb-subpanel-promote-label {
-  white-space: nowrap;
 }
 
 .gb-subpanel-pathbar {
@@ -6185,11 +6197,23 @@ mark.db-find-current-text {
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
     .cloud-mobile-side-drawer[data-drawer-kind="panel"] .gb-subpanel-promote-btn {
-    flex: 1 1 auto;
-    min-width: 0;
-    max-width: 184px;
+    flex: 0 0 44px;
+    width: 44px;
   }
 }
+
+.gb-subpanel-title { flex: 1; }
+.gb-subpanel-parent-host { min-width: 0; flex: 0 1 auto; max-width: 35%; }
+.gb-subpanel-parent-host[hidden] { display: none; }
+.gb-subpanel-parent-host .meldex-entity-detail-parent {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 3px; font-size: 11px;
+}
+.gb-subpanel-title-text.meldex-entity-detail-header-title {
+  flex: 1; min-width: 70px; padding: 2px 4px; font-size: 14px; line-height: 24px;
+  border-radius: 3px; outline: none; cursor: text;
+}
+.gb-subpanel-title-text.meldex-entity-detail-header-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* =========================================================================
    gb-quick-memo-panel.css — クイックメモのフロートパネル
@@ -6850,6 +6874,24 @@ iframe.meldex-entity-linked-media {
 .meldex-entity-linked-note { flex: 1; min-height: 0; overflow: auto; }
 .gb-editor-host-toolbar { flex: 0 0 auto; min-width: 0; overflow-x: auto; }
 .gb-editor-host-toolbar .tb-file-title { min-width: 60px; }
+
+/* One topic strip owns the columns and all normal file applications. */
+.meldex-entity-attachments-section.is-unified { margin: 0; }
+.meldex-topic-columns-pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.meldex-topic-columns-pane[hidden] { display: none !important; }
+.meldex-entity-attachment-item:has(.gb-tab-more) { position: relative; padding-right: 27px; }
+.meldex-entity-attachment-more { flex: none; }
+.meldex-entity-linked-pane:has(.gb-form-app) { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-pane > .gb-form-app { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+#tb-db #toolbar-category,
+.gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] {
+  display: inline-flex; align-items: center; min-height: 30px;
+  font-size: 16px; line-height: 30px; font-weight: 600;
+}
+#tb-db #toolbar-category input,
+.gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {
+  height: 30px; box-sizing: border-box; line-height: normal;
+}
 
 /* Command palette and left chrome footer */
 

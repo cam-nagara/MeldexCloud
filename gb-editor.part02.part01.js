@@ -310,7 +310,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);

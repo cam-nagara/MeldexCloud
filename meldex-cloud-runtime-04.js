@@ -28337,9 +28337,10 @@
   async function _resolveSheetDefaultForm(provider, path, preferred) {
     const sheet = _normalizeFolderPath(path);
     let malformedPreferred = null, found = null;
-    const matches = async candidate => {
+    const matches = async (candidate, automatic = false) => {
       try {
         const doc = JSON.parse(await provider.readText(candidate));
+        if (automatic && doc.meldex?.topic_attachment === true) return false;
         return doc.fileType === 'meldex-form' && doc.schema_version === 1
           && _normalizeFolderPath(doc.sheet?.path) === sheet;
       } catch (error) {
@@ -28349,7 +28350,7 @@
     };
     if (preferred && await matches(preferred)) return preferred;
     await _iterateWorkspaceFiles(provider, async candidate => {
-      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate, true)) found = candidate;
     }, '');
     return found || malformedPreferred;
   }
@@ -35868,6 +35869,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           if (item.type !== 'form-app') continue;
           try {
             const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.meldex?.topic_attachment === true) continue;
             if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
             const sheetPath = _normalizeFolderPath(doc.sheet.path);
             const handle = await _resolveEntryHandle(provider, sheetPath);
@@ -42084,7 +42086,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const listing = await apiFetch('/sheet-entry/attachments?entry_path=' + encodeURIComponent(entryPath));
       const resolved = listing?.attachments?.find(value => value.id === item.id);
       const path = resolved?.client_path || item.path;
-      const kind = (!item.kind || item.kind === 'file') && /\.md$/i.test(path) ? 'note' : item.kind;
+      const kind = /\.mel-form$/i.test(path) ? 'form' : (!item.kind || item.kind === 'file') && /\.md$/i.test(path) ? 'note' : item.kind;
       const access = await window.MeldexEntityDetail.resolveReadOnly(path, options.readOnly);
       root.dataset.readOnly = access.readOnly ? '1' : '0';
       if (disposed) return false;
@@ -42101,25 +42103,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }, true);
       }
       function bindHost(ctx, activate, syncDetail) {
-        const kindName = ({ note: 'page', sheet: 'database', scenario: 'scriptnote' })[kind] || kind;
+        const kindName = ({ note: 'page', sheet: 'database', scenario: 'scriptnote', form: 'form-app' })[kind] || kind;
         ownership = window.GBEditorHost?.register(root, {
           editorId: id, path, kind: kindName, label: item.name,
           surface: options.surface || (root.closest('.gb-subpanel') ? 'subpanel' : 'main'),
           ctx, activate, syncDetail, flush: () => flushEditor(),
+          resolveCtx: kindName === 'form-app' ? () => instance?.ctx : null,
           component: instance,
-          onPathRename: kindName === 'database' ? (oldPath, newPath) => instance.onPathRename?.(oldPath, newPath) : null,
+          onPathRename: ['database', 'form-app'].includes(kindName) ? (oldPath, newPath, options) => instance.onPathRename?.(oldPath, newPath, options) : null,
           reload: async (reloadOptions = {}) => {
             if (!reloadOptions.skipFlush && await flushEditor() === false) return false;
             if (kindName === 'database') return instance.refresh();
             if (kindName === 'scriptnote') return instance._loadScenario(ownership.host.path, { skipNavPush: true, silent: true });
-            if (kindName === 'board') return instance.reload();
+            if (kindName === 'board' || kindName === 'form-app') return instance.reload();
             if (kindName === 'page') return openPage(item.name, ownership.host.path, { containerEl: root.querySelector('[data-editor-local-id=page-content]'),
               skipShowView: true, skipGlobalUi: true, skipStateView: true, skipNavPush: true, skipSaveLastView: true, skipRecent: true, skipHighlight: true, skipHistoryScope: true });
             return false;
           },
           historyScope: () => {
             const currentPath = ownership?.host.path || path;
-            return kindName === 'scriptnote' ? instance?._editor?._historyScope?.() :
+            return kindName === 'form-app' ? instance?._historyScope?.() : kindName === 'scriptnote' ? instance?._editor?._historyScope?.() :
               kindName === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(currentPath) :
               kindName === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(currentPath) :
               (kindName === 'page' ? 'page:' : kindName === 'database' ? 'db:' : kindName + ':') + currentPath.replace(/^\/+/, '');
@@ -42156,6 +42159,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           return true;
         };
         return await instance.open(path);
+      }
+      if (kind === 'form' || kind === 'form-app' || /\.mel-form$/i.test(path)) {
+        instance = createToolComponent('form-app', id, id);
+        instance._embedded = true;
+        instance._embeddedReadOnly = access.readOnly;
+        instance._embeddedEntryPath = entryPath;
+        instance.state = { ...instance.state, formPath: path, label: item.name };
+        setComponentInstance(id, instance);
+        instance.mount(root);
+        flushEditor = () => instance.flush();
+        bindHost(null, () => {
+          if (instance.el && !root.contains(instance.el)) instance.mount(root);
+          instance.activate();
+        }, null);
+        const loaded = await instance.load(path);
+        if (loaded === false) throw new Error('フォームを読み込めませんでした');
+        return true;
       }
       if (kind === 'scenario' || kind === 'board') {
         const type = kind === 'scenario' ? 'scriptnote' : 'board';
@@ -42334,8 +42354,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function getAttachmentIcon(kind, name) {
     const ext = (name || '').split('.').pop()?.toLowerCase();
-    const inferred = { md: 'page', 'mel-board': 'board', 'mel-scenario': 'scriptnote', 'mel-sheet': 'database' }[ext];
-    const type = { note: 'page', sheet: 'database', scenario: 'scriptnote' }[kind]
+    const inferred = { md: 'page', 'mel-board': 'board', 'mel-scenario': 'scriptnote', 'mel-sheet': 'database', 'mel-form': 'form-app' }[ext];
+    const type = { note: 'page', sheet: 'database', scenario: 'scriptnote', form: 'form-app' }[kind]
       || ((!kind || kind === 'file') && inferred) || kind;
     const shared = typeof uiTypeIconName === 'function' ? uiTypeIconName(type) : '';
     if (shared) return shared;
@@ -42353,6 +42373,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const path = item.path;
     const name = item.name || path.split('/').pop();
     const ext = name.split('.').pop()?.toLowerCase();
+    if ((item.kind === 'form' || ext === 'mel-form') && typeof openFormFile === 'function') return openFormFile(name, path);
     if (item.kind === 'folder' && typeof openFolder === 'function') return openFolder(name, path);
     if (['sheet', 'database'].includes(item.kind) && typeof selectDatabase === 'function') return selectDatabase(path);
     if (item.kind === 'chat' && typeof window.openSavedChat === 'function') return window.openSavedChat(path);
@@ -42617,14 +42638,22 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     header.dataset.mobileTabContainer = '1';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
-    section.classList.toggle('is-empty', attachments.length === 0);
+    const columns = options.columnsPanel;
+    const columnsId = '__columns__';
+    section.classList.toggle('is-unified', !!columns);
+    section.classList.toggle('is-empty', attachments.length === 0 && !columns);
     const list = document.createElement('div');
     list.className = 'meldex-entity-attachments-list gb-pane-tabs-scroll';
     list.setAttribute('role', 'tablist');
-    list.setAttribute('aria-label', 'リンクファイル');
-    if (attachments.length) header.appendChild(list);
+    list.setAttribute('aria-label', columns ? 'トピックのタブ' : 'リンクファイル');
+    if (attachments.length || columns) header.appendChild(list);
     const content = document.createElement('div');
     content.className = 'meldex-entity-linked-content';
+    if (columns) {
+      columns.dataset.attachmentId = columnsId;
+      columns.id = 'linked-columns-' + section.dataset.instanceId;
+      content.appendChild(columns);
+    }
     const editors = new Map();
     let selectedId = '';
     let switching = Promise.resolve(true);
@@ -42640,10 +42669,22 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (disposed) return true;
         if (!await flushEditors()) return false;
         for (const editor of editors.values()) if (await editor.dispose?.() === false) return false;
+        section._closeAttachmentMenu?.();
+        section._closeAddMenu?.();
         disposed = true;
         return true;
       },
     };
+    function updateSelection() {
+      section.dataset.selectedAttachment = selectedId;
+      list.querySelectorAll('[role=tab]').forEach(tab => {
+        const selected = tab.dataset.attachmentId === selectedId;
+        tab.closest('.gb-tab')?.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+        if (selected) tab.closest('.gb-tab')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      });
+      Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+    }
     function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
         if (disposed) return false;
@@ -42653,6 +42694,25 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
         if (!await flushEditors()) return false;
         if (disposed) return false;
+        if (item.id === columnsId) {
+          editors.get(selectedId)?.deactivate?.();
+          selectedId = columnsId; updateSelection();
+          // A hidden linked editor must not remain the target of the inspector.
+          if (selectionOptions.activate !== false) {
+            const parent = window.GBEditorHost?.ownerOf?.(columns.closest('.meldex-entity-detail') || columns);
+            if (parent) window.GBEditorHost.activate(parent);
+            else {
+              if (typeof state !== 'undefined') { state.view = 'entity'; state.currentEntityPath = entryPath; }
+              window.GBOptionTargetContext?.set({ path: entryPath, kind: 'entity' }, 'topic-columns');
+              if (typeof historySetScope === 'function') historySetScope('');
+              // The topic is already mounted: the legacy entity-detail sync
+              // reopens the subpanel and would discard retained file editors.
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.();
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.syncFollowingVersionTabs?.();
+            }
+          }
+          return true;
+        }
         if (editors.get(item.id)?.failed) {
           await editors.get(item.id).dispose();
           editors.delete(item.id);
@@ -42673,14 +42733,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           await editor.ready;
         }
         selectedId = item.id;
-        section.dataset.selectedAttachment = selectedId;
-        list.querySelectorAll('[role="tab"]').forEach(tab => {
-          const selected = tab.dataset.attachmentId === selectedId;
-          tab.closest('.gb-tab')?.classList.toggle('active', selected);
-          tab.setAttribute('aria-selected', String(selected));
-          tab.tabIndex = selected ? 0 : -1;
-        });
-        Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+        updateSelection();
         if (selectionOptions.activate !== false) editors.get(selectedId)?.activate?.();
         return true;
       }).catch(error => {
@@ -42690,6 +42743,28 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return switching;
     }
 
+    function navigateTab(event, current) {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...list.querySelectorAll('[role=tab]')];
+      const index = tabs.indexOf(current);
+      const target = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1)
+        : tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      if (!target) return;
+      event.preventDefault();
+      target.click(); target.focus();
+    }
+    if (columns) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = '列一覧'; tab.dataset.tabTitle = '列一覧'; tab.dataset.attachmentId = columnsId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-columns-tab';
+      tab.setAttribute('aria-controls', columns.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: columnsId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
+    }
+
     if (!options.readOnly) {
       const addContainer = document.createElement('div');
       addContainer.className = 'meldex-entity-attachment-add-container';
@@ -42697,11 +42772,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
-      addBtn.className = 'entity-create-action-btn meldex-entity-attachment-add-btn';
+      addBtn.className = 'gb-tab-add meldex-entity-attachment-add-btn';
       addBtn.dataset.e2eId = 'entity-attachment-add-btn';
       addBtn.title = '既存ファイルをリンクまたは新規作成';
       addBtn.ariaLabel = 'ファイルを追加';
-      addBtn.innerHTML = `${_icon('plus', 12)} <span>ファイルを追加</span>`;
+      addBtn.innerHTML = columns ? _icon('plus', 14) : `${_icon('plus', 12)} <span>ファイルを追加</span>`;
 
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
@@ -42769,12 +42844,32 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         event.stopPropagation();
         const existing = document.querySelector('.meldex-entity-attachment-menu');
         if (existing) {
-          existing.remove();
+          existing._closeAddMenu?.();
           return;
         }
 
         const menu = document.createElement('div');
         menu.className = 'meldex-entity-attachment-menu ab-dropdown-menu';
+        menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'ファイルを追加');
+        const close = () => {
+          menu.remove(); addBtn.setAttribute('aria-expanded', 'false');
+          document.removeEventListener('pointerdown', closeHandler, true);
+          document.removeEventListener('keydown', keyHandler, true);
+          if (section._closeAddMenu === close) section._closeAddMenu = null;
+        };
+        section._closeAddMenu = menu._closeAddMenu = close;
+        const closeHandler = e => { if (!menu.contains(e.target) && !addBtn.contains(e.target)) close(); };
+        const keyHandler = e => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); addBtn.focus(); return; }
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+          e.preventDefault(); e.stopPropagation();
+          const items = [...menu.querySelectorAll('[role=menuitem]')];
+          const index = items.indexOf(document.activeElement);
+          const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+            : (index + (e.key === 'ArrowUp' ? items.length - 1 : 1)) % items.length;
+          items[next]?.focus();
+        };
+        addBtn.setAttribute('aria-haspopup', 'menu'); addBtn.setAttribute('aria-expanded', 'true');
         menu.style.position = 'fixed';
         menu.style.zIndex = '1000';
         menu.style.background = 'var(--bg-panel, #252526)';
@@ -42791,6 +42886,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           { id: 'create-database', icon: getAttachmentIcon('sheet'), label: '新規シート', action: () => handleCreateNew('database', 'シート') },
           { id: 'create-scriptnote', icon: getAttachmentIcon('scenario'), label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
           { id: 'create-board', icon: getAttachmentIcon('board'), label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
+          { id: 'create-form', icon: getAttachmentIcon('form'), label: '新規フォーム', action: () => handleCreateNew('form-app', 'フォーム') },
         ];
 
         menuItems.forEach((item) => {
@@ -42804,6 +42900,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           }
           const row = document.createElement('button');
           row.type = 'button';
+          row.setAttribute('role', 'menuitem');
           row.className = 'ab-dropdown-item';
           if (item.id) row.dataset.e2eId = `entity-attachment-${item.id}`;
           row.style.display = 'flex';
@@ -42819,19 +42916,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           row.style.fontSize = '12px';
           row.innerHTML = `${_icon(item.icon, 14)} <span>${item.label}</span>`;
           row.addEventListener('click', () => {
-            menu.remove();
+            close();
             item.action();
           });
           menu.appendChild(row);
         });
 
-        const closeHandler = (e) => {
-          if (!menu.contains(e.target) && e.target !== addBtn) {
-            menu.remove();
-            document.removeEventListener('pointerdown', closeHandler);
-          }
-        };
-        setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+        document.addEventListener('pointerdown', closeHandler, true);
+        document.addEventListener('keydown', keyHandler, true);
 
         // The common positioner uses viewport coordinates. Mount outside the
         // scrolling entity pane so its offsets and clipping do not apply.
@@ -42843,6 +42935,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           menu.style.top = anchor.bottom + 4 + 'px';
         }
         if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+        menu.querySelector('button')?.focus();
       }
 
       addBtn.addEventListener('click', showAddMenu);
@@ -42884,17 +42977,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           e.stopPropagation();
           selectAttachment(item);
         });
-        nameSpan.addEventListener('keydown', event => {
-          const index = attachments.indexOf(item);
-          let next;
-          if (event.key === 'ArrowRight') next = attachments[(index + 1) % attachments.length];
-          if (event.key === 'ArrowLeft') next = attachments[(index + attachments.length - 1) % attachments.length];
-          if (event.key === 'Home') next = attachments[0];
-          if (event.key === 'End') next = attachments[attachments.length - 1];
-          if (!next) return;
-          event.preventDefault();
-          selectAttachment(next).then(ok => { if (ok) list.querySelectorAll('[role="tab"]').forEach(tab => { if (tab.dataset.attachmentId === next.id) tab.focus(); }); });
-        });
+        nameSpan.addEventListener('keydown', event => navigateTab(event, nameSpan));
 
         const sizeSpan = document.createElement('span');
         sizeSpan.className = 'meldex-entity-attachment-size';
@@ -42903,53 +42986,81 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         row.appendChild(iconBox);
         row.appendChild(nameSpan);
 
-        if (!options.readOnly) {
-          const delBtn = document.createElement('button');
-          delBtn.type = 'button';
-          delBtn.className = 'meldex-entity-attachment-del-btn';
-          delBtn.dataset.action = 'remove-attachment';
-          delBtn.dataset.attachmentId = item.id;
-          delBtn.dataset.e2eId = `entity-attachment-remove-${item.id}`;
-          const deletesLinkedFile = item.mode !== 'link';
-          delBtn.title = deletesLinkedFile ? 'リンク先ファイルを削除' : 'リンクを外す';
-          delBtn.ariaLabel = delBtn.title;
-          delBtn.innerHTML = _icon('trash2', 12);
-          delBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const targetName = item.name || item.path;
-            const question = deletesLinkedFile
-              ? `リンク先ファイル「${targetName}」を削除し、リンク一覧から外しますか？`
-              : `リンク「${targetName}」を外しますか？（リンク先ファイルは削除されません）`;
-            if (!confirm(question)) return;
-            try {
-              if (options.beforeMutation && !await options.beforeMutation()) return;
-              const current = typeof apiFetch === 'function' ? await apiFetch('/entity?path=' + encodeURIComponent(entryPath)) : data;
-              const res = await apiPost('/sheet-entry/detach', {
-                entry_path: entryPath,
-                attachment_id: item.id,
-                delete_file: item.mode !== 'link',
-                expected_revision: current?.revision != null ? current.revision : undefined,
-              });
-              if (res?.ok) {
-                if (res.delete_warning) {
-                  const warnDetail = typeof res.delete_warning === 'string' ? res.delete_warning : JSON.stringify(res.delete_warning);
-                  const msg = warnDetail.includes('一時退避ファイルの確定削除に失敗しました')
-                    ? `リンクは外れましたが、${warnDetail}`
-                    : `リンクは外れましたが、一時退避ファイルの確定削除に失敗しました: ${warnDetail}`;
-                  if (typeof showStatus === 'function') showStatus(msg, true);
-                } else {
-                  if (typeof showStatus === 'function') {
-                    showStatus(deletesLinkedFile ? 'リンク先ファイルを削除しました' : 'リンクを外しました');
-                  }
-                }
-                if (typeof options.onReload === 'function') await options.onReload();
-              }
-            } catch (err) {
-              if (typeof showStatus === 'function') showStatus('リンクを外せませんでした: ' + (err.message || err), true);
-            }
+        const more = document.createElement('button');
+        more.type = 'button'; more.className = 'gb-tab-more meldex-entity-attachment-more';
+        more.dataset.allowReadonly = '1'; more.dataset.e2eId = `entity-attachment-menu-${item.id}`;
+        more.setAttribute('aria-label', (item.name || item.path) + 'のタブ操作');
+        more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+        more.innerHTML = _icon('ellipsis', 14);
+        const showMenu = event => {
+          event.preventDefault(); event.stopPropagation();
+          section._closeAttachmentMenu?.();
+          section._closeAddMenu?.();
+          document.querySelectorAll('.gb-context-menu').forEach(menu => {
+            if (menu._closeAttachmentMenu) menu._closeAttachmentMenu();
+            else if (menu._closeTabMenu) menu._closeTabMenu();
+            else menu.remove();
           });
-          row.appendChild(delBtn);
-        }
+          const menu = document.createElement('div'); menu.className = 'gb-context-menu tab-context-menu';
+          menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'タブ操作');
+          more.setAttribute('aria-expanded', 'true');
+          const close = () => { menu.remove(); more.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true); if (section._closeAttachmentMenu === close) section._closeAttachmentMenu = null; };
+          section._closeAttachmentMenu = menu._closeAttachmentMenu = close;
+          const outside = e => { if (!menu.contains(e.target) && !more.contains(e.target)) close(); };
+          const escape = e => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); more.focus(); return; }
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+            e.preventDefault();
+            const items = [...menu.querySelectorAll('[role=menuitem]')];
+            const index = items.indexOf(document.activeElement);
+            const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+              : (index + (e.key === 'ArrowUp' ? items.length - 1 : 1)) % items.length;
+            items[next]?.focus();
+          };
+          const add = (label, icon, action) => {
+            const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-context-menu-item';
+            button.setAttribute('role', 'menuitem'); button.innerHTML = _icon(icon, 14);
+            button.appendChild(document.createTextNode(label));
+            button.addEventListener('click', async () => { close(); try { await action(); } catch (error) { globalThis.showStatus?.(error.userMessage || error.message, true); } });
+            menu.appendChild(button);
+          };
+          add('メインパネルで開く', 'externalLink', async () => { if (await flushEditors()) openAttachment(item, entryPath); });
+          add('新しいウィンドウで開く', 'monitor', async () => {
+            if (!await flushEditors()) return;
+            const type = { note: 'page', sheet: 'pivot', scenario: 'scriptnote', form: 'form-app' }[item.kind] || item.kind || 'page';
+            const url = '/?open=' + encodeURIComponent(type) + '&path=' + encodeURIComponent(item.path) + '&label=' + encodeURIComponent(item.name || '');
+            if (typeof _open_app_window_js === 'function') return _open_app_window_js(url);
+            window.open(url, '_blank');
+          });
+          add('フォルダツリーで表示', 'folderTree', () => globalThis.revealPathInFolderTree?.(item.path));
+          if (!options.readOnly) {
+            const remove = async deleteFile => {
+              const name = item.name || item.path;
+              const question = deleteFile ? `ファイル「${name}」を削除してトピックから外しますか？ この削除はUndoでは元に戻せません。` : `「${name}」をトピックから外しますか？ ファイルは残ります。`;
+              const confirmed = typeof cfConfirm === 'function' ? await cfConfirm(question) : confirm(question);
+              if (!confirmed || options.beforeMutation && !await options.beforeMutation()) return;
+              const current = await apiFetch('/entity?path=' + encodeURIComponent(entryPath));
+              const result = await apiPost('/sheet-entry/detach', { entry_path: entryPath, attachment_id: item.id, delete_file: deleteFile, expected_revision: current.revision });
+              if (result?.ok) {
+                if (result.delete_warning) globalThis.showStatus?.('リンクは外れましたが、' +
+                  (typeof result.delete_warning === 'string' ? result.delete_warning : JSON.stringify(result.delete_warning)), true);
+                else globalThis.showStatus?.(deleteFile ? 'リンク先ファイルを削除しました' : 'トピックから外しました（ファイルは残ります）');
+                await options.onReload?.();
+              }
+            };
+            add('トピックから外す', 'unlink', () => remove(false));
+            if (['copy', 'move'].includes(item.mode)) add('ファイルを削除', 'trash2', () => remove(true));
+          }
+          document.body.appendChild(menu);
+          const anchor = more.getBoundingClientRect();
+          if (typeof positionPopup === 'function') positionPopup(menu, anchor, { prefer: 'below', gap: 4 });
+          if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+          menu.querySelector('button')?.focus();
+          document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', escape, true);
+        };
+        more.addEventListener('click', showMenu);
+        row.addEventListener('contextmenu', showMenu);
+        row.appendChild(more);
 
         list.appendChild(row);
       });
@@ -42978,9 +43089,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
     }
 
-    if (attachments.length) section.appendChild(content);
+    if (attachments.length || columns) section.appendChild(content);
     container.appendChild(section);
-    const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
+    const initial = attachments.find(item => item.id === options.selectedId) || (columns ? { id: columnsId } : attachments[0]);
     if (initial) selectAttachment(initial, { activate: !!options.selectedId });
     return section;
   }
@@ -43281,6 +43392,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         db: 'database',
         scenario: 'scriptnote',
         script: 'scriptnote',
+        form: 'form-app',
       };
       itemType = typeAlias[itemType] || itemType;
       if (['chat', 'folder'].includes(itemType)) throw _httpError(400, 'トピックにチャットとフォルダは追加できません');
@@ -43363,6 +43475,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
         };
         await provider.writeText(createdPath, JSON.stringify(emptyDoc, null, 2));
+      } else if (itemType === 'form-app') {
+        const name = await uniqueName(label, '.mel-form');
+        createdPath = `${attachmentDir}/${name}`;
+        kind = 'form';
+        const doc = { fileType: 'meldex-form', schema_version: 1, title: name.replace(/\.mel-form$/, ''),
+          sheet: { path: sheetDir }, layout: null, formConfig: { mode: 'entry' },
+          meldex: { metadata_version: 1, document_id: global.crypto?.randomUUID?.() || `form-${Date.now()}`, topic_attachment: true } };
+        await provider.writeText(createdPath, JSON.stringify(doc, null, 2));
       } else if (itemType === 'board') {
         const name = await uniqueName(label, '.mel-board');
         createdPath = `${attachmentDir}/${name}`;
@@ -43536,7 +43656,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         id: attId,
         path: targetPath,
         name: targetPath.split('/').pop(),
-        kind: directory ? 'sheet' : /\.mel-board$/i.test(sourcePath) ? 'board' : /\.mel-scenario$/i.test(sourcePath) ? 'scenario' : /\.md$/i.test(sourcePath) ? 'note' : /\.(png|jpe?g|webp|gif|svg)$/i.test(sourcePath) ? 'image' : 'file',
+        kind: directory ? 'sheet' : /\.mel-board$/i.test(sourcePath) ? 'board' : /\.mel-scenario$/i.test(sourcePath) ? 'scenario' : /\.mel-form$/i.test(sourcePath) ? 'form' : /\.md$/i.test(sourcePath) ? 'note' : /\.(png|jpe?g|webp|gif|svg)$/i.test(sourcePath) ? 'image' : 'file',
         mode: mode,
         created_at: new Date().toISOString(),
         size: stat?.size,

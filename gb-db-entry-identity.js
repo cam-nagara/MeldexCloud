@@ -241,6 +241,9 @@
       _dbNotifyCalendarEntryRenamed(request.dbPath, oldPath, newPath, oldName, newName);
     }
     invalidateRelationCaches(request.dbPath);
+    window.dispatchEvent?.(new CustomEvent('meldex:entity-renamed', {
+      detail: { path: newPath, oldPath, oldName, name: newName, entryId },
+    }));
     return { ...result, new_path: newPath, entry_id: entryId || result?.entry_id || '' };
   }
 

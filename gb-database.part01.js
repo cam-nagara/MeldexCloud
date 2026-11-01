@@ -406,7 +406,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const dbName = dbPerfTargetLabel;
   if (!openOpts.skipGlobalUi) {
     const toolbarCategoryEl = document.getElementById('toolbar-category');
-    if (toolbarCategoryEl) {
+    if (toolbarCategoryEl && !toolbarCategoryEl.querySelector('input')) {
       toolbarCategoryEl.textContent = dbName;
       toolbarCategoryEl.title = 'ダブルクリックでシート名を変更';
       // 古いハンドラがある場合は除去してから貼り直す（新しい ctx をクロージャに反映するため）
@@ -498,7 +498,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     ctx.dbMetadata = dbMetadata;
     if (dbMetadata.display_title) {
       const titleEl = !openOpts.skipGlobalUi && document.getElementById("toolbar-category");
-      if (titleEl) titleEl.textContent = dbMetadata.display_title;
+      if (titleEl && !titleEl.querySelector('input')) titleEl.textContent = dbMetadata.display_title;
       renameAppPathReferences(dbPath, dbPath, { label: dbMetadata.display_title, type: "database" });
     }
     if (syncGlobalState) state.dbMetadata = dbMetadata;
@@ -1071,15 +1071,15 @@ function _dbRenameLocalRefs(dbPath, oldName, newName) {
   (c.savedViews || []).forEach(update);
   if (dirty) saveDbViewConfig(dbPath, c);
 }
-function _dbUndoRename(dbPath, oldName, newName, ctx) {
+function _dbUndoRename(dbPath, oldName, newName, ctx, ref = {}) {
   const scope = _dbScope(dbPath);
   historyPush('名前を変更: ' + oldName + ' → ' + newName,
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName: newName, newName: oldName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName: newName, newName: oldName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName, newName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName, newName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     scope

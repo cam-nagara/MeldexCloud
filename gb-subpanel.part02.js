@@ -277,7 +277,7 @@
     if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
-    if (_pathBarEl) _pathBarEl.style.display = 'none';
+    if (_parentLinkHost) { _parentLinkHost.replaceChildren(); _parentLinkHost.hidden = true; }
     _updateNavUi();
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -302,7 +302,10 @@
     _titleIconEl.className = 'gb-subpanel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
-    title.append(_titleIconEl, _titleTextEl);
+    _parentLinkHost = document.createElement('span');
+    _parentLinkHost.className = 'gb-subpanel-parent-host';
+    _parentLinkHost.hidden = true;
+    title.append(_parentLinkHost, _titleIconEl, _titleTextEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
       MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
     }
@@ -332,22 +335,20 @@
     _forwardBtn.disabled = true;
     _forwardBtn.addEventListener('click', () => navForward());
 
-    // 計画書「文字が見える『メインパネルで開く』ボタン」— アイコンのみにしない。
+    // 名前は共通ツールチップと支援技術に残し、ヘッダーでは専用アイコンを使う。
     _promoteBtn = document.createElement('button');
     _promoteBtn.type = 'button';
     _promoteBtn.className = 'gb-subpanel-button gb-subpanel-promote-btn';
     _promoteBtn.dataset.testid = 'gb-subpanel-promote';
     _promoteBtn.dataset.e2eId = 'gb-subpanel-promote';
     _promoteBtn.title = 'メインパネルで開く';
+    _promoteBtn.setAttribute('aria-label', 'メインパネルで開く');
     _promoteBtn.hidden = true;
     const promoteIcon = document.createElement('span');
     promoteIcon.className = 'gb-subpanel-promote-icon';
     promoteIcon.setAttribute('aria-hidden', 'true');
-    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('panelTop', 14) : '';
-    const promoteLabel = document.createElement('span');
-    promoteLabel.className = 'gb-subpanel-promote-label';
-    promoteLabel.textContent = 'メインパネルで開く';
-    _promoteBtn.append(promoteIcon, promoteLabel);
+    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('squareArrowOutUpLeft', 16) : '';
+    _promoteBtn.append(promoteIcon);
     _promoteBtn.addEventListener('click', () => promoteToMainPane());
 
     _closeContentBtn = document.createElement('button');
@@ -364,16 +365,12 @@
     actions.append(_backBtn, _forwardBtn, _promoteBtn, _closeContentBtn);
     titlebar.append(title, actions);
 
-    _pathBarEl = document.createElement('div');
-    _pathBarEl.className = 'gb-subpanel-pathbar';
-    _pathBarEl.style.display = 'none';
-
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
     _contentEl.className = 'gb-subpanel-content';
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
-    root.append(titlebar, _pathBarEl, _contentEl);
+    root.append(titlebar, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
       MeldexDnD.installSurfaceDropTarget(root, async item => {
         const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;

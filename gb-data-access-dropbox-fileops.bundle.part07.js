@@ -1,3 +1,4 @@
+      }
     }
 
     if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };

@@ -1,3 +1,4 @@
+        await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
       }
@@ -897,4 +898,3 @@
         error.code = 'trash_empty_partial_failure';
         error.failures = [{ trash_root: '', name: '', error: cause?.message || String(cause) }];
         throw error;
-      }

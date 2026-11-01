@@ -1013,7 +1013,7 @@ function _dbStartCellInlineEditor(td, options = {}) {
 
 function _dbIsNativeEditingElement(el) {
   return !!(el && el.isConnected !== false && (
-    el.contentEditable === 'true' ||
+    el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only' ||
     el.tagName === 'INPUT' ||
     el.tagName === 'TEXTAREA' ||
     el.tagName === 'SELECT'

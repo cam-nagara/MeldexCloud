@@ -31,7 +31,7 @@ const GBSubPanel = (() => {
   let _forwardBtn = null;
   let _promoteBtn = null;
   let _closeContentBtn = null;
-  let _pathBarEl = null;
+  let _parentLinkHost = null;
   let _contentEl = null;
   let _pane = null;
   let _current = null;
@@ -390,10 +390,10 @@ const GBSubPanel = (() => {
     if (_titleTextEl) _titleTextEl.textContent = entry.label || _toolLabel(entry.type);
     if (_promoteBtn) _promoteBtn.hidden = !entry.path || entry.type === 'unsupported';
     if (_closeContentBtn) _closeContentBtn.hidden = false;
-    if (_pathBarEl) {
-      _pathBarEl.textContent = entry.path ? _basename(entry.path) : '';
-      _pathBarEl.title = entry.path || '';
-      _pathBarEl.style.display = entry.path ? '' : 'none';
+    if (_titleTextEl) _titleTextEl.title = entry.path || '';
+    if (_parentLinkHost) {
+      if (entry.type !== 'entity') _parentLinkHost.replaceChildren();
+      _parentLinkHost.hidden = entry.type !== 'entity';
     }
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -705,7 +705,11 @@ const GBSubPanel = (() => {
     root.dataset.gbSubpanelEntityRoot = 'true';
     _contentEl.appendChild(root);
     if (window.MeldexEntityDetail?.mount) {
-      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
+      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel',
+        titleEl: _titleTextEl, parentHost: _parentLinkHost, onTitleChange: name => {
+          entry.label = name;
+          _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
+        } });
       return true;
     }
     root.textContent = 'トピックを表示できません';

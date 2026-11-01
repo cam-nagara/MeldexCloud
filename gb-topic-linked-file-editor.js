@@ -14,7 +14,7 @@
       const listing = await apiFetch('/sheet-entry/attachments?entry_path=' + encodeURIComponent(entryPath));
       const resolved = listing?.attachments?.find(value => value.id === item.id);
       const path = resolved?.client_path || item.path;
-      const kind = (!item.kind || item.kind === 'file') && /\.md$/i.test(path) ? 'note' : item.kind;
+      const kind = /\.mel-form$/i.test(path) ? 'form' : (!item.kind || item.kind === 'file') && /\.md$/i.test(path) ? 'note' : item.kind;
       const access = await window.MeldexEntityDetail.resolveReadOnly(path, options.readOnly);
       root.dataset.readOnly = access.readOnly ? '1' : '0';
       if (disposed) return false;
@@ -31,25 +31,26 @@
         }, true);
       }
       function bindHost(ctx, activate, syncDetail) {
-        const kindName = ({ note: 'page', sheet: 'database', scenario: 'scriptnote' })[kind] || kind;
+        const kindName = ({ note: 'page', sheet: 'database', scenario: 'scriptnote', form: 'form-app' })[kind] || kind;
         ownership = window.GBEditorHost?.register(root, {
           editorId: id, path, kind: kindName, label: item.name,
           surface: options.surface || (root.closest('.gb-subpanel') ? 'subpanel' : 'main'),
           ctx, activate, syncDetail, flush: () => flushEditor(),
+          resolveCtx: kindName === 'form-app' ? () => instance?.ctx : null,
           component: instance,
-          onPathRename: kindName === 'database' ? (oldPath, newPath) => instance.onPathRename?.(oldPath, newPath) : null,
+          onPathRename: ['database', 'form-app'].includes(kindName) ? (oldPath, newPath, options) => instance.onPathRename?.(oldPath, newPath, options) : null,
           reload: async (reloadOptions = {}) => {
             if (!reloadOptions.skipFlush && await flushEditor() === false) return false;
             if (kindName === 'database') return instance.refresh();
             if (kindName === 'scriptnote') return instance._loadScenario(ownership.host.path, { skipNavPush: true, silent: true });
-            if (kindName === 'board') return instance.reload();
+            if (kindName === 'board' || kindName === 'form-app') return instance.reload();
             if (kindName === 'page') return openPage(item.name, ownership.host.path, { containerEl: root.querySelector('[data-editor-local-id=page-content]'),
               skipShowView: true, skipGlobalUi: true, skipStateView: true, skipNavPush: true, skipSaveLastView: true, skipRecent: true, skipHighlight: true, skipHistoryScope: true });
             return false;
           },
           historyScope: () => {
             const currentPath = ownership?.host.path || path;
-            return kindName === 'scriptnote' ? instance?._editor?._historyScope?.() :
+            return kindName === 'form-app' ? instance?._historyScope?.() : kindName === 'scriptnote' ? instance?._editor?._historyScope?.() :
               kindName === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(currentPath) :
               kindName === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(currentPath) :
               (kindName === 'page' ? 'page:' : kindName === 'database' ? 'db:' : kindName + ':') + currentPath.replace(/^\/+/, '');
@@ -86,6 +87,23 @@
           return true;
         };
         return await instance.open(path);
+      }
+      if (kind === 'form' || kind === 'form-app' || /\.mel-form$/i.test(path)) {
+        instance = createToolComponent('form-app', id, id);
+        instance._embedded = true;
+        instance._embeddedReadOnly = access.readOnly;
+        instance._embeddedEntryPath = entryPath;
+        instance.state = { ...instance.state, formPath: path, label: item.name };
+        setComponentInstance(id, instance);
+        instance.mount(root);
+        flushEditor = () => instance.flush();
+        bindHost(null, () => {
+          if (instance.el && !root.contains(instance.el)) instance.mount(root);
+          instance.activate();
+        }, null);
+        const loaded = await instance.load(path);
+        if (loaded === false) throw new Error('フォームを読み込めませんでした');
+        return true;
       }
       if (kind === 'scenario' || kind === 'board') {
         const type = kind === 'scenario' ? 'scriptnote' : 'board';

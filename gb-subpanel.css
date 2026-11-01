@@ -90,8 +90,9 @@
 }
 
 .gb-subpanel-promote-btn {
-  padding: 0 8px;
-  gap: 5px;
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
   color: var(--fg);
   border-color: var(--border);
 }
@@ -100,10 +101,6 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.gb-subpanel-promote-label {
-  white-space: nowrap;
 }
 
 .gb-subpanel-pathbar {
@@ -297,8 +294,20 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
     .cloud-mobile-side-drawer[data-drawer-kind="panel"] .gb-subpanel-promote-btn {
-    flex: 1 1 auto;
-    min-width: 0;
-    max-width: 184px;
+    flex: 0 0 44px;
+    width: 44px;
   }
 }
+
+.gb-subpanel-title { flex: 1; }
+.gb-subpanel-parent-host { min-width: 0; flex: 0 1 auto; max-width: 35%; }
+.gb-subpanel-parent-host[hidden] { display: none; }
+.gb-subpanel-parent-host .meldex-entity-detail-parent {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 3px; font-size: 11px;
+}
+.gb-subpanel-title-text.meldex-entity-detail-header-title {
+  flex: 1; min-width: 70px; padding: 2px 4px; font-size: 14px; line-height: 24px;
+  border-radius: 3px; outline: none; cursor: text;
+}
+.gb-subpanel-title-text.meldex-entity-detail-header-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }

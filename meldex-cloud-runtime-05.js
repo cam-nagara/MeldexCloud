@@ -13688,8 +13688,7 @@ const GBLayout = (() => {
     _paneMap[node.id] = { node, el: pane, contentEl: content };
     _updatePaneNavButtons(node.id);
 
-    // タブは自然幅 -> ラベル付き最小72px -> アイコンのみ、の順で縮退する。
-    // compact 化してもなお溢れる場合だけ tabsScroll が横スクロールで対応する。
+    // ラベル付き最小72pxでも収まらないタブは、共通の「▼」から選べる。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
         tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
@@ -13697,11 +13696,6 @@ const GBLayout = (() => {
         void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
           tabBar.classList.add('gb-tabs-shrink');
-          void tabsScroll.offsetWidth;
-          if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
-            tabBar.classList.remove('gb-tabs-shrink');
-            tabBar.classList.add('gb-tabs-compact');
-          }
         }
         const iconOnly = tabBar.classList.contains('gb-tabs-compact');
         tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {
@@ -57800,7 +57794,7 @@ function _sn2StopSep() {
   }
 
   function stripIds(root, surface) {
-    root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    root.querySelectorAll('[id]').forEach(el => { if (!el.id.startsWith('linked-')) el.removeAttribute('id'); });
     // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
     // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
     // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
@@ -57964,6 +57958,8 @@ function _sn2StopSep() {
       if (!await flush().catch(() => false)) return false;
       if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
       state.disposed = true;
+      state.titleCleanup?.();
+      if (options.parentHost) options.parentHost.replaceChildren();
       clearTimeout(state.timer);
       if (root._meldexEntityDetailController === controller) delete root._meldexEntityDetailController;
       return true;
@@ -57983,6 +57979,7 @@ function _sn2StopSep() {
           return false;
         }
         if (currentSection._linkedFiles && !await currentSection._linkedFiles.dispose()) return false;
+        if (state.disposed || refreshSeq !== state.attachmentRefreshSeq) return false;
         const nextSectionData = {
           ...(state.data || {}),
           entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
@@ -57992,6 +57989,7 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
+          columnsPanel: state.columnsPane,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
@@ -58037,6 +58035,9 @@ function _sn2StopSep() {
       root.dataset.meldexEntityDetail = id;
       root.dataset.surface = state.surface;
       root.dataset.path = state.path;
+      state.titleCleanup?.();
+      state.titleCleanup = null;
+      if (options.parentHost) options.parentHost.replaceChildren();
       root.replaceChildren();
       const loading = document.createElement('div');
       loading.className = 'meldex-entity-detail-loading';
@@ -58067,11 +58068,12 @@ function _sn2StopSep() {
           if (typeof selectDatabase === 'function') selectDatabase(parent);
         });
         if (state.surface === 'main') parentButton.id = 'entity-parent-link';
-        root.appendChild(parentButton);
+        (options.parentHost || root).appendChild(parentButton);
       }
 
-      const title = document.createElement('h2');
-      title.className = 'meldex-entity-detail-title';
+      const title = options.titleEl || document.createElement('h2');
+      if (!options.titleEl) title.className = 'meldex-entity-detail-title';
+      else title.classList.add('meldex-entity-detail-header-title');
       title.textContent = entityName(data, state.path);
       title.dataset.e2eId = 'entity-detail-title';
       title.contentEditable = access.readOnly ? 'false' : 'plaintext-only';
@@ -58080,15 +58082,54 @@ function _sn2StopSep() {
       title.setAttribute('aria-multiline', 'false');
       let savedTitle = title.textContent;
       let cancellingTitle = false;
-      title.addEventListener('keydown', event => {
+      const entryId = state.data?.entry_id || state.data?.id
+        || Object.values(state.data?.properties || {}).flat().find(value => value?.entry_id)?.entry_id || '';
+      const renameCtx = options.ctx || (typeof getAllPanes === 'function' ? Object.values(getAllPanes() || {}) : [])
+        .find(ctx => !ctx.destroyed && Object.values(ctx.pivotData?.entities || {}).some(entity =>
+          (entryId && (entity?._id || entity?.entry_id) === entryId)
+          || entity?._entry_path === state.path
+          || Object.values(entity || {}).some(values => Array.isArray(values) && values.some(value => value?.file === state.path))));
+      const renameDbPath = renameCtx?.dbPath || parent;
+      const titleScope = typeof _dbScope === 'function' ? _dbScope(renameDbPath) : '';
+      const titleOwner = window.GBEditorHost?.register(title, {
+        path: state.path, kind: 'entity', label: savedTitle, surface: state.surface,
+        ctx: { viewMode: 'entity', entityPath: state.path, dbPath: renameDbPath },
+        activate: () => { if (typeof historySetScope === 'function') historySetScope(titleScope); },
+        historyScope: () => titleScope, flush,
+        syncDetail: () => { if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.(); },
+      });
+      const updateTitle = event => {
+        if (state.disposed || event.detail?.path !== state.path) return;
+        const editing = title === document.activeElement && title.textContent !== savedTitle && !state.titleSaving;
+        savedTitle = event.detail.name;
+        state.data.entity = savedTitle;
+        if (!editing) title.textContent = savedTitle;
+        if (titleOwner) titleOwner.host.label = savedTitle;
+        options.onTitleChange?.(savedTitle);
+        root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
+          if (option.value === state.path) option.textContent = savedTitle;
+        });
+      };
+      window.addEventListener('meldex:entity-renamed', updateTitle);
+      const titleKeydown = event => {
         if (event.isComposing) return;
+        if ((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(event.key.toLowerCase())
+            && title.textContent === savedTitle && !state.titleSaving) {
+          event.preventDefault(); event.stopPropagation();
+          titleOwner?.activate();
+          const redo = event.key.toLowerCase() === 'y' || event.shiftKey;
+          void (redo ? meldexRedo() : meldexUndo());
+          return;
+        }
         if (event.key === 'Enter' || event.key === 'Escape') {
           event.preventDefault();
+          event.stopPropagation();
           if (event.key === 'Escape') { cancellingTitle = true; title.textContent = savedTitle; state.titleFailed = false; }
           title.blur();
         }
-      });
-      title.addEventListener('blur', () => {
+      };
+      const titleBlur = () => {
+        if (state.titleSaving || state.disposed) return;
         const next = title.textContent.replace(/[\r\n]+/g, ' ').trim();
         if (cancellingTitle || !next || next === savedTitle || root.dataset.readOnly === '1') {
           cancellingTitle = false;
@@ -58101,15 +58142,34 @@ function _sn2StopSep() {
         state.titleSaving = (async () => {
           try {
             if (!await save()) throw new Error('本文を保存できませんでした');
+            const oldName = savedTitle;
             const renamed = await window.GbDbEntryIdentity.rename({
-              path: state.path, dbPath: parent, oldName: savedTitle, newName: next,
-              entryId: state.data?.entry_id || state.data?.id, ctx: options.ctx,
+              path: state.path, dbPath: renameDbPath, oldName: savedTitle, newName: next,
+              entryId, ctx: renameCtx,
             });
             if (renamed?.ok === false) throw new Error('名前を変更できませんでした');
+            if (typeof _dbUndoRename === 'function') _dbUndoRename(renameDbPath, oldName, next, renameCtx,
+              { path: state.path, entryId });
             savedTitle = next;
             state.data.entity = next;
+            options.onTitleChange?.(next);
+            // Retained form editors keep their inputs and undo stack. Only the
+            // enclosing record's display label changes after this rename.
+            root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
+              if (option.value === state.path) option.textContent = next;
+            });
             // 表示名変更は同じ論理パス・IDを維持する。保存基準だけ取り直す。
-            await refreshAttachmentsOnly();
+            // A display-name change must preserve the live linked editors and
+            // their undo stacks. Refresh only the entry's save baseline.
+            const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
+            if (!state.saving && String(refreshed.page_content || '') === String(state.editor?.dataset.lastSavedMd || '')) {
+              state.data.revision = refreshed.revision;
+              state.data.freetext_etag = refreshed.freetext_etag;
+              if (state.editor) {
+                state.editor.dataset.lastSavedRevision = String(refreshed.revision);
+                state.editor.dataset.lastSavedEtag = refreshed.freetext_etag || '';
+              }
+            }
             return true;
           } catch (error) {
             state.titleFailed = true;
@@ -58121,9 +58181,17 @@ function _sn2StopSep() {
             state.titleSaving = null;
           }
         })();
-      });
+      };
+      title.addEventListener('keydown', titleKeydown);
+      title.addEventListener('blur', titleBlur);
+      state.titleCleanup = () => {
+        window.removeEventListener('meldex:entity-renamed', updateTitle);
+        titleOwner?.dispose();
+        title.removeEventListener('keydown', titleKeydown); title.removeEventListener('blur', titleBlur);
+        if (options.titleEl) { title.contentEditable = 'false'; title.removeAttribute('role'); title.removeAttribute('aria-label'); title.classList.remove('meldex-entity-detail-header-title'); }
+      };
       if (state.surface === 'main') title.id = 'entity-title';
-      root.appendChild(title);
+      if (!options.titleEl) root.appendChild(title);
 
       const actions = document.createElement('div');
       actions.className = 'meldex-entity-detail-actions';
@@ -58150,15 +58218,21 @@ function _sn2StopSep() {
       }
       if (actions.childElementCount) root.appendChild(actions);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
+      state.columnsPane = columnsPane;
       const grid = document.createElement('div');
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
-      root.appendChild(grid);
+      columnsPane.appendChild(grid);
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
           parentDb: parent,
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
+          topicTabs: true,
           readOnly: access.readOnly,
           ctx: options.ctx,
         });
@@ -58178,6 +58252,7 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
+          columnsPanel: state.columnsPane,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
         });
@@ -58206,7 +58281,7 @@ function _sn2StopSep() {
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
-        root.appendChild(preview);
+        columnsPane.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
         if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
@@ -58246,8 +58321,8 @@ function _sn2StopSep() {
       }
       const toolbar = buildToolbar(editor);
       if (state.surface === 'main') toolbar.id = 'entity-rt-toolbar';
-      root.appendChild(toolbar);
-      root.appendChild(editor);
+      columnsPane.appendChild(toolbar);
+      columnsPane.appendChild(editor);
 
       // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 
@@ -70828,6 +70903,10 @@ function historySetScope(scope) {
 }
 
 function _historyScopeDisplayName(scope) {
+  if (String(scope || '').startsWith('form:')) {
+    const host = globalThis.GBEditorHost?.get();
+    return host?.kind === 'form-app' && host.historyScope?.() === scope ? (host.label || 'フォーム') : 'フォーム';
+  }
   const raw = scope ? scope.split(':').slice(1).join(':') : '';
   // パスの場合はファイル名のみ表示
   return raw.includes('/') ? raw.split('/').pop() : raw;
@@ -105938,7 +106017,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
@@ -149621,6 +149700,9 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       _dbNotifyCalendarEntryRenamed(request.dbPath, oldPath, newPath, oldName, newName);
     }
     invalidateRelationCaches(request.dbPath);
+    window.dispatchEvent?.(new CustomEvent('meldex:entity-renamed', {
+      detail: { path: newPath, oldPath, oldName, name: newName, entryId },
+    }));
     return { ...result, new_path: newPath, entry_id: entryId || result?.entry_id || '' };
   }
 
@@ -162983,7 +163065,7 @@ function _dbStartCellInlineEditor(td, options = {}) {
 
 function _dbIsNativeEditingElement(el) {
   return !!(el && el.isConnected !== false && (
-    el.contentEditable === 'true' ||
+    el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only' ||
     el.tagName === 'INPUT' ||
     el.tagName === 'TEXTAREA' ||
     el.tagName === 'SELECT'
@@ -169411,7 +169493,7 @@ if (typeof window !== 'undefined') {
 
 /* === gb-mobile-tab-gesture-router.js === */
 ;
-/* Common <=640px tab dropdown and edge gesture router. */
+/* Shared tab overflow, <=640px tab dropdown and edge gesture router. */
 (function (global) {
   'use strict';
 
@@ -169427,6 +169509,7 @@ if (typeof window !== 'undefined') {
   ].join(',');
   let observer = null;
   let gesture = null;
+  const overflowBars = new Map();
 
   function isPhone() {
     return !!global.matchMedia?.(PHONE_QUERY).matches;
@@ -169456,27 +169539,31 @@ if (typeof window !== 'undefined') {
     return tabs.find(tab => tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true') || tabs[0];
   }
 
-  function closeMenu(menu, trigger) {
+  function closeMenu(menu, trigger, restoreFocus = true) {
+    menu?._cleanup?.();
     menu?.remove();
     trigger?.setAttribute('aria-expanded', 'false');
-    trigger?.focus?.();
+    if (trigger?._tabMenu === menu) trigger._tabMenu = null;
+    if (restoreFocus) trigger?.focus?.();
   }
 
-  function closeMainTab(tablist, tab) {
+  async function closeMainTab(tablist, tab) {
     const paneId = tablist.closest('.gb-pane')?.dataset?.paneId;
     const tabId = tab?.dataset?.tabId;
-    if (!paneId || !tabId || typeof global.GBTabs?.closeTab !== 'function') return false;
-    global.GBTabs.closeTab(paneId, tabId);
-    return true;
+    const tabsApi = typeof GBTabs !== 'undefined' ? GBTabs : global.GBTabs;
+    if (!paneId || !tabId || typeof tabsApi?.closeTab !== 'function') return false;
+    return await tabsApi.closeTab(paneId, tabId) !== false;
   }
 
-  function openMenu(trigger, tablist) {
-    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => node.remove());
-    const tabs = tabItems(tablist);
+  function openMenu(trigger, tablist, overflowTabs = null) {
+    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => closeMenu(node, node._trigger, false));
+    const tabs = overflowTabs || tabItems(tablist);
     const menu = document.createElement('div');
-    menu.className = 'gb-mobile-tab-menu';
+    menu.className = 'gb-mobile-tab-menu' + (overflowTabs ? ' gb-tab-overflow-menu gb-context-menu' : '');
+    menu._trigger = trigger; trigger._tabMenu = menu;
+    menu._closeTabMenu = () => closeMenu(menu, trigger, false);
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '表示を切り替える');
+    menu.setAttribute('aria-label', overflowTabs ? '隠れているタブ' : '表示を切り替える');
     tabs.forEach((tab) => {
       const row = document.createElement('div');
       row.className = 'gb-mobile-tab-menu-row';
@@ -169486,21 +169573,26 @@ if (typeof window !== 'undefined') {
       item.setAttribute('role', 'menuitem');
       item.disabled = tab.matches(':disabled,[aria-disabled="true"]');
       item.textContent = tabTitle(tab);
+      if (tab === activeTab(tabItems(tablist))) item.setAttribute('aria-current', 'page');
       item.addEventListener('click', () => {
+        closeMenu(menu, trigger, !overflowTabs);
         tab.click();
         syncOne(tablist);
-        closeMenu(menu, trigger);
+        if (overflowTabs) global.requestAnimationFrame(() => {
+          if (tab.isConnected) tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          scheduleSync();
+        });
       });
       row.appendChild(item);
-      if (tablist.classList.contains('gb-pane-tabs')) {
+      if (tablist.classList.contains('gb-pane-tabs') && tab.dataset.tabId) {
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'gb-mobile-tab-menu-close';
         close.setAttribute('aria-label', `${tabTitle(tab)}を閉じる`);
         close.title = `${tabTitle(tab)}を閉じる`;
         close.textContent = '×';
-        close.addEventListener('click', () => {
-          if (closeMainTab(tablist, tab)) closeMenu(menu, trigger);
+        close.addEventListener('click', async () => {
+          if (await closeMainTab(tablist, tab)) closeMenu(menu, trigger);
         });
         row.appendChild(close);
       }
@@ -169525,18 +169617,81 @@ if (typeof window !== 'undefined') {
       else if (event.key === 'End') next = items.length - 1;
       if (next >= 0) {
         event.preventDefault();
+        event.stopPropagation();
         items[next]?.focus();
       }
     });
     const dismiss = (event) => {
       if (event.key === 'Escape' || (event.type === 'pointerdown' && !menu.contains(event.target) && event.target !== trigger)) {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
         closeMenu(menu, trigger);
-        document.removeEventListener('keydown', dismiss, true);
-        document.removeEventListener('pointerdown', dismiss, true);
       }
+    };
+    menu._cleanup = () => {
+      document.removeEventListener('keydown', dismiss, true);
+      document.removeEventListener('pointerdown', dismiss, true);
     };
     document.addEventListener('keydown', dismiss, true);
     document.addEventListener('pointerdown', dismiss, true);
+  }
+
+  function clippedTabs(bar, scroll) {
+    const clip = scroll.getBoundingClientRect();
+    return tabItems(bar).filter(tab => {
+      const rect = tab.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < clip.left - 1 || rect.right > clip.right + 1);
+    });
+  }
+
+  function syncOverflow(bar) {
+    if (!bar.classList.contains('gb-pane-tabs')) return;
+    const scroll = bar.querySelector(':scope > .gb-pane-tabs-scroll');
+    if (!scroll?.clientWidth) {
+      const existing = overflowBars.get(bar);
+      if (existing) {
+        if (!existing.trigger.hidden) existing.trigger.hidden = true;
+        if (existing.trigger._tabMenu) closeMenu(existing.trigger._tabMenu, existing.trigger, false);
+      }
+      return;
+    }
+    let state = overflowBars.get(bar);
+    if (!state) {
+      const trigger = document.createElement('button');
+      trigger.type = 'button'; trigger.className = 'gb-tab-overflow-button'; trigger.textContent = '▼';
+      trigger.hidden = true;
+      trigger.title = '隠れているタブを表示'; trigger.setAttribute('aria-label', trigger.title);
+      trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
+      trigger.dataset.e2eId = 'tab-overflow-button';
+      trigger.addEventListener('click', () => {
+        if (trigger._tabMenu) closeMenu(trigger._tabMenu, trigger);
+        else {
+          const hidden = clippedTabs(bar, scroll);
+          if (hidden.length) openMenu(trigger, bar, hidden);
+          else scheduleSync();
+        }
+      });
+      bar.appendChild(trigger);
+      const resize = typeof global.ResizeObserver === 'function' ? new global.ResizeObserver(scheduleSync) : null;
+      resize?.observe(scroll); resize?.observe(bar);
+      scroll.addEventListener('scroll', scheduleSync, { passive: true });
+      state = { scroll, trigger, resize, active: null, add: scroll.querySelector(':scope > .gb-pane-add-tab') }; overflowBars.set(bar, state);
+    }
+    const { trigger } = state;
+    // Compare against the space without the trigger to avoid show/hide oscillation.
+    const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
+    const overflow = !isPhone() && scroll.scrollWidth > scroll.clientWidth + reserved + 1;
+    if (trigger.hidden === overflow) trigger.hidden = !overflow;
+    // Keep creation available when the final tab and its following + are clipped.
+    if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
+    else if (state.add && !overflow && state.add.parentNode === bar) scroll.appendChild(state.add);
+    if (!overflow && trigger._tabMenu) closeMenu(trigger._tabMenu, trigger, false);
+    const active = activeTab(tabItems(bar));
+    if (active !== state.active) {
+      state.active = active;
+      if (active && !isPhone()) global.requestAnimationFrame(() => {
+        if (active.isConnected) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+    }
   }
 
   // 1ペイン内に複数のタブバー（ペイン自体のタブ + 中に埋め込まれたオプション
@@ -169618,7 +169773,13 @@ if (typeof window !== 'undefined') {
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
     const usedIds = new Map();
-    tablists.forEach((tablist) => syncOne(tablist, usedIds));
+    tablists.forEach((tablist) => { syncOne(tablist, usedIds); syncOverflow(tablist); });
+    for (const [bar, state] of overflowBars) {
+      if (bar.isConnected) continue;
+      state.resize?.disconnect(); state.scroll.removeEventListener('scroll', scheduleSync);
+      if (state.trigger._tabMenu) closeMenu(state.trigger._tabMenu, state.trigger, false);
+      overflowBars.delete(bar);
+    }
     document.querySelectorAll('.gb-mobile-tab-dropdown').forEach((trigger) => {
       if (!trigger.__meldexTablist?.isConnected) trigger.remove();
     });
@@ -169726,7 +169887,7 @@ if (typeof window !== 'undefined') {
     installGestures();
     _installMenuOutsideClickGuard();
     observer = new MutationObserver(scheduleSync);
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-disabled', 'disabled'] });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-selected', 'aria-disabled', 'disabled'] });
     global.addEventListener('resize', scheduleSync, { passive: true });
   }
 
@@ -170266,7 +170427,11 @@ if (typeof window !== 'undefined') {
   function renderView(root, dbPath, cfg, propTypes, ctx) {
     const owner = ctx?.containerEl || root;
     let session = viewSessions.get(owner);
-    if (!session || session.dbPath !== dbPath) { session = { dbPath, path: '', continuous: false, created: new Map() }; viewSessions.set(owner, session); }
+    if (!session || session.dbPath !== dbPath) {
+      const linkedEntry = ctx?.formApp?._embeddedEntryPath || '';
+      const initial = normalPath(linkedEntry.replace(/\/[^/]+$/, '')) === normalPath(dbPath) ? linkedEntry : '';
+      session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
+    }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
     const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
@@ -170328,8 +170493,15 @@ if (typeof window !== 'undefined') {
         const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
         if (layout) _elRenderLayoutBody(panel, data, path, { propTypes, ctx, readOnly: access.readOnly || ctx?.readOnly, formLayout: ctx?.formApp?.getLayout() }, dbPath, layout.id, renderRecord);
         else {
-          const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-          await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+          if (ctx?.formApp?._embeddedEntryPath) {
+            // A topic form edits the enclosing record. Do not recursively mount
+            // that topic's linked files inside its own form application.
+            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx,
+              topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
+          } else {
+            const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
+            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+          }
         }
       } catch (error) {
         if (generation === current && panel.isConnected) {
@@ -175277,10 +175449,11 @@ class FormAppComponent extends ToolComponent {
     window.addEventListener('beforeunload', this._beforeUnload);
     return this.el;
   }
+  _historyScope() { return this._embedded ? 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath) : ''; }
   _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
-    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function') historySetScope(this._historyScope());
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
     if (path && path !== this.path) this.ready = this.load(path);
@@ -175307,7 +175480,7 @@ class FormAppComponent extends ToolComponent {
     this.el.textContent = 'フォームを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([
-        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false),
+        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true),
       ]);
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
@@ -175435,7 +175608,7 @@ class FormAppComponent extends ToolComponent {
         }
         if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
       };
-      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
+      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), this._historyScope(), this.state.label || 'フォーム');
     }
     return true;
   }
@@ -175459,7 +175632,7 @@ class FormAppComponent extends ToolComponent {
         MeldexEntityDetail.resolveReadOnly(path, false),
       ]);
       if (this.ctx !== ctx || ctx.destroyed) return;
-      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly;
+      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly || this._embeddedReadOnly === true;
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
     } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
   }
@@ -181513,7 +181686,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const dbName = dbPerfTargetLabel;
   if (!openOpts.skipGlobalUi) {
     const toolbarCategoryEl = document.getElementById('toolbar-category');
-    if (toolbarCategoryEl) {
+    if (toolbarCategoryEl && !toolbarCategoryEl.querySelector('input')) {
       toolbarCategoryEl.textContent = dbName;
       toolbarCategoryEl.title = 'ダブルクリックでシート名を変更';
       // 古いハンドラがある場合は除去してから貼り直す（新しい ctx をクロージャに反映するため）
@@ -181605,7 +181778,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     ctx.dbMetadata = dbMetadata;
     if (dbMetadata.display_title) {
       const titleEl = !openOpts.skipGlobalUi && document.getElementById("toolbar-category");
-      if (titleEl) titleEl.textContent = dbMetadata.display_title;
+      if (titleEl && !titleEl.querySelector('input')) titleEl.textContent = dbMetadata.display_title;
       renameAppPathReferences(dbPath, dbPath, { label: dbMetadata.display_title, type: "database" });
     }
     if (syncGlobalState) state.dbMetadata = dbMetadata;
@@ -182178,15 +182351,15 @@ function _dbRenameLocalRefs(dbPath, oldName, newName) {
   (c.savedViews || []).forEach(update);
   if (dirty) saveDbViewConfig(dbPath, c);
 }
-function _dbUndoRename(dbPath, oldName, newName, ctx) {
+function _dbUndoRename(dbPath, oldName, newName, ctx, ref = {}) {
   const scope = _dbScope(dbPath);
   historyPush('名前を変更: ' + oldName + ' → ' + newName,
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName: newName, newName: oldName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName: newName, newName: oldName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName, newName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName, newName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     scope
@@ -247340,7 +247513,11 @@ const GBPaneBridge = (() => {
     const adoptsUnmarkedLiveContent = !liveView && !livePath
       && _hasMatchingUnmarkedLiveContent(viewEl, viewName, path);
     const needsLiveReload = !adoptsUnmarkedLiveContent
-      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path);
+      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path
+        // A layout rebuild can retain the view marker while replacing its
+        // sheet context. That empty context has no data to render.
+        || (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)
+          && !paneRenderCtx?.pivotData));
     const resolvedViewName = typeof _resolveDbPaneDisplayView === 'function'
       ? _resolveDbPaneDisplayView(viewName, tab)
       : viewName;
@@ -247370,9 +247547,6 @@ const GBPaneBridge = (() => {
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
-        // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
-        const needsDisplayReload = !_isPassiveToolPaneTab(prevView, { type: prevView, path: '' })
-          && _normalizeDbPaneView(prevView) !== resolvedViewName;
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
@@ -247406,7 +247580,9 @@ const GBPaneBridge = (() => {
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        // A linked editor also changes the shared view/path. Returning to this
+        // already rendered sheet must preserve the first click and its input.
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && needsLiveReload) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
           else if (typeof openHtmlFile === 'function') openHtmlFile(label, path, scopedBridgeOpts);
@@ -250856,7 +251032,7 @@ const GBSubPanel = (() => {
   let _forwardBtn = null;
   let _promoteBtn = null;
   let _closeContentBtn = null;
-  let _pathBarEl = null;
+  let _parentLinkHost = null;
   let _contentEl = null;
   let _pane = null;
   let _current = null;
@@ -251215,10 +251391,10 @@ const GBSubPanel = (() => {
     if (_titleTextEl) _titleTextEl.textContent = entry.label || _toolLabel(entry.type);
     if (_promoteBtn) _promoteBtn.hidden = !entry.path || entry.type === 'unsupported';
     if (_closeContentBtn) _closeContentBtn.hidden = false;
-    if (_pathBarEl) {
-      _pathBarEl.textContent = entry.path ? _basename(entry.path) : '';
-      _pathBarEl.title = entry.path || '';
-      _pathBarEl.style.display = entry.path ? '' : 'none';
+    if (_titleTextEl) _titleTextEl.title = entry.path || '';
+    if (_parentLinkHost) {
+      if (entry.type !== 'entity') _parentLinkHost.replaceChildren();
+      _parentLinkHost.hidden = entry.type !== 'entity';
     }
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -251530,7 +251706,11 @@ const GBSubPanel = (() => {
     root.dataset.gbSubpanelEntityRoot = 'true';
     _contentEl.appendChild(root);
     if (window.MeldexEntityDetail?.mount) {
-      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
+      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel',
+        titleEl: _titleTextEl, parentHost: _parentLinkHost, onTitleChange: name => {
+          entry.label = name;
+          _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
+        } });
       return true;
     }
     root.textContent = 'トピックを表示できません';
@@ -251816,7 +251996,7 @@ const GBSubPanel = (() => {
     if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
-    if (_pathBarEl) _pathBarEl.style.display = 'none';
+    if (_parentLinkHost) { _parentLinkHost.replaceChildren(); _parentLinkHost.hidden = true; }
     _updateNavUi();
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -251841,7 +252021,10 @@ const GBSubPanel = (() => {
     _titleIconEl.className = 'gb-subpanel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
-    title.append(_titleIconEl, _titleTextEl);
+    _parentLinkHost = document.createElement('span');
+    _parentLinkHost.className = 'gb-subpanel-parent-host';
+    _parentLinkHost.hidden = true;
+    title.append(_parentLinkHost, _titleIconEl, _titleTextEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
       MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
     }
@@ -251871,22 +252054,20 @@ const GBSubPanel = (() => {
     _forwardBtn.disabled = true;
     _forwardBtn.addEventListener('click', () => navForward());
 
-    // 計画書「文字が見える『メインパネルで開く』ボタン」— アイコンのみにしない。
+    // 名前は共通ツールチップと支援技術に残し、ヘッダーでは専用アイコンを使う。
     _promoteBtn = document.createElement('button');
     _promoteBtn.type = 'button';
     _promoteBtn.className = 'gb-subpanel-button gb-subpanel-promote-btn';
     _promoteBtn.dataset.testid = 'gb-subpanel-promote';
     _promoteBtn.dataset.e2eId = 'gb-subpanel-promote';
     _promoteBtn.title = 'メインパネルで開く';
+    _promoteBtn.setAttribute('aria-label', 'メインパネルで開く');
     _promoteBtn.hidden = true;
     const promoteIcon = document.createElement('span');
     promoteIcon.className = 'gb-subpanel-promote-icon';
     promoteIcon.setAttribute('aria-hidden', 'true');
-    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('panelTop', 14) : '';
-    const promoteLabel = document.createElement('span');
-    promoteLabel.className = 'gb-subpanel-promote-label';
-    promoteLabel.textContent = 'メインパネルで開く';
-    _promoteBtn.append(promoteIcon, promoteLabel);
+    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('squareArrowOutUpLeft', 16) : '';
+    _promoteBtn.append(promoteIcon);
     _promoteBtn.addEventListener('click', () => promoteToMainPane());
 
     _closeContentBtn = document.createElement('button');
@@ -251903,16 +252084,12 @@ const GBSubPanel = (() => {
     actions.append(_backBtn, _forwardBtn, _promoteBtn, _closeContentBtn);
     titlebar.append(title, actions);
 
-    _pathBarEl = document.createElement('div');
-    _pathBarEl.className = 'gb-subpanel-pathbar';
-    _pathBarEl.style.display = 'none';
-
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
     _contentEl.className = 'gb-subpanel-content';
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
-    root.append(titlebar, _pathBarEl, _contentEl);
+    root.append(titlebar, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
       MeldexDnD.installSurfaceDropTarget(root, async item => {
         const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;

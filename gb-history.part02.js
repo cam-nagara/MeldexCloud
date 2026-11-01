@@ -134,6 +134,10 @@ function historySetScope(scope) {
 }
 
 function _historyScopeDisplayName(scope) {
+  if (String(scope || '').startsWith('form:')) {
+    const host = globalThis.GBEditorHost?.get();
+    return host?.kind === 'form-app' && host.historyScope?.() === scope ? (host.label || 'フォーム') : 'フォーム';
+  }
   const raw = scope ? scope.split(':').slice(1).join(':') : '';
   // パスの場合はファイル名のみ表示
   return raw.includes('/') ? raw.split('/').pop() : raw;
