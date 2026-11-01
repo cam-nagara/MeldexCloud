@@ -95,7 +95,12 @@
         instance._skipDetailSync = true;
         instance.mount(root);
         if (typeof replaceIcons === 'function') replaceIcons(instance.el);
-        bindHost(null, () => instance.activate(), () => instance._syncDetailPanel?.());
+        bindHost(null, () => {
+          // Responsive layout rendering may detach retained tool DOM. Its
+          // lifetime belongs to this linked editor, so restore the same instance.
+          if (instance.el && !root.contains(instance.el)) instance.mount(root);
+          instance.activate();
+        }, () => instance._syncDetailPanel?.());
         if (kind === 'scenario') {
           const loaded = await instance._loadScenario(path, {
             skipNavPush: true, skipRecent: true, skipSaveLastView: true, skipStatus: true, silent: true,

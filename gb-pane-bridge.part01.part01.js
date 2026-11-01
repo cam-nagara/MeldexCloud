@@ -948,7 +948,9 @@ const GBPaneBridge = (() => {
         // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
         // ケースは正しく再読込される。
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
-        else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, scopedBridgeOpts);
+        // Embedded notes also bind the shared state. Returning to an already
+        // rendered main note must not start a disk load that overwrites typing.
+        else if (viewName === 'page' && typeof openPage === 'function' && needsLiveReload) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
         else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
           // tab.state.viewerUrl（例: シート内ギャラリーが渡す特殊なビューワーURL。
@@ -1129,6 +1131,8 @@ const GBPaneBridge = (() => {
     const orphanComponentIds = [];
     if (typeof forEachComponent === 'function') {
       forEachComponent((comp, tabId) => {
+        // Linked editors own their lifetime outside the layout's tab IDs.
+        if (window.GBEditorHost?.ownsComponent?.(comp)) return;
         if (!validTabIds.has(tabId)) orphanComponentIds.push(tabId);
       });
     }

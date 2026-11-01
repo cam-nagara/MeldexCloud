@@ -17477,7 +17477,8 @@
   }
 
   function _normalizePath(path) {
-    return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').trim();
+    const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').trim();
+    return normalized === '.' ? '' : normalized;
   }
 
   // サーバー側 meldex_file_locks.SYSTEM_LOCK_BLACKLIST と同じ一覧。
@@ -42164,7 +42165,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         instance._skipDetailSync = true;
         instance.mount(root);
         if (typeof replaceIcons === 'function') replaceIcons(instance.el);
-        bindHost(null, () => instance.activate(), () => instance._syncDetailPanel?.());
+        bindHost(null, () => {
+          // Responsive layout rendering may detach retained tool DOM. Its
+          // lifetime belongs to this linked editor, so restore the same instance.
+          if (instance.el && !root.contains(instance.el)) instance.mount(root);
+          instance.activate();
+        }, () => instance._syncDetailPanel?.());
         if (kind === 'scenario') {
           const loaded = await instance._loadScenario(path, {
             skipNavPush: true, skipRecent: true, skipSaveLastView: true, skipStatus: true, silent: true,
@@ -42608,6 +42614,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     const header = document.createElement('div');
     header.className = 'meldex-entity-attachments-header gb-pane-tabs';
+    header.dataset.mobileTabContainer = '1';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
     section.classList.toggle('is-empty', attachments.length === 0);
@@ -42627,9 +42634,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return true;
     };
     section._linkedFiles = {
-      flush: async () => { await switching; return flushEditors(); },
+      flush: async () => { await switching; return disposed || flushEditors(); },
       dispose: async () => {
         await switching;
+        if (disposed) return true;
         if (!await flushEditors()) return false;
         for (const editor of editors.values()) if (await editor.dispose?.() === false) return false;
         disposed = true;
@@ -42638,7 +42646,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     };
     function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
-        if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
+        if (disposed) return false;
+        if (selectedId === item.id && !editors.get(item.id)?.failed) {
+          if (selectionOptions.activate !== false) editors.get(item.id)?.activate?.();
+          return true;
+        }
         if (!await flushEditors()) return false;
         if (disposed) return false;
         if (editors.get(item.id)?.failed) {

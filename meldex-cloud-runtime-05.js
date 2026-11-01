@@ -53977,6 +53977,7 @@ class CanvasComponent extends ToolComponent {
   }
 
   activate() {
+    if (!this.el) return false;
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
     if (isPaneActive) {
@@ -54053,7 +54054,9 @@ class CanvasComponent extends ToolComponent {
       if (typeof bdRender === 'function') bdRender();
       if (typeof bdTransform === 'function') bdTransform();
     }
-    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+    // Focus in an owned editor rebinds this runtime. Toolbar rebuilding commits
+    // inline edits, so keep the current toolbar while the text owns focus.
+    if (!this._boardLoadPending && isPaneActive && !bd.editing && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }
@@ -68978,6 +68981,9 @@ if (typeof window !== 'undefined') {
     if (host?.resolveComponent) host.component = host.resolveComponent();
     return host || null;
   }
+  function ownsComponent(component) {
+    return !!component && [...hosts.values()].some(host => host.component === component);
+  }
   function bindState(host) {
     if (host.resolveCtx) host.ctx = host.resolveCtx();
     host.activate?.();
@@ -69222,7 +69228,7 @@ if (typeof window !== 'undefined') {
     clearTimeout(syncTimer);
     if (get() && needsSync) syncTimer = setTimeout(sync, 0);
   }, true);
-  window.GBEditorHost = { get, ownerOf, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
+  window.GBEditorHost = { get, ownerOf, ownsComponent, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
 })();
 
 ;
@@ -145080,7 +145086,7 @@ function hideBoardNoteTab() {
 
   async function _openParentDatabase(parentDb) {
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(parentDb));
       _renderSeq += 1;
@@ -145214,7 +145220,7 @@ function hideBoardNoteTab() {
   async function _prepareContentReplacement(seq) {
     const portedOk = await _runPortedBeforeClose('replace');
     if (!portedOk || seq !== _renderSeq) return false;
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     return editorOk !== false && seq === _renderSeq;
   }
 
@@ -145249,7 +145255,7 @@ function hideBoardNoteTab() {
     _openingTarget = true;
     _syncOpenButton();
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (actionSeq !== _renderSeq || target !== _currentTarget || !isOpen()) return;
       const entry = await _resolveTargetEntry(target);
@@ -145373,15 +145379,19 @@ function hideBoardNoteTab() {
     }
   }
 
-  function _flushActiveEditor() {
+  async function _flushActiveEditor(options = {}) {
+    const links = document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]');
+    if (await links?._linkedFiles?.flush?.() === false) return false;
     const editor = _activeEditor;
-    if (!editor) return Promise.resolve(true);
-    clearTimeout(editor.timer);
-    editor.timer = null;
-    return _saveEditor(editor).then((ok) => {
+    if (editor) {
+      clearTimeout(editor.timer);
+      editor.timer = null;
+      const ok = await _saveEditor(editor);
       if (ok || !editor.dirty) _activeEditor = null;
-      return ok;
-    });
+      if (!ok) return false;
+    }
+    if (options.disposeLinks && await links?._linkedFiles?.dispose?.() === false) return false;
+    return true;
   }
 
   function _ensureDrawer() {
@@ -145454,6 +145464,13 @@ function hideBoardNoteTab() {
 
   function openElement(title, element, options) {
     if (!_isEnabled()) return false;
+    // A synchronous API cannot wait for linked-file saves. Keep the current
+    // editor until the caller closes it through the asynchronous save guard.
+    if (isOpen() && _portedPanel?.element !== element
+        && document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]')) {
+      if (typeof showStatus === 'function') showStatus('表示中の内容を閉じてから開いてください', true);
+      return false;
+    }
     // 保存ガードを持つ別パネルを同期APIで黙って置換すると内容を失い得る。
     // 同じ要素の再表示は、呼び出し元が先にflush済みなので許可する。
     if (_portedPanel?.beforeClose && _portedPanel.element !== element) {
@@ -145483,7 +145500,7 @@ function hideBoardNoteTab() {
       const portedOk = await _runPortedBeforeClose('close');
       if (!portedOk || closeSeq !== _renderSeq) return false;
     }
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     if (!editorOk || closeSeq !== _renderSeq) return false;
     _hideDrawerNow();
     return true;
@@ -145666,7 +145683,8 @@ function hideBoardNoteTab() {
       typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
       && body.__MeldexAttachmentsRenderedReadOnly !== access.readOnly
     ) {
-      body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      await body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
     }
     const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
     if (grid) {
@@ -145731,7 +145749,7 @@ function hideBoardNoteTab() {
     return true;
   }
 
-  async function _renderEntity(body, entityPath, entityName, seq) {
+  async function _renderEntity(body, entityPath, entityName, seq, selectedId) {
     const name = entityName || _fileName(entityPath).replace(/\.md$/i, '');
     const noteTarget = _entityNoteTarget(entityPath, name);
     const parentDb = _parentDb(entityPath);
@@ -145747,6 +145765,7 @@ function hideBoardNoteTab() {
             : (document.body?.dataset?.cloudReadonly === '1' ? '閲覧専用のため編集できません' : ''),
         };
       if (seq !== _renderSeq) return;
+      if (!await _flushActiveEditor({ disposeLinks: true }) || seq !== _renderSeq) return;
       body.replaceChildren();
 
       _syncEntityAccessNotice(body, access);
@@ -145786,16 +145805,23 @@ function hideBoardNoteTab() {
       body.appendChild(props);
 
       if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
-        const renderAttachmentsForAccess = (readOnly) => {
-          body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]')?.remove();
+        const renderAttachmentsForAccess = async (readOnly, selectedId) => {
+          const old = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
+          selectedId = selectedId || old?.dataset.selectedAttachment;
+          if (await old?._linkedFiles?.dispose?.() === false || seq !== _renderSeq) return false;
+          // Another access refresh may have completed while saving this one.
+          if (body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]') !== old) return false;
+          old?.remove();
           window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
             readOnly,
             surface: 'mobile-drawer',
-            onReload: async () => {
-              await _flushActiveEditor();
+            selectedId,
+            beforeMutation: _flushActiveEditor,
+            onReload: async (nextId) => {
+              if (!await _flushActiveEditor()) return false;
               if (_currentTarget?.kind !== 'entity' || _currentTarget.entityPath !== entityPath || !isOpen()) return;
               const reloadSeq = ++_renderSeq;
-              await _renderEntity(body, entityPath, name, reloadSeq);
+              await _renderEntity(body, entityPath, name, reloadSeq, nextId);
             },
           });
           const attachments = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
@@ -145804,7 +145830,7 @@ function hideBoardNoteTab() {
           body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
         };
         body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
-        renderAttachmentsForAccess(access.readOnly);
+        await renderAttachmentsForAccess(access.readOnly, selectedId);
       }
 
       const page = document.createElement('section');
@@ -169566,7 +169592,7 @@ if (typeof window !== 'undefined') {
     // Convert the inner list so the toolbar's other controls remain visible.
     const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
       && tablist.querySelector(':scope > [role="tablist"]');
-    if (nativeSwitcher || nestedTablist) {
+    if (nativeSwitcher || nestedTablist || tablist.dataset.mobileTabContainer === '1') {
       const old = tablist.previousElementSibling;
       if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
       return;
@@ -247361,7 +247387,9 @@ const GBPaneBridge = (() => {
         // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
         // ケースは正しく再読込される。
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
-        else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, scopedBridgeOpts);
+        // Embedded notes also bind the shared state. Returning to an already
+        // rendered main note must not start a disk load that overwrites typing.
+        else if (viewName === 'page' && typeof openPage === 'function' && needsLiveReload) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
         else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
           // tab.state.viewerUrl（例: シート内ギャラリーが渡す特殊なビューワーURL。
@@ -247542,6 +247570,8 @@ const GBPaneBridge = (() => {
     const orphanComponentIds = [];
     if (typeof forEachComponent === 'function') {
       forEachComponent((comp, tabId) => {
+        // Linked editors own their lifetime outside the layout's tab IDs.
+        if (window.GBEditorHost?.ownsComponent?.(comp)) return;
         if (!validTabIds.has(tabId)) orphanComponentIds.push(tabId);
       });
     }

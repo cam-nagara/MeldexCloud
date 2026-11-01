@@ -67,6 +67,7 @@ class CanvasComponent extends ToolComponent {
   }
 
   activate() {
+    if (!this.el) return false;
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
     if (isPaneActive) {
@@ -143,7 +144,9 @@ class CanvasComponent extends ToolComponent {
       if (typeof bdRender === 'function') bdRender();
       if (typeof bdTransform === 'function') bdTransform();
     }
-    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+    // Focus in an owned editor rebinds this runtime. Toolbar rebuilding commits
+    // inline edits, so keep the current toolbar while the text owns focus.
+    if (!this._boardLoadPending && isPaneActive && !bd.editing && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }

@@ -34,6 +34,9 @@
     if (host?.resolveComponent) host.component = host.resolveComponent();
     return host || null;
   }
+  function ownsComponent(component) {
+    return !!component && [...hosts.values()].some(host => host.component === component);
+  }
   function bindState(host) {
     if (host.resolveCtx) host.ctx = host.resolveCtx();
     host.activate?.();
@@ -278,5 +281,5 @@
     clearTimeout(syncTimer);
     if (get() && needsSync) syncTimer = setTimeout(sync, 0);
   }, true);
-  window.GBEditorHost = { get, ownerOf, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
+  window.GBEditorHost = { get, ownerOf, ownsComponent, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
 })();

@@ -179,7 +179,7 @@
     // Convert the inner list so the toolbar's other controls remain visible.
     const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
       && tablist.querySelector(':scope > [role="tablist"]');
-    if (nativeSwitcher || nestedTablist) {
+    if (nativeSwitcher || nestedTablist || tablist.dataset.mobileTabContainer === '1') {
       const old = tablist.previousElementSibling;
       if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
       return;

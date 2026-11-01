@@ -303,6 +303,7 @@
 
     const header = document.createElement('div');
     header.className = 'meldex-entity-attachments-header gb-pane-tabs';
+    header.dataset.mobileTabContainer = '1';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
     section.classList.toggle('is-empty', attachments.length === 0);
@@ -322,9 +323,10 @@
       return true;
     };
     section._linkedFiles = {
-      flush: async () => { await switching; return flushEditors(); },
+      flush: async () => { await switching; return disposed || flushEditors(); },
       dispose: async () => {
         await switching;
+        if (disposed) return true;
         if (!await flushEditors()) return false;
         for (const editor of editors.values()) if (await editor.dispose?.() === false) return false;
         disposed = true;
@@ -333,7 +335,11 @@
     };
     function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
-        if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
+        if (disposed) return false;
+        if (selectedId === item.id && !editors.get(item.id)?.failed) {
+          if (selectionOptions.activate !== false) editors.get(item.id)?.activate?.();
+          return true;
+        }
         if (!await flushEditors()) return false;
         if (disposed) return false;
         if (editors.get(item.id)?.failed) {
