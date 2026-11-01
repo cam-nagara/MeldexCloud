@@ -8,10 +8,10 @@
 (function () {
   'use strict';
 
-  const VERSION = 4;
+  const VERSION = 5;
   const RIGHT = Object.freeze([
     { type: 'detail',      label: 'オプション',       icon: 'slidersHorizontal', section: 'primary' },
-    { type: 'subpanel',    label: 'サブパネル',       icon: 'panelRight',        section: 'primary', separatorAfter: true },
+    { type: 'subpanel',    label: 'サブパネル',       icon: 'panelRight',        section: 'bottom', external: true },
     { type: 'information', label: 'プロパティ',       icon: 'info',              section: 'context' },
     { type: 'tags',        label: 'タグ',             icon: 'tags',              section: 'context' },
     { type: 'backlinks',   label: 'バックリンク',     icon: 'fileSymlink',       section: 'context' },
@@ -28,7 +28,7 @@
   const BY_TYPE = new Map(RIGHT.map((item, index) => [item.type, Object.freeze({ ...item, index })]));
 
   function definitions() { return RIGHT.slice(); }
-  function defaults() { return RIGHT.filter(item => item.type !== 'chat').map(item => [item.label, item.type]); }
+  function defaults() { return RIGHT.filter(item => item.type !== 'chat' && !item.external).map(item => [item.label, item.type]); }
   function types() { return new Set(RIGHT.map(item => item.type)); }
   function definition(type) { return BY_TYPE.get(String(type || '')) || null; }
   function order(type) { return definition(type)?.index ?? Number.MAX_SAFE_INTEGER; }

@@ -540,8 +540,21 @@ class VersionComponent extends ToolComponent {
 
   activate() {
     super.activate();
-    const path = this._getTabPath() || this.state.versionPath || '';
-    const vType = this.state.versionType || 'file';
+    let path = this._getTabPath() || this.state.versionPath || '';
+    let vType = this.state.versionType || 'file';
+    // The fixed rail starts with an untargeted tab. It follows the last editor,
+    // while versions explicitly opened for a path retain their pinned target.
+    if ((!path || this.state.versionFollow) && typeof _getCurrentVersionTarget === 'function') {
+      const target = _getCurrentVersionTarget();
+      path = target?.path || path;
+      vType = target?.type || vType;
+      this.state.versionFollow = true;
+      const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(tab => tab.id === this.tabId);
+      if (tab) {
+        tab.path = path;
+        tab.state = { ...(tab.state || {}), versionPath: path, versionType: vType, versionFollow: true };
+      }
+    }
     if (path) {
       this._loadVersions(path, vType);
     } else {

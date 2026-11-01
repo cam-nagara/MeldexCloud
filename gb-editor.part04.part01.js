@@ -29,6 +29,8 @@ function closeFileSearch() {
 }
 
 function _currentFileSearchEditable() {
+  const editor = window.GBEditorHost?.get();
+  if (editor?.kind === 'page') return window.GBEditorHost.element('page-content');
   if (state.view === 'entity') return document.getElementById('entity-freetext');
   if (state.view === 'page') return document.getElementById('page-content');
   return null;
@@ -126,7 +128,7 @@ function clearBoardSearchHighlights() {
 }
 
 function clearFileSearchHighlights() {
-  const editables = [document.getElementById('page-content'), document.getElementById('entity-freetext')];
+  const editables = [...document.querySelectorAll('#page-content,[data-editor-local-id="page-content"],#entity-freetext')];
   editables.forEach(el => {
     if (!el) return;
     el.querySelectorAll('mark.file-search-highlight').forEach(mark => {

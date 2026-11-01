@@ -749,6 +749,7 @@ document.addEventListener('pointerdown', (e) => {
   // （2026-08-13 バグ報告で確認）。
   if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
     document.querySelectorAll('.gb-context-menu').forEach(m => {
+      if (m._isPopupChildTarget?.(e.target)) return;
       if (m._popupChildSelector && e.target?.closest?.(m._popupChildSelector)) return;
       if (typeof m._requestClose === 'function') m._requestClose();
       else m.remove();
@@ -897,4 +898,3 @@ function _loadingPaintDelay() {
 async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   const options = opts || {};
   const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;
-  const size = typeof sizeOrText === 'number'

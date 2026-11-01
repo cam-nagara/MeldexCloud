@@ -275,7 +275,18 @@
     return Math.ceil(Math.max(1, Math.min(5000, Number(maxResults) || 100)) * 93 * 0.015 * 150);
   }
 
-  function confirmBookmarkSyncCost(maxResults, includeReplies = false) {
+  let costConfirmationPending = false;
+  async function confirmCost(message) {
+    if (costConfirmationPending || typeof cfConfirm !== 'function') return false;
+    costConfirmationPending = true;
+    try {
+      return !!await cfConfirm(message, { okLabel: '取得を開始', cancelLabel: 'キャンセル' });
+    } finally {
+      costConfirmationPending = false;
+    }
+  }
+
+  async function confirmBookmarkSyncCost(maxResults, includeReplies = false) {
     const limit = Math.max(1, Number(maxResults) || 100);
     const estimatedOwnedUsd = limit * 0.001;
     const estimatedStandardUsd = limit * 0.005;
@@ -285,14 +296,14 @@
       ? `\n元ポストと参照元（最大2件）のそれぞれに、返信を最大30件取得します。投稿者情報を含む返信ノート対象分の概算上限は約${yen(replyBudgetYen(limit))}です。重複を割り引かず計算しています。`
       : `\n参照元ポストと投稿者情報も含む概算上限は約${yen(withAuthorsAndReferencesYen)}です（重複を割り引かず計算）。`;
     const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\nポスト取得分の目安は約${yen(estimatedOwnedUsd * 150)}〜${yen(estimatedStandardUsd * 150)}です（約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}）。${replies}\n概算1ドル＝150円。フォルダ確認分・税等は別で、契約条件や料金変更によって実費は変わります。\n\nこの件数と費用目安で取得を始めますか？`;
-    return window.confirm(message);
+    return confirmCost(message);
   }
 
   async function sync(mode) {
     if (syncInFlight) return;
     const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
     const includeReplies = document.getElementById('x-bookmarks-include-replies')?.checked === true;
-    if (!confirmBookmarkSyncCost(maxResults, includeReplies)) return;
+    if (!await confirmBookmarkSyncCost(maxResults, includeReplies)) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
@@ -334,7 +345,7 @@
 
   async function syncFolders() {
     if (syncInFlight) return;
-    if (!window.confirm('Xのフォルダ一覧と各フォルダ内容を追加取得します。従量課金でフォルダ情報を更新しますか？')) return;
+    if (!await confirmCost('Xのフォルダ一覧と各フォルダ内容を追加取得します。従量課金でフォルダ情報を更新しますか？')) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
@@ -373,7 +384,7 @@
   async function reimportPost(postId, saveDir) {
     const id = String(postId || '').trim();
     if (!id) throw new Error('ポストIDを確認できません');
-    if (!confirmBookmarkSyncCost(1, true)) return null;
+    if (!await confirmBookmarkSyncCost(1, true)) return null;
     const result = await runBackgroundJob('/x-bookmarks/reimport', {
       post_id: id,
       save_dir: saveDir || undefined,
@@ -405,7 +416,7 @@
   async function enrichSavedNotes(includeReplies) {
     if (syncInFlight) return;
     const limit = includeReplies ? Number(document.getElementById('x-bookmarks-max-results')?.value || 100) : 5000;
-    if (includeReplies && !confirmBookmarkSyncCost(limit, true)) return;
+    if (includeReplies && !await confirmBookmarkSyncCost(limit, true)) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {

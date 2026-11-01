@@ -326,11 +326,16 @@ async function importCsvToDb() {
   }
   if (!path) return;
   try {
-    const result = await apiPost('/import-csv', { csv_path: path, db_path: dbPath });
+    const result = await runBackgroundJob('/import-csv', { csv_path: path, db_path: dbPath, background: true }, { operationLabel: 'CSVをシートに取り込んでいます' });
     const count = Number(result?.count || 0);
     if (typeof showStatus === 'function') showStatus('CSVインポート完了（' + count + '件）');
-    if (typeof selectDatabase === 'function') selectDatabase(dbPath);
+    if (typeof selectDatabase === 'function' && getCurrentFilePath() === dbPath) selectDatabase(dbPath);
   } catch (e) {
+    if (e?.name === 'AbortError') {
+      showStatus('CSV取り込みを停止しました。保存済みの行を保持し、同じCSVの再実行では残りを取り込みます。');
+      if (getCurrentFilePath() === dbPath && typeof selectDatabase === 'function') selectDatabase(dbPath);
+      return;
+    }
     if (typeof showStatus === 'function') showStatus('CSVのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
   }
 }
@@ -349,11 +354,16 @@ async function importXlsxToDb() {
   }
   if (!path) return;
   try {
-    const result = await apiPost('/import-xlsx', { xlsx_path: path, db_path: dbPath });
+    const result = await runBackgroundJob('/import-xlsx', { xlsx_path: path, db_path: dbPath, background: true }, { operationLabel: 'Excelをシートに取り込んでいます' });
     const count = Number(result?.count || 0);
     if (typeof showStatus === 'function') showStatus('Excelインポート完了（' + count + '件）');
-    if (typeof selectDatabase === 'function') selectDatabase(dbPath);
+    if (typeof selectDatabase === 'function' && getCurrentFilePath() === dbPath) selectDatabase(dbPath);
   } catch (e) {
+    if (e?.name === 'AbortError') {
+      showStatus('Excel取り込みを停止しました。保存済みの行を保持し、同じExcelの再実行では残りを取り込みます。');
+      if (getCurrentFilePath() === dbPath && typeof selectDatabase === 'function') selectDatabase(dbPath);
+      return;
+    }
     if (typeof showStatus === 'function') showStatus('Excelのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
   }
 }

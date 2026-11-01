@@ -1087,13 +1087,18 @@ async function convertCsvToDb() {
   )) return;
 
   try {
-    const result = await apiPost('/import-csv', { csv_path: _csvPath, db_path: dbPath });
+    const sourceCsvPath = _csvPath;
+    const result = await runBackgroundJob('/import-csv', { csv_path: sourceCsvPath, db_path: dbPath, background: true }, { operationLabel: 'CSVをシートに変換しています' });
     if (result?.ok === false) throw new Error('import failed');
     const count = Number(result?.count || 0);
     showStatus('シート変換完了: ' + fileName + '（' + count + '件）');
     if (typeof loadOutliner === 'function') loadOutliner();
-    if (typeof selectDatabase === 'function') selectDatabase(dbPath);
+    if (typeof selectDatabase === 'function' && _csvPath === sourceCsvPath) selectDatabase(dbPath);
   } catch (e) {
+    if (e?.name === 'AbortError') {
+      showStatus('CSV変換を停止しました。保存済みの行を保持し、同じCSVの再実行では残りを取り込みます。');
+      return;
+    }
     showStatus('DB変換に失敗しました', true);
   }
 }

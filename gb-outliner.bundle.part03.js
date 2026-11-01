@@ -1,3 +1,9 @@
+    toggle.innerHTML = lucide('chevronRight', 16);
+    toggle.dataset.expanded = 'false';
+  }
+  row.appendChild(toggle);
+
+  // Icon（ルートフォルダにはアイコンを表示しない）
   if (!item._isRoot) {
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
@@ -892,9 +898,3 @@ function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, 
       // A user rename/add/delete while migration was pending takes precedence.
       if (signature(currentItems) !== initialSignature) return;
       window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
-      const nextItems = _outlinerSheetTreeItems(item, pivotData);
-      const byPath = new Map(currentItems.map(child => [child.path, child]));
-      const nextPaths = new Set(nextItems.map(child => child.path));
-      const merged = nextItems.map(child => {
-        const existing = byPath.get(child.path);
-        if (existing) { Object.assign(existing, child); return existing; }

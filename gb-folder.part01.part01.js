@@ -1235,7 +1235,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   closeColHeaderMenu();
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
-  // サブパネル内では、右サイドバーで開く・バージョン管理等の
+  // サブパネル内では、サブパネルで開く・バージョン管理等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1377,7 +1377,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
     openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
     openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
     if (_canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
-      openSub.item('右サイドバーで開く', () => openLinkedPathInRightSidebar(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
+      openSub.item('サブパネルで開く', () => openLinkedPathInRightSidebar(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
     }
     if (typeof openLinkedPathStandalone === 'function'
         && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(item.path, item.type))) {

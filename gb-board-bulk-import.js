@@ -262,6 +262,10 @@
       path: _resolveDbEntityPathForBulkImport(dbPath, name, data, entitiesObj[name]),
       name,
       source: 'db',
+      // The pivot already contains every adopted image value in these modes.
+      // Keep it instead of requesting the same topic once more for each card.
+      ...(data.new_format === true && (!statusFilter || ['採用', '掲載済み'].every(status => statusFilter.split(',').includes(status)))
+        ? { imageProperties: entitiesObj[name] } : {}),
     })).filter(e => !!e.path);
     const advancedFilters = Array.isArray(activeView?.advancedFilters) ? activeView.advancedFilters : [];
     const filtered = advancedFilters.length
@@ -419,7 +423,7 @@
     const startY = center.y - gridH / 2;
 
     // 画像プロパティは並行取得 (最大 6 本)。
-    const imgMap = await _fetchImagesParallel(entries.map(e => e.path), 6);
+    const imgMap = await _fetchImagesParallel(entries, 6);
     if (bd.path !== targetPath || bd._openSeq !== openSeq || bd.nodes !== targetNodes) {
       throw new Error('取込中にボードが切り替わったため、追加を中止しました');
     }
@@ -470,22 +474,23 @@
 
   // path 配列から最初の画像プロパティ URL を並行取得する。
   // Promise.all + 並行制限 (concurrency 本) で過大な fetch を避ける。
-  async function _fetchImagesParallel(paths, concurrency) {
+  async function _fetchImagesParallel(entries, concurrency) {
     const result = new Map();
-    if (!Array.isArray(paths) || !paths.length) return result;
+    if (!Array.isArray(entries) || !entries.length) return result;
     let cursor = 0;
     const worker = async () => {
-      while (cursor < paths.length) {
+      while (cursor < entries.length) {
         const idx = cursor++;
-        const path = paths[idx];
+        const entry = entries[idx];
+        const path = entry.path;
         if (!path) continue;
         try {
-          const img = await _extractFirstImage(path);
+          const img = await _extractFirstImage(path, entry.imageProperties);
           if (img) result.set(path, img);
         } catch (_) { /* 画像取得失敗は無視して次へ */ }
       }
     };
-    const workerCount = Math.max(1, Math.min(concurrency || 1, paths.length));
+    const workerCount = Math.max(1, Math.min(concurrency || 1, entries.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     return result;
   }
@@ -495,14 +500,16 @@
   // 構造で、同じプロパティに複数の候補値 (採用/不採用) が並ぶ。ここでは "採用" / "掲載済み" の
   // 値だけを見て、値文字列が画像拡張子で終わる最初のものを選ぶ。
   // 画像判定は拡張子 (.png/.jpg/.jpeg/.gif/.webp/.svg/.bmp/.avif) ベース。
-  async function _extractFirstImage(path) {
+  async function _extractFirstImage(path, knownProperties) {
     if (!path) return '';
     const imgExt = /\.(png|jpe?g|gif|webp|svg|bmp|avif)(\?.*)?$/i;
     const adopted = (status) => status === '採用' || status === '掲載済み';
-    let data;
-    try {
-      data = await apiFetch('/entity?path=' + encodeURIComponent(path));
-    } catch (_) { return ''; }
+    let data = knownProperties && typeof knownProperties === 'object' ? { properties: knownProperties } : null;
+    if (!data) {
+      try {
+        data = await apiFetch('/entity?path=' + encodeURIComponent(path));
+      } catch (_) { return ''; }
+    }
     const props = (data && typeof data === 'object' && data.properties && typeof data.properties === 'object')
       ? data.properties : null;
     if (props) {
@@ -588,6 +595,7 @@
 
   if (window.__MELDEX_BOARD_BULK_IMPORT_TEST__) {
     window.__MELDEX_BOARD_BULK_IMPORT_TEST__.importEntries = _executeImport;
+    window.__MELDEX_BOARD_BULK_IMPORT_TEST__.fetchEntries = _fetchDbEntries;
   }
   window.bdOpenBulkLinkImport = bdOpenBulkLinkImport;
 })();

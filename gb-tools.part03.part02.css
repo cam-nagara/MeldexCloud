@@ -1,4 +1,4 @@
-#page-content kbd,
+:is(#page-content,[data-editor-local-id="page-content"]) kbd,
 #entity-freetext kbd,
 #dp-editable kbd,
 #board-note-editable kbd {
@@ -19,7 +19,7 @@
 }
 
 /* === Note styling: details/summary (collapsible) === */
-#page-content details,
+:is(#page-content,[data-editor-local-id="page-content"]) details,
 #entity-freetext details,
 #dp-editable details,
 #board-note-editable details {
@@ -29,7 +29,7 @@
   overflow: hidden;
   background: var(--page-details-bg, transparent);
 }
-#page-content details summary,
+:is(#page-content,[data-editor-local-id="page-content"]) details summary,
 #entity-freetext details summary,
 #dp-editable details summary,
 #board-note-editable details summary {
@@ -43,20 +43,20 @@
   font-style: var(--page-details-summary-italic, normal);
   user-select: none;
 }
-#page-content details summary:hover,
+:is(#page-content,[data-editor-local-id="page-content"]) details summary:hover,
 #entity-freetext details summary:hover,
 #dp-editable details summary:hover,
 #board-note-editable details summary:hover {
   background: var(--page-details-summary-hover-bg, var(--bg3));
   color: var(--page-details-summary-hover-fg, var(--page-details-summary-fg, var(--fg)));
 }
-#page-content details[open] summary,
+:is(#page-content,[data-editor-local-id="page-content"]) details[open] summary,
 #entity-freetext details[open] summary,
 #dp-editable details[open] summary,
 #board-note-editable details[open] summary {
   border-block-end: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
 }
-#page-content details > :not(summary),
+:is(#page-content,[data-editor-local-id="page-content"]) details > :not(summary),
 #entity-freetext details > :not(summary),
 #dp-editable details > :not(summary),
 #board-note-editable details > :not(summary) {
@@ -64,7 +64,7 @@
 }
 
 /* === Note styling: heading icon === */
-#page-content .heading-icon,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-icon,
 #entity-freetext .heading-icon,
 #dp-editable .heading-icon,
 #board-note-editable .heading-icon {
@@ -81,7 +81,7 @@
 }
 
 /* === Note styling: title heading block === */
-#page-content .note-title,
+:is(#page-content,[data-editor-local-id="page-content"]) .note-title,
 #entity-freetext .note-title,
 #dp-editable .note-title,
 #board-note-editable .note-title {
@@ -102,7 +102,7 @@
 
 /* === Note styling: toolbar file name edit ===
    ツールバー上のファイル名欄は UI 部品として扱い、本文の「タイトル」書式は適用しない。 */
-#page-rt-toolbar #page-title {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) {
   color: var(--ui-toolbar-fg, var(--fg));
   font-family: inherit;
   font-weight: inherit;
@@ -123,13 +123,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#page-rt-toolbar #page-title:empty::before {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]):empty::before {
   content: attr(data-placeholder);
   color: var(--ui-fg-muted);
 }
 /* 貼り付け等で混入したインライン書式（太字・斜体・フォント・文字色・背景色）を無効化し、
    常にツールバー標準フォントで表示する。 */
-#page-rt-toolbar #page-title * {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) * {
   font: inherit !important;
   color: inherit !important;
   background: none !important;
@@ -138,14 +138,14 @@
 /* === Note styling: block drag handle ===
    工程7: gb-note-block-reorder.js が全編集ホスト（メイン/エンティティ自由記述/
    詳細パネル内ノート）で同じクラス名を使うため、3ホストすべてを対象にする
-   （旧実装は #page-content 専用で他2ホストにスタイルが当たらなかった）。 */
-#page-content .dragging, #entity-freetext .dragging, #dp-editable .dragging {
+   （旧実装は :is(#page-content,[data-editor-local-id="page-content"]) 専用で他2ホストにスタイルが当たらなかった）。 */
+:is(#page-content,[data-editor-local-id="page-content"]) .dragging, #entity-freetext .dragging, #dp-editable .dragging {
   opacity: var(--page-dragging-opacity, 0.4);
 }
-#page-content .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
+:is(#page-content,[data-editor-local-id="page-content"]) .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
   border-block-start: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
-#page-content .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
+:is(#page-content,[data-editor-local-id="page-content"]) .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
   border-block-end: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
 /* 工程7-1: pointerdown直後〜pointerup/cancelまで対象ブロック全体を「捕捉中」として
@@ -157,7 +157,7 @@
    （targeted-note-micro-handle-drag-persists-order 等）もこのクラスの有無で検証する
    ため残しているが、旧来のCSSアウトラインは二重表示（新オーバーレイと重なって表示
    される）を避けるため描画しない（クラスは残す・見た目だけ無効化する）。 */
-#page-content .note-block-reorder-armed, #entity-freetext .note-block-reorder-armed, #dp-editable .note-block-reorder-armed {
+:is(#page-content,[data-editor-local-id="page-content"]) .note-block-reorder-armed, #entity-freetext .note-block-reorder-armed, #dp-editable .note-block-reorder-armed {
   outline: none;
 }
 /* 工程7-7: 先頭/末尾でこれ以上移動できない状態を視覚的に示す（ハンドルの小さな
@@ -193,11 +193,11 @@
 }
 .heading-section.level-5,
 .heading-section.level-6 { padding-inline-start: 12px; }
-/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。#page-content h2等にpadding-leftがあるため、ID付きで上書きする */
-#page-content .heading-section > h1,
-#page-content .heading-section > h2,
-#page-content .heading-section > h3,
-#page-content .heading-section > h4,
+/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。:is(#page-content,[data-editor-local-id="page-content"]) h2等にpadding-leftがあるため、ID付きで上書きする */
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h1,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h2,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h3,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h4,
 #entity-freetext .heading-section > h1,
 #entity-freetext .heading-section > h2,
 #entity-freetext .heading-section > h3,
@@ -205,8 +205,8 @@
   margin-inline-start: -12px;
   padding-inline-start: 4px;
 }
-#page-content .heading-section > h5,
-#page-content .heading-section > h6,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h5,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h6,
 #entity-freetext .heading-section > h5,
 #entity-freetext .heading-section > h6 {
   margin-inline-start: -8px;

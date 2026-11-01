@@ -856,7 +856,9 @@ function getFilterParam(filterMode) {
 }
 
 function _updateFilterBadge(options = {}) {
-  const badge = document.getElementById('filter-badge');
+  const ctx = options.ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const editorRoot = ctx?.containerEl?.closest?.('[data-editor-host]');
+  const badge = editorRoot?.querySelector('[data-editor-local-id="filter-badge"]') || document.getElementById('filter-badge');
   if (!badge) return;
   const dbPath = options.dbPath || state.currentDbPath;
   const filterMode = options.filter == null ? state.filter : options.filter;

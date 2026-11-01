@@ -42075,6 +42075,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function mount(root, item, entryPath, options = {}) {
     const id = 'topic-link-' + (++sequence);
     let instance = null;
+    let ownership = null;
     let disposed = false;
     let flushEditor = async () => true;
     const cleanup = [];
@@ -42082,7 +42083,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const listing = await apiFetch('/sheet-entry/attachments?entry_path=' + encodeURIComponent(entryPath));
       const resolved = listing?.attachments?.find(value => value.id === item.id);
       const path = resolved?.client_path || item.path;
-      const kind = item.kind;
+      const kind = (!item.kind || item.kind === 'file') && /\.md$/i.test(path) ? 'note' : item.kind;
       const access = await window.MeldexEntityDetail.resolveReadOnly(path, options.readOnly);
       root.dataset.readOnly = access.readOnly ? '1' : '0';
       if (disposed) return false;
@@ -42098,15 +42099,59 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
               && !((event.ctrlKey || event.metaKey) && ['c', 'a'].includes(event.key.toLowerCase()))) stop(event);
         }, true);
       }
+      function bindHost(ctx, activate, syncDetail) {
+        const kindName = ({ note: 'page', sheet: 'database', scenario: 'scriptnote' })[kind] || kind;
+        ownership = window.GBEditorHost?.register(root, {
+          editorId: id, path, kind: kindName, label: item.name,
+          surface: options.surface || (root.closest('.gb-subpanel') ? 'subpanel' : 'main'),
+          ctx, activate, syncDetail, flush: () => flushEditor(),
+          component: instance,
+          onPathRename: kindName === 'database' ? (oldPath, newPath) => instance.onPathRename?.(oldPath, newPath) : null,
+          reload: async (reloadOptions = {}) => {
+            if (!reloadOptions.skipFlush && await flushEditor() === false) return false;
+            if (kindName === 'database') return instance.refresh();
+            if (kindName === 'scriptnote') return instance._loadScenario(ownership.host.path, { skipNavPush: true, silent: true });
+            if (kindName === 'board') return instance.reload();
+            if (kindName === 'page') return openPage(item.name, ownership.host.path, { containerEl: root.querySelector('[data-editor-local-id=page-content]'),
+              skipShowView: true, skipGlobalUi: true, skipStateView: true, skipNavPush: true, skipSaveLastView: true, skipRecent: true, skipHighlight: true, skipHistoryScope: true });
+            return false;
+          },
+          historyScope: () => {
+            const currentPath = ownership?.host.path || path;
+            return kindName === 'scriptnote' ? instance?._editor?._historyScope?.() :
+              kindName === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(currentPath) :
+              kindName === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(currentPath) :
+              (kindName === 'page' ? 'page:' : kindName === 'database' ? 'db:' : kindName + ':') + currentPath.replace(/^\/+/, '');
+          },
+        });
+      }
+      if (kind === 'chat' || kind === 'folder' || /(?:^|\/)\_chat\/llm\//.test(path)) {
+        const notice = document.createElement('p');
+        notice.textContent = 'この種類はトピック内での編集を終了しました。';
+        const open = document.createElement('button');
+        open.type = 'button'; open.className = 'gb-btn'; open.dataset.allowReadonly = '1';
+        open.textContent = 'メインパネルで開く';
+        open.addEventListener('click', () => window.MeldexSheetEntryAttachments.openAttachment(item, entryPath));
+        root.append(notice, open);
+        return true;
+      }
       if (kind === 'sheet' || kind === 'database') {
         instance = window.MeldexProductionSheetEmbed.create({ idSuffix: id });
+        const bar = window.GBEditorHost.toolbar('tb-db', id);
+        root.appendChild(bar);
         instance.mount(root);
+        root._dbPaneContext = instance.ctx;
+        bar._dbPaneContext = instance.ctx;
+        const title = bar.querySelector('[data-editor-local-id=toolbar-category]');
+        if (title) title.textContent = item.name;
+        bindHost(instance.ctx, null, null);
         flushEditor = async () => {
+          const currentPath = ownership?.host.path || path;
           // 新規行を保存してから、その行の改名・セル更新の完了を待つ。
-          if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(path);
-          if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(path) === false) return false;
-          if (typeof flushPendingDbPropertySettings === 'function') await flushPendingDbPropertySettings(path);
-          if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(path);
+          if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(currentPath);
+          if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(currentPath) === false) return false;
+          if (typeof flushPendingDbPropertySettings === 'function') await flushPendingDbPropertySettings(currentPath);
+          if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(currentPath);
           return true;
         };
         return await instance.open(path);
@@ -42114,9 +42159,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (kind === 'scenario' || kind === 'board') {
         const type = kind === 'scenario' ? 'scriptnote' : 'board';
         instance = createToolComponent(type, id, id, { embedded: true, interaction: access.readOnly ? 'read-only' : 'editable' });
+        if (typeof setComponentInstance === 'function') setComponentInstance(id, instance);
         instance.state = { ...instance.state, [kind === 'scenario' ? 'scenarioPath' : 'boardPath']: path, label: item.name };
         instance._skipDetailSync = true;
         instance.mount(root);
+        if (typeof replaceIcons === 'function') replaceIcons(instance.el);
+        bindHost(null, () => instance.activate(), () => instance._syncDetailPanel?.());
         if (kind === 'scenario') {
           const loaded = await instance._loadScenario(path, {
             skipNavPush: true, skipRecent: true, skipSaveLastView: true, skipStatus: true, silent: true,
@@ -42125,57 +42173,58 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         } else {
           instance.activate();
           if (instance._boardLoadPending && await instance._boardLoadPending === false) throw new Error('ボードを読み込めませんでした');
-          // The Board engine has one active model. Retain this component's dump
-          // before another surface takes it, and restore it before an edit.
-          const remember = event => {
-            if (!root.contains(event.target) && typeof bd !== 'undefined' && bd.path === path && typeof bdDumpState === 'function') {
-              instance._bdDump = bdDumpState();
-            }
-          };
-          const activate = () => {
-            if (typeof bd !== 'undefined' && bd.path === path) instance._bdDump = null;
-            instance.activate();
-          };
-          document.addEventListener('pointerdown', remember, true);
-          root.addEventListener('pointerdown', activate, true);
+          // CanvasComponent owns the shared runtime handoff and per-editor dump.
           root.addEventListener('wheel', event => {
-            activate();
+            ownership?.activate();
             if (instance.onEmbeddedWheel?.({ mode: event.ctrlKey || event.metaKey ? 'zoom' : 'pan', deltaX: event.deltaX, deltaY: event.deltaY }, event)) {
               event.preventDefault(); event.stopPropagation();
             }
           }, { capture: true, passive: false });
-          cleanup.push(() => document.removeEventListener('pointerdown', remember, true));
         }
         flushEditor = async () => {
           if (typeof instance.flush === 'function') return await instance.flush();
           if (typeof instance.flushPendingSave === 'function') return await instance.flushPendingSave();
-          if (kind === 'board' && typeof bd !== 'undefined' && bd.path === path && bd.dirty) return await bdSave();
+          if (kind === 'board' && typeof bd !== 'undefined') {
+            const ownsRuntime = typeof CanvasComponent !== 'undefined' && CanvasComponent._runtimeOwner === instance;
+            if (!ownsRuntime && !instance._bdDump?.bd?.dirty) return true;
+            if (ownsRuntime && !bd.dirty) return true;
+            instance.activate();
+            if (bd.dirty) return await bdSave();
+          }
           return true;
         };
         return true;
       }
-      if (kind === 'chat' || /(?:^|\/)\_chat\/llm\//.test(path)) {
-        const chatEditor = await mountChat(root, path, access);
-        flushEditor = chatEditor.flush;
-        instance = chatEditor;
-        return true;
-      }
       if (kind === 'note' || /\.md$/i.test(path)) {
-        const toolbar = document.createElement('div');
-        toolbar.className = 'gb-toolbar meldex-entity-detail-toolbar';
+        const toolbar = window.GBEditorHost.toolbar('page-rt-toolbar', id);
+        const title = toolbar.querySelector('[data-editor-local-id=page-title]');
+        if (title) { title.textContent = item.name; title.contentEditable = access.readOnly ? 'false' : 'true'; }
         const editor = document.createElement('div');
         editor.className = 'meldex-entity-linked-note meldex-entity-detail-editor';
+        editor.dataset.editorLocalId = 'page-content';
         editor.dataset.e2eId = 'entity-linked-note-editor';
-        // 読込が終わるまで入力させない。非同期のopenPageが先行入力を上書きしないようにする。
         editor.contentEditable = 'false';
-        for (const [label, command] of [['太字', 'bold'], ['斜体', 'italic'], ['箇条書き', 'insertUnorderedList']]) {
-          const button = document.createElement('button');
-          button.type = 'button'; button.textContent = label; button.disabled = true;
-          button.addEventListener('mousedown', event => event.preventDefault());
-          button.addEventListener('click', () => { editor.focus(); document.execCommand(command); });
-          toolbar.appendChild(button);
-        }
-        root.append(toolbar, editor);
+        const ctx = { paneId: id, pagePath: path, viewMode: 'page', containerEl: root, strictRoot: true };
+        bindHost(ctx, null, null);
+        if (title && typeof initPageTitle === 'function') initPageTitle(title, {
+          getPath: () => ctx.pagePath,
+          onRenamed: ({ newPath, label, result }) => {
+            const oldPath = ctx.pagePath;
+            ctx.pagePath = newPath;
+            editor.dataset.path = newPath;
+            if (ownership) { ownership.host.path = newPath; ownership.host.label = label; }
+            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { label, etag: result.etag, titleOnly: !!result.title_only, type: 'page' });
+          },
+        });
+        root.dataset.editorLocalId = 'page-view';
+        const body = document.createElement('div'); body.className = 'note-editor-body';
+        const toc = document.createElement('div'); toc.dataset.editorLocalId = 'note-toc'; toc.id = 'note-toc-' + id; toc.style.display = 'none';
+        const resize = document.createElement('div'); resize.dataset.editorLocalId = 'note-toc-resize'; resize.id = 'note-toc-resize-' + id; resize.style.display = 'none';
+        resize.setAttribute('role', 'separator'); resize.setAttribute('aria-label', '目次幅を調整'); resize.tabIndex = 0;
+        body.append(toc, resize, editor);
+        root.append(toolbar, body);
+        if (typeof initNoteTocResize === 'function') initNoteTocResize(root);
+        window.MeldexNoteStatusFilter?.bindButtons?.(root);
         const ok = await openPage(item.name, path, {
           containerEl: editor, skipShowView: true, skipGlobalUi: true, skipStateView: true,
           skipNavPush: true, skipSaveLastView: true, skipRecent: true, skipHighlight: true, skipHistoryScope: true,
@@ -42185,7 +42234,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         flushEditor = async () => {
           if (access.readOnly) return true;
           await _runNoteAutoSave(editor);
-          return !window.MeldexNoteSaveAdapter?.isConflictPending?.(path)
+          return !window.MeldexNoteSaveAdapter?.isConflictPending?.(ctx.pagePath)
             && window.MeldexNoteSaveAdapter.isUnchanged(editor, _noteMarkdownFromEditor(editor));
         };
         return ok;
@@ -42228,7 +42277,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
         return false;
       } },
-      activate: () => instance?.activate?.(),
+      activate: () => { ownership?.activate(); instance?.activate?.(); },
       deactivate: () => instance?.deactivate?.(),
       dispose: async () => {
         await ready;
@@ -42238,118 +42287,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           return false;
         }
         disposed = true;
+        ownership?.dispose();
         cleanup.forEach(remove => remove());
-        instance?.destroy?.({ skipFlush: true });
+        if (instance && typeof getComponentInstance === 'function' && getComponentInstance(id) === instance) removeComponentInstance(id, { skipFlush: true });
+        else instance?.destroy?.({ skipFlush: true });
         return true;
       },
     };
   }
 
-  async function mountChat(root, path, access) {
-    // /chat/load supplies the canonical message model. Bind it to the same file
-    // generation as /file so edits cannot overwrite a concurrent chat session.
-    const file = await apiFetch('/file?path=' + encodeURIComponent(path));
-    const source = String(path).replace(/\\/g, '/').match(/^(.+)\/_chat\/llm\//)?.[1] || '';
-    const chat = await apiFetch('/chat/load?path=' + encodeURIComponent(path)
-      + (/^(?:[a-z]:\/|\/)/i.test(source) ? '&source_folder=' + encodeURIComponent(source) : ''));
-    const check = await apiFetch('/file?path=' + encodeURIComponent(path));
-    if (file.etag !== check.etag) throw new Error('チャットが更新されました。タブを開き直してください');
-    const messages = structuredClone(chat.messages || []);
-    let baseline = file.content;
-    let etag = file.etag;
-    let dirty = false;
-    let timer = 0;
-    let saving = Promise.resolve(true);
-    function serialize() {
-      const match = baseline.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-      if (!match) throw new Error('チャットのメタデータを読み取れません');
-      const lines = match[1].split(/\r?\n/);
-      const start = lines.findIndex(line => /^messages:/.test(line));
-      if (start >= 0) {
-        let end = start + 1;
-        while (end < lines.length && !/^[^\s#-][^\r\n]*?:(?:\s|$)/.test(lines[end])) end += 1;
-        lines.splice(start, end - start);
-      }
-      lines.push('messages: ' + JSON.stringify(messages));
-      const body = messages.map(message => '## ' + (message.role === 'assistant' ? 'Assistant' : 'User') + '\n\n'
-        + (Array.isArray(message.content) ? message.content.filter(part => part.type === 'text').map(part => part.text || '').join('\n') : message.content || '')).join('\n\n');
-      return '---\n' + lines.join('\n') + '\n---\n\n' + body + '\n';
-    }
-    function flush() {
-      clearTimeout(timer);
-      saving = saving.catch(() => false).then(async () => {
-        if (!dirty || access.readOnly) return true;
-        const content = serialize();
-        const result = await apiPut('/file?path=' + encodeURIComponent(path), { content, if_match_etag: etag });
-        if (result?.ok === false || result?.missing || result?.skipped || !result?.etag) {
-          throw new Error('チャットの保存を確認できませんでした。入力を保持しています');
-        }
-        baseline = content;
-        etag = result.etag;
-        if (serialize() === content) {
-          dirty = false;
-          await window.MeldexDraftRecovery?.markSynced?.(path, content);
-        }
-        return true;
-      });
-      return saving;
-    }
-    function schedule() {
-      dirty = true;
-      void window.MeldexDraftRecovery?.saveDraft?.(path, serialize(), baseline);
-      clearTimeout(timer);
-      timer = setTimeout(() => flush().catch(error => {
-        if (typeof showStatus === 'function') showStatus('チャットの保存に失敗しました: ' + (error.userMessage || error.message || error), true);
-      }), 1000);
-    }
-    const conversation = document.createElement('div');
-    conversation.className = 'meldex-entity-linked-chat';
-    function renderMessage(message) {
-      const label = document.createElement('label');
-      label.textContent = ({ assistant: 'アシスタント', user: 'ユーザー', system: 'システム', tool: 'ツール' })[message.role] || message.role;
-      function textInput(value, update) {
-        const input = document.createElement('textarea');
-        input.value = String(value || ''); input.readOnly = access.readOnly;
-        input.dataset.e2eId = 'entity-linked-chat-message';
-        input.addEventListener('input', () => { update(input.value); schedule(); });
-        input.addEventListener('blur', () => flush().catch(() => {}));
-        label.appendChild(input);
-      }
-      if (Array.isArray(message.content)) {
-        for (const part of message.content) {
-          if (part.type === 'text') textInput(part.text, value => { part.text = value; });
-          else {
-            const attachment = document.createElement('div');
-            attachment.textContent = part.name || part.filename || (part.type === 'image_url' ? '画像' : '添付ファイル');
-            label.appendChild(attachment);
-          }
-        }
-      } else textInput(message.content, value => { message.content = value; });
-      conversation.appendChild(label);
-    }
-    messages.forEach(renderMessage);
-    root.appendChild(conversation);
-    if (!access.readOnly) {
-      const add = document.createElement('button');
-      add.type = 'button'; add.className = 'gb-btn'; add.textContent = 'メッセージを追加';
-      add.dataset.action = 'add-message';
-      add.addEventListener('click', () => {
-        const message = { role: 'user', content: '', id: crypto.randomUUID() };
-        messages.push(message); renderMessage(message); schedule();
-        conversation.lastElementChild.querySelector('textarea').focus();
-      });
-      root.appendChild(add);
-    }
-    const beforeUnload = event => {
-      if (!dirty) return;
-      void window.MeldexDraftRecovery?.saveDraft?.(path, serialize(), baseline);
-      void flush().catch(() => {});
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', beforeUnload);
-    return { flush, destroy: () => { clearTimeout(timer); window.removeEventListener('beforeunload', beforeUnload); } };
-  }
   window.MeldexTopicLinkedEditor = { mount };
 })();
 
@@ -42363,6 +42309,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
    およびエントリ詳細での添付表示・操作を集約する。 */
 (function (global) {
   'use strict';
+  let sectionSequence = 0;
 
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -42381,6 +42328,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function getAttachmentIcon(kind, name) {
     const ext = (name || '').split('.').pop()?.toLowerCase();
+    const inferred = { md: 'page', 'mel-board': 'board', 'mel-scenario': 'scriptnote', 'mel-sheet': 'database' }[ext];
+    const type = { note: 'page', sheet: 'database', scenario: 'scriptnote' }[kind]
+      || ((!kind || kind === 'file') && inferred) || kind;
+    const shared = typeof uiTypeIconName === 'function' ? uiTypeIconName(type) : '';
+    if (shared) return shared;
     if (kind === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
     if (kind === 'pdf' || ext === 'pdf') return 'fileText';
     if (kind === 'board' || ext === 'mel-board') return 'kanban';
@@ -42395,6 +42347,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const path = item.path;
     const name = item.name || path.split('/').pop();
     const ext = name.split('.').pop()?.toLowerCase();
+    if (item.kind === 'folder' && typeof openFolder === 'function') return openFolder(name, path);
+    if (['sheet', 'database'].includes(item.kind) && typeof selectDatabase === 'function') return selectDatabase(path);
+    if (item.kind === 'chat' && typeof window.openSavedChat === 'function') return window.openSavedChat(path);
 
     // Meldex内部形式
     if (ext === 'mel-board' && typeof openBoard === 'function') {
@@ -42649,14 +42604,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const section = document.createElement('section');
     section.className = 'meldex-entity-attachments-section';
     section.dataset.e2eId = 'entity-attachments-section';
+    section.dataset.instanceId = String(++sectionSequence);
 
     const header = document.createElement('div');
-    header.className = 'meldex-entity-attachments-header';
+    header.className = 'meldex-entity-attachments-header gb-pane-tabs';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
     section.classList.toggle('is-empty', attachments.length === 0);
     const list = document.createElement('div');
-    list.className = 'meldex-entity-attachments-list';
+    list.className = 'meldex-entity-attachments-list gb-pane-tabs-scroll';
     list.setAttribute('role', 'tablist');
     list.setAttribute('aria-label', 'リンクファイル');
     if (attachments.length) header.appendChild(list);
@@ -42680,7 +42636,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return true;
       },
     };
-    function selectAttachment(item) {
+    function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
         if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
         if (!await flushEditors()) return false;
@@ -42698,6 +42654,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           pane.setAttribute('role', 'tabpanel');
           pane.setAttribute('aria-label', item.name || item.path);
           pane.dataset.attachmentId = item.id;
+          pane.id = 'linked-pane-' + section.dataset.instanceId + '-' + item.id;
           content.appendChild(pane);
           const editor = window.MeldexTopicLinkedEditor.mount(pane, item, entryPath, options);
           editors.set(item.id, editor);
@@ -42707,11 +42664,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         section.dataset.selectedAttachment = selectedId;
         list.querySelectorAll('[role="tab"]').forEach(tab => {
           const selected = tab.dataset.attachmentId === selectedId;
+          tab.closest('.gb-tab')?.classList.toggle('active', selected);
           tab.setAttribute('aria-selected', String(selected));
           tab.tabIndex = selected ? 0 : -1;
         });
         Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
-        editors.get(selectedId)?.activate?.();
+        if (selectionOptions.activate !== false) editors.get(selectedId)?.activate?.();
         return true;
       }).catch(error => {
         if (typeof showStatus === 'function') showStatus('リンク先を開けませんでした: ' + (error.message || error), true);
@@ -42769,8 +42727,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       section._uploadLinkedFiles = uploadFiles;
 
       async function handleCreateNew(type, defaultLabel) {
-        const label = prompt(`新規${defaultLabel}の名前を入力してください:`, defaultLabel);
-        if (label == null) return;
+        const label = '無題';
         addBtn.disabled = true;
         try {
           if (options.beforeMutation && !await options.beforeMutation()) throw new Error('未保存の編集を保存できませんでした');
@@ -42818,12 +42775,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const menuItems = [
           { id: 'link-existing', icon: 'link2', label: '既存ファイルをリンク...', action: () => fileInput.click() },
           { divider: true },
-          { id: 'create-note', icon: 'fileText', label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
-          { id: 'create-chat', icon: 'messageSquare', label: '新規チャット', action: () => handleCreateNew('chat', 'チャット') },
-          { id: 'create-database', icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
-          { id: 'create-scriptnote', icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
-          { id: 'create-board', icon: 'kanban', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
-          { id: 'create-folder', icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
+          { id: 'create-note', icon: getAttachmentIcon('note'), label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
+          { id: 'create-database', icon: getAttachmentIcon('sheet'), label: '新規シート', action: () => handleCreateNew('database', 'シート') },
+          { id: 'create-scriptnote', icon: getAttachmentIcon('scenario'), label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
+          { id: 'create-board', icon: getAttachmentIcon('board'), label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
         ];
 
         menuItems.forEach((item) => {
@@ -42889,8 +42844,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (attachments.length) {
       attachments.forEach((item) => {
         const row = document.createElement('div');
-        row.className = 'meldex-entity-attachment-item';
+        row.className = 'meldex-entity-attachment-item gb-tab';
         row.dataset.attachmentId = item.id;
+        row.addEventListener('click', event => {
+          if (!event.target.closest('button')) selectAttachment(item);
+        });
 
         const iconBox = document.createElement('span');
         iconBox.className = 'meldex-entity-attachment-icon';
@@ -42901,6 +42859,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         nameSpan.className = 'meldex-entity-attachment-name';
         nameSpan.setAttribute('role', 'tab');
         nameSpan.setAttribute('aria-selected', 'false');
+        nameSpan.setAttribute('aria-controls', 'linked-pane-' + section.dataset.instanceId + '-' + item.id);
         nameSpan.dataset.allowReadonly = '1';
         nameSpan.dataset.attachmentId = item.id;
         nameSpan.dataset.action = 'select-attachment';
@@ -43009,7 +42968,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (attachments.length) section.appendChild(content);
     container.appendChild(section);
     const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
-    if (initial) selectAttachment(initial);
+    if (initial) selectAttachment(initial, { activate: !!options.selectedId });
     return section;
   }
 
@@ -43311,6 +43270,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         script: 'scriptnote',
       };
       itemType = typeAlias[itemType] || itemType;
+      if (['chat', 'folder'].includes(itemType)) throw _httpError(400, 'トピックにチャットとフォルダは追加できません');
 
       const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
@@ -43521,6 +43481,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (!entryPath) throw _httpError(400, 'entry_path は必須です');
       if (!sourcePath) throw _httpError(400, 'source_path は必須です');
 
+      const sourceStat = await provider.statPath(sourcePath);
+      const directory = sourceStat?.kind === 'directory' || sourceStat?.type === 'dir' || sourceStat?.type === 'folder'
+        || sourceStat?.isDirectory === true || sourceStat?.['.tag'] === 'folder';
+      if (directory) {
+        const name = sourcePath.replace(/\/$/, '').split('/').pop();
+        const settings = await frontmatterLite.readFrontmatter(provider, `${sourcePath}/${name}.md`).catch(() => null);
+        if (settings?.frontmatter?.type !== 'settings-db') throw _httpError(400, 'トピックにフォルダは追加できません');
+      } else if (/\.md$/i.test(sourcePath)) {
+        const source = await frontmatterLite.readFrontmatter(provider, sourcePath);
+        if (String(source?.frontmatter?.type || '').trim().toLowerCase() === 'chat' || /(?:^|\/)\_chat\/llm\//i.test(sourcePath)) {
+          throw _httpError(400, 'トピックにチャットは追加できません');
+        }
+      }
+
       const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
@@ -43549,7 +43523,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         id: attId,
         path: targetPath,
         name: targetPath.split('/').pop(),
-        kind: getAttachmentIcon(null, targetPath),
+        kind: directory ? 'sheet' : /\.mel-board$/i.test(sourcePath) ? 'board' : /\.mel-scenario$/i.test(sourcePath) ? 'scenario' : /\.md$/i.test(sourcePath) ? 'note' : /\.(png|jpe?g|webp|gif|svg)$/i.test(sourcePath) ? 'image' : 'file',
         mode: mode,
         created_at: new Date().toISOString(),
         size: stat?.size,
@@ -44824,6 +44798,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function _isDirectUrl(value) {
     const raw = String(value || '').trim();
+    if (_looksLikeFileRawUrl(raw) && !_runtime()?.isBrowserDataMode?.()) {
+      try {
+        // Rebuilding a scoped Desktop URL from "path" alone loses its root
+        // and may reuse another source's cached image with the same name.
+        if (new URL(raw, document.baseURI || window.location.href).searchParams.has('context_path')) return true;
+      } catch {}
+    }
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) return false;
     return /^(https?:|data:|blob:)/i.test(raw) || (raw.startsWith('/') && _isAppRelativeUrl(raw));
   }
@@ -55307,7 +55288,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const px = Math.max(10, Number(size) || 20);
     const className = options.className ? ' ' + options.className : '';
     if (parsed.type === 'image') {
-      const src = '/api/media/file?path=' + encodeURIComponent(parsed.path);
+      const endpoint = parsed.path.startsWith('_media/') ? '/api/media/file' : '/api/file-raw';
+      const context = endpoint === '/api/file-raw' && options.contextPath
+        ? '&context_path=' + encodeURIComponent(options.contextPath) : '';
+      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context;
       return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
     }
     if (parsed.type === 'lucide') {
@@ -55390,7 +55374,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const spec = normalizeSpec(item.spec);
       if (!spec.startsWith('image:') || seen.has(spec)) continue;
       seen.add(spec);
-      items.push({ ...item, type: 'image', spec, search: [item.label, item.keywords, '画像 写真 カスタム'].join(' ') });
+      const filename = parseSpec(spec).path.replace(/\\/g, '/').split('/').pop();
+      items.push({ ...item, type: 'image', spec, label: item.label || filename || '画像',
+        search: [item.label, filename, item.keywords, '画像 写真 カスタム'].filter(Boolean).join(' ') });
     }
     return items;
   }
@@ -55459,6 +55445,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const picker = document.createElement('div');
     const pickerId = 'gb-icon-picker-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    const childPopups = new Map();
+    picker._registerChildPopup = (popup, close, relatedSelector = '') => {
+      if (!popup) return;
+      for (const child of childPopups.keys()) if (!child.isConnected) childPopups.delete(child);
+      childPopups.set(popup, { close, relatedSelector });
+    };
+    // 本体の共通dismissも、body直下に開く子ポップアップを内側として扱う。
+    picker._isPopupChildTarget = (target) => [...childPopups].some(([popup, child]) =>
+      popup.isConnected && (popup.contains(target) || (child.relatedSelector && target?.closest?.(child.relatedSelector))));
     picker.className = 'gb-icon-picker gb-context-menu' + (options.className ? ' ' + options.className : '');
     picker.dataset.e2eId = 'icon-picker-popup';
     picker.setAttribute('role', 'dialog');
@@ -55472,6 +55467,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let keydownHandler = null;
     const removePicker = () => {
       renderToken++;
+      for (const [popup, child] of childPopups) if (popup.isConnected) child.close?.();
+      childPopups.clear();
       picker.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
       if (keydownHandler) document.removeEventListener('keydown', keydownHandler, true);
@@ -55566,10 +55563,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
-      const label = document.createElement('input'); label.className = 'gb-input'; label.placeholder = '画像の名前（省略時はファイル名）';
-      label.setAttribute('aria-label', '画像の名前');
-      const keywords = document.createElement('input'); keywords.className = 'gb-input'; keywords.placeholder = '検索ワード（例: 猫 ねこ キャラクター）';
-      keywords.setAttribute('aria-label', '画像の検索ワード');
       const upload = document.createElement('button'); upload.type = 'button'; upload.className = 'gb-btn gb-btn-xs';
       upload.textContent = '画像を登録'; upload.dataset.e2eId = 'icon-picker-image-upload';
       const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.hidden = true;
@@ -55580,12 +55573,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = fileInput.files?.[0]; if (!file) return;
         upload.disabled = true; status.textContent = '登録中…';
         try {
-          const item = await options.onUploadImage(file, { label: label.value.trim(), keywords: keywords.value.trim() });
+          const item = await options.onUploadImage(file, { label: file.name, keywords: '画像 写真 カスタム' });
           if (picker.isConnected) selectItem(item);
         } catch (error) { if (picker.isConnected) status.textContent = error.message || '画像の登録に失敗しました'; }
         finally { upload.disabled = false; fileInput.value = ''; }
       });
-      form.append(label, keywords, upload, fileInput, status); picker.appendChild(form);
+      form.append(upload, fileInput, status); picker.appendChild(form);
     }
 
     const grid = document.createElement('div');
@@ -55669,7 +55662,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
-        btn.innerHTML = render(item.spec, options.itemSize || 22);
+        btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
         btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
         btn.addEventListener('click', () => selectItem(item));
         fragment.appendChild(btn);
@@ -55739,22 +55732,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     closeHandler = (ev) => {
+      if (picker._isPopupChildTarget(ev.target)) return;
       if (!picker.contains(ev.target) && ev.target !== options.anchorEl) {
         removePicker();
       }
     };
     keydownHandler = (ev) => {
       if (ev.key === 'Escape') {
+        // 子パレットが先にEscapeを処理する。次のEscapeで親を閉じる。
+        if ([...childPopups.keys()].some(popup => popup.isConnected)) {
+          // 子が処理した同じEscapeを本体の共通dismissへ渡さない。
+          ev.stopPropagation();
+          return;
+        }
         ev.preventDefault();
         ev.stopPropagation();
         removePicker();
       }
     };
-    setTimeout(() => {
-      if (!picker.isConnected || !closeHandler || !keydownHandler) return;
+    if (picker.isConnected && closeHandler && keydownHandler) {
       document.addEventListener('pointerdown', closeHandler, true);
       document.addEventListener('keydown', keydownHandler, true);
-    }, 0);
+    }
     return picker;
   }
 
@@ -63712,6 +63711,10 @@ ${reason.message}`
     try {
       const token = _safeGet('meldex-auth-token') || _safeGet('crossfolio-auth-token') || '';
       if (token && !next.has('Authorization')) next.set('Authorization', 'Bearer ' + token);
+      // 直接fetchするベータAPIにも、この端末の編集リース所有情報を渡す。
+      // 省略すると自分のフォルダ編集中でも、他端末の書込みとして拒否される。
+      const locks = window.MeldexActiveLocks;
+      if (locks?.header && typeof locks.token === 'function') next.set(locks.header, locks.token());
     } catch (_) {}
     return next;
   }
@@ -70891,7 +70894,10 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   const anchor = _gbPaletteAnchor;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
   _gbPaletteAnchor = null;
-  document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => menu.remove());
+  document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => {
+    if (typeof menu._requestClose === 'function') menu._requestClose();
+    else menu.remove();
+  });
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
@@ -71226,10 +71232,26 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       const openSwatchCtxMenu = (e) => {
         e.preventDefault();
         e.stopPropagation?.();
-        document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(m => m.remove());
+        document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(m => {
+          if (typeof m._requestClose === 'function') m._requestClose();
+          else m.remove();
+        });
         const menu = document.createElement('div');
         menu.className = 'gb-context-menu gb-palette-context-menu';
         menu.setAttribute('role', 'menu');
+        const closeCtx = (ev) => { if (!menu.contains(ev.target)) closeMenu(); };
+        const keyCtx = (ev) => {
+          if (ev.key !== 'Escape') return;
+          ev.preventDefault(); ev.stopPropagation();
+          closeMenu(true);
+        };
+        function closeMenu(restoreFocus = false) {
+          menu.remove();
+          document.removeEventListener('pointerdown', closeCtx, true);
+          document.removeEventListener('keydown', keyCtx, true);
+          if (restoreFocus && swatch.isConnected) swatch.focus({ preventScroll: true });
+        }
+        menu._requestClose = () => closeMenu();
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'gb-context-menu-item danger';
@@ -71237,7 +71259,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         del.setAttribute('role', 'menuitem');
         del.textContent = '削除';
         del.addEventListener('click', () => {
-          menu.remove();
+          closeMenu();
           removeCustomColor(c);
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
@@ -71256,12 +71278,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
         }
         del.focus({ preventScroll: true });
-        setTimeout(() => {
-          const closeCtx = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); } };
-          const keyCtx = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); swatch.focus({ preventScroll: true }); } };
-          document.addEventListener('pointerdown', closeCtx, true);
-          document.addEventListener('keydown', keyCtx, true);
-        }, 0);
+        // この操作のpointerdownは完了済み。直後のEscapeも取りこぼさない。
+        document.addEventListener('pointerdown', closeCtx, true);
+        document.addEventListener('keydown', keyCtx, true);
       };
       swatch.addEventListener('contextmenu', openSwatchCtxMenu);
       if (typeof addLongPressHandler === 'function') {

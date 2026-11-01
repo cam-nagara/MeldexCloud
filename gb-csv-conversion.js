@@ -170,11 +170,19 @@
       : root.MeldexCsv.serialize(options.rows || [], options.dialect);
 
     const submitButton = dialog.querySelector('[data-command="submit"]');
+    const cancelButton = dialog.querySelector('[data-command="cancel"]');
     submitButton.disabled = true;
     submitButton.textContent = '変換中...';
+    submitButton.setAttribute('aria-label', submitButton.textContent);
+    cancelButton.textContent = '閉じて作業を続ける';
+    cancelButton.setAttribute('aria-label', cancelButton.textContent);
     try {
-      const result = await apiPost('/import-csv', body);
+      const result = await runBackgroundJob('/import-csv', { ...body, background: true }, { operationLabel: 'CSVをシートに変換しています' });
       if (!result?.ok) throw new Error('変換を完了できませんでした');
+      if (!dialog.isConnected) {
+        if (typeof showStatus === 'function') showStatus(`シートを作成しました: ${result.imported_count || 0}件`);
+        return result;
+      }
       if (typeof options.onCreated === 'function') {
         await options.onCreated(result);
       } else {
@@ -188,10 +196,17 @@
       if (typeof showStatus === 'function') showStatus(`シートを作成しました: ${result.imported_count || 0}件${suffix}`);
       close(result);
       return result;
+    } catch (error) {
+      if (error?.name !== 'AbortError') throw error;
+      if (typeof showStatus === 'function') showStatus('CSV変換を停止しました。確定前のシートは作成していません。');
+      return null;
     } finally {
-      if (active) {
+      if (active?.dialog === dialog) {
         submitButton.disabled = false;
-        submitButton.textContent = 'シートを作成';
+        submitButton.textContent = dialog.querySelector('[name="mode"]').value === 'append' ? '既存シートへ追加' : 'シートを作成';
+        submitButton.setAttribute('aria-label', submitButton.textContent);
+        cancelButton.textContent = 'キャンセル';
+        cancelButton.setAttribute('aria-label', cancelButton.textContent);
       }
     }
   }

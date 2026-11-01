@@ -1,6 +1,7 @@
-function updateNoteToc() {
-  const pc = document.getElementById('page-content');
-  const toc = document.getElementById('note-toc');
+function updateNoteToc(editor) {
+  const pc = editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+  const toc = editor ? editor.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="note-toc"],#note-toc')
+    : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
@@ -987,17 +988,21 @@ function _restoreCustomUndoSelection(editable, snapshot) {
 function _resetCustomUndo(editable) {
   editable._customUndoStack = []; editable._customRedoStack = [];
   editable._lastCustomOp = false; editable._customUndoInputPending = false;
-  editable._customUndoDocument = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  editable._customUndoDocument = _customUndoDocumentIdentity(editable);
+}
+function _customUndoDocumentIdentity(editable) {
+  return JSON.stringify([editable.dataset.path || editable.dataset.entityPath || globalThis.GBEditorHost?.ownerOf?.(editable)?.path || '', editable._openPageLoadSeq]);
 }
 function _ensureCustomUndoDocument(editable) {
-  const identity = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  const identity = _customUndoDocumentIdentity(editable);
   if (editable._customUndoDocument !== identity) _resetCustomUndo(editable);
 }
-function _customUndoPush(stack, editable) {
+function _customUndoPush(stack, editable, snapshot = null) {
   const selections = _customUndoSelections.get(stack) || [];
   selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
-  stack.push(editable.innerHTML);
-  selections.push({ html: editable.innerHTML, selection: _customUndoSelection(editable) });
+  const html = snapshot ? snapshot.html : editable.innerHTML;
+  stack.push(html);
+  selections.push({ html, selection: snapshot ? snapshot.selection : _customUndoSelection(editable) });
   if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
   _customUndoSelections.set(stack, selections);
 }
@@ -1025,6 +1030,61 @@ function _customUndoHost(node) {
   return host;
 }
 let _customUndoInProgress = false;
+const _scopedNoteUndoStates = new WeakMap();
+function _scopedNoteUndoState(editable) {
+  if (!editable || globalThis.GBEditorHost?.ownerOf?.(editable)?.kind !== 'page') return null;
+  _ensureCustomUndoDocument(editable);
+  let value = _scopedNoteUndoStates.get(editable);
+  if (!value || value.stack !== editable._customUndoStack) {
+    value = { stack: editable._customUndoStack, html: editable.innerHTML,
+      selection: _customUndoSelection(editable), kind: '', time: 0, after: null, pending: null, composing: false };
+    _scopedNoteUndoStates.set(editable, value);
+  }
+  return value;
+}
+function _syncScopedNoteUndoState(editable, value, kind = '') {
+  if (!value) return;
+  value.html = editable.innerHTML;
+  value.selection = _customUndoSelection(editable);
+  value.after = value.selection;
+  value.kind = kind;
+  value.time = Date.now();
+  value.pending = null;
+}
+document.addEventListener('focusin', event => {
+  _scopedNoteUndoState(_customUndoHost(event.target));
+}, true);
+document.addEventListener('selectionchange', () => {
+  const editable = _customUndoHost(document.activeElement);
+  const value = _scopedNoteUndoState(editable);
+  if (value && !value.pending) value.selection = _customUndoSelection(editable);
+});
+document.addEventListener('beforeinput', event => {
+  const editable = _customUndoHost(event.target);
+  const value = _scopedNoteUndoState(editable);
+  if (!value) return;
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+    event.preventDefault();
+    _applyCustomUndo(editable, event.inputType === 'historyRedo');
+    return;
+  }
+  value.pending = { html: editable.innerHTML, selection: _customUndoSelection(editable) };
+}, true);
+document.addEventListener('compositionstart', event => {
+  const value = _scopedNoteUndoState(_customUndoHost(event.target));
+  if (value) { value.composing = true; value.kind = ''; }
+}, true);
+document.addEventListener('compositionend', event => {
+  const editable = _customUndoHost(event.target);
+  const value = _scopedNoteUndoState(editable);
+  if (!value) return;
+  value.composing = false;
+  if (value.kind === 'composition' && editable._customUndoStack.at(-1) === editable.innerHTML) {
+    _customUndoPop(editable._customUndoStack);
+    editable._lastCustomOp = editable._customUndoStack.length > 0;
+    value.kind = '';
+  }
+}, true);
 function _applyCustomUndo(editable, redo) {
   if (!editable || !editable.isContentEditable) return false;
   _ensureCustomUndoDocument(editable);
@@ -1047,18 +1107,34 @@ document.addEventListener('keydown', function(e) {
   const key = String(e.key).toLowerCase();
   if (key !== 'z' && key !== 'y') return;
   const editable = _customUndoHost(document.activeElement);
-  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey))) e.preventDefault();
+  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey)) || _scopedNoteUndoState(editable)) e.preventDefault();
 }, true);
 
 // Undo後の通常入力は古いRedoを破棄する。コールアウト内部からのinputも同じ文書へ集約する。
 document.addEventListener('input', function(e) {
-  if (_customUndoInProgress) return;
   const editable = _customUndoHost(e.target);
   if (!editable) return;
   _ensureCustomUndoDocument(editable);
+  const scoped = _scopedNoteUndoState(editable);
+  if (_customUndoInProgress) { _syncScopedNoteUndoState(editable, scoped); return; }
   if (editable._customUndoInputPending) {
     editable._customUndoInputPending = false;
     editable._lastCustomOp = true;
+    _syncScopedNoteUndoState(editable, scoped);
+    return;
+  }
+  if (scoped) {
+    const before = scoped.pending || { html: scoped.html, selection: scoped.selection };
+    const kind = scoped.composing || e.isComposing || /Composition/.test(e.inputType || '') ? 'composition' : e.inputType || 'command';
+    const continuous = kind === scoped.kind && Date.now() - scoped.time < 750
+      && (kind === 'composition' || (['insertText', 'deleteContentBackward', 'deleteContentForward'].includes(kind)
+        && JSON.stringify(before.selection) === JSON.stringify(scoped.after)));
+    if (before.html !== editable.innerHTML) {
+      if (!continuous) _customUndoPush(editable._customUndoStack, editable, before);
+      editable._customRedoStack.length = 0;
+      editable._lastCustomOp = true;
+    }
+    _syncScopedNoteUndoState(editable, scoped, kind);
     return;
   }
   editable._customRedoStack.length = 0;
@@ -1091,6 +1167,8 @@ function rtCaptureSelectionFromToolbar() {
   const range = sel.getRangeAt(0).cloneRange();
   const editable = _rtSelectionEditable(range);
   if (!editable) return false;
+  const host = window.GBEditorHost?.get();
+  if (host?.kind === 'page' && !host.root.contains(editable)) return false;
   rtSavedSelection = range;
   rtTarget = editable;
   return true;
@@ -1187,7 +1265,9 @@ function _rtApplyNoteTitle() {
 function rtCmd(cmd, value) {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
-  if ((cmd === 'undo' || cmd === 'redo') && _applyCustomUndo(editable, cmd === 'redo')) return;
+  if (cmd === 'undo' || cmd === 'redo') {
+    if (_applyCustomUndo(editable, cmd === 'redo') || _scopedNoteUndoState(editable)) return;
+  }
   document.execCommand(cmd, false, value || null);
   if (cmd === 'formatBlock') _rtClearNoteTitleAtSelection(editable);
 }
@@ -1252,7 +1332,7 @@ const CALLOUT_PRESETS = [
 
 function _calloutMetadata(value) {
   const meta = {};
-  for (const key of ['background', 'border']) {
+  for (const key of ['background', 'border', 'iconColor']) {
     const color = String(value?.[key] || '');
     if (/^(transparent|#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i.test(color)
       && CSS.supports('color', color)) meta[key] = color;
@@ -1260,14 +1340,55 @@ function _calloutMetadata(value) {
   for (const key of ['label', 'keywords']) {
     if (value?.[key]) meta[key] = String(value[key]).slice(0, 500);
   }
+  if (typeof value?.colorLinked === 'boolean') meta.colorLinked = value.colorLinked;
   return meta;
 }
 
-function _calloutImageLibraryKey() {
+function _calloutColorsLinked(value) {
+  if (typeof value?.colorLinked === 'boolean') return value.colorLinked;
+  // 旧ノートの個別指定は保持し、指定のないコールアウトは連動を既定にする。
+  return !(value?.background || value?.border);
+}
+
+function _calloutColorStyles(value, iconColor) {
+  const meta = _calloutMetadata(value);
+  if (!_calloutColorsLinked(meta)) return { background: meta.background || '', border: meta.border || '' };
+  const accent = _calloutMetadata({ border: iconColor }).border || 'var(--page-callout-icon-fg, currentColor)';
+  return { background: `color-mix(in srgb, ${accent} 10%, transparent)`,
+    border: `color-mix(in srgb, ${accent} 30%, transparent)` };
+}
+
+function _calloutBlockColors(block) {
+  return { background: block.dataset.calloutBackground, border: block.dataset.calloutBorder,
+    colorLinked: block.dataset.calloutColorLinked === 'true' ? true
+      : block.dataset.calloutColorLinked === 'false' ? false : undefined };
+}
+
+function _applyCalloutColorStyles(block) {
+  const value = _calloutBlockColors(block);
+  const iconColor = block.querySelector('.callout-icon')?.dataset.color;
+  const linked = _calloutColorsLinked(value);
+  const styles = _calloutColorStyles(value, iconColor);
+  block.dataset.calloutColorLinked = String(linked);
+  block.style.setProperty('--callout-linked-color', linked ? _calloutMetadata({ border: iconColor }).border || '' : '');
+  // 入力時にChromiumが背景のインライン指定を整理しても、連動状態を失わない。
+  block.style.backgroundColor = linked ? '' : styles.background;
+  block.style.borderColor = linked ? '' : styles.border;
+}
+
+function _calloutImageLibraryKey(editable) {
   const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.();
   const scope = workspace?.workspaceId || workspace?.workspace_id || workspace?.stableId
     || window.MeldexWorkspaces?.getActiveId?.() || window.MeldexStandaloneFS?.rootPathLabel?.();
-  return scope ? 'meldex-callout-images-v1:' + scope : null;
+  if (scope) return 'meldex-callout-images-v1:' + scope;
+  // 通常のDesktopはworkspace IDを持たない。ノートの保存先ソースで分離する。
+  const path = editable?.dataset?.path || editable?.dataset?.entityPath || '';
+  if (!path) return null;
+  const source = typeof _detectSourceFolderFromPath === 'function' ? _detectSourceFolderFromPath(path) : '';
+  const base = source || path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+  let folder = String(base).replace(/\\/g, '/').replace(/\/+$/, '');
+  if (/^[a-z]:\//i.test(folder)) folder = folder.toLowerCase();
+  return folder ? 'meldex-callout-images-v1:source:' + encodeURIComponent(folder) : null;
 }
 
 function _calloutRegisteredImages(key) {
@@ -1282,29 +1403,78 @@ function _calloutRegisteredImages(key) {
   } catch (_) { return []; }
 }
 
+async function _prepareCalloutIconImage(file) {
+  if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+    throw new Error('10MB以下のPNG・JPEG・GIF・WebP画像を選択してください');
+  }
+  const image = new Image();
+  // 本体の画像URL制約でも読み込める既存のdata URL経路を使う。
+  const data = await _readFileAsDataURL(file);
+  let canvas;
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('画像を読み込めませんでした'));
+      image.src = data;
+    });
+    const width = image.naturalWidth, height = image.naturalHeight;
+    if (!width || !height) throw new Error('画像の大きさを読み込めませんでした');
+    if (width <= 512 && height <= 512) return file;
+    const scale = 512 / Math.max(width, height);
+    canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('画像を縮小できませんでした');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const type = file.type === 'image/jpeg' || file.type === 'image/webp' ? file.type : 'image/png';
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
+    if (!blob) throw new Error('画像を縮小できませんでした');
+    const ext = { 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/png': 'png' }[blob.type];
+    if (!ext) throw new Error('画像を保存可能な形式に変換できませんでした');
+    const name = file.name.replace(/\.[^.]*$/, '') + '.' + ext;
+    return new File([blob], name, { type: blob.type, lastModified: file.lastModified });
+  } finally {
+    image.src = '';
+    if (canvas) canvas.width = canvas.height = 0;
+  }
+}
+
 function _calloutImageOptions(editable, isCurrent) {
-  const libraryKey = _calloutImageLibraryKey();
-  const current = () => isCurrent() && _calloutImageLibraryKey() === libraryKey;
+  const libraryKey = _calloutImageLibraryKey(editable);
+  const current = () => isCurrent() && _calloutImageLibraryKey(editable) === libraryKey;
   const imageItems = [...editable.querySelectorAll('.callout-icon[data-icon^="image:"]')].map(icon => ({
     spec: icon.dataset.icon, label: icon.dataset.iconLabel || '登録画像',
     keywords: icon.dataset.iconKeywords || '画像 写真 カスタム', type: 'image',
   }));
-  imageItems.push(..._calloutRegisteredImages(libraryKey));
+  const registered = _calloutRegisteredImages(libraryKey);
+  // 旧Desktop版で一覧へ登録されなかった画像も、ノートから読み戻して保全する。
+  if (libraryKey && imageItems.length) {
+    const items = new Map(registered.map(item => [GBIconAssets.normalizeSpec(item.spec), item]));
+    imageItems.forEach(item => items.set(GBIconAssets.normalizeSpec(item.spec), item));
+    try { localStorage.setItem(libraryKey, JSON.stringify([...items.values()])); } catch (_) {}
+  }
+  imageItems.push(...registered);
   return {
     presetsIconOnly: true, imageItems,
+    imageContextPath: editable.dataset.path || editable.dataset.entityPath || '',
     onUploadImage: async (file, details) => {
       if (!current()) throw new Error('編集対象が変わったため、もう一度開いてください');
-      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type) || file.size > 10 * 1024 * 1024) {
+      const prepared = await _prepareCalloutIconImage(file);
+      if (!current()) throw new Error('編集対象が変わりました');
+      if (prepared.size > 10 * 1024 * 1024) {
         throw new Error('10MB以下のPNG・JPEG・GIF・WebP画像を選択してください');
       }
       const path = editable.dataset.path || editable.dataset.entityPath || '';
       if (!path) throw new Error('先にノートを保存してください');
       const dir = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-      const data = await _readFileAsDataURL(file);
+      const data = await _readFileAsDataURL(prepared);
       if (!current()) throw new Error('編集対象が変わりました');
       const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data, filename: file.name }),
+        body: JSON.stringify({ data, filename: prepared.name, source: 'callout-icon' }),
       });
       if (!result.ok || !result.path) throw new Error(result.error || '画像を登録できませんでした');
       if (!current()) throw new Error('編集対象が変わりました。元のノートで画像を選び直してください');
@@ -1322,7 +1492,8 @@ function _calloutImageOptions(editable, isCurrent) {
 }
 
 function insertNoteTable(rows = 3, cols = 3) {
-  const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
+  const editable = _rtEnsureEditableSelection()
+                || document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
                 || document.getElementById('page-content');
   if (!editable) return;
   editable.focus();
@@ -1346,7 +1517,9 @@ function insertNoteTable(rows = 3, cols = 3) {
 }
 
 function insertCallout() {
-  const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable');
+  // パネル内のツールバーへフォーカスが移った場合も、本文の選択位置へ戻す。
+  const hosts = '#page-content, #entity-freetext, #dp-editable';
+  const editable = document.activeElement?.closest(hosts) || _rtEnsureEditableSelection()?.closest(hosts);
   if (!editable) return;
   const originalPath = editable.dataset.path || editable.dataset.entityPath;
   const originalGeneration = editable._openPageLoadSeq;
@@ -1389,10 +1562,12 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange, item)
   const cls = type ? ' callout-' + type : '';
   const colorStyle = color ? ' style="color:' + esc(color) + ';"' : '';
   const spec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(iconName || 'lightbulb') : iconName;
-  const iconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 20) : lucide(iconName, 20);
+  const iconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 20,
+    { contextPath: editable.dataset.path || editable.dataset.entityPath }) : lucide(iconName, 20);
   const imageAttrs = item?.type === 'image'
     ? ` data-icon-label="${esc(item.label || '登録画像')}" data-icon-keywords="${esc(item.keywords || '画像 写真 カスタム')}"` : '';
-  const html = `<div class="callout-block${cls}" contenteditable="false"><span class="callout-icon" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
+  const blockStyle = color ? `--callout-linked-color:${color};` : '';
+  const html = `<div class="callout-block${cls}" data-callout-color-linked="true" style="${esc(blockStyle)}" contenteditable="false"><span class="callout-icon" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
   document.execCommand('insertHTML', false, html);
   setTimeout(() => {
     const blocks = editable.querySelectorAll('.callout-block');
@@ -1433,7 +1608,7 @@ function _openCalloutIconPicker(iconEl) {
     if (!isCurrent()) return;
     _pushCustomUndo(editable);
     const normalized = GBIconAssets.normalizeSpec(spec);
-    iconEl.innerHTML = GBIconAssets.render(normalized, 20);
+    iconEl.innerHTML = GBIconAssets.render(normalized, 20, { contextPath: path });
     iconEl.dataset.icon = normalized;
     iconEl.dataset.color = color || '';
     iconEl.style.color = color || '';
@@ -1444,6 +1619,7 @@ function _openCalloutIconPicker(iconEl) {
     if (block) {
       const preset = _calloutPresetForSpec(normalized);
       for (const type of ['info', 'warning', 'danger', 'success']) block.classList.toggle('callout-' + type, preset?.type === type);
+      _applyCalloutColorStyles(block);
     }
     _dispatchCalloutInput(iconEl);
   }
@@ -1459,32 +1635,74 @@ function _openCalloutIconPicker(iconEl) {
     includeNoto: true,
     presets: CALLOUT_PRESETS.map((p) => ({ ...p, spec: p.icon })),
     onSelect: (spec, item) => applyIcon(spec, item?.color || iconEl.dataset.color || '', item),
-    extraFooter: () => {
+    extraFooter: (picker) => {
       const colorWrap = document.createElement('div');
       colorWrap.className = 'callout-color-settings';
-      if (typeof createInlineColorGrid === 'function') {
+      if (typeof openColorPalette === 'function' && typeof setColorSwatchValue === 'function') {
         const block = iconEl.closest('.callout-block');
+        const linkLabel = document.createElement('label'); linkLabel.className = 'callout-color-setting';
+        const link = document.createElement('input'); link.type = 'checkbox';
+        link.dataset.e2eId = 'callout-color-linked';
+        link.checked = _calloutColorsLinked(_calloutBlockColors(block));
+        const linkText = document.createElement('span'); linkText.textContent = 'アイコン色に連動';
+        linkLabel.title = '枠はアイコン色の30％、背景は10％の濃さで表示します。オフで個別に設定できます';
+        linkLabel.append(link, linkText);
+        const swatches = [];
+        const refreshColors = () => {
+          link.checked = _calloutColorsLinked(_calloutBlockColors(block));
+          const styles = _calloutColorStyles(_calloutBlockColors(block), iconEl.dataset.color);
+          swatches.forEach(({ swatch, target, key, label }) => {
+            const linked = target === block && link.checked;
+            setColorSwatchValue(swatch, linked ? styles[label === '枠' ? 'border' : 'background'] : target.dataset[key] || '');
+            swatch.disabled = linked;
+            swatch.title = linked ? '「アイコン色に連動」をオフにすると個別に設定できます' : label + 'の色を選択';
+          });
+        };
+        link.addEventListener('change', () => {
+          if (!picker.isConnected || !isCurrent()) { refreshColors(); return; }
+          _pushCustomUndo(editable);
+          block.dataset.calloutColorLinked = String(link.checked);
+          _applyCalloutColorStyles(block);
+          refreshColors();
+          _dispatchCalloutInput(iconEl);
+        });
         const targets = [['アイコン', iconEl, 'color', 'color'], ['枠', block, 'calloutBorder', 'borderColor'],
           ['背景', block, 'calloutBackground', 'backgroundColor']];
-        const controls = document.createElement('div'); controls.className = 'callout-color-targets';
-        controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', '色の設定対象');
-        const palette = document.createElement('div'); palette.className = 'callout-color-palette';
-        const selectTarget = ([label, target, key, property]) => {
-          controls.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', button.textContent === label ? 'true' : 'false'));
-          const cg = createInlineColorGrid(target.dataset[key] || '', (c) => {
+        colorWrap.setAttribute('role', 'group'); colorWrap.setAttribute('aria-label', 'コールアウトの色');
+        targets.forEach(([label, target, key, property]) => {
+          const control = document.createElement('label'); control.className = 'callout-color-setting';
+          const text = document.createElement('span'); text.textContent = label;
+          const swatch = document.createElement('button'); swatch.type = 'button';
+          swatch.className = 'gb-color-swatch gb-color-swatch--field';
+          swatch.setAttribute('aria-label', label + 'の色を選択'); swatch.title = label + 'の色を選択';
+          swatch.setAttribute('aria-haspopup', 'dialog');
+          swatches.push({ swatch, target, key, label });
+          swatch.addEventListener('click', () => {
             if (!isCurrent()) return;
-            _pushCustomUndo(editable);
-            target.style[property] = c || ''; target.dataset[key] = c || '';
-            _dispatchCalloutInput(iconEl);
-            selectTarget([label, target, key, property]);
+            const applyColor = (color) => {
+              if (!picker.isConnected || !isCurrent() || (target === block && link.checked)) return;
+              _pushCustomUndo(editable);
+              target.style[property] = color || ''; target.dataset[key] = color || '';
+              _applyCalloutColorStyles(block);
+              refreshColors();
+              _dispatchCalloutInput(iconEl);
+            };
+            openColorPalette(swatch, target.dataset[key] || '', applyColor);
+            const palette = document.querySelector('.gb-palette-popup');
+            if (palette) {
+              palette.addEventListener('click', event => event.stopPropagation());
+              // 個別指定の解除も、開いた共通パレット内で行う。
+              const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'gb-btn gb-btn-xs';
+              reset.textContent = 'デフォルト'; reset.setAttribute('aria-label', 'デフォルトを選択');
+              reset.addEventListener('click', () => { applyColor(''); closeColorPalette({ restoreFocus: true }); });
+              palette.querySelector('.gb-palette-close-row')?.prepend(reset);
+              picker._registerChildPopup(palette, () => closeColorPalette(), '.gb-palette-context-menu, .gb-ctx-menu');
+            }
           });
-          cg.setAttribute('aria-label', label + 'の色'); palette.replaceChildren(cg);
-        };
-        targets.forEach(target => {
-          const button = document.createElement('button'); button.type = 'button'; button.className = 'gb-btn gb-btn-xs';
-          button.textContent = target[0]; button.addEventListener('click', () => selectTarget(target)); controls.appendChild(button);
+          control.append(text, swatch); colorWrap.appendChild(control);
         });
-        colorWrap.append(controls, palette); selectTarget(targets[0]);
+        colorWrap.appendChild(linkLabel);
+        refreshColors();
       }
       return colorWrap;
     },
@@ -1498,6 +1716,14 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   _openCalloutIconPicker(iconEl);
 });
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || !['Enter', ' '].includes(e.key)) return;
+  const iconEl = e.target.closest?.('.callout-icon[role="button"]');
+  if (!iconEl) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  // clickを経由し、表示ロックの確認・解除を通常のマウス操作と同じ経路へ通す。
+  iconEl.click();
+}, true);
 
 // エントリ用リッチテキストツールバーを初期化（メインと同じボタン構成）
 function _shouldAllowToolbarMouseDefault(target) {

@@ -15,6 +15,7 @@
     'external-import': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
     'enex-import': 'ENEX取り込み',
+    'sheet-file-import': 'シート取り込み',
     'webclip-inbox': 'Web受信箱',
   };
   const restoredJobs = new Map();
@@ -46,7 +47,13 @@
     const api = _progressApi();
     if (!api || !job?.id) return null;
     const jobId = String(job.id);
+    const activeStatus = ['queued', 'running', 'cancelling'].includes(job.status) ? job.status : 'running';
     let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
+    if (handle && ['queued', 'running', 'cancelling'].includes(job.status)
+        && api.isTerminalStatus(handle.getState()?.status)) {
+      handle.dispose();
+      handle = null;
+    }
     // 定期巡回だけでは通知しない。実際の取得開始か、取得結果・失敗を待つ。
     if (!handle && job.kind === 'webclip-inbox'
         && ['queued', 'running'].includes(job.status)
@@ -60,7 +67,7 @@
         kind: String(job.kind || 'import'),
         label: _jobLabel(job),
         phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
-        status: job.status,
+        status: activeStatus,
         mode: Number(job.progress?.total) > 0 ? 'determinate' : 'indeterminate',
         processed: Number(job.progress?.processed) || 0,
         total: Number(job.progress?.total) || null,
@@ -68,6 +75,9 @@
         background: true,
         showImmediately: true,
         priority: job.status === 'running' ? 20 : 10,
+        cancellable: true,
+        cancelCompletes: false,
+        cancel: () => apiPost('/jobs/' + encodeURIComponent(jobId) + '/cancel', {}, { silentError: true }),
       });
     }
     const rawTotal = Number(job.progress?.total);
@@ -75,7 +85,7 @@
     handle.update({
       label: _jobLabel(job),
       phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
-      status: job.status,
+      status: job.cancel_requested || (activeStatus === 'running' && handle.getState()?.status === 'cancelling') ? 'cancelling' : activeStatus,
       mode: rawTotal > 0 ? 'determinate' : 'indeterminate',
       processed: processed,
       total: rawTotal > 0 ? rawTotal : null,
@@ -138,11 +148,13 @@
       entry.handle = entry.handle || _syncJob(job);
       const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
       if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-      else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました（未取得・翻訳待ちを含む）' });
+      else if (['failed', 'errors', 'failed_assets', 'conflicts', 'blocked', 'unsupported', 'unprocessed', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error || result.warnings?.length) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました。確認が必要な項目があります。' });
       else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
     } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
-      entry.handle?.cancelled({ summary: '取り込みを中止しました' });
+      const partial = job.result;
+      entry.handle?.cancelled({ summary: partial?.unprocessed !== undefined
+        ? `取り込みを中止しました。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : '取り込みを中止しました' });
       restoredJobs.delete(jobId);
     } else if (job?.status === 'error') {
       entry.handle = entry.handle || _syncJob(job);

@@ -977,12 +977,12 @@
 }
 
 /* === Note styling: heading empty-line removal === */
-#page-content h1 + div:has(> br:only-child),
-#page-content h2 + div:has(> br:only-child),
-#page-content h3 + div:has(> br:only-child),
-#page-content h4 + div:has(> br:only-child),
-#page-content h5 + div:has(> br:only-child),
-#page-content h6 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h1 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h2 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h3 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h4 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h5 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h6 + div:has(> br:only-child),
 #entity-freetext h1 + div:has(> br:only-child),
 #entity-freetext h2 + div:has(> br:only-child),
 #entity-freetext h3 + div:has(> br:only-child),
@@ -993,13 +993,13 @@
 }
 
 /* === Note styling: table === */
-#page-content table, #entity-freetext table, #dp-editable table, #board-note-editable table {
+:is(#page-content,[data-editor-local-id="page-content"]) table, #entity-freetext table, #dp-editable table, #board-note-editable table {
   border-collapse: collapse;
   inline-size: 100%;
   margin-block: var(--page-table-margin-y, 8px);
   font-size: var(--page-table-font-size, 13px);
 }
-#page-content th, #entity-freetext th, #dp-editable th, #board-note-editable th {
+:is(#page-content,[data-editor-local-id="page-content"]) th, #entity-freetext th, #dp-editable th, #board-note-editable th {
   background: var(--page-table-header-bg, var(--bg3)) !important;
   color: var(--page-table-header-fg, var(--page-text-fg, var(--fg))) !important;
   font-weight: var(--page-table-header-bold, bold);
@@ -1008,7 +1008,7 @@
   font-size: var(--page-table-header-font-size, inherit);
   text-align: start;
 }
-#page-content td, #entity-freetext td, #dp-editable td, #board-note-editable td {
+:is(#page-content,[data-editor-local-id="page-content"]) td, #entity-freetext td, #dp-editable td, #board-note-editable td {
   background: var(--page-table-cell-bg, transparent) !important;
   color: var(--page-table-cell-fg, var(--page-text-fg, var(--fg))) !important;
   font-weight: var(--page-table-cell-bold, normal);
@@ -1016,7 +1016,7 @@
   font-family: var(--page-table-cell-font, inherit);
   font-size: var(--page-table-cell-font-size, inherit);
 }
-#page-content th, #page-content td,
+:is(#page-content,[data-editor-local-id="page-content"]) th, :is(#page-content,[data-editor-local-id="page-content"]) td,
 #entity-freetext th, #entity-freetext td,
 #dp-editable th, #dp-editable td,
 #board-note-editable th, #board-note-editable td {
@@ -1028,13 +1028,13 @@
   height: auto;
   line-height: var(--page-text-line-height, 160%);
 }
-#page-content td:empty::before, #page-content th:empty::before,
+:is(#page-content,[data-editor-local-id="page-content"]) td:empty::before, :is(#page-content,[data-editor-local-id="page-content"]) th:empty::before,
 #entity-freetext td:empty::before, #entity-freetext th:empty::before,
 #dp-editable td:empty::before, #dp-editable th:empty::before,
 #board-note-editable td:empty::before, #board-note-editable th:empty::before {
   content: '\200B';
 }
-#page-content tr:hover td, #entity-freetext tr:hover td, #dp-editable tr:hover td, #board-note-editable tr:hover td {
+:is(#page-content,[data-editor-local-id="page-content"]) tr:hover td, #entity-freetext tr:hover td, #dp-editable tr:hover td, #board-note-editable tr:hover td {
   background: var(--page-table-row-hover-bg, var(--bg2)) !important;
   color: var(--page-table-row-hover-fg, var(--page-table-cell-fg, var(--page-text-fg, var(--fg)))) !important;
 }
@@ -1175,29 +1175,29 @@ blockquote .quote-cite a {
 }
 
 /* === Note styling: horizontal rule === */
-#page-content hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
+:is(#page-content,[data-editor-local-id="page-content"]) hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
   border: none;
   border-block-start: 1px solid var(--page-hr-color, var(--border));
   margin-block: 20px;
 }
 
 /* === Note styling: link hover === */
-#page-content .auto-link:hover, #entity-freetext .auto-link:hover, #dp-editable .auto-link:hover, #board-note-editable .auto-link:hover {
+:is(#page-content,[data-editor-local-id="page-content"]) .auto-link:hover, #entity-freetext .auto-link:hover, #dp-editable .auto-link:hover, #board-note-editable .auto-link:hover {
   background: var(--page-link-hover-bg, var(--bg3));
   border-radius: var(--page-link-hover-radius, 2px);
 }
 
 /* === Note styling: code block === */
-#page-content pre, #entity-freetext pre, #dp-editable pre, #board-note-editable pre {
+:is(#page-content,[data-editor-local-id="page-content"]) pre, #entity-freetext pre, #dp-editable pre, #board-note-editable pre {
   border-radius: var(--page-code-block-radius, 4px);
   border: var(--page-code-block-border-width, 1px) solid var(--page-code-block-border, var(--border));
 }
 
 /* === Note styling: list markers === */
-#page-content ul, #entity-freetext ul, #dp-editable ul, #board-note-editable ul {
+:is(#page-content,[data-editor-local-id="page-content"]) ul, #entity-freetext ul, #dp-editable ul, #board-note-editable ul {
   list-style-type: disc;
 }
-#page-content ul ul, #entity-freetext ul ul, #dp-editable ul ul, #board-note-editable ul ul {
+:is(#page-content,[data-editor-local-id="page-content"]) ul ul, #entity-freetext ul ul, #dp-editable ul ul, #board-note-editable ul ul {
   list-style-type: circle;
 }
 

@@ -16,8 +16,6 @@
   const ENEX_MAX_BYTES = 32 * 1024 * 1024;
   const PUREREF_WARN_BYTES = 64 * 1024 * 1024;
   const PUREREF_MAX_BYTES = 256 * 1024 * 1024;
-  const JOB_POLL_INTERVAL_MS = 1000;
-  const JOB_MAX_POLLS = 30 * 60;
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -75,6 +73,11 @@
     return !!fallbackWhenUnavailable;
   }
 
+  async function inputText(message, value) {
+    if (typeof cfPrompt === 'function') return cfPrompt(message, value || '', { okLabel: '決定' });
+    return window.prompt(message, value || '');
+  }
+
   async function loadConfig() {
     if (!apiReady()) return null;
     return apiFetch('/external-import/config', { silentError: true });
@@ -102,8 +105,8 @@
       card.appendChild(title);
       card.appendChild(textEl('div', `保存先: ${item.save_dir || ''}`, 'gb-section-desc'));
       const result = item.last_result;
-      const issues = (result?.errors || 0) + (result?.failed_assets || 0) + (result?.warnings?.length || 0);
-      card.appendChild(textEl('div', result ? `前回: 新規${result.created || 0} / 更新${result.updated || 0} / スキップ${result.skipped || 0}${issues ? ' / 要確認' + issues + '件' : ''}` : '前回: なし', 'gb-section-desc'));
+      const issues = (result?.errors || 0) + (result?.failed_assets || 0) + (result?.conflicts || 0) + (result?.unprocessed || 0) + (result?.warnings?.length || 0);
+      card.appendChild(textEl('div', result ? `前回: ${result.cancelled ? '停止 / ' : ''}新規${result.created || 0} / 更新${result.updated || 0} / スキップ${result.skipped || 0}${result.cancelled && result.unprocessed == null ? ' / 残り未確認' : ''}${issues ? ' / 要確認' + issues + '件' : ''}` : '前回: なし', 'gb-section-desc'));
       if (item.service === 'notion') card.appendChild(textEl('div', item.source_ids?.length ? `対象: 指定した${item.source_ids.length}ページ` : '対象: 接続に共有した全ページ', 'gb-section-desc'));
       if (!result && item.service === 'eagle-reference') {
         card.appendChild(textEl('div', '「更新を反映」を押すと参照用フォルダを作成し、ソースフォルダとして追加します。', 'gb-section-desc'));
@@ -116,7 +119,7 @@
       row.style.justifyContent = 'flex-start';
       row.style.flexWrap = 'wrap';
 
-      const copyCompleted = item.service === 'eagle-copy' && item.last_result && item.last_result.ok !== false;
+      const copyCompleted = item.service === 'eagle-copy' && item.last_result && item.last_result.ok !== false && !item.last_result.cancelled && !item.last_result.unprocessed;
       const runBtn = document.createElement('button');
       runBtn.type = 'button';
       runBtn.className = 'gb-btn gb-btn-sm';
@@ -140,6 +143,7 @@
 
       const deleteBtn = document.createElement('button');
       deleteBtn.type = 'button';
+      deleteBtn.disabled = runningSetIds.has(item.id);
       deleteBtn.className = 'gb-btn gb-btn-sm gb-btn-danger';
       deleteBtn.innerHTML = icon('trash2', 14) + ' 一覧から削除';
       deleteBtn.dataset.e2eId = `external-import-set-delete-${stableId}`;
@@ -325,7 +329,7 @@
 
   async function createSet(service, extra, options = {}) {
     const initialName = extra?.name || serviceLabel(service);
-    const name = options.promptForName === false ? initialName : prompt(`${serviceLabel(service)}取り込みセット名`, initialName);
+    const name = options.promptForName === false ? initialName : await inputText(`${serviceLabel(service)}取り込みセット名`, initialName);
     if (!name) return;
     const body = { ...(extra || {}), service, name };
     if (!body.save_dir) body.save_dir = `外部取り込み/${serviceLabel(service)}/${name}`;
@@ -355,7 +359,7 @@
       path = picked?.path || '';
     } catch {}
     if (!path) {
-      path = prompt('Obsidianフォルダを入力してください', '');
+      path = await inputText('Obsidianフォルダを入力してください', '');
     }
     if (!path) return;
     try {
@@ -572,7 +576,7 @@
         const result = await createSet(service, {
           source_path: libraryPath,
           name,
-          save_dir: `外部取り込み/Eagle/${name}`,
+          save_dir: `外部取り込み/${service === 'eagle-reference' ? 'Eagle参照' : 'Eagle'}/${name}`,
           save_root: 'source'
         }, {
           promptForName: false,
@@ -669,7 +673,8 @@
       await refresh();
       if (finalMessage) setStatus(finalMessage, finalIsError);
     } catch (err) {
-      setStatus('取り込みに失敗しました: ' + (err.userMessage || err.message || err), true);
+      const partial = err?.jobStatus?.result;
+      setStatus(err?.name === 'AbortError' ? `取り込みを停止しました。保存済みのファイルは残ります。${partial ? ' 新規' + (partial.created || 0) + ' / 更新' + (partial.updated || 0) + (partial.unprocessed == null ? ' / 残り未確認' : ' / 未処理' + partial.unprocessed) : ''}` : '取り込みに失敗しました: ' + (err.userMessage || err.message || err), err?.name !== 'AbortError');
     } finally {
       runningSetIds.delete(id);
       try { await refresh(); } catch {}
@@ -678,21 +683,10 @@
 
   async function pollJob(jobId) {
     if (!jobId) return;
-    for (let i = 0; i < JOB_MAX_POLLS; i += 1) {
-      const job = await apiFetch(`/external-import/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
-      if (job.status === 'done') {
-        const r = job.result || {};
-        resultStatus(`取り込み完了: 新規${r.created || 0} / 更新${r.updated || 0} / スキップ${r.skipped || 0}`, r);
-        return r;
-      }
-      if (job.status === 'error') throw new Error(job.error || '取り込みに失敗しました');
-      if (job.status === 'cancelled') throw new Error('取り込みをキャンセルしました');
-      if (i > 0 && i % 15 === 0) {
-        setStatus('取り込み処理中です。大きいデータでは時間がかかります...', false);
-      }
-      await new Promise(resolve => setTimeout(resolve, JOB_POLL_INTERVAL_MS));
-    }
-    throw new Error('取り込み処理が長時間続いています。時間をおいて確認してください。');
+    const result = await runBackgroundJob('', {}, { resumeJobId: jobId, operationLabel: '外部データを取り込んでいます',
+      onProgress: progress => setStatus(formatJobProgress(progress, { unit: '件', defaultPhase: '取り込み中' }), false) });
+    resultStatus(`取り込み完了: 新規${result.created || 0} / 更新${result.updated || 0} / スキップ${result.skipped || 0}`, result);
+    return result;
   }
 
   async function deleteSet(id) {
@@ -733,7 +727,7 @@
       );
       resultStatus(`ENEX取り込み完了: 新規${data.created || 0} / 更新${data.updated || 0}`, data);
     } catch (err) {
-      setStatus('ENEXを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
+      setStatus(err?.name === 'AbortError' ? 'ENEX取り込みを停止しました。保存済みのファイルは残ります。' : 'ENEXを取り込めませんでした: ' + (err.userMessage || err.message || err), err?.name !== 'AbortError');
     } finally {
       if (inputEl) inputEl.value = '';
     }
@@ -766,7 +760,7 @@
         if (!ok) return;
       }
       const baseName = (file.name || 'PureRef').replace(/\.pur$/i, '');
-      const boardName = prompt('作成するボード名', baseName);
+      const boardName = await inputText('作成するボード名', baseName);
       if (!boardName) return;
       setStatus('PureRefファイルを読み込んでいます...', false);
       const content = await fileToBase64(file);
@@ -785,7 +779,7 @@
       resultStatus(`PureRef取り込み完了: 画像${data.image_count}件 / ${data.board_path || ''}`, data);
       if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     } catch (err) {
-      setStatus('PureRefを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
+      setStatus(err?.name === 'AbortError' ? 'PureRef取り込みを停止しました。保存済みのファイルは残ります。' : 'PureRefを取り込めませんでした: ' + (err.userMessage || err.message || err), err?.name !== 'AbortError');
     } finally {
       if (inputEl) inputEl.value = '';
     }
@@ -869,7 +863,7 @@
               <label for="external-import-notion-name">取り込みセット名</label><input id="external-import-notion-name" class="gb-input" value="Notion" maxlength="120">
               <label for="external-import-notion-sources">取り込むページのURLまたはID（1行に1件）</label><textarea id="external-import-notion-sources" class="gb-input" rows="3" placeholder="https://www.notion.so/..." spellcheck="false"></textarea>
               <label class="external-import-check"><input type="checkbox" id="external-import-notion-all">接続に共有した全ページを取り込む</label>
-              <div class="gb-section-desc">ページ指定は最大100件、全ページの取り込みは1回最大1,000件です。</div>
+              <div class="gb-section-desc">ページ指定は最大100件です。全ページを選ぶと、接続に共有したページを最後まで順次取得します。</div>
               <label class="external-import-check"><input type="checkbox" id="external-import-notion-children" checked>ページ内のブロックも取り込む</label>
               <label class="external-import-check"><input type="checkbox" id="external-import-notion-assets">添付ファイルをコピーする</label>
               <button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm" disabled>${icon('plus', 14)} 取り込みセットを追加</button>

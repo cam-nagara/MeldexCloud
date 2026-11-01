@@ -74,12 +74,18 @@ document.addEventListener('contextmenu', (e) => {
    ============================== */
 
 
-// フォルダツリーの展開状態をlocalStorageで保持
+// 展開状態は今回の起動中だけ復元する。前回起動時の保存値では枝を開かない。
+let _outlinerExpansionSessionStarted = false;
 function getExpandedPaths() {
-  try { return JSON.parse(localStorage.getItem('outliner-expanded') || '[]'); } catch { return []; }
+  if (!_outlinerExpansionSessionStarted) return [];
+  try {
+    const paths = JSON.parse(localStorage.getItem('outliner-expanded') || '[]');
+    return Array.isArray(paths) ? paths.filter(path => typeof path === 'string') : [];
+  } catch { return []; }
 }
 function saveExpandedState(path, expanded) {
   let paths = getExpandedPaths();
+  _outlinerExpansionSessionStarted = true;
   const key = _pathToFileId(path) || path;
   if (expanded && !paths.includes(key)) paths.push(key);
   else if (!expanded) paths = paths.filter(p => p !== key && p !== path);
@@ -892,9 +898,3 @@ const treeSelection = {
       const entry = state.flat[i];
       const path = entry && entry.data && entry.data.path;
       if (!path) continue;
-      const mountedEl = state.mountedById.get(path);
-      if (mountedEl) this.add(mountedEl);
-      else state.selectedIds.add(path);
-    }
-    return true;
-  },

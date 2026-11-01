@@ -266,14 +266,13 @@
   justify-content: center;
   padding: 4px;
 }
-.gb-icon-image-register { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; flex: 0 0 auto; }
-.gb-icon-image-register input { min-width: 0; width: 100%; font-size: 11px; }
-.gb-icon-image-register input:first-child { grid-column: 1 / -1; }
-.gb-icon-image-register [role="status"] { grid-column: 1 / -1; font-size: 11px; color: var(--fg2); }
-.callout-color-settings { padding-top: 6px; border-top: 1px solid var(--border); flex: 0 0 auto; }
-.callout-color-targets { display: flex; gap: 6px; margin-bottom: 4px; }
-.callout-color-targets [aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-.callout-color-palette { overflow: auto; max-height: 90px; }
+.gb-icon-image-register { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 0 0 auto; }
+.gb-icon-image-register [role="status"] { font-size: 11px; color: var(--fg2); }
+.gb-icon-image-register [role="status"]:empty { display: none; }
+.callout-color-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 6px; border-top: 1px solid var(--border); flex: 0 0 auto; }
+.callout-color-setting { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.callout-color-setting input[type="checkbox"] { margin: 0; }
+.callout-color-setting .gb-color-swatch:disabled { opacity: 0.65; cursor: default; }
 
 .gb-icon-picker-footer {
   border-top: 1px solid var(--border);
@@ -522,7 +521,7 @@ input[type=number] { -moz-appearance: textfield; }
   --a11y-warning-border: #f59f00;
 }
 
-:focus-visible:not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input) {
+:focus-visible:not(td.active-cell):not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input) {
   outline: 2px solid var(--a11y-focus-ring) !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 3px var(--a11y-focus-shadow) !important;
@@ -2065,11 +2064,11 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #app-toolbar button,
   #app-toolbar input,
   #app-toolbar select,
-  #page-rt-toolbar .tb-icon-btn,
-  #page-rt-toolbar .tb-select,
-  #page-rt-toolbar button,
-  #page-rt-toolbar input,
-  #page-rt-toolbar select,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-icon-btn,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-select,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) button,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) input,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) select,
   #html-toolbar .tb-icon-btn,
   #html-toolbar input,
   #csv-toolbar .tb-icon-btn,
@@ -2107,7 +2106,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
     flex-wrap: wrap !important;
   }
   #app-toolbar .tb-icon-btn .ico,
-  #page-rt-toolbar .tb-icon-btn .ico,
+  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-icon-btn .ico,
   #html-toolbar .tb-icon-btn .ico,
   #csv-toolbar .tb-icon-btn .ico,
   #folder-toolbar .tb-icon-btn .ico {
@@ -2537,7 +2536,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
 }
 .chat-list-state-icons { margin-left: auto; color: var(--accent); font-size: 11px; white-space: nowrap; }
 
-#note-toc {
+:is(#note-toc,[data-editor-local-id="note-toc"]) {
   width: 200px;
   flex-shrink: 0;
   overflow-y: auto;
@@ -2548,7 +2547,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   font-size: 12px;
 }
 
-#note-toc-resize {
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
   width: var(--note-toc-resize-hit, 8px);
   min-width: var(--note-toc-resize-hit, 8px);
   flex-shrink: 0;
@@ -2558,7 +2557,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   touch-action: none;
 }
 
-#page-content {
+:is(#page-content,[data-editor-local-id="page-content"]) {
   flex: 1;
   padding-block: 16px;
   padding-inline: max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2));
@@ -6729,18 +6728,7 @@ button[data-search-tag-trigger][aria-pressed="true"] {
   padding: 6px 2px;
 }
 
-.meldex-entity-attachment-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: var(--ui-radius-sm, 4px);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  font-size: 13px;
-  flex: 0 0 auto;
-  max-width: 220px;
-}
+.meldex-entity-attachment-item { flex: 0 0 auto; max-width: 220px; }
 
 .meldex-entity-attachment-icon {
   display: flex;
@@ -6754,7 +6742,7 @@ button[data-search-tag-trigger][aria-pressed="true"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--accent, #3b82f6);
+  color: inherit;
   cursor: pointer;
   border: 0;
   padding: 3px 2px;
@@ -6763,8 +6751,7 @@ button[data-search-tag-trigger][aria-pressed="true"] {
 }
 
 .meldex-entity-attachment-item:has([aria-selected="true"]) {
-  border-color: var(--accent);
-  background: var(--bg3);
+  border-bottom-color: var(--accent);
 }
 
 .meldex-entity-attachment-add-container {
@@ -6793,7 +6780,8 @@ button[data-search-tag-trigger][aria-pressed="true"] {
 .meldex-entity-linked-pane:has(.gb-canvas-root),
 .meldex-entity-linked-pane:has(.sn2-root) {
   display: flex;
-  height: 500px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -6849,6 +6837,19 @@ iframe.meldex-entity-linked-media {
   color: var(--danger, #ef4444);
   background: rgba(239, 68, 68, 0.1);
 }
+
+/* The linked application owns the space remaining below topic properties. */
+.meldex-entity-detail:has(.meldex-entity-linked-content) { overflow: hidden; }
+.meldex-entity-attachments-section:has(.meldex-entity-linked-content) {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 180px; margin-bottom: 0;
+}
+.meldex-entity-attachments-header { flex: 0 0 auto; margin-bottom: 0; gap: 0; }
+.meldex-entity-attachments-list { flex: 1; gap: 0; }
+.meldex-entity-linked-content { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-note { flex: 1; min-height: 0; overflow: auto; }
+.gb-editor-host-toolbar { flex: 0 0 auto; min-width: 0; overflow-x: auto; }
+.gb-editor-host-toolbar .tb-file-title { min-width: 60px; }
 
 /* Command palette and left chrome footer */
 
@@ -12453,14 +12454,14 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   display: inline-block; width: 14px; height: 14px; border: 2px solid var(--fg2);
   border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
 }
-#entity-freetext > div, #page-content > div { margin-block: 2px; }
-#page-content > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
+#entity-freetext > div, :is(#page-content,[data-editor-local-id="page-content"]) > div { margin-block: 2px; }
+:is(#page-content,[data-editor-local-id="page-content"]) > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
 #entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }
 
 /* 目次の項目。旧実装は見た目もホバーも JS のインラインstyle直書きだったため、
    ポインタが項目に乗ったまま目次が作り直されると mouseleave が発火せず、
    ハイライトが消えないまま残った。CSS の :hover へ移して構造的に解消する。 */
-#note-toc .note-toc-item {
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item {
   display: block;
   inline-size: 100%;
   padding-block: 2px;
@@ -12476,17 +12477,17 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   white-space: nowrap;
   color: var(--page-toc-item-fg, var(--fg));
 }
-#note-toc .note-toc-item:hover,
-#note-toc .note-toc-item:focus-visible { background: var(--bg4); }
-#note-toc .note-toc-level-1 { padding-inline-start: 0; color: var(--page-toc-item-fg, var(--accent)); }
-#note-toc .note-toc-level-2 { padding-inline-start: 12px; }
-#note-toc .note-toc-level-3 { padding-inline-start: 24px; }
-#note-toc .note-toc-level-4 { padding-inline-start: 36px; }
-#note-toc .note-toc-level-5 { padding-inline-start: 48px; }
-#note-toc .note-toc-level-6 { padding-inline-start: 60px; }
-#note-toc .note-toc-empty { color: var(--fg2); padding: 4px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item:hover,
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item:focus-visible { background: var(--bg4); }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-1 { padding-inline-start: 0; color: var(--page-toc-item-fg, var(--accent)); }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-2 { padding-inline-start: 12px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-3 { padding-inline-start: 24px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-4 { padding-inline-start: 36px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-5 { padding-inline-start: 48px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-6 { padding-inline-start: 60px; }
+:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-empty { color: var(--fg2); padding: 4px; }
 
-#note-toc-resize {
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
   --note-toc-resize-hit: 8px;
   position: relative;
   outline: none;
@@ -12497,19 +12498,19 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .note-editor-body {
   min-height: 0;
 }
-.note-editor-body #note-toc,
-.note-editor-body #note-toc-resize {
+.note-editor-body :is(#note-toc,[data-editor-local-id="note-toc"]),
+.note-editor-body :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
   min-height: 0;
   box-sizing: border-box;
 }
 /* 本文だけ min-height を 0 にしない。旧実装では Meldex.html のインラインstyleが
-   min-height:200px を持っていたため、この規則の min-height:0 は #page-content には
+   min-height:200px を持っていたため、この規則の min-height:0 は :is(#page-content,[data-editor-local-id="page-content"]) には
    元から効いていなかった。レイアウトを外部CSS（gb-layout.part01.css）へ移すにあたり、
    当時の実効値（200px）を保つために本文を対象から外す。 */
-.note-editor-body #page-content {
+.note-editor-body :is(#page-content,[data-editor-local-id="page-content"]) {
   box-sizing: border-box;
 }
-#note-toc-resize::before {
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"])::before {
   content: '';
   position: absolute;
   top: 0;
@@ -12519,18 +12520,18 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   transform: translateX(-50%);
   background: var(--ui-border, var(--border));
 }
-#note-toc-resize:hover,
-#note-toc-resize:focus-visible {
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):hover,
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):focus-visible {
   background: transparent !important;
   border-right-color: transparent !important;
 }
-#note-toc-resize:hover::before,
-#note-toc-resize:focus-visible::before {
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):hover::before,
+:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):focus-visible::before {
   width: 2px;
   background: var(--ui-accent, var(--accent));
 }
 @media (pointer: coarse), (max-width: 640px) {
-  #page-view {
+  :is(#page-view,[data-editor-local-id="page-view"]) {
     --note-page-mobile-top-offset: 52px;
     height: min(
       calc((var(--meldex-window-inner-height, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
@@ -12544,11 +12545,11 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
     ) !important;
     min-height: 0 !important;
   }
-  #page-view .note-editor-body {
+  :is(#page-view,[data-editor-local-id="page-view"]) .note-editor-body {
     flex: 1 1 auto;
     min-height: 0 !important;
   }
-  #note-toc-resize {
+  :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
     --note-toc-resize-hit: 24px;
     align-self: stretch;
     max-height: 100%;
@@ -14155,7 +14156,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .tree-node-row.dragging { opacity: 0.4; }
 
 /* リッチテキスト */
-#entity-freetext, #page-content, #dp-editable, #board-note-editable {
+#entity-freetext, :is(#page-content,[data-editor-local-id="page-content"]), #dp-editable, #board-note-editable {
   color: var(--page-text-fg, var(--page-fg, var(--fg)));
   background: var(--page-text-bg, var(--content-bg, var(--page-bg, var(--bg))));
   font-family: var(--page-text-font, inherit);
@@ -14164,13 +14165,13 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   caret-color: var(--page-caret-color, var(--editor-caret-color, auto));
 }
 #entity-freetext::selection, #entity-freetext *::selection,
-#page-content::selection, #page-content *::selection,
+:is(#page-content,[data-editor-local-id="page-content"])::selection, :is(#page-content,[data-editor-local-id="page-content"]) *::selection,
 #dp-editable::selection, #dp-editable *::selection,
 #board-note-editable::selection, #board-note-editable *::selection {
   background: var(--page-selection-color, var(--ui-selection-bg));
   color: var(--page-selection-fg, var(--ui-selection-fg, inherit));
 }
-#entity-freetext blockquote, #page-content blockquote, #dp-editable blockquote, #board-note-editable blockquote {
+#entity-freetext blockquote, :is(#page-content,[data-editor-local-id="page-content"]) blockquote, #dp-editable blockquote, #board-note-editable blockquote {
   border-inline-start: 3px solid var(--page-quote-border); padding-block: 4px; padding-inline: 12px; margin-block: 4px;
   color: var(--page-quote-fg); background: var(--page-quote-bg);
   font-weight: var(--page-quote-bold); font-style: var(--page-quote-italic);
@@ -14203,13 +14204,17 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .callout-block.callout-warning { background: var(--page-callout-warning-bg, rgba(236,180,56,0.1)); border-color: var(--page-callout-warning-border, rgba(236,180,56,0.3)); }
 .callout-block.callout-danger { background: var(--page-callout-danger-bg, rgba(236,56,56,0.1)); border-color: var(--page-callout-danger-border, rgba(236,56,56,0.3)); }
 .callout-block.callout-success { background: var(--page-callout-success-bg, rgba(56,180,80,0.1)); border-color: var(--page-callout-success-border, rgba(56,180,80,0.3)); }
-#entity-freetext h1, #page-content h1, #dp-editable h1, #board-note-editable h1 { font-size: 24px; line-height: var(--page-h1-line-height, 130%); margin-block: var(--page-h1-space-before, 16px) var(--page-h1-space-after, 6px); color: var(--page-h1-fg); font-weight: var(--page-h1-bold); font-style: var(--page-h1-italic); font-family: var(--page-h1-font, inherit); }
-#entity-freetext h2, #page-content h2, #dp-editable h2, #board-note-editable h2 { font-size: 20px; line-height: var(--page-h2-line-height, 130%); margin-block: var(--page-h2-space-before, 14px) var(--page-h2-space-after, 4px); padding-inline-start: var(--page-h2-indent, 8px); color: var(--page-h2-fg); font-weight: var(--page-h2-bold); font-style: var(--page-h2-italic); font-family: var(--page-h2-font, inherit); }
-#entity-freetext h3, #page-content h3, #dp-editable h3, #board-note-editable h3 { font-size: 16px; line-height: var(--page-h3-line-height, 130%); margin-block: var(--page-h3-space-before, 12px) var(--page-h3-space-after, 4px); padding-inline-start: var(--page-h3-indent, 16px); color: var(--page-h3-fg); font-weight: var(--page-h3-bold); font-style: var(--page-h3-italic); font-family: var(--page-h3-font, inherit); }
-#entity-freetext h4, #page-content h4, #dp-editable h4, #board-note-editable h4 { font-size: 16px; line-height: var(--page-h4-line-height, 130%); margin-block: var(--page-h4-space-before, 10px) var(--page-h4-space-after, 3px); padding-inline-start: var(--page-h4-indent, 24px); color: var(--page-h4-fg); font-weight: var(--page-h4-bold); font-style: var(--page-h4-italic); font-family: var(--page-h4-font, inherit); }
-#entity-freetext h5, #page-content h5, #dp-editable h5, #board-note-editable h5 { font-size: 14px; line-height: var(--page-h5-line-height, 130%); margin-block: var(--page-h5-space-before, 8px) var(--page-h5-space-after, 3px); padding-inline-start: var(--page-h5-indent, 32px); color: var(--page-h5-fg); font-weight: var(--page-h5-bold); font-style: var(--page-h5-italic); font-family: var(--page-h5-font, inherit); }
-#entity-freetext h6, #page-content h6, #dp-editable h6, #board-note-editable h6 { font-size: 13px; line-height: var(--page-h6-line-height, 130%); margin-block: var(--page-h6-space-before, 6px) var(--page-h6-space-after, 2px); padding-inline-start: var(--page-h6-indent, 40px); color: var(--page-h6-fg); font-weight: var(--page-h6-bold); font-style: var(--page-h6-italic); font-family: var(--page-h6-font, inherit); }
-#entity-freetext, #page-content, #dp-editable, #board-note-editable {
+.callout-block[data-callout-color-linked="true"] {
+  background-color: color-mix(in srgb, var(--callout-linked-color, var(--page-callout-icon-fg, currentColor)) 10%, transparent);
+  border-color: color-mix(in srgb, var(--callout-linked-color, var(--page-callout-icon-fg, currentColor)) 30%, transparent);
+}
+#entity-freetext h1, :is(#page-content,[data-editor-local-id="page-content"]) h1, #dp-editable h1, #board-note-editable h1 { font-size: 24px; line-height: var(--page-h1-line-height, 130%); margin-block: var(--page-h1-space-before, 16px) var(--page-h1-space-after, 6px); color: var(--page-h1-fg); font-weight: var(--page-h1-bold); font-style: var(--page-h1-italic); font-family: var(--page-h1-font, inherit); }
+#entity-freetext h2, :is(#page-content,[data-editor-local-id="page-content"]) h2, #dp-editable h2, #board-note-editable h2 { font-size: 20px; line-height: var(--page-h2-line-height, 130%); margin-block: var(--page-h2-space-before, 14px) var(--page-h2-space-after, 4px); padding-inline-start: var(--page-h2-indent, 8px); color: var(--page-h2-fg); font-weight: var(--page-h2-bold); font-style: var(--page-h2-italic); font-family: var(--page-h2-font, inherit); }
+#entity-freetext h3, :is(#page-content,[data-editor-local-id="page-content"]) h3, #dp-editable h3, #board-note-editable h3 { font-size: 16px; line-height: var(--page-h3-line-height, 130%); margin-block: var(--page-h3-space-before, 12px) var(--page-h3-space-after, 4px); padding-inline-start: var(--page-h3-indent, 16px); color: var(--page-h3-fg); font-weight: var(--page-h3-bold); font-style: var(--page-h3-italic); font-family: var(--page-h3-font, inherit); }
+#entity-freetext h4, :is(#page-content,[data-editor-local-id="page-content"]) h4, #dp-editable h4, #board-note-editable h4 { font-size: 16px; line-height: var(--page-h4-line-height, 130%); margin-block: var(--page-h4-space-before, 10px) var(--page-h4-space-after, 3px); padding-inline-start: var(--page-h4-indent, 24px); color: var(--page-h4-fg); font-weight: var(--page-h4-bold); font-style: var(--page-h4-italic); font-family: var(--page-h4-font, inherit); }
+#entity-freetext h5, :is(#page-content,[data-editor-local-id="page-content"]) h5, #dp-editable h5, #board-note-editable h5 { font-size: 14px; line-height: var(--page-h5-line-height, 130%); margin-block: var(--page-h5-space-before, 8px) var(--page-h5-space-after, 3px); padding-inline-start: var(--page-h5-indent, 32px); color: var(--page-h5-fg); font-weight: var(--page-h5-bold); font-style: var(--page-h5-italic); font-family: var(--page-h5-font, inherit); }
+#entity-freetext h6, :is(#page-content,[data-editor-local-id="page-content"]) h6, #dp-editable h6, #board-note-editable h6 { font-size: 13px; line-height: var(--page-h6-line-height, 130%); margin-block: var(--page-h6-space-before, 6px) var(--page-h6-space-after, 2px); padding-inline-start: var(--page-h6-indent, 40px); color: var(--page-h6-fg); font-weight: var(--page-h6-bold); font-style: var(--page-h6-italic); font-family: var(--page-h6-font, inherit); }
+#entity-freetext, :is(#page-content,[data-editor-local-id="page-content"]), #dp-editable, #board-note-editable {
   font-size: var(--page-text-font-size, inherit);
   line-height: var(--page-text-line-height, 160%);
   -webkit-text-stroke-color: var(--page-text-stroke-color, transparent);
@@ -14218,35 +14223,35 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   box-shadow: calc(-1 * var(--page-text-left-accent, 0px)) 0 0 0 var(--page-text-accent-color, var(--accent));
   border-block-end: var(--page-text-underline, 0px) solid var(--page-text-accent-color, currentColor);
 }
-#entity-freetext h1, #page-content h1, #dp-editable h1, #board-note-editable h1 { font-size: var(--page-h1-font-size, 24px); padding-inline-start: var(--page-h1-left-accent, 0px); background: var(--page-h1-bg, transparent); -webkit-text-stroke-color: var(--page-h1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h1-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); border-block-end: var(--page-h1-underline, 0px) solid var(--page-h1-accent-color, currentColor); }
-#entity-freetext h2, #page-content h2, #dp-editable h2, #board-note-editable h2 { font-size: var(--page-h2-font-size, 20px); padding-inline-start: calc(var(--page-h2-indent, 8px) + var(--page-h2-left-accent, 0px)); background: var(--page-h2-bg, transparent); -webkit-text-stroke-color: var(--page-h2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h2-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); border-block-end: var(--page-h2-underline, 0px) solid var(--page-h2-accent-color, currentColor); }
-#entity-freetext h3, #page-content h3, #dp-editable h3, #board-note-editable h3 { font-size: var(--page-h3-font-size, 16px); padding-inline-start: calc(var(--page-h3-indent, 16px) + var(--page-h3-left-accent, 0px)); background: var(--page-h3-bg, transparent); -webkit-text-stroke-color: var(--page-h3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h3-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); border-block-end: var(--page-h3-underline, 0px) solid var(--page-h3-accent-color, currentColor); }
-#entity-freetext h4, #page-content h4, #dp-editable h4, #board-note-editable h4 { font-size: var(--page-h4-font-size, 16px); padding-inline-start: calc(var(--page-h4-indent, 24px) + var(--page-h4-left-accent, 0px)); background: var(--page-h4-bg, transparent); -webkit-text-stroke-color: var(--page-h4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h4-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); border-block-end: var(--page-h4-underline, 0px) solid var(--page-h4-accent-color, currentColor); }
-#entity-freetext h5, #page-content h5, #dp-editable h5, #board-note-editable h5 { font-size: var(--page-h5-font-size, 14px); padding-inline-start: calc(var(--page-h5-indent, 32px) + var(--page-h5-left-accent, 0px)); background: var(--page-h5-bg, transparent); -webkit-text-stroke-color: var(--page-h5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h5-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); border-block-end: var(--page-h5-underline, 0px) solid var(--page-h5-accent-color, currentColor); }
-#entity-freetext h6, #page-content h6, #dp-editable h6, #board-note-editable h6 { font-size: var(--page-h6-font-size, 13px); padding-inline-start: calc(var(--page-h6-indent, 40px) + var(--page-h6-left-accent, 0px)); background: var(--page-h6-bg, transparent); -webkit-text-stroke-color: var(--page-h6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h6-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); border-block-end: var(--page-h6-underline, 0px) solid var(--page-h6-accent-color, currentColor); }
-#entity-freetext blockquote, #page-content blockquote, #dp-editable blockquote, #board-note-editable blockquote { font-size: var(--page-quote-font-size, inherit); font-family: var(--page-quote-font, inherit); -webkit-text-stroke-color: var(--page-quote-stroke-color, transparent); -webkit-text-stroke-width: var(--page-quote-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 0 var(--page-quote-accent-color, var(--page-quote-border)); border-block-end: var(--page-quote-underline, 0px) solid var(--page-quote-accent-color, currentColor); }
+#entity-freetext h1, :is(#page-content,[data-editor-local-id="page-content"]) h1, #dp-editable h1, #board-note-editable h1 { font-size: var(--page-h1-font-size, 24px); padding-inline-start: var(--page-h1-left-accent, 0px); background: var(--page-h1-bg, transparent); -webkit-text-stroke-color: var(--page-h1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h1-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); border-block-end: var(--page-h1-underline, 0px) solid var(--page-h1-accent-color, currentColor); }
+#entity-freetext h2, :is(#page-content,[data-editor-local-id="page-content"]) h2, #dp-editable h2, #board-note-editable h2 { font-size: var(--page-h2-font-size, 20px); padding-inline-start: calc(var(--page-h2-indent, 8px) + var(--page-h2-left-accent, 0px)); background: var(--page-h2-bg, transparent); -webkit-text-stroke-color: var(--page-h2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h2-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); border-block-end: var(--page-h2-underline, 0px) solid var(--page-h2-accent-color, currentColor); }
+#entity-freetext h3, :is(#page-content,[data-editor-local-id="page-content"]) h3, #dp-editable h3, #board-note-editable h3 { font-size: var(--page-h3-font-size, 16px); padding-inline-start: calc(var(--page-h3-indent, 16px) + var(--page-h3-left-accent, 0px)); background: var(--page-h3-bg, transparent); -webkit-text-stroke-color: var(--page-h3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h3-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); border-block-end: var(--page-h3-underline, 0px) solid var(--page-h3-accent-color, currentColor); }
+#entity-freetext h4, :is(#page-content,[data-editor-local-id="page-content"]) h4, #dp-editable h4, #board-note-editable h4 { font-size: var(--page-h4-font-size, 16px); padding-inline-start: calc(var(--page-h4-indent, 24px) + var(--page-h4-left-accent, 0px)); background: var(--page-h4-bg, transparent); -webkit-text-stroke-color: var(--page-h4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h4-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); border-block-end: var(--page-h4-underline, 0px) solid var(--page-h4-accent-color, currentColor); }
+#entity-freetext h5, :is(#page-content,[data-editor-local-id="page-content"]) h5, #dp-editable h5, #board-note-editable h5 { font-size: var(--page-h5-font-size, 14px); padding-inline-start: calc(var(--page-h5-indent, 32px) + var(--page-h5-left-accent, 0px)); background: var(--page-h5-bg, transparent); -webkit-text-stroke-color: var(--page-h5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h5-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); border-block-end: var(--page-h5-underline, 0px) solid var(--page-h5-accent-color, currentColor); }
+#entity-freetext h6, :is(#page-content,[data-editor-local-id="page-content"]) h6, #dp-editable h6, #board-note-editable h6 { font-size: var(--page-h6-font-size, 13px); padding-inline-start: calc(var(--page-h6-indent, 40px) + var(--page-h6-left-accent, 0px)); background: var(--page-h6-bg, transparent); -webkit-text-stroke-color: var(--page-h6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-h6-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); border-block-end: var(--page-h6-underline, 0px) solid var(--page-h6-accent-color, currentColor); }
+#entity-freetext blockquote, :is(#page-content,[data-editor-local-id="page-content"]) blockquote, #dp-editable blockquote, #board-note-editable blockquote { font-size: var(--page-quote-font-size, inherit); font-family: var(--page-quote-font, inherit); -webkit-text-stroke-color: var(--page-quote-stroke-color, transparent); -webkit-text-stroke-width: var(--page-quote-stroke-width, 0px); paint-order: stroke fill; box-shadow: calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 0 var(--page-quote-accent-color, var(--page-quote-border)); border-block-end: var(--page-quote-underline, 0px) solid var(--page-quote-accent-color, currentColor); }
 /* iOS Safari のリンク長押しコールアウトを抑止（カスタム長押しメニューと競合するため）。
    テキスト選択自体は残す。詳細は docs/global-contextmenu-refactor-plan.md §6。 */
-#entity-freetext, #page-content, #dp-editable, #board-note-editable { -webkit-touch-callout: none; }
-#entity-freetext hr, #page-content hr, #dp-editable hr, #board-note-editable hr { border: none; border-block-start: 1px solid var(--page-hr-color, var(--border)); margin-block: 8px; }
-#entity-freetext ul, #entity-freetext ol, #page-content ul, #page-content ol, #dp-editable ul, #dp-editable ol, #board-note-editable ul, #board-note-editable ol { padding-inline-start: 24px; margin-block: 4px; }
-#entity-freetext li, #page-content li, #dp-editable li, #board-note-editable li { line-height: var(--page-text-line-height, 160%); margin-block: 0.4em; }
+#entity-freetext, :is(#page-content,[data-editor-local-id="page-content"]), #dp-editable, #board-note-editable { -webkit-touch-callout: none; }
+#entity-freetext hr, :is(#page-content,[data-editor-local-id="page-content"]) hr, #dp-editable hr, #board-note-editable hr { border: none; border-block-start: 1px solid var(--page-hr-color, var(--border)); margin-block: 8px; }
+#entity-freetext ul, #entity-freetext ol, :is(#page-content,[data-editor-local-id="page-content"]) ul, :is(#page-content,[data-editor-local-id="page-content"]) ol, #dp-editable ul, #dp-editable ol, #board-note-editable ul, #board-note-editable ol { padding-inline-start: 24px; margin-block: 4px; }
+#entity-freetext li, :is(#page-content,[data-editor-local-id="page-content"]) li, #dp-editable li, #board-note-editable li { line-height: var(--page-text-line-height, 160%); margin-block: 0.4em; }
 /* チェックリスト（gb-note-block-types.js）: 通常の箇条書き記号(disc)と
    チェックボックスが二重表示にならないよう記号を消し、チェックボックスを
    行頭に揃える。 */
-#entity-freetext li.note-checklist-item, #page-content li.note-checklist-item, #dp-editable li.note-checklist-item, #board-note-editable li.note-checklist-item {
+#entity-freetext li.note-checklist-item, :is(#page-content,[data-editor-local-id="page-content"]) li.note-checklist-item, #dp-editable li.note-checklist-item, #board-note-editable li.note-checklist-item {
   list-style: none;
   display: flex;
   align-items: baseline;
   gap: 6px;
 }
-#entity-freetext li.note-checklist-item input.note-checklist-check, #page-content li.note-checklist-item input.note-checklist-check, #dp-editable li.note-checklist-item input.note-checklist-check, #board-note-editable li.note-checklist-item input.note-checklist-check {
+#entity-freetext li.note-checklist-item input.note-checklist-check, :is(#page-content,[data-editor-local-id="page-content"]) li.note-checklist-item input.note-checklist-check, #dp-editable li.note-checklist-item input.note-checklist-check, #board-note-editable li.note-checklist-item input.note-checklist-check {
   flex-shrink: 0;
   margin: 0;
   cursor: pointer;
   accent-color: var(--page-checklist-accent, var(--accent));
 }
-#entity-freetext li.note-checklist-item[data-checked="true"], #page-content li.note-checklist-item[data-checked="true"], #dp-editable li.note-checklist-item[data-checked="true"], #board-note-editable li.note-checklist-item[data-checked="true"] {
+#entity-freetext li.note-checklist-item[data-checked="true"], :is(#page-content,[data-editor-local-id="page-content"]) li.note-checklist-item[data-checked="true"], #dp-editable li.note-checklist-item[data-checked="true"], #board-note-editable li.note-checklist-item[data-checked="true"] {
   color: var(--page-checklist-checked-fg, var(--fg2));
   text-decoration: line-through;
 }
@@ -14698,7 +14703,7 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
    論理プロパティで持つ。ここは縦書きのときだけ差し替える分を書く。
    padding-inline は「行の左右」＝縦書きでは上下の余白。設定「余白」(--page-margin-x) が
    横書き・縦書きのどちらでも同じ意味（行の左右の余白）で効くようにするための要。 */
-#page-content.vertical-writing {
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing {
   writing-mode: vertical-rl; text-orientation: mixed;
   font-feature-settings: "vert" 1, "vpal" 1;
   overflow-y: hidden; overflow-x: auto;
@@ -14714,11 +14719,11 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
 /* 縦書きでは目次を左ではなく上に出す（縦書きは右上が読み始めなので、左の縦帯だと視線と逆）。
    DOM順（目次 → 仕切り → 本文）のまま flex の方向だけ変えるので、フォーカス順や
    パネル複製への影響が無い。
-   狭い画面では単独アプリが #note-toc を引き出し（position:fixed）へ切り替えるため、
+   狭い画面では単独アプリが :is(#note-toc,[data-editor-local-id="note-toc"]) を引き出し（position:fixed）へ切り替えるため、
    flex の並びを変えるのは通常幅のときだけにする。 */
 @media (min-width: 821px) {
   .note-editor-body.is-note-vertical { flex-direction: column; }
-  .note-editor-body.is-note-vertical > #note-toc {
+  .note-editor-body.is-note-vertical > :is(#note-toc,[data-editor-local-id="note-toc"]) {
     width: auto;
     max-width: none;
     flex-basis: auto;
@@ -14727,7 +14732,7 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
     overflow-y: auto;
     overflow-x: hidden;
   }
-  .note-editor-body.is-note-vertical > #note-toc-resize {
+  .note-editor-body.is-note-vertical > :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
     width: auto;
     min-width: 0;
     height: var(--note-toc-resize-hit, 8px);
@@ -14737,7 +14742,7 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
     border-bottom: 1px solid var(--border);
   }
   /* 仕切りのホバー線も横向きに */
-  .note-editor-body.is-note-vertical > #note-toc-resize::before {
+  .note-editor-body.is-note-vertical > :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"])::before {
     top: 50%;
     bottom: auto;
     left: 0;
@@ -14749,33 +14754,33 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
 
 /* 番号付きリストのマーカー。text-orientation:mixed を継承すると半角数字が横倒しになるが、
    ::marker には text-orientation を適用できないため、縦組みの慣行どおり縦中横にする。 */
-#page-content.vertical-writing ol > li::marker { text-combine-upright: all; }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing ol > li::marker { text-combine-upright: all; }
 
 /* コードは縦組みにしない（ソースコードが縦に流れると読めないため） */
-#page-content.vertical-writing pre {
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing pre {
   writing-mode: horizontal-tb;
   text-orientation: initial;
   inline-size: auto;
   max-inline-size: none;
 }
-#page-content.vertical-writing pre code { writing-mode: horizontal-tb; }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing pre code { writing-mode: horizontal-tb; }
 
 /* チェックボックス・キー表示などの小さな部品は横組みのまま（記号の向きが崩れるため） */
-#page-content.vertical-writing input[type="checkbox"],
-#page-content.vertical-writing kbd { writing-mode: horizontal-tb; }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing input[type="checkbox"],
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing kbd { writing-mode: horizontal-tb; }
 
 /* 論理プロパティが無いもの（box-shadow によるアクセント線）は縦書き専用に鏡映しへ差し替える。
    横書き側の宣言（gb-tools.part02.part01.css）は触らない。 */
-#page-content.vertical-writing {
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing {
   box-shadow: 0 calc(-1 * var(--page-text-left-accent, 0px)) 0 0 var(--page-text-accent-color, var(--accent));
 }
-#page-content.vertical-writing h1 { box-shadow: 0 calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); }
-#page-content.vertical-writing h2 { box-shadow: 0 calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); }
-#page-content.vertical-writing h3 { box-shadow: 0 calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); }
-#page-content.vertical-writing h4 { box-shadow: 0 calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); }
-#page-content.vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
-#page-content.vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
-#page-content.vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h1 { box-shadow: 0 calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h2 { box-shadow: 0 calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h3 { box-shadow: 0 calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h4 { box-shadow: 0 calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
 
 /* ルビ */
 /* ルビ: data-ruby属性でCSS疑似要素として表示（ContentEditable互換） */
@@ -16942,12 +16947,12 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 
 /* === Note styling: heading empty-line removal === */
-#page-content h1 + div:has(> br:only-child),
-#page-content h2 + div:has(> br:only-child),
-#page-content h3 + div:has(> br:only-child),
-#page-content h4 + div:has(> br:only-child),
-#page-content h5 + div:has(> br:only-child),
-#page-content h6 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h1 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h2 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h3 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h4 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h5 + div:has(> br:only-child),
+:is(#page-content,[data-editor-local-id="page-content"]) h6 + div:has(> br:only-child),
 #entity-freetext h1 + div:has(> br:only-child),
 #entity-freetext h2 + div:has(> br:only-child),
 #entity-freetext h3 + div:has(> br:only-child),
@@ -16958,13 +16963,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 
 /* === Note styling: table === */
-#page-content table, #entity-freetext table, #dp-editable table, #board-note-editable table {
+:is(#page-content,[data-editor-local-id="page-content"]) table, #entity-freetext table, #dp-editable table, #board-note-editable table {
   border-collapse: collapse;
   inline-size: 100%;
   margin-block: var(--page-table-margin-y, 8px);
   font-size: var(--page-table-font-size, 13px);
 }
-#page-content th, #entity-freetext th, #dp-editable th, #board-note-editable th {
+:is(#page-content,[data-editor-local-id="page-content"]) th, #entity-freetext th, #dp-editable th, #board-note-editable th {
   background: var(--page-table-header-bg, var(--bg3)) !important;
   color: var(--page-table-header-fg, var(--page-text-fg, var(--fg))) !important;
   font-weight: var(--page-table-header-bold, bold);
@@ -16973,7 +16978,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   font-size: var(--page-table-header-font-size, inherit);
   text-align: start;
 }
-#page-content td, #entity-freetext td, #dp-editable td, #board-note-editable td {
+:is(#page-content,[data-editor-local-id="page-content"]) td, #entity-freetext td, #dp-editable td, #board-note-editable td {
   background: var(--page-table-cell-bg, transparent) !important;
   color: var(--page-table-cell-fg, var(--page-text-fg, var(--fg))) !important;
   font-weight: var(--page-table-cell-bold, normal);
@@ -16981,7 +16986,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   font-family: var(--page-table-cell-font, inherit);
   font-size: var(--page-table-cell-font-size, inherit);
 }
-#page-content th, #page-content td,
+:is(#page-content,[data-editor-local-id="page-content"]) th, :is(#page-content,[data-editor-local-id="page-content"]) td,
 #entity-freetext th, #entity-freetext td,
 #dp-editable th, #dp-editable td,
 #board-note-editable th, #board-note-editable td {
@@ -16993,13 +16998,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   height: auto;
   line-height: var(--page-text-line-height, 160%);
 }
-#page-content td:empty::before, #page-content th:empty::before,
+:is(#page-content,[data-editor-local-id="page-content"]) td:empty::before, :is(#page-content,[data-editor-local-id="page-content"]) th:empty::before,
 #entity-freetext td:empty::before, #entity-freetext th:empty::before,
 #dp-editable td:empty::before, #dp-editable th:empty::before,
 #board-note-editable td:empty::before, #board-note-editable th:empty::before {
   content: '\200B';
 }
-#page-content tr:hover td, #entity-freetext tr:hover td, #dp-editable tr:hover td, #board-note-editable tr:hover td {
+:is(#page-content,[data-editor-local-id="page-content"]) tr:hover td, #entity-freetext tr:hover td, #dp-editable tr:hover td, #board-note-editable tr:hover td {
   background: var(--page-table-row-hover-bg, var(--bg2)) !important;
   color: var(--page-table-row-hover-fg, var(--page-table-cell-fg, var(--page-text-fg, var(--fg)))) !important;
 }
@@ -17140,35 +17145,35 @@ blockquote .quote-cite a {
 }
 
 /* === Note styling: horizontal rule === */
-#page-content hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
+:is(#page-content,[data-editor-local-id="page-content"]) hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
   border: none;
   border-block-start: 1px solid var(--page-hr-color, var(--border));
   margin-block: 20px;
 }
 
 /* === Note styling: link hover === */
-#page-content .auto-link:hover, #entity-freetext .auto-link:hover, #dp-editable .auto-link:hover, #board-note-editable .auto-link:hover {
+:is(#page-content,[data-editor-local-id="page-content"]) .auto-link:hover, #entity-freetext .auto-link:hover, #dp-editable .auto-link:hover, #board-note-editable .auto-link:hover {
   background: var(--page-link-hover-bg, var(--bg3));
   border-radius: var(--page-link-hover-radius, 2px);
 }
 
 /* === Note styling: code block === */
-#page-content pre, #entity-freetext pre, #dp-editable pre, #board-note-editable pre {
+:is(#page-content,[data-editor-local-id="page-content"]) pre, #entity-freetext pre, #dp-editable pre, #board-note-editable pre {
   border-radius: var(--page-code-block-radius, 4px);
   border: var(--page-code-block-border-width, 1px) solid var(--page-code-block-border, var(--border));
 }
 
 /* === Note styling: list markers === */
-#page-content ul, #entity-freetext ul, #dp-editable ul, #board-note-editable ul {
+:is(#page-content,[data-editor-local-id="page-content"]) ul, #entity-freetext ul, #dp-editable ul, #board-note-editable ul {
   list-style-type: disc;
 }
-#page-content ul ul, #entity-freetext ul ul, #dp-editable ul ul, #board-note-editable ul ul {
+:is(#page-content,[data-editor-local-id="page-content"]) ul ul, #entity-freetext ul ul, #dp-editable ul ul, #board-note-editable ul ul {
   list-style-type: circle;
 }
 
 /* === Note styling: kbd (keyboard shortcut) === */
 
-#page-content kbd,
+:is(#page-content,[data-editor-local-id="page-content"]) kbd,
 #entity-freetext kbd,
 #dp-editable kbd,
 #board-note-editable kbd {
@@ -17189,7 +17194,7 @@ blockquote .quote-cite a {
 }
 
 /* === Note styling: details/summary (collapsible) === */
-#page-content details,
+:is(#page-content,[data-editor-local-id="page-content"]) details,
 #entity-freetext details,
 #dp-editable details,
 #board-note-editable details {
@@ -17199,7 +17204,7 @@ blockquote .quote-cite a {
   overflow: hidden;
   background: var(--page-details-bg, transparent);
 }
-#page-content details summary,
+:is(#page-content,[data-editor-local-id="page-content"]) details summary,
 #entity-freetext details summary,
 #dp-editable details summary,
 #board-note-editable details summary {
@@ -17213,20 +17218,20 @@ blockquote .quote-cite a {
   font-style: var(--page-details-summary-italic, normal);
   user-select: none;
 }
-#page-content details summary:hover,
+:is(#page-content,[data-editor-local-id="page-content"]) details summary:hover,
 #entity-freetext details summary:hover,
 #dp-editable details summary:hover,
 #board-note-editable details summary:hover {
   background: var(--page-details-summary-hover-bg, var(--bg3));
   color: var(--page-details-summary-hover-fg, var(--page-details-summary-fg, var(--fg)));
 }
-#page-content details[open] summary,
+:is(#page-content,[data-editor-local-id="page-content"]) details[open] summary,
 #entity-freetext details[open] summary,
 #dp-editable details[open] summary,
 #board-note-editable details[open] summary {
   border-block-end: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
 }
-#page-content details > :not(summary),
+:is(#page-content,[data-editor-local-id="page-content"]) details > :not(summary),
 #entity-freetext details > :not(summary),
 #dp-editable details > :not(summary),
 #board-note-editable details > :not(summary) {
@@ -17234,7 +17239,7 @@ blockquote .quote-cite a {
 }
 
 /* === Note styling: heading icon === */
-#page-content .heading-icon,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-icon,
 #entity-freetext .heading-icon,
 #dp-editable .heading-icon,
 #board-note-editable .heading-icon {
@@ -17251,7 +17256,7 @@ blockquote .quote-cite a {
 }
 
 /* === Note styling: title heading block === */
-#page-content .note-title,
+:is(#page-content,[data-editor-local-id="page-content"]) .note-title,
 #entity-freetext .note-title,
 #dp-editable .note-title,
 #board-note-editable .note-title {
@@ -17272,7 +17277,7 @@ blockquote .quote-cite a {
 
 /* === Note styling: toolbar file name edit ===
    ツールバー上のファイル名欄は UI 部品として扱い、本文の「タイトル」書式は適用しない。 */
-#page-rt-toolbar #page-title {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) {
   color: var(--ui-toolbar-fg, var(--fg));
   font-family: inherit;
   font-weight: inherit;
@@ -17293,13 +17298,13 @@ blockquote .quote-cite a {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#page-rt-toolbar #page-title:empty::before {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]):empty::before {
   content: attr(data-placeholder);
   color: var(--ui-fg-muted);
 }
 /* 貼り付け等で混入したインライン書式（太字・斜体・フォント・文字色・背景色）を無効化し、
    常にツールバー標準フォントで表示する。 */
-#page-rt-toolbar #page-title * {
+:is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) * {
   font: inherit !important;
   color: inherit !important;
   background: none !important;
@@ -17308,14 +17313,14 @@ blockquote .quote-cite a {
 /* === Note styling: block drag handle ===
    工程7: gb-note-block-reorder.js が全編集ホスト（メイン/エンティティ自由記述/
    詳細パネル内ノート）で同じクラス名を使うため、3ホストすべてを対象にする
-   （旧実装は #page-content 専用で他2ホストにスタイルが当たらなかった）。 */
-#page-content .dragging, #entity-freetext .dragging, #dp-editable .dragging {
+   （旧実装は :is(#page-content,[data-editor-local-id="page-content"]) 専用で他2ホストにスタイルが当たらなかった）。 */
+:is(#page-content,[data-editor-local-id="page-content"]) .dragging, #entity-freetext .dragging, #dp-editable .dragging {
   opacity: var(--page-dragging-opacity, 0.4);
 }
-#page-content .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
+:is(#page-content,[data-editor-local-id="page-content"]) .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
   border-block-start: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
-#page-content .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
+:is(#page-content,[data-editor-local-id="page-content"]) .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
   border-block-end: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
 /* 工程7-1: pointerdown直後〜pointerup/cancelまで対象ブロック全体を「捕捉中」として
@@ -17327,7 +17332,7 @@ blockquote .quote-cite a {
    （targeted-note-micro-handle-drag-persists-order 等）もこのクラスの有無で検証する
    ため残しているが、旧来のCSSアウトラインは二重表示（新オーバーレイと重なって表示
    される）を避けるため描画しない（クラスは残す・見た目だけ無効化する）。 */
-#page-content .note-block-reorder-armed, #entity-freetext .note-block-reorder-armed, #dp-editable .note-block-reorder-armed {
+:is(#page-content,[data-editor-local-id="page-content"]) .note-block-reorder-armed, #entity-freetext .note-block-reorder-armed, #dp-editable .note-block-reorder-armed {
   outline: none;
 }
 /* 工程7-7: 先頭/末尾でこれ以上移動できない状態を視覚的に示す（ハンドルの小さな
@@ -17363,11 +17368,11 @@ blockquote .quote-cite a {
 }
 .heading-section.level-5,
 .heading-section.level-6 { padding-inline-start: 12px; }
-/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。#page-content h2等にpadding-leftがあるため、ID付きで上書きする */
-#page-content .heading-section > h1,
-#page-content .heading-section > h2,
-#page-content .heading-section > h3,
-#page-content .heading-section > h4,
+/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。:is(#page-content,[data-editor-local-id="page-content"]) h2等にpadding-leftがあるため、ID付きで上書きする */
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h1,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h2,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h3,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h4,
 #entity-freetext .heading-section > h1,
 #entity-freetext .heading-section > h2,
 #entity-freetext .heading-section > h3,
@@ -17375,8 +17380,8 @@ blockquote .quote-cite a {
   margin-inline-start: -12px;
   padding-inline-start: 4px;
 }
-#page-content .heading-section > h5,
-#page-content .heading-section > h6,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h5,
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > h6,
 #entity-freetext .heading-section > h5,
 #entity-freetext .heading-section > h6 {
   margin-inline-start: -8px;
@@ -19788,7 +19793,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   box-sizing: border-box;
 }
 
-/* 実際のノート描画CSS（gb-tools.part02.part01.css の #page-content h1〜h6 等）と
+/* 実際のノート描画CSS（gb-tools.part02.part01.css の :is(#page-content,[data-editor-local-id="page-content"]) h1〜h6 等）と
    同じ --page-* トークンを参照する。値そのものはテーマ／ファイルスタイルの
    どちらであっても常に最新のCSS変数を指すため、再描画なしで追従する。 */
 .note-heading-toolbar-menu [data-type-id="title"] .note-heading-toolbar-sample {
@@ -19847,7 +19852,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   color: var(--page-h6-fg);
   background: var(--page-h6-bg, transparent);
 }
-/* 本文は編集ホスト本体（gb-tools.part02.part01.css の #page-content 等）と同じ
+/* 本文は編集ホスト本体（gb-tools.part02.part01.css の :is(#page-content,[data-editor-local-id="page-content"]) 等）と同じ
    --page-text-* を参照する。ファイル単位の太字・斜体・フォント・背景も見本へ
    反映し、文字色だけが合っている不完全な見本にしない。 */
 .note-heading-toolbar-menu [data-type-id="body"] .note-heading-toolbar-sample {
@@ -19878,13 +19883,13 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .note-status-dot[data-status="done"],[data-note-status="done"]::after{--note-status-color:#27ae60}
 .note-status-dot[data-status="hold"],[data-note-status="hold"]::after{--note-status-color:#f2994a}
 .note-status-dot:not([data-status="unset"]){background:var(--note-status-color)}
-#page-content .note-status-block{position:relative}
-#page-content .note-status-block::after{content:attr(data-note-status-label);float:right;margin-inline-start:8px;padding:1px 6px;border:1px solid var(--note-status-color,var(--border));border-radius:999px;color:var(--note-status-color,var(--fg2));font-size:10px;line-height:1.5;pointer-events:none}
-#page-content [data-note-status="todo"]::after{content:"未着手"}
-#page-content [data-note-status="doing"]::after{content:"進行中"}
-#page-content [data-note-status="done"]::after{content:"完了"}
-#page-content [data-note-status="hold"]::after{content:"保留"}
-#page-content .note-filter-hidden{display:none!important}
+:is(#page-content,[data-editor-local-id="page-content"]) .note-status-block{position:relative}
+:is(#page-content,[data-editor-local-id="page-content"]) .note-status-block::after{content:attr(data-note-status-label);float:right;margin-inline-start:8px;padding:1px 6px;border:1px solid var(--note-status-color,var(--border));border-radius:999px;color:var(--note-status-color,var(--fg2));font-size:10px;line-height:1.5;pointer-events:none}
+:is(#page-content,[data-editor-local-id="page-content"]) [data-note-status="todo"]::after{content:"未着手"}
+:is(#page-content,[data-editor-local-id="page-content"]) [data-note-status="doing"]::after{content:"進行中"}
+:is(#page-content,[data-editor-local-id="page-content"]) [data-note-status="done"]::after{content:"完了"}
+:is(#page-content,[data-editor-local-id="page-content"]) [data-note-status="hold"]::after{content:"保留"}
+:is(#page-content,[data-editor-local-id="page-content"]) .note-filter-hidden{display:none!important}
 #page-note-filter-btn.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent)}
 
 /* Schedule production task workspace */

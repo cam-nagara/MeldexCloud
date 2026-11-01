@@ -1,3 +1,9 @@
+      const nextItems = _outlinerSheetTreeItems(item, pivotData);
+      const byPath = new Map(currentItems.map(child => [child.path, child]));
+      const nextPaths = new Set(nextItems.map(child => child.path));
+      const merged = nextItems.map(child => {
+        const existing = byPath.get(child.path);
+        if (existing) { Object.assign(existing, child); return existing; }
         return child;
       });
       if (vr?.isVirtualContainer?.(container)) {
@@ -892,9 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
     const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
     if (topicSource) {
-      window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
-        addMenuItem(item.label, () => {
-          closeTreeContextMenu();
-          item.action();
-        }, null, item.icon);
-      });

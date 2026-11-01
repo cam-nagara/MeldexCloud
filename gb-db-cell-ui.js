@@ -740,7 +740,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         sub.appendChild(copyItem);
         const rightItem = document.createElement('div');
         rightItem.className = 'gb-context-menu-item';
-        rightItem.innerHTML = lucide('panelRight', 14) + ' 右サイドバーで開く';
+        rightItem.innerHTML = lucide('panelRight', 14) + ' サブパネルで開く';
         rightItem.addEventListener('click', async () => {
           menu.remove();
           let name = idOrName;

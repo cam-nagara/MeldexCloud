@@ -1,3 +1,9 @@
+      window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
+        addMenuItem(item.label, () => {
+          closeTreeContextMenu();
+          item.action();
+        }, null, item.icon);
+      });
       addSep();
     }
   }
@@ -42,7 +48,7 @@
     });
     if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
-        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
           openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },
@@ -892,9 +898,3 @@ async function addItemAt(parentPath, type, options = {}) {
     _showCloudPhase1BlockedCreate(type);
     return;
   }
-  const label = '無題';
-  // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
-  const anchorNode = options.anchorNode;
-  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
-  const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
-  const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);

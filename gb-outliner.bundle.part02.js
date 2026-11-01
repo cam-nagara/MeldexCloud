@@ -1,3 +1,9 @@
+      const mountedEl = state.mountedById.get(path);
+      if (mountedEl) this.add(mountedEl);
+      else state.selectedIds.add(path);
+    }
+    return true;
+  },
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
 
@@ -892,9 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
   const toggle = document.createElement('span');
   toggle.className = 'tree-toggle';
   if (isExpandable) {
-    toggle.innerHTML = lucide('chevronRight', 16);
-    toggle.dataset.expanded = 'false';
-  }
-  row.appendChild(toggle);
-
-  // Icon（ルートフォルダにはアイコンを表示しない）

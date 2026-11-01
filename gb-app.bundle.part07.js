@@ -1,3 +1,4 @@
+  const size = typeof sizeOrText === 'number'
     ? sizeOrText
     : String(sizeOrText || '').length;
   if (size < threshold) return;

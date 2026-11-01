@@ -1,3 +1,9 @@
+  const label = '無題';
+  // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
+  const anchorNode = options.anchorNode;
+  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
+  const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
+  const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
   let pendingNode = null;
   let existingNames = null;
   let siblingNames = null;
@@ -892,9 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
 })();
 
 function _readOutlinerDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = ev => resolve(ev.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);

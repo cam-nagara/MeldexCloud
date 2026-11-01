@@ -126,7 +126,7 @@
       if (handling || !_hasReportedLoadFailure() || _current?.path !== watchedPath) return;
       handling = true;
       const seq = ++_opSeq;
-      await _retractCurrentContent({ remount: true });
+      if (await _retractCurrentContent({ remount: true }) === false) return;
       if (seq !== _opSeq || _current?.path !== watchedPath) return;
       _renderErrorState(entry, 'ファイルを読み込めませんでした');
       _current = entry;
@@ -142,6 +142,40 @@
   }
 
   function _renderTarget(entry) {
+    _renderTargetContent(entry);
+    if (!_contentEl || entry.type === 'entity' || entry.loadError || _hasReportedLoadFailure()) return;
+    const kind = DB_VIEW_TYPES.has(entry.type) ? 'database' : entry.type;
+    _editorOwnership = window.GBEditorHost?.register(_contentEl, {
+      editorId: INNER_PANE_ID, path: entry.path, label: entry.label, kind, surface: 'subpanel',
+      resolveCtx: () => _sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null)
+        || (kind === 'page' ? { paneId: INNER_PANE_ID, pagePath: entry.path, viewMode: 'page', containerEl: _contentEl } : null),
+      resolveComponent: () => typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null,
+      activate: () => {
+        if (['board', 'scriptnote'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
+      },
+      syncDetail: () => {
+        const component = typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null;
+        if (component?._syncDetailPanel) component._syncDetailPanel();
+        else if (typeof _syncDetailPanel === 'function') void _syncDetailPanel(entry.label, entry.path, kind);
+      },
+      flush: () => _flushBeforeTransition(entry).then(result => result?.ok !== false),
+      reload: async (options = {}) => {
+        if (!options.skipFlush && !(await _flushBeforeTransition(entry)).ok) return false;
+        if (kind === 'page') return window.GBEditorHost.reloadNote(_contentEl, entry.label, entry.path);
+        if (_sheetEmbed) return _sheetEmbed.refresh();
+        const component = getComponentInstance(_pane?.tabs?.[0]?.id);
+        if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
+        return component?.reload?.();
+      },
+      historyScope: () => kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
+        : kind === 'scriptnote' ? getComponentInstance(_pane?.tabs?.[0]?.id)?._editor?._historyScope?.()
+        : kind === 'calendar' && typeof _meldexScheduleTabHistoryScope === 'function' ? _meldexScheduleTabHistoryScope(_pane?.tabs?.[0])
+        : kind === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(entry.path)
+        : kind + ':' + entry.path.replace(/^\/+/, ''),
+    });
+  }
+
+  function _renderTargetContent(entry) {
     if (!_contentEl) return;
     _contentEl.replaceChildren();
     _updateHeader(entry);
@@ -382,11 +416,12 @@
     } catch {
       return false;
     }
-    await _retractCurrentContent({ remount: false });
+    if (await _retractCurrentContent({ remount: false }) === false) return false;
     _current = null;
     _navHistory = [];
     _navIndex = -1;
     _showEmptyState();
+    window.GBEditorHost?.returnToMain?.();
     return true;
   }
 
@@ -412,6 +447,7 @@
     // すでに見えているなら何もしない。開き直すとレイアウトの再描画が走り、
     // 表示中の内容が作り直されてしまう（内容の置き換え時に消える原因になる）。
     if (_subpanelIsVisible()) return;
+    if (window.GBIndependentSubpanel?.open()) return;
     const reveal = window.MeldexRightSidebarReveal?.reveal;
     if (typeof reveal === 'function') {
       reveal('subpanel');
@@ -461,6 +497,7 @@
       _navHistory = [];
       _navIndex = -1;
       _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
       return true;
     });
   }
@@ -550,6 +587,7 @@
   }
 
   function onPathRename(oldPath, newPath, options = {}) {
+    window.GBEditorHost?.onPathRename?.(oldPath, newPath, options);
     if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
     const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
     const viewerState = frame ? _captureViewerFrameState(frame) : null;
@@ -596,6 +634,7 @@
 
   return {
     open,
+    flush: async () => (await _flushBeforeTransition(_current)).ok,
     close: closeContent,
     navBack,
     navForward,

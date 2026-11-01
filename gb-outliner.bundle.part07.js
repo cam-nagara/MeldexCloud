@@ -1,3 +1,9 @@
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = ev => resolve(ev.target.result);
+    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
+    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
+    reader.readAsDataURL(file);
   });
 }
 

@@ -16390,6 +16390,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function _isDirectUrl(value) {
     const raw = String(value || '').trim();
+    if (_looksLikeFileRawUrl(raw) && !_runtime()?.isBrowserDataMode?.()) {
+      try {
+        // Rebuilding a scoped Desktop URL from "path" alone loses its root
+        // and may reuse another source's cached image with the same name.
+        if (new URL(raw, document.baseURI || window.location.href).searchParams.has('context_path')) return true;
+      } catch {}
+    }
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) return false;
     return /^(https?:|data:|blob:)/i.test(raw) || (raw.startsWith('/') && _isAppRelativeUrl(raw));
   }

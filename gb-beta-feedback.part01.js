@@ -150,6 +150,10 @@
     try {
       const token = _safeGet('meldex-auth-token') || _safeGet('crossfolio-auth-token') || '';
       if (token && !next.has('Authorization')) next.set('Authorization', 'Bearer ' + token);
+      // 直接fetchするベータAPIにも、この端末の編集リース所有情報を渡す。
+      // 省略すると自分のフォルダ編集中でも、他端末の書込みとして拒否される。
+      const locks = window.MeldexActiveLocks;
+      if (locks?.header && typeof locks.token === 'function') next.set(locks.header, locks.token());
     } catch (_) {}
     return next;
   }

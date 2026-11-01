@@ -774,7 +774,10 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   const anchor = _gbPaletteAnchor;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
   _gbPaletteAnchor = null;
-  document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => menu.remove());
+  document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => {
+    if (typeof menu._requestClose === 'function') menu._requestClose();
+    else menu.remove();
+  });
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
@@ -1109,10 +1112,26 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       const openSwatchCtxMenu = (e) => {
         e.preventDefault();
         e.stopPropagation?.();
-        document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(m => m.remove());
+        document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(m => {
+          if (typeof m._requestClose === 'function') m._requestClose();
+          else m.remove();
+        });
         const menu = document.createElement('div');
         menu.className = 'gb-context-menu gb-palette-context-menu';
         menu.setAttribute('role', 'menu');
+        const closeCtx = (ev) => { if (!menu.contains(ev.target)) closeMenu(); };
+        const keyCtx = (ev) => {
+          if (ev.key !== 'Escape') return;
+          ev.preventDefault(); ev.stopPropagation();
+          closeMenu(true);
+        };
+        function closeMenu(restoreFocus = false) {
+          menu.remove();
+          document.removeEventListener('pointerdown', closeCtx, true);
+          document.removeEventListener('keydown', keyCtx, true);
+          if (restoreFocus && swatch.isConnected) swatch.focus({ preventScroll: true });
+        }
+        menu._requestClose = () => closeMenu();
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'gb-context-menu-item danger';
@@ -1120,7 +1139,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         del.setAttribute('role', 'menuitem');
         del.textContent = '削除';
         del.addEventListener('click', () => {
-          menu.remove();
+          closeMenu();
           removeCustomColor(c);
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
@@ -1139,12 +1158,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
         }
         del.focus({ preventScroll: true });
-        setTimeout(() => {
-          const closeCtx = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); } };
-          const keyCtx = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); swatch.focus({ preventScroll: true }); } };
-          document.addEventListener('pointerdown', closeCtx, true);
-          document.addEventListener('keydown', keyCtx, true);
-        }, 0);
+        // この操作のpointerdownは完了済み。直後のEscapeも取りこぼさない。
+        document.addEventListener('pointerdown', closeCtx, true);
+        document.addEventListener('keydown', keyCtx, true);
       };
       swatch.addEventListener('contextmenu', openSwatchCtxMenu);
       if (typeof addLongPressHandler === 'function') {

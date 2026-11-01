@@ -4,6 +4,7 @@
    およびエントリ詳細での添付表示・操作を集約する。 */
 (function (global) {
   'use strict';
+  let sectionSequence = 0;
 
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -22,6 +23,11 @@
 
   function getAttachmentIcon(kind, name) {
     const ext = (name || '').split('.').pop()?.toLowerCase();
+    const inferred = { md: 'page', 'mel-board': 'board', 'mel-scenario': 'scriptnote', 'mel-sheet': 'database' }[ext];
+    const type = { note: 'page', sheet: 'database', scenario: 'scriptnote' }[kind]
+      || ((!kind || kind === 'file') && inferred) || kind;
+    const shared = typeof uiTypeIconName === 'function' ? uiTypeIconName(type) : '';
+    if (shared) return shared;
     if (kind === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
     if (kind === 'pdf' || ext === 'pdf') return 'fileText';
     if (kind === 'board' || ext === 'mel-board') return 'kanban';
@@ -36,6 +42,9 @@
     const path = item.path;
     const name = item.name || path.split('/').pop();
     const ext = name.split('.').pop()?.toLowerCase();
+    if (item.kind === 'folder' && typeof openFolder === 'function') return openFolder(name, path);
+    if (['sheet', 'database'].includes(item.kind) && typeof selectDatabase === 'function') return selectDatabase(path);
+    if (item.kind === 'chat' && typeof window.openSavedChat === 'function') return window.openSavedChat(path);
 
     // Meldex内部形式
     if (ext === 'mel-board' && typeof openBoard === 'function') {
@@ -290,14 +299,15 @@
     const section = document.createElement('section');
     section.className = 'meldex-entity-attachments-section';
     section.dataset.e2eId = 'entity-attachments-section';
+    section.dataset.instanceId = String(++sectionSequence);
 
     const header = document.createElement('div');
-    header.className = 'meldex-entity-attachments-header';
+    header.className = 'meldex-entity-attachments-header gb-pane-tabs';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
     section.classList.toggle('is-empty', attachments.length === 0);
     const list = document.createElement('div');
-    list.className = 'meldex-entity-attachments-list';
+    list.className = 'meldex-entity-attachments-list gb-pane-tabs-scroll';
     list.setAttribute('role', 'tablist');
     list.setAttribute('aria-label', 'リンクファイル');
     if (attachments.length) header.appendChild(list);
@@ -321,7 +331,7 @@
         return true;
       },
     };
-    function selectAttachment(item) {
+    function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
         if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
         if (!await flushEditors()) return false;
@@ -339,6 +349,7 @@
           pane.setAttribute('role', 'tabpanel');
           pane.setAttribute('aria-label', item.name || item.path);
           pane.dataset.attachmentId = item.id;
+          pane.id = 'linked-pane-' + section.dataset.instanceId + '-' + item.id;
           content.appendChild(pane);
           const editor = window.MeldexTopicLinkedEditor.mount(pane, item, entryPath, options);
           editors.set(item.id, editor);
@@ -348,11 +359,12 @@
         section.dataset.selectedAttachment = selectedId;
         list.querySelectorAll('[role="tab"]').forEach(tab => {
           const selected = tab.dataset.attachmentId === selectedId;
+          tab.closest('.gb-tab')?.classList.toggle('active', selected);
           tab.setAttribute('aria-selected', String(selected));
           tab.tabIndex = selected ? 0 : -1;
         });
         Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
-        editors.get(selectedId)?.activate?.();
+        if (selectionOptions.activate !== false) editors.get(selectedId)?.activate?.();
         return true;
       }).catch(error => {
         if (typeof showStatus === 'function') showStatus('リンク先を開けませんでした: ' + (error.message || error), true);
@@ -410,8 +422,7 @@
       section._uploadLinkedFiles = uploadFiles;
 
       async function handleCreateNew(type, defaultLabel) {
-        const label = prompt(`新規${defaultLabel}の名前を入力してください:`, defaultLabel);
-        if (label == null) return;
+        const label = '無題';
         addBtn.disabled = true;
         try {
           if (options.beforeMutation && !await options.beforeMutation()) throw new Error('未保存の編集を保存できませんでした');
@@ -459,12 +470,10 @@
         const menuItems = [
           { id: 'link-existing', icon: 'link2', label: '既存ファイルをリンク...', action: () => fileInput.click() },
           { divider: true },
-          { id: 'create-note', icon: 'fileText', label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
-          { id: 'create-chat', icon: 'messageSquare', label: '新規チャット', action: () => handleCreateNew('chat', 'チャット') },
-          { id: 'create-database', icon: 'table', label: '新規シート', action: () => handleCreateNew('database', 'シート') },
-          { id: 'create-scriptnote', icon: 'bookOpen', label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
-          { id: 'create-board', icon: 'kanban', label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
-          { id: 'create-folder', icon: 'folder', label: '新規フォルダ', action: () => handleCreateNew('folder', 'フォルダ') },
+          { id: 'create-note', icon: getAttachmentIcon('note'), label: '新規ノート', action: () => handleCreateNew('note', 'ノート') },
+          { id: 'create-database', icon: getAttachmentIcon('sheet'), label: '新規シート', action: () => handleCreateNew('database', 'シート') },
+          { id: 'create-scriptnote', icon: getAttachmentIcon('scenario'), label: '新規シナリオ', action: () => handleCreateNew('scriptnote', 'シナリオ') },
+          { id: 'create-board', icon: getAttachmentIcon('board'), label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
         ];
 
         menuItems.forEach((item) => {
@@ -530,8 +539,11 @@
     if (attachments.length) {
       attachments.forEach((item) => {
         const row = document.createElement('div');
-        row.className = 'meldex-entity-attachment-item';
+        row.className = 'meldex-entity-attachment-item gb-tab';
         row.dataset.attachmentId = item.id;
+        row.addEventListener('click', event => {
+          if (!event.target.closest('button')) selectAttachment(item);
+        });
 
         const iconBox = document.createElement('span');
         iconBox.className = 'meldex-entity-attachment-icon';
@@ -542,6 +554,7 @@
         nameSpan.className = 'meldex-entity-attachment-name';
         nameSpan.setAttribute('role', 'tab');
         nameSpan.setAttribute('aria-selected', 'false');
+        nameSpan.setAttribute('aria-controls', 'linked-pane-' + section.dataset.instanceId + '-' + item.id);
         nameSpan.dataset.allowReadonly = '1';
         nameSpan.dataset.attachmentId = item.id;
         nameSpan.dataset.action = 'select-attachment';
@@ -650,7 +663,7 @@
     if (attachments.length) section.appendChild(content);
     container.appendChild(section);
     const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
-    if (initial) selectAttachment(initial);
+    if (initial) selectAttachment(initial, { activate: !!options.selectedId });
     return section;
   }
 
@@ -952,6 +965,7 @@
         script: 'scriptnote',
       };
       itemType = typeAlias[itemType] || itemType;
+      if (['chat', 'folder'].includes(itemType)) throw _httpError(400, 'トピックにチャットとフォルダは追加できません');
 
       const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
@@ -1162,6 +1176,20 @@
       if (!entryPath) throw _httpError(400, 'entry_path は必須です');
       if (!sourcePath) throw _httpError(400, 'source_path は必須です');
 
+      const sourceStat = await provider.statPath(sourcePath);
+      const directory = sourceStat?.kind === 'directory' || sourceStat?.type === 'dir' || sourceStat?.type === 'folder'
+        || sourceStat?.isDirectory === true || sourceStat?.['.tag'] === 'folder';
+      if (directory) {
+        const name = sourcePath.replace(/\/$/, '').split('/').pop();
+        const settings = await frontmatterLite.readFrontmatter(provider, `${sourcePath}/${name}.md`).catch(() => null);
+        if (settings?.frontmatter?.type !== 'settings-db') throw _httpError(400, 'トピックにフォルダは追加できません');
+      } else if (/\.md$/i.test(sourcePath)) {
+        const source = await frontmatterLite.readFrontmatter(provider, sourcePath);
+        if (String(source?.frontmatter?.type || '').trim().toLowerCase() === 'chat' || /(?:^|\/)\_chat\/llm\//i.test(sourcePath)) {
+          throw _httpError(400, 'トピックにチャットは追加できません');
+        }
+      }
+
       const { frontmatter, body: textBody } = await readEntryDocument(entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
@@ -1190,7 +1218,7 @@
         id: attId,
         path: targetPath,
         name: targetPath.split('/').pop(),
-        kind: getAttachmentIcon(null, targetPath),
+        kind: directory ? 'sheet' : /\.mel-board$/i.test(sourcePath) ? 'board' : /\.mel-scenario$/i.test(sourcePath) ? 'scenario' : /\.md$/i.test(sourcePath) ? 'note' : /\.(png|jpe?g|webp|gif|svg)$/i.test(sourcePath) ? 'image' : 'file',
         mode: mode,
         created_at: new Date().toISOString(),
         size: stat?.size,

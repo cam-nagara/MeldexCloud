@@ -150,6 +150,10 @@ function showToolMenu(e, toolType, component) {
   if (component === e) component = null; // gb-events appends the event after explicit arguments.
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
+  const editorHost = window.GBEditorHost?.get();
+  if (!component && editorHost && btn?.closest('[data-editor-host]')) {
+    component = editorHost.component || { path: editorHost.path, state: { label: editorHost.label } };
+  }
   if (!component && typeof getComponentInstance === 'function' && typeof GBTabs !== 'undefined') {
     const subpanel = btn?.closest('#gb-subpanel-root') && window.GBSubPanel?.getCurrentTarget?.();
     const paneId = btn?.closest('[data-pane-id]')?.dataset.paneId;
@@ -261,6 +265,8 @@ function _buildRecentSubmenuItems(toolType) {
 
 // 現在のファイルパス取得
 function getCurrentFilePath() {
+  const editor = window.GBEditorHost?.get();
+  if (editor) return editor.path;
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined') ? GBTabs.getActiveTab(GBLayout.activePane) : null;
   if (activeTab?.type === 'folder') {
     if (activeTab.path) return activeTab.path;
@@ -287,6 +293,10 @@ function getCurrentFilePath() {
 }
 
 function _toolMenuFileTarget(toolType, component) {
+  const editor = window.GBEditorHost?.get();
+  if (editor && editor.kind === toolType && (!component || component === editor.component || component.path === editor.path)) {
+    return { path: editor.path, label: editor.label, type: toolType };
+  }
   const tabs = typeof GBTabs !== 'undefined' ? GBTabs : null;
   const tab = component
     ? (component.paneId && component.tabId ? tabs?.getTabs?.(component.paneId)?.find(item => item.id === component.tabId) : null)

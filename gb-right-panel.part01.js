@@ -99,6 +99,7 @@ function _rightSidebarToolAllowed(tabName, source) {
 }
 
 function openRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.open();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
@@ -118,6 +119,7 @@ function openRightPanelTab(tabName, source) {
 
 // 右アクティブバーからのトグル: 同じタブなら閉じる、違うタブなら開く
 function toggleRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.toggle();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');

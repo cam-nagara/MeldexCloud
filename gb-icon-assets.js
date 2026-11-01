@@ -236,7 +236,10 @@
     const px = Math.max(10, Number(size) || 20);
     const className = options.className ? ' ' + options.className : '';
     if (parsed.type === 'image') {
-      const src = '/api/media/file?path=' + encodeURIComponent(parsed.path);
+      const endpoint = parsed.path.startsWith('_media/') ? '/api/media/file' : '/api/file-raw';
+      const context = endpoint === '/api/file-raw' && options.contextPath
+        ? '&context_path=' + encodeURIComponent(options.contextPath) : '';
+      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context;
       return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
     }
     if (parsed.type === 'lucide') {
@@ -319,7 +322,9 @@
       const spec = normalizeSpec(item.spec);
       if (!spec.startsWith('image:') || seen.has(spec)) continue;
       seen.add(spec);
-      items.push({ ...item, type: 'image', spec, search: [item.label, item.keywords, '画像 写真 カスタム'].join(' ') });
+      const filename = parseSpec(spec).path.replace(/\\/g, '/').split('/').pop();
+      items.push({ ...item, type: 'image', spec, label: item.label || filename || '画像',
+        search: [item.label, filename, item.keywords, '画像 写真 カスタム'].filter(Boolean).join(' ') });
     }
     return items;
   }
@@ -388,6 +393,15 @@
 
     const picker = document.createElement('div');
     const pickerId = 'gb-icon-picker-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    const childPopups = new Map();
+    picker._registerChildPopup = (popup, close, relatedSelector = '') => {
+      if (!popup) return;
+      for (const child of childPopups.keys()) if (!child.isConnected) childPopups.delete(child);
+      childPopups.set(popup, { close, relatedSelector });
+    };
+    // 本体の共通dismissも、body直下に開く子ポップアップを内側として扱う。
+    picker._isPopupChildTarget = (target) => [...childPopups].some(([popup, child]) =>
+      popup.isConnected && (popup.contains(target) || (child.relatedSelector && target?.closest?.(child.relatedSelector))));
     picker.className = 'gb-icon-picker gb-context-menu' + (options.className ? ' ' + options.className : '');
     picker.dataset.e2eId = 'icon-picker-popup';
     picker.setAttribute('role', 'dialog');
@@ -401,6 +415,8 @@
     let keydownHandler = null;
     const removePicker = () => {
       renderToken++;
+      for (const [popup, child] of childPopups) if (popup.isConnected) child.close?.();
+      childPopups.clear();
       picker.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
       if (keydownHandler) document.removeEventListener('keydown', keydownHandler, true);
@@ -495,10 +511,6 @@
 
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
-      const label = document.createElement('input'); label.className = 'gb-input'; label.placeholder = '画像の名前（省略時はファイル名）';
-      label.setAttribute('aria-label', '画像の名前');
-      const keywords = document.createElement('input'); keywords.className = 'gb-input'; keywords.placeholder = '検索ワード（例: 猫 ねこ キャラクター）';
-      keywords.setAttribute('aria-label', '画像の検索ワード');
       const upload = document.createElement('button'); upload.type = 'button'; upload.className = 'gb-btn gb-btn-xs';
       upload.textContent = '画像を登録'; upload.dataset.e2eId = 'icon-picker-image-upload';
       const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.hidden = true;
@@ -509,12 +521,12 @@
         const file = fileInput.files?.[0]; if (!file) return;
         upload.disabled = true; status.textContent = '登録中…';
         try {
-          const item = await options.onUploadImage(file, { label: label.value.trim(), keywords: keywords.value.trim() });
+          const item = await options.onUploadImage(file, { label: file.name, keywords: '画像 写真 カスタム' });
           if (picker.isConnected) selectItem(item);
         } catch (error) { if (picker.isConnected) status.textContent = error.message || '画像の登録に失敗しました'; }
         finally { upload.disabled = false; fileInput.value = ''; }
       });
-      form.append(label, keywords, upload, fileInput, status); picker.appendChild(form);
+      form.append(upload, fileInput, status); picker.appendChild(form);
     }
 
     const grid = document.createElement('div');
@@ -598,7 +610,7 @@
         btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
-        btn.innerHTML = render(item.spec, options.itemSize || 22);
+        btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
         btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
         btn.addEventListener('click', () => selectItem(item));
         fragment.appendChild(btn);
@@ -668,22 +680,28 @@
     }
 
     closeHandler = (ev) => {
+      if (picker._isPopupChildTarget(ev.target)) return;
       if (!picker.contains(ev.target) && ev.target !== options.anchorEl) {
         removePicker();
       }
     };
     keydownHandler = (ev) => {
       if (ev.key === 'Escape') {
+        // 子パレットが先にEscapeを処理する。次のEscapeで親を閉じる。
+        if ([...childPopups.keys()].some(popup => popup.isConnected)) {
+          // 子が処理した同じEscapeを本体の共通dismissへ渡さない。
+          ev.stopPropagation();
+          return;
+        }
         ev.preventDefault();
         ev.stopPropagation();
         removePicker();
       }
     };
-    setTimeout(() => {
-      if (!picker.isConnected || !closeHandler || !keydownHandler) return;
+    if (picker.isConnected && closeHandler && keydownHandler) {
       document.addEventListener('pointerdown', closeHandler, true);
       document.addEventListener('keydown', keydownHandler, true);
-    }, 0);
+    }
     return picker;
   }
 

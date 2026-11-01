@@ -970,7 +970,7 @@ const _UI_STRUCTURED_KEYS = [
   'meldex-favorites', 'outliner-sort', 'outliner-manual-order',
   'outliner-locked-items', 'outliner-node-colors', 'outliner-work-folder', 'outliner-work-folder-id', 'outliner-work-folders',
   'global-filter', 'gb:outliner-filter-shared-state', 'main-calendar-path', 'main-calendar-id',
-  'outliner-expanded', '_file-id-migrated',
+  '_file-id-migrated',
   'customDbTemplates',
   'version-config', 'history-max', 'folder-display-config',
 ];
@@ -1095,7 +1095,8 @@ async function _restoreUiConfigFromServer() {
       overwriteKeys.add('ui-scale-source');
     }
     for (const [key, val] of Object.entries(config)) {
-      if (key === 'folder-files-hidden') continue;
+      // 展開状態は今回の起動中の操作だけを使い、旧設定から持ち戻さない。
+      if (key === 'folder-files-hidden' || key === 'outliner-expanded') continue;
       if (val == null) continue;
       if (localStorage.getItem(key) !== (initial.get(key) ?? null)) continue;
       if (localStorage.getItem(key) != null && !overwriteKeys.has(key)) continue;

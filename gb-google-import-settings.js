@@ -30,6 +30,126 @@
     return state?.isOwner === true || role === 'owner' || role === 'admin';
   }
 
+  // The job belongs to the desktop service, not to the settings panel's DOM.
+  // Keep one observer per job so closing/reopening settings never stops it or
+  // starts a second polling loop. Only opaque job IDs survive a page reload.
+  const personalJobs = new Map();
+  const personalJobsKey = 'meldex.google-personal.active-jobs.v1';
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function rememberJobs() {
+    try {
+      sessionStorage.setItem(personalJobsKey, JSON.stringify([...personalJobs.values()]
+        .filter(entry => !entry.stopped).map(({ kind, id }) => ({ kind, id }))));
+    } catch (_) { /* Monitoring still works when session storage is disabled. */ }
+  }
+  function forgetPersonalJobs() {
+    for (const entry of personalJobs.values()) {
+      entry.stopped = true;
+      entry.operation?.dispose();
+    }
+    personalJobs.clear();
+    rememberJobs();
+  }
+  function observePersonalJob(kind, id, restored = false) {
+    if (!['preview', 'import'].includes(kind) || typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) throw new Error('取り込みの処理IDが不正です');
+    const key = `${kind}:${id}`;
+    let entry = personalJobs.get(key);
+    if (entry?.lost) { entry.operation?.dispose(); personalJobs.delete(key); entry = null; }
+    if (entry) return entry;
+    // Retain only a small terminal cache for a reopened settings panel.
+    for (const [oldKey, old] of personalJobs) {
+      if (personalJobs.size < 24) break;
+      if (old.stopped) personalJobs.delete(oldKey);
+    }
+    entry = { kind, id, stopped: false, latest: null, operation: null };
+    personalJobs.set(key, entry);
+    const path = `/google-import/local/${kind === 'preview' ? 'preview-jobs' : 'jobs'}/${encodeURIComponent(id)}`;
+    entry.first = new Promise(resolve => { entry.resolveFirst = resolve; });
+    const publish = job => { entry.latest = job; entry.resolveFirst(job); };
+    const operation = () => entry.operation ||= window.MeldexOperationProgress?.begin({
+      kind: 'google-personal-' + kind, persistentJobId: 'google-personal:' + key,
+      label: kind === 'preview' ? 'Google取り込みの対象確認' : 'Googleドライブから取り込み',
+      background: true, showInTray: true, showImmediately: true, priority: 20,
+      cancellable: true, cancelCompletes: false,
+      cancel: async () => {
+        await apiPost(path + '/cancel', {}, { silentError: true });
+        entry.cancelRequested = true;
+      },
+    });
+    rememberJobs();
+    void (async () => {
+      let delay = 1000;
+      while (!entry.stopped) {
+        try {
+          const job = await apiFetch(path, { silentError: true });
+          if (entry.stopped) break;
+          publish(job);
+          const op = job.status === 'running' || restored ? operation() : entry.operation;
+          if (job.status === 'running') {
+            const sheet = kind === 'import' && job.phase === 'sheet-records';
+            op?.update({ status: job.cancel || entry.cancelRequested ? 'cancelling' : 'running',
+              phase: kind === 'preview' ? ({ documents: '文書・表を検索', locations: '保存場所を確認', shortcuts: '文書・表へのリンクを確認' }[job.phase] || '対象を確認')
+                : sheet ? 'シート内のデータを保存' : 'ファイルを取り込み',
+              mode: kind === 'import' && (sheet ? job.record_total : job.total) > 0 ? 'determinate' : 'indeterminate',
+              processed: kind === 'preview' ? 0 : sheet ? job.record_processed : job.processed,
+              total: sheet ? job.record_total : job.total,
+              currentItem: kind === 'preview' ? '' : job.item_name || '',
+              message: job.cancel || entry.cancelRequested ? '停止を要求しました。保存中の処理の終了を待っています。'
+                : kind === 'preview' ? `文書・表 ${job.loaded ?? 0}件 / 保存場所確認 ${job.checked ?? 0}件 / 一覧 ${job.found ?? 0}件`
+                  : sheet ? `全体 ${job.processed} / ${job.total}ファイル` : '設定を閉じても取り込みは続きます。',
+            });
+          } else {
+            const result = job.result;
+            const summary = kind === 'preview' ? (job.status === 'done' ? `対象確認完了: ${result?.total ?? job.found ?? 0}件。外部取り込みで一覧を確認してください。` : job.message || '対象確認を停止しました。')
+              : result ? `作成${result.created} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}` : job.message || '取り込みを完了できませんでした。';
+            if (job.status === 'failed') op?.fail({ error: kind === 'import' && result && job.message ? `${job.message} / ${summary}` : summary });
+            else if (job.cancel || job.status === 'cancelled') op?.cancelled({ summary });
+            else if (job.status !== 'done') op?.fail({ error: summary });
+            else if (kind === 'import' && (!result || result.failed || result.blocked || result.unsupported || result.unprocessed)) op?.partial({ summary });
+            else op?.succeed({ summary });
+            entry.stopped = true;
+            rememberJobs();
+            if (kind === 'import' && typeof reloadOutlinerTree === 'function') {
+              try { await reloadOutlinerTree(); } catch (_) { /* Saved files remain available on the next tree refresh. */ }
+            }
+          }
+          delay = 1000;
+        } catch (error) {
+          if (entry.stopped) break;
+          const status = error.status || error.statusCode || error.response?.status;
+          entry.lost = [401, 403, 404].includes(Number(status));
+          const message = entry.lost ? '処理の進捗を確認できません。外部取り込みの接続状態を更新してください。'
+            : '進捗を取得できません。処理は続いている場合があります。自動で再確認します。';
+          publish(entry.lost ? { status: 'failed', message } : { _progressUnavailable: true, message });
+          if (entry.lost) {
+            operation()?.unknown({ summary: message }); entry.stopped = true; rememberJobs();
+          } else {
+            operation()?.update({ mode: 'indeterminate', phase: '進捗を再取得中', message });
+            delay = Math.min(delay * 2, 5000);
+          }
+        }
+        if (!entry.stopped) await pause(delay);
+      }
+      entry.resolveFirst({ status: 'cancelled', message: '接続設定が変更されました。' });
+    })();
+    return entry;
+  }
+  async function readPersonalJob(kind, id) {
+    const entry = observePersonalJob(kind, id);
+    return entry.latest || await entry.first;
+  }
+  function restorePersonalJobs() {
+    if (isCloudSurface() || !canManage() || typeof apiFetch !== 'function') return;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(personalJobsKey) || '[]');
+      if (Array.isArray(saved)) for (const item of saved.slice(0, 16)) {
+        if (item && ['preview', 'import'].includes(item.kind) && typeof item.id === 'string' && /^[\w-]{1,128}$/.test(item.id)) observePersonalJob(item.kind, item.id, true);
+      }
+    } catch (_) { /* Ignore stale or malformed local observer IDs. */ }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restorePersonalJobs, { once: true });
+  else restorePersonalJobs();
+
   function cloudPayload() {
     return {
       config: {
@@ -573,7 +693,7 @@
         if (panel._authStarting) return;
         panel._authStarting = true;
         clearConnectionView(); setBusy(true);
-        try { await action(); }
+        try { await action(); forgetPersonalJobs(); }
         finally { panel._authStarting = false; await refresh(); }
       };
       const act = fn => async () => {
@@ -585,8 +705,9 @@
         panel._watchingPreview = jobId;
         try {
           while (panel.isConnected && panel._previewJob === jobId) {
-            const job = await apiFetch(`/google-import/local/preview-jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            const job = await readPersonalJob('preview', jobId);
             if (!panel.isConnected || panel._previewJob !== jobId) return;
+            if (job._progressUnavailable) { message(job.message); await pause(1000); continue; }
             const progressLabel = { running: '確認中', done: '確認完了', failed: '確認失敗', cancelled: '確認停止', expired: '確認やり直し' }[job.status] || '確認結果';
             const phaseLabel = job.status === 'running' ? (({ documents: '文書・表を検索', locations: '保存場所を確認', shortcuts: '文書・表へのリンクを確認' }[job.phase] || '')
               + (job.scope_label ? ' / ' + job.scope_label : '')) : '';
@@ -626,10 +747,13 @@
         find('cancel').hidden = false;
         try {
           while (panel.isConnected && panel._job === jobId) {
-            const job = await apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
+            const job = await readPersonalJob('import', jobId);
             if (!panel.isConnected || panel._job !== jobId) return;
+            if (job._progressUnavailable) { message(job.message); await pause(1000); continue; }
             if (job.status === 'running') {
-              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。' : `全体を取り込み中 ${job.processed} / ${job.total}`);
+              const detail = job.phase === 'sheet-records'
+                ? ` / ${job.item_name || 'シート'}: シート内のデータを保存 ${job.record_processed ?? 0} / ${job.record_total ?? 0}` : '';
+              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。' : `全体を取り込み中 ${job.processed} / ${job.total}${detail}`);
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
             }
@@ -647,7 +771,6 @@
                 find('run').textContent = '失敗・未処理をまとめて再試行';
                 find('run').hidden = false;
               }
-              if (typeof reloadOutlinerTree === 'function') await reloadOutlinerTree();
             } else {
               invalidate();
               if (job.plan_id) {
@@ -841,6 +964,7 @@
           const source = find('source').value.replace(/[\\/]+$/, '') + (find('subfolder').value.trim() ? '/' + find('subfolder').value.trim() : '');
           const job = await apiPost('/google-import/local/preview-jobs', { source, folder_url: find('folder').value.trim(), targets }, { silentError: true });
           panel._previewJob = job.job_id;
+          observePersonalJob('preview', job.job_id);
         } finally {
           panel._previewStarting = false;
           await refresh();
@@ -863,6 +987,7 @@
         setBusy(true);
         try {
           panel._job = (await apiPost('/google-import/local/run', { plan_id: panel._plan }, { silentError: true })).job_id;
+          observePersonalJob('import', panel._job);
           find('cancel').hidden = false;
         } finally {
           panel._importStarting = false;

@@ -883,7 +883,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
     if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
-        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
           openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },

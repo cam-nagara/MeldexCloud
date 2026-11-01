@@ -42,7 +42,8 @@
     const calloutMatch = line.match(/^>\s*\[!([^\s\]]+)\s*(#[0-9a-fA-F]{3,8})?\s*(info|warning|danger|success|x-post)?\]\s*(.*)$/);
     if (calloutMatch) {
       closeListAll();
-      const cIconRaw = calloutMatch[1], cColor = calloutMatch[2] || '', cType = calloutMatch[3] || '', cTextParts = [calloutMatch[4]];
+      const meta = pendingCalloutMetadata || {}; pendingCalloutMetadata = null;
+      const cIconRaw = calloutMatch[1], cColor = meta.iconColor || calloutMatch[2] || '', cType = calloutMatch[3] || '', cTextParts = [calloutMatch[4]];
       while (i + 1 < lines.length && lines[i + 1].startsWith('> ')) {
         i++;
         cTextParts.push(lines[i].slice(2));
@@ -53,12 +54,14 @@
       const cBody = cTextParts.map(t => cType === 'x-post' ? esc(t) : inlinemd(t)).join('<br>');
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
-      const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
-      const meta = pendingCalloutMetadata || {}; pendingCalloutMetadata = null;
-      const iconHtml = `<span class="callout-icon" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
+      const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20, { contextPath: _mdMediaBasePath }) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
+      const iconHtml = `<span class="callout-icon" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
       const blockAttrs = (meta.background ? ` data-callout-background="${esc(meta.background)}"` : '')
-        + (meta.border ? ` data-callout-border="${esc(meta.border)}"` : '');
-      const blockStyle = `background-color:${meta.background || ''};border-color:${meta.border || ''};`;
+        + (meta.border ? ` data-callout-border="${esc(meta.border)}"` : '')
+        + ` data-callout-color-linked="${_calloutColorsLinked(meta)}"`;
+      const colors = _calloutColorStyles(meta, cColor);
+      const blockStyle = _calloutColorsLinked(meta) ? (cColor ? `--callout-linked-color:${cColor};` : '')
+        : `background-color:${colors.background};border-color:${colors.border};`;
       html += `<div class="callout-block${cls}"${blockAttrs} style="${esc(blockStyle)}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
       continue;
     }
@@ -675,7 +678,8 @@ function htmlToMd(html) {
           // data-icon属性があればLucide名、なければtextContent（旧emoji互換）
           const icon = iconEl?.dataset?.icon || iconEl?.textContent || 'lightbulb';
           const color = iconEl?.dataset?.color || '';
-          const meta = _calloutMetadata({ background: node.dataset.calloutBackground, border: node.dataset.calloutBorder,
+          const meta = _calloutMetadata({ ..._calloutBlockColors(node), colorLinked: _calloutColorsLinked(_calloutBlockColors(node)),
+            iconColor: color && !/^#[0-9a-f]{3,8}$/i.test(color) ? color : '',
             label: iconEl?.dataset.iconLabel, keywords: iconEl?.dataset.iconKeywords });
           const metadata = Object.keys(meta).length ? '<!--meldex-callout:' + encodeURIComponent(JSON.stringify(meta)) + '-->\n' : '';
           const bodyNode = node.querySelector('.callout-body');
@@ -683,7 +687,8 @@ function htmlToMd(html) {
           const typeMatch = [...node.classList].find(c => c.startsWith('callout-') && c !== 'callout-block');
           const type = typeMatch ? typeMatch.replace('callout-', '') : '';
           const bodyLines = body.split('\n');
-          const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
+          const tokenColor = /^#[0-9a-f]{3,8}$/i.test(color) ? color : '';
+          const firstLine = `> [!${icon}${tokenColor ? ' ' + tokenColor : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
           return _calloutMk + metadata + firstLine + (restLines ? '\n' + restLines : '') + '\n\n';
         }
@@ -1101,7 +1106,7 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、サブパネルで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1178,7 +1183,7 @@ function _showLinkContextMenu(e, linkTarget) {
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
     if (_canUseRightSidebar) {
-      addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
+      addItem('panelRight', 'サブパネルで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
         linkType: linkTarget.linkType || '',
         sourcePaneId: linkTarget.sourcePaneId || '',
         sourceEl: e?.target || null,

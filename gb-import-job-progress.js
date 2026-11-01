@@ -16,8 +16,9 @@
   'use strict';
 
   const JOB_POLL_INTERVAL_MS = 1200;
-  // 上限（保険）: 1.2秒 × 3000 ≒ 60分。通常はこれより早く完了/失敗する。
-  const JOB_MAX_POLLS = 3000;
+  // Worker completion, not elapsed time, determines when observation ends.
+  // A caller may still request an explicit diagnostic polling limit.
+  const JOB_MAX_POLLS = Infinity;
   const JOB_LONG_RUNNING_NOTICE_MS = 5 * 60 * 1000;
 
   function delay(ms) {
@@ -93,7 +94,10 @@
         job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
       } catch (err) {
         // 一時的な通信タイムアウトはポーリングを継続する（処理はサーバ側で継続中）
-        if (err && err.isTimeout) { await delay(pollIntervalMs); continue; }
+        const status = Number(err?.status || err?.statusCode || 0);
+        if (err?.isTimeout || err?.name === 'TypeError' || status === 429 || status >= 500) {
+          await delay(Math.max(pollIntervalMs, 1000)); continue;
+        }
         // ジョブが見つからない（サーバ再起動等）場合は数回まで許容してから諦める
         if (err && /404/.test(String(err.message || '')) && missCount < 3) {
           missCount += 1;
@@ -148,6 +152,7 @@
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
+    let cancelJobId = '';
     let operation = opts.operationProgress === false || !progressApi
       ? null
       : progressApi.begin({
@@ -158,24 +163,33 @@
           delayMs: opts.operationDelayMs,
           showInTray: opts.showInTray !== false,
           priority: Number(opts.operationPriority) || 20,
+          cancellable: false,
+          cancelCompletes: false,
+          cancel: async () => {
+            if (cancelJobId) await apiPost('/jobs/' + encodeURIComponent(cancelJobId) + '/cancel', {}, { silentError: true });
+          },
         });
     const userOnStarted = typeof opts.onStarted === 'function' ? opts.onStarted : null;
     const userOnProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
     const wrapped = Object.assign({}, opts, {
       onStarted: function (jobId, started) {
+        cancelJobId = jobId;
         const existing = progressApi?.findByPersistentJobId(jobId);
         if (operation && existing && existing.id !== operation.id) {
           operation.dispose();
           operation = existing;
         }
         operation?.setPersistentJobId(jobId);
-        operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中' });
+        operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中', cancellable: true });
         if (userOnStarted) userOnStarted(jobId, started);
       },
       onProgress: function (progress, job) {
         const total = Number(progress?.total);
+        // Terminal states are finalized below with their result/exception.
+        // Marking "cancelled" here would bypass completion and auto-dismiss.
+        const activeStatus = ['queued', 'running', 'cancelling'].includes(job?.status) ? job.status : operation?.getState()?.status || 'running';
         operation?.update({
-          status: job?.status || 'running',
+          status: job?.cancel_requested || (activeStatus === 'running' && operation?.getState()?.status === 'cancelling') ? 'cancelling' : activeStatus,
           mode: total > 0 ? 'determinate' : 'indeterminate',
           processed: Number(progress?.processed) || 0,
           total: total > 0 ? total : null,
@@ -192,13 +206,18 @@
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
       if (result?.ok === false) {
         operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
-      } else if (['failed', 'errors', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result?.[key]) > 0) || result?.folder_error) {
-        operation?.partial({ summary: result.summary || '処理が終了しました（未取得・翻訳待ちを含む）', details: result.failure_samples || result.failures || [] });
+      } else if (['failed', 'errors', 'failed_assets', 'conflicts', 'blocked', 'unsupported', 'unprocessed', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result?.[key]) > 0) || result?.folder_error || result?.warnings?.length) {
+        operation?.partial({ summary: result.summary || '処理が終了しました。確認が必要な項目があります。', details: result.failure_samples || result.failures || [] });
       } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
       return result;
     } catch (error) {
-      if (error?.name === 'AbortError') operation?.cancelled({ summary: error.message });
+      if (error?.name === 'AbortError') {
+        const partial = error.jobStatus?.result;
+        operation?.cancelled({ summary: partial?.unprocessed !== undefined
+          ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message });
+      }
       else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
+      else if (error?.name === 'LongRunningJobError' || [400, 401, 403, 404].includes(Number(error?.status)) || /HTTP 404/.test(error?.message || '')) operation?.unknown({ summary: '進捗を確認できないため、処理の結果は未確認です。取り込みの前回結果を確認してください。' });
       else operation?.update({ message: error?.name === 'LongRunningJobError' ? error.message : '進捗を確認できません。処理が終了したかは未確認です。' });
       throw error;
     }

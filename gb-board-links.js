@@ -174,7 +174,7 @@ function _bdAvailableOpenTargets() {
     ];
   }
   return [
-    { value: 'right-sidebar', label: '右サイドバー' },
+    { value: 'right-sidebar', label: 'サブパネル' },
     { value: 'main', label: 'メインパネル' },
   ];
 }
@@ -808,7 +808,7 @@ async function openLinkedPathInRightPane(path, label, options) {
   if (opts.selectionPreviewSeq != null && opts.selectionPreviewSeq !== _bdSelectAutoSubpanelSeq) return false;
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
-  // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
+  // サブパネル内からは、別のサブパネルを開くUI（サブパネルで開く）を
   // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
   // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
   // sourcePaneId を明示的なヒントとして優先し、無ければフォーカス位置で判定する。
@@ -816,7 +816,7 @@ async function openLinkedPathInRightPane(path, label, options) {
     const source = opts.sourceEl || (opts.sourcePaneId || undefined);
     if (!GBPaneBridge.guardRightSidebarTool('subpanel', source)) return false;
   }
-  // 右サイドバーで開く = 新しい右サイドバー常設「サブパネル」（GBSubPanel）で表示する。
+  // サブパネルで開く = 新しい右サイドバー常設「サブパネル」（GBSubPanel）で表示する。
   // 対応対象に含まれない拡張子は、既存の解決結果(entry.type)に関わらず
   // GBLinkRouter の判定を優先し、汎用ビューワー（ノート扱い）へ誤って
   // フォールバックさせず「未対応形式」としてサブパネル側にエラー表示させる。
@@ -1065,7 +1065,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   e?.preventDefault?.();
   e?.stopPropagation?.();
   document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
-  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、サブパネルで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const anchorEl = e?.currentTarget || e?.target || null;
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
@@ -1100,7 +1100,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   } else {
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
     if (canUseRightSidebar && !_bdIsExternalBrowserUrl(targetPath)) {
-      addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
+      addItem('サブパネルで開く', 'panelRight', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     }
   }
   if (_bdIsExternalBrowserUrl(targetPath)) {

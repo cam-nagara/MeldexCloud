@@ -72,7 +72,7 @@
   box-sizing: border-box;
 }
 
-/* 実際のノート描画CSS（gb-tools.part02.part01.css の #page-content h1〜h6 等）と
+/* 実際のノート描画CSS（gb-tools.part02.part01.css の :is(#page-content,[data-editor-local-id="page-content"]) h1〜h6 等）と
    同じ --page-* トークンを参照する。値そのものはテーマ／ファイルスタイルの
    どちらであっても常に最新のCSS変数を指すため、再描画なしで追従する。 */
 .note-heading-toolbar-menu [data-type-id="title"] .note-heading-toolbar-sample {
@@ -131,7 +131,7 @@
   color: var(--page-h6-fg);
   background: var(--page-h6-bg, transparent);
 }
-/* 本文は編集ホスト本体（gb-tools.part02.part01.css の #page-content 等）と同じ
+/* 本文は編集ホスト本体（gb-tools.part02.part01.css の :is(#page-content,[data-editor-local-id="page-content"]) 等）と同じ
    --page-text-* を参照する。ファイル単位の太字・斜体・フォント・背景も見本へ
    反映し、文字色だけが合っている不完全な見本にしない。 */
 .note-heading-toolbar-menu [data-type-id="body"] .note-heading-toolbar-sample {

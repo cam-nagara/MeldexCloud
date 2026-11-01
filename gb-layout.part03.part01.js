@@ -425,6 +425,7 @@
 
   function render() {
     if (!_layoutEl) return;
+    _root = window.GBIndependentSubpanel?.ensure?.(_root) || _root;
     _root = window.GBChatSidebar?.ensure?.(_root) || _root;
     _ensureReadableMainPane();
     // Phase 5 安全策: ポップアップ表示中に再レンダリングすると、ポップアップ内に

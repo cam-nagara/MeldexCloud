@@ -278,11 +278,17 @@
   function _buildCallout(nlIdSpan, nodes) {
     const wrap = document.createElement('div');
     wrap.className = 'callout-block callout-info';
+    wrap.dataset.calloutColorLinked = 'true';
     wrap.setAttribute('contenteditable', 'false');
     if (nlIdSpan) wrap.appendChild(nlIdSpan);
     const icon = document.createElement('span');
     icon.className = 'callout-icon';
+    icon.setAttribute('role', 'button');
+    icon.tabIndex = 0;
+    icon.setAttribute('aria-label', 'コールアウトアイコンを変更');
     icon.dataset.icon = 'info';
+    icon.dataset.color = '#3898ec';
+    icon.style.color = '#3898ec';
     icon.innerHTML = typeof lucide === 'function' ? lucide('info', 20) : '';
     wrap.appendChild(icon);
     const body = document.createElement('div');
@@ -291,6 +297,7 @@
     if (nodes && nodes.length && _hasMeaningfulContent(nodes)) nodes.forEach((n) => body.appendChild(n));
     else body.appendChild(document.createElement('br'));
     wrap.appendChild(body);
+    if (typeof _applyCalloutColorStyles === 'function') _applyCalloutColorStyles(wrap);
     return wrap;
   }
 

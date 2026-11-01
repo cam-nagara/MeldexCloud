@@ -146,7 +146,7 @@ const GBLayout = (() => {
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
   const FIXED_RAIL_RIGHT_DEFAULTS = window.GBRailContract?.defaults?.() || [
-    ['オプション', 'detail'], ['サブパネル', 'subpanel'],
+    ['オプション', 'detail'],
     ['プロパティ', 'information'], ['タグ', 'tags'], ['バックリンク', 'backlinks'], ['アノテート', 'annotation'], ['テーマ', 'file-theme'],
     ['ヒストリー', 'history'], ['バージョン管理', 'version'],
   ];
