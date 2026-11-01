@@ -561,6 +561,7 @@
         nameSpan.dataset.e2eId = `entity-attachment-select-${item.id}`;
         nameSpan.tabIndex = -1;
         nameSpan.textContent = item.name || item.path.split('/').pop();
+        nameSpan.dataset.tabTitle = nameSpan.textContent;
         nameSpan.title = item.path || '';
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
