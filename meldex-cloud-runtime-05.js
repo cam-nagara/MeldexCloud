@@ -145889,10 +145889,14 @@ function hideBoardNoteTab() {
       columnsPane.appendChild(props);
 
       if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
-        const renderAttachmentsForAccess = async (readOnly, selectedId) => {
+        let attachmentsAccessQueue = Promise.resolve();
+        const renderAttachmentsNow = async (readOnly, requestedId) => {
+          if (seq !== _renderSeq) return false;
           const old = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
-          selectedId = selectedId || old?.dataset.selectedAttachment;
           if (await old?._linkedFiles?.dispose?.() === false || seq !== _renderSeq) return false;
+          // Initial selection also mounts asynchronously. Read it after dispose
+          // has joined that work, rather than reverting a loading file to columns.
+          const selectedId = requestedId || old?.dataset.selectedAttachment;
           // Another access refresh may have completed while saving this one.
           if (body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]') !== old) return false;
           old?.remove();
@@ -145910,6 +145914,12 @@ function hideBoardNoteTab() {
             },
           });
           body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
+          return true;
+        };
+        const renderAttachmentsForAccess = (readOnly, requestedId) => {
+          attachmentsAccessQueue = attachmentsAccessQueue.catch(() => false)
+            .then(() => renderAttachmentsNow(readOnly, requestedId));
+          return attachmentsAccessQueue;
         };
         body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
         await renderAttachmentsForAccess(access.readOnly, selectedId);
